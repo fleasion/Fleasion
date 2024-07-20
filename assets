@@ -7,7 +7,7 @@
         "drastic": "80ef9ad136193b345f559c24b9e84924",
         "water sleeves": "5c80658b59d891565dda5ea29bba2661",
         "pink sleeves": "2b280dc1bba4695a13a2f999f26aa4cc",
-        "winter camo": "7c657d0a527710bf8fda0563723e4c3c",
+        "winter camo": "45ce7c10d3b5754f054768071772f9e5",
         "rainbow cat": "1e69d7d4cd36a25ac8980ea21f598d17",
 	"zutto": "b63b7d9032a76feee44d569d729ab861"
     },
@@ -36,7 +36,14 @@
     },
     "custom skins": {
         "laked sky": "a0488e1997d93d997a04ac4c98a14b60",
-        "rainbow cat": "1e69d7d4cd36a25ac8980ea21f598d17"
+	"galaxy": "42a5a30257115abe8411245ad375a013",
+        "pink stars": "086139f5e96896f1124935b158a948a4",
+        "pink purple pattern": "7434a7a9d1e3225cbdb86a704294840f",
+        "drastic": "80ef9ad136193b345f559c24b9e84924",
+        "water": "5c80658b59d891565dda5ea29bba2661",
+        "winter camo": "45ce7c10d3b5754f054768071772f9e5",
+        "rainbow cat": "1e69d7d4cd36a25ac8980ea21f598d17",
+	"zutto": "b63b7d9032a76feee44d569d729ab861"
     },
     "sounds": {
         "pew": "7eac4541692ca64abc5485b4875b237c",
