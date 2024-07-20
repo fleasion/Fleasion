@@ -1,5 +1,5 @@
 {
-    "version": "v1.02",
+    "version": "v1.03",
     "sleeves": {
         "galaxy": "42a5a30257115abe8411245ad375a013",
         "pink stars": "086139f5e96896f1124935b158a948a4",
@@ -49,8 +49,8 @@
         "pew": "7eac4541692ca64abc5485b4875b237c",
         "laser": "ad20c7ec88aeeaa36c6b7147e9a38ae9",
 	"Old Badger": "9604f62b6042d7a09086cb95471bda0f",
-	"MW2 inter": "c25dabce8164bbf0c3f6eb8ca4e41440",
-	"MW2 m107": "a4f5643a055b5f0c77dd8abe7abbfb86",
+	"MW2 inter": "fdae3df64a1e65959c9fe10a29b811e9",
+	"MW2 m107": "347bc2e9283ef882987b169a7995214b",
         "none": "5873cfba79134ecfec6658f559d8f320"
     },
     "hitsound": {
