@@ -1,0 +1,56 @@
+{
+    "version": "v1.00",
+    "sleeves": {
+        "galaxy": "42a5a30257115abe8411245ad375a013",
+        "pink stars": "086139f5e96896f1124935b158a948a4",
+        "pink purple pattern": "7434a7a9d1e3225cbdb86a704294840f",
+        "drastic": "80ef9ad136193b345f559c24b9e84924",
+        "water sleeves": "5c80658b59d891565dda5ea29bba2661",
+        "pink sleeves": "2b280dc1bba4695a13a2f999f26aa4cc",
+        "winter camo": "7c657d0a527710bf8fda0563723e4c3c",
+        "rainbow cat": "1e69d7d4cd36a25ac8980ea21f598d17",
+        "white diamond": "b398bb97a181f86348cdd271b2f44cab"
+    },
+    "sights": {
+        "delta": "89dee12dd59fda0cc7311ab4ca1fbada",
+        "eotech 552": "41b3d6c444070b421b3125f17045b155",
+        "coyote": "c3eed25613be282991f7f36185313e77",
+        "coyote small": "ac59980bedb36f4b240633b08b532d08",
+        "okp 7": "7f79e1dd7f093eb6ad647396717938da"
+    },
+    "gun smoke": {
+        "pink": "5c4932441500b62a3218bbbabe45a117",
+        "blue": "38342d3214ad04067e03106bdff41914",
+        "arda garden": "a359199394481b570abbba664bc3fc3f"
+    },
+    "hitmarker": {
+        "pink small": "5b62f2b46911c14c8786c6e943d25bf9",
+        "big blue": "5cbef7585db032e658b662ea4e415f36",
+        "big pink": "7cdebc991be99683783721c89a811fca"
+    },
+    "gun skins": {
+        "future fire*": "8fa1daa2762d86b3af771acab1a46aad",
+        "twinkles": "85fff172c7626ee6e29a0a80293e0913",
+        "you tried": "1d5cdc87729753b85e8dc4dd68b8a828",
+        "c-black 1": "fdd5222cc496c67c581abbad52b9c3e6"
+    },
+    "custom skins": {
+        "laked sky": "a0488e1997d93d997a04ac4c98a14b60",
+        "rainbow cat": "1e69d7d4cd36a25ac8980ea21f598d17"
+    },
+    "sounds": {
+        "pew": "7eac4541692ca64abc5485b4875b237c",
+        "laser": "ad20c7ec88aeeaa36c6b7147e9a38ae9",
+        "none": "5873cfba79134ecfec6658f559d8f320"
+    },
+    "hitsound": {
+        "ding": "df62d2f5a545befcf81719f5ec7be3f6",
+        "osu": "01c20dd5f22535f5c598a0d8d89266fb",
+        "kovaaks": "546ca45d4089d45a931e3ce54d737474",
+        "quake 3": "b276797f86a205ad57892ba259d7bca2"
+    },
+    "killsound": {
+        "kill sounds": ["2d421883139df33004f7f4b09599f072", "24d2253563d53f0da7d629905baf39a1", "f759e18df11147e4063bde4456932a5b", "49e13f7317bbda81144c039ad909487d", "2a987fd54ae83be4acdcea094d615d01", "796946525a9eaaa7266d9185b25e318c", "1feefea40850972e3e63bcb0d86baca0"],
+        "tf2": "80cda01cdd99bfaae5d7dc50f689bafa"
+    }
+}
