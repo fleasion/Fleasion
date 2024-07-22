@@ -1,4 +1,4 @@
-1.00
+1.01
 
 For help/support join discord.gg/v9gXTuCz8B
 
@@ -57,6 +57,15 @@ a0488e1997d93d997a04ac4c98a14b60 # laked sky
 4b1f2e9938532d75b87ce6199352402b # idk sou_p suggested
 b67bfab233fa604100ba97c5200b05a1 # azumangao
 b398bb97a181f86348cdd271b2f44cab # white diamond
+d0fc6de21ed19e46b599f1a2f5969565 backstreet writing
+6fa317d171476e72230d22d2cb05862f hypomatic
+844b8483ef8c309b246b378a88fa8d9b rush hour
+1daa74342d045443e4262214508599db dreamscape
+4cce48e4b4a317fc2504e006ea8c6023 rubie 1
+56284bac9a10504b9e6c0ff72f5b3338 xmas nights 3
+68cee73f2049c26b2bcb1ea5faa8696f drain gang
+5b480a1640c3a30cd8057cbad2264b3d neon nights
+0657db57fac4614acc2b05a5da5b8102 fastbreak fraggers
 
 ## gun skins
 # normal
@@ -127,6 +136,69 @@ feb10a78b7cfb4cb20562b595237de35 #aug a2 762
 ad20c7ec88aeeaa36c6b7147e9a38ae9 #laser sound (delayed :/)
 5873cfba79134ecfec6658f559d8f320 #no sound
 
+#rgd hashes
+0e99b20d905f94ec6d28699d2750e8b1 # pin 
+737a3e0467c2d7ba9ac6e6451bee25e7 # texture map 
+d04beb061ccabcd91ef2c50f7c2e616f # main model 
+e244aadf5a0e57f08dc3a96e0ac2c695 # clip
+
+#bundle charge hashes
+f960b8fe85cce078c2d2ab092f69c43a # bottom cap 1
+5094ebf77c1ee86bf916990883ab73a5 # bottom cap 2
+dfce0295d8cef54babb874d5c9933a48 # most of bundlecharge 1
+8a0e4e3f88554a146ac062a863c98a52 # most of bundlecharge 2
+a3cca2cc62f85d77c65c13de64ed3cca # pullcord 1
+002ae54b60345945142f04857ab23e03 # pullcord 2
+18f44561aef2840a728116f0807ec24c # texturemap 1
+7e698898130ba3d4ccb9b27d8f9ce434 # texturemap 2
+
+7b5d218f530f0d1b67fc3d39144c10db # throw hand sound
+298e56989dd258e0a1c9f22502fb9531 # throw air sound
+e530dc184b3b30fb065a7012d3838309 # another throw air sound
+260f4f9cce1720dc7814902b732cd070 # pull cord pulled down sound
+d1f680604dd65a190a3141dc0683c7b9 # end priming grenade
+0e83b67c880f5526e67eba9c968f8d30 # start priming grenade
+33551d0b8b1d1f1d7f87a3023547e507 # hiss
+
+02338147fad6261f320ca5248b8f6a7a # smoke
+
+#subspace tripmine
+80c48cdbd2be1c63fb3c4ed1f2ef08bf # normal model
+591a9bf130b238bf1e25cde92467db2f # small ver
+78b4a822e435977c86c29efd7a92442f # texture
+
+7763774b834063344305f3016b4309d3 # beep audio
+e8ad21ed3052383701e571f3c265d924 # boom audio
+4d6007a0be7dcc22068639c9063e0194 # invisible
+
+5873cfba79134ecfec6658f559d8f320 # nothing to replace stuff with
+f11e31419461edfc6681bf997accaef9 # pink
+
+#every nade explosion
+#close
+9119b417ff52efbba1e9073f43666cf9
+644ce805a98f142462a1b16072639a6d
+dc3803506c5f74cbd460519a8f882253
+2700cff7472595d36164730ca682bc55
+7d39ba6ff97601c6e6430709d967415f
+dbfb0f447cc4c9031b85a7dc99216dd7
+11beb6053598461d48e03a713545f321
+#mid
+603ed35195cd5957e0c418178975147c
+1a1963570db057376d9fe1fb77600dd8
+3e0af729b140cc9bbce5df68e44c873f
+111c5be2fcbff43ba0f32ae8df519f86
+b27f0b076c700a1cc6d7dba00c4b8b35
+6d963dbf780628e98bfa941b23e13778
+db71802e3f496f5cfc3d781eed43b98c
+97e4d68d5003bdcefb565a98a44e4363
+#far
+511f26fd3b63d14c4b8c41f69d1d545a
+2da9a6422d03fe487487773a48da88b7
+6e8bf85300b9be83272522cbbbb4a2d9
+2fac8f2341b16f17530376cb3df4a1f1
+c52a42f2ac898daefc63507b9f0d9c94
+5500c88da13ef7d496a549ec8ba060f2
 
 ### Made/Found by @cro.p
 ### contributed by @8ar
