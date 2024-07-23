@@ -1,4 +1,4 @@
-# v1.111
+# v1.10
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -181,7 +181,7 @@ with open('assets.json', 'r') as file:
 while True:
     files_to_delete = ['']
     file_to_replace = ''
-    menu = input("dop Enter the number corresponding to what you'd like to do:\n1: Ingame asset replacements\n2: Block (experimental, dont use)\n3: Clear Cache\n4: Change config\n5: Exit\n")
+    menu = input("Enter the number corresponding to what you'd like to do:\n1: Ingame asset replacements\n2: Block (experimental, dont use)\n3: Clear Cache\n4: Change config\n5: Exit\n")
     if menu == '1':
         print("options:\n0: Custom\n1: Sleeves\n2: Gun smoke\n3: Sights\n4: Hitmarker\n5: Arm model tweaks\n6: Gun Sounds\n7: Gun skins\n8: No textures\n9: Default skyboxes\n10: Hitmarker sound\n11: Kill sounds")
         options = input("Enter option: ")
