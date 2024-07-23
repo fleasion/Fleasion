@@ -1,8 +1,9 @@
-# v1.10
+# v1.11
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
-
+# skibidi
 import os
+import sys
 import shutil
 import time
 import getpass
@@ -10,53 +11,64 @@ import json
 import webbrowser
 import requests
 
-def get_version():
-    response = requests.get('https://raw.githubusercontent.com/CroppingFlea479/ignore/main/read%20me')
-    first_line = response.text.splitlines()[0]
+README_URL = 'https://raw.githubusercontent.com/CroppingFlea479/ignore/main/read%20me'
+FLEASION_URL = 'https://raw.githubusercontent.com/CroppingFlea479/ignore/main/fleasion.py'
+ASSETS_URL = 'https://raw.githubusercontent.com/CroppingFlea479/ignore/main/assets'
+README_FILE = 'READ ME.txt'
+FLEASION_FILE = 'fleasion.py'
+ASSETS_FILE = 'assets.json'
+
+def fetch_first_line(url):
+    response = requests.get(url)
     lines = response.text.splitlines()
+    return lines[0], lines
 
-    fresponse = requests.get('https://raw.githubusercontent.com/CroppingFlea479/ignore/main/fleasion.py')
-    ffirst_line = fresponse.text.splitlines()[0]
-    flines = fresponse.text.splitlines()
-
+def read_first_line(file_name):
     try:
-        with open('READ ME.txt', 'r') as readme_file:
-            readme_first_line = readme_file.readline().strip()
+        with open(file_name, 'r') as file:
+            return file.readline().strip()
     except FileNotFoundError:
-        readme_first_line = ''
-    
-    if first_line == readme_first_line:
-        print(f"V{first_line} is up to date!")
-    else:
-        with open('READ ME.txt', 'w') as file:
-            file.write('\n'.join(lines[0:]))
-        print(f"V{first_line} is up to date!")
-        print("Updated READ ME.txt!")
+        return ''
 
-    try:
-        with open('fleasion.py', 'r') as fleasion_file:
-            fleasion_first_line = fleasion_file.readline().strip()
-    except FileNotFoundError:
-        fleasion_first_line = ''
-    
-    if ffirst_line == fleasion_first_line:
-        print(f"V{ffirst_line} is up to date!")
-    else:
-        with open('fleasion.py', 'w') as ffile:
-            ffile.write('\n'.join(flines[0:]))
-        print(f"V{ffirst_line} is up to date!")
-        print("Updated READ ME.txt!")
+def update_file(file_name, lines):
+    with open(file_name, 'w') as file:
+        file.write('\n'.join(lines))
 
-    response_assets = requests.get('https://raw.githubusercontent.com/CroppingFlea479/ignore/main/assets')
+def get_version():
+    readme_first_line, readme_lines = fetch_first_line(README_URL)
+    fleasion_first_line, fleasion_lines = fetch_first_line(FLEASION_URL)
+
+    local_readme_first_line = read_first_line(README_FILE)
+    if readme_first_line == local_readme_first_line:
+        print(f"R V{readme_first_line}")
+    else:
+        update_file(README_FILE, readme_lines)
+        print(f"Updated READ ME.txt! to v{readme_first_line}")
+
+    local_fleasion_first_line = read_first_line(FLEASION_FILE)
+    fleasiondisplay = fleasion_first_line[2:]
+    if fleasion_first_line == local_fleasion_first_line:
+        print(f"F {fleasiondisplay}")
+    else:
+        update_file(FLEASION_FILE, fleasion_lines)
+        print(f"Updated fleasion.py to {fleasiondisplay}")
+        os.execv(sys.executable, ['python'] + sys.argv)
+
+    response_assets = requests.get(ASSETS_URL)
     response_json = response_assets.json()
 
-    if response_json['version'] == data['version']:
-        print(f"Assets are up to date! ({response_json['version']})")
+    try:
+        with open(ASSETS_FILE, 'r') as file:
+            local_assets = json.load(file)
+    except FileNotFoundError:
+        local_assets = {}
+
+    if response_json.get('version') == local_assets.get('version'):
+        print(f"A {response_json['version']}")
     else:
-        print(f"Assets are not up to date, getting new assets")
-        with open('assets.json', 'w') as file:
+        with open(ASSETS_FILE, 'w') as file:
             json.dump(response_json, file, indent=4)
-            print(f"Assets are up to date ({response_json['version']})!")
+        print(f"Updated assets.json to ({response_json['version']})")
 
 config_file = 'assets.json'
 
