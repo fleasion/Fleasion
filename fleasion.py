@@ -11,9 +11,9 @@ import json
 import webbrowser
 import requests
 
-README_URL = 'https://raw.githubusercontent.com/CroppingFlea479/ignore/main/read%20me'
+README_URL = 'https://raw.githubusercontent.com/CroppingFlea479/ignore/main/READ%20ME.txt'
 FLEASION_URL = 'https://raw.githubusercontent.com/CroppingFlea479/ignore/main/fleasion.py'
-ASSETS_URL = 'https://raw.githubusercontent.com/CroppingFlea479/ignore/main/assets'
+ASSETS_URL = 'https://raw.githubusercontent.com/CroppingFlea479/ignore/main/assets.json'
 README_FILE = 'READ ME.txt'
 FLEASION_FILE = 'fleasion.py'
 ASSETS_FILE = 'assets.json'
