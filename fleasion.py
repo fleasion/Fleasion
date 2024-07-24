@@ -1,4 +1,4 @@
-# v1.13
+# v1.14
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -209,17 +209,7 @@ while True:
                         case 3: files_to_delete, file_to_replace = ['f5b0bcba5570d196909a78c7a697467c', '7f828aee555e5e1161d4b39faddda970'], 'c9672591983da8fffedb9cec7df1e521'
                         case 4: delete_stuff(data["arm models"])
                         case _: print("Enter a Valid Option!")                     
-                case 6: #sounds
-                    sound_option = input("Enter sound option:\n1: Ak107\n2: Aug a2\n3: M60\n4: M16s\n5: Badger\n6: Intervention\n7: m107\n")
-                    match int(sound_option):
-                        case 1: files_to_delete, file_to_replace = ['56f8e4698653f8f9d9468ea4ae17efba'], list_and_get_input("sounds")
-                        case 2: files_to_delete, file_to_replace = ['feb10a78b7cfb4cb20562b595237de35'], list_and_get_input("sounds")
-                        case 3: files_to_delete, file_to_replace = ['9877e2301abfd337e428ba10f4a04e5e'], list_and_get_input("sounds")
-                        case 4: files_to_delete, file_to_replace = ['20178d7285faf3f539d59a358bcb2e66'], list_and_get_input("sounds")
-                        case 5: files_to_delete, file_to_replace = ['18a6668af40b844e4433d077cbaa94ff'], list_and_get_input("sounds")
-                        case 6: files_to_delete, file_to_replace = ['632f5c38bd614dae412e2d5b17714ce2'], list_and_get_input("sounds")
-                        case 7: files_to_delete, file_to_replace = ['bec24846e0b8f767bad1e7bf470093ad'], list_and_get_input("sounds")
-                        case _: print("Enter a Valid Option!")                
+                case 6: files_to_delete, file_to_replace = [list_and_get_input("gun sounds")], list_and_get_input("replacement sounds")              
                 case 7: files_to_delete, file_to_replace = [list_and_get_input("gun skins")], list_and_get_input("custom skins")
                 case 8: files_to_delete, file_to_replace = data["textures"], 'd625adff6a3d75081d11b3407b0b417c' # no textures without downside
                 case 9: 
