@@ -1,4 +1,4 @@
-# v1.10
+# v1.11
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -204,7 +204,7 @@ while True:
                 case 5: 
                     arm_option = input("Enter arm option:\n1: No arms\n2: No sleeves\n3: Bone arms\n4: default arms\n")
                     match int(arm_option):
-                        case 1: files_to_delete, file_to_replace = read_file_names(data["arm models"]), '5873cfba79134ecfec6658f559d8f320' # no arms
+                        case 1: files_to_delete, file_to_replace = data["arm models"], '5873cfba79134ecfec6658f559d8f320' # no arms
                         case 2: files_to_delete, file_to_replace = ['0417f106902be46503fc75266526817a', '18ff02c763205099ce8542cebc98ae71'], 'd625adff6a3d75081d11b3407b0b417c'
                         case 3: files_to_delete, file_to_replace = ['f5b0bcba5570d196909a78c7a697467c', '7f828aee555e5e1161d4b39faddda970'], 'c9672591983da8fffedb9cec7df1e521'
                         case 4: delete_stuff(data["arm models"])
