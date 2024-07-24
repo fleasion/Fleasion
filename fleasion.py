@@ -1,4 +1,4 @@
-# v1.11
+# v1.12
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -68,7 +68,7 @@ def get_version():
     else:
         with open(ASSETS_FILE, 'w') as file:
             json.dump(response_json, file, indent=4)
-        print(f"Updated assets.json to ({response_json['version']})")
+        print(f"Updated assets.json to {response_json['version']}")
 
 config_file = 'assets.json'
 
