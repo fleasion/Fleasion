@@ -1,4 +1,4 @@
-# v1.12
+# v1.13
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -11,9 +11,9 @@ import json
 import webbrowser
 import requests
 
-README_URL = 'https://raw.githubusercontent.com/CroppingFlea479/ignore/main/READ%20ME.txt'
-FLEASION_URL = 'https://raw.githubusercontent.com/CroppingFlea479/ignore/main/fleasion.py'
-ASSETS_URL = 'https://raw.githubusercontent.com/CroppingFlea479/ignore/main/assets.json'
+README_URL = 'https://raw.githubusercontent.com/CroppingFlea479/Fleasion/main/READ%20ME.txt'
+FLEASION_URL = 'https://raw.githubusercontent.com/CroppingFlea479/Fleasion/main/fleasion.py'
+ASSETS_URL = 'https://raw.githubusercontent.com/CroppingFlea479/Fleasion/main/assets.json'
 README_FILE = 'READ ME.txt'
 FLEASION_FILE = 'fleasion.py'
 ASSETS_FILE = 'assets.json'
