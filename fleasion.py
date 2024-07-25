@@ -1,4 +1,4 @@
-# v1.2.0
+# v1.2.1
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -10,11 +10,11 @@ import json
 import webbrowser
 import requests
 
-README_URL = 'https://raw.githubusercontent.com/CroppingFlea479/Fleasion/main/READ%20ME.txt'
+README_URL = 'https://raw.githubusercontent.com/CroppingFlea479/Fleasion/main/README.md'
 FLEASION_URL = 'https://raw.githubusercontent.com/CroppingFlea479/Fleasion/main/fleasion.py'
 ASSETS_URL = 'https://raw.githubusercontent.com/CroppingFlea479/Fleasion/main/assets.json'
 RUN_URL = 'https://raw.githubusercontent.com/CroppingFlea479/Fleasion/main/run.bat'
-README_FILE = 'READ ME.txt'
+README_FILE = 'README.md'
 FLEASION_FILE = 'fleasion.py'
 ASSETS_FILE = 'assets.json'
 RUN_FILE = 'run.bat'
@@ -45,7 +45,7 @@ def get_version():
         print(f"ReadMe   v{readme_first_line[0]}")
     else:
         update_file(README_FILE, readme_lines)
-        print(f"Updated READ ME.txt to v{readme_first_line[0]}")
+        print(f"Updated README.md to v{readme_first_line[0]}")
 
     local_fleasion_first_line = read_lines(FLEASION_FILE)[0]
     fleasion_display = fleasion_first_line[0][2:]
