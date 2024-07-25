@@ -1,4 +1,4 @@
-1.0.1
+1.1.0
 
 For help/support join discord.gg/v9gXTuCz8B
 
@@ -23,8 +23,15 @@ Clear cache should be used if a clear undo option is apparent or if some critica
 Change config is for adding or sharing natively provided options internally.
 
 HASH DUMP:
-more are here than natively provided, this will be updated automatically with more textures so check every now and then, might be your new main arm skin!
+we now compile a lot of hashes here:https://docs.google.com/spreadsheets/d/1S7GexRGkgiDXit8qabV7rYFOctO6FraZrrTm1-Rru_4/edit?usp=sharing
 
+
+
+
+
+
+LEGACY DUMP:
+more are here than natively provided, this will be updated automatically with more textures so check every now and then, might be your new main arm skin!
 
 ### TEXTURES
 ## anything can be swapped with anything! (Dont put an audio as a texture)
