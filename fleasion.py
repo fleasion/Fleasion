@@ -1,4 +1,4 @@
-# v1.1.6
+# v1.2.0
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -42,7 +42,7 @@ def get_version():
 
     local_readme_first_line = read_lines(README_FILE)[0]
     if readme_first_line[0] == local_readme_first_line:
-        print(f"ReadMe   V{readme_first_line[0]}")
+        print(f"ReadMe   v{readme_first_line[0]}")
     else:
         update_file(README_FILE, readme_lines)
         print(f"Updated READ ME.txt to v{readme_first_line[0]}")
@@ -73,11 +73,12 @@ def get_version():
         print(f"Updated assets.json to {response_json['version']}")
 
     local_run_lines = read_lines(RUN_FILE, 2)
-    if run_lines[1] == local_run_lines[1]:
-        print(f"Run.bat  {run_lines[1]}")
+    run_version = run_lines[1][4:]
+    if run_version == local_run_lines[1][4:]:
+        print(f"Run.bat  {run_version}")
     else:
         update_file(RUN_FILE, all_run_lines)
-        print(f"Updated run.bat to {run_lines[1]}")
+        print(f"Updated run.bat to {run_version}")
 
     time.sleep(1)
     os.system('cls')
@@ -190,78 +191,75 @@ while mod_cache == False or pf_cache == False:
 with open('assets.json', 'r') as file:
     data = json.load(file)
 
+def replace(files_to_delete, file_to_replace):
+    try:
+        copy_file_path = os.path.join(folder_path, file_to_replace)
+        if os.path.exists(copy_file_path):
+            for file_to_delete in files_to_delete:
+                delete_file_path = os.path.join(folder_path, file_to_delete)
+                if os.path.exists(delete_file_path):
+                    os.remove(delete_file_path)
+                    print(f'{file_to_delete} has been deleted.')
+                else:
+                    print(f'{file_to_delete} not found.')
+
+                new_file_path = os.path.join(folder_path, file_to_delete)
+                shutil.copy(copy_file_path, new_file_path)
+                #print(f'{copy_file_path} has been copied to {new_file_path}.')
+                print(f'{file_to_delete} has been replaced.')
+        else:
+            print(f'{file_to_replace} not found.')
+
+    except Exception as e:
+        if hasattr(e, 'winerror') and e.winerror == 183:
+            pass
+        else:
+            print(f'An error occurred: {e}')
+
 while True:
-    files_to_delete = ['']
-    file_to_replace = ''
     menu = input("Enter the number corresponding to what you'd like to do:\n1: Ingame asset replacements\n2: Block (experimental, dont use)\n3: Clear Cache\n4: Change config\n5: Exit\n")
     if menu == '1':
         print("options:\n0:  Custom\n1:  Sights\n2:  Arm model tweaks\n3:  Sleeves\n4:  No textures\n5:  Default skyboxes\n6:  Gun skins\n7:  Gun Sounds\n8:  Gun smoke\n9:  Hitmarker\n10: Hitmarker sound\n11: Kill sounds")
         options = input("Enter option: ")
         try:
             match int(options):
-                case 0: files_to_delete, file_to_replace = [input("Enter asset to change: ")], input("Enter replacement: ")
+                case 0: replace([input("Enter asset to change: ")], input("Enter replacement: "))
                 case 1:
                     sight_option = input("Enter sight option:\n1: Reticle tweaks\n2: Sight model tweaks\n")
                     try:
                         match int(sight_option):
-                            case 1: files_to_delete, file_to_replace = [list_and_get_input("reticles")], list_and_get_input("reticle replacement")   
+                            case 1: replace([list_and_get_input("reticles")], list_and_get_input("reticle replacement"))
                             case 2: 
                                 sightbackground = input("Enter background tweak:\n1: clear coyote/reflex blue background\n2: clear delta black ring\n")
                                 match int(sightbackground):
-                                    case 1: files_to_delete, file_to_replace = ['3fc9141fc7c1167c575b9361a98f04c0', '2eaae4fe3a9fce967af993d27ad68d52'], '5873cfba79134ecfec6658f559d8f320' # clear coyote and reflex blue background
-                                    case 2: files_to_delete, file_to_replace = ['30c4d2bb30b6b8c9ac7cfeec5db25a85', '7d5652167ec33ed349e569a55a398705'], 'd625adff6a3d75081d11b3407b0b417c' # delta black ring
+                                    case 1: replace(['3fc9141fc7c1167c575b9361a98f04c0', '2eaae4fe3a9fce967af993d27ad68d52'], '5873cfba79134ecfec6658f559d8f320') # clear coyote and reflex blue background
+                                    case 2: replace(['30c4d2bb30b6b8c9ac7cfeec5db25a85', '7d5652167ec33ed349e569a55a398705'], 'd625adff6a3d75081d11b3407b0b417c') # delta black ring
                             case _: print("Invalid option")
                     except Exception as e: print(f"Error: {e}")
                 case 2: 
                     arm_option = input("Enter arm option:\n1: No arms\n2: No sleeves\n3: Bone arms\n4: default arms\n")
                     match int(arm_option):
-                        case 1: files_to_delete, file_to_replace = data["arm models"], '5873cfba79134ecfec6658f559d8f320' # no arms
-                        case 2: files_to_delete, file_to_replace = ['0417f106902be46503fc75266526817a', '18ff02c763205099ce8542cebc98ae71'], 'd625adff6a3d75081d11b3407b0b417c'
-                        case 3: files_to_delete, file_to_replace = ['f5b0bcba5570d196909a78c7a697467c', '7f828aee555e5e1161d4b39faddda970'], 'c9672591983da8fffedb9cec7df1e521'
+                        case 1: replace(data["arm models"], '5873cfba79134ecfec6658f559d8f320') # no arms
+                        case 2: replace(['0417f106902be46503fc75266526817a', '18ff02c763205099ce8542cebc98ae71'], 'd625adff6a3d75081d11b3407b0b417c')
+                        case 3: replace(['f5b0bcba5570d196909a78c7a697467c', '7f828aee555e5e1161d4b39faddda970'], 'c9672591983da8fffedb9cec7df1e521')
                         case 4: delete_stuff(data["arm models"])
                         case _: print("Enter a Valid Option!") 
-                case 3: files_to_delete, file_to_replace = ['aa33dd87fc9db92e891361e069da1849'], list_and_get_input("sleeves")
-                case 4: files_to_delete, file_to_replace = data["textures"], 'd625adff6a3d75081d11b3407b0b417c' # no textures without downside
+                case 3: replace(['aa33dd87fc9db92e891361e069da1849'], list_and_get_input("sleeves"))
+                case 4: replace(data["textures"], 'd625adff6a3d75081d11b3407b0b417c') # no textures without downside
                 case 5: 
                     sky_option = input("Is Bloxstrap sky folder setup?\n1: yes\n2: no\n")
                     match int(sky_option):                    
-                        case 1: files_to_delete, file_to_replace = data["skyboxes"], 'd625adff6a3d75081d11b3407b0b417c' # forced default skybox
+                        case 1: replace(data["skyboxes"], 'd625adff6a3d75081d11b3407b0b417c') # forced default skybox
                         case 2: bloxstrap()
                         case _: print("Enter a Valid Option!")  
-                case 6: files_to_delete, file_to_replace = [list_and_get_input("gun skins")], list_and_get_input("custom skins")
-                case 7: files_to_delete, file_to_replace = [list_and_get_input("gun sounds")], list_and_get_input("replacement sounds")  
-                case 8: files_to_delete, file_to_replace = ['8194373fb18740071f5e885bab349252'], list_and_get_input("gun smoke")
-                case 9: files_to_delete, file_to_replace = ['097165b476243d2095ef0a256320b06a'], list_and_get_input("hitmarker") # hitmarkers                                 
-                case 10: files_to_delete, file_to_replace = ['a177d2c00abd3e550b873d76c97ad960'], list_and_get_input("hitsound")
-                case 11: files_to_delete, file_to_replace = data["killsound"]["default"], list_and_get_input("killsound")
+                case 6: replace([list_and_get_input("gun skins")], list_and_get_input("custom skins"))
+                case 7: replace([list_and_get_input("gun sounds")], list_and_get_input("replacement sounds"))  
+                case 8: replace(['8194373fb18740071f5e885bab349252'], list_and_get_input("gun smoke"))
+                case 9: replace(['097165b476243d2095ef0a256320b06a'], list_and_get_input("hitmarker")) # hitmarkers                                 
+                case 10: replace(['a177d2c00abd3e550b873d76c97ad960'], list_and_get_input("hitsound"))
+                case 11: replace(data["killsound"]["default"], list_and_get_input("killsound"))
                 case _: print("Invalid number.")
         except Exception as e: print(f"Error: {e}")
-
-        try:
-            copy_file_path = os.path.join(folder_path, file_to_replace)
-            if os.path.exists(copy_file_path):
-                timestamp = time.strftime("%Y%m%d-%H%M%S")
-                temp_file_path = os.path.join(folder_path, f'{file_to_replace}_{timestamp}')
-                shutil.copy(copy_file_path, temp_file_path)
-                print(f'{file_to_replace} has been copied to {temp_file_path}.')
-                for file_to_delete in files_to_delete:
-                    delete_file_path = os.path.join(folder_path, file_to_delete)
-                    if os.path.exists(delete_file_path):
-                        os.remove(delete_file_path)
-                        print(f'{file_to_delete} has been deleted.')
-                    else:
-                        print(f'{file_to_delete} not found.')
-                    new_file_path = os.path.join(folder_path, file_to_delete)
-                    shutil.copy(temp_file_path, new_file_path)
-                    print(f'{temp_file_path} has been copied to {new_file_path}.')
-                os.rename(temp_file_path, copy_file_path)
-                print(f'{temp_file_path} has been renamed back to {copy_file_path}.')
-            else:
-                print(f'{file_to_replace} not found.')
-
-        except Exception as e:
-            if e.winerror == 183: pass
-            else: print(f'An error occurred: {e}')
 
     elif menu == '2':
         blockwarn = input("Warning: This is highly experimental and volatile to causing errors, only continue if you are aware of what youre doing.\nType 'done' to proceed, anything else will cancel.\n")
