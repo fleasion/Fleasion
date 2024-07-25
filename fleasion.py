@@ -1,4 +1,4 @@
-# v1.15
+# v1.16
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -6,7 +6,6 @@ import os
 import sys
 import shutil
 import time
-import getpass
 import json
 import webbrowser
 import requests
@@ -14,44 +13,47 @@ import requests
 README_URL = 'https://raw.githubusercontent.com/CroppingFlea479/Fleasion/main/READ%20ME.txt'
 FLEASION_URL = 'https://raw.githubusercontent.com/CroppingFlea479/Fleasion/main/fleasion.py'
 ASSETS_URL = 'https://raw.githubusercontent.com/CroppingFlea479/Fleasion/main/assets.json'
+RUN_URL = 'https://raw.githubusercontent.com/CroppingFlea479/Fleasion/main/run.bat'
 README_FILE = 'READ ME.txt'
 FLEASION_FILE = 'fleasion.py'
 ASSETS_FILE = 'assets.json'
+RUN_FILE = 'run.bat'
 
-def fetch_first_line(url):
+def fetch_lines(url, num_lines=1):
     response = requests.get(url)
     lines = response.text.splitlines()
-    return lines[0], lines
+    return lines[:num_lines], lines
 
-def read_first_line(file_name):
+def read_lines(file_name, num_lines=1):
     try:
         with open(file_name, 'r') as file:
-            return file.readline().strip()
+            return [file.readline().strip() for _ in range(num_lines)]
     except FileNotFoundError:
-        return ''
+        return [''] * num_lines
 
 def update_file(file_name, lines):
     with open(file_name, 'w') as file:
         file.write('\n'.join(lines))
 
 def get_version():
-    readme_first_line, readme_lines = fetch_first_line(README_URL)
-    fleasion_first_line, fleasion_lines = fetch_first_line(FLEASION_URL)
+    readme_first_line, readme_lines = fetch_lines(README_URL)
+    fleasion_first_line, fleasion_lines = fetch_lines(FLEASION_URL)
+    run_lines, all_run_lines = fetch_lines(RUN_URL, 2)
 
-    local_readme_first_line = read_first_line(README_FILE)
-    if readme_first_line == local_readme_first_line:
-        print(f"R V{readme_first_line}")
+    local_readme_first_line = read_lines(README_FILE)[0]
+    if readme_first_line[0] == local_readme_first_line:
+        print(f"ReadMe   V{readme_first_line[0]}")
     else:
         update_file(README_FILE, readme_lines)
-        print(f"Updated READ ME.txt! to v{readme_first_line}")
+        print(f"Updated READ ME.txt to v{readme_first_line[0]}")
 
-    local_fleasion_first_line = read_first_line(FLEASION_FILE)
-    fleasiondisplay = fleasion_first_line[2:]
-    if fleasion_first_line == local_fleasion_first_line:
-        print(f"F {fleasiondisplay}")
+    local_fleasion_first_line = read_lines(FLEASION_FILE)[0]
+    fleasion_display = fleasion_first_line[0][2:]
+    if fleasion_first_line[0] == local_fleasion_first_line:
+        print(f"Fleasion {fleasion_display}")
     else:
         update_file(FLEASION_FILE, fleasion_lines)
-        print(f"Updated fleasion.py to {fleasiondisplay}")
+        print(f"Updated fleasion.py to {fleasion_display}")
         os.execv(sys.executable, ['python'] + sys.argv)
 
     response_assets = requests.get(ASSETS_URL)
@@ -64,11 +66,21 @@ def get_version():
         local_assets = {}
 
     if response_json.get('version') == local_assets.get('version'):
-        print(f"A {response_json['version']}")
+        print(f"Assets   {response_json['version']}")
     else:
         with open(ASSETS_FILE, 'w') as file:
             json.dump(response_json, file, indent=4)
         print(f"Updated assets.json to {response_json['version']}")
+
+    local_run_lines = read_lines(RUN_FILE, 2)
+    if run_lines[1] == local_run_lines[1]:
+        print(f"Run.bat  {run_lines[1]}")
+    else:
+        update_file(RUN_FILE, all_run_lines)
+        print(f"Updated run.bat to {run_lines[1]}")
+
+    time.sleep(1)
+    os.system('cls')
 
 config_file = 'assets.json'
 
@@ -122,7 +134,7 @@ def read_file_names(file_path):
             return big_name_list
 
 def bloxstrap():
-    base_path = f"C:/Users/{getpass.getuser()}/AppData/Local/Bloxstrap/Modifications"
+    base_path = os.path.join(os.getenv('LOCALAPPDATA'), 'Bloxstrap', 'Modifications')
     nested_folders = ["PlatformContent", "pc", "textures", "sky"]
     
     if not os.path.exists(base_path):
@@ -149,7 +161,9 @@ def delete_stuff(files_to_delete):
         else:
             print(f'{file_to_delete} not found.')
 
-folder_path = f'C:/Users/{getpass.getuser()}/AppData/Local/Temp/Roblox/http'
+get_version()
+
+folder_path = os.path.join(os.getenv('TEMP'), 'roblox', 'http')
 
 mod_cache = False
 pf_cache = False
@@ -172,8 +186,6 @@ while mod_cache == False or pf_cache == False:
     if os.path.exists(pf_cache_check_path) and pf_cache == False:
         print("PF cache detected")
         pf_cache = True
-
-get_version()
 
 with open('assets.json', 'r') as file:
     data = json.load(file)
