@@ -1,5 +1,5 @@
 {
-    "version": "v1.2.0",
+    "version": "v1.2.1",
     "skyboxes": [
         "00660de2448a349949acd19d40c6f18b",
         "264712dbcc4929bd881518e8089ca7a6",
@@ -700,6 +700,7 @@
         "ump45": "4159819a640ab9aaced94a9b58717152",
         "g36c": "b9e21999a84f260a2c3f11d36ecec8e4",
         "mp7": "9181697484e9ac91eeaf8ca62496e8e8",
+        "mp7 loudener": "ae710bc9d1f9c81525bc2edbbfafbaef",
         "mac10": "11752d91006aabc1b9b089c632e9a008",
         "p90": "9e24b7dd4c73ef71d0863afb9a8402e7",
         "colt mars": "6be5f40d32a4f21c2ecb6f93d6fb0b18",
@@ -956,6 +957,7 @@
         "ump45": "4159819a640ab9aaced94a9b58717152",
         "g36c": "b9e21999a84f260a2c3f11d36ecec8e4",
         "mp7": "9181697484e9ac91eeaf8ca62496e8e8",
+        "mp7 loudener": "ae710bc9d1f9c81525bc2edbbfafbaef",
         "mac10": "11752d91006aabc1b9b089c632e9a008",
         "p90": "9e24b7dd4c73ef71d0863afb9a8402e7",
         "colt mars": "6be5f40d32a4f21c2ecb6f93d6fb0b18",
