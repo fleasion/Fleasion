@@ -186,7 +186,7 @@ If you want a texture added, ping either **@cro.p**, **@8ar**, or **@daokoshoega
 - **@cro.p**
 
 ### Contributed by
-- **@8ar** Code/Manual labor/Hashes
+- **@8ar** Code/Hashes/resources
 - **@yoloblokers** Hashes/resources
 - **@.commit.** Hashes/resources
 
