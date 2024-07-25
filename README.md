@@ -1,4 +1,4 @@
-1.1.1
+1.1.2
 tool version
 
 ## Help & Support
@@ -186,7 +186,9 @@ If you want a texture added, ping either **@cro.p**, **@8ar**, or **@daokoshoega
 - **@cro.p**
 
 ### Contributed by
-- **@8ar**
+- **@8ar** Code/Manual labor/Hashes
+- **@yoloblokers** Hashes/resources
+- **@.commit.** Hashes/resources
 
 ### Distributed in
 - [Discord server](https://discord.gg/v9gXTuCz8B)
