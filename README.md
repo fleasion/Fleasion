@@ -1,5 +1,5 @@
 1.1.3
-version
+help version
 
 ## Help & Support
 For help or support, join our [Discord server](https://discord.gg/v9gXTuCz8B).
