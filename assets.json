@@ -1111,7 +1111,7 @@
         "mw2 m107": "88387e83846d794740888b6afd3ee1f6",
         "mw2 wa2k": "582e9efa33370b5a4e989fc176aca31e",
         "mw2 r700": "3525671ef653bc449088340e3f8873a1",
-        "mw2 dragonuv": "c8e48c110adbcc8c38c552aa4f61eb6c",
+        "mw2 dragunov": "c8e48c110adbcc8c38c552aa4f61eb6c",
         "no sound": "5873cfba79134ecfec6658f559d8f320"
     },
     "reticles": {
@@ -1136,7 +1136,7 @@
         "m145": "05805c8f7a5a8814f8507dfa4971cb86",
         "pso-1": "5534f045db5ec9c5b70ce52e5d5fac28",
         "malcolm 3x": "5fbd5e721526bc9595bf4319a5bb1af4",
-        "malcolm6x": "5fbd5e721526bc9595bf4319a5bb1af4",
+        "malcolm 6x": "5fbd5e721526bc9595bf4319a5bb1af4",
         "global offensive": "5fbd5e721526bc9595bf4319a5bb1af4",
         "unertl": "5fbd5e721526bc9595bf4319a5bb1af4",
         "ta44": "b3333b3d854908862485a2fedb9051ef",
@@ -1172,7 +1172,7 @@
         "handmade": "318a444ab929278fb9ec3be1946d3ac0",
         "anti": "2e6d3cae15d0d31450caaa13fec73013",
         "animu": "7c5dd6ff788ca1c431151c1b026c363d",
-        "furry": "329b1ec740916e4a045904dddec414ff"        
+        "furro": "329b1ec740916e4a045904dddec414ff"        
     },
     "reticle replacement": {
         "dots": "c3eed25613be282991f7f36185313e77",
@@ -1196,7 +1196,7 @@
         "m145": "05805c8f7a5a8814f8507dfa4971cb86",
         "pso-1": "5534f045db5ec9c5b70ce52e5d5fac28",
         "malcolm 3x": "5fbd5e721526bc9595bf4319a5bb1af4",
-        "malcolm6x": "5fbd5e721526bc9595bf4319a5bb1af4",
+        "malcolm 6x": "5fbd5e721526bc9595bf4319a5bb1af4",
         "global offensive": "5fbd5e721526bc9595bf4319a5bb1af4",
         "unertl": "5fbd5e721526bc9595bf4319a5bb1af4",
         "ta44": "b3333b3d854908862485a2fedb9051ef",
@@ -1232,7 +1232,7 @@
         "handmade": "318a444ab929278fb9ec3be1946d3ac0",
         "anti": "2e6d3cae15d0d31450caaa13fec73013",
         "animu": "7c5dd6ff788ca1c431151c1b026c363d",
-        "furry": "329b1ec740916e4a045904dddec414ff",
+        "furro": "329b1ec740916e4a045904dddec414ff",
         "upsidedown ekp": "16ab2e4e301ea89f46263250657f9b94",
         "small dot": "ac59980bedb36f4b240633b08b532d08",
         "nothing": "5873cfba79134ecfec6658f559d8f320"
