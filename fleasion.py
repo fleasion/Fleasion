@@ -1,4 +1,4 @@
-# v1.14
+# v1.15
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -183,41 +183,43 @@ while True:
     file_to_replace = ''
     menu = input("Enter the number corresponding to what you'd like to do:\n1: Ingame asset replacements\n2: Block (experimental, dont use)\n3: Clear Cache\n4: Change config\n5: Exit\n")
     if menu == '1':
-        print("options:\n0: Custom\n1: Sleeves\n2: Gun smoke\n3: Sights\n4: Hitmarker\n5: Arm model tweaks\n6: Gun Sounds\n7: Gun skins\n8: No textures\n9: Default skyboxes\n10: Hitmarker sound\n11: Kill sounds")
+        print("options:\n0:  Custom\n1:  Sights\n2:  Arm model tweaks\n3:  Sleeves\n4:  No textures\n5:  Default skyboxes\n6:  Gun skins\n7:  Gun Sounds\n8:  Gun smoke\n9:  Hitmarker\n10: Hitmarker sound\n11: Kill sounds")
         options = input("Enter option: ")
         try:
             match int(options):
                 case 0: files_to_delete, file_to_replace = [input("Enter asset to change: ")], input("Enter replacement: ")
-                case 1: files_to_delete, file_to_replace = ['aa33dd87fc9db92e891361e069da1849'], list_and_get_input("sleeves")
-                case 2: files_to_delete, file_to_replace = ['8194373fb18740071f5e885bab349252'], list_and_get_input("gun smoke")
-                case 3:
-                    sight_option = input("Enter sight option:\n1: Deflex\n2: Eoflex\n3: Remove reflex and coyote background\n4: Remove delta black ring\n")
+                case 1:
+                    sight_option = input("Enter sight option:\n1: Reticle tweaks\n2: Sight model tweaks\n")
                     try:
                         match int(sight_option):
-                            case 1: files_to_delete, file_to_replace = [data["sights"]["delta"]], data["sights"]["coyote"]; print(files_to_delete) # deflex
-                            case 2: files_to_delete, file_to_replace = [data["sights"]["eotech 552"]], data["sights"]["coyote small"] # eoflex
-                            case 3: files_to_delete, file_to_replace = ['3fc9141fc7c1167c575b9361a98f04c0', '2eaae4fe3a9fce967af993d27ad68d52'], '5873cfba79134ecfec6658f559d8f320' # clear coyote and reflex blue background
-                            case 4: files_to_delete, file_to_replace = ['30c4d2bb30b6b8c9ac7cfeec5db25a85', '7d5652167ec33ed349e569a55a398705'], 'd625adff6a3d75081d11b3407b0b417c' # delta black ring
+                            case 1: files_to_delete, file_to_replace = [list_and_get_input("reticles")], list_and_get_input("reticle replacement")   
+                            case 2: 
+                                sightbackground = input("Enter background tweak:\n1: clear coyote/reflex blue background\n2: clear delta black ring\n")
+                                match int(sightbackground):
+                                    case 1: files_to_delete, file_to_replace = ['3fc9141fc7c1167c575b9361a98f04c0', '2eaae4fe3a9fce967af993d27ad68d52'], '5873cfba79134ecfec6658f559d8f320' # clear coyote and reflex blue background
+                                    case 2: files_to_delete, file_to_replace = ['30c4d2bb30b6b8c9ac7cfeec5db25a85', '7d5652167ec33ed349e569a55a398705'], 'd625adff6a3d75081d11b3407b0b417c' # delta black ring
                             case _: print("Invalid option")
                     except Exception as e: print(f"Error: {e}")
-                case 4: files_to_delete, file_to_replace = ['097165b476243d2095ef0a256320b06a'], list_and_get_input("hitmarker") # hitmarkers
-                case 5: 
+                case 2: 
                     arm_option = input("Enter arm option:\n1: No arms\n2: No sleeves\n3: Bone arms\n4: default arms\n")
                     match int(arm_option):
                         case 1: files_to_delete, file_to_replace = data["arm models"], '5873cfba79134ecfec6658f559d8f320' # no arms
                         case 2: files_to_delete, file_to_replace = ['0417f106902be46503fc75266526817a', '18ff02c763205099ce8542cebc98ae71'], 'd625adff6a3d75081d11b3407b0b417c'
                         case 3: files_to_delete, file_to_replace = ['f5b0bcba5570d196909a78c7a697467c', '7f828aee555e5e1161d4b39faddda970'], 'c9672591983da8fffedb9cec7df1e521'
                         case 4: delete_stuff(data["arm models"])
-                        case _: print("Enter a Valid Option!")                     
-                case 6: files_to_delete, file_to_replace = [list_and_get_input("gun sounds")], list_and_get_input("replacement sounds")              
-                case 7: files_to_delete, file_to_replace = [list_and_get_input("gun skins")], list_and_get_input("custom skins")
-                case 8: files_to_delete, file_to_replace = data["textures"], 'd625adff6a3d75081d11b3407b0b417c' # no textures without downside
-                case 9: 
+                        case _: print("Enter a Valid Option!") 
+                case 3: files_to_delete, file_to_replace = ['aa33dd87fc9db92e891361e069da1849'], list_and_get_input("sleeves")
+                case 4: files_to_delete, file_to_replace = data["textures"], 'd625adff6a3d75081d11b3407b0b417c' # no textures without downside
+                case 5: 
                     sky_option = input("Is Bloxstrap sky folder setup?\n1: yes\n2: no\n")
                     match int(sky_option):                    
                         case 1: files_to_delete, file_to_replace = data["skyboxes"], 'd625adff6a3d75081d11b3407b0b417c' # forced default skybox
                         case 2: bloxstrap()
-                        case _: print("Enter a Valid Option!")   
+                        case _: print("Enter a Valid Option!")  
+                case 6: files_to_delete, file_to_replace = [list_and_get_input("gun skins")], list_and_get_input("custom skins")
+                case 7: files_to_delete, file_to_replace = [list_and_get_input("gun sounds")], list_and_get_input("replacement sounds")  
+                case 8: files_to_delete, file_to_replace = ['8194373fb18740071f5e885bab349252'], list_and_get_input("gun smoke")
+                case 9: files_to_delete, file_to_replace = ['097165b476243d2095ef0a256320b06a'], list_and_get_input("hitmarker") # hitmarkers                                 
                 case 10: files_to_delete, file_to_replace = ['a177d2c00abd3e550b873d76c97ad960'], list_and_get_input("hitsound")
                 case 11: files_to_delete, file_to_replace = data["killsound"]["default"], list_and_get_input("killsound")
                 case _: print("Invalid number.")
