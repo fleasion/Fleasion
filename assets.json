@@ -1,5 +1,5 @@
 {
-    "version": "v1.10",
+    "version": "v1.11",
     "skyboxes": [
         "00660de2448a349949acd19d40c6f18b",
         "264712dbcc4929bd881518e8089ca7a6",
@@ -1119,7 +1119,7 @@
         "mw2 wa2k": "582e9efa33370b5a4e989fc176aca31e",
         "mw2 r700": "3525671ef653bc449088340e3f8873a1",
         "mw2 dragonuv": "c8e48c110adbcc8c38c552aa4f61eb6c",
-        "none": "5873cfba79134ecfec6658f559d8f320"
+        "no sound": "5873cfba79134ecfec6658f559d8f320"
     },
     "hitsound": {
         "ding": "df62d2f5a545befcf81719f5ec7be3f6",
