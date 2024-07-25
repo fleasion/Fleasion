@@ -1,5 +1,9 @@
 @echo off
+REM v1.1.0
 setlocal
+
+REM Step 0: Set the current directory to the script's directory
+cd /d "%~dp0"
 
 REM Step 1: Check if Python is installed and update/install if necessary
 python --version >nul 2>&1
@@ -60,7 +64,7 @@ if %errorlevel% neq 0 (
 REM Step 4: Run the Python script fleasion.py
 cls
 echo Welcome to Fleasion!
-python fleasion.py
+python "%~dp0fleasion.py"
 
 endlocal
 pause
