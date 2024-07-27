@@ -1,4 +1,4 @@
-1.1.3
+1.1.4
 help version
 
 ## Help & Support
@@ -26,6 +26,7 @@ If you want a texture added, ping either **@cro.p**, **@8ar**, or **@daokoshoega
 - **Change Config**: For adding or sharing natively provided options internally.
 
 - **VULKAN**: If you enable vulkan rendering on bloxstrap, assets will change while youre ingame meaning you dont need to rejoin
+- "FFlagDebugGraphicsPreferVulkan": "true"
 
 ## Hash Dumps
 - **[HASH DUMP](https://docs.google.com/spreadsheets/d/1S7GexRGkgiDXit8qabV7rYFOctO6FraZrrTm1-Rru_4/edit?usp=sharing)**: We compile a lot of hashes here.
