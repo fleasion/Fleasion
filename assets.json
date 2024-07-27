@@ -1,5 +1,5 @@
 {
-    "version": "v1.3.0",
+    "version": "v1.3.1",
     "skins": {
         "galaxy": "42a5a30257115abe8411245ad375a013",
         "pink stars": "086139f5e96896f1124935b158a948a4",
@@ -34,7 +34,6 @@
         "cat4": "7eac611244b43837ad2911b07ed90754",
         "azumanga": "b67bfab233fa604100ba97c5200b05a1",
         "white diamond": "b398bb97a181f86348cdd271b2f44cab"
-
     },
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
@@ -142,7 +141,7 @@
         "marpatar": "a50ce35c92a59a8ce5bac87bed986b79"
     },
     "gun sounds": {
-        "assault rifles": {
+        "ars": {
             "ak12": "2f6a7d1ed072c7e21af32b95e6f68c5e",
             "an94": "c5d668520f6408d1590d9b4b5157e73f",
             "an94 7.62": "a912c9d26a7b8eee9866133ded7785fd",
@@ -178,7 +177,7 @@
             "g11k2": "e73c403e2acc566534548848238cf4ea",
             "m41a": "d683f9eeba1eec135f2e7f4b37c13d38"
         },
-        "battle rifles": {
+        "brs": {
             "m14": "aaa860a948eef6dd44da3647f8602e45",
             "ecr": "6e1198245f77f3d0239c671d3a5e620f",
             "scar-h": "73822c7f3754dcf609adb0db24fdd6d7",
@@ -261,7 +260,7 @@
             "mac10": "11752d91006aabc1b9b089c632e9a008",
             "p90": "9e24b7dd4c73ef71d0863afb9a8402e7",
             "colt mars": "6be5f40d32a4f21c2ecb6f93d6fb0b18",
-            "mp5": "6be5f40d32a4f21c2ecb6f93d6fb0b18",
+            "mp5": "1d2e09bacbbbacd0de8db314cfa32c42",
             "colt smg": "cc392c38be2e4ca625d11238085e4245",
             "l2a3": "5648900e9efc2d8ea54877256b7ba734",
             "mp5sd": "4b7469d33882872c0aa7b6f6e1fa7306",
@@ -406,7 +405,7 @@
         "other": {
             "serbu": "cb55cf48ca6d27b678d2b92d92dfb08b",
             "sfg 50": "32e321c27457289889ac0d5fa72f7d97",
-            "m79 thumper": "b0fbcd4fdb34beba9419a35d6c46526c",
+            "m79 thumper": "a7e91934890371310b892c53cc9216f2",
             "coilgun": "f395684e679a6f6cc17da0bdf04ed865",
             "coilgun pennies": "4277f847a310a9053d448faf1333c141",
             "sawed off": "eff22f50f5009be21d7cc20829ca369c",
@@ -422,7 +421,7 @@
         }
     },
     "replacement sounds": {
-        "assault rifles": {
+        "ars": {
             "ak12": "2f6a7d1ed072c7e21af32b95e6f68c5e",
             "an94": "c5d668520f6408d1590d9b4b5157e73f",
             "an94 7.62": "a912c9d26a7b8eee9866133ded7785fd",
@@ -458,7 +457,7 @@
             "g11k2": "e73c403e2acc566534548848238cf4ea",
             "m41a": "d683f9eeba1eec135f2e7f4b37c13d38"
         },
-        "battle rifles": {
+        "brs": {
             "m14": "aaa860a948eef6dd44da3647f8602e45",
             "ecr": "6e1198245f77f3d0239c671d3a5e620f",
             "scar-h": "73822c7f3754dcf609adb0db24fdd6d7",
@@ -541,7 +540,7 @@
             "mac10": "11752d91006aabc1b9b089c632e9a008",
             "p90": "9e24b7dd4c73ef71d0863afb9a8402e7",
             "colt mars": "6be5f40d32a4f21c2ecb6f93d6fb0b18",
-            "mp5": "6be5f40d32a4f21c2ecb6f93d6fb0b18",
+            "mp5": "1d2e09bacbbbacd0de8db314cfa32c42",
             "colt smg": "cc392c38be2e4ca625d11238085e4245",
             "l2a3": "5648900e9efc2d8ea54877256b7ba734",
             "mp5sd": "4b7469d33882872c0aa7b6f6e1fa7306",
@@ -686,7 +685,7 @@
         "other": {
             "serbu": "cb55cf48ca6d27b678d2b92d92dfb08b",
             "sfg 50": "32e321c27457289889ac0d5fa72f7d97",
-            "m79 thumper": "b0fbcd4fdb34beba9419a35d6c46526c",
+            "m79 thumper": "a7e91934890371310b892c53cc9216f2",
             "coilgun": "f395684e679a6f6cc17da0bdf04ed865",
             "coilgun pennies": "4277f847a310a9053d448faf1333c141",
             "sawed off": "eff22f50f5009be21d7cc20829ca369c",
@@ -700,41 +699,78 @@
             "obrez": "9ad455eba2a68a2e3c736b2d552915a8",
             "sass 308": "cbe914973bc37bc746daa8f897ebe36c"
         },
-        "custom": {
-            "pew": "7eac4541692ca64abc5485b4875b237c",
-            "laser": "ad20c7ec88aeeaa36c6b7147e9a38ae9",
-            "old badger": "9604f62b6042d7a09086cb95471bda0f",
-            "no sound": "5873cfba79134ecfec6658f559d8f320"
+        "old": {
+            "badger": "9604f62b6042d7a09086cb95471bda0f",
+            "ak105": "23f99f429bfa1cda4ecabf7494822e8c",
+            "p90": "fb2e3dc505ff0555925e761712a55ee3",
+            "famas": "09740d40db6e17eb405b44db9fb23d25"
         },
         "mw2": {
             "inter": "841850b8cbb5eb5990bb737a22de230e",
-            "m107": "88387e83846d794740888b6afd3ee1f6",
+            "m82": "88387e83846d794740888b6afd3ee1f6",
             "wa2k": "582e9efa33370b5a4e989fc176aca31e",
             "r700": "3525671ef653bc449088340e3f8873a1",
-            "svds": "c8e48c110adbcc8c38c552aa4f61eb6c"
+            "svds": "c8e48c110adbcc8c38c552aa4f61eb6c",
+            "stryker": "4479cb4a3bf49198e58a035decd51c46",
+            "ump45": "bd4934bde4f3aead621bad9a08b8ec14",
+            "usp45": "4fd34e24510a47e1e26f10709ad691ac",
+            "win12000": "d2812514ae3056f5dcf8161a84e44c67",
+            "kriss": "da13f1e90bdd476d0b79b382ed742817",
+            "revolver": "91fba36e8d39c944febc46eb4c14474a",
+            "rpd": "80648b63931887c5f4bb634835f181fd",
+            "aa12": "2e7d8e956372ce7ab0e1beb6a33adcfd",
+            "ak47": "64c0be7cb0b212f14d7713e9605228ae",
+            "ak74": "b8773b82087833e7bedbec8dc56fbbe0",
+            "aug": "6cf5d804222b9bd1396444c87574e91a",
+            "beretta": "a5c85ee2bb267af38cf46f4163ab721b",
+            "deagle": "7f1e804345e9e905340a3fd56cb411c4",
+            "famas": "09740d40db6e17eb405b44db9fb23d25",
+            "fn2000": "38466d0d6a2cbbb19955005f4c7aea84",
+            "fnfal": "c4e05f05e545db3c5bd1654053996abf",
+            "g3": "fca0cc25b488e2034a53f3277997793c",
+            "g36": "f4caa429d2d80c409ab7af1f98c095f0",
+            "glock": "3134482946cbd62418fc00c6edb18ec7",
+            "m4": "16207e3439051e26a0c1cd0a88cad06a",
+            "m4 v2": "ce35073aea59bf725655cabdc0ef10be",
+            "m14": "868f1de7fd1467a30aeceae14798ff2e",
+            "m60": "6361b8cd5dbb5882c160bfe271ebcc5f",
+            "m79": "1d3c211ad0f2a98a55355532e5d5baa1",
+            "m1014": "a03869fce399a6c0c10dd508babf28c6",
+            "magpul": "fb8f174b948c20eac0de999c45f4ca67",
+            "mp5": "11ba7a3b1f3d6bb7f467f909062f71a4",
+            "p90": "fb2e3dc505ff0555925e761712a55ee3",
+            "pp2000": "c985782cd9f1e09a5f74080e6ea26751",
+            "sa80": "482c0ed7dde7d2d8d0d1ef01cce4f8e1",
+            "sawshotgun": "e37a465044347e8fac1dcb027471ed7f",
+            "scar": "54413a92cd52c472fa448d6b93196256",
+            "skorpion": "27f7cdfc7532c0d0a1adc4e5ceb04922",
+            "tavor": "1c30582686dc2ec0d580b39ccd9f98cd"            
         },
         "bo3": {
-            "svg": "2405cf6050d3391fa3d1773d41d4d3d4",
-            "locus": "ede2e0733541ea0a1bb373526721db1c"
+            "svg": "6f9b4389b986491f9cc29465272cc77f",
+            "locus": "53711294c777df908a418b2faf1f53ec"
         },
         "waw": {
-            "m1911": "e22f1f8c9d0d78d7e3e002d0f09321f9",
-            "bar": "804d84dae20b040cf6640139462f7146",
+            "stg44": "26b599516776a7a421b8b99e8c35811a",
+            "bar": "472c83e218327507ce1fd4f07a6a625a",
             "db": "a9c4c1e4eef780b72010a19664c1e672",
-            "kar98k": "b0b80068afc10c43f1baa7bfe47dfe2f",
-            "mg42": "3a5e18b8f91bcfb3237fb586fb35916e",
-            "mosin": "7f3e4e743ed7ee3662ffa163f2b94974",
-            "mp40": "1c5a8395891eac66b8a97033948839ed",
-            "ppsh": "050dcda28cff4bbffc3008165caa9d49",
-            "springfield": "f0a07fdb5f39f55493706d397d3c9402",
-            "stg44": "c7f5bb8dba0ecdac5147f5dac8928b1c",
-            "thompson": "3ff9e4b7843a55bbf6270ae5d85e3d20"
+            "mg42": "899d25f2377d79b9dd6a29928574d7a5",
+            "mp40": "29c12f47dce5bffea90997bdf3e1b363",
+            "thompson": "9c6b8a19b92c78541e51f1caf2ab42a2",
+            "garand": "15d61093afd20e222791774c09d02a78",
+            "springfield": "3c32b9fd3e8228b68033b85f7462e67f", 
+            "kar98k": "b0b80068afc10c43f1baa7bfe47dfe2f",     
+            "mosin": "7f3e4e743ed7ee3662ffa163f2b94974",      
+            "ptrs": "0aa4f2a02473ff75c3486067d753b447",
+            "m1911": "3ada33d2bb0488a6693d03ac955c4a31",
+            "357": "e68c27896a5c7a0d5f3cbc115653d7e9",
+            "raygun": "52248a93493c7debb5ea47fde801d905"
         },
         "cs new": {
-            "ak47": "63cfacb75f37a2bf561d9b2ca61a4ac7",
+            "ak47": "ab1f6064687ac5e207389af752478c43",
             "aug": "6251947899319c142ef399a28d1192e2",
-            "awp": "f7c29521a8a59fabcfcaa94caf7f202c",
-            "bizon": "5863c020cb40fc791dbec833d4cde992",
+            "awp": "9e5fe45f7277f086b00166b050561c58",
+            "bizon": "0aec79863cbbedc1f97e99f25fb3c368",
             "deagle": "182c722ca44018f169a0c50ad04d6925",
             "famas": "d5402c2faf69335fafbd78bf1a6510c7",
             "fiveseven": "f05bc27f0c00b9c4c0b8b57eaec56eb4",
@@ -754,12 +790,18 @@
             "fiveseven": "293b794b25f7cc1d11b45a2444861591",
             "m4a1-s": "e96d316793c5ec3059dbda107e1c9974",
             "scout": "00f849280a14ba5500f0952b4f82e29c",
-            "p90": "55e549484c57509e3fbb22e6097d516b",
-            "glock": "adc2c553f9502952c1dd3435bf563995"
+            "p90": "3f88de2a691f25eaa8a81dff33a2b7ae",
+            "glock": "a3a55fa6b9d87d33ceeb7a838524330a"
         },
         "halo": {
-            "br55 br": "df2926e96c6e1665a16bfa6ce14e06dd",
-            "srs99d-s2": "8c0be6f7ec28bca0a3282db1f19c434a"
+            "br55": "58f3ba79d09429d6d5d3304bc26e08bc",
+            "srs99d-s2": "8c0be6f7ec28bca0a3282db1f19c434a",
+            "m6d": "e3b3f20e6c80eef4fc8bc3e892fbecfc"
+        },
+        "custom": {
+            "pew": "7eac4541692ca64abc5485b4875b237c",
+            "laser": "ad20c7ec88aeeaa36c6b7147e9a38ae9",
+            "no sound": "5873cfba79134ecfec6658f559d8f320"
         }
     },
     "reticles": {
