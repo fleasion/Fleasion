@@ -1,5 +1,5 @@
 {
-    "version": "v1.3.4",
+    "version": "v1.3.5",
     "skins": {
         "galaxy": "42a5a30257115abe8411245ad375a013",
         "pink stars": "086139f5e96896f1124935b158a948a4",
@@ -330,7 +330,7 @@
             "model 700": "620aa3764f76fc9427973aaa57388556",
             "aws": "ae4f73bb091aca16ebb8fcdc846941c7",
             "bfg 50": "32e321c27457289889ac0d5fa72f7d97",
-            "awm": "edf091bb925fa87900910e501da97018",
+            "awm": "be03d326605be8428f46ee8f566c1411",
             "trg-42": "c1f443550e43ca38475a426f6b97b3bc",
             "mosin": "9ad455eba2a68a2e3c736b2d552915a8",
             "svds": "8cbdf3645a28e8d2607835e2ad465578",
@@ -610,7 +610,7 @@
             "model 700": "620aa3764f76fc9427973aaa57388556",
             "aws": "ae4f73bb091aca16ebb8fcdc846941c7",
             "bfg 50": "32e321c27457289889ac0d5fa72f7d97",
-            "awm": "edf091bb925fa87900910e501da97018",
+            "awm": "be03d326605be8428f46ee8f566c1411",
             "trg-42": "c1f443550e43ca38475a426f6b97b3bc",
             "mosin": "9ad455eba2a68a2e3c736b2d552915a8",
             "svds": "8cbdf3645a28e8d2607835e2ad465578",
@@ -802,9 +802,9 @@
             "glock": "a3a55fa6b9d87d33ceeb7a838524330a"
         },
         "halo": {
-            "br55": "58f3ba79d09429d6d5d3304bc26e08bc",
-            "srs99d-s2": "8c0be6f7ec28bca0a3282db1f19c434a",
-            "m6d": "e3b3f20e6c80eef4fc8bc3e892fbecfc"
+            "h2 br": "58f3ba79d09429d6d5d3304bc26e08bc",
+            "h3 sniper": "8c0be6f7ec28bca0a3282db1f19c434a",
+            "ce magnum": "e3b3f20e6c80eef4fc8bc3e892fbecfc"
         },
         "custom": {
             "pew": "7eac4541692ca64abc5485b4875b237c",
