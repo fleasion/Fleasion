@@ -1,5 +1,5 @@
 {
-    "version": "v1.3.1",
+    "version": "v1.3.2",
     "skins": {
         "galaxy": "42a5a30257115abe8411245ad375a013",
         "pink stars": "086139f5e96896f1124935b158a948a4",
@@ -379,7 +379,7 @@
             "m7644": "c9883d97c569e2f206c441e9778798af",
             "toy m1911": "fc356c3eefc7b33d4ce084e120b646be"
         },
-        "machine pistols": {
+        "mps": {
             "g18": "d2b575a13ea346c423543e1c8a7936d2",
             "93r": "912c8cc21a2bfff5a882e91a8695da9a",
             "pp-2000": "b7157a16dcce56a8d8715531e17928fa",
@@ -659,7 +659,7 @@
             "m7644": "c9883d97c569e2f206c441e9778798af",
             "toy m1911": "fc356c3eefc7b33d4ce084e120b646be"
         },
-        "machine pistols": {
+        "mps": {
             "g18": "d2b575a13ea346c423543e1c8a7936d2",
             "93r": "912c8cc21a2bfff5a882e91a8695da9a",
             "pp-2000": "b7157a16dcce56a8d8715531e17928fa",
