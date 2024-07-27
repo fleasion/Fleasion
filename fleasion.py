@@ -1,4 +1,4 @@
-# v1.2.1
+# v1.3.0
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -112,6 +112,36 @@ def list_and_get_input(area):
         else:
             print("No new key added.")
             return input_file
+        
+def nest_list_and_get_input(area):
+    print(f"Available categories in '{area}':")
+    for category in data[area]:
+        print(f"{category}")
+
+    selected_category = input(f"Enter the category you want to use in '{area}': ")
+
+    if selected_category in data[area]:
+        print(f"Available keys in '{selected_category}':")
+        for key in data[area][selected_category]:
+            print(f"{key}")
+
+        input_key = input(f"Enter the key you want to use in '{selected_category}': ")
+
+        if input_key in data[area][selected_category]:
+            return data[area][selected_category][input_key]
+        else:
+            new_key = input(f"'{input_key}' does not exist. Enter a new key name to add (leave blank to skip): ")
+            if new_key:
+                data[area][selected_category][new_key] = input_key
+                print(f"Added new key '{new_key}' with value '{input_key}' to '{selected_category}'.")
+                save_data_to_file(data)
+                return input_key
+            else:
+                print("No new key added.")
+                return input_key
+    else:
+        print(f"Category '{selected_category}' does not exist.")
+        return None
     
 def add_new_area():
     new_area = input("Enter the new area name: ")
@@ -228,14 +258,19 @@ while True:
                     sight_option = input("Enter sight option:\n1: Reticle tweaks\n2: Sight model tweaks\n")
                     try:
                         match int(sight_option):
-                            case 1: replace([list_and_get_input("reticles")], list_and_get_input("reticle replacement"))
+                            case 1: 
+                                reticle = nest_list_and_get_input("reticles")
+                                reticle_replacement = nest_list_and_get_input("reticle replacement")
+                                if reticle and reticle_replacement:
+                                    replace([reticle], reticle_replacement)
                             case 2: 
                                 sightbackground = input("Enter background tweak:\n1: clear coyote/reflex blue background\n2: clear delta black ring\n")
                                 match int(sightbackground):
                                     case 1: replace(['3fc9141fc7c1167c575b9361a98f04c0', '2eaae4fe3a9fce967af993d27ad68d52'], '5873cfba79134ecfec6658f559d8f320') # clear coyote and reflex blue background
                                     case 2: replace(['30c4d2bb30b6b8c9ac7cfeec5db25a85', '7d5652167ec33ed349e569a55a398705'], 'd625adff6a3d75081d11b3407b0b417c') # delta black ring
                             case _: print("Invalid option")
-                    except Exception as e: print(f"Error: {e}")
+                    except Exception as e:
+                        print(f"Error: {e}")
                 case 2: 
                     arm_option = input("Enter arm option:\n1: No arms\n2: No sleeves\n3: Bone arms\n4: default arms\n")
                     match int(arm_option):
@@ -244,7 +279,7 @@ while True:
                         case 3: replace(['f5b0bcba5570d196909a78c7a697467c', '7f828aee555e5e1161d4b39faddda970'], 'c9672591983da8fffedb9cec7df1e521')
                         case 4: delete_stuff(data["arm models"])
                         case _: print("Enter a Valid Option!") 
-                case 3: replace(['aa33dd87fc9db92e891361e069da1849'], list_and_get_input("sleeves"))
+                case 3: replace(['aa33dd87fc9db92e891361e069da1849'], list_and_get_input("skins"))
                 case 4: replace(data["textures"], 'd625adff6a3d75081d11b3407b0b417c') # no textures without downside
                 case 5: 
                     sky_option = input("Is Bloxstrap sky folder setup?\n1: yes\n2: no\n")
@@ -252,8 +287,12 @@ while True:
                         case 1: replace(data["skyboxes"], 'd625adff6a3d75081d11b3407b0b417c') # forced default skybox
                         case 2: bloxstrap()
                         case _: print("Enter a Valid Option!")  
-                case 6: replace([list_and_get_input("gun skins")], list_and_get_input("custom skins"))
-                case 7: replace([list_and_get_input("gun sounds")], list_and_get_input("replacement sounds"))  
+                case 6: replace([list_and_get_input("gun skins")], list_and_get_input("skins"))
+                case 7: 
+                    reticle = nest_list_and_get_input("gun sounds")
+                    reticle_replacement = nest_list_and_get_input("replacement sounds")
+                    if reticle and reticle_replacement:
+                        replace([reticle], reticle_replacement)                     
                 case 8: replace(['8194373fb18740071f5e885bab349252'], list_and_get_input("gun smoke"))
                 case 9: replace(['097165b476243d2095ef0a256320b06a'], list_and_get_input("hitmarker")) # hitmarkers                                 
                 case 10: replace(['a177d2c00abd3e550b873d76c97ad960'], list_and_get_input("hitsound"))
