@@ -1,5 +1,5 @@
 {
-    "version": "v1.3.2",
+    "version": "v1.3.3",
     "skins": {
         "galaxy": "42a5a30257115abe8411245ad375a013",
         "pink stars": "086139f5e96896f1124935b158a948a4",
@@ -379,7 +379,7 @@
             "m7644": "c9883d97c569e2f206c441e9778798af",
             "toy m1911": "fc356c3eefc7b33d4ce084e120b646be"
         },
-        "mps": {
+        "machine pistols": {
             "g18": "d2b575a13ea346c423543e1c8a7936d2",
             "93r": "912c8cc21a2bfff5a882e91a8695da9a",
             "pp-2000": "b7157a16dcce56a8d8715531e17928fa",
@@ -659,7 +659,7 @@
             "m7644": "c9883d97c569e2f206c441e9778798af",
             "toy m1911": "fc356c3eefc7b33d4ce084e120b646be"
         },
-        "mps": {
+        "machine pistols": {
             "g18": "d2b575a13ea346c423543e1c8a7936d2",
             "93r": "912c8cc21a2bfff5a882e91a8695da9a",
             "pp-2000": "b7157a16dcce56a8d8715531e17928fa",
@@ -744,7 +744,14 @@
             "sawshotgun": "e37a465044347e8fac1dcb027471ed7f",
             "scar": "54413a92cd52c472fa448d6b93196256",
             "skorpion": "27f7cdfc7532c0d0a1adc4e5ceb04922",
-            "tavor": "1c30582686dc2ec0d580b39ccd9f98cd"            
+            "tavor": "1c30582686dc2ec0d580b39ccd9f98cd"
+        },
+        "bo1": {
+            "m60": "8b5f57d2e078f2f513df7d4caba57d42",
+            "hk21": "1a176545f78a2305c125a83fdf510ef8",
+            "stoner": "b4e7a3a0d8363a7910c2cc1b79596d44",
+            "m16": "166f8f9381d2e051f07b29bbb203a86d",
+            "sgmix": "a378372f1e33d7529f9339df2d5b23f9"
         },
         "bo3": {
             "svg": "6f9b4389b986491f9cc29465272cc77f",
@@ -756,11 +763,12 @@
             "db": "a9c4c1e4eef780b72010a19664c1e672",
             "mg42": "899d25f2377d79b9dd6a29928574d7a5",
             "mp40": "29c12f47dce5bffea90997bdf3e1b363",
+            "ppsh": "34fdfc7ebabc3619b677282fbaff1e70",
             "thompson": "9c6b8a19b92c78541e51f1caf2ab42a2",
             "garand": "15d61093afd20e222791774c09d02a78",
-            "springfield": "3c32b9fd3e8228b68033b85f7462e67f", 
-            "kar98k": "b0b80068afc10c43f1baa7bfe47dfe2f",     
-            "mosin": "7f3e4e743ed7ee3662ffa163f2b94974",      
+            "springfield": "3c32b9fd3e8228b68033b85f7462e67f",
+            "kar98k": "b0b80068afc10c43f1baa7bfe47dfe2f",
+            "mosin": "7f3e4e743ed7ee3662ffa163f2b94974",
             "ptrs": "0aa4f2a02473ff75c3486067d753b447",
             "m1911": "3ada33d2bb0488a6693d03ac955c4a31",
             "357": "e68c27896a5c7a0d5f3cbc115653d7e9",
