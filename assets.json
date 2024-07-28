@@ -1,5 +1,5 @@
 {
-    "version": "v1.3.7",
+    "version": "v1.3.8",
     "skins": {
         "galaxy": "42a5a30257115abe8411245ad375a013",
         "pink stars": "086139f5e96896f1124935b158a948a4",
@@ -329,15 +329,15 @@
             "intervention": "632f5c38bd614dae412e2d5b17714ce2",
             "model 700": "620aa3764f76fc9427973aaa57388556",
             "aws": "ae4f73bb091aca16ebb8fcdc846941c7",
-            "bfg 50": "32e321c27457289889ac0d5fa72f7d97",
+            "bfg 50": "160883329152d9abc5434a1b0982ec7d",
             "awm": "be03d326605be8428f46ee8f566c1411",
             "trg-42": "c1f443550e43ca38475a426f6b97b3bc",
             "mosin": "9ad455eba2a68a2e3c736b2d552915a8",
             "svds": "8cbdf3645a28e8d2607835e2ad465578",
             "m1903": "b3da49a6f3d29e80097487c96a286bf5",
             "m1903 maxim": "b8e6e87edd79d462be595ee6b90afa57",
-            "k14": "b8e6e87edd79d462be595ee6b90afa57",
-            "hecate": "32e321c27457289889ac0d5fa72f7d97",
+            "k14": "7a88319bb1b848a1688bb8ef56e70e11",
+            "hecate": "5099a4c2d1cb7558d084c3148250e5cd",
             "ft300": "a9db01f545120ec70240d881ccdf8987",
             "m107": "bec24846e0b8f767bad1e7bf470093ad",
             "steyr scout": "7acb1e667091d807167e5d09fee37490",
@@ -404,7 +404,7 @@
         },
         "other": {
             "serbu": "cb55cf48ca6d27b678d2b92d92dfb08b",
-            "sfg 50": "32e321c27457289889ac0d5fa72f7d97",
+            "sfg 50": "160883329152d9abc5434a1b0982ec7d",
             "m79 thumper": "a7e91934890371310b892c53cc9216f2",
             "coilgun": "f395684e679a6f6cc17da0bdf04ed865",
             "coilgun pennies": "4277f847a310a9053d448faf1333c141",
@@ -609,15 +609,15 @@
             "intervention": "632f5c38bd614dae412e2d5b17714ce2",
             "model 700": "620aa3764f76fc9427973aaa57388556",
             "aws": "ae4f73bb091aca16ebb8fcdc846941c7",
-            "bfg 50": "32e321c27457289889ac0d5fa72f7d97",
+            "bfg 50": "160883329152d9abc5434a1b0982ec7d",
             "awm": "be03d326605be8428f46ee8f566c1411",
             "trg-42": "c1f443550e43ca38475a426f6b97b3bc",
             "mosin": "9ad455eba2a68a2e3c736b2d552915a8",
             "svds": "8cbdf3645a28e8d2607835e2ad465578",
             "m1903": "b3da49a6f3d29e80097487c96a286bf5",
             "m1903 maxim": "b8e6e87edd79d462be595ee6b90afa57",
-            "k14": "b8e6e87edd79d462be595ee6b90afa57",
-            "hecate": "32e321c27457289889ac0d5fa72f7d97",
+            "k14": "7a88319bb1b848a1688bb8ef56e70e11",
+            "hecate": "5099a4c2d1cb7558d084c3148250e5cd",
             "ft300": "a9db01f545120ec70240d881ccdf8987",
             "m107": "bec24846e0b8f767bad1e7bf470093ad",
             "steyr scout": "7acb1e667091d807167e5d09fee37490",
@@ -684,7 +684,7 @@
         },
         "other": {
             "serbu": "cb55cf48ca6d27b678d2b92d92dfb08b",
-            "sfg 50": "32e321c27457289889ac0d5fa72f7d97",
+            "sfg 50": "160883329152d9abc5434a1b0982ec7d",
             "m79 thumper": "a7e91934890371310b892c53cc9216f2",
             "coilgun": "f395684e679a6f6cc17da0bdf04ed865",
             "coilgun pennies": "4277f847a310a9053d448faf1333c141",
@@ -812,7 +812,6 @@
         "ghosts": {
             "usr": "208aab6be07ec27a560a141685fc4d7a",
             "gm6": "288241bbdc8253ce86e1961df7749b2e"
-           
         },
         "waw": {
             "stg44": "26b599516776a7a421b8b99e8c35811a",
@@ -933,7 +932,7 @@
             "ntw scope": "f5927804adfad1ea8d27d6d79aae012a",
             "olympian target": "5b22e8483bdc68071c13c28723be9695"
         },
-        "other": {
+        "special": {
             "handmade": "318a444ab929278fb9ec3be1946d3ac0",
             "plague sight": "cb2f869523919f4043a890558c4438a6",
             "plague in-sight": "e06548e960c0723d413e0c95d3a3c066",
@@ -999,7 +998,7 @@
             "ntw scope": "f5927804adfad1ea8d27d6d79aae012a",
             "olympian target": "5b22e8483bdc68071c13c28723be9695"
         },
-        "other": {
+        "special": {
             "handmade": "318a444ab929278fb9ec3be1946d3ac0",
             "plague sight": "cb2f869523919f4043a890558c4438a6",
             "plague in-sight": "e06548e960c0723d413e0c95d3a3c066",
