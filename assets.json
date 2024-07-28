@@ -1,5 +1,5 @@
 {
-    "version": "v1.3.6",
+    "version": "v1.3.7",
     "skins": {
         "galaxy": "42a5a30257115abe8411245ad375a013",
         "pink stars": "086139f5e96896f1124935b158a948a4",
@@ -719,7 +719,7 @@
             "deagle": "fa29bcc394cf07248cd2b5fe0ec14ab9",
             "rex": "fa29bcc394cf07248cd2b5fe0ec14ab9",
             "svu": "52f25d13dfc45710017fef78165f34a8",
-            "famas": "1e8c2bde752eb7894ffe2a2972c96590",
+            "famas": "2d250faa7838c14e6ac0330946323c5c",
             "g17": "e6aa0994e2d935fa05394ee754a44637",
             "g18": "e6aa0994e2d935fa05394ee754a44637",
             "intervention": "e8ec995fa5aedf97e16240b0b4c58d9e",
@@ -783,6 +783,17 @@
             "skorpion": "27f7cdfc7532c0d0a1adc4e5ceb04922",
             "tavor": "1c30582686dc2ec0d580b39ccd9f98cd"
         },
+        "mw3": {
+            "revolver": "8fdb7c6bd88bb23c1ccea7c48b54ead5",
+            "msr": "86bf86acfdc004db6f07cfa3ba059fcb",
+            "l96a1": "33231b0371fb73dfd8486676c139038c",
+            "fmg9": "260c27baf1843d9c28dba8815d1f881f",
+            "cm901": "ff1b54033625f71346af4dd897d035f7",
+            "barrett": "81a906cca431bc68571d84db066c8294",
+            "aw50": "1ea7b351082f992d22b205af3f82c424",
+            "ak47": "e823b7338eb13edeb069e2aa35c3d4f6",
+            "fn57": "d6bc400efbec2bfec07c9aae725dc2a2"
+        },
         "bo1": {
             "m60": "8b5f57d2e078f2f513df7d4caba57d42",
             "hk21": "1a176545f78a2305c125a83fdf510ef8",
@@ -790,9 +801,18 @@
             "m16": "166f8f9381d2e051f07b29bbb203a86d",
             "sgmix": "a378372f1e33d7529f9339df2d5b23f9"
         },
+        "bo2": {
+            "dsr": "44a7d2043d615f35eb4b19318b0b7eeb",
+            "ballista": "382d35a7fea44db256cfd3f331fbf4d6"
+        },
         "bo3": {
             "svg": "6f9b4389b986491f9cc29465272cc77f",
             "locus": "53711294c777df908a418b2faf1f53ec"
+        },
+        "ghosts": {
+            "usr": "208aab6be07ec27a560a141685fc4d7a",
+            "gm6": "288241bbdc8253ce86e1961df7749b2e"
+           
         },
         "waw": {
             "stg44": "26b599516776a7a421b8b99e8c35811a",
@@ -846,6 +866,9 @@
         },
         "tarkov": {
             "vss": "0cab76e9382acf7767c5073a66993ebc"
+        },
+        "pubg": {
+            "winch 1894": "06a9390826a21a9d86bce3aa8a3e4f33"
         },
         "custom": {
             "pew": "7eac4541692ca64abc5485b4875b237c",
