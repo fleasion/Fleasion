@@ -1,5 +1,5 @@
 {
-    "version": "v1.3.5",
+    "version": "v1.3.6",
     "skins": {
         "galaxy": "42a5a30257115abe8411245ad375a013",
         "pink stars": "086139f5e96896f1124935b158a948a4",
@@ -700,10 +700,47 @@
             "sass 308": "cbe914973bc37bc746daa8f897ebe36c"
         },
         "old": {
-            "badger": "9604f62b6042d7a09086cb95471bda0f",
-            "ak105": "23f99f429bfa1cda4ecabf7494822e8c",
-            "p90": "fb2e3dc505ff0555925e761712a55ee3",
-            "famas": "09740d40db6e17eb405b44db9fb23d25"
+            "badger sg": "9604f62b6042d7a09086cb95471bda0f",
+            "ak105 sg": "23f99f429bfa1cda4ecabf7494822e8c",
+            "p90 sg": "fb2e3dc505ff0555925e761712a55ee3",
+            "xix sg": "2ac38cfcee2ebc19ae67722e9466a158",
+            "ntw sg": "24cb3e46f23df97dab7fc04d7d89fc0f",
+            "ak12": "e5cd8f5f200987cfb873fb441ebd90c2",
+            "an94": "2d250faa7838c14e6ac0330946323c5c",
+            "as val": "069cdd79ad4b4dddcbf05d05912d8182",
+            "m16a4": "069cdd79ad4b4dddcbf05d05912d8182",
+            "m4": "069cdd79ad4b4dddcbf05d05912d8182",
+            "g36": "069cdd79ad4b4dddcbf05d05912d8182",
+            "g36c": "069cdd79ad4b4dddcbf05d05912d8182",
+            "mg36": "069cdd79ad4b4dddcbf05d05912d8182",
+            "p90": "069cdd79ad4b4dddcbf05d05912d8182",
+            "aug a1": "da86876038760555b9fbd308f499e471",
+            "bfg 50": "a51b626ea6b9c6accbb46528ca94b7ca",
+            "deagle": "fa29bcc394cf07248cd2b5fe0ec14ab9",
+            "rex": "fa29bcc394cf07248cd2b5fe0ec14ab9",
+            "svu": "52f25d13dfc45710017fef78165f34a8",
+            "famas": "1e8c2bde752eb7894ffe2a2972c96590",
+            "g17": "e6aa0994e2d935fa05394ee754a44637",
+            "g18": "e6aa0994e2d935fa05394ee754a44637",
+            "intervention": "e8ec995fa5aedf97e16240b0b4c58d9e",
+            "ksg 12": "c4a7953ea733bddd821bab6590afc787",
+            "remington 870": "c4a7953ea733bddd821bab6590afc787",
+            "l22": "a13aaedd080d6cd43568ecf9404894ed",
+            "l86 lsw": "a13aaedd080d6cd43568ecf9404894ed",
+            "m60": "9ae08097bae72e73e268f07f7ad430d7",
+            "m9": "3a198b2a2f9d6404c4f4fec8a19ae345",
+            "m93r": "3a198b2a2f9d6404c4f4fec8a19ae345",
+            "mk11": "eaf2285f74a99eb27f072cb08928ff1a",
+            "mp5k": "c3d8158e569a92dbcb4c5ac80c55ff9c",
+            "mp7": "83265e5b2fc5e26958c1ff2f01bdcb03",
+            "remington 700": "ab07d074f5be9519505e529ddb747f4d",
+            "scar": "ab157bdccaf6ac0ff7d25cf8ad9bda56",
+            "sks": "5cda6fc44786848b1bbba11c0d8d6c03",
+            "tec 9": "2a5b6bcbb364e750199263960fcd068d",
+            "ump 45": "f9dfc468afb920c4a94b2664a9bf78f2"
+        },
+        "cor": {
+            "ptrs": "2d6e9e7f56bca61515f0528632794344"
         },
         "mw2": {
             "inter": "841850b8cbb5eb5990bb737a22de230e",
@@ -803,12 +840,17 @@
         },
         "halo": {
             "h2 br": "58f3ba79d09429d6d5d3304bc26e08bc",
+            "reach dmr": "92acd5b5d8f28f96e0de0ca553758022",
             "h3 sniper": "8c0be6f7ec28bca0a3282db1f19c434a",
             "ce magnum": "e3b3f20e6c80eef4fc8bc3e892fbecfc"
+        },
+        "tarkov": {
+            "vss": "0cab76e9382acf7767c5073a66993ebc"
         },
         "custom": {
             "pew": "7eac4541692ca64abc5485b4875b237c",
             "laser": "ad20c7ec88aeeaa36c6b7147e9a38ae9",
+            "lightning": "",
             "no sound": "5873cfba79134ecfec6658f559d8f320"
         }
     },
