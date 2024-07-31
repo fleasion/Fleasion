@@ -1,4 +1,4 @@
-# v1.3.0
+# v1.4.0
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -9,6 +9,7 @@ import time
 import json
 import webbrowser
 import requests
+from pathlib import Path
 
 README_URL = 'https://raw.githubusercontent.com/CroppingFlea479/Fleasion/main/README.md'
 FLEASION_URL = 'https://raw.githubusercontent.com/CroppingFlea479/Fleasion/main/fleasion.py'
@@ -93,55 +94,50 @@ def save_data_to_file(data, filename='assets.json'):
         json.dump(data, file, indent=4)
     print(f"Data saved to {filename}")
 
-def list_and_get_input(area):
-    print(f"Available keys in '{area}':")
-    for key in data[area]:
-        print(f"{key}")
+def dlist(area):
+    current_level = data[area]
+    path = [area]
     
-    input_file = input(f"Enter the key you want to use in '{area}': ")
-    
-    if input_file in data[area]:
-        return data[area][input_file]
-    else:
-        new_key = input(f"'{input_file}' does not exist. Enter a new key name to add (leave blank to skip): ")
-        if new_key:
-            data[area][new_key] = input_file
-            print(f"Added new key '{new_key}' with value '{input_file}' to '{area}'.")
-            save_data_to_file(data)
-            return input_file
-        else:
-            print("No new key added.")
-            return input_file
-        
-def nest_list_and_get_input(area):
-    print(f"Available categories in '{area}':")
-    for category in data[area]:
-        print(f"{category}")
-
-    selected_category = input(f"Enter the category you want to use in '{area}': ")
-
-    if selected_category in data[area]:
-        print(f"Available keys in '{selected_category}':")
-        for key in data[area][selected_category]:
+    while isinstance(current_level, dict):
+        print(f"Available keys in '{' -> '.join(path)}':")
+        for key in current_level:
             print(f"{key}")
 
-        input_key = input(f"Enter the key you want to use in '{selected_category}': ")
-
-        if input_key in data[area][selected_category]:
-            return data[area][selected_category][input_key]
-        else:
-            new_key = input(f"'{input_key}' does not exist. Enter a new key name to add (leave blank to skip): ")
-            if new_key:
-                data[area][selected_category][new_key] = input_key
-                print(f"Added new key '{new_key}' with value '{input_key}' to '{selected_category}'.")
-                save_data_to_file(data)
-                return input_key
+        user_input = input(f"Enter the key(s) you want to use in '{' -> '.join(path)}' (nest in keys with a period, type 'back' to go back, or 'skip' to skip): ").strip()
+        
+        if user_input.lower() == 'back':
+            if len(path) > 1:
+                path.pop()
+                current_level = data[path[0]]
+                for key in path[1:]:
+                    current_level = current_level[key]
             else:
-                print("No new key added.")
-                return input_key
-    else:
-        print(f"Category '{selected_category}' does not exist.")
-        return None
+                print("You are already at the top level. Cannot go back.")
+            continue
+
+        if user_input.lower() == 'skip':
+            print("Skipping category.")
+            return
+        
+        selected_keys = user_input.split('.')
+        selected_keys = [key.strip() for key in selected_keys]
+
+        valid = True
+        temp_level = current_level
+        for key in selected_keys:
+            if key in temp_level:
+                temp_level = temp_level[key]
+            else:
+                print(f"Key '{key}' does not exist in '{' -> '.join(path)}'. Please try again.")
+                valid = False
+                break
+        
+        if valid:
+            for key in selected_keys:
+                path.append(key)
+                current_level = current_level[key]
+
+    return current_level
     
 def add_new_area():
     new_area = input("Enter the new area name: ")
@@ -153,7 +149,6 @@ def add_new_area():
 
     data[new_area][new_key] = new_value
 
-    # Write updated data back to JSON file
     with open(config_file, 'w') as file:
         json.dump(data, file, indent=4)
 
@@ -259,8 +254,8 @@ while True:
                     try:
                         match int(sight_option):
                             case 1: 
-                                reticle = nest_list_and_get_input("reticles")
-                                reticle_replacement = nest_list_and_get_input("reticle replacement")
+                                reticle = dlist("reticles")
+                                reticle_replacement = dlist("reticle replacement")
                                 if reticle and reticle_replacement:
                                     replace([reticle], reticle_replacement)
                             case 2: 
@@ -279,7 +274,7 @@ while True:
                         case 3: replace(['f5b0bcba5570d196909a78c7a697467c', '7f828aee555e5e1161d4b39faddda970'], 'c9672591983da8fffedb9cec7df1e521')
                         case 4: delete_stuff(data["arm models"])
                         case _: print("Enter a Valid Option!") 
-                case 3: replace(['aa33dd87fc9db92e891361e069da1849'], list_and_get_input("skins"))
+                case 3: replace(['aa33dd87fc9db92e891361e069da1849'], dlist("skins"))
                 case 4: replace(data["textures"], 'd625adff6a3d75081d11b3407b0b417c') # no textures without downside
                 case 5: 
                     sky_option = input("Is Bloxstrap sky folder setup?\n1: yes\n2: no\n")
@@ -287,16 +282,16 @@ while True:
                         case 1: replace(data["skyboxes"], 'd625adff6a3d75081d11b3407b0b417c') # forced default skybox
                         case 2: bloxstrap()
                         case _: print("Enter a Valid Option!")  
-                case 6: replace([list_and_get_input("gun skins")], list_and_get_input("skins"))
+                case 6: replace([dlist("gun skins")], dlist("skins"))
                 case 7: 
-                    reticle = nest_list_and_get_input("gun sounds")
-                    reticle_replacement = nest_list_and_get_input("replacement sounds")
+                    reticle = dlist("gun sounds")
+                    reticle_replacement = dlist("replacement sounds")
                     if reticle and reticle_replacement:
                         replace([reticle], reticle_replacement)                     
-                case 8: replace(['8194373fb18740071f5e885bab349252'], list_and_get_input("gun smoke"))
-                case 9: replace(['097165b476243d2095ef0a256320b06a'], list_and_get_input("hitmarker")) # hitmarkers                                 
-                case 10: replace(['a177d2c00abd3e550b873d76c97ad960'], list_and_get_input("hitsound"))
-                case 11: replace(data["killsound"]["default"], list_and_get_input("killsound"))
+                case 8: replace(['8194373fb18740071f5e885bab349252'], dlist("gun smoke"))
+                case 9: replace(['097165b476243d2095ef0a256320b06a'], dlist("hitmarker")) # hitmarkers                                 
+                case 10: replace(['a177d2c00abd3e550b873d76c97ad960'], dlist("hitsound"))
+                case 11: replace(data["killsound"]["default"], dlist("killsound"))
                 case _: print("Invalid number.")
         except Exception as e: print(f"Error: {e}")
 
