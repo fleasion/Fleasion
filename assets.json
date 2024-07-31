@@ -1,5 +1,5 @@
 {
-    "version": "v1.4.0",
+    "version": "v1.4.1",
     "skins": {
         "galaxy": "42a5a30257115abe8411245ad375a013",
         "pink stars": "086139f5e96896f1124935b158a948a4",
@@ -864,7 +864,6 @@
             "handmade": "318a444ab929278fb9ec3be1946d3ac0",
             "plague sight": "cb2f869523919f4043a890558c4438a6",
             "plague in-sight": "e06548e960c0723d413e0c95d3a3c066",
-            "plague blackscope": "e06548e960c0723d413e0c95d3a3c066",
             "anti": "2e6d3cae15d0d31450caaa13fec73013",
             "animu": "7c5dd6ff788ca1c431151c1b026c363d",
             "furro": "329b1ec740916e4a045904dddec414ff"
@@ -930,7 +929,6 @@
             "handmade": "318a444ab929278fb9ec3be1946d3ac0",
             "plague sight": "cb2f869523919f4043a890558c4438a6",
             "plague in-sight": "e06548e960c0723d413e0c95d3a3c066",
-            "plague blackscope": "e06548e960c0723d413e0c95d3a3c066",
             "anti": "2e6d3cae15d0d31450caaa13fec73013",
             "animu": "7c5dd6ff788ca1c431151c1b026c363d",
             "furro": "329b1ec740916e4a045904dddec414ff"
