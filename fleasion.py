@@ -1,4 +1,4 @@
-# v1.4.1
+# v1.4.2
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -177,6 +177,8 @@ def bloxstrap():
 
         print("All folders created successfully! Import your skyboxes into the opened folder.")
         os.startfile(path)
+
+        replace(data["skyboxes"], 'd625adff6a3d75081d11b3407b0b417c')
 
 def delete_stuff(files_to_delete):
     for file_to_delete in files_to_delete:
