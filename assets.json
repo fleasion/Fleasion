@@ -1,5 +1,5 @@
 {
-    "version": "v1.4.7",
+    "version": "v1.4.8",
     "skins": {
         "Tier 2": {
             "FAUNA 2 CASE": {
@@ -784,6 +784,7 @@
                 "neon nights": "5b480a1640c3a30cd8057cbad2264b3d",
                 "hypomatic": "6fa317d171476e72230d22d2cb05862f",
                 "drain gang": "68cee73f2049c26b2bcb1ea5faa8696f",
+                "dragon": "14cc5228aa4ea4797b3b4ace81552f64",
                 "fastbreak fraggers": "0657db57fac4614acc2b05a5da5b8102",
                 "rush hour": "844b8483ef8c309b246b378a88fa8d9b",
                 "xmas nights 3": "56284bac9a10504b9e6c0ff72f5b3338",
@@ -799,6 +800,10 @@
                 "left": "0017cf02dc82cb38c07fdc458aef1a31",
                 "down": "515e8a05134e8370431b0d0990bee982",
                 "up": "6dd1545472276566fda1bbe1549bd21e"
+            },
+            "wireframe": {
+                "space": "7e979cd246b458d4b1d2ecd706261675",
+                "tpose": "d18191c71a37796bb7cae754cce981e0"
             },
             "random": {
                 "anti black": "9bf106156d73eb795675779d98ab5fde",
