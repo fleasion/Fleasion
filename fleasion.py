@@ -1,4 +1,4 @@
-# v1.4.0
+# v1.4.1
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -250,20 +250,30 @@ while True:
             match int(options):
                 case 0: replace([input("Enter asset to change: ")], input("Enter replacement: "))
                 case 1:
-                    sight_option = input("Enter sight option:\n1: Reticle tweaks\n2: Sight model tweaks\n")
+                    sight_option = input("Enter sight option:\n1: Reticle tweaks\n2: Sight model tweaks\n3: Ballistics tracker tweaks\n")
                     try:
                         match int(sight_option):
-                            case 1: 
+                            case 1:
                                 reticle = dlist("reticles")
                                 reticle_replacement = dlist("reticle replacement")
                                 if reticle and reticle_replacement:
                                     replace([reticle], reticle_replacement)
-                            case 2: 
-                                sightbackground = input("Enter background tweak:\n1: clear coyote/reflex blue background\n2: clear delta black ring\n")
+                            case 2:
+                                sightbackground = input(
+                                    "Enter background tweak:\n1: clear coyote/reflex blue background\n2: clear delta black ring\n")
                                 match int(sightbackground):
-                                    case 1: replace(['3fc9141fc7c1167c575b9361a98f04c0', '2eaae4fe3a9fce967af993d27ad68d52'], '5873cfba79134ecfec6658f559d8f320') # clear coyote and reflex blue background
-                                    case 2: replace(['30c4d2bb30b6b8c9ac7cfeec5db25a85', '7d5652167ec33ed349e569a55a398705'], 'd625adff6a3d75081d11b3407b0b417c') # delta black ring
-                            case _: print("Invalid option")
+                                    case 1:
+                                        replace(
+                                            ['3fc9141fc7c1167c575b9361a98f04c0', '2eaae4fe3a9fce967af993d27ad68d52'],
+                                            '5873cfba79134ecfec6658f559d8f320')  # clear coyote and reflex blue background
+                                    case 2:
+                                        replace(
+                                            ['30c4d2bb30b6b8c9ac7cfeec5db25a85', '7d5652167ec33ed349e569a55a398705'],
+                                            'd625adff6a3d75081d11b3407b0b417c')  # delta black ring
+                            case 3:
+                                replace(data["ballistics tracker"]["default"], dlist("ballistics tracker"))
+                            case _:
+                                print("Invalid option")
                     except Exception as e:
                         print(f"Error: {e}")
                 case 2: 
