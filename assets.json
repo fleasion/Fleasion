@@ -1,5 +1,5 @@
 {
-    "version": "v1.4.8",
+    "version": "v1.4.81",
     "skins": {
         "Tier 2": {
             "FAUNA 2 CASE": {
@@ -803,6 +803,7 @@
             },
             "wireframe": {
                 "space": "7e979cd246b458d4b1d2ecd706261675",
+                "space2": "9ee8d4388840e2c0b24df4eab6b229fe",
                 "tpose": "d18191c71a37796bb7cae754cce981e0"
             },
             "random": {
