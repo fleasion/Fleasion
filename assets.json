@@ -1,5 +1,5 @@
 {
-    "version": "v1.4.4",
+    "version": "v1.4.5",
     "skins": {
         "Tier 2": {
             "FAUNA 2 CASE": {
@@ -813,7 +813,8 @@
                 "purple landscape": "15613ce251e8e16157dc4bd7d9157e61",
                 "pink stars": "086139f5e96896f1124935b158a948a4",
                 "laked sky": "a0488e1997d93d997a04ac4c98a14b60",
-                "white diamond": "b398bb97a181f86348cdd271b2f44cab"
+                "white diamond": "b398bb97a181f86348cdd271b2f44cab",
+                "drastic": "80ef9ad136193b345f559c24b9e84924"
             }
         }
     },
