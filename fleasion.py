@@ -103,7 +103,7 @@ def dlist(area):
         for key in current_level:
             print(f"{key}")
 
-        user_input = input(f"Enter the key(s) you want to use in '{' -> '.join(path)}'\n(nest in keys with a period, type 'back' to go back, or 'skip' to skip): ").strip()
+        user_input = input(f"Enter the key(s) you want to use in '{' -> '.join(path)}'\n(nest in keys with a period, type 'back' to go back, or 'skip' to skip)\n: ").strip()
         
         if user_input.lower() == 'back':
             if len(path) > 1:
