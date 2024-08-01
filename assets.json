@@ -1,5 +1,5 @@
 {
-    "version": "v1.4.11",
+    "version": "v1.4.12",
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
         "blue": "38342d3214ad04067e03106bdff41914",
@@ -768,7 +768,7 @@
         "custom": {
             "pew": "7eac4541692ca64abc5485b4875b237c",
             "laser": "ad20c7ec88aeeaa36c6b7147e9a38ae9",
-            "no sound": "5873cfba79134ecfec6658f559d8f320"
+            "remove": "5873cfba79134ecfec6658f559d8f320"
         }
     },
     "reticles": {
@@ -964,7 +964,8 @@
             "pink stars": "086139f5e96896f1124935b158a948a4",
             "laked sky": "a0488e1997d93d997a04ac4c98a14b60",
             "white diamond": "b398bb97a181f86348cdd271b2f44cab",
-            "drastic": "80ef9ad136193b345f559c24b9e84924"
+            "drastic": "80ef9ad136193b345f559c24b9e84924",
+            "vice": "350ac195878df6428b14cefede86fbd2"
         },
         "pf cases": {
             "tier 2": {
