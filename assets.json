@@ -1,5 +1,5 @@
 {
-    "version": "v1.4.2",
+    "version": "v1.4.3",
     "skins": {
         "Tier 2": {
         "FAUNA 2 CASE": {
@@ -772,36 +772,49 @@
         }
     },
     "custom": {
-        "rainbow cat": "1e69d7d4cd36a25ac8980ea21f598d17",
-        "cat1": "7b0f3ec58ab15a927b750b8704dfd8b5",
-        "cat2": "0a41d14f6b1c1214f8775a6ed0ea9448",
-        "cat3": "7eac611244b43837ad2911b07ed90754",
-        "dreamscape red": "1daa74342d045443e4262214508599db",
-        "rubie 1 red": "4cce48e4b4a317fc2504e006ea8c6023",
-        "neon nights red": "5b480a1640c3a30cd8057cbad2264b3d",
-        "hypomatic red": "6fa317d171476e72230d22d2cb05862f",
-        "drain gang red": "68cee73f2049c26b2bcb1ea5faa8696f",
-        "fastbreak fraggers red": "0657db57fac4614acc2b05a5da5b8102",
-        "rush hour red": "844b8483ef8c309b246b378a88fa8d9b",
-        "xmas nights 3 red": "56284bac9a10504b9e6c0ff72f5b3338",
-        "sacrifice red": "690645df3b605768432c6b65ad47900e",
-        "ID red": "69078805b9cd2000bd81f2c92d8206c3",
-        "backstreet writing red": "d0fc6de21ed19e46b599f1a2f5969565",
-        "anti black": "9bf106156d73eb795675779d98ab5fde",
-        "anti white": "4c05fa81207493a878deb92bbf4d693f",
-        "aphex twin": "4b1f2e9938532d75b87ce6199352402b",
-        "water": "5c80658b59d891565dda5ea29bba2661",
-        "yuki aim thing": "0016b3cd354480935dcfffbbef25c7ee",
-        "galaxy": "42a5a30257115abe8411245ad375a013",
-        "winter camo": "45ce7c10d3b5754f054768071772f9e5",
-        "eroder": "2117b7dbd2a9d5222a1225ec6f2dfe69",
-        "pink purple pattern": "7434a7a9d1e3225cbdb86a704294840f",
-        "purple landscape": "15613ce251e8e16157dc4bd7d9157e61",
-        "pink stars": "086139f5e96896f1124935b158a948a4",
-        "laked sky": "a0488e1997d93d997a04ac4c98a14b60",
-        "azumanga": "b67bfab233fa604100ba97c5200b05a1",
-        "white diamond": "b398bb97a181f86348cdd271b2f44cab"
-      }
+        "cats": {
+            "rainbow cat": "1e69d7d4cd36a25ac8980ea21f598d17",
+            "cat1": "7b0f3ec58ab15a927b750b8704dfd8b5",
+            "cat2": "0a41d14f6b1c1214f8775a6ed0ea9448",
+            "cat3": "7eac611244b43837ad2911b07ed90754"
+        },
+        "red": {
+            "dreamscape red": "1daa74342d045443e4262214508599db",
+            "rubie 1 red": "4cce48e4b4a317fc2504e006ea8c6023",
+            "neon nights red": "5b480a1640c3a30cd8057cbad2264b3d",
+            "hypomatic red": "6fa317d171476e72230d22d2cb05862f",
+            "drain gang red": "68cee73f2049c26b2bcb1ea5faa8696f",
+            "fastbreak fraggers red": "0657db57fac4614acc2b05a5da5b8102",
+            "rush hour red": "844b8483ef8c309b246b378a88fa8d9b",
+            "xmas nights 3 red": "56284bac9a10504b9e6c0ff72f5b3338",
+            "sacrifice red": "690645df3b605768432c6b65ad47900e",
+            "ID red": "69078805b9cd2000bd81f2c92d8206c3",
+            "backstreet writing red": "d0fc6de21ed19e46b599f1a2f5969565"
+        },
+        "anime": {
+            "azumanga": "b67bfab233fa604100ba97c5200b05a1"
+        },
+        "fade": {
+            "right": "b70f075d58535964d3647f9924078e7a",
+            "left": "0017cf02dc82cb38c07fdc458aef1a31",
+            "down": "515e8a05134e8370431b0d0990bee982",
+            "up": "6dd1545472276566fda1bbe1549bd21e"
+        },
+        "random": {
+            "anti black": "9bf106156d73eb795675779d98ab5fde",
+            "anti white": "4c05fa81207493a878deb92bbf4d693f",
+            "aphex twin": "4b1f2e9938532d75b87ce6199352402b",
+            "water": "5c80658b59d891565dda5ea29bba2661",
+            "yuki aim thing": "0016b3cd354480935dcfffbbef25c7ee",
+            "galaxy": "42a5a30257115abe8411245ad375a013",
+            "winter camo": "45ce7c10d3b5754f054768071772f9e5",
+            "eroder": "2117b7dbd2a9d5222a1225ec6f2dfe69",
+            "pink purple pattern": "7434a7a9d1e3225cbdb86a704294840f",
+            "purple landscape": "15613ce251e8e16157dc4bd7d9157e61",
+            "pink stars": "086139f5e96896f1124935b158a948a4",
+            "laked sky": "a0488e1997d93d997a04ac4c98a14b60",
+            "white diamond": "b398bb97a181f86348cdd271b2f44cab"
+        }
   },
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
