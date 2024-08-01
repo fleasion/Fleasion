@@ -1,5 +1,5 @@
 {
-    "version": "v1.4.6",
+    "version": "v1.4.7",
     "skins": {
         "Tier 2": {
             "FAUNA 2 CASE": {
@@ -850,7 +850,7 @@
         ],
         "tf2": "80cda01cdd99bfaae5d7dc50f689bafa",
         "xonotic": "eae51b1f5affd84b4e4793b1be19a66a",
-        "apex": "2134b97ee3e15c20a189d474d5269802"
+        "titanfall 2": "2134b97ee3e15c20a189d474d5269802"
     },
     "gun sounds": {
         "ars": {
@@ -1450,8 +1450,8 @@
             "sks": "5cda6fc44786848b1bbba11c0d8d6c03",
             "tec 9": "2a5b6bcbb364e750199263960fcd068d",
             "ump 45": "f9dfc468afb920c4a94b2664a9bf78f2",
-            "m231": "001fc4cdfa6c71e4fc48e81115ec66a6",
-            "colt smg": "001fc4cdfa6c71e4fc48e81115ec66a6"
+            "m231": "069cdd79ad4b4dddcbf05d05912d8182",
+            "colt smg": "069cdd79ad4b4dddcbf05d05912d8182"
         },
         "cor": {
             "ptrs": "2d6e9e7f56bca61515f0528632794344"
