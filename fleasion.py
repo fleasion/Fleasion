@@ -1,4 +1,4 @@
-# v1.4.3
+# v1.4.4
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -273,7 +273,7 @@ while True:
                                             ['30c4d2bb30b6b8c9ac7cfeec5db25a85', '7d5652167ec33ed349e569a55a398705'],
                                             'd625adff6a3d75081d11b3407b0b417c')  # delta black ring
                             case 3:
-                                replace(data["ballistics tracker"]["default"], dlist("ballistics tracker"))
+                                replace([data["ballistics tracker"]["default"]], dlist("ballistics tracker"))
                             case _:
                                 print("Invalid option")
                     except Exception as e:
