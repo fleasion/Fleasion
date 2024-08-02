@@ -1,5 +1,5 @@
 {
-    "version": "v1.4.14",
+    "version": "v1.4.15",
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
         "blue": "38342d3214ad04067e03106bdff41914",
@@ -18,7 +18,10 @@
         "quake 3": "b276797f86a205ad57892ba259d7bca2",
         "tf2": "80cda01cdd99bfaae5d7dc50f689bafa",
         "mw2": "c5699c647761d9ed2407b3b8529310fe",
-        "xonotic": "2178841e2915c199051ffcfb3ff99b6c"
+        "xonotic": "2178841e2915c199051ffcfb3ff99b6c",
+        "meat punch 1": "99b11524684655eaa77495f37fbec71f",
+        "meat punch 2": "a86804777ed59f0421e1cd62863d4019",
+        "meat punch 3": "c4c60a8e87c9ee410ebeb70515eaa5ba"
     },
     "killsound": {
         "default": [
@@ -948,7 +951,9 @@
             "nature": "70a4b4b8061e37c6dfaa8a5242ffe6d7",
             "hacker": "243bb51a108d6771da1abf6cb256b821",
             "city": "3b32055582e300f3e4cb6fdd78870e2e",
-            "giant leaps": "9f1b08e510c3fd3ba43c91e659be8cf9"
+            "giant leaps": "9f1b08e510c3fd3ba43c91e659be8cf9",
+            "musical mainframe": "b19abcac4085f829b62f2c447626bc69",
+            "digital fruits": "649ec7e1c10058ab21cfecc4ec137831"
         },
         "random": {
             "anti black": "9bf106156d73eb795675779d98ab5fde",
