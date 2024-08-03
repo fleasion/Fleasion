@@ -1,5 +1,5 @@
 {
-    "version": "v1.5.7",
+    "version": "v1.5.8",
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
         "blue": "38342d3214ad04067e03106bdff41914",
@@ -995,6 +995,8 @@
         "custom": {
             "upsidedown ekp": "16ab2e4e301ea89f46263250657f9b94",
             "small dot": "ac59980bedb36f4b240633b08b532d08",
+            "big dot": "73c2849b95adc835ee0eaef758346920",
+            "huge dot": "577f6c95249ebea2926892c3f3e8c040",
             "remove": "5873cfba79134ecfec6658f559d8f320"
         }
     },
