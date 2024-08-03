@@ -1,4 +1,4 @@
-# v1.5.4
+# v1.5.5
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -368,7 +368,7 @@ while True:
                                 case _:
                                     print("Enter a Valid Option!")
                         case 2:
-                            replace(data["replacement sounds"]["grenade sounds"]["default"], dlist("replacement sounds"))
+                            replace(data["replacement sounds"]["explosions"]["default"], dlist("replacement sounds"))
                         case 3:
                             replace([dlist("grenade sounds")], dlist("replacement sounds"))
                         case _:
