@@ -1,5 +1,5 @@
 {
-    "version": "v1.5.8",
+    "version": "v1.5.9",
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
         "blue": "38342d3214ad04067e03106bdff41914",
@@ -994,6 +994,8 @@
         },
         "custom": {
             "upsidedown ekp": "16ab2e4e301ea89f46263250657f9b94",
+            "yolo": "4bee1c8a394923bee7078462a27db7a7",
+            "soy": "6c4eae63d97c83a4bd970a57f783cade",
             "small dot": "ac59980bedb36f4b240633b08b532d08",
             "big dot": "73c2849b95adc835ee0eaef758346920",
             "huge dot": "577f6c95249ebea2926892c3f3e8c040",
