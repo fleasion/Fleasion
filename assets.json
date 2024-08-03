@@ -1,5 +1,5 @@
 {
-    "version": "v1.5.4",
+    "version": "v1.5.5",
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
         "blue": "38342d3214ad04067e03106bdff41914",
@@ -820,6 +820,7 @@
             },
             "bell": "b478c6fadeb3645df27d51d1c11d6ebd",
             "taco bell": "007e3fdade28112d28e8ff0dfaeb65a0",
+            "metal pipe": "3f3016cdd65115263b7fb9d5fb8b40b7",
             "remove": "5873cfba79134ecfec6658f559d8f320"
         },
         "hit sounds": {
