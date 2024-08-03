@@ -1,5 +1,5 @@
 {
-    "version": "v1.4.17",
+    "version": "v1.4.18",
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
         "blue": "38342d3214ad04067e03106bdff41914",
@@ -13,6 +13,7 @@
         "mw2": "f54a0e14f22167d3b0146cdf62cf11a7"
     },
     "hitsound": {
+        "default": "a177d2c00abd3e550b873d76c97ad960",
         "ding": "df62d2f5a545befcf81719f5ec7be3f6",
         "osu": "01c20dd5f22535f5c598a0d8d89266fb",
         "osu bubble": "0a24d862d5bb8eb368ffc46b0b094061",
@@ -25,9 +26,13 @@
         "meat punch 1": "99b11524684655eaa77495f37fbec71f",
         "meat punch 2": "a86804777ed59f0421e1cd62863d4019",
         "meat punch 3": "c4c60a8e87c9ee410ebeb70515eaa5ba",
+        "bell": "b478c6fadeb3645df27d51d1c11d6ebd",
+        "ballon pop": "1c9a309f36cff20a354dcc8675294621",
+        "mighty eagle": "79c947ce29faf8a6e1fbd05d8473e506",
+        "red angry bird": "8c404fcc623fa24f814ffbc34788d845",
         "button": "d9fe9f65509642d75082e32441a26e66",
         "boing": "d1478243251037788e8d4f365202bbf3",
-        "mighty eagle": "79c947ce29faf8a6e1fbd05d8473e506"
+        "anime": "1f00efe6252f845873c98d7aca6c34b9"
     },
     "killsound": {
         "default": [
@@ -42,6 +47,18 @@
         "tf2": "80cda01cdd99bfaae5d7dc50f689bafa",
         "xonotic": "eae51b1f5affd84b4e4793b1be19a66a",
         "titanfall 2": "2134b97ee3e15c20a189d474d5269802",
+        "ding": "df62d2f5a545befcf81719f5ec7be3f6",
+        "osu": "01c20dd5f22535f5c598a0d8d89266fb",
+        "osu bubble": "0a24d862d5bb8eb368ffc46b0b094061",
+        "osu click": "e4c162508f3143b993e4987252d1e27d",
+        "kovaaks": "546ca45d4089d45a931e3ce54d737474",
+        "quake 3": "b276797f86a205ad57892ba259d7bca2",
+        "tf2": "80cda01cdd99bfaae5d7dc50f689bafa",
+        "mw2": "c5699c647761d9ed2407b3b8529310fe",
+        "xonotic": "2178841e2915c199051ffcfb3ff99b6c",
+        "meat punch 1": "99b11524684655eaa77495f37fbec71f",
+        "meat punch 2": "a86804777ed59f0421e1cd62863d4019",
+        "meat punch 3": "c4c60a8e87c9ee410ebeb70515eaa5ba",
         "bell": "b478c6fadeb3645df27d51d1c11d6ebd",
         "ballon pop": "1c9a309f36cff20a354dcc8675294621",
         "mighty eagle": "79c947ce29faf8a6e1fbd05d8473e506",
