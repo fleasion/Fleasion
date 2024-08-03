@@ -1,5 +1,5 @@
 {
-    "version": "v1.4.16",
+    "version": "v1.4.17",
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
         "blue": "38342d3214ad04067e03106bdff41914",
@@ -9,11 +9,14 @@
         "pink small": "5b62f2b46911c14c8786c6e943d25bf9",
         "big blue": "5cbef7585db032e658b662ea4e415f36",
         "big pink": "7cdebc991be99683783721c89a811fca",
-        "another pink": "34732c8b8a11032ca4dd3330cb8daa91"
+        "another pink": "34732c8b8a11032ca4dd3330cb8daa91",
+        "mw2": "f54a0e14f22167d3b0146cdf62cf11a7"
     },
     "hitsound": {
         "ding": "df62d2f5a545befcf81719f5ec7be3f6",
         "osu": "01c20dd5f22535f5c598a0d8d89266fb",
+        "osu bubble": "0a24d862d5bb8eb368ffc46b0b094061",
+        "osu click": "e4c162508f3143b993e4987252d1e27d",
         "kovaaks": "546ca45d4089d45a931e3ce54d737474",
         "quake 3": "b276797f86a205ad57892ba259d7bca2",
         "tf2": "80cda01cdd99bfaae5d7dc50f689bafa",
@@ -21,7 +24,9 @@
         "xonotic": "2178841e2915c199051ffcfb3ff99b6c",
         "meat punch 1": "99b11524684655eaa77495f37fbec71f",
         "meat punch 2": "a86804777ed59f0421e1cd62863d4019",
-        "meat punch 3": "c4c60a8e87c9ee410ebeb70515eaa5ba"
+        "meat punch 3": "c4c60a8e87c9ee410ebeb70515eaa5ba",
+        "button": "d9fe9f65509642d75082e32441a26e66",
+        "boing": "d1478243251037788e8d4f365202bbf3"
     },
     "killsound": {
         "default": [
@@ -35,7 +40,14 @@
         ],
         "tf2": "80cda01cdd99bfaae5d7dc50f689bafa",
         "xonotic": "eae51b1f5affd84b4e4793b1be19a66a",
-        "titanfall 2": "2134b97ee3e15c20a189d474d5269802"
+        "titanfall 2": "2134b97ee3e15c20a189d474d5269802",
+        "bell": "b478c6fadeb3645df27d51d1c11d6ebd",
+        "ballon pop": "1c9a309f36cff20a354dcc8675294621",
+        "mighty eagle": "79c947ce29faf8a6e1fbd05d8473e506",
+        "red angry bird": "8c404fcc623fa24f814ffbc34788d845",
+        "button": "d9fe9f65509642d75082e32441a26e66",
+        "boing": "d1478243251037788e8d4f365202bbf3",
+        "anime": "1f00efe6252f845873c98d7aca6c34b9"
     },
     "gun sounds": {
         "ars": {
@@ -698,6 +710,7 @@
             "hk21": "1a176545f78a2305c125a83fdf510ef8",
             "stoner": "b4e7a3a0d8363a7910c2cc1b79596d44",
             "m16": "166f8f9381d2e051f07b29bbb203a86d",
+            "l96a1": "76e6f31055ed438e9c98090dbbb577f8",
             "sgmix": "a378372f1e33d7529f9339df2d5b23f9"
         },
         "bo2": {
@@ -771,6 +784,7 @@
         "custom": {
             "pew": "7eac4541692ca64abc5485b4875b237c",
             "laser": "ad20c7ec88aeeaa36c6b7147e9a38ae9",
+            "slingshot": "c6f5b936f5d2bafdd7e981ac22e0b8f2",
             "remove": "5873cfba79134ecfec6658f559d8f320"
         }
     },
