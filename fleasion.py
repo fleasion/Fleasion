@@ -1,4 +1,4 @@
-# v1.5.7
+# v1.5.8
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -108,7 +108,7 @@ def dlist(area):
 
     while isinstance(current_level, dict):
         match = {}
-        print(f"Available keys in '{' -> '.join(path)}':")
+        print(f"\nAvailable keys in {GREEN}{' -> '.join(path)}{DEFAULT}:")
         for j, key in enumerate(current_level):
             match[str(j+1)] = key
             print(f"{j + 1}: {' ' if j < 9 else ''}{GREEN}{key}{DEFAULT}")
