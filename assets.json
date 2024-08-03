@@ -1,5 +1,5 @@
 {
-    "version": "v1.4.18",
+    "version": "v1.5.0",
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
         "blue": "38342d3214ad04067e03106bdff41914",
@@ -11,61 +11,6 @@
         "big pink": "7cdebc991be99683783721c89a811fca",
         "another pink": "34732c8b8a11032ca4dd3330cb8daa91",
         "mw2": "f54a0e14f22167d3b0146cdf62cf11a7"
-    },
-    "hitsound": {
-        "default": "a177d2c00abd3e550b873d76c97ad960",
-        "ding": "df62d2f5a545befcf81719f5ec7be3f6",
-        "osu": "01c20dd5f22535f5c598a0d8d89266fb",
-        "osu bubble": "0a24d862d5bb8eb368ffc46b0b094061",
-        "osu click": "e4c162508f3143b993e4987252d1e27d",
-        "kovaaks": "546ca45d4089d45a931e3ce54d737474",
-        "quake 3": "b276797f86a205ad57892ba259d7bca2",
-        "tf2": "80cda01cdd99bfaae5d7dc50f689bafa",
-        "mw2": "c5699c647761d9ed2407b3b8529310fe",
-        "xonotic": "2178841e2915c199051ffcfb3ff99b6c",
-        "meat punch 1": "99b11524684655eaa77495f37fbec71f",
-        "meat punch 2": "a86804777ed59f0421e1cd62863d4019",
-        "meat punch 3": "c4c60a8e87c9ee410ebeb70515eaa5ba",
-        "bell": "b478c6fadeb3645df27d51d1c11d6ebd",
-        "ballon pop": "1c9a309f36cff20a354dcc8675294621",
-        "mighty eagle": "79c947ce29faf8a6e1fbd05d8473e506",
-        "red angry bird": "8c404fcc623fa24f814ffbc34788d845",
-        "button": "d9fe9f65509642d75082e32441a26e66",
-        "boing": "d1478243251037788e8d4f365202bbf3",
-        "anime": "1f00efe6252f845873c98d7aca6c34b9"
-    },
-    "killsound": {
-        "default": [
-            "2d421883139df33004f7f4b09599f072",
-            "24d2253563d53f0da7d629905baf39a1",
-            "f759e18df11147e4063bde4456932a5b",
-            "49e13f7317bbda81144c039ad909487d",
-            "2a987fd54ae83be4acdcea094d615d01",
-            "796946525a9eaaa7266d9185b25e318c",
-            "1feefea40850972e3e63bcb0d86baca0"
-        ],
-        "tf2": "80cda01cdd99bfaae5d7dc50f689bafa",
-        "xonotic": "eae51b1f5affd84b4e4793b1be19a66a",
-        "titanfall 2": "2134b97ee3e15c20a189d474d5269802",
-        "ding": "df62d2f5a545befcf81719f5ec7be3f6",
-        "osu": "01c20dd5f22535f5c598a0d8d89266fb",
-        "osu bubble": "0a24d862d5bb8eb368ffc46b0b094061",
-        "osu click": "e4c162508f3143b993e4987252d1e27d",
-        "kovaaks": "546ca45d4089d45a931e3ce54d737474",
-        "quake 3": "b276797f86a205ad57892ba259d7bca2",
-        "tf2": "80cda01cdd99bfaae5d7dc50f689bafa",
-        "mw2": "c5699c647761d9ed2407b3b8529310fe",
-        "xonotic": "2178841e2915c199051ffcfb3ff99b6c",
-        "meat punch 1": "99b11524684655eaa77495f37fbec71f",
-        "meat punch 2": "a86804777ed59f0421e1cd62863d4019",
-        "meat punch 3": "c4c60a8e87c9ee410ebeb70515eaa5ba",
-        "bell": "b478c6fadeb3645df27d51d1c11d6ebd",
-        "ballon pop": "1c9a309f36cff20a354dcc8675294621",
-        "mighty eagle": "79c947ce29faf8a6e1fbd05d8473e506",
-        "red angry bird": "8c404fcc623fa24f814ffbc34788d845",
-        "button": "d9fe9f65509642d75082e32441a26e66",
-        "boing": "d1478243251037788e8d4f365202bbf3",
-        "anime": "1f00efe6252f845873c98d7aca6c34b9"
     },
     "gun sounds": {
         "ars": {
@@ -804,7 +749,43 @@
             "laser": "ad20c7ec88aeeaa36c6b7147e9a38ae9",
             "slingshot": "c6f5b936f5d2bafdd7e981ac22e0b8f2",
             "remove": "5873cfba79134ecfec6658f559d8f320"
-        }
+        },
+        "hit sounds": {
+            "default": "a177d2c00abd3e550b873d76c97ad960",
+            "ding": "df62d2f5a545befcf81719f5ec7be3f6",
+            "osu": "01c20dd5f22535f5c598a0d8d89266fb",
+            "osu bubble": "0a24d862d5bb8eb368ffc46b0b094061",
+            "osu click": "e4c162508f3143b993e4987252d1e27d",
+            "kovaaks": "546ca45d4089d45a931e3ce54d737474",
+            "quake 3": "b276797f86a205ad57892ba259d7bca2",
+            "tf2": "80cda01cdd99bfaae5d7dc50f689bafa",
+            "mw2": "c5699c647761d9ed2407b3b8529310fe",
+            "xonotic": "2178841e2915c199051ffcfb3ff99b6c",
+            "meat punch 1": "99b11524684655eaa77495f37fbec71f",
+            "meat punch 2": "a86804777ed59f0421e1cd62863d4019",
+            "meat punch 3": "c4c60a8e87c9ee410ebeb70515eaa5ba",
+            "button": "d9fe9f65509642d75082e32441a26e66",
+            "boing": "d1478243251037788e8d4f365202bbf3"
+            },
+        "kill sounds": {
+            "default": [
+                "2d421883139df33004f7f4b09599f072",
+                "24d2253563d53f0da7d629905baf39a1",
+                "f759e18df11147e4063bde4456932a5b",
+                "49e13f7317bbda81144c039ad909487d",
+                "2a987fd54ae83be4acdcea094d615d01",
+                "796946525a9eaaa7266d9185b25e318c",
+                "1feefea40850972e3e63bcb0d86baca0"
+            ],
+            "tf2": "80cda01cdd99bfaae5d7dc50f689bafa",
+            "xonotic": "2178841e2915c199051ffcfb3ff99b6c",
+            "titanfall 2": "2134b97ee3e15c20a189d474d5269802",
+            "bell": "b478c6fadeb3645df27d51d1c11d6ebd",
+            "ballon pop": "1c9a309f36cff20a354dcc8675294621",
+            "mighty eagle": "79c947ce29faf8a6e1fbd05d8473e506",
+            "red angry bird": "8c404fcc623fa24f814ffbc34788d845",
+            "sata andagi": "1f00efe6252f845873c98d7aca6c34b9"
+            }
     },
     "reticles": {
         "red dots": {
