@@ -1,5 +1,5 @@
 {
-    "version": "v1.5.2",
+    "version": "v1.5.3",
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
         "blue": "38342d3214ad04067e03106bdff41914",
@@ -790,7 +790,7 @@
             "slingshot": "c6f5b936f5d2bafdd7e981ac22e0b8f2",
             "remove": "5873cfba79134ecfec6658f559d8f320"
         },
-        "grenade sounds": {
+        "explosions": {
             "default": [
                 "9119b417ff52efbba1e9073f43666cf9",
                 "644ce805a98f142462a1b16072639a6d",
