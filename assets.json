@@ -1,5 +1,5 @@
 {
-    "version": "v1.5.5",
+    "version": "v1.5.6",
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
         "blue": "38342d3214ad04067e03106bdff41914",
@@ -13,6 +13,14 @@
         "mw2": "f54a0e14f22167d3b0146cdf62cf11a7"
     },
     "grenades": {
+        "rgd": {
+            "main": "d04beb061ccabcd91ef2c50f7c2e616f",
+            "junk": [
+                "0e99b20d905f94ec6d28699d2750e8b1",
+                "e244aadf5a0e57f08dc3a96e0ac2c695"
+            ],
+            "texture": "737a3e0467c2d7ba9ac6e6451bee25e7"
+        },
         "bundle": {
             "main": [
                 "dfce0295d8cef54babb874d5c9933a48",
@@ -28,14 +36,6 @@
                 "18f44561aef2840a728116f0807ec24c",
                 "7e698898130ba3d4ccb9b27d8f9ce434"
             ]
-        },
-        "rgd": {
-            "main": "d04beb061ccabcd91ef2c50f7c2e616f",
-            "junk": [
-                "0e99b20d905f94ec6d28699d2750e8b1",
-                "e244aadf5a0e57f08dc3a96e0ac2c695"
-            ],
-            "texture": "737a3e0467c2d7ba9ac6e6451bee25e7"
         },
         "subspace": {
             "normal": "80c48cdbd2be1c63fb3c4ed1f2ef08bf",
