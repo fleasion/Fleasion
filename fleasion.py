@@ -1,4 +1,4 @@
-# v1.5.8
+# v1.5.9
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -263,10 +263,10 @@ def replace(files_to_delete, file_to_replace):
         else:
             print(f'{RED}An error occurred: {e}{DEFAULT}\n')
 
-
+first_run = True
 while True:
     menu = input(
-        f"Enter the number corresponding to what you'd like to do:\n1: {GREEN}Ingame asset replacements{DEFAULT}\n2: {GREEN}Block (experimental, dont use){DEFAULT}\n3: {GREEN}Clear Cache{DEFAULT}\n4: {GREEN}Change config{DEFAULT}\n5: {GREEN}Exit{DEFAULT}\n: ")
+        f"{'' if 'first_run' in globals() else '\n'}Enter the number corresponding to what you'd like to do:\n1: {GREEN}Ingame asset replacements{DEFAULT}\n2: {GREEN}Block (experimental, dont use){DEFAULT}\n3: {GREEN}Clear Cache{DEFAULT}\n4: {GREEN}Change config{DEFAULT}\n5: {GREEN}Exit{DEFAULT}\n: ") if globals().setdefault('first_run', False) else input(f"\nEnter the number corresponding to what you'd like to do:\n1: {GREEN}Ingame asset replacements{DEFAULT}\n2: {GREEN}Block (experimental, dont use){DEFAULT}\n3: {GREEN}Clear Cache{DEFAULT}\n4: {GREEN}Change config{DEFAULT}\n5: {GREEN}Exit{DEFAULT}\n: "); first_run = False
     if menu == '1':
         print(
             f"\nasset replacements:\n0:  {GREEN}Custom{DEFAULT}\n1:  {GREEN}Sights{DEFAULT}\n2:  {GREEN}Arm model tweaks{DEFAULT}\n3:  {GREEN}Sleeves{DEFAULT}\n4:  {GREEN}No textures{DEFAULT}\n5:  {GREEN}Default skyboxes{DEFAULT}\n6:  {GREEN}Gun skins{DEFAULT}\n7:  {GREEN}Gun Sounds{DEFAULT}\n8:  {GREEN}Gun smoke{DEFAULT}\n9:  {GREEN}Hit tweaks{DEFAULT}\n10: {GREEN}Grenade tweaks{DEFAULT}")
