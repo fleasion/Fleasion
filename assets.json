@@ -1,5 +1,5 @@
 {
-    "version": "v1.5.1",
+    "version": "v1.5.2",
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
         "blue": "38342d3214ad04067e03106bdff41914",
@@ -11,6 +11,46 @@
         "big pink": "7cdebc991be99683783721c89a811fca",
         "another pink": "34732c8b8a11032ca4dd3330cb8daa91",
         "mw2": "f54a0e14f22167d3b0146cdf62cf11a7"
+    },
+    "grenades": {
+        "bundle": {
+            "main": [
+                "dfce0295d8cef54babb874d5c9933a48",
+                "8a0e4e3f88554a146ac062a863c98a52"
+            ],
+            "junk": [
+                "f960b8fe85cce078c2d2ab092f69c43a",
+                "5094ebf77c1ee86bf916990883ab73a5",
+                "a3cca2cc62f85d77c65c13de64ed3cca",
+                "002ae54b60345945142f04857ab23e03"
+            ],
+            "texture": [
+                "18f44561aef2840a728116f0807ec24c",
+                "7e698898130ba3d4ccb9b27d8f9ce434"
+            ]
+        },
+        "rgd": {
+            "main": "d04beb061ccabcd91ef2c50f7c2e616f",
+            "junk": [
+                "0e99b20d905f94ec6d28699d2750e8b1",
+                "e244aadf5a0e57f08dc3a96e0ac2c695"
+            ],
+            "texture": "737a3e0467c2d7ba9ac6e6451bee25e7"
+        },
+        "subspace": {
+            "normal": "80c48cdbd2be1c63fb3c4ed1f2ef08bf",
+            "small": "591a9bf130b238bf1e25cde92467db2f",
+            "texture": "78b4a822e435977c86c29efd7a92442f"
+        }
+    },
+    "grenade sounds": {
+        "hiss": "33551d0b8b1d1f1d7f87a3023547e507",
+        "throw hand sound": "7b5d218f530f0d1b67fc3d39144c10db",
+        "throw air sound": "298e56989dd258e0a1c9f22502fb9531",
+        "another throw air sound": "e530dc184b3b30fb065a7012d3838309",
+        "pull cord pulled down sound": "260f4f9cce1720dc7814902b732cd070",
+        "end priming grenade": "d1f680604dd65a190a3141dc0683c7b9",
+        "start priming grenade": "0e83b67c880f5526e67eba9c968f8d30"
     },
     "gun sounds": {
         "ars": {
@@ -750,7 +790,7 @@
             "slingshot": "c6f5b936f5d2bafdd7e981ac22e0b8f2",
             "remove": "5873cfba79134ecfec6658f559d8f320"
         },
-        "explosions": {
+        "grenade sounds": {
             "default": [
                 "9119b417ff52efbba1e9073f43666cf9",
                 "644ce805a98f142462a1b16072639a6d",
@@ -774,8 +814,14 @@
                 "c52a42f2ac898daefc63507b9f0d9c94",
                 "5500c88da13ef7d496a549ec8ba060f2"
             ],
-            "subspace": "e8ad21ed3052383701e571f3c265d924",
-            "bell": "b478c6fadeb3645df27d51d1c11d6ebd"
+            "subspace": {
+                "boom": "e8ad21ed3052383701e571f3c265d924",
+                "beep": "7763774b834063344305f3016b4309d3",
+                "invis": "e8ad21ed3052383701e571f3c265d924"
+            },
+            "bell": "b478c6fadeb3645df27d51d1c11d6ebd",
+            "taco bell": "007e3fdade28112d28e8ff0dfaeb65a0",
+            "remove": "5873cfba79134ecfec6658f559d8f320"
         },
         "hit sounds": {
             "default": "a177d2c00abd3e550b873d76c97ad960",
@@ -811,7 +857,8 @@
             "ballon pop": "1c9a309f36cff20a354dcc8675294621",
             "mighty eagle": "79c947ce29faf8a6e1fbd05d8473e506",
             "red angry bird": "8c404fcc623fa24f814ffbc34788d845",
-            "sata andagi": "1f00efe6252f845873c98d7aca6c34b9"
+            "sata andagi": "1f00efe6252f845873c98d7aca6c34b9",
+            "okay": "2f04c22ca47269a568453603ede9d7da"
         }
     },
     "reticles": {
