@@ -1,4 +1,4 @@
-# v1.5.3
+# v1.5.4
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -352,12 +352,25 @@ while True:
                         case _:
                             print("Enter a Valid Option!")
                 case 10:
-                    boom_option = input(f"\nEnter grenade option:\n1: {GREEN}Model tweaks{DEFAULT}\n2: {GREEN}Explosion sound{DEFAULT}\n: ")
+                    boom_option = input(f"\nEnter grenade option:\n1: {GREEN}Model tweaks{DEFAULT}\n2: {GREEN}Explosion sound{DEFAULT}\n3: {GREEN}Grenade sound{DEFAULT} \n: ")
                     match int(boom_option):
                         case 1:
-                            print("nothing here yet")
+                            model_option = input(f"\nEnter Model option:\n1: {GREEN}RGD{DEFAULT}\n2: {GREEN}Bundle{DEFAULT}\n: ")
+                            match int(model_option):
+                                case 1:
+                                    replace(data["grenades"]["rgd"]["junk"], "5873cfba79134ecfec6658f559d8f320")
+                                    replace([data["grenades"]["rgd"]["main"]], dlist("grenades"))
+                                    replace([data["grenades"]["rgd"]["texture"]], dlist("grenades"))
+                                case 2:
+                                    replace(data["grenades"]["bundle"]["junk"], "5873cfba79134ecfec6658f559d8f320")
+                                    replace(data["grenades"]["bundle"]["main"], dlist("grenades"))
+                                    replace(data["grenades"]["bundle"]["texture"], dlist("grenades"))
+                                case _:
+                                    print("Enter a Valid Option!")
                         case 2:
-                            replace(data["replacement sounds"]["explosions"]["default"], dlist("replacement sounds"))
+                            replace(data["replacement sounds"]["grenade sounds"]["default"], dlist("replacement sounds"))
+                        case 3:
+                            replace([dlist("grenade sounds")], dlist("replacement sounds"))
                         case _:
                             print("Enter a Valid Option!")
                 case _:
