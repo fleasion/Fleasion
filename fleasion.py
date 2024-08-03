@@ -1,4 +1,4 @@
-# v1.5.5
+# v1.5.6
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -269,7 +269,7 @@ while True:
         f"Enter the number corresponding to what you'd like to do:\n1: {GREEN}Ingame asset replacements{DEFAULT}\n2: {GREEN}Block (experimental, dont use){DEFAULT}\n3: {GREEN}Clear Cache{DEFAULT}\n4: {GREEN}Change config{DEFAULT}\n5: {GREEN}Exit{DEFAULT}\n: ")
     if menu == '1':
         print(
-            f"\nasset replacements:\n0:  {GREEN}Custom{DEFAULT}\n1:  {GREEN}Sights{DEFAULT}\n2:  {GREEN}Arm model tweaks{DEFAULT}\n3:  {GREEN}Sleeves{DEFAULT}\n4:  {GREEN}No textures{DEFAULT}\n5:  {GREEN}Default skyboxes{DEFAULT}\n6:  {GREEN}Gun skins{DEFAULT}\n7:  {GREEN}Gun Sounds{DEFAULT}\n8:  {GREEN}Gun smoke{DEFAULT}\n9:  {GREEN}Hitmarker tweaks{DEFAULT}\n10: {GREEN}Grenade tweaks{DEFAULT}")
+            f"\nasset replacements:\n0:  {GREEN}Custom{DEFAULT}\n1:  {GREEN}Sights{DEFAULT}\n2:  {GREEN}Arm model tweaks{DEFAULT}\n3:  {GREEN}Sleeves{DEFAULT}\n4:  {GREEN}No textures{DEFAULT}\n5:  {GREEN}Default skyboxes{DEFAULT}\n6:  {GREEN}Gun skins{DEFAULT}\n7:  {GREEN}Gun Sounds{DEFAULT}\n8:  {GREEN}Gun smoke{DEFAULT}\n9:  {GREEN}Hit tweaks{DEFAULT}\n10: {GREEN}Grenade tweaks{DEFAULT}")
         options = input(": ")
         try:
             match int(options):
@@ -341,7 +341,7 @@ while True:
                 case 8:
                     replace(['8194373fb18740071f5e885bab349252'], dlist("gun smoke"))
                 case 9:#
-                    hit_option = input(f"\nEnter hit option:\n1: {GREEN}Hitmarkers{DEFAULT}\n2: {GREEN}Hitmarker sounds{DEFAULT}\n3: {GREEN}Kill sounds{DEFAULT}\n: ")
+                    hit_option = input(f"\nEnter hit option:\n1: {GREEN}Hitmarkers{DEFAULT}\n2: {GREEN}Hit sounds{DEFAULT}\n3: {GREEN}Kill sounds{DEFAULT}\n: ")
                     match int(hit_option):
                         case 1:
                             replace(['097165b476243d2095ef0a256320b06a'], dlist("hitmarker"))  # hitmarkers
