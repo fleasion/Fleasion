@@ -1,4 +1,4 @@
-# v1.4.4
+# v1.5.0
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -19,11 +19,14 @@ README_FILE = 'README.md'
 FLEASION_FILE = 'fleasion.py'
 ASSETS_FILE = 'assets.json'
 RUN_FILE = 'run.bat'
+GREEN, RED, BLUE, DEFAULT = '\033[32m', '\033[31m', '\033[34m', '\033[0m'
+
 
 def fetch_lines(url, num_lines=1):
     response = requests.get(url)
     lines = response.text.splitlines()
     return lines[:num_lines], lines
+
 
 def read_lines(file_name, num_lines=1):
     try:
@@ -32,9 +35,11 @@ def read_lines(file_name, num_lines=1):
     except FileNotFoundError:
         return [''] * num_lines
 
+
 def update_file(file_name, lines):
     with open(file_name, 'w') as file:
         file.write('\n'.join(lines))
+
 
 def get_version():
     readme_first_line, readme_lines = fetch_lines(README_URL)
@@ -84,27 +89,33 @@ def get_version():
     time.sleep(1)
     os.system('cls')
 
+
 config_file = 'assets.json'
 
 with open('assets.json', 'r') as file:
     data = json.load(file)
+
 
 def save_data_to_file(data, filename='assets.json'):
     with open(filename, 'w') as file:
         json.dump(data, file, indent=4)
     print(f"Data saved to {filename}")
 
+
 def dlist(area):
     current_level = data[area]
     path = [area]
-    
-    while isinstance(current_level, dict):
-        print(f"Available keys in '{' -> '.join(path)}':")
-        for key in current_level:
-            print(f"{key}")
 
-        user_input = input(f"Enter the key(s) you want to use in '{' -> '.join(path)}'\n(nest in keys with a period, type 'back' to go back, or 'skip' to skip)\n: ").strip()
-        
+    while isinstance(current_level, dict):
+        match = {}
+        print(f"Available keys in '{' -> '.join(path)}':")
+        for j, key in enumerate(current_level):
+            match[str(j+1)] = key
+            print(f"{j + 1}: {GREEN}{key}{DEFAULT}")
+
+        user_input = input(
+            f"Enter the key you want to use in {' -> '.join(path)}\n(nest in keys with a period, type 'back' to go back, or 'skip' to skip)\n: ").strip()
+
         if user_input.lower() == 'back':
             if len(path) > 1:
                 path.pop()
@@ -118,9 +129,12 @@ def dlist(area):
         if user_input.lower() == 'skip':
             print("Skipping category.")
             return
-        
-        selected_keys = user_input.split('.')
-        selected_keys = [key.strip() for key in selected_keys]
+
+        if user_input in match.keys():
+            selected_keys = [match[user_input]]
+        else:
+            selected_keys = user_input.split('.')
+            selected_keys = [key.strip() for key in selected_keys]
 
         valid = True
         temp_level = current_level
@@ -128,17 +142,18 @@ def dlist(area):
             if key in temp_level:
                 temp_level = temp_level[key]
             else:
-                print(f"Key '{key}' does not exist in '{' -> '.join(path)}'. Please try again.")
+                print(f"{RED}Key '{key}' does not exist in '{' -> '.join(path)}'. Please try again.{DEFAULT}")
                 valid = False
                 break
-        
+
         if valid:
             for key in selected_keys:
                 path.append(key)
                 current_level = current_level[key]
 
     return current_level
-    
+
+
 def add_new_area():
     new_area = input("Enter the new area name: ")
     new_key = input(f"Enter the key for '{new_area}': ")
@@ -154,17 +169,19 @@ def add_new_area():
 
     print(f"New area '{new_area}' with key '{new_key}' and value '{new_value}' added to JSON file.")
 
+
 def read_file_names(file_path):
-            with open(file_path, 'r') as file:
-                big_name_list = [line.strip() for line in file if line.strip() and not line.startswith('#')]
-            return big_name_list
+    with open(file_path, 'r') as file:
+        big_name_list = [line.strip() for line in file if line.strip() and not line.startswith('#')]
+    return big_name_list
+
 
 def bloxstrap():
     base_path = os.path.join(os.getenv('LOCALAPPDATA'), 'Bloxstrap', 'Modifications')
     nested_folders = ["PlatformContent", "pc", "textures", "sky"]
-    
+
     if not os.path.exists(base_path):
-        print("bloxstrap not found")
+        print(f"{RED}bloxstrap not found{DEFAULT}")
     else:
         path = base_path
         for folder in nested_folders:
@@ -180,14 +197,16 @@ def bloxstrap():
 
         replace(data["skyboxes"], 'd625adff6a3d75081d11b3407b0b417c')
 
+
 def delete_stuff(files_to_delete):
     for file_to_delete in files_to_delete:
         delete_file_path = os.path.join(folder_path, file_to_delete)
         if os.path.exists(delete_file_path):
-            os.remove(delete_file_path)
+            os.remove(delete_file_path)  #
             print(f'{file_to_delete} has been deleted.')
         else:
-            print(f'{file_to_delete} not found.')
+            print(f'{RED}{file_to_delete} not found.{DEFAULT}')
+
 
 get_version()
 
@@ -202,7 +221,7 @@ pf_cache_check_path = os.path.join(folder_path, '8a7090ac9b2e858f4aee9e19a0bfd56
 if os.path.exists(mod_cache_check_path): mod_cache = True
 if os.path.exists(pf_cache_check_path): pf_cache = True
 
-if mod_cache == False or pf_cache == False: print("Missing cache, join prompted experience.")
+if mod_cache == False or pf_cache == False: print(f"{RED}Missing cache, join prompted experience.{DEFAULT}")
 if mod_cache == False: webbrowser.open_new_tab("https://www.roblox.com/games/18504289170/texture-game")
 if pf_cache == False: webbrowser.open_new_tab("https://www.roblox.com/games/292439477/Phantom-Forces")
 
@@ -218,6 +237,7 @@ while mod_cache == False or pf_cache == False:
 with open('assets.json', 'r') as file:
     data = json.load(file)
 
+
 def replace(files_to_delete, file_to_replace):
     try:
         copy_file_path = os.path.join(folder_path, file_to_replace)
@@ -226,33 +246,38 @@ def replace(files_to_delete, file_to_replace):
                 delete_file_path = os.path.join(folder_path, file_to_delete)
                 if os.path.exists(delete_file_path):
                     os.remove(delete_file_path)
-                    print(f'{file_to_delete} has been deleted.')
+                    # print(f'{file_to_delete} has been deleted.')
                 else:
-                    print(f'{file_to_delete} not found.')
+                    print(f'{RED}{file_to_delete} not found.{DEFAULT}')
 
                 new_file_path = os.path.join(folder_path, file_to_delete)
                 shutil.copy(copy_file_path, new_file_path)
-                #print(f'{copy_file_path} has been copied to {new_file_path}.')
-                print(f'{file_to_delete} has been replaced.')
+                # print(f'{copy_file_path} has been copied to {new_file_path}.')
+                print(f'{BLUE}{file_to_delete} has been replaced with {file_to_replace}.{DEFAULT}')
         else:
-            print(f'{file_to_replace} not found.')
+            print(f'{RED}{file_to_replace} not found.{DEFAULT}')
 
     except Exception as e:
         if hasattr(e, 'winerror') and e.winerror == 183:
             pass
         else:
-            print(f'An error occurred: {e}')
+            print(f'{RED}An error occurred: {e}{DEFAULT}')
+
 
 while True:
-    menu = input("Enter the number corresponding to what you'd like to do:\n1: Ingame asset replacements\n2: Block (experimental, dont use)\n3: Clear Cache\n4: Change config\n5: Exit\n")
+    menu = input(
+        f"Enter the number corresponding to what you'd like to do:\n1: {GREEN}Ingame asset replacements{DEFAULT}\n2: {GREEN}Block (experimental, dont use){DEFAULT}\n3: {GREEN}Clear Cache{DEFAULT}\n4: {GREEN}Change config{DEFAULT}\n5: {GREEN}Exit{DEFAULT}\n")
     if menu == '1':
-        print("options:\n0:  Custom\n1:  Sights\n2:  Arm model tweaks\n3:  Sleeves\n4:  No textures\n5:  Default skyboxes\n6:  Gun skins\n7:  Gun Sounds\n8:  Gun smoke\n9:  Hitmarker\n10: Hitmarker sound\n11: Kill sounds")
+        print(
+            f"options:\n0:  {GREEN}Custom{DEFAULT}\n1:  {GREEN}Sights{DEFAULT}\n2:  {GREEN}Arm model tweaks{DEFAULT}\n3:  {GREEN}Sleeves{DEFAULT}\n4:  {GREEN}No textures{DEFAULT}\n5:  {GREEN}Default skyboxes{DEFAULT}\n6:  {GREEN}Gun skins{DEFAULT}\n7:  {GREEN}Gun Sounds{DEFAULT}\n8:  {GREEN}Gun smoke{DEFAULT}\n9:  {GREEN}Hitmarker{DEFAULT}\n10: {GREEN}Hitmarker sound{DEFAULT}\n11: {GREEN}Kill sounds{DEFAULT}")
         options = input("Enter option: ")
         try:
             match int(options):
-                case 0: replace([input("Enter asset to change: ")], input("Enter replacement: "))
+                case 0:
+                    replace([input("Enter asset to change: ")], input("Enter replacement: "))
                 case 1:
-                    sight_option = input("Enter sight option:\n1: Reticle tweaks\n2: Sight model tweaks\n3: Ballistics tracker tweaks\n")
+                    sight_option = input(
+                        f"Enter sight option:\n1: {GREEN}Reticle tweaks{DEFAULT}\n2: {GREEN}Sight model tweaks{DEFAULT}\n3: {GREEN}Ballistics tracker tweaks{DEFAULT}\n")
                     try:
                         match int(sight_option):
                             case 1:
@@ -262,7 +287,7 @@ while True:
                                     replace([reticle], reticle_replacement)
                             case 2:
                                 sightbackground = input(
-                                    "Enter background tweak:\n1: clear coyote/reflex blue background\n2: clear delta black ring\n")
+                                    f"Enter background tweak:\n1: {GREEN}clear coyote/reflex blue background{DEFAULT}\n2: {GREEN}clear delta black ring{DEFAULT}\n")
                                 match int(sightbackground):
                                     case 1:
                                         replace(
@@ -277,43 +302,63 @@ while True:
                             case _:
                                 print("Invalid option")
                     except Exception as e:
-                        print(f"Error: {e}")
-                case 2: 
-                    arm_option = input("Enter arm option:\n1: No arms\n2: No sleeves\n3: Bone arms\n4: default arms\n")
+                        print(f"{RED}Error: {e}{DEFAULT}")
+                case 2:
+                    arm_option = input(f"Enter arm option:\n1: {GREEN}No arms{DEFAULT}\n2: {GREEN}No sleeves{DEFAULT}\n3: {GREEN}Bone arms{DEFAULT}\n4: {GREEN}default arms{DEFAULT}\n")
                     match int(arm_option):
-                        case 1: replace(data["arm models"], '5873cfba79134ecfec6658f559d8f320') # no arms
-                        case 2: replace(['0417f106902be46503fc75266526817a', '18ff02c763205099ce8542cebc98ae71'], 'd625adff6a3d75081d11b3407b0b417c')
-                        case 3: replace(['f5b0bcba5570d196909a78c7a697467c', '7f828aee555e5e1161d4b39faddda970'], 'c9672591983da8fffedb9cec7df1e521')
-                        case 4: delete_stuff(data["arm models"])
-                        case _: print("Enter a Valid Option!") 
-                case 3: replace(['aa33dd87fc9db92e891361e069da1849'], dlist("skins"))
-                case 4: replace(data["textures"], 'd625adff6a3d75081d11b3407b0b417c') # no textures without downside
-                case 5: 
-                    sky_option = input("Is Bloxstrap sky folder setup?\n1: yes\n2: no\n")
-                    match int(sky_option):                    
-                        case 1: replace(data["skyboxes"], 'd625adff6a3d75081d11b3407b0b417c') # forced default skybox
-                        case 2: bloxstrap()
-                        case _: print("Enter a Valid Option!")  
-                case 6: replace([dlist("gun skins")], dlist("skins"))
-                case 7: 
-                    reticle = dlist("gun sounds")
-                    reticle_replacement = dlist("replacement sounds")
-                    if reticle and reticle_replacement:
-                        replace([reticle], reticle_replacement)                     
-                case 8: replace(['8194373fb18740071f5e885bab349252'], dlist("gun smoke"))
-                case 9: replace(['097165b476243d2095ef0a256320b06a'], dlist("hitmarker")) # hitmarkers                                 
-                case 10: replace(['a177d2c00abd3e550b873d76c97ad960'], dlist("hitsound"))
-                case 11: replace(data["killsound"]["default"], dlist("killsound"))
-                case _: print("Invalid number.")
-        except Exception as e: print(f"Error: {e}")
+                        case 1:
+                            replace(data["arm models"], '5873cfba79134ecfec6658f559d8f320')  # no arms
+                        case 2:
+                            replace(['0417f106902be46503fc75266526817a', '18ff02c763205099ce8542cebc98ae71'],
+                                    'd625adff6a3d75081d11b3407b0b417c')
+                        case 3:
+                            replace(['f5b0bcba5570d196909a78c7a697467c', '7f828aee555e5e1161d4b39faddda970'],
+                                    'c9672591983da8fffedb9cec7df1e521')
+                        case 4:
+                            delete_stuff(data["arm models"])
+                        case _:
+                            print("Enter a Valid Option!")
+                case 3:
+                    replace(['aa33dd87fc9db92e891361e069da1849'], dlist("skins"))
+                case 4:
+                    replace(data["textures"], 'd625adff6a3d75081d11b3407b0b417c')  # no textures without downside
+                case 5:
+                    sky_option = input(f"Is Bloxstrap sky folder setup?\n1: {GREEN}yes{DEFAULT}\n2: {GREEN}no{DEFAULT}\n")
+                    match int(sky_option):
+                        case 1:
+                            replace(data["skyboxes"], 'd625adff6a3d75081d11b3407b0b417c')  # forced default skybox
+                        case 2:
+                            bloxstrap()
+                        case _:
+                            print("Enter a Valid Option!")
+                case 6:
+                    replace([dlist("gun skins")], dlist("skins"))
+                case 7:
+                    sound = dlist("gun sounds")
+                    sound_replacement = dlist("replacement sounds")
+                    if sound and sound_replacement:
+                        replace([sound], sound_replacement)
+                case 8:
+                    replace(['8194373fb18740071f5e885bab349252'], dlist("gun smoke"))
+                case 9:#
+                    replace(['097165b476243d2095ef0a256320b06a'], dlist("replacement sounds"))  # hitmarkers
+                case 10:
+                    replace(['a177d2c00abd3e550b873d76c97ad960'], dlist("replacement sounds"))
+                case 11:
+                    replace(data["replacement sounds"]["kill sounds"]["default"], dlist("replacement sounds"))
+                case _:
+                    print("Invalid number.")
+        except Exception as e:
+            print(f"{RED}Error: {e}{DEFAULT}")
 
     elif menu == '2':
-        blockwarn = input("Warning: This is highly experimental and volatile to causing errors, only continue if you are aware of what youre doing.\nType 'done' to proceed, anything else will cancel.\n")
+        blockwarn = input(
+            f"{RED}Warning: This is highly experimental and volatile to causing errors, only continue if you are aware of what youre doing.\nType 'done' to proceed, anything else will cancel.\n{DEFAULT}")
         if blockwarn == "done":
             file_path = r"C:\Windows\System32\drivers\etc\hosts"
             with open(file_path, "r") as file:
                 content = file.read()
-            
+
             blockedlist = []
             unblockedlist = []
 
@@ -330,7 +375,8 @@ while True:
 
             print("Currently blocked:", " ".join(blockedlist))
             print("Currently unblocked:", " ".join(unblockedlist))
-            
+
+
             def website_blocks():
                 website_blocklist = []
                 print("Enter c(num)/t(num) to block/unblock (type 'done' when finished)")
@@ -341,16 +387,19 @@ while True:
                     website_blocklist.append(website_name)
                 return website_blocklist
 
+
             website_block = website_blocks()
 
             try:
                 modified_content = content
                 for string_thing in website_block:
                     if f"#127.0.0.1 {string_thing}.rbxcdn.com" in content:
-                        modified_content = modified_content.replace(f"#127.0.0.1 {string_thing}.rbxcdn.com", f"127.0.0.1 {string_thing}.rbxcdn.com")
+                        modified_content = modified_content.replace(f"#127.0.0.1 {string_thing}.rbxcdn.com",
+                                                                    f"127.0.0.1 {string_thing}.rbxcdn.com")
                         print("Blocked!")
                     elif f"127.0.0.1 {string_thing}.rbxcdn.com" in content:
-                        modified_content = modified_content.replace(f"127.0.0.1 {string_thing}.rbxcdn.com", f"#127.0.0.1 {string_thing}.rbxcdn.com")
+                        modified_content = modified_content.replace(f"127.0.0.1 {string_thing}.rbxcdn.com",
+                                                                    f"#127.0.0.1 {string_thing}.rbxcdn.com")
                         print("Unblocked!")
                     else:
                         print("No text found, blocking it.")
@@ -363,12 +412,13 @@ while True:
                 with open(file_path, "w") as file:
                     file.write(modified_content)
             except Exception as e:
-                print(f"An error occurred: {e}")
+                print(f"{RED}An error occurred: {e}{DEFAULT}")
         else:
             pass
 
     elif menu == '3':
-        resetkwarn = input("Warning: This will fully reset all tweaks and anything loaded from any game.\nType 'done' to proceed, anything else will cancel.\n")
+        resetkwarn = input(
+            f"{RED}Warning: This will fully reset all tweaks and anything loaded from any game.\nType 'done' to proceed, anything else will cancel.\n{DEFAULT}")
         if resetkwarn == "done":
             def delete_all_in_directory(directory):
                 try:
@@ -383,9 +433,10 @@ while True:
                             except Exception as e:
                                 print(f'Failed to delete {file_path}. Reason: {e}')
                     else:
-                        print(f'The directory {directory} does not exist.')
+                        print(f'{RED}The directory {directory} does not exist.{DEFAULT}')
                 except Exception as e:
-                    print(f'Error: {e}')
+                    print(f'{RED}Error: {e}{DEFAULT}')
+
 
             delete_all_in_directory(folder_path)
             print("Rejoin relevant experiences")
