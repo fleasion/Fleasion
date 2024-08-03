@@ -1,4 +1,4 @@
-# v1.5.2
+# v1.5.3
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -114,9 +114,9 @@ def dlist(area):
             print(f"{j + 1}: {' ' if j < 9 else ''}{GREEN}{key}{DEFAULT}")
 
         user_input = input(
-            f"Enter the key(name or number) you want to use in {' -> '.join(path)}\n(nest in keys with a period, type 'back' to go back, or 'skip' to skip)\n: ").strip()
+            f"Enter the key(name or number) you want to use in {' -> '.join(path)}\n(nest in keys with a period, type 'back' to go back, or 'skip' to skip)\n: ").strip().lower()
 
-        if user_input.lower() == 'back':
+        if user_input == 'back':
             if len(path) > 1:
                 path.pop()
                 current_level = data[path[0]]
@@ -126,7 +126,7 @@ def dlist(area):
                 print("You are already at the top level. Cannot go back.")
             continue
 
-        if user_input.lower() == 'skip':
+        if user_input == 'skip':
             print("Skipping category.")
             return
 
@@ -221,7 +221,7 @@ pf_cache_check_path = os.path.join(folder_path, '8a7090ac9b2e858f4aee9e19a0bfd56
 if os.path.exists(mod_cache_check_path): mod_cache = True
 if os.path.exists(pf_cache_check_path): pf_cache = True
 
-if mod_cache == False or pf_cache == False: print(f"{RED}Missing cache, join prompted experience.{DEFAULT}")
+if mod_cache == False or pf_cache == False: print(f"{RED}Missing cache, join prompted {'experiences' if not mod_cache or not pf_cache else 'experience'}.{DEFAULT}")
 if mod_cache == False: webbrowser.open_new_tab("https://www.roblox.com/games/18504289170/texture-game")
 if pf_cache == False: webbrowser.open_new_tab("https://www.roblox.com/games/292439477/Phantom-Forces")
 
@@ -261,23 +261,23 @@ def replace(files_to_delete, file_to_replace):
         if hasattr(e, 'winerror') and e.winerror == 183:
             pass
         else:
-            print(f'{RED}An error occurred: {e}{DEFAULT}')
+            print(f'{RED}An error occurred: {e}{DEFAULT}\n')
 
 
 while True:
     menu = input(
-        f"Enter the number corresponding to what you'd like to do:\n1: {GREEN}Ingame asset replacements{DEFAULT}\n2: {GREEN}Block (experimental, dont use){DEFAULT}\n3: {GREEN}Clear Cache{DEFAULT}\n4: {GREEN}Change config{DEFAULT}\n5: {GREEN}Exit{DEFAULT}\n")
+        f"Enter the number corresponding to what you'd like to do:\n1: {GREEN}Ingame asset replacements{DEFAULT}\n2: {GREEN}Block (experimental, dont use){DEFAULT}\n3: {GREEN}Clear Cache{DEFAULT}\n4: {GREEN}Change config{DEFAULT}\n5: {GREEN}Exit{DEFAULT}\n: ")
     if menu == '1':
         print(
-            f"options:\n0:  {GREEN}Custom{DEFAULT}\n1:  {GREEN}Sights{DEFAULT}\n2:  {GREEN}Arm model tweaks{DEFAULT}\n3:  {GREEN}Sleeves{DEFAULT}\n4:  {GREEN}No textures{DEFAULT}\n5:  {GREEN}Default skyboxes{DEFAULT}\n6:  {GREEN}Gun skins{DEFAULT}\n7:  {GREEN}Gun Sounds{DEFAULT}\n8:  {GREEN}Gun smoke{DEFAULT}\n9:  {GREEN}Hitmarker{DEFAULT}\n10: {GREEN}Hitmarker sound{DEFAULT}\n11: {GREEN}Kill sounds{DEFAULT}")
-        options = input("Enter option: ")
+            f"\nasset replacements:\n0:  {GREEN}Custom{DEFAULT}\n1:  {GREEN}Sights{DEFAULT}\n2:  {GREEN}Arm model tweaks{DEFAULT}\n3:  {GREEN}Sleeves{DEFAULT}\n4:  {GREEN}No textures{DEFAULT}\n5:  {GREEN}Default skyboxes{DEFAULT}\n6:  {GREEN}Gun skins{DEFAULT}\n7:  {GREEN}Gun Sounds{DEFAULT}\n8:  {GREEN}Gun smoke{DEFAULT}\n9:  {GREEN}Hitmarker tweaks{DEFAULT}\n10: {GREEN}Grenade tweaks{DEFAULT}")
+        options = input(": ")
         try:
             match int(options):
                 case 0:
-                    replace([input("Enter asset to change: ")], input("Enter replacement: "))
+                    replace([input("\nEnter asset to change: ")], input("Enter replacement: "))
                 case 1:
                     sight_option = input(
-                        f"Enter sight option:\n1: {GREEN}Reticle tweaks{DEFAULT}\n2: {GREEN}Sight model tweaks{DEFAULT}\n3: {GREEN}Ballistics tracker tweaks{DEFAULT}\n")
+                        f"\nEnter sight option:\n1: {GREEN}Reticle tweaks{DEFAULT}\n2: {GREEN}Sight model tweaks{DEFAULT}\n3: {GREEN}Ballistics tracker tweaks{DEFAULT}\n: ")
                     try:
                         match int(sight_option):
                             case 1:
@@ -287,7 +287,7 @@ while True:
                                     replace([reticle], reticle_replacement)
                             case 2:
                                 sightbackground = input(
-                                    f"Enter background tweak:\n1: {GREEN}clear coyote/reflex blue background{DEFAULT}\n2: {GREEN}clear delta black ring{DEFAULT}\n")
+                                    f"\nEnter background tweak:\n1: {GREEN}clear coyote/reflex blue background{DEFAULT}\n2: {GREEN}clear delta black ring{DEFAULT}\n: ")
                                 match int(sightbackground):
                                     case 1:
                                         replace(
@@ -304,7 +304,7 @@ while True:
                     except Exception as e:
                         print(f"{RED}Error: {e}{DEFAULT}")
                 case 2:
-                    arm_option = input(f"Enter arm option:\n1: {GREEN}No arms{DEFAULT}\n2: {GREEN}No sleeves{DEFAULT}\n3: {GREEN}Bone arms{DEFAULT}\n4: {GREEN}default arms{DEFAULT}\n")
+                    arm_option = input(f"\nEnter arm option:\n1: {GREEN}No arms{DEFAULT}\n2: {GREEN}No sleeves{DEFAULT}\n3: {GREEN}Bone arms{DEFAULT}\n4: {GREEN}default arms{DEFAULT}\n: ")
                     match int(arm_option):
                         case 1:
                             replace(data["arm models"], '5873cfba79134ecfec6658f559d8f320')  # no arms
@@ -323,7 +323,7 @@ while True:
                 case 4:
                     replace(data["textures"], 'd625adff6a3d75081d11b3407b0b417c')  # no textures without downside
                 case 5:
-                    sky_option = input(f"Is Bloxstrap sky folder setup?\n1: {GREEN}yes{DEFAULT}\n2: {GREEN}no{DEFAULT}\n")
+                    sky_option = input(f"\nIs Bloxstrap sky folder setup?\n1: {GREEN}yes{DEFAULT}\n2: {GREEN}no{DEFAULT}\n: ")
                     match int(sky_option):
                         case 1:
                             replace(data["skyboxes"], 'd625adff6a3d75081d11b3407b0b417c')  # forced default skybox
@@ -341,11 +341,25 @@ while True:
                 case 8:
                     replace(['8194373fb18740071f5e885bab349252'], dlist("gun smoke"))
                 case 9:#
-                    replace(['097165b476243d2095ef0a256320b06a'], dlist("replacement sounds"))  # hitmarkers
+                    hit_option = input(f"\nEnter hit option:\n1: {GREEN}Hitmarkers{DEFAULT}\n2: {GREEN}Hitmarker sounds{DEFAULT}\n3: {GREEN}Kill sounds{DEFAULT}\n: ")
+                    match int(hit_option):
+                        case 1:
+                            replace(['097165b476243d2095ef0a256320b06a'], dlist("hitmarker"))  # hitmarkers
+                        case 2:
+                            replace(['a177d2c00abd3e550b873d76c97ad960'], dlist("replacement sounds"))
+                        case 3:
+                            replace(data["replacement sounds"]["kill sounds"]["default"], dlist("replacement sounds"))
+                        case _:
+                            print("Enter a Valid Option!")
                 case 10:
-                    replace(['a177d2c00abd3e550b873d76c97ad960'], dlist("replacement sounds"))
-                case 11:
-                    replace(data["replacement sounds"]["kill sounds"]["default"], dlist("replacement sounds"))
+                    boom_option = input(f"\nEnter grenade option:\n1: {GREEN}Model tweaks{DEFAULT}\n2: {GREEN}Explosion sound{DEFAULT}\n: ")
+                    match int(boom_option):
+                        case 1:
+                            print("nothing here yet")
+                        case 2:
+                            replace(data["replacement sounds"]["explosions"]["default"], dlist("replacement sounds"))
+                        case _:
+                            print("Enter a Valid Option!")
                 case _:
                     print("Invalid number.")
         except Exception as e:
@@ -353,7 +367,7 @@ while True:
 
     elif menu == '2':
         blockwarn = input(
-            f"{RED}Warning: This is highly experimental and volatile to causing errors, only continue if you are aware of what youre doing.\nType 'done' to proceed, anything else will cancel.\n{DEFAULT}")
+            f"\n{RED}Warning: This is highly experimental and volatile to causing errors, only continue if you are aware of what youre doing.\nType 'done' to proceed, anything else will cancel.\n{DEFAULT}")
         if blockwarn == "done":
             file_path = r"C:\Windows\System32\drivers\etc\hosts"
             with open(file_path, "r") as file:
@@ -373,7 +387,7 @@ while True:
                 elif f"127.0.0.1 t{i}.rbxcdn.com" in content:
                     blockedlist.append(f"t{i}")
 
-            print("Currently blocked:", " ".join(blockedlist))
+            print("\nCurrently blocked:", " ".join(blockedlist))
             print("Currently unblocked:", " ".join(unblockedlist))
 
 
@@ -412,13 +426,13 @@ while True:
                 with open(file_path, "w") as file:
                     file.write(modified_content)
             except Exception as e:
-                print(f"{RED}An error occurred: {e}{DEFAULT}")
+                print(f"{RED}An error occurred: {e}{DEFAULT}\n")
         else:
             pass
 
     elif menu == '3':
         resetkwarn = input(
-            f"{RED}Warning: This will fully reset all tweaks and anything loaded from any game.\nType 'done' to proceed, anything else will cancel.\n{DEFAULT}")
+            f"\n{RED}Warning: This will fully reset all tweaks and anything loaded from any game.\nType 'done' to proceed, anything else will cancel.\n{DEFAULT}")
         if resetkwarn == "done":
             def delete_all_in_directory(directory):
                 try:
@@ -439,13 +453,13 @@ while True:
 
 
             delete_all_in_directory(folder_path)
-            print("Rejoin relevant experiences")
+            print("Cleared cache, rejoin relevant experiences\n")
 
     elif menu == "4":
         add_new_area()
 
     elif menu == '5':
-        print("Exiting the program.")
+        print("\nExiting the program.")
         break
 
     else:
