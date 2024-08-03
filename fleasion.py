@@ -1,4 +1,4 @@
-# v1.5.1
+# v1.5.2
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -111,7 +111,7 @@ def dlist(area):
         print(f"Available keys in '{' -> '.join(path)}':")
         for j, key in enumerate(current_level):
             match[str(j+1)] = key
-            print(f"{j + 1}: {GREEN}{key}{DEFAULT}")
+            print(f"{j + 1}: {' ' if j < 9 else ''}{GREEN}{key}{DEFAULT}")
 
         user_input = input(
             f"Enter the key(name or number) you want to use in {' -> '.join(path)}\n(nest in keys with a period, type 'back' to go back, or 'skip' to skip)\n: ").strip()
