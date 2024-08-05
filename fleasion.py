@@ -1,4 +1,4 @@
-# v1.5.10
+# v1.5.11
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -468,7 +468,7 @@ while True:
 
 
             delete_all_in_directory(folder_path)
-            print("Cleared cache, rejoin relevant experiences\n")
+            print("Cleared cache, rejoin relevant experiences")
 
     elif menu == "4":
         add_new_area()
