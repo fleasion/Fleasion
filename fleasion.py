@@ -1,4 +1,4 @@
-# v1.5.10
+# v1.5.11
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -46,20 +46,22 @@ def get_version():
     fleasion_first_line, fleasion_lines = fetch_lines(FLEASION_URL)
     run_lines, all_run_lines = fetch_lines(RUN_URL, 2)
 
+    print("Validifying file versions...")
+
     local_readme_first_line = read_lines(README_FILE)[0]
     if readme_first_line[0] == local_readme_first_line:
-        print(f"ReadMe   v{readme_first_line[0]}")
+        print(f"ReadMe   {GREEN}v{readme_first_line[0]}{DEFAULT}")
     else:
         update_file(README_FILE, readme_lines)
-        print(f"Updated README.md to v{readme_first_line[0]}")
+        print(f"Updated README.md to {BLUE}v{readme_first_line[0]}{DEFAULT}")
 
     local_fleasion_first_line = read_lines(FLEASION_FILE)[0]
     fleasion_display = fleasion_first_line[0][2:]
     if fleasion_first_line[0] == local_fleasion_first_line:
-        print(f"Fleasion {fleasion_display}")
+        print(f"Fleasion {GREEN}{fleasion_display}{DEFAULT}")
     else:
         update_file(FLEASION_FILE, fleasion_lines)
-        print(f"Updated fleasion.py to {fleasion_display}")
+        print(f"Updated fleasion.py to {BLUE}{fleasion_display}{DEFAULT}")
         os.execv(sys.executable, ['python'] + sys.argv)
 
     response_assets = requests.get(ASSETS_URL)
@@ -72,29 +74,24 @@ def get_version():
         local_assets = {}
 
     if response_json.get('version') == local_assets.get('version'):
-        print(f"Assets   {response_json['version']}")
+        print(f"Assets   {GREEN}{response_json['version']}{DEFAULT}")
     else:
         with open(ASSETS_FILE, 'w') as file:
             json.dump(response_json, file, indent=4)
-        print(f"Updated assets.json to {response_json['version']}")
+        print(f"Updated assets.json to {BLUE}{response_json['version']}{DEFAULT}")
 
     local_run_lines = read_lines(RUN_FILE, 2)
     run_version = run_lines[1][4:]
     if run_version == local_run_lines[1][4:]:
-        print(f"Run.bat  {run_version}")
+        print(f"Run.bat  {GREEN}{run_version}{DEFAULT}")
     else:
         update_file(RUN_FILE, all_run_lines)
-        print(f"Updated run.bat to {run_version}")
+        print(f"Updated run.bat to {BLUE}{run_version}{DEFAULT}")
 
     time.sleep(1)
     os.system('cls')
 
-
 config_file = 'assets.json'
-
-with open('assets.json', 'r') as file:
-    data = json.load(file)
-
 
 def save_data_to_file(data, filename='assets.json'):
     with open(filename, 'w') as file:
@@ -441,7 +438,7 @@ while True:
                 with open(file_path, "w") as file:
                     file.write(modified_content)
             except Exception as e:
-                print(f"{RED}An error occurred: {e}{DEFAULT}\n")
+                print(f"{RED}An error occurred: {e}{DEFAULT}")
         else:
             pass
 
