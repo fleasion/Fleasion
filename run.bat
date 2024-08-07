@@ -1,4 +1,5 @@
 : fleasion by @cro.p
+REM v1.2.0
 : distributed in https://discord.gg/v9gXTuCz8B
 : https://github.com/CroppingFlea479/Fleasion
 : script base by @8ar and modified by @3tcy
