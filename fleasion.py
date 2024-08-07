@@ -1,4 +1,4 @@
-# v1.5.11
+# v1.6.0
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -224,16 +224,18 @@ if pf_cache == False: webbrowser.open_new_tab("https://www.roblox.com/games/2924
 
 while mod_cache == False or pf_cache == False:
     if os.path.exists(mod_cache_check_path) and mod_cache == False:
-        print("Modding cache detected")
+        print(f"{GREEN}Modding{DEFAULT} cache detected")
         mod_cache = True
 
     if os.path.exists(pf_cache_check_path) and pf_cache == False:
-        print("PF cache detected")
+        print(f"{GREEN}PF{DEFAULT} cache detected")
         pf_cache = True
 
+time.sleep(1)
+os.system('cls')
+    
 with open('assets.json', 'r') as file:
     data = json.load(file)
-
 
 def replace(files_to_delete, file_to_replace):
     try:
@@ -260,6 +262,7 @@ def replace(files_to_delete, file_to_replace):
         else:
             print(f'{RED}An error occurred: {e}{DEFAULT}\n')
 
+print(f"Welcome to: {GREEN}Fleasion!{DEFAULT}\n")
 start = True
 while True:
     if not start: print(" ")
@@ -379,7 +382,7 @@ while True:
 
     elif menu == '2':
         blockwarn = input(
-            f"\n{RED}Warning: This is highly experimental and volatile to causing errors, only continue if you are aware of what youre doing.\nType 'done' to proceed, anything else will cancel.\n{DEFAULT}")
+            f"\n{RED}Warning: This is highly experimental and volatile to causing errors, requiring run.bat to be ran as admin to use. Only continue if you are aware of what youre doing.\nType 'done' to proceed, anything else will cancel.\n{DEFAULT}")
         if blockwarn == "done":
             file_path = r"C:\Windows\System32\drivers\etc\hosts"
             with open(file_path, "r") as file:
