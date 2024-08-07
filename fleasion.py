@@ -1,4 +1,4 @@
-# v1.6.0
+# v1.6.1
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -46,7 +46,7 @@ def get_version():
     fleasion_first_line, fleasion_lines = fetch_lines(FLEASION_URL)
     run_lines, all_run_lines = fetch_lines(RUN_URL, 2)
 
-    print("Validifying file versions...")
+    print("Validating file versions...")
 
     local_readme_first_line = read_lines(README_FILE)[0]
     if readme_first_line[0] == local_readme_first_line:
