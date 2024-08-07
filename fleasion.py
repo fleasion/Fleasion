@@ -1,4 +1,4 @@
-# v1.6.1
+# v1.6.2
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -231,8 +231,9 @@ while mod_cache == False or pf_cache == False:
         print(f"{GREEN}PF{DEFAULT} cache detected")
         pf_cache = True
 
-time.sleep(1)
-os.system('cls')
+    if mod_cache == True and pf_cache == True:
+        time.sleep(1)
+        os.system('cls')
     
 with open('assets.json', 'r') as file:
     data = json.load(file)
