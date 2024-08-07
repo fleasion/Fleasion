@@ -1,4 +1,4 @@
-# v1.6.2
+# v1.6.3
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -294,12 +294,16 @@ while True:
                                 match int(sightbackground):
                                     case 1:
                                         replace(
-                                            ['3fc9141fc7c1167c575b9361a98f04c0', '2eaae4fe3a9fce967af993d27ad68d52'],
-                                            '5873cfba79134ecfec6658f559d8f320')  # clear coyote and reflex blue background
+                                            ['3fc9141fc7c1167c575b9361a98f04c0'],'5873cfba79134ecfec6658f559d8f320')  # clear coyote and reflex blue background
                                     case 2:
+                                        replace(
+                                            ['2eaae4fe3a9fce967af993d27ad68d52'], '5873cfba79134ecfec6658f559d8f320')  # clear coyote and reflex blue background
+                                    case 3:
                                         replace(
                                             ['30c4d2bb30b6b8c9ac7cfeec5db25a85', '7d5652167ec33ed349e569a55a398705'],
                                             'd625adff6a3d75081d11b3407b0b417c')  # delta black ring
+                                    case _:
+                                        print("Invalid option")
                             case 3:
                                 replace([data["ballistics tracker"]["default"]], dlist("ballistics tracker"))
                             case _:
