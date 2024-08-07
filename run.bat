@@ -50,6 +50,3 @@ cls
 if exist %cd%\fleasion.py py %cd%\fleasion.py & exit
 curl -sSL -o %cd%\fleasion.py https://raw.githubusercontent.com/CroppingFlea479/Fleasion/main/fleasion.py
 py %cd%\fleasion.py
-
-
-
