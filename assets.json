@@ -1,5 +1,5 @@
 {
-    "version": "v1.5.11",
+    "version": "v1.6.0",
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
         "blue": "38342d3214ad04067e03106bdff41914",
@@ -832,6 +832,7 @@
                 "pew": "7eac4541692ca64abc5485b4875b237c",
                 "laser": "ad20c7ec88aeeaa36c6b7147e9a38ae9",
                 "slingshot": "c6f5b936f5d2bafdd7e981ac22e0b8f2",
+                "vine boom": "1871d8d39f507208a36f7347deaa1603",
                 "remove": "5873cfba79134ecfec6658f559d8f320"
             }
         },
@@ -887,7 +888,11 @@
             "button": "d9fe9f65509642d75082e32441a26e66",
             "boing": "d1478243251037788e8d4f365202bbf3",
             "rust headshot": "a45086fd9aac7af4d9eb6c50962d7ccc",
-            "arsenal headshot": "0fb1cac73f0e0a695755454d5700bb0a"
+            "arsenal headshot": "0fb1cac73f0e0a695755454d5700bb0a",
+            "peggle": "631519a8d3df15dd435453f384132d8c",
+            "peggle low": "7b9b55debf4dae8eb74bdabd4d3b7a1b",
+            "bonk": "1e31d341fc0d6832cdcd5c8bf57f4e9a",
+            "small bonk": "448c64c2a76eea6c50a960eedbdd85f5"
         },
         "kill sounds": {
             "default": [
@@ -909,7 +914,9 @@
             "sata andagi": "1f00efe6252f845873c98d7aca6c34b9",
             "okay": "2f04c22ca47269a568453603ede9d7da",
             "og trowel": "15f74d5f2b7398997367445172956372",
-            "hl2 scream": "b1ad6dbb7266d47a2431ffc1a5cff3e5"
+            "hl2 scream": "b1ad6dbb7266d47a2431ffc1a5cff3e5",
+            "mario yahoo": "da7af51dcb12a55e75ce641ff6af06a7",
+            "peggle fever": ""
         }
     },
     "reticles": {
