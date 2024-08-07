@@ -48,9 +48,10 @@ if %errorlevel% neq 0 py -m pip install requests
 
 : Just in case, check if Fleasion is there.
 
-if exist %cd%\fleasion.py py %cd%\fleasion.py && exit
-curl -sSL -o %cd%\fleasion.py https://raw.githubusercontent.com/CroppingFlea479/Fleasion/main/fleasion.py
-py %cd%\fleasion.py
+flea=%cd%\fleasion.py
+if exist %flea% py %flea% && exit
+curl -sSL -o %flea% https://raw.githubusercontent.com/CroppingFlea479/Fleasion/main/fleasion.py
+py %flea%
 
 
 
