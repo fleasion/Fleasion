@@ -1,5 +1,5 @@
 @echo off
-REM v1.2.4
+REM 1.2.5
 
 : fleasion by @cro.p
 : distributed in https://discord.gg/v9gXTuCz8B
@@ -9,20 +9,26 @@ REM v1.2.4
 
 : Check if the latest version of Python is installed and install if necessary
 
-reg Query "HKLM\SOFTWARE\Python\PythonCore" >nul 2>&1 || goto py
-reg Query "HKLM\SOFTWARE\Python\PythonCore\3.12" >nul 2>&1 || goto py
-goto pip
+
+set LM=True
+set CU=True
+reg Query "HKLM\SOFTWARE\Python\PythonCore\3.12" >nul 2>&1 || set LM=False
+reg Query "HKCU\SOFTWARE\Python\PythonCore\3.12" >nul 2>&1 || set CU=False
+if %LM% == True goto pip
+if %CU% == True goto pip
+goto py
 
 :py
 cls
 echo Downloading python...
-curl -sSL -o python.exe https://www.python.org/ftp/python/3.12.4/python-3.12.4-amd64.exe --ssl-no-revoke
+curl -sSL -o python.exe https://www.python.org/ftp/python/3.12.4/python-3.12.4-amd64.exe
 echo Installing..
 python.exe /quiet InstallAllUsers=1 PrependPath=1 Include_test=0 Include_doc=0
 del python.exe >nul
 
 
-: Check if pip is installed and install if necessary
+: Check if pip and requests package is installed and install if necessary
+
 
 :pip
 cls
@@ -31,7 +37,7 @@ py -m pip install --upgrade pip --no-warn-script-location >nul 2>&1
 if %errorlevel% neq 0 (
     cls
     echo Downloading pip...
-    curl -sSL -o get-pip.py https://bootstrap.pypa.io/get-pip.py --ssl-no-revoke
+    curl -sSL -o get-pip.py https://bootstrap.pypa.io/get-pip.py
     echo Installing..
     py get-pip.py --no-setuptools --no-wheel --no-warn-script-location >nul 2>&1
     del get-pip.py
@@ -44,6 +50,11 @@ py -m pip install requests --no-warn-script-location >nul 2>&1
 
 
 : Just in case, check if Fleasion is there.
+
+
 cls
+if exist %cd%\fleasion.py py fleasion.py & exit /b else goto install
+
+:install
 curl -sSL -o %cd%\fleasion.py https://raw.githubusercontent.com/CroppingFlea479/Fleasion/main/fleasion.py --ssl-no-revoke
 py %cd%\fleasion.py
