@@ -1,5 +1,5 @@
 @echo off
-REM 1.2.5
+REM 1.2.6
 
 : fleasion by @cro.p
 : distributed in https://discord.gg/v9gXTuCz8B
@@ -23,7 +23,7 @@ cls
 echo Downloading python...
 curl -sSL -o python.exe https://www.python.org/ftp/python/3.12.4/python-3.12.4-amd64.exe
 echo Installing..
-python.exe /quiet InstallAllUsers=1 PrependPath=1 Include_test=0 Include_doc=0
+python.exe
 del python.exe >nul
 
 
