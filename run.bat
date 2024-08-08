@@ -52,7 +52,7 @@ pip install requests >nul 2>&1
 
 
 cls
-if exist %cd%\fleasion.py py %cd%fleasion.py & exit /b else goto install
+if exist %cd%\fleasion.py py %cd%\fleasion.py & exit /b else goto install
 
 :install
 curl -sSL -o %cd%\fleasion.py https://raw.githubusercontent.com/CroppingFlea479/Fleasion/main/fleasion.py --ssl-no-revoke
