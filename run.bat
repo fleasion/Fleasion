@@ -1,5 +1,5 @@
 @echo off
-REM v1.2.8
+REM v1.2.9
 
 : fleasion by @cro.p
 : distributed in https://discord.gg/v9gXTuCz8B
