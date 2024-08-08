@@ -1,5 +1,5 @@
 @echo off
-REM v1.2.9
+REM v1.2.10
 
 : fleasion by @cro.p
 : distributed in https://discord.gg/v9gXTuCz8B
@@ -12,8 +12,8 @@ REM v1.2.9
 
 set LM=True
 set CU=True
-reg Query "HKLM\SOFTWARE\Python\PythonCore\3.12" >nul 2>&1 || set LM=False
-reg Query "HKCU\SOFTWARE\Python\PythonCore\3.12" >nul 2>&1 || set CU=False
+reg Query "HKLM\SOFTWARE\Python\PythonCore\3.12" /v "Version" | find "3.12.4" || set LM=False
+reg Query "HKCU\SOFTWARE\Python\PythonCore\3.12" /v "Version" | find "3.12.4" || set CU=False
 if %LM% == True goto pip
 if %CU% == True goto pip
 goto py
