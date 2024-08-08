@@ -1,6 +1,8 @@
-# v1.6.4
+# v1.6.5
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
+
+# test
 
 import os
 import sys
@@ -269,7 +271,7 @@ while True:
     if not start: print(" ")
     start = False
     menu = input(
-        f"Enter the number corresponding to what you'd like to do:\n1: {GREEN}Ingame asset replacements{DEFAULT}\n2: {GREEN}Block (experimental, dont use){DEFAULT}\n3: {GREEN}Clear Cache{DEFAULT}\n4: {GREEN}Change config{DEFAULT}\n5: {GREEN}Exit{DEFAULT}\n: ")
+        f"Enter the number corresponding to what you'd like to do:\n1: {GREEN}Ingame asset replacements{DEFAULT}\n2: {GREEN}Block (experimental, dont use){DEFAULT}\n3: {GREEN}Clear Cache{DEFAULT}\n4: {GREEN}Presets{DEFAULT}\n5: {GREEN}Exit{DEFAULT}\n: ")
     if menu == '1':
         print(
             f"\nasset replacements:\n0:  {GREEN}Custom{DEFAULT}\n1:  {GREEN}Sights{DEFAULT}\n2:  {GREEN}Arm model tweaks{DEFAULT}\n3:  {GREEN}Sleeves{DEFAULT}\n4:  {GREEN}No textures{DEFAULT}\n5:  {GREEN}Default skyboxes{DEFAULT}\n6:  {GREEN}Gun skins{DEFAULT}\n7:  {GREEN}Gun Sounds{DEFAULT}\n8:  {GREEN}Gun smoke{DEFAULT}\n9:  {GREEN}Hit tweaks{DEFAULT}\n10: {GREEN}Grenade tweaks{DEFAULT}")
@@ -290,7 +292,7 @@ while True:
                                     replace([reticle], reticle_replacement)
                             case 2:
                                 sightbackground = input(
-                                    f"\nEnter background tweak:\n1: {GREEN}clear coyote blue background{DEFAULT}\n2: {GREEN}clear reflex blue background{DEFAULT}\n3: {GREEN}clear delta black ring{DEFAULT}\n: ")
+                                    f"\nEnter background tweak:\n1: {GREEN}clear coyote blue background{DEFAULT}\n2: {GREEN}clear reflex blue background{DEFAULT}\n3: {GREEN}clear delta black ring{DEFAULT}\n4: {GREEN}remove sniper black circle{DEFAULT}\n5: {GREEN}remove glass hack border{DEFAULT}\n: ")
                                 match int(sightbackground):
                                     case 1:
                                         replace(
@@ -302,6 +304,14 @@ while True:
                                         replace(
                                             ['30c4d2bb30b6b8c9ac7cfeec5db25a85', '7d5652167ec33ed349e569a55a398705'],
                                             'd625adff6a3d75081d11b3407b0b417c')  # delta black ring
+                                    case 4:
+                                        replace(
+                                            ['a883a2373ad6931556dce946c50c3690 ', '5a2a41b0da7ec98bf25780bb3f5d071f '],
+                                            'd625adff6a3d75081d11b3407b0b417c')  # remove sniper junk       
+                                    case 5:
+                                        replace(
+                                            ['1764672fe43c9f1d129b3d51dc3c40ee'],
+                                            'd625adff6a3d75081d11b3407b0b417c')  # remove sniper junk                                                                              
                                     case _:
                                         print("Invalid option")
                             case 3:
@@ -476,7 +486,7 @@ while True:
             print("Cleared cache, rejoin relevant experiences")
 
     elif menu == "4":
-        add_new_area()
+        print("coming soon")
 
     elif menu == '5':
         print("\nExiting the program.")
