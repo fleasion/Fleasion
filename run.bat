@@ -1,5 +1,5 @@
 @echo off
-REM v1.3.0
+REM v1.3.1
 
 : fleasion by @cro.p
 : distributed in https://discord.gg/v9gXTuCz8B
@@ -45,7 +45,7 @@ if %errorlevel%==9009 (
 
 cls
 echo Installing/checking for requests package...
-pip install requests >nul 2>&1
+py -m pip install requests >nul 2>&1
 
 
 : Just in case, check if Fleasion is there.
