@@ -1,5 +1,5 @@
 @echo off
-REM v1.2.6
+REM v1.2.7
 
 : fleasion by @cro.p
 : distributed in https://discord.gg/v9gXTuCz8B
@@ -33,20 +33,19 @@ del python.exe >nul
 :pip
 cls
 echo Updating/checking for pip..
-py -m pip install --upgrade pip --no-warn-script-location >nul 2>&1
-if %errorlevel% neq 0 (
+py -m pip install --upgrade pip >nul 2>&1
+if %errorlevel%==9009 (
     cls
     echo Downloading pip...
     curl -sSL -o get-pip.py https://bootstrap.pypa.io/get-pip.py
     echo Installing..
-    py get-pip.py --no-setuptools --no-wheel --no-warn-script-location >nul 2>&1
+    py get-pip.py --no-setuptools --no-wheel >nul 2>&1
     del get-pip.py
-    py -m pip install --upgrade pip --no-warn-script-location >nul 2>&1
 )
 
 cls
 echo Installing/checking for requests package...
-py -m pip install requests --no-warn-script-location >nul 2>&1
+pip install requests >nul 2>&1
 
 
 : Just in case, check if Fleasion is there.
