@@ -1,5 +1,5 @@
 {
-    "version": "v1.6.0",
+    "version": "v1.6.1",
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
         "blue": "38342d3214ad04067e03106bdff41914",
@@ -747,6 +747,9 @@
                 "stoner": "b4e7a3a0d8363a7910c2cc1b79596d44",
                 "m16": "166f8f9381d2e051f07b29bbb203a86d",
                 "l96a1": "76e6f31055ed438e9c98090dbbb577f8",
+                "dragunov": "6ec1066b5b7dd55c49ec4837ee9e64f4",
+                "msg90": "c785f1fa3585c2146b75c2beab1341d7",
+                "wa2000": "4aa7de10e52e16d968263dbd2c8ee955",
                 "sgmix": "a378372f1e33d7529f9339df2d5b23f9"
             },
             "bo2": {
@@ -789,6 +792,11 @@
                 "m4a1-s": "3432465a71630db27a25464d4641e84d",
                 "scout": "7d8a14fbe35b655ece3a2d9c7d9c476c",
                 "p90": "a01810032d0d682fe3414a5d9b71aac9",
+                "M4A4": "b28a65570f32caed6a4345bd0ed4377a",
+                "P250": "fb087e29fc9e59cf2cd9bafc277f4884",
+                "MP5SD": "2d3a96111a82e96eb3fc930822b2b71f",
+                "MAC-10": "0c819253bf3a71352689ebb3d5ac0a49",
+                "UMP-45": "cd74f87345dd2506c60cb87f9aac6eb7",
                 "glock": "98b9455b9c74722100a3d0be1ba0a80f",
                 "r8": "8f964032a85f8399e3590193254f0691"
             },
@@ -812,7 +820,8 @@
                 "ce magnum": "e3b3f20e6c80eef4fc8bc3e892fbecfc"
             },
             "tarkov": {
-                "vss": "0cab76e9382acf7767c5073a66993ebc"
+                "vss": "6eb64434cd96557f479f3b6415a22e56",
+                "akm": "798f241a87ffc6bc45e2dc2c11cb0a5b"
             },
             "pubg": {
                 "winch 1894": "06a9390826a21a9d86bce3aa8a3e4f33"
@@ -1106,7 +1115,8 @@
             "hammer": "43888377a0d12a880e244d7d931d7c7e",
             "fishy frames": "5907c412d00d6d79c57c58839b958463",
             "technological tundra": "d1d6e5f676bc2486c23aa9df587d3e4f",
-            "beastly blueprints": "34732cfff5afa75dd4dc603f52f90c01"
+            "beastly blueprints": "34732cfff5afa75dd4dc603f52f90c01",
+            "tubes of time": "3316978a210e8957b88e04fdf99f637d"
         },
         "cs": {
             "dragon lore": "5f7dd47df8ac76832a3fbb9f992a80b3",
