@@ -1,8 +1,6 @@
-# v1.6.6
+# v1.7.0
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
-
-# test
 
 import os
 import sys
@@ -44,6 +42,7 @@ def update_file(file_name, lines):
 
 
 def get_version():
+    global presets_file
     readme_first_line, readme_lines = fetch_lines(README_URL)
     fleasion_first_line, fleasion_lines = fetch_lines(FLEASION_URL)
     run_lines, all_run_lines = fetch_lines(RUN_URL, 2)
@@ -90,15 +89,24 @@ def get_version():
         update_file(RUN_FILE, all_run_lines)
         print(f"Updated run.bat to {BLUE}{run_version}{DEFAULT}")
 
+    presets_file = 'presets.json'
+    if not os.path.exists(presets_file):
+        with open(presets_file, 'w') as file:
+            json.dump({
+                "replace oled": [
+                    '0fd98b21b47dbd948988ec1c67696af8',
+                    '5873cfba79134ecfec6658f559d8f320',
+                    '009b0b998ae084f23e5c0d7b1f9431b3',
+                    '577f6c95249ebea2926892c3f3e8c040'
+                ],
+                "test2": "tv2",
+                "test3": "tv3",
+                "test4": "tv4"
+            }, file, indent=4)
+        print(f"Created {BLUE}{presets_file}{DEFAULT}")
+
     time.sleep(1)
     os.system('cls')
-
-config_file = 'assets.json'
-
-def save_data_to_file(data, filename='assets.json'):
-    with open(filename, 'w') as file:
-        json.dump(data, file, indent=4)
-    print(f"Data saved to {filename}")
 
 
 def dlist(area):
@@ -153,28 +161,6 @@ def dlist(area):
     return current_level
 
 
-def add_new_area():
-    new_area = input("Enter the new area name: ")
-    new_key = input(f"Enter the key for '{new_area}': ")
-    new_value = input(f"Enter the value for '{new_key}': ")
-
-    if new_area not in data:
-        data[new_area] = {}
-
-    data[new_area][new_key] = new_value
-
-    with open(config_file, 'w') as file:
-        json.dump(data, file, indent=4)
-
-    print(f"New area '{new_area}' with key '{new_key}' and value '{new_value}' added to JSON file.")
-
-
-def read_file_names(file_path):
-    with open(file_path, 'r') as file:
-        big_name_list = [line.strip() for line in file if line.strip() and not line.startswith('#')]
-    return big_name_list
-
-
 def bloxstrap():
     base_path = os.path.join(os.getenv('LOCALAPPDATA'), 'Bloxstrap', 'Modifications')
     nested_folders = ["PlatformContent", "pc", "textures", "sky"]
@@ -206,6 +192,24 @@ def delete_stuff(files_to_delete):
         else:
             print(f'{RED}{file_to_delete} not found.{DEFAULT}')
 
+
+def preset_check():
+    print("\nAvailable presets:")
+    for idx, key in enumerate(presets.keys(), start=1):
+        print(f"{idx}: {GREEN}{key}{DEFAULT}")
+
+    choice = input(": ")
+
+    if choice.isdigit():
+        choice = int(choice)
+        if 1 <= choice <= len(presets):
+            return list(presets.keys())[choice - 1]
+        else:
+            print("Invalid number.")
+            return None
+    else:
+        return choice
+    
 
 get_version()
 
@@ -239,6 +243,9 @@ while mod_cache == False or pf_cache == False:
     
 with open('assets.json', 'r') as file:
     data = json.load(file)
+
+with open('presets.json', 'r') as file:
+    presets = json.load(file)
 
 def replace(files_to_delete, file_to_replace):
     try:
@@ -488,8 +495,56 @@ while True:
             delete_all_in_directory(folder_path)
             print("Cleared cache, rejoin relevant experiences")
 
-    elif menu == "4":
-        print("coming soon")
+    elif menu == '4':
+        preset_option = input(f"\nPresets:\n1: {GREEN}Load preset{DEFAULT}\n2: {GREEN}Add preset{DEFAULT}\n3: {GREEN}Delete preset{DEFAULT}\n: ")
+
+        if preset_option == '1':
+            if presets:
+                name = preset_check()
+
+                n_asset = 0; r_asset = 1; loops = 1
+                if name:
+                    values = int((len(presets[name])/2)+1)
+                if name in presets:
+                    while loops != values:
+                        replace([presets[name][n_asset]], presets[name][r_asset])
+                        n_asset += 1; r_asset += 1; loops += 1
+                else:
+                    print(f"{RED}{name}{DEFAULT} does not exist.")
+            else:
+                print("No presets available")
+        elif preset_option == '2':
+            new_preset = input("\nEnter preset name\n: ")
+            switch = False; done = False
+            while done == False:
+                prompt = "\nEnter asset replacement\n: " if switch else f"\nEnter asset to change {GREEN}Type 'done' to finish{DEFAULT}\n: "
+                switch = not switch
+                new_value = input(prompt)
+                if new_value == "done":
+                    done = True
+                else:
+                    if new_preset not in presets:
+                        presets[new_preset] = []
+                    presets[new_preset].append(new_value)
+
+                    with open('presets.json', 'w') as f:
+                        json.dump(presets, f, indent=4)
+
+        elif preset_option == '3':
+            if presets:
+                name = preset_check()
+
+                if name in presets:
+                    del presets[name]
+                    with open(presets_file, 'w') as file:
+                        json.dump(presets, file, indent=4)
+                    print(f"{GREEN}{name}{DEFAULT} deleted successfully.")
+                else:
+                    print(f"{RED}{name}{DEFAULT} does not exist.")
+            else:
+                print("No presets available to delete.")
+        else:
+            print("Invalid option")
 
     elif menu == '5':
         print("\nExiting the program.")
