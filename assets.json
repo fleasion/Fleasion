@@ -1,11 +1,12 @@
 {
-    "version": "v1.6.4",
+    "version": "v1.6.5",
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
         "blue": "38342d3214ad04067e03106bdff41914",
         "arda garden": "a359199394481b570abbba664bc3fc3f"
     },
     "hitmarker": {
+        "default": "097165b476243d2095ef0a256320b06a",
         "pink small": "5b62f2b46911c14c8786c6e943d25bf9",
         "big blue": "5cbef7585db032e658b662ea4e415f36",
         "big pink": "7cdebc991be99683783721c89a811fca",
