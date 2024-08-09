@@ -1,4 +1,4 @@
-# v1.6.5
+# v1.6.6
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -292,7 +292,7 @@ while True:
                                     replace([reticle], reticle_replacement)
                             case 2:
                                 sightbackground = input(
-                                    f"\nEnter background tweak:\n1: {GREEN}clear coyote blue background{DEFAULT}\n2: {GREEN}clear reflex blue background{DEFAULT}\n3: {GREEN}clear delta black ring{DEFAULT}\n4: {GREEN}remove sniper black circle{DEFAULT}\n5: {GREEN}remove glass hack border{DEFAULT}\n: ")
+                                    f"\nEnter background tweak:\n1: {GREEN}clear coyote blue background{DEFAULT}\n2: {GREEN}clear reflex blue background{DEFAULT}\n3: {GREEN}clear okp-7 blue background{DEFAULT}\n4: {GREEN}clear delta black ring{DEFAULT}\n5: {GREEN}remove sniper black circle{DEFAULT}\n6: {GREEN}remove glass hack border{DEFAULT}\n: ")
                                 match int(sightbackground):
                                     case 1:
                                         replace(
@@ -302,13 +302,16 @@ while True:
                                             ['2eaae4fe3a9fce967af993d27ad68d52'], '5873cfba79134ecfec6658f559d8f320')  # clear reflex blue background
                                     case 3:
                                         replace(
+                                            ['2eaae4fe3a9fce967af993d27ad68d52'], '5873cfba79134ecfec6658f559d8f320')  # clear okp-7  blue background                                        
+                                    case 4:
+                                        replace(
                                             ['30c4d2bb30b6b8c9ac7cfeec5db25a85', '7d5652167ec33ed349e569a55a398705'],
                                             'd625adff6a3d75081d11b3407b0b417c')  # delta black ring
-                                    case 4:
+                                    case 5:
                                         replace(
                                             ['a883a2373ad6931556dce946c50c3690 ', '5a2a41b0da7ec98bf25780bb3f5d071f '],
                                             'd625adff6a3d75081d11b3407b0b417c')  # remove sniper junk       
-                                    case 5:
+                                    case 6:
                                         replace(
                                             ['1764672fe43c9f1d129b3d51dc3c40ee'],
                                             'd625adff6a3d75081d11b3407b0b417c')  # remove sniper junk                                                                              
