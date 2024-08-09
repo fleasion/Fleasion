@@ -1,5 +1,5 @@
 {
-    "version": "v1.6.1",
+    "version": "v1.6.2",
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
         "blue": "38342d3214ad04067e03106bdff41914",
@@ -1104,17 +1104,17 @@
             "up": "6dd1545472276566fda1bbe1549bd21e"
         },
         "wireframe": {
-            "space": "9ee8d4388840e2c0b24df4eab6b229fe",
-            "tpose": "d18191c71a37796bb7cae754cce981e0",
-            "nature": "70a4b4b8061e37c6dfaa8a5242ffe6d7",
-            "hacker": "243bb51a108d6771da1abf6cb256b821",
-            "city": "3b32055582e300f3e4cb6fdd78870e2e",
+            "spacious worlds": "9ee8d4388840e2c0b24df4eab6b229fe",
+            "spherical power": "d18191c71a37796bb7cae754cce981e0",
+            "natural mockup": "70a4b4b8061e37c6dfaa8a5242ffe6d7",
+            "exploited wires": "243bb51a108d6771da1abf6cb256b821",
+            "industrial grid": "3b32055582e300f3e4cb6fdd78870e2e",
             "giant leaps": "9f1b08e510c3fd3ba43c91e659be8cf9",
             "musical mainframe": "b19abcac4085f829b62f2c447626bc69",
             "digital fruits": "649ec7e1c10058ab21cfecc4ec137831",
-            "hammer": "43888377a0d12a880e244d7d931d7c7e",
+            "frameworks": "43888377a0d12a880e244d7d931d7c7e",
             "fishy frames": "5907c412d00d6d79c57c58839b958463",
-            "technological tundra": "d1d6e5f676bc2486c23aa9df587d3e4f",
+            "techno tundra": "d1d6e5f676bc2486c23aa9df587d3e4f",
             "beastly blueprints": "34732cfff5afa75dd4dc603f52f90c01",
             "tubes of time": "3316978a210e8957b88e04fdf99f637d"
         },
