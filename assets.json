@@ -1,5 +1,5 @@
 {
-    "version": "v1.6.2",
+    "version": "v1.6.3",
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
         "blue": "38342d3214ad04067e03106bdff41914",
@@ -746,6 +746,8 @@
                 "hk21": "1a176545f78a2305c125a83fdf510ef8",
                 "stoner": "b4e7a3a0d8363a7910c2cc1b79596d44",
                 "m16": "166f8f9381d2e051f07b29bbb203a86d",
+                "aug": "5d80349cfe15c2fb925dd2f579a91dff",
+                "famas": "da4d2b2ecb140e1f2e731a70517dfcd0",
                 "l96a1": "76e6f31055ed438e9c98090dbbb577f8",
                 "dragunov": "6ec1066b5b7dd55c49ec4837ee9e64f4",
                 "msg90": "c785f1fa3585c2146b75c2beab1341d7",
@@ -766,6 +768,7 @@
             },
             "waw": {
                 "stg44": "26b599516776a7a421b8b99e8c35811a",
+                "stg44 suppressed": "c49498afd8a261d52af0b5ea9d368bd5",
                 "bar": "472c83e218327507ce1fd4f07a6a625a",
                 "db": "a9c4c1e4eef780b72010a19664c1e672",
                 "mg42": "899d25f2377d79b9dd6a29928574d7a5",
@@ -773,6 +776,7 @@
                 "ppsh": "34fdfc7ebabc3619b677282fbaff1e70",
                 "thompson": "9c6b8a19b92c78541e51f1caf2ab42a2",
                 "garand": "15d61093afd20e222791774c09d02a78",
+                "g43 suppressed": "94d4a44de1f7123a2d5a1728d6c95de6",
                 "springfield": "3c32b9fd3e8228b68033b85f7462e67f",
                 "kar98k": "b0b80068afc10c43f1baa7bfe47dfe2f",
                 "mosin": "7f3e4e743ed7ee3662ffa163f2b94974",
@@ -823,8 +827,15 @@
                 "vss": "6eb64434cd96557f479f3b6415a22e56",
                 "akm": "798f241a87ffc6bc45e2dc2c11cb0a5b"
             },
+            "insurgency": {
+                "ak47": "0e3453be632e15fadb1a0685e30e2c08"
+            },
             "pubg": {
                 "winch 1894": "06a9390826a21a9d86bce3aa8a3e4f33"
+            },
+            "hl of": {
+                "m40a1": "91d42465a70384c75c7fc6e6bd116e5a",
+                "deagle": "5ef86eaf58d9759879a00ce06ab724bf"
             },
             "hl2": {
                 "smg": "f01ee3c4bef1a4f5ee9bfc056ae03678",
