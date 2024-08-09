@@ -1,5 +1,5 @@
 {
-    "version": "v1.6.3",
+    "version": "v1.6.4",
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
         "blue": "38342d3214ad04067e03106bdff41914",
@@ -912,7 +912,8 @@
             "peggle": "631519a8d3df15dd435453f384132d8c",
             "peggle low": "7b9b55debf4dae8eb74bdabd4d3b7a1b",
             "bonk": "1e31d341fc0d6832cdcd5c8bf57f4e9a",
-            "small bonk": "448c64c2a76eea6c50a960eedbdd85f5"
+            "small bonk": "448c64c2a76eea6c50a960eedbdd85f5",
+            "neverlose": "d1b91f19cfed2e02a2f9381174671388"
         },
         "kill sounds": {
             "default": [
