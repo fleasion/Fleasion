@@ -98,10 +98,7 @@ def get_version():
                     '5873cfba79134ecfec6658f559d8f320',
                     '009b0b998ae084f23e5c0d7b1f9431b3',
                     '577f6c95249ebea2926892c3f3e8c040'
-                ],
-                "test2": "tv2",
-                "test3": "tv3",
-                "test4": "tv4"
+                ]
             }, file, indent=4)
         print(f"Created {BLUE}{presets_file}{DEFAULT}")
 
