@@ -1,5 +1,5 @@
 {
-    "version": "v1.6.5",
+    "version": "v1.6.6",
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
         "blue": "38342d3214ad04067e03106bdff41914",
@@ -902,6 +902,7 @@
             "quake 3": "b276797f86a205ad57892ba259d7bca2",
             "tf2": "80cda01cdd99bfaae5d7dc50f689bafa",
             "mw2": "c5699c647761d9ed2407b3b8529310fe",
+            "mw2019": "d594c2d8b3234e49931d310764b3505f",
             "xonotic": "2178841e2915c199051ffcfb3ff99b6c",
             "meat punch 1": "99b11524684655eaa77495f37fbec71f",
             "meat punch 2": "a86804777ed59f0421e1cd62863d4019",
@@ -934,11 +935,11 @@
             "mighty eagle": "79c947ce29faf8a6e1fbd05d8473e506",
             "red angry bird": "8c404fcc623fa24f814ffbc34788d845",
             "sata andagi": "1f00efe6252f845873c98d7aca6c34b9",
+            "mw2019": "fc9401aaa9bd48d5de4e41c5c928a37c",
             "okay": "2f04c22ca47269a568453603ede9d7da",
             "og trowel": "15f74d5f2b7398997367445172956372",
             "hl2 scream": "b1ad6dbb7266d47a2431ffc1a5cff3e5",
-            "mario yahoo": "da7af51dcb12a55e75ce641ff6af06a7",
-            "peggle fever": ""
+            "mario yahoo": "da7af51dcb12a55e75ce641ff6af06a7"
         }
     },
     "reticles": {
