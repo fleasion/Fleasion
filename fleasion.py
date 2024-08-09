@@ -1,4 +1,4 @@
-# v1.7.0
+# v1.7.1
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -505,7 +505,7 @@ while True:
                 if name in presets:
                     while loops != values:
                         replace([presets[name][n_asset]], presets[name][r_asset])
-                        n_asset += 1; r_asset += 1; loops += 1
+                        n_asset += 2; r_asset += 2; loops += 1
                 else:
                     print(f"{RED}{name}{DEFAULT} does not exist.")
             else:
