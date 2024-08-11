@@ -1,5 +1,5 @@
 {
-    "version": "v1.6.6",
+    "version": "v1.6.7",
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
         "blue": "38342d3214ad04067e03106bdff41914",
@@ -797,11 +797,11 @@
                 "m4a1-s": "3432465a71630db27a25464d4641e84d",
                 "scout": "7d8a14fbe35b655ece3a2d9c7d9c476c",
                 "p90": "a01810032d0d682fe3414a5d9b71aac9",
-                "M4A4": "b28a65570f32caed6a4345bd0ed4377a",
-                "P250": "fb087e29fc9e59cf2cd9bafc277f4884",
-                "MP5SD": "2d3a96111a82e96eb3fc930822b2b71f",
-                "MAC-10": "0c819253bf3a71352689ebb3d5ac0a49",
-                "UMP-45": "cd74f87345dd2506c60cb87f9aac6eb7",
+                "m4a4": "b28a65570f32caed6a4345bd0ed4377a",
+                "p250": "fb087e29fc9e59cf2cd9bafc277f4884",
+                "mp5sd": "2d3a96111a82e96eb3fc930822b2b71f",
+                "mac-10": "0c819253bf3a71352689ebb3d5ac0a49",
+                "ump-45": "cd74f87345dd2506c60cb87f9aac6eb7",
                 "glock": "98b9455b9c74722100a3d0be1ba0a80f",
                 "r8": "8f964032a85f8399e3590193254f0691"
             },
@@ -823,6 +823,45 @@
                 "reach dmr": "92acd5b5d8f28f96e0de0ca553758022",
                 "h3 sniper": "8c0be6f7ec28bca0a3282db1f19c434a",
                 "ce magnum": "e3b3f20e6c80eef4fc8bc3e892fbecfc"
+            },
+            "r6": {
+                "lfp586": "14d833216f1567921c98629c66f55b81",
+                "rp-46": "f50ae4a2a69e4883a99e522aa58f767a",
+                "m120 crem": "42b727fb752667f3c49687bd79d9824f",
+                "stim pistol": "139044fa165c9a144bd7b96f2df1b741",
+                "6p41": "2cd6c9430abb01cb4954f492d884e969",
+                "m590a1": "fcb05370336a9aadb15d41e2d8ee8523",
+                "sg-cqb": "d609bff9769108b364828f2de5a5f6a6",
+                "m870": "03ff133511c9c6f8ba238a6b3742cc05",
+                "417": "c35059bb105c210daeb1de24c480a8a8",
+                "ots-03": "2f8f06cba8d33f1eee0177e302356e4a",
+                "sasg-12": "499cc7a2933af0fb48bb5993788ddba7",
+                "m1014": "68ea90bf786eeaded65bb1fd57ef89a4",
+                "ar33": "28a8a14e2a89510eea7f1b6187f97842",
+                "aug a2": "c4e9a3596ea9c2859930e95e58b2e92e",
+                "l85a2": "c279c77faefcc27f70487488e08de25e",
+                "556xi": "15f683085424a0f5985109fe09b16899",
+                "f2": "8707972ef56039d12dd515c1e3e4cfd1",
+                "552 commando": "7f11164f5e9496a0053ef6d301429c3d",
+                "ak12": "4a76532fe41e22e30b920194152ed9de",
+                "r4-c": "c306e0d087f5b15edfe76c032a3ffe19",
+                "416-c carbine": "fe63ff0281de4bd52dcf128d56286911",
+                "g36c": "21a480d6e6d986301889fef4f3b5ea16",
+                "fmg-9": "ea3609f3ba3d86fb8fc62329d07b9f7b",
+                "ump45": "fda0bb1c774d774322f053122a6e0771",
+                "mp5": "ea3c96613ba77159d84d26691d1f6a52",
+                "p90": "c10149ea57be0a917cf6976ee4170737",
+                "smg-11": "d048d6400a67445c549b687b1cd17dd3",
+                "mp7": "4c8402d3822e9e896eaad514d4b8d3a7",
+                "9x19vsn": "157c444d73da6b2ed0da29ac6d55efb8",
+                "mp5k": "e2afa604713e046022df01c0d027dba3",
+                "m45 meusoc": "243c85abb20287c83a30c8b0683ca8cd",
+                "p9": "a841c665712df0a651cf079ab392e158",
+                "p226 mk 25": "3b8519e94dd019ae93da368e397b7ce4",
+                "5.7 usg": "adabdf6f99e00aaa9afbfd222054ba8e",
+                "pmm": "7d51103e7f1387647101c169bda5d86e",
+                "gsh-18": "bafe601101792ec57eb8da8c5dd84a70",
+                "p12": "d36670cf8deef0c6c0ff1cec4a8658cd"
             },
             "tarkov": {
                 "vss": "6eb64434cd96557f479f3b6415a22e56",
@@ -890,6 +929,7 @@
             "metal pipe": "3f3016cdd65115263b7fb9d5fb8b40b7",
             "og roblox explosion": "03d136234837405ec039df9d29821fd5",
             "hl2 semtex": "17a6f0e40a90673ec1cd69ecdccf37a7",
+            "m120 crem explosion": "d3f74e85850cf40bf8d36803b5ab9c89",
             "remove": "5873cfba79134ecfec6658f559d8f320"
         },
         "hit sounds": {
@@ -915,7 +955,8 @@
             "peggle low": "7b9b55debf4dae8eb74bdabd4d3b7a1b",
             "bonk": "1e31d341fc0d6832cdcd5c8bf57f4e9a",
             "small bonk": "448c64c2a76eea6c50a960eedbdd85f5",
-            "neverlose": "d1b91f19cfed2e02a2f9381174671388"
+            "neverlose": "d1b91f19cfed2e02a2f9381174671388",
+            "pop": "f93c23cb45e31d9fd07ab4d688a54306"
         },
         "kill sounds": {
             "default": [
