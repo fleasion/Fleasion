@@ -1,5 +1,5 @@
 {
-    "version": "v1.6.7",
+    "version": "v1.6.8",
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
         "blue": "38342d3214ad04067e03106bdff41914",
@@ -868,7 +868,35 @@
                 "akm": "798f241a87ffc6bc45e2dc2c11cb0a5b"
             },
             "insurgency": {
-                "ak47": "0e3453be632e15fadb1a0685e30e2c08"
+                "ak47": "0e3453be632e15fadb1a0685e30e2c08",
+                "aks": "39250de31a263f3de0d6a28bf6f41a34",
+                "ak74": "e994c5fa619ab1a49f7ab31789d1781a",
+                "flaregun": "59a1e6f361dc02435168f5360b0ea64a",
+                "galil": "b1d46483b4f2677c566c258b3833d2bb",
+                "fn fal": "7de6523a13435b3323c21a90a98a187a",
+                "gp30": "e4fe88c9f779ecd3e87ef269903a7332",
+                "m1a1": "f11a5107eaaf1dd07c41daaf68a9f6db",
+                "m9": "4d7a12b40a1fb580d87a613eb65057b8",
+                "m4a1": "8061bdfccb69b895c41403eb33658ddd",
+                "m16a4": "86722ce7aa52e173afae2478d50034a4",
+                "m14": "1db0995a9088201c4f7a6b11dbbeeec9",
+                "m45": "c98e6c76985be1eb2f21a0bcbafaa91e",
+                "m40a1": "64a3398b0d75b1d406c7d0154cd65130",
+                "m590": "bf9ab8963fee1a5c776cb6d1eb7ad9c6",
+                "m249": "f01ce54fb757576fe0db781f96d11762",
+                "makarov": "95664f30b3d70ae8a6291f8357643bc5",
+                "m1911": "4e92a49649e2bd4785cb1d4c4681f732",
+                "mk18": "b7a2703bcfee11410b59f3e8b5527c7c",
+                "mini14": "53f396f440b49aeee45a25d1558e2186",
+                "mp5k": "1fa37112f98a66d220d67322fa1ef3c6",
+                "mosin": "e13a0117934b666b2c91ad23770ce457",
+                "mp40": "d96c789347ae98d437512732115b9b4e",
+                "rpk": "a8e7673e0021ed1ec1bc094a0f53edf8",
+                "revolver": "0e433e315d48bbfe28844a8665dd89f0",
+                "sterling": "589187bf611293b20f6b029277ee5a5e",
+                "sks": "160917ae9e353cfc228be9e1c79a8624",
+                "ump45": "f1e311b06a5fcc2fee1ad65520786235",
+                "toz": "8fbc2d2177081cbac83ef67d820c3970"
             },
             "pubg": {
                 "winch 1894": "06a9390826a21a9d86bce3aa8a3e4f33"
@@ -891,9 +919,35 @@
             "custom": {
                 "pew": "7eac4541692ca64abc5485b4875b237c",
                 "laser": "ad20c7ec88aeeaa36c6b7147e9a38ae9",
+                "shooting star tf2": "9a624ad8d45c02cc5ef977c2c52de6e7",
                 "slingshot": "c6f5b936f5d2bafdd7e981ac22e0b8f2",
                 "vine boom": "1871d8d39f507208a36f7347deaa1603",
-                "remove": "5873cfba79134ecfec6658f559d8f320"
+                "remove": "5873cfba79134ecfec6658f559d8f320",
+                "cave sound 1": "eae3978b00e0554c92da55c1d7eba3b1",
+                "cave sound 2": "61077cd868d8c2781aff4543e203e77c",
+                "cave sound 3": "e6885a699666b49389835dea04920b40",
+                "pooits": "cb6531bd18b1f91456eaa6cc3c835100",
+                "frying pan": "f8ef35c1e20d1021080757b0918d545e",
+                "pow!": "b8eff5a196d28502ee559d3fd52add68",
+                "ded": "249079b87abdfafdbd37ece2b710aa37",
+                "nope.avi": "0125dceb59f83321b978da1ffa56c801",
+                "right behind you": "06b9b0cb535ad72827ca5fe510ebefa4",
+                "bat hit": "be42526c3a367cb7ff4d07b7f547789f",
+                "slap": "703a42a12d31ba280d2470a060bd019e",
+                "whack": "8f93fa329a1afbcd40ffb4670acdbb95",
+                "pizza": "405a4c19df00b97703f28dcd3d6f0b23",
+                "cheezburger pls": "8dccc0275d279d61af91bf2192a1c502",
+                "mmm cheezburger": "b617b9d33118775f68c4278116bed78d",
+                "nom nom nom": "5fe7825971ace8e660f9f66e4e34fbdb",
+                "beta bfg50": "d5d4c9083234d2b84ba0270f828a989d",
+                "windows error": "c582be6de0bdbb02963644bac80ea1ba",
+                "metal pipe": "a48aec4b605581466940e8706d193b3e",
+                "boss roar": "50ac50827a4279dbad667da8cd4b1ba4",
+                "d'oh": "9b5aa33cc02a4f66a40ddc1c2f356f26",
+                "fart 1": "49bfc6612c659e74196631a7c24e1f5c",
+                "fart 2": "99bc594bd0d067c099f8b40213f5d2f4",
+                "fart 3": "a64797d879514f2f2830cca05549917c",
+                "failure": "32df361ffb056e84ad68f2d759c9f182"
             }
         },
         "explosions": {
@@ -956,7 +1010,12 @@
             "bonk": "1e31d341fc0d6832cdcd5c8bf57f4e9a",
             "small bonk": "448c64c2a76eea6c50a960eedbdd85f5",
             "neverlose": "d1b91f19cfed2e02a2f9381174671388",
-            "pop": "f93c23cb45e31d9fd07ab4d688a54306"
+            "pop": "f93c23cb45e31d9fd07ab4d688a54306",
+            "helmet headshot 1": "47cd60db94ba86bc2b4a5fc36268bc9c",
+            "helmet headshot 2": "bfe23e0c6dc8215416489d846c7706d3",
+            "insurgency headshot 1": "eeb94b07cbb3102ef71c9de0d29c046c",
+            "insurgency headshot 2": "efba9652f655a2decfc9ab1048c63425",
+            "remove": "5873cfba79134ecfec6658f559d8f320"
         },
         "kill sounds": {
             "default": [
@@ -972,7 +1031,7 @@
             "xonotic": "2178841e2915c199051ffcfb3ff99b6c",
             "titanfall 2": "2134b97ee3e15c20a189d474d5269802",
             "bell": "b478c6fadeb3645df27d51d1c11d6ebd",
-            "ballon pop": "1c9a309f36cff20a354dcc8675294621",
+            "balloon pop": "1c9a309f36cff20a354dcc8675294621",
             "mighty eagle": "79c947ce29faf8a6e1fbd05d8473e506",
             "red angry bird": "8c404fcc623fa24f814ffbc34788d845",
             "sata andagi": "1f00efe6252f845873c98d7aca6c34b9",
@@ -980,7 +1039,8 @@
             "okay": "2f04c22ca47269a568453603ede9d7da",
             "og trowel": "15f74d5f2b7398997367445172956372",
             "hl2 scream": "b1ad6dbb7266d47a2431ffc1a5cff3e5",
-            "mario yahoo": "da7af51dcb12a55e75ce641ff6af06a7"
+            "mario yahoo": "da7af51dcb12a55e75ce641ff6af06a7",
+            "remove": "5873cfba79134ecfec6658f559d8f320"
         }
     },
     "reticles": {
@@ -1114,7 +1174,10 @@
         },
         "custom": {
             "upsidedown ekp": "16ab2e4e301ea89f46263250657f9b94",
+            "digi threat": "32a599014ec1e056abdd5f9e8059dca3",
             "yolo": "4bee1c8a394923bee7078462a27db7a7",
+            "yolo 2": "9004d39c874ab84f213c87bb2274654c",
+            "hello vro": "76d89439f14332810e86a974530d519f",
             "soy": "6c4eae63d97c83a4bd970a57f783cade",
             "small dot": "ac59980bedb36f4b240633b08b532d08",
             "big dot": "73c2849b95adc835ee0eaef758346920",
@@ -1183,7 +1246,9 @@
             "cat skulls": "7ec4d22d48298ff67e37b7424d17e387",
             "carbon fiber": "70000b3a2cf92de5d449f996c2712135",
             "damascus": "afe242e75a8be4ddba08d6f95bfe1283",
-            "gamma doppler": "28e49c1d4006e0d5fd60250a9a1c9fe6"
+            "gamma doppler": "28e49c1d4006e0d5fd60250a9a1c9fe6",
+            "hypnotic": "9880a6604a9b21f9dd7a27f2c57fc216",
+            "crimson web": "5068def5d7d7e2e72694170fddb0f923"
         },
         "random": {
             "anti black": "9bf106156d73eb795675779d98ab5fde",
@@ -1639,7 +1704,6 @@
                     "future fire*": "9aa4402b21a4a227bff7fa43c95be84e",
                     "mended masks*": "5ccda56807558633317239fb0c61969a",
                     "platinum pixel*": "bf15914b794b997146eca00540d58738",
-                    "taxidermist*": "N/A",
                     "candied corn 2*": "4a2052d74292363e596b46626b5acba8",
                     "crackles*": "0c59a7f730cac991f2e872b26afefebf",
                     "heated cabin*": "09150dcc2adb88e43cde4ff7391b7472",
@@ -2485,7 +2549,6 @@
                 "future fire*": "8fa1daa2762d86b3af771acab1a46aad",
                 "mended masks*": "6ff7e8339bd6d57e1e0b761eb8e37181",
                 "platinum pixel*": "f86e260789c4b7a100938107b1c5b2e4",
-                "taxidermist*": "N/A",
                 "candied corn 2*": "f952d7b1c27140e88117039608165a21",
                 "crackles*": "a8c72cb79b911e9a2b490a1914cf2999",
                 "heated cabin*": "c44f69f16348c9b0510d71449f1c7933",
