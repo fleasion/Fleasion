@@ -37,7 +37,7 @@ as well as install any dependencies.
 - The Fleasion script will then run, follow the prompts given.
 
 ### Loading Texures
-Fleasion requires you to load textures/audio before you can use them. As such you may be directed to join [Texture Game]
+Fleasion requires you to load textures/audio before you can use them. As such you may be directed to join [Texture Game](https://www.roblox.com/games/18504289170/Texture-Game)
 and Phantom Forces on Launch to load them. Some files require you to do certain things to load the defaults:
 - Sights (Equip the sight on a gun)
 - Skins (Equip the skin on a gun / Load the skin's preview in the case shop)
