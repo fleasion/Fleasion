@@ -1,4 +1,4 @@
-# v1.7.1
+# v1.7.2
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -328,18 +328,16 @@ while True:
                     except Exception as e:
                         print(f"{RED}Error: {e}{DEFAULT}")
                 case 2:
-                    arm_option = input(f"\nEnter arm option:\n1: {GREEN}No arms{DEFAULT}\n2: {GREEN}No sleeves{DEFAULT}\n3: {GREEN}Bone arms{DEFAULT}\n4: {GREEN}default arms{DEFAULT}\n: ")
+                    arm_option = input(f"\nEnter arm option:\n1: {GREEN}Remove options{DEFAULT}\n2: {GREEN}Bone arms{DEFAULT}\n3: {GREEN}Default arms{DEFAULT}\n: ")
                     match int(arm_option):
                         case 1:
-                            replace(data["arm models"], '5873cfba79134ecfec6658f559d8f320')  # no arms
+                            replace(dlist('arm models'), '5873cfba79134ecfec6658f559d8f320')
                         case 2:
-                            replace(['0417f106902be46503fc75266526817a', '18ff02c763205099ce8542cebc98ae71'],
-                                    'd625adff6a3d75081d11b3407b0b417c')
-                        case 3:
+                            replace(data["arm models"]["bare arms"], "5873cfba79134ecfec6658f559d8f320")
                             replace(['f5b0bcba5570d196909a78c7a697467c', '7f828aee555e5e1161d4b39faddda970'],
                                     'c9672591983da8fffedb9cec7df1e521')
-                        case 4:
-                            delete_stuff(data["arm models"])
+                        case 3:
+                            delete_stuff(data["arm models"]["everything"])
                         case _:
                             print("Enter a Valid Option!")
                 case 3:
