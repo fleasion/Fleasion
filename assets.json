@@ -1,5 +1,5 @@
 {
-    "version": "v1.6.10",
+    "version": "v1.6.11",
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
         "blue": "38342d3214ad04067e03106bdff41914",
@@ -698,6 +698,7 @@
                 "r700": "3525671ef653bc449088340e3f8873a1",
                 "svds": "c8e48c110adbcc8c38c552aa4f61eb6c",
                 "stryker": "4479cb4a3bf49198e58a035decd51c46",
+                "g36": "f4caa429d2d80c409ab7af1f98c095f0",
                 "ump45": "bd4934bde4f3aead621bad9a08b8ec14",
                 "usp45": "4fd34e24510a47e1e26f10709ad691ac",
                 "win12000": "d2812514ae3056f5dcf8161a84e44c67",
@@ -735,7 +736,6 @@
                 "revolver": "8fdb7c6bd88bb23c1ccea7c48b54ead5",
                 "msr": "86bf86acfdc004db6f07cfa3ba059fcb",
                 "l96a1": "33231b0371fb73dfd8486676c139038c",
-                "g36": "f4caa429d2d80c409ab7af1f98c095f0",
                 "fmg9": "260c27baf1843d9c28dba8815d1f881f",
                 "cm901": "ff1b54033625f71346af4dd897d035f7",
                 "barrett": "81a906cca431bc68571d84db066c8294",
@@ -818,9 +818,9 @@
                 "scout": "00f849280a14ba5500f0952b4f82e29c",
                 "p90": "3f88de2a691f25eaa8a81dff33a2b7ae",
                 "glock": "a3a55fa6b9d87d33ceeb7a838524330a",
-                "usp-s unsilenced": "f1edade7e2106bd68b7d7af9343dd445 / 7ed159cda41eb653697b4db48b438b24",
+                "usp-s unsilenced": "7ed159cda41eb653697b4db48b438b24",
                 "negev": "d157376bae519e425f34e31b2f46b9e2",
-                "mp7": "91f437a160b2f90244dfcccf75a5a37c / e91541b15f286cc81f4f4c5107b0fe05",
+                "mp7": "91f437a160b2f90244dfcccf75a5a37c",
                 "nova": "3d8e95d2a1ef0952bb2079803c14e453"
             },
             "halo": {
@@ -1021,8 +1021,8 @@
             "helmet headshot 2": "bfe23e0c6dc8215416489d846c7706d3",
             "insurgency headshot 1": "eeb94b07cbb3102ef71c9de0d29c046c",
             "insurgency headshot 2": "efba9652f655a2decfc9ab1048c63425",
-            "minecraft damage": "a42cff6d6448687c7ec9f678a5e92d9a / 24ca11550dd831ae4b77751dbdb55725",
-            "steve hurt": "5499afe0c704e674f2c6ab4b9da49ce2 / 7b31feb1976bf37fa92034bec4af3dc1",
+            "minecraft damage": "24ca11550dd831ae4b77751dbdb55725",
+            "steve hurt": "5499afe0c704e674f2c6ab4b9da49ce2",
             "minecraft bow ding": "ec37e7657043f456b722e7af78834718",
             "remove": "5873cfba79134ecfec6658f559d8f320"
         },
@@ -1279,7 +1279,8 @@
             "laked sky": "a0488e1997d93d997a04ac4c98a14b60",
             "white diamond": "b398bb97a181f86348cdd271b2f44cab",
             "drastic": "80ef9ad136193b345f559c24b9e84924",
-            "vice": "350ac195878df6428b14cefede86fbd2"
+            "vice": "350ac195878df6428b14cefede86fbd2",
+            "jared flatmore": "ba5f4f1d3276be2e4adfc17f793f7a4e"
         },
         "pf cases": {
             "tier 2": {
@@ -2997,7 +2998,7 @@
             "c2cce731ec61058330d6bce974c166b3",
             "a6a1aa86662153d932b0aef32f0011fb",
             "09f8c2d5c94150c4db35beef31045d04"
-],
+        ],
         "left glove": [
             "5de75379be644ee64d7ad3101d3acce0",
             "d9e318993f8d4b0a91483c5d85711d64",
