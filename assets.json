@@ -1,5 +1,5 @@
 {
-    "version": "v1.6.11",
+    "version": "v1.6.12",
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
         "blue": "38342d3214ad04067e03106bdff41914",
@@ -618,14 +618,36 @@
                 }
             },
             "old": {
+                "unstable build": {
+                    "an94": "ef434b81946e6cc8ab423e5adedd64b1",
+                    "aks74u": "6363b54f7abc85260775d7d958855b43",
+                    "pp19 bizon": "457e37780c1292ba72541ed3e8a4b2e2",
+                    "mg42": "ba6892ed7e880d7201d2c461ae282d37",
+                    "stg44": "f5670e70a94c36d9262cdc696503579b",
+                    "l85a2": "cdfd8ff32c2520b5bbe734b33bcc0e86",
+                    "ak47": "39d03cfbda0a92796fe8cb2e2eb24b5d",
+                    "type 88": "daf0974e10dc106a71485a3d45254bf9",
+                    "mk11": "2c37ccb180ea899ad084845367d46a2c",
+                    "ak74": "23f99f429bfa1cda4ecabf7494822e8c",
+                    "akm": "778130ffa9611b37bf2bb31582aef9bb",
+                    "ak103": "1772dda6cf500869d0ca28840e64ea3d",
+                    "g11k2": "8f915812e2fdeda35e272cde7c3477b8",
+                    "k14": "aa17a41afc19400187aeb56dc1e3b195",
+                    "m231": "16b1a1b335f631da499f99c33ad53a56",
+                    "ak12": "e847e7244dd8c7777ed85f03f7f3dc89",
+                    "groza 1": "fae2fcfd36b733a5980de40228127b11",
+                    "m21": "d9077d40dab42b3987f7653e23f08326",
+                    "ft300": "9d03afbad7e986ffa66456403878ed01",
+                    "m3a1": "70e9ec4992f56500995fc0e9e2011487",
+                    "type 58": "9f3b2fab9459bbaa708503756c8c1bee"
+                },
                 "2022": {
                     "badger": "9604f62b6042d7a09086cb95471bda0f",
                     "ak105": "23f99f429bfa1cda4ecabf7494822e8c",
                     "p90": "fb2e3dc505ff0555925e761712a55ee3",
                     "k1a": "cff103e12b23a55c7b0aefc3de9b25e7",
                     "xix": "2ac38cfcee2ebc19ae67722e9466a158",
-                    "ntw": "24cb3e46f23df97dab7fc04d7d89fc0f",
-                    "an94": "ef434b81946e6cc8ab423e5adedd64b1"
+                    "ntw": "24cb3e46f23df97dab7fc04d7d89fc0f"
                 },
                 "2015": {
                     "ak12": "e5cd8f5f200987cfb873fb441ebd90c2",
@@ -662,7 +684,10 @@
                     "tec 9": "2a5b6bcbb364e750199263960fcd068d",
                     "ump 45": "f9dfc468afb920c4a94b2664a9bf78f2",
                     "m231": "069cdd79ad4b4dddcbf05d05912d8182",
-                    "colt smg": "069cdd79ad4b4dddcbf05d05912d8182"
+                    "colt smg": "069cdd79ad4b4dddcbf05d05912d8182",
+                    "spezi m231": "3a4b5acaac0c6d9b2fcf2c1c7acfb026",
+                    "spezi m16a4": "d52289ab89ef2a008e8f2a81773ad178",
+                    "spezi famas": "662a18192ab8e13ec6691b788dacd41e"
                 }
             },
             "scrapped": {
@@ -814,14 +839,20 @@
                 "deagle": "2a630845f8487b20ac30725e561ad23b",
                 "famas": "28c95287aca0f2b07ca06ecdc6c35a75",
                 "fiveseven": "293b794b25f7cc1d11b45a2444861591",
-                "m4a1-s": "e96d316793c5ec3059dbda107e1c9974",
+                "m4a1 silenced": "e96d316793c5ec3059dbda107e1c9974",
+                "m4a1 unsilenced": "3701121cb81bbef3053185caa8fc36ce",
                 "scout": "00f849280a14ba5500f0952b4f82e29c",
                 "p90": "3f88de2a691f25eaa8a81dff33a2b7ae",
                 "glock": "a3a55fa6b9d87d33ceeb7a838524330a",
                 "usp-s unsilenced": "7ed159cda41eb653697b4db48b438b24",
                 "negev": "d157376bae519e425f34e31b2f46b9e2",
                 "mp7": "91f437a160b2f90244dfcccf75a5a37c",
-                "nova": "3d8e95d2a1ef0952bb2079803c14e453"
+                "nova": "3d8e95d2a1ef0952bb2079803c14e453",
+                "g3sg": "c85fb6970891f54e038ddbc19ac2df7c",
+                "mac-10": "8e292fb5fbbaa6a20abfad6ae28cfe98",
+                "scar20": "36977fda2eda51b066a5e77ad00a6c81",
+                "ump-45": "1db039b252a4fec529e13700b82f73c6",
+                "tec-9": "37605a19def3af546a2ec9054442b9d0"
             },
             "halo": {
                 "h2 br": "58f3ba79d09429d6d5d3304bc26e08bc",
@@ -870,6 +901,7 @@
             },
             "tarkov": {
                 "vss": "6eb64434cd96557f479f3b6415a22e56",
+                "vss (bad cut)": "0cab76e9382acf7767c5073a66993ebc",
                 "akm": "798f241a87ffc6bc45e2dc2c11cb0a5b"
             },
             "insurgency": {
@@ -921,6 +953,13 @@
                 "ar alt": "842dbb77b99c084b1549b6e2a453cd2b",
                 "revolver": "f813bb288c2520d353f25f16d25415e6"
             },
+            "fortnite": {
+                "pump shotgun": "e48e083f10cd22153f8ce152a374ebfe",
+                "spas": "b0b249f3489a7e3aca1d5b6d0590110b",
+                "bolt action": "eec0ee61b119170a6fc07f982882fe1c",
+                "heavy sniper": "a63ac275c9c98d9237e34eccb88e3386",
+                "hunting rifle": "f62bd423930a30fbddc86bad8e61143d"
+            },
             "custom": {
                 "pew": "7eac4541692ca64abc5485b4875b237c",
                 "laser": "ad20c7ec88aeeaa36c6b7147e9a38ae9",
@@ -952,6 +991,7 @@
                 "fart 2": "99bc594bd0d067c099f8b40213f5d2f4",
                 "fart 3": "a64797d879514f2f2830cca05549917c",
                 "failure": "32df361ffb056e84ad68f2d759c9f182",
+                "toy gun": "c48d289b60385409669d7ee8ebb1a832",
                 "remove": "5873cfba79134ecfec6658f559d8f320"
             }
         },
@@ -1024,6 +1064,8 @@
             "minecraft damage": "24ca11550dd831ae4b77751dbdb55725",
             "steve hurt": "5499afe0c704e674f2c6ab4b9da49ce2",
             "minecraft bow ding": "ec37e7657043f456b722e7af78834718",
+            "fortnite shield crack 1": "7a0e39642fe1051d4486dfa8850f9c26",
+            "fortnite shield crack 2": "87b10c7e66e30b7a7a56166518f84801",
             "remove": "5873cfba79134ecfec6658f559d8f320"
         },
         "kill sounds": {
@@ -1053,6 +1095,7 @@
             "mario yahoo": "da7af51dcb12a55e75ce641ff6af06a7",
             "funny tube up": "50f09af16e81115a818b62c5fe584d69",
             "funny tube down": "5de2204b55c685766a890d32637868b6",
+            "cd break": "57fd0d1c447688af358eefbf73b816b0",
             "remove": "5873cfba79134ecfec6658f559d8f320"
         }
     },
