@@ -1,4 +1,4 @@
-# v1.7.2
+# v1.7.3
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -51,10 +51,10 @@ def get_version():
 
     local_readme_first_line = read_lines(README_FILE)[0]
     if readme_first_line[0] == local_readme_first_line:
-        print(f"ReadMe   {GREEN}v{readme_first_line[0]}{DEFAULT}")
+        print(f"ReadMe   {GREEN}{readme_first_line[0]}{DEFAULT}")
     else:
         update_file(README_FILE, readme_lines)
-        print(f"Updated README.md to {BLUE}v{readme_first_line[0]}{DEFAULT}")
+        print(f"Updated README.md to {BLUE}{readme_first_line[0]}{DEFAULT}")
 
     local_fleasion_first_line = read_lines(FLEASION_FILE)[0]
     fleasion_display = fleasion_first_line[0][2:]
@@ -275,7 +275,7 @@ while True:
     if not start: print(" ")
     start = False
     menu = input(
-        f"Enter the number corresponding to what you'd like to do:\n1: {GREEN}Ingame asset replacements{DEFAULT}\n2: {GREEN}Block (experimental, dont use){DEFAULT}\n3: {GREEN}Clear Cache{DEFAULT}\n4: {GREEN}Presets{DEFAULT}\n5: {GREEN}Exit{DEFAULT}\n: ")
+        f"Enter the number corresponding to what you'd like to do:\n1: {GREEN}Ingame asset replacements{DEFAULT}\n2: {GREEN}Presets{DEFAULT}\n3: {GREEN}Block (experimental, dont use){DEFAULT}\n4: {GREEN}Clear Cache{DEFAULT}\n5: {GREEN}Settings{DEFAULT}\n6: {GREEN}Exit{DEFAULT}\n: ")
     if menu == '1':
         print(
             f"\nasset replacements:\n0:  {GREEN}Custom{DEFAULT}\n1:  {GREEN}Sights{DEFAULT}\n2:  {GREEN}Arm model tweaks{DEFAULT}\n3:  {GREEN}Sleeves{DEFAULT}\n4:  {GREEN}No textures{DEFAULT}\n5:  {GREEN}Default skyboxes{DEFAULT}\n6:  {GREEN}Gun skins{DEFAULT}\n7:  {GREEN}Gun Sounds{DEFAULT}\n8:  {GREEN}Gun smoke{DEFAULT}\n9:  {GREEN}Hit tweaks{DEFAULT}\n10: {GREEN}Grenade tweaks{DEFAULT}")
@@ -309,7 +309,22 @@ while True:
                                             ['2eaae4fe3a9fce967af993d27ad68d52'], '5873cfba79134ecfec6658f559d8f320')  # clear okp-7  blue background                                        
                                     case 4:
                                         replace(
-                                            ['30c4d2bb30b6b8c9ac7cfeec5db25a85', '7d5652167ec33ed349e569a55a398705'],
+                                            ['056ac9fb1543db7f94ac27e0e0080017',
+                                            '0caf44cde467ce871a69016beb71e789',
+                                            '4b303cc6d25cca559fd888dab94ed5f4',
+                                            '6d1c0b4317d92a952c0aafa90d11b3c4',
+                                            '6ef07e83a819fbab3ff54dfdd243bf20',
+                                            '70760932258152110631e73281867534',
+                                            'a66168d3c9e79810c2771e8c5dd3dcc8',
+                                            'ad6b8c53c9a03088f72a9d17dcf32677',
+                                            'aed64715b1017b36cad7ac3bd84a2940',
+                                            'bd11d30bbd328e617c40c6db647e677a',
+                                            'c0f0be1314ec8551e77342623eae4561',
+                                            'ce2f07e82ff5c348e979d9659c351e2d',
+                                            'd7765ec294f5f5a53332e7b123ff414a',
+                                            'dbcdb92dabe832e564d2be954f557a75',
+                                            'f6dda093a3fb8789810d6881a4b652e3'
+                                            ],
                                             'd625adff6a3d75081d11b3407b0b417c')  # delta black ring
                                     case 5:
                                         replace(
@@ -401,6 +416,57 @@ while True:
             print(f"{RED}Error: {e}{DEFAULT}")
 
     elif menu == '2':
+        preset_option = input(f"\nPresets:\n1: {GREEN}Load preset{DEFAULT}\n2: {GREEN}Add preset{DEFAULT}\n3: {GREEN}Delete preset{DEFAULT}\n: ")
+
+        if preset_option == '1':
+            if presets:
+                name = preset_check()
+
+                n_asset = 0; r_asset = 1; loops = 1
+                if name:
+                    values = int((len(presets[name])/2)+1)
+                if name in presets:
+                    while loops != values:
+                        replace([presets[name][n_asset]], presets[name][r_asset])
+                        n_asset += 2; r_asset += 2; loops += 1
+                else:
+                    print(f"{RED}{name}{DEFAULT} does not exist.")
+            else:
+                print("No presets available")
+        elif preset_option == '2':
+            new_preset = input("\nEnter preset name\n: ")
+            switch = False; done = False
+            while done == False:
+                prompt = "\nEnter asset replacement\n: " if switch else f"\nEnter asset to change {GREEN}Type 'done' to finish{DEFAULT}\n: "
+                switch = not switch
+                new_value = input(prompt)
+                if new_value == "done":
+                    done = True
+                else:
+                    if new_preset not in presets:
+                        presets[new_preset] = []
+                    presets[new_preset].append(new_value)
+
+                    with open('presets.json', 'w') as f:
+                        json.dump(presets, f, indent=4)
+
+        elif preset_option == '3':
+            if presets:
+                name = preset_check()
+
+                if name in presets:
+                    del presets[name]
+                    with open(presets_file, 'w') as file:
+                        json.dump(presets, file, indent=4)
+                    print(f"{GREEN}{name}{DEFAULT} deleted successfully.")
+                else:
+                    print(f"{RED}{name}{DEFAULT} does not exist.")
+            else:
+                print("No presets available to delete.")
+        else:
+            print("Invalid option")
+
+    elif menu == '3':
         blockwarn = input(
             f"\n{RED}Warning: This is highly experimental and volatile to causing errors, requiring run.bat to be ran as admin to use. Only continue if you are aware of what youre doing.\nType 'done' to proceed, anything else will cancel.\n{DEFAULT}")
         if blockwarn == "done":
@@ -465,7 +531,7 @@ while True:
         else:
             pass
 
-    elif menu == '3':
+    elif menu == '4':
         resetkwarn = input(
             f"\n{RED}Warning: This will fully reset all tweaks and anything loaded from any game.\nType 'done' to proceed, anything else will cancel.\n{DEFAULT}")
         if resetkwarn == "done":
@@ -490,58 +556,64 @@ while True:
             delete_all_in_directory(folder_path)
             print("Cleared cache, rejoin relevant experiences")
 
-    elif menu == '4':
-        preset_option = input(f"\nPresets:\n1: {GREEN}Load preset{DEFAULT}\n2: {GREEN}Add preset{DEFAULT}\n3: {GREEN}Delete preset{DEFAULT}\n: ")
-
-        if preset_option == '1':
-            if presets:
-                name = preset_check()
-
-                n_asset = 0; r_asset = 1; loops = 1
-                if name:
-                    values = int((len(presets[name])/2)+1)
-                if name in presets:
-                    while loops != values:
-                        replace([presets[name][n_asset]], presets[name][r_asset])
-                        n_asset += 2; r_asset += 2; loops += 1
-                else:
-                    print(f"{RED}{name}{DEFAULT} does not exist.")
-            else:
-                print("No presets available")
-        elif preset_option == '2':
-            new_preset = input("\nEnter preset name\n: ")
-            switch = False; done = False
-            while done == False:
-                prompt = "\nEnter asset replacement\n: " if switch else f"\nEnter asset to change {GREEN}Type 'done' to finish{DEFAULT}\n: "
-                switch = not switch
-                new_value = input(prompt)
-                if new_value == "done":
-                    done = True
-                else:
-                    if new_preset not in presets:
-                        presets[new_preset] = []
-                    presets[new_preset].append(new_value)
-
-                    with open('presets.json', 'w') as f:
-                        json.dump(presets, f, indent=4)
-
-        elif preset_option == '3':
-            if presets:
-                name = preset_check()
-
-                if name in presets:
-                    del presets[name]
-                    with open(presets_file, 'w') as file:
-                        json.dump(presets, file, indent=4)
-                    print(f"{GREEN}{name}{DEFAULT} deleted successfully.")
-                else:
-                    print(f"{RED}{name}{DEFAULT} does not exist.")
-            else:
-                print("No presets available to delete.")
-        else:
-            print("Invalid option")
-
     elif menu == '5':
+        b_path = os.path.join(os.getenv('LOCALAPPDATA'), 'Bloxstrap', 'Modifications')
+        Cset = ["ClientSettings", "ClientAppSettings.json"]
+        settings_file_path = os.path.join(b_path, *Cset)
+
+        cache_flags = {
+            "DFIntNumAssetsMaxToPreload": "9999999",
+            "DFIntAssetPreloading": "9999999",
+            "DFIntHttpCacheCleanMinFilesRequired": "9999999"
+        }
+
+        if not os.path.exists(b_path):
+            print(f"{RED}Bloxstrap not found{DEFAULT}")
+        else:
+            if not os.path.exists(settings_file_path):
+                print(f"{RED}Settings file not found: {settings_file_path}{DEFAULT}")
+            else:
+                with open(settings_file_path, 'r') as file:
+                    settings_data = json.load(file)
+
+                cacheclear = "False"
+                for key, value in cache_flags.items():
+                    if settings_data.get(key) != value:
+                        cacheclear = "True"
+                        break
+
+                cache_color = RED if cacheclear == "False" else BLUE
+
+                print(
+                    f"\nSettings:\n1:  {GREEN}Auto Cache Clear : {cache_color}{cacheclear}{DEFAULT}\n"
+                )
+
+                settings = input(": ")
+                try:
+                    match int(settings):
+                        case 1:
+                            if cacheclear == "False":
+                                for key in cache_flags.keys():
+                                    settings_data.pop(key, None)
+                                cacheclear = "True"; val2 = "True"; val_color = BLUE
+                            else:
+                                settings_data.update(cache_flags)
+                                cacheclear = "False"; val2 = "False"; val_color = RED
+                            val = "Auto Cache Clear";
+                        case _:
+                            print("Invalid number.")
+
+                    with open(settings_file_path, 'w') as file:
+                        json.dump(settings_data, file, indent=4)
+
+                    print(f"\n{GREEN}Successfully changed {BLUE}{val}{GREEN} to {val_color}{val2}{DEFAULT}!")
+
+                except ValueError:
+                    print(f"{RED}Invalid input. Please enter a number.{DEFAULT}")
+                except Exception as e:
+                    print(f"{RED}Error: {e}{DEFAULT}")
+
+    elif menu == '6':
         print("\nExiting the program.")
         break
 
