@@ -1,4 +1,4 @@
-# v1.7.5
+# v1.7.6
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -429,16 +429,16 @@ while True:
             if presets:
                 name = preset_check()
 
-                n_asset = 0;
-                r_asset = 1;
+                n_asset = 0
+                r_asset = 1
                 loops = 1
                 if name:
                     values = int((len(presets[name]) / 2) + 1)
                 if name in presets:
                     while loops != values:
                         replace([presets[name][n_asset]], presets[name][r_asset])
-                        n_asset += 2;
-                        r_asset += 2;
+                        n_asset += 2
+                        r_asset += 2
                         loops += 1
                 else:
                     print(f"{RED}{name}{DEFAULT} does not exist.")
@@ -617,7 +617,7 @@ while True:
                 cache_color = RED if cacheclear == "False" else BLUE
 
                 print(
-                    f"\nSettings:\n1:  {GREEN}Auto Cache Clear : {cache_color}{cacheclear}{DEFAULT}\n"
+                    f"\nSettings:\n1: {GREEN}Auto Cache Clear : {cache_color}{cacheclear}{DEFAULT}\n"
                 )
 
                 settings = input(": ")
@@ -627,15 +627,15 @@ while True:
                             if cacheclear == "False":
                                 for key in cache_flags.keys():
                                     settings_data.pop(key, None)
-                                cacheclear = "True";
-                                val2 = "True";
+                                cacheclear = "True"
+                                val2 = "True"
                                 val_color = BLUE
                             else:
                                 settings_data.update(cache_flags)
-                                cacheclear = "False";
-                                val2 = "False";
+                                cacheclear = "False"
+                                val2 = "False"
                                 val_color = RED
-                            val = "Auto Cache Clear";
+                            val = "Auto Cache Clear"
                         case _:
                             print("Invalid number.")
 
