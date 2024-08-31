@@ -1,4 +1,4 @@
-# v1.7.4
+# v1.7.5
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -114,7 +114,7 @@ def dlist(area):
         match = {}
         print(f"\nAvailable keys in {GREEN}{' -> '.join(path)}{DEFAULT}:")
         for j, key in enumerate(current_level):
-            match[str(j+1)] = key
+            match[str(j + 1)] = key
             print(f"{j + 1}: {' ' if j < 9 else ''}{GREEN}{key}{DEFAULT}")
 
         user_input = input(
@@ -206,7 +206,7 @@ def preset_check():
             return None
     else:
         return choice
-    
+
 
 get_version()
 
@@ -229,18 +229,21 @@ while mod_cache == False or pf_cache == False:
     if os.path.exists(mod_cache_check_path) and mod_cache == False:
         print(f"{GREEN}Modding{DEFAULT} cache detected")
         mod_cache = True
+
     if os.path.exists(pf_cache_check_path) and pf_cache == False:
         print(f"{GREEN}PF{DEFAULT} cache detected")
         pf_cache = True
+
     if mod_cache == True and pf_cache == True:
         time.sleep(1)
         os.system('cls')
-    
+
 with open('assets.json', 'r') as file:
     data = json.load(file)
 
 with open('presets.json', 'r') as file:
     presets = json.load(file)
+
 
 def replace(files_to_delete, file_to_replace):
     try:
@@ -266,6 +269,7 @@ def replace(files_to_delete, file_to_replace):
             pass
         else:
             print(f'{RED}An error occurred: {e}{DEFAULT}\n')
+
 
 def get_hashes():
     output = []
@@ -331,7 +335,7 @@ def get_hashes():
                     case 2:
                         output.append((data["arm models"]["bare arms"], "5873cfba79134ecfec6658f559d8f320"))
                         output.append((['f5b0bcba5570d196909a78c7a697467c', '7f828aee555e5e1161d4b39faddda970'],
-                                'c9672591983da8fffedb9cec7df1e521'))
+                                       'c9672591983da8fffedb9cec7df1e521'))
                     case 3:
                         delete_stuff(data["arm models"]["everything"])
                     case _:
@@ -368,7 +372,8 @@ def get_hashes():
                     case 2:
                         output.append((['a177d2c00abd3e550b873d76c97ad960'], dlist("replacement sounds")))
                     case 3:
-                        output.append((data["replacement sounds"]["kill sounds"]["default"], dlist("replacement sounds")))
+                        output.append(
+                            (data["replacement sounds"]["kill sounds"]["default"], dlist("replacement sounds")))
                     case _:
                         print("Enter a Valid Option!")
             case 10:
@@ -390,7 +395,8 @@ def get_hashes():
                             case _:
                                 print("Enter a Valid Option!")
                     case 2:
-                        output.append((data["replacement sounds"]["explosions"]["default"], dlist("replacement sounds")))
+                        output.append(
+                            (data["replacement sounds"]["explosions"]["default"], dlist("replacement sounds")))
                     case 3:
                         output.append(([dlist("grenade sounds")], dlist("replacement sounds")))
                     case _:
@@ -401,6 +407,7 @@ def get_hashes():
         print(f"{RED}Error: {e}{DEFAULT}")
 
     return output
+
 
 print(f"Welcome to: {GREEN}Fleasion!{DEFAULT}\n")
 start = True
@@ -463,7 +470,7 @@ while True:
                     json.dump(presets, f, indent=4)
                     print(f"{BLUE}Preset saved{DEFAULT}")
                 repeat = input("Continue editing preset? (y/n)\n: ").lower()
-                if repeat != 'y':
+                if repeat == 'n':
                     break
 
         elif preset_option == '3':
@@ -577,6 +584,7 @@ while True:
                     except Exception as e:
                         print(f'{RED}Error: {e}{DEFAULT}')
 
+
                 delete_all_in_directory(folder_path)
                 print("Cleared cache, rejoin relevant experiences")
 
@@ -619,10 +627,14 @@ while True:
                             if cacheclear == "False":
                                 for key in cache_flags.keys():
                                     settings_data.pop(key, None)
-                                cacheclear = "True"; val2 = "True"; val_color = BLUE
+                                cacheclear = "True";
+                                val2 = "True";
+                                val_color = BLUE
                             else:
                                 settings_data.update(cache_flags)
-                                cacheclear = "False"; val2 = "False"; val_color = RED
+                                cacheclear = "False";
+                                val2 = "False";
+                                val_color = RED
                             val = "Auto Cache Clear";
                         case _:
                             print("Invalid number.")
