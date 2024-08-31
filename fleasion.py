@@ -1,4 +1,4 @@
-# v1.7.6
+# v1.8.0
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -9,6 +9,7 @@ import time
 import json
 import webbrowser
 import requests
+import platform
 from pathlib import Path
 
 README_URL = 'https://raw.githubusercontent.com/CroppingFlea479/Fleasion/main/README.md'
@@ -210,7 +211,15 @@ def preset_check():
 
 get_version()
 
-folder_path = os.path.join(os.getenv('TEMP'), 'roblox', 'http')
+os_name = platform.system()
+
+if os_name == "Windows":
+    folder_path = os.path.join(os.getenv('TEMP'), 'roblox', 'http')
+elif os_name == "Linux":
+    folder_path = os.path.expanduser("~/.var/app/org.vinegarhq.Sober/cache/sober/http")
+else:
+    print(f"Unsupported OS - {os}")
+    exit()
 
 mod_cache = False
 pf_cache = False
