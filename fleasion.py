@@ -1,4 +1,4 @@
-# v1.7.3
+# v1.7.4
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -229,11 +229,9 @@ while mod_cache == False or pf_cache == False:
     if os.path.exists(mod_cache_check_path) and mod_cache == False:
         print(f"{GREEN}Modding{DEFAULT} cache detected")
         mod_cache = True
-
     if os.path.exists(pf_cache_check_path) and pf_cache == False:
         print(f"{GREEN}PF{DEFAULT} cache detected")
         pf_cache = True
-
     if mod_cache == True and pf_cache == True:
         time.sleep(1)
         os.system('cls')
@@ -269,186 +267,204 @@ def replace(files_to_delete, file_to_replace):
         else:
             print(f'{RED}An error occurred: {e}{DEFAULT}\n')
 
+def get_hashes():
+    output = []
+    print(
+        f"\nasset replacements:\n0:  {GREEN}Custom{DEFAULT}\n1:  {GREEN}Sights{DEFAULT}\n2:  {GREEN}Arm model tweaks{DEFAULT}\n3:  {GREEN}Sleeves{DEFAULT}\n4:  {GREEN}No textures{DEFAULT}\n5:  {GREEN}Default skyboxes{DEFAULT}\n6:  {GREEN}Gun skins{DEFAULT}\n7:  {GREEN}Gun Sounds{DEFAULT}\n8:  {GREEN}Gun smoke{DEFAULT}\n9:  {GREEN}Hit tweaks{DEFAULT}\n10: {GREEN}Grenade tweaks{DEFAULT}")
+    options = input(": ")
+    try:
+        match int(options):
+            case 0:
+                output.append(([input("\nEnter asset to change: ")], input("Enter replacement: ")))
+            case 1:
+                sight_option = input(
+                    f"\nEnter sight option:\n1: {GREEN}Reticle tweaks{DEFAULT}\n2: {GREEN}Sight model tweaks{DEFAULT}\n3: {GREEN}Ballistics tracker tweaks{DEFAULT}\n: ")
+                try:
+                    match int(sight_option):
+                        case 1:
+                            reticle = dlist("reticles")
+                            reticle_replacement = dlist("reticle replacement")
+                            if reticle and reticle_replacement:
+                                output.append(([reticle], reticle_replacement))
+                        case 2:
+                            sightbackground = input(
+                                f"\nEnter background tweak:\n1: {GREEN}clear coyote blue background{DEFAULT}\n2: {GREEN}clear reflex blue background{DEFAULT}\n3: {GREEN}clear okp-7 blue background{DEFAULT}\n4: {GREEN}clear delta black ring{DEFAULT}\n5: {GREEN}remove sniper black circle{DEFAULT}\n6: {GREEN}remove glass hack border{DEFAULT}\n: ")
+                            match int(sightbackground):
+                                case 1:
+                                    output.append((
+                                        ['3fc9141fc7c1167c575b9361a98f04c0'],
+                                        '5873cfba79134ecfec6658f559d8f320'))  # clear coyote blue background
+                                case 2:
+                                    output.append((
+                                        ['2eaae4fe3a9fce967af993d27ad68d52'],
+                                        '5873cfba79134ecfec6658f559d8f320'))  # clear reflex blue background
+                                case 3:
+                                    output.append((
+                                        ['2eaae4fe3a9fce967af993d27ad68d52'],
+                                        '5873cfba79134ecfec6658f559d8f320'))  # clear okp-7  blue background
+                                case 4:
+                                    output.append((
+                                        ['30c4d2bb30b6b8c9ac7cfeec5db25a85', '7d5652167ec33ed349e569a55a398705'],
+                                        'd625adff6a3d75081d11b3407b0b417c'))  # delta black ring
+                                case 5:
+                                    output.append((
+                                        ['a883a2373ad6931556dce946c50c3690 ', '5a2a41b0da7ec98bf25780bb3f5d071f '],
+                                        'd625adff6a3d75081d11b3407b0b417c'))  # remove sniper junk
+                                case 6:
+                                    output.append((
+                                        ['1764672fe43c9f1d129b3d51dc3c40ee'],
+                                        'd625adff6a3d75081d11b3407b0b417c'))  # remove sniper junk
+                                case _:
+                                    print("Invalid option")
+                        case 3:
+                            output.append(([data["ballistics tracker"]["default"]], dlist("ballistics tracker")))
+                        case _:
+                            print("Invalid option")
+                except Exception as e:
+                    print(f"{RED}Error: {e}{DEFAULT}")
+            case 2:
+                arm_option = input(
+                    f"\nEnter arm option:\n1: {GREEN}Remove options{DEFAULT}\n2: {GREEN}Bone arms{DEFAULT}\n3: {GREEN}Default arms{DEFAULT}\n: ")
+                match int(arm_option):
+                    case 1:
+                        output.append((dlist('arm models'), '5873cfba79134ecfec6658f559d8f320'))
+                    case 2:
+                        output.append((data["arm models"]["bare arms"], "5873cfba79134ecfec6658f559d8f320"))
+                        output.append((['f5b0bcba5570d196909a78c7a697467c', '7f828aee555e5e1161d4b39faddda970'],
+                                'c9672591983da8fffedb9cec7df1e521'))
+                    case 3:
+                        delete_stuff(data["arm models"]["everything"])
+                    case _:
+                        print("Enter a Valid Option!")
+            case 3:
+                output.append((['aa33dd87fc9db92e891361e069da1849'], dlist("skins")))
+            case 4:
+                output.append((data["textures"], 'd625adff6a3d75081d11b3407b0b417c'))  # no textures without downside
+            case 5:
+                sky_option = input(
+                    f"\nIs Bloxstrap sky folder setup?\n1: {GREEN}yes{DEFAULT}\n2: {GREEN}no{DEFAULT}\n: ")
+                match int(sky_option):
+                    case 1:
+                        output.append((data["skyboxes"], 'd625adff6a3d75081d11b3407b0b417c'))  # forced default skybox
+                    case 2:
+                        bloxstrap()
+                    case _:
+                        print("Enter a Valid Option!")
+            case 6:
+                output.append(([dlist("gun skins")], dlist("skins")))
+            case 7:
+                sound = dlist("gun sounds")
+                sound_replacement = dlist("replacement sounds")
+                if sound and sound_replacement:
+                    output.append(([sound], sound_replacement))
+            case 8:
+                output.append((['8194373fb18740071f5e885bab349252'], dlist("gun smoke")))
+            case 9:  #
+                hit_option = input(
+                    f"\nEnter hit option:\n1: {GREEN}Hitmarkers{DEFAULT}\n2: {GREEN}Hit sounds{DEFAULT}\n3: {GREEN}Kill sounds{DEFAULT}\n: ")
+                match int(hit_option):
+                    case 1:
+                        output.append((['097165b476243d2095ef0a256320b06a'], dlist("hitmarker")))  # hitmarkers
+                    case 2:
+                        output.append((['a177d2c00abd3e550b873d76c97ad960'], dlist("replacement sounds")))
+                    case 3:
+                        output.append((data["replacement sounds"]["kill sounds"]["default"], dlist("replacement sounds")))
+                    case _:
+                        print("Enter a Valid Option!")
+            case 10:
+                boom_option = input(
+                    f"\nEnter grenade option:\n1: {GREEN}Model tweaks{DEFAULT}\n2: {GREEN}Explosion sound{DEFAULT}\n3: {GREEN}Grenade sound{DEFAULT} \n: ")
+                match int(boom_option):
+                    case 1:
+                        model_option = input(
+                            f"\nEnter Model option:\n1: {GREEN}RGD{DEFAULT}\n2: {GREEN}Bundle{DEFAULT}\n: ")
+                        match int(model_option):
+                            case 1:
+                                output.append((data["grenades"]["rgd"]["junk"], "5873cfba79134ecfec6658f559d8f320"))
+                                output.append(([data["grenades"]["rgd"]["main"]], dlist("grenades")))
+                                output.append(([data["grenades"]["rgd"]["texture"]], dlist("grenades")))
+                            case 2:
+                                output.append((data["grenades"]["bundle"]["junk"], "5873cfba79134ecfec6658f559d8f320"))
+                                output.append((data["grenades"]["bundle"]["main"], dlist("grenades")))
+                                output.append((data["grenades"]["bundle"]["texture"], dlist("grenades")))
+                            case _:
+                                print("Enter a Valid Option!")
+                    case 2:
+                        output.append((data["replacement sounds"]["explosions"]["default"], dlist("replacement sounds")))
+                    case 3:
+                        output.append(([dlist("grenade sounds")], dlist("replacement sounds")))
+                    case _:
+                        print("Enter a Valid Option!")
+            case _:
+                print("Invalid number.")
+    except Exception as e:
+        print(f"{RED}Error: {e}{DEFAULT}")
+
+    return output
+
 print(f"Welcome to: {GREEN}Fleasion!{DEFAULT}\n")
 start = True
 while True:
     if not start: print(" ")
     start = False
     menu = input(
-        f"Enter the number corresponding to what you'd like to do:\n1: {GREEN}Ingame asset replacements{DEFAULT}\n2: {GREEN}Presets{DEFAULT}\n3: {GREEN}Block (experimental, dont use){DEFAULT}\n4: {GREEN}Clear Cache{DEFAULT}\n5: {GREEN}Settings{DEFAULT}\n6: {GREEN}Exit{DEFAULT}\n: ")
+        f"Enter the number corresponding to what you'd like to do:\n1: {GREEN}Ingame asset replacements{DEFAULT}\n2: {GREEN}Presets{DEFAULT}\n3: {GREEN}Block (experimental, dont use){DEFAULT}\n4: {GREEN}Cache Settings{DEFAULT}\n5: {GREEN}Settings{DEFAULT}\n6: {GREEN}Exit{DEFAULT}\n: ")
     if menu == '1':
-        print(
-            f"\nasset replacements:\n0:  {GREEN}Custom{DEFAULT}\n1:  {GREEN}Sights{DEFAULT}\n2:  {GREEN}Arm model tweaks{DEFAULT}\n3:  {GREEN}Sleeves{DEFAULT}\n4:  {GREEN}No textures{DEFAULT}\n5:  {GREEN}Default skyboxes{DEFAULT}\n6:  {GREEN}Gun skins{DEFAULT}\n7:  {GREEN}Gun Sounds{DEFAULT}\n8:  {GREEN}Gun smoke{DEFAULT}\n9:  {GREEN}Hit tweaks{DEFAULT}\n10: {GREEN}Grenade tweaks{DEFAULT}")
-        options = input(": ")
-        try:
-            match int(options):
-                case 0:
-                    replace([input("\nEnter asset to change: ")], input("Enter replacement: "))
-                case 1:
-                    sight_option = input(
-                        f"\nEnter sight option:\n1: {GREEN}Reticle tweaks{DEFAULT}\n2: {GREEN}Sight model tweaks{DEFAULT}\n3: {GREEN}Ballistics tracker tweaks{DEFAULT}\n: ")
-                    try:
-                        match int(sight_option):
-                            case 1:
-                                reticle = dlist("reticles")
-                                reticle_replacement = dlist("reticle replacement")
-                                if reticle and reticle_replacement:
-                                    replace([reticle], reticle_replacement)
-                            case 2:
-                                sightbackground = input(
-                                    f"\nEnter background tweak:\n1: {GREEN}clear coyote blue background{DEFAULT}\n2: {GREEN}clear reflex blue background{DEFAULT}\n3: {GREEN}clear okp-7 blue background{DEFAULT}\n4: {GREEN}clear delta black ring{DEFAULT}\n5: {GREEN}remove sniper black circle{DEFAULT}\n6: {GREEN}remove glass hack border{DEFAULT}\n: ")
-                                match int(sightbackground):
-                                    case 1:
-                                        replace(
-                                            ['3fc9141fc7c1167c575b9361a98f04c0'],'5873cfba79134ecfec6658f559d8f320')  # clear coyote blue background
-                                    case 2:
-                                        replace(
-                                            ['2eaae4fe3a9fce967af993d27ad68d52'], '5873cfba79134ecfec6658f559d8f320')  # clear reflex blue background
-                                    case 3:
-                                        replace(
-                                            ['2eaae4fe3a9fce967af993d27ad68d52'], '5873cfba79134ecfec6658f559d8f320')  # clear okp-7  blue background                                        
-                                    case 4:
-                                        replace(
-                                            ['056ac9fb1543db7f94ac27e0e0080017',
-                                            '0caf44cde467ce871a69016beb71e789',
-                                            '4b303cc6d25cca559fd888dab94ed5f4',
-                                            '6d1c0b4317d92a952c0aafa90d11b3c4',
-                                            '6ef07e83a819fbab3ff54dfdd243bf20',
-                                            '70760932258152110631e73281867534',
-                                            'a66168d3c9e79810c2771e8c5dd3dcc8',
-                                            'ad6b8c53c9a03088f72a9d17dcf32677',
-                                            'aed64715b1017b36cad7ac3bd84a2940',
-                                            'bd11d30bbd328e617c40c6db647e677a',
-                                            'c0f0be1314ec8551e77342623eae4561',
-                                            'ce2f07e82ff5c348e979d9659c351e2d',
-                                            'd7765ec294f5f5a53332e7b123ff414a',
-                                            'dbcdb92dabe832e564d2be954f557a75',
-                                            'f6dda093a3fb8789810d6881a4b652e3'
-                                            ],
-                                            'd625adff6a3d75081d11b3407b0b417c')  # delta black ring
-                                    case 5:
-                                        replace(
-                                            ['a883a2373ad6931556dce946c50c3690 ', '5a2a41b0da7ec98bf25780bb3f5d071f '],
-                                            'd625adff6a3d75081d11b3407b0b417c')  # remove sniper junk       
-                                    case 6:
-                                        replace(
-                                            ['1764672fe43c9f1d129b3d51dc3c40ee'],
-                                            'd625adff6a3d75081d11b3407b0b417c')  # remove sniper junk                                                                              
-                                    case _:
-                                        print("Invalid option")
-                            case 3:
-                                replace([data["ballistics tracker"]["default"]], dlist("ballistics tracker"))
-                            case _:
-                                print("Invalid option")
-                    except Exception as e:
-                        print(f"{RED}Error: {e}{DEFAULT}")
-                case 2:
-                    arm_option = input(f"\nEnter arm option:\n1: {GREEN}Remove options{DEFAULT}\n2: {GREEN}Bone arms{DEFAULT}\n3: {GREEN}Default arms{DEFAULT}\n: ")
-                    match int(arm_option):
-                        case 1:
-                            replace(dlist('arm models'), '5873cfba79134ecfec6658f559d8f320')
-                        case 2:
-                            replace(data["arm models"]["bare arms"], "5873cfba79134ecfec6658f559d8f320")
-                            replace(['f5b0bcba5570d196909a78c7a697467c', '7f828aee555e5e1161d4b39faddda970'],
-                                    'c9672591983da8fffedb9cec7df1e521')
-                        case 3:
-                            delete_stuff(data["arm models"]["everything"])
-                        case _:
-                            print("Enter a Valid Option!")
-                case 3:
-                    replace(['aa33dd87fc9db92e891361e069da1849'], dlist("skins"))
-                case 4:
-                    replace(data["textures"], 'd625adff6a3d75081d11b3407b0b417c')  # no textures without downside
-                case 5:
-                    sky_option = input(f"\nIs Bloxstrap sky folder setup?\n1: {GREEN}yes{DEFAULT}\n2: {GREEN}no{DEFAULT}\n: ")
-                    match int(sky_option):
-                        case 1:
-                            replace(data["skyboxes"], 'd625adff6a3d75081d11b3407b0b417c')  # forced default skybox
-                        case 2:
-                            bloxstrap()
-                        case _:
-                            print("Enter a Valid Option!")
-                case 6:
-                    replace([dlist("gun skins")], dlist("skins"))
-                case 7:
-                    sound = dlist("gun sounds")
-                    sound_replacement = dlist("replacement sounds")
-                    if sound and sound_replacement:
-                        replace([sound], sound_replacement)
-                case 8:
-                    replace(['8194373fb18740071f5e885bab349252'], dlist("gun smoke"))
-                case 9:#
-                    hit_option = input(f"\nEnter hit option:\n1: {GREEN}Hitmarkers{DEFAULT}\n2: {GREEN}Hit sounds{DEFAULT}\n3: {GREEN}Kill sounds{DEFAULT}\n: ")
-                    match int(hit_option):
-                        case 1:
-                            replace(['097165b476243d2095ef0a256320b06a'], dlist("hitmarker"))  # hitmarkers
-                        case 2:
-                            replace(['a177d2c00abd3e550b873d76c97ad960'], dlist("replacement sounds"))
-                        case 3:
-                            replace(data["replacement sounds"]["kill sounds"]["default"], dlist("replacement sounds"))
-                        case _:
-                            print("Enter a Valid Option!")
-                case 10:
-                    boom_option = input(f"\nEnter grenade option:\n1: {GREEN}Model tweaks{DEFAULT}\n2: {GREEN}Explosion sound{DEFAULT}\n3: {GREEN}Grenade sound{DEFAULT} \n: ")
-                    match int(boom_option):
-                        case 1:
-                            model_option = input(f"\nEnter Model option:\n1: {GREEN}RGD{DEFAULT}\n2: {GREEN}Bundle{DEFAULT}\n: ")
-                            match int(model_option):
-                                case 1:
-                                    replace(data["grenades"]["rgd"]["junk"], "5873cfba79134ecfec6658f559d8f320")
-                                    replace([data["grenades"]["rgd"]["main"]], dlist("grenades"))
-                                    replace([data["grenades"]["rgd"]["texture"]], dlist("grenades"))
-                                case 2:
-                                    replace(data["grenades"]["bundle"]["junk"], "5873cfba79134ecfec6658f559d8f320")
-                                    replace(data["grenades"]["bundle"]["main"], dlist("grenades"))
-                                    replace(data["grenades"]["bundle"]["texture"], dlist("grenades"))
-                                case _:
-                                    print("Enter a Valid Option!")
-                        case 2:
-                            replace(data["replacement sounds"]["explosions"]["default"], dlist("replacement sounds"))
-                        case 3:
-                            replace([dlist("grenade sounds")], dlist("replacement sounds"))
-                        case _:
-                            print("Enter a Valid Option!")
-                case _:
-                    print("Invalid number.")
-        except Exception as e:
-            print(f"{RED}Error: {e}{DEFAULT}")
+        replacements = get_hashes()
+        for replacement in replacements:
+            replace(replacement[0], replacement[1])
 
     elif menu == '2':
-        preset_option = input(f"\nPresets:\n1: {GREEN}Load preset{DEFAULT}\n2: {GREEN}Add preset{DEFAULT}\n3: {GREEN}Delete preset{DEFAULT}\n: ")
+        preset_option = input(
+            f"\nPresets:\n1: {GREEN}Load preset{DEFAULT}\n2: {GREEN}Add preset{DEFAULT}\n3: {GREEN}Delete preset{DEFAULT}\n: ")
 
         if preset_option == '1':
             if presets:
                 name = preset_check()
 
-                n_asset = 0; r_asset = 1; loops = 1
+                n_asset = 0;
+                r_asset = 1;
+                loops = 1
                 if name:
-                    values = int((len(presets[name])/2)+1)
+                    values = int((len(presets[name]) / 2) + 1)
                 if name in presets:
                     while loops != values:
                         replace([presets[name][n_asset]], presets[name][r_asset])
-                        n_asset += 2; r_asset += 2; loops += 1
+                        n_asset += 2;
+                        r_asset += 2;
+                        loops += 1
                 else:
                     print(f"{RED}{name}{DEFAULT} does not exist.")
             else:
                 print("No presets available")
+
         elif preset_option == '2':
             new_preset = input("\nEnter preset name\n: ")
-            switch = False; done = False
-            while done == False:
-                prompt = "\nEnter asset replacement\n: " if switch else f"\nEnter asset to change {GREEN}Type 'done' to finish{DEFAULT}\n: "
-                switch = not switch
-                new_value = input(prompt)
-                if new_value == "done":
-                    done = True
-                else:
-                    if new_preset not in presets:
-                        presets[new_preset] = []
-                    presets[new_preset].append(new_value)
-
-                    with open('presets.json', 'w') as f:
-                        json.dump(presets, f, indent=4)
+            if new_preset not in presets:
+                presets[new_preset] = []
+            while True:
+                replacements = get_hashes()
+                for replacement in replacements:
+                    if isinstance(replacement[1], list):
+                        if len(replacement[0]) == len(replacement[1]):
+                            for i, replace in replacement[0]:
+                                presets[new_preset].append(replace)
+                                presets[new_preset].append(replacement[1][i])
+                                print(f"{BLUE}Added successfully ({replace} -> {replacement[1][i]}){DEFAULT}")
+                        else:
+                            print(f"{RED}This replacement is not supported, changes not applied{DEFAULT}")
+                            presets[new_preset] = []
+                    else:
+                        for replace in replacements[0][0]:
+                            presets[new_preset].append(replace)
+                            presets[new_preset].append(replacement[1])
+                            print(f"{BLUE}Added successfully ({replace} -> {replacement[1]}){DEFAULT}")
+                with open('presets.json', 'w') as f:
+                    json.dump(presets, f, indent=4)
+                    print(f"{BLUE}Preset saved{DEFAULT}")
+                repeat = input("Continue editing preset? (y/n)\n: ").lower()
+                if repeat != 'y':
+                    break
 
         elif preset_option == '3':
             if presets:
@@ -456,13 +472,14 @@ while True:
 
                 if name in presets:
                     del presets[name]
-                    with open(presets_file, 'w') as file:
+                    with open("presets.json", 'w') as file:
                         json.dump(presets, file, indent=4)
                     print(f"{GREEN}{name}{DEFAULT} deleted successfully.")
                 else:
                     print(f"{RED}{name}{DEFAULT} does not exist.")
             else:
                 print("No presets available to delete.")
+
         else:
             print("Invalid option")
 
@@ -532,29 +549,36 @@ while True:
             pass
 
     elif menu == '4':
-        resetkwarn = input(
-            f"\n{RED}Warning: This will fully reset all tweaks and anything loaded from any game.\nType 'done' to proceed, anything else will cancel.\n{DEFAULT}")
-        if resetkwarn == "done":
-            def delete_all_in_directory(directory):
-                try:
-                    if os.path.exists(directory):
-                        for filename in os.listdir(directory):
-                            file_path = os.path.join(directory, filename)
-                            try:
-                                if os.path.isfile(file_path) or os.path.islink(file_path):
-                                    os.unlink(file_path)
-                                elif os.path.isdir(file_path):
-                                    shutil.rmtree(file_path)
-                            except Exception as e:
-                                print(f'Failed to delete {file_path}. Reason: {e}')
-                    else:
-                        print(f'{RED}The directory {directory} does not exist.{DEFAULT}')
-                except Exception as e:
-                    print(f'{RED}Error: {e}{DEFAULT}')
+        menu = input(
+            f"\nEnter the number corresponding to what you'd like to do:\n1: {GREEN}Revert replacement{DEFAULT}\n2: {GREEN}Clear full cache{DEFAULT}\n: ")
+        if menu == '1':
+            replacements = get_hashes()
+            for replacement in replacements:
+                delete_stuff(replacement[0])
 
+        elif menu == '2':
+            resetkwarn = input(
+                f"\n{RED}Warning: This will fully reset all tweaks and anything loaded from any game.\nType 'done' to proceed, anything else will cancel.\n{DEFAULT}")
+            if resetkwarn == "done":
+                def delete_all_in_directory(directory):
+                    try:
+                        if os.path.exists(directory):
+                            for filename in os.listdir(directory):
+                                file_path = os.path.join(directory, filename)
+                                try:
+                                    if os.path.isfile(file_path) or os.path.islink(file_path):
+                                        os.unlink(file_path)
+                                    elif os.path.isdir(file_path):
+                                        shutil.rmtree(file_path)
+                                except Exception as e:
+                                    print(f'Failed to delete {file_path}. Reason: {e}')
+                        else:
+                            print(f'{RED}The directory {directory} does not exist.{DEFAULT}')
+                    except Exception as e:
+                        print(f'{RED}Error: {e}{DEFAULT}')
 
-            delete_all_in_directory(folder_path)
-            print("Cleared cache, rejoin relevant experiences")
+                delete_all_in_directory(folder_path)
+                print("Cleared cache, rejoin relevant experiences")
 
     elif menu == '5':
         b_path = os.path.join(os.getenv('LOCALAPPDATA'), 'Bloxstrap', 'Modifications')
