@@ -475,7 +475,6 @@ while True:
                 presets[new_preset] = []
             while True:
                 replacements = get_hashes()
-                print(replacements)
                 for replacement in replacements:
                     if isinstance(replacement[1], list):
                         if len(replacement[0]) == len(replacement[1]):
