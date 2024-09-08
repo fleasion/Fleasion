@@ -1,4 +1,4 @@
-# v1.8.0
+# v1.8.1
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -283,7 +283,7 @@ def replace(files_to_delete, file_to_replace):
 def get_hashes():
     output = []
     print(
-        f"\nasset replacements:\n0:  {GREEN}Custom{DEFAULT}\n1:  {GREEN}Sights{DEFAULT}\n2:  {GREEN}Arm model tweaks{DEFAULT}\n3:  {GREEN}Sleeves{DEFAULT}\n4:  {GREEN}No textures{DEFAULT}\n5:  {GREEN}Default skyboxes{DEFAULT}\n6:  {GREEN}Gun skins{DEFAULT}\n7:  {GREEN}Gun Sounds{DEFAULT}\n8:  {GREEN}Gun smoke{DEFAULT}\n9:  {GREEN}Hit tweaks{DEFAULT}\n10: {GREEN}Grenade tweaks{DEFAULT}")
+        f"\nasset replacements:\n0:  {GREEN}Custom{DEFAULT}\n1:  {GREEN}Sights{DEFAULT}\n2:  {GREEN}Arm model tweaks{DEFAULT}\n3:  {GREEN}Sleeves{DEFAULT}\n4:  {GREEN}No textures{DEFAULT}\n5:  {GREEN}Default skyboxes{DEFAULT}\n6:  {GREEN}Gun skins{DEFAULT}\n7:  {GREEN}Gun Sounds{DEFAULT}\n8:  {GREEN}Gun smoke{DEFAULT}\n9:  {GREEN}Hit tweaks{DEFAULT}\n10: {GREEN}Grenade tweaks{DEFAULT}\n11: {GREEN}Misc tweaks{DEFAULT}")
     options = input(": ")
     try:
         match int(options):
@@ -410,6 +410,21 @@ def get_hashes():
                         output.append(([dlist("grenade sounds")], dlist("replacement sounds")))
                     case _:
                         print("Enter a Valid Option!")
+            case 11:
+                misc_option = input(
+                    f"\nEnter misc option:\n1: {GREEN}M21 Garand Ping{DEFAULT}\n2: {GREEN}BFG Machina Sounds{DEFAULT}\n3: {GREEN}Anti damage affect{DEFAULT}\n: ")
+                match int(misc_option):
+                    case 1:
+                        output.append((["07fe5c19cdd350a4922412d00d567edd", "17bb7bd20bf6e1b41214619d16698ff4", "b36ed668aea77715747e3ebadce8a439", "fbc5302726777295ae2ccd092d2748f9"], "5873cfba79134ecfec6658f559d8f320"))
+                        output.append((["877cb2de0924e058860135f72e800aad"], "9296d1de6b6a994aee0f95c1f5206b58"))
+                    case 2:
+                        output.append((["9d1808db108b86ddaeda18968a23a804"], "1689699496f4cf0e2f0fade63f68b83a"))
+                        output.append((["3ad4ddcb4c77ab8bdfc83cf9c0cfafa9", "edf091bb925fa87900910e501da97018", "768131a75f0d2d95e6799a0a5acd67c6", "3d92b91e96ef916b6717a53ef3f3a442", "32e321c27457289889ac0d5fa72f7d97"], "5873cfba79134ecfec6658f559d8f320"))
+                        output.append((["160883329152d9abc5434a1b0982ec7d"], "0d05028f1eaeb0b97ecd0c473b484371"))
+                    case 3:
+                        output.append((["a0542ee89ad3cc311bb3f7d23ef94fe4"], "614546fcea8e0411a1c94d669809a459"))
+                    case _:
+                        print("Enter a Valid Option!")
             case _:
                 print("Invalid number.")
     except Exception as e:
@@ -460,21 +475,23 @@ while True:
                 presets[new_preset] = []
             while True:
                 replacements = get_hashes()
+                print(replacements)
                 for replacement in replacements:
                     if isinstance(replacement[1], list):
                         if len(replacement[0]) == len(replacement[1]):
-                            for i, replace in replacement[0]:
-                                presets[new_preset].append(replace)
+                            print(replacement[0])
+                            for i, replac in enumerate(replacement[0]):
+                                presets[new_preset].append(replac)
                                 presets[new_preset].append(replacement[1][i])
-                                print(f"{BLUE}Added successfully ({replace} -> {replacement[1][i]}){DEFAULT}")
+                                print(f"{BLUE}Added successfully ({replac} -> {replacement[1][i]}){DEFAULT}")
                         else:
                             print(f"{RED}This replacement is not supported, changes not applied{DEFAULT}")
                             presets[new_preset] = []
                     else:
-                        for replace in replacements[0][0]:
-                            presets[new_preset].append(replace)
+                        for replac in replacement[0]:
+                            presets[new_preset].append(replac)
                             presets[new_preset].append(replacement[1])
-                            print(f"{BLUE}Added successfully ({replace} -> {replacement[1]}){DEFAULT}")
+                            print(f"{BLUE}Added successfully ({replac} -> {replacement[1]}){DEFAULT}")
                 with open('presets.json', 'w') as f:
                     json.dump(presets, f, indent=4)
                     print(f"{BLUE}Preset saved{DEFAULT}")
