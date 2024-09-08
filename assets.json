@@ -1,5 +1,5 @@
 {
-    "version": "v1.6.12",
+    "version": "v1.6.13",
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
         "blue": "38342d3214ad04067e03106bdff41914",
@@ -639,7 +639,8 @@
                     "m21": "d9077d40dab42b3987f7653e23f08326",
                     "ft300": "9d03afbad7e986ffa66456403878ed01",
                     "m3a1": "70e9ec4992f56500995fc0e9e2011487",
-                    "type 58": "9f3b2fab9459bbaa708503756c8c1bee"
+                    "type 58": "9f3b2fab9459bbaa708503756c8c1bee",
+                    "x95": "0eff4c96d9807e2cef2caa223b84cc1f"
                 },
                 "2022": {
                     "badger": "9604f62b6042d7a09086cb95471bda0f",
@@ -1088,6 +1089,8 @@
             "red angry bird": "8c404fcc623fa24f814ffbc34788d845",
             "sata andagi": "1f00efe6252f845873c98d7aca6c34b9",
             "mw2019": "fc9401aaa9bd48d5de4e41c5c928a37c",
+            "bocw": "78ec1fb06ede9be290b2d6b19eed8f76",
+            "bf1 headshot": "2cca1081a15c5bf79851fef41b2b2f4b",
             "okay": "2f04c22ca47269a568453603ede9d7da",
             "og trowel": "15f74d5f2b7398997367445172956372",
             "roblox oof": "7293d55730c60a9334e84d97bdd81b0b",
