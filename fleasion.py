@@ -1,4 +1,4 @@
-# v1.8.3
+# v1.8.4
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -425,7 +425,7 @@ def get_hashes():
                         output.append((["a0542ee89ad3cc311bb3f7d23ef94fe4"], "614546fcea8e0411a1c94d669809a459"))
                     case 4:
                         fizzy_option = input(
-                            f"\nEnter misc option:\n1: {GREEN}G50 > USP MATCH{DEFAULT}\n2: {GREEN}Potato Grip > Flashlight Launcher{DEFAULT}\n3: {GREEN}SCAR-L > AR2{DEFAULT}\n4: {GREEN}M870 > Gravity Gun{DEFAULT}\n5: {GREEN}ZIP22 > Spray Bottle{DEFAULT}\n6: {GREEN}NTW > Tau Cannon{DEFAULT}\n7: {GREEN}ASP Baton > Stun Stick{DEFAULT}\n8: {GREEN}Hardballer > Hyperlaser{DEFAULT}\n9: {GREEN}Skeleton Grip Laser{DEFAULT}\n10: {GREEN}Hardballer > Hyperlaser{DEFAULT}\n: ")
+                            f"\nEnter misc option:\n1: {GREEN}G50 > USP MATCH{DEFAULT}\n2: {GREEN}Potato Grip > Flashlight Launcher{DEFAULT}\n3: {GREEN}SCAR-L > AR2{DEFAULT}\n4: {GREEN}M870 > Gravity Gun{DEFAULT}\n5: {GREEN}ZIP22 > Spray Bottle{DEFAULT}\n6: {GREEN}NTW > Tau Cannon{DEFAULT}\n7: {GREEN}ASP Baton > Stun Stick{DEFAULT}\n8: {GREEN}Hardballer > Hyperlaser{DEFAULT}\n9: {GREEN}Skeleton Grip Laser{DEFAULT}\n10: {GREEN}Flashlight Laser{DEFAULT}\n: ")
                         match int(fizzy_option):
                             case 1:
                                 output.append((["bdd9569ccf5265e1bcba9cfdf31158b4", "cdb896f02cec15070658302308e932a6",
