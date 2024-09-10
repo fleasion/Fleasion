@@ -1,4 +1,4 @@
-# v1.8.5
+# v1.8.6
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -21,6 +21,7 @@ FLEASION_FILE = 'fleasion.py'
 ASSETS_FILE = 'assets.json'
 RUN_FILE = 'run.bat'
 GREEN, RED, BLUE, DEFAULT = '\033[32m', '\033[31m', '\033[34m', '\033[0m'
+os_name = platform.system()
 
 
 def fetch_lines(url, num_lines=1):
@@ -210,8 +211,6 @@ def preset_check():
 
 
 get_version()
-
-os_name = platform.system()
 
 if os_name == "Windows":
     folder_path = os.path.join(os.getenv('TEMP'), 'roblox', 'http')
