@@ -1,4 +1,4 @@
-# v1.8.4
+# v1.8.5
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -104,7 +104,7 @@ def get_version():
         print(f"Created {BLUE}{presets_file}{DEFAULT}")
 
     time.sleep(1)
-    os.system('cls')
+    os.system('cls' if os_name == 'Windows' else 'clear')
 
 
 def dlist(area):
@@ -225,7 +225,7 @@ mod_cache = False
 pf_cache = False
 
 mod_cache_check_path = os.path.join(folder_path, '016a313606e2f99a85bb1a91083206fc')
-pf_cache_check_path = os.path.join(folder_path, '8a7090ac9b2e858f4aee9e19a0bfd562')
+pf_cache_check_path = os.path.join(folder_path, '7b8ca4a4ec7addd0f55179a86e49a5a1' if os_name == 'Linux' else '8a7090ac9b2e858f4aee9e19a0bfd562')
 
 if os.path.exists(mod_cache_check_path): mod_cache = True
 if os.path.exists(pf_cache_check_path): pf_cache = True
@@ -245,7 +245,7 @@ while mod_cache == False or pf_cache == False:
 
     if mod_cache == True and pf_cache == True:
         time.sleep(1)
-        os.system('cls')
+        os.system('cls' if os_name == 'Windows' else 'clear')
 
 with open('assets.json', 'r') as file:
     data = json.load(file)
@@ -350,9 +350,15 @@ def get_hashes():
                     case _:
                         print("Enter a Valid Option!")
             case 3:
-                output.append((['aa33dd87fc9db92e891361e069da1849'], dlist("skins")))
+                if os_name == "Linux":
+                    output.append((data["linux"]["defaults"]["sleeves"], dlist("skins")))
+                else:
+                    output.append((['aa33dd87fc9db92e891361e069da1849'], dlist("skins")))
             case 4:
-                output.append((data["textures"], 'd625adff6a3d75081d11b3407b0b417c'))  # no textures without downside
+                if os_name == "Linux":
+                    output.append((data["linux"]["textures"], 'd625adff6a3d75081d11b3407b0b417c'))
+                else:
+                    output.append((data["textures"], 'd625adff6a3d75081d11b3407b0b417c'))  # no textures without downside
             case 5:
                 sky_option = input(
                     f"\nIs Bloxstrap sky folder setup?\n1: {GREEN}yes{DEFAULT}\n2: {GREEN}no{DEFAULT}\n: ")
@@ -412,7 +418,7 @@ def get_hashes():
                         print("Enter a Valid Option!")
             case 11:
                 misc_option = input(
-                    f"\nEnter misc option:\n1: {GREEN}M21 Garand Ping{DEFAULT}\n2: {GREEN}BFG Machina Sounds{DEFAULT}\n3: {GREEN}Anti Damage Affect{DEFAULT}\n4: {GREEN}Fizzy's Models{DEFAULT}\n: ")
+                    f"\nEnter misc option:\n1: {GREEN}M21 Garand Ping{DEFAULT}\n2: {GREEN}BFG Machina Sounds{DEFAULT}\n3: {GREEN}Anti Damage Affect{DEFAULT}\n4: {GREEN}Remove Flashlight Beam{DEFAULT}\n5: {GREEN}Fizzy's Models{DEFAULT}\n: ")
                 match int(misc_option):
                     case 1:
                         output.append((["07fe5c19cdd350a4922412d00d567edd", "17bb7bd20bf6e1b41214619d16698ff4", "b36ed668aea77715747e3ebadce8a439", "fbc5302726777295ae2ccd092d2748f9"], "5873cfba79134ecfec6658f559d8f320"))
@@ -424,6 +430,8 @@ def get_hashes():
                     case 3:
                         output.append((["a0542ee89ad3cc311bb3f7d23ef94fe4"], "614546fcea8e0411a1c94d669809a459"))
                     case 4:
+                        output.append((["960b11e6e7d549c8b12044201025093f "], "058e54ef5ad3fb914c34a6f446a36702"))
+                    case 5:
                         fizzy_option = input(
                             f"\nEnter misc option:\n1: {GREEN}G50 > USP MATCH{DEFAULT}\n2: {GREEN}Potato Grip > Flashlight Launcher{DEFAULT}\n3: {GREEN}SCAR-L > AR2{DEFAULT}\n4: {GREEN}M870 > Gravity Gun{DEFAULT}\n5: {GREEN}ZIP22 > Spray Bottle{DEFAULT}\n6: {GREEN}NTW > Tau Cannon{DEFAULT}\n7: {GREEN}ASP Baton > Stun Stick{DEFAULT}\n8: {GREEN}Hardballer > Hyperlaser{DEFAULT}\n9: {GREEN}Skeleton Grip Laser{DEFAULT}\n10: {GREEN}Flashlight Laser{DEFAULT}\n: ")
                         match int(fizzy_option):
