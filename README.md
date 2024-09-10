@@ -1,4 +1,4 @@
-v1.2.3
+v1.2.4
 <h1 align=center>DISCLAIMER!</h1>
 
 <p align=center>
@@ -103,7 +103,8 @@ skyboxes to be used on any map.
     <a href=https://discordapp.com/users/749886948579213352>Yolo</a>,
     <a href=https://discordapp.com/users/391844483970498562>Commit</a>,
     <a href=https://discordapp.com/users/1198598120775364659>3tcy</a>,
-    <a href=https://discordapp.com/users/629024378402766900>deco</a>
+    <a href=https://discordapp.com/users/629024378402766900>Deco</a>,
+    <a href=https://discordapp.com/users/898381322278551572>Fizzy</a>
   </a>
 </h>
 <p></p>
