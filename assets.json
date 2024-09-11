@@ -1,5 +1,5 @@
 {
-    "version": "v1.6.15",
+    "version": "v1.6.16",
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
         "blue": "38342d3214ad04067e03106bdff41914",
@@ -1023,7 +1023,11 @@
                 "diamondback": "fb3d94e46dd04c7bb3018ff3b2dbd2b8",
                 "enforcer": "b91f982d56b0c2158e716564d5339f5d",
                 "bazaar bargain": "a9af2436322648b37b10fb4ac30c8421",
-                "ambassador": "6ccf37bf38e3e23640ecefd69e2acd84"
+                "ambassador": "6ccf37bf38e3e23640ecefd69e2acd84",
+                "widowmaker": "1eee46a86b9d19af480db34e088b8449",
+                "smg": "27597069d4f927b71f9da47c8e4d9c28",
+                "soda popper": "ad624bd50bcb8c4e5d8a32405dae7d38",
+                "frontier justice": "8c93c127a35cf3ed51b132d7c554adfb"
             },
             "custom": {
                 "pew": "7eac4541692ca64abc5485b4875b237c",
