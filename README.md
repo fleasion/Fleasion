@@ -2,7 +2,7 @@ v1.2.4
 <h1 align=center>DISCLAIMER!</h1>
 
 <p align=center>
-  <b> This tool is NOT intended for gaining an unfair advantage or exploiting the game. <br> Do not modify enemy players. Map and Player tweaks will get you banned. <br> Custom tweaks are at your own risk. </b> <br> While misuse is possible, doing so is against the rules and will cause in-game consequences.  <br> All provided presets adhere to the terms of service and will not result in punishment. <br> A guide on obtaining relevant hashes will not be shared due to its potential for abuse.<br><br>If you want a texture/audio added, ping <a href=https://discordapp.com/users/749886948579213352>Yolo</a> in our <a href=https://discord.gg/spezi> Discord server.</a>
+  <b> This tool is NOT intended for gaining an unfair advantage or exploiting the game. <br> Do not modify enemy players. Map and Player tweaks will get you banned. <br> Custom tweaks are at your own risk. </b> <br> While misuse is possible, doing so is against the rules and will cause in-game consequences.  <br> All provided presets adhere to the terms of service and will not result in punishment. <br> A guide on obtaining relevant hashes will not be shared due to its potential for abuse.<br><br>If you want a texture/audio added, ping <a href=https://discord.com/users/749886948579213352>Yolo</a> in our <a href=https://discord.gg/spezi> Discord server.</a>
 </p>
 
 <h4 align=center>
@@ -41,70 +41,81 @@ v1.2.4
 
 <h1 align=center>Getting ready</h1>
 
-- [Download this run file]()
-- Run `run.bat`. It will set everything up and/or make sure you have the dependencies.
-- The Fleasion script will then run, follow the prompts given.
+<li>Download the run file
+<li>Run <code>run.bat</code>. It will set everything up and/or make sure you have the dependencies.
+<li>The Fleasion script will then run, follow the prompts given.
 
 <h3 align=center>If run.bat fails</h3>
-  
-  - Download the [latest release of Python](https://www.python.org/ftp/python/3.12.5/python-3.12.5-amd64.exe) and install it **with Add to path enabled**
-  - Launch Command Prompt by pressing a keyboard combination "Win+R" (Win = Windows key), typing "cmd" and pressing Enter.
-  - Type `pip install requests` and press Enter.
-  - After it finishes, download the `Source code (zip)` from [here](https://github.com/CroppingFlea479/Fleasion/releases/tag/v1.7.1) and extract it. (psst, you will probably want something like [7zip](https://www.7-zip.org/download.html) for this)
-  - Open the extracted folder and run `fleasion.py` directly.
 
+  <li> 1.Download the <a href=https://www.python.org/ftp/python/3.12.6/python-3.12.6-amd64.exe> latest release of Python right here </a> and install it with the <b>Add python.exe to PATH</b> checkbox checked on.
+  <p align=center>
+    <a>
+      <img src=[insert image]>
+    </a>
+  </p>
+  <li> 2. Launch Command Prompt by pressing a keyboard combination "<code>Win+R</code>" (Win = Windows key), typing "<code>cmd</code>" and pressing Enter.
+  <li>2.1. Type <code>pip install requests</code> and press Enter.</li>
+  ^ If you see this (see image below) redo step 1.
+  <p align=center>
+    <a>
+      <img src=[insert image]>
+    </a>
+  </p>
+  <li> After it finishes, download the <b>Source code (zip)</b> from <a href="https://github.com/CroppingFlea479/Fleasion/releases/tag/v1.7.1">here</a> and extract it. (you will want something like <a href=https://www.7-zip.org/download.html><b>7zip</b></a> to extract it)
+  <li> Open the extracted folder and run <code>fleasion.py</code> directly.
+
+<p></p>
 
 <h1 align="center">Loading Textures</h1>
 
-**Fleasion requires you to load resources before you can use it.** <br> You will be redirected to <a href=https://www.roblox.com/games/18504289170/Texture-Game>**Texture Game**</a>
-and <a href=https://www.roblox.com/games/292439477/Phantom-Forces>**Phantom Forces**</a> upon launching Fleasion to load said resources. **Some** actions will also require you to do something to load the default: <br>
-- **Sights** (Equip the sight on a gun)
-- **In-game sounds** (Trigger the sound before replacing it)
-- **Skins** (Equip the skin on a gun / Load the skin's preview in the case shop)
-- **Default skyboxes** (Load the skyboxes by playing on maps with the corresponding skyboxes)
-- **Removing textures** (Load the textures by playing on maps with the textures you want to remove)
+  <p align=center>
+    <a>
+      <img src=[insert image]>
+    </a>
+  </p>
 
+<b>Fleasion requires you to load resources before you can use it.</b> <br>You will be redirected to <a href=https://www.roblox.com/games/18504289170/Texture-Game><b>Texture Game</b></a>
+and <a href=https://www.roblox.com/games/292439477/Phantom-Forces><b>Phantom Forces</b></a> upon launching Fleasion to load said resources. <b>Some</b> actions will also require you to do something to load the default:
+<li> <b>Sights</b> (Equip the sight on a gun)
+<li> <b>In-game sounds</b> (Trigger the sound before replacing it)
+<li> <b>Skins</b> (Equip the skin on a gun / Load the skin's preview in the case shop)
+<li> <b>Default skyboxes</b> (Load the skyboxes by playing on maps with the corresponding skyboxes)
+<li> <b>Removing textures</b> (Load the textures by playing on maps with the textures you want to remove)
+<p></p>
 If you are unsure of why a texture isn't loading, [ask us!](#help--support).
+
+<p></p>
 
 <h1 align=center>Features</h1>
 
-- **Replacement of textures/audios**
-- **Blocking:** Highly experimental. Requires running `run.bat` as admin to access. It is volatile and can break your game.
+<li> <b>Replacement of textures/audio</b>
+<li> <b>Blocking:</b> Highly experimental. Requires running <code>run.bat</code> as admin to access. It is volatile and can break your game.
 Use only if you know what you're doing.
-- **Presets:** Allows you to save multiple replacements to be used in bulk.
-- **Clear Cache:** Used to clear any replacements. It will reset everything you have done.
+<li> <b>Presets:</b> Allows you to save multiple replacements to be used in bulk.
+<li> <b>Clear Cache:</b> Used to clear any replacements. It will reset everything you have done.
 
 <h3 align="center">Bloxstrap Compatibility</h3>
-<p>
-  <a>
-    For some Fleasion features such as forcing default skyboxes, it's recommended to be used alongside <a href=https://bloxstrap.pizzaboxer.xyz>Bloxstrap</a>. <br>
-    Custom Bloxstrap skyboxes only work on maps with default skyboxes, <br> so using Fleasion to force default skyboxes allows custom Bloxstrap 
+For the <code>Force default skyboxes</code> feature, it's recommended to be used alongside <a href=https://bloxstrap.pizzaboxer.xyz>Bloxstrap</a>. <br>
+Custom Bloxstrap skyboxes only work on maps with default skyboxes, <br> so using Fleasion to force default skyboxes allows custom Bloxstrap 
 skyboxes to be used on any map.
-  </a>
-</p>
 
 
 <h3 align=center>Hashes</h3>
 <p>
-  <a>
-    All of the hashes used to replace textures/audio are stored internally in <a href=https://github.com/CroppingFlea479/Fleasion/blob/main/assets.json>assets.json</a>, and are updated regularly with new additions. <br>
-    For a more human readable dump of some of the PF hashes, see this <a href=https://docs.google.com/spreadsheets/d/1S7GexRGkgiDXit8qabV7rYFOctO6FraZrrTm1-Rru_4/edit?usp=sharing>spreadsheet</a> compiled by <a href=https://discordapp.com/users/749886948579213352>Yolo</a> and <a href=https://discordapp.com/users/391844483970498562>Commit</a>.
-  </a>
+All of the hashes used to replace textures/audio are stored internally in <a href=https://github.com/CroppingFlea479/Fleasion/blob/main/assets.json>assets.json</a>, and are updated regularly with new additions. <br>
+For a more human readable dump of some of the PF hashes, see this <a href=https://docs.google.com/spreadsheets/d/1S7GexRGkgiDXit8qabV7rYFOctO6FraZrrTm1-Rru_4/edit?usp=sharing>spreadsheet</a> compiled by <a href=https://discord.com/users/749886948579213352>Yolo</a> and <a href=https://discord.com/users/391844483970498562>Commit</a>.
 </p>
-
-
-
 <h1 align=center>Fleasion Team</h1>
 
-<h3 align=center>
+<h2 align=center>
   <a>
-    <a href=https://discordapp.com/users/776150381280886815>Crop</a> (founder)<br> 
-    <a href=https://discordapp.com/users/333184650606411776>Tyler</a>,
-    <a href=https://discordapp.com/users/749886948579213352>Yolo</a>,
-    <a href=https://discordapp.com/users/391844483970498562>Commit</a>,
-    <a href=https://discordapp.com/users/1198598120775364659>3tcy</a>,
-    <a href=https://discordapp.com/users/629024378402766900>Deco</a>,
-    <a href=https://discordapp.com/users/898381322278551572>Fizzy</a>
+    <a href=https://discord.com/users/776150381280886815>Crop</a> (founder)<br>
+    <a href=https://discord.com/users/333184650606411776>Tyler</a>,
+    <a href=https://discord.com/users/749886948579213352>Yolo</a>,
+    <a href=https://discord.com/users/391844483970498562>Commit</a>,
+    <a href=https://discord.com/users/1198598120775364659>3tcy</a>,
+    <a href=https://discord.com/users/629024378402766900>Deco</a>,
+    <a href=https://discord.com/users/898381322278551572>Fizzy</a>
   </a>
 </h>
 <p></p>
