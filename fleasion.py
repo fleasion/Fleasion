@@ -1,4 +1,4 @@
-# v1.8.10
+# v1.8.11
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -15,14 +15,15 @@ README_URL = 'https://raw.githubusercontent.com/CroppingFlea479/Fleasion/main/RE
 FLEASION_URL = 'https://raw.githubusercontent.com/CroppingFlea479/Fleasion/main/fleasion.py'
 ASSETS_URL = 'https://raw.githubusercontent.com/CroppingFlea479/Fleasion/main/assets.json'
 RUN_URL = 'https://raw.githubusercontent.com/CroppingFlea479/Fleasion/main/run.bat'
+RUNSH_URL = 'https://raw.githubusercontent.com/CroppingFlea479/Fleasion/main/run.sh'
 README_FILE = 'README.md'
 FLEASION_FILE = 'fleasion.py'
 ASSETS_FILE = 'assets.json'
 RUN_FILE = 'run.bat'
+RUNSH_FILE = 'run.sh'
 GREEN, RED, BLUE, DEFAULT = '\033[32m', '\033[31m', '\033[34m', '\033[0m'
 os_name = platform.system()
-# Makes the code cleaner and likely makes it slightly faster.
-clear_command = 'cls' if os_name == 'Windows' else 'clear'
+
 
 def fetch_lines(url, num_lines=1):
     response = requests.get(url)
@@ -48,6 +49,7 @@ def get_version():
     readme_first_line, readme_lines = fetch_lines(README_URL)
     fleasion_first_line, fleasion_lines = fetch_lines(FLEASION_URL)
     run_lines, all_run_lines = fetch_lines(RUN_URL, 2)
+    runsh_lines, all_runsh_lines = fetch_lines(RUNSH_URL, 2)
 
     print("Validating file versions...")
 
@@ -91,6 +93,14 @@ def get_version():
         update_file(RUN_FILE, all_run_lines)
         print(f"Updated run.bat to {BLUE}{run_version}{DEFAULT}")
 
+    local_runsh_lines = read_lines(RUNSH_FILE, 2)
+    runsh_version = runsh_lines[1][2:]
+    if runsh_version == local_runsh_lines[1][2:]:
+        print(f"Run.sh  {GREEN}{runsh_version}{DEFAULT}")
+    else:
+        update_file(RUNSH_FILE, all_runsh_lines)
+        print(f"Updated run.sh to {BLUE}{runsh_version}{DEFAULT}")
+
     presets_file = 'presets.json'
     if not os.path.exists(presets_file):
         with open(presets_file, 'w') as file:
@@ -105,7 +115,7 @@ def get_version():
         print(f"Created {BLUE}{presets_file}{DEFAULT}")
 
     time.sleep(1)
-    os.system(clear_command)
+    os.system('cls' if os_name == 'Windows' else 'clear')
 
 
 def dlist(area):
@@ -226,30 +236,25 @@ pf_cache = False
 mod_cache_check_path = os.path.join(folder_path, '29ec14d6f908cabca7fae131487d96d8')  # 016a313606e2f99a85bb1a91083206fc
 pf_cache_check_path = os.path.join(folder_path, '7b8ca4a4ec7addd0f55179a86e49a5a1' if os_name == 'Linux' else '8a7090ac9b2e858f4aee9e19a0bfd562')
 
-if os.path.exists(mod_cache_check_path):
-    mod_cache = True
-if os.path.exists(pf_cache_check_path):
-    pf_cache = True
+if os.path.exists(mod_cache_check_path): mod_cache = True
+if os.path.exists(pf_cache_check_path): pf_cache = True
 
-if not mod_cache or not pf_cache:
-    print(f"{RED}Missing cache, join prompted {'experiences' if not mod_cache or not pf_cache else 'experience'}.{DEFAULT}")
-if not mod_cache: 
-    webbrowser.open_new_tab("https://www.roblox.com/games/18504289170/texture-game")
-if not pf_cache:
-    webbrowser.open_new_tab("https://www.roblox.com/games/292439477/Phantom-Forces")
+if mod_cache == False or pf_cache == False: print(f"{RED}Missing cache, join prompted {'experiences' if not mod_cache or not pf_cache else 'experience'}.{DEFAULT}")
+if mod_cache == False: webbrowser.open_new_tab("https://www.roblox.com/games/18504289170/texture-game")
+if pf_cache == False: webbrowser.open_new_tab("https://www.roblox.com/games/292439477/Phantom-Forces")
 
-while not mod_cache or not pf_cache:
-    if os.path.exists(mod_cache_check_path) and not mod_cache:
+while mod_cache == False or pf_cache == False:
+    if os.path.exists(mod_cache_check_path) and mod_cache == False:
         print(f"{GREEN}Modding{DEFAULT} cache detected")
         mod_cache = True
 
-    if os.path.exists(pf_cache_check_path) and not pf_cache:
+    if os.path.exists(pf_cache_check_path) and pf_cache == False:
         print(f"{GREEN}PF{DEFAULT} cache detected")
         pf_cache = True
 
-    if mod_cache and pf_cache:
+    if mod_cache == True and pf_cache == True:
         time.sleep(1)
-        os.system(clear_command)
+        os.system('cls' if os_name == 'Windows' else 'clear')
 
 with open('assets.json', 'r') as file:
     data = json.load(file)
@@ -582,8 +587,7 @@ def get_hashes():
 print(f"Welcome to: {GREEN}Fleasion!{DEFAULT}\n")
 start = True
 while True:
-    if not start:
-        print(" ")
+    if not start: print(" ")
     start = False
     menu = input(
         f"Enter the number corresponding to what you'd like to do:\n1: {GREEN}Ingame asset replacements{DEFAULT}\n2: {GREEN}Presets{DEFAULT}\n3: {GREEN}Block (experimental, dont use){DEFAULT}\n4: {GREEN}Cache Settings{DEFAULT}\n5: {GREEN}Settings{DEFAULT}\n6: {GREEN}Exit{DEFAULT}\n: ")
