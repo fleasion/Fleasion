@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 
+# v1.0.0
 # fleasion by @cro.p
 # distributed in https://discord.gg/spezi
 # https://github.com/CroppingFlea479/Fleasion
