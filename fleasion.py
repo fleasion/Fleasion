@@ -1,4 +1,4 @@
-# v1.8.11
+# v1.8.12
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -96,10 +96,10 @@ def get_version():
     local_runsh_lines = read_lines(RUNSH_FILE, 2)
     runsh_version = runsh_lines[1][2:]
     if runsh_version == local_runsh_lines[1][2:]:
-        print(f"Run.sh  {GREEN}{runsh_version}{DEFAULT}")
+        print(f"Run.sh   {GREEN}{runsh_version}{DEFAULT}")
     else:
         update_file(RUNSH_FILE, all_runsh_lines)
-        print(f"Updated run.sh to {BLUE}{runsh_version}{DEFAULT}")
+        print(f"Updated run.sh to  {BLUE}{runsh_version}{DEFAULT}")
 
     presets_file = 'presets.json'
     if not os.path.exists(presets_file):
