@@ -10,7 +10,6 @@ import json
 import webbrowser
 import requests
 import platform
-from pathlib import Path
 
 README_URL = 'https://raw.githubusercontent.com/CroppingFlea479/Fleasion/main/README.md'
 FLEASION_URL = 'https://raw.githubusercontent.com/CroppingFlea479/Fleasion/main/fleasion.py'
@@ -22,7 +21,8 @@ ASSETS_FILE = 'assets.json'
 RUN_FILE = 'run.bat'
 GREEN, RED, BLUE, DEFAULT = '\033[32m', '\033[31m', '\033[34m', '\033[0m'
 os_name = platform.system()
-
+# Makes the code cleaner and likely makes it slightly faster.
+clear_command = 'cls' if os_name == 'Windows' else 'clear'
 
 def fetch_lines(url, num_lines=1):
     response = requests.get(url)
@@ -105,7 +105,7 @@ def get_version():
         print(f"Created {BLUE}{presets_file}{DEFAULT}")
 
     time.sleep(1)
-    os.system('cls' if os_name == 'Windows' else 'clear')
+    os.system(clear_command)
 
 
 def dlist(area):
@@ -226,25 +226,30 @@ pf_cache = False
 mod_cache_check_path = os.path.join(folder_path, '016a313606e2f99a85bb1a91083206fc')
 pf_cache_check_path = os.path.join(folder_path, '7b8ca4a4ec7addd0f55179a86e49a5a1' if os_name == 'Linux' else '8a7090ac9b2e858f4aee9e19a0bfd562')
 
-if os.path.exists(mod_cache_check_path): mod_cache = True
-if os.path.exists(pf_cache_check_path): pf_cache = True
+if os.path.exists(mod_cache_check_path):
+    mod_cache = True
+if os.path.exists(pf_cache_check_path):
+    pf_cache = True
 
-if mod_cache == False or pf_cache == False: print(f"{RED}Missing cache, join prompted {'experiences' if not mod_cache or not pf_cache else 'experience'}.{DEFAULT}")
-if mod_cache == False: webbrowser.open_new_tab("https://www.roblox.com/games/18504289170/texture-game")
-if pf_cache == False: webbrowser.open_new_tab("https://www.roblox.com/games/292439477/Phantom-Forces")
+if not mod_cache or not pf_cache:
+    print(f"{RED}Missing cache, join prompted {'experiences' if not mod_cache or not pf_cache else 'experience'}.{DEFAULT}")
+if not mod_cache: 
+    webbrowser.open_new_tab("https://www.roblox.com/games/18504289170/texture-game")
+if not pf_cache:
+    webbrowser.open_new_tab("https://www.roblox.com/games/292439477/Phantom-Forces")
 
-while mod_cache == False or pf_cache == False:
-    if os.path.exists(mod_cache_check_path) and mod_cache == False:
+while not mod_cache or not pf_cache:
+    if os.path.exists(mod_cache_check_path) and not mod_cache:
         print(f"{GREEN}Modding{DEFAULT} cache detected")
         mod_cache = True
 
-    if os.path.exists(pf_cache_check_path) and pf_cache == False:
+    if os.path.exists(pf_cache_check_path) and not pf_cache:
         print(f"{GREEN}PF{DEFAULT} cache detected")
         pf_cache = True
 
-    if mod_cache == True and pf_cache == True:
+    if mod_cache and pf_cache:
         time.sleep(1)
-        os.system('cls' if os_name == 'Windows' else 'clear')
+        os.system(clear_command)
 
 with open('assets.json', 'r') as file:
     data = json.load(file)
@@ -577,7 +582,8 @@ def get_hashes():
 print(f"Welcome to: {GREEN}Fleasion!{DEFAULT}\n")
 start = True
 while True:
-    if not start: print(" ")
+    if not start:
+        print(" ")
     start = False
     menu = input(
         f"Enter the number corresponding to what you'd like to do:\n1: {GREEN}Ingame asset replacements{DEFAULT}\n2: {GREEN}Presets{DEFAULT}\n3: {GREEN}Block (experimental, dont use){DEFAULT}\n4: {GREEN}Cache Settings{DEFAULT}\n5: {GREEN}Settings{DEFAULT}\n6: {GREEN}Exit{DEFAULT}\n: ")
