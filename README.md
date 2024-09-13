@@ -1,4 +1,4 @@
-v1.2.4
+v1.2.5
 <h1 align=center>DISCLAIMER!</h1>
 
 <p align=center>
