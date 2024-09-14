@@ -1,5 +1,5 @@
 {
-    "version": "v1.6.16",
+    "version": "v1.6.17",
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
         "blue": "38342d3214ad04067e03106bdff41914",
@@ -1027,7 +1027,10 @@
                 "widowmaker": "1eee46a86b9d19af480db34e088b8449",
                 "smg": "27597069d4f927b71f9da47c8e4d9c28",
                 "soda popper": "ad624bd50bcb8c4e5d8a32405dae7d38",
-                "frontier justice": "8c93c127a35cf3ed51b132d7c554adfb"
+                "frontier justice": "8c93c127a35cf3ed51b132d7c554adfb",
+                "righteous bison": "63819c856c3c73ab1357440580267fcd",
+                "tomislav": "dd818511acabaa9be13cd68952100790",
+                "capper": "d6590a3ef22be160a8d5fae9bef8ead0"
             },
             "custom": {
                 "pew": "7eac4541692ca64abc5485b4875b237c",
@@ -1395,7 +1398,9 @@
             "white diamond": "b398bb97a181f86348cdd271b2f44cab",
             "drastic": "80ef9ad136193b345f559c24b9e84924",
             "vice": "350ac195878df6428b14cefede86fbd2",
-            "jared flatmore": "ba5f4f1d3276be2e4adfc17f793f7a4e"
+            "jared flatmore": "ba5f4f1d3276be2e4adfc17f793f7a4e",
+            "skibidi": "797e08d7d38989aa08d9072d9b825f06",
+            "skibidi haze": "25a25b1ae1e9d6f79e7d7ca7b1263638"
         },
         "pf cases": {
             "tier 2": {
