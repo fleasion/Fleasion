@@ -1,5 +1,5 @@
 {
-    "version": "v1.6.17",
+    "version": "v1.6.18",
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
         "blue": "38342d3214ad04067e03106bdff41914",
@@ -1171,6 +1171,7 @@
             "funny tube up": "50f09af16e81115a818b62c5fe584d69",
             "funny tube down": "5de2204b55c685766a890d32637868b6",
             "cd break": "57fd0d1c447688af358eefbf73b816b0",
+            "the division hs": "323f6092a39bfecaa0ebf63fc2659598",
             "remove": "5873cfba79134ecfec6658f559d8f320"
         }
     },
