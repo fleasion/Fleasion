@@ -1,4 +1,4 @@
-# v1.8.13
+# v1.8.14
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -358,8 +358,8 @@ def get_hashes():
                         output.append((dlist('arm models'), '5873cfba79134ecfec6658f559d8f320'))
                     case 2:
                         output.append((data["arm models"]["bare arms"], "5873cfba79134ecfec6658f559d8f320"))
-                        output.append((['f5b0bcba5570d196909a78c7a697467c', '7f828aee555e5e1161d4b39faddda970'],
-                                       'c9672591983da8fffedb9cec7df1e521'))
+                        output.append((['2245ea538d66f8c9eb7f453aa3e421c2', 'd599df8997da0b6a3e5b12ab948f648b'],
+                                       'c9672591983da8fffedb9cec7df1e521'))  # c9672591983da8fffedb9cec7df1e521 needs to be updated with new hash
                     case 3:
                         delete_stuff(data["arm models"]["everything"])
                     case _:
