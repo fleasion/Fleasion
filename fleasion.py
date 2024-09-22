@@ -1,4 +1,4 @@
-# v1.8.14
+# v1.8.15
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -436,7 +436,7 @@ def get_hashes():
                         print("Enter a Valid Option!")
             case 11:
                 misc_option = input(
-                    f"\nEnter misc option:\n1: {GREEN}M21 Garand Ping{DEFAULT}\n2: {GREEN}BFG Machina Sounds{DEFAULT}\n3: {GREEN}Anti Damage Affect{DEFAULT}\n4: {GREEN}Remove Flashlight Beam{DEFAULT}\n5: {GREEN}Fizzy's Models{DEFAULT}\n: ")
+                    f"\nEnter misc option:\n1: {GREEN}M21 Garand Ping{DEFAULT}\n2: {GREEN}BFG Machina Sounds{DEFAULT}\n3: {GREEN}Damage Affect Tweaks{DEFAULT}\n4: {GREEN}Remove Flashlight Beam{DEFAULT}\n5: {GREEN}Fizzy's Models{DEFAULT}\n: ")
                 match int(misc_option):
                     case 1:
                         output.append((["07fe5c19cdd350a4922412d00d567edd", "17bb7bd20bf6e1b41214619d16698ff4", "b36ed668aea77715747e3ebadce8a439", "fbc5302726777295ae2ccd092d2748f9"], "5873cfba79134ecfec6658f559d8f320"))
@@ -446,7 +446,13 @@ def get_hashes():
                         output.append((["3ad4ddcb4c77ab8bdfc83cf9c0cfafa9", "edf091bb925fa87900910e501da97018", "768131a75f0d2d95e6799a0a5acd67c6", "3d92b91e96ef916b6717a53ef3f3a442", "32e321c27457289889ac0d5fa72f7d97"], "5873cfba79134ecfec6658f559d8f320"))
                         output.append((["160883329152d9abc5434a1b0982ec7d"], "0d05028f1eaeb0b97ecd0c473b484371"))
                     case 3:
-                        output.append((["a0542ee89ad3cc311bb3f7d23ef94fe4"], "614546fcea8e0411a1c94d669809a459"))
+                        damage_option = input(
+                            f"\nEnter option:\n1: {GREEN}Remove Damage Effect{DEFAULT}\n2: {GREEN}Anti Damage Affect{DEFAULT}\n: ")
+                        match int(damage_option):
+                            case 1:
+                                output.append((["a0542ee89ad3cc311bb3f7d23ef94fe4"], "5873cfba79134ecfec6658f559d8f320 "))
+                            case 2:
+                                output.append((["a0542ee89ad3cc311bb3f7d23ef94fe4"], "614546fcea8e0411a1c94d669809a459"))
                     case 4:
                         output.append((["960b11e6e7d549c8b12044201025093f "], "058e54ef5ad3fb914c34a6f446a36702"))
                     case 5:
