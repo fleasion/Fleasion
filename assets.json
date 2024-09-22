@@ -1,5 +1,5 @@
 {
-    "version": "v1.6.19",
+    "version": "v1.6.20",
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
         "blue": "38342d3214ad04067e03106bdff41914",
@@ -1000,11 +1000,11 @@
                 "revolver": "f813bb288c2520d353f25f16d25415e6"
             },
             "fortnite": {
-                "pump shotgun": "e48e083f10cd22153f8ce152a374ebfe",
-                "spas": "b0b249f3489a7e3aca1d5b6d0590110b",
-                "bolt action": "eec0ee61b119170a6fc07f982882fe1c",
-                "heavy sniper": "a63ac275c9c98d9237e34eccb88e3386",
-                "hunting rifle": "f62bd423930a30fbddc86bad8e61143d"
+                "pump shotgun": "d1555ec8aaab2d1136f43780f11aae2b",
+                "spas": "7bc97219d0a8f8fff54a1484e24c4b17",
+                "bolt action": "7c3d2cfcfa74d8d281ea69dc173b751e",
+                "heavy sniper": "9b1ae08895a176eae91d077a8ac197a6",
+                "hunting rifle": "1a991fe1b538ec212d4a4ac0dbb8441d"
             },
             "tf2": {
                 "shooting star": "9a624ad8d45c02cc5ef977c2c52de6e7",
@@ -1139,6 +1139,7 @@
             "minecraft bow ding": "ec37e7657043f456b722e7af78834718",
             "fortnite shield crack 1": "7a0e39642fe1051d4486dfa8850f9c26",
             "fortnite shield crack 2": "87b10c7e66e30b7a7a56166518f84801",
+            "gd counter": "8d1cdbb62859b10b7222f0f6f4cce4f2",
             "remove": "5873cfba79134ecfec6658f559d8f320"
         },
         "kill sounds": {
@@ -1172,6 +1173,8 @@
             "funny tube down": "5de2204b55c685766a890d32637868b6",
             "cd break": "57fd0d1c447688af358eefbf73b816b0",
             "the division hs": "323f6092a39bfecaa0ebf63fc2659598",
+            "gd chest": "a0359a727da80faa172439e8d155dc77",
+            "gd explode": "00255b54658813753207ceb03c46e5d3",
             "remove": "5873cfba79134ecfec6658f559d8f320"
         }
     },
@@ -1401,7 +1404,10 @@
             "vice": "350ac195878df6428b14cefede86fbd2",
             "jared flatmore": "ba5f4f1d3276be2e4adfc17f793f7a4e",
             "skibidi": "797e08d7d38989aa08d9072d9b825f06",
-            "skibidi haze": "25a25b1ae1e9d6f79e7d7ca7b1263638"
+            "skibidi haze": "25a25b1ae1e9d6f79e7d7ca7b1263638",
+            "qoueo": "28be569a1b320890a1975985f970833c",
+            "interstellar": "b1ee4d11e92f5a5732d8e2398a215a81",
+            "nullscapes": "96e8053e6591b47db53598462e693fa2"
         },
         "pf cases": {
             "tier 2": {
