@@ -1,5 +1,5 @@
 {
-    "version": "v1.6.22",
+    "version": "v1.6.23",
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
         "blue": "38342d3214ad04067e03106bdff41914",
@@ -767,20 +767,36 @@
                 "barrett": "81a906cca431bc68571d84db066c8294",
                 "aw50": "1ea7b351082f992d22b205af3f82c424",
                 "ak47": "e823b7338eb13edeb069e2aa35c3d4f6",
-                "fn57": "d6bc400efbec2bfec07c9aae725dc2a2"
+                "fn57": "d6bc400efbec2bfec07c9aae725dc2a2",
+                "m16": "8982eed2f45f34fb3644404b3fb3af6b",
+                "m4": "e41c79894cdce83d2375bf40ba6c05b5",
+                "g36": "b91adf92d5156f788833cfe4cb549643",
+                "m60": "ae83140fe25f203a55f7cc006b1de25a",
+                "mp412 rex": "3a5d862a14426fda7c23011b6b1593ba",
+                "scar": "fb408ead1ccd0382ef47b5d06fa1b1c2",
+                "mp7": "f2f22ea6c5baddee49ce48ad6f3874c2",
+                "m14": "dfb1a845bf9d13a25fb5e6f3260df6f8",
+                "aa12": "0782a118e1e0fa4fd081abd020be87d8",
+                "ksg 12": "104eee42cf3b0d40b97b669c1251ed79",
+                "m1014": "e3127367f34eee2bddffb781d6e58b14",
+                "model 1889": "36e23e6f189d128d3afd0e35a61b4ba1",
+                "stryker": "763e4f8819e4bee0524bbf7edc923336",
+                "mg36": "c8f34ff669250e9285e19dd7cf1b6f94"
             },
             "bo1": {
-                "m60": "8b5f57d2e078f2f513df7d4caba57d42",
+                "m60": "ab7f95e6f2ef1cc21ea2c306acadb70b",
                 "hk21": "1a176545f78a2305c125a83fdf510ef8",
                 "stoner": "b4e7a3a0d8363a7910c2cc1b79596d44",
                 "m16": "166f8f9381d2e051f07b29bbb203a86d",
                 "aug": "5d80349cfe15c2fb925dd2f579a91dff",
-                "famas": "da4d2b2ecb140e1f2e731a70517dfcd0",
+                "famas": "b8bf5ff4c7a03fa7950631c0cbd6e4a6",
                 "l96a1": "76e6f31055ed438e9c98090dbbb577f8",
                 "dragunov": "6ec1066b5b7dd55c49ec4837ee9e64f4",
                 "msg90": "c785f1fa3585c2146b75c2beab1341d7",
                 "wa2000": "4aa7de10e52e16d968263dbd2c8ee955",
-                "sgmix": "a378372f1e33d7529f9339df2d5b23f9"
+                "sgmix": "a378372f1e33d7529f9339df2d5b23f9",
+                "mp5k": "9a93305a8920d036a62a7b1355d87fbf",
+                "rpk": "060bd0a080b3d4699f5a205f0de9d036"
             },
             "bo2": {
                 "dsr": "44a7d2043d615f35eb4b19318b0b7eeb",
@@ -833,11 +849,21 @@
             },
             "bo3": {
                 "svg": "6f9b4389b986491f9cc29465272cc77f",
-                "locus": "53711294c777df908a418b2faf1f53ec"
+                "locus": "53711294c777df908a418b2faf1f53ec",
+                "kuda": "cb6175cdb93dd331a506d1ba8ebe745c",
+                "gorgon": "9048fd58dc29f97e34b6991312034f22"
             },
             "ghosts": {
+                "honey badger": "d2eeb0bf970857c891076c86b19cc0ca",
+                "k7": "f1fa42b9a8959dc93c8ead2134e10119",
                 "usr": "208aab6be07ec27a560a141685fc4d7a",
-                "gm6": "288241bbdc8253ce86e1961df7749b2e"
+                "gm6": "288241bbdc8253ce86e1961df7749b2e",
+                "vector": "57b55e0bab2b30e751781916f0bd6212",
+                "tar": "84466670d18bb6f30a726d220e3a7281",
+                ".44 magnum": "b77cfe9e020f50550008f34322176832",
+                "ak12": "d4a2678222c46e4a3a375d525a5c1214",
+                "chainsaw": "422931288ef1a7bf8334ae52bd8d1b11",
+                "m37 iar": "610ee49df7efd7e9f4049100747f2539"
             },
             "waw": {
                 "stg44": "26b599516776a7a421b8b99e8c35811a",
@@ -853,7 +879,7 @@
                 "springfield": "3c32b9fd3e8228b68033b85f7462e67f",
                 "kar98k": "b0b80068afc10c43f1baa7bfe47dfe2f",
                 "mosin": "7f3e4e743ed7ee3662ffa163f2b94974",
-                "ptrs": "0aa4f2a02473ff75c3486067d753b447",
+                "ptrs 41": "c48ed3ba82c356426a1c68a5aaca8a86",
                 "m1911": "3ada33d2bb0488a6693d03ac955c4a31",
                 "357": "e68c27896a5c7a0d5f3cbc115653d7e9",
                 "raygun": "52248a93493c7debb5ea47fde801d905"
@@ -1102,6 +1128,7 @@
             "m120 crem explosion": "d3f74e85850cf40bf8d36803b5ab9c89",
             "airstrike explosion": "40ba6cb1789a618ab02e0cfe4e2f7159",
             "tf2 explosion": "e8ebbfd722e5be7302faad1e9d2a98af",
+            "bo1 grenade": "0b585b91d8ad9fea5e7564c042ba6570",
             "remove": "5873cfba79134ecfec6658f559d8f320"
         },
         "hit sounds": {
