@@ -1,4 +1,4 @@
-# v1.8.16
+# v1.8.17
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -87,8 +87,8 @@ def get_version():
         print(f"Updated assets.json to {BLUE}{response_json['version']}{DEFAULT}")
 
     local_run_lines = read_lines(RUN_FILE, 2)
-    run_version = run_lines[1][4:]
-    if run_version == local_run_lines[1][4:]:
+    run_version = run_lines[1][2:]
+    if run_version == local_run_lines[1][2:]:
         print(f"Run.bat  {GREEN}{run_version}{DEFAULT}")
     else:
         update_file(RUN_FILE, all_run_lines)
@@ -358,8 +358,8 @@ def get_hashes():
                         output.append((dlist('arm models'), '5873cfba79134ecfec6658f559d8f320'))
                     case 2:
                         output.append((data["arm models"]["bare arms"], "5873cfba79134ecfec6658f559d8f320"))
-                        output.append((['f5b0bcba5570d196909a78c7a697467c', '7f828aee555e5e1161d4b39faddda970'],
-                                       'c9672591983da8fffedb9cec7df1e521'))
+                        output.append((['2245ea538d66f8c9eb7f453aa3e421c2', 'd599df8997da0b6a3e5b12ab948f648b'],
+                                       'c9672591983da8fffedb9cec7df1e521'))  # c9672591983da8fffedb9cec7df1e521 needs to be updated with new hash
                     case 3:
                         delete_stuff(data["arm models"]["everything"])
                     case _:
