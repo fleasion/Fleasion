@@ -1,5 +1,5 @@
 {
-    "version": "v1.6.24",
+    "version": "v1.6.25",
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
         "blue": "38342d3214ad04067e03106bdff41914",
@@ -930,7 +930,8 @@
                 "h2 br": "58f3ba79d09429d6d5d3304bc26e08bc",
                 "reach dmr": "92acd5b5d8f28f96e0de0ca553758022",
                 "h3 sniper": "8c0be6f7ec28bca0a3282db1f19c434a",
-                "ce magnum": "e3b3f20e6c80eef4fc8bc3e892fbecfc"
+                "ce magnum": "e3b3f20e6c80eef4fc8bc3e892fbecfc",
+                "h3 ar": "f3ac4aab11763bf3e06092d5dcf9a699"
             },
             "r6": {
                 "lfp586": "14d833216f1567921c98629c66f55b81",
