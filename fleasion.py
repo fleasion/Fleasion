@@ -1,4 +1,4 @@
-# v1.8.19
+# v1.8.20
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -366,7 +366,7 @@ def get_hashes():
                         print("Enter a Valid Option!")
             case 3:
                 if os_name == "Linux":
-                    output.append((data["linux"]["defaults"]["sleeves"], dlist("skins")))
+                    output.append(([data["linux"]["defaults"]["sleeves"]], dlist("skins")))
                 else:
                     output.append((['aa33dd87fc9db92e891361e069da1849'], dlist("skins")))
             case 4:
@@ -647,7 +647,6 @@ while True:
                 for replacement in replacements:
                     if isinstance(replacement[1], list):
                         if len(replacement[0]) == len(replacement[1]):
-                            print(replacement[0])
                             for i, replac in enumerate(replacement[0]):
                                 presets[new_preset].append(replac)
                                 presets[new_preset].append(replacement[1][i])
