@@ -1,4 +1,4 @@
-# v1.8.18
+# v1.8.19
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -234,7 +234,7 @@ else:
 mod_cache = False
 pf_cache = False
 
-mod_cache_check_path = os.path.join(folder_path, '29ec14d6f908cabca7fae131487d96d8')  # 016a313606e2f99a85bb1a91083206fc
+mod_cache_check_path = os.path.join(folder_path, '3dbc81ab51ae36ab1de45855c9bb2b15') # 29ec14d6f908cabca7fae131487d96d8, 016a313606e2f99a85bb1a91083206fc
 pf_cache_check_path = os.path.join(folder_path, '7b8ca4a4ec7addd0f55179a86e49a5a1' if os_name == 'Linux' else '8a7090ac9b2e858f4aee9e19a0bfd562')
 
 if os.path.exists(mod_cache_check_path):
@@ -520,9 +520,9 @@ def get_hashes():
                                 output.append((["43d3a2cb1557fc51be6bcb0d329489d3"], "ec94a4a602c83e551bbfcccdf3d0000d")) # part1 (2) 3fc23807190d4700757599c4418b62cc
                                 output.append((["98c46e363b32e6c2be25f3a375951f66"], "36ba75eb9dd62725fcb25d36acbeb47b")) # part2
                                 output.append((["cd5656b20061988925ce2e5faf274150"], "a488627070a3f389c4a6dddb85ef7430")) # sound
-                            case 7:
-                                output.append((["e0c825a5deb0871b8e12376dd4fa40ba"], "f6a75145709a83372de39deacfe9ce27"))
-                                output.append((["02d75c76b65f1f837b2f8b1684c7b9c4"], "49c011ad1cc299fc8ba83f1356a61858"))
+                            case 7: # stun stick
+                                output.append((["0a80927d93180dd5a41cf776d351f2b0"], "bb1ab18ed6822cadd12bc7485c925265")) # 1
+                                output.append((["22ed03bb2af84d4ddaad3bcc306a2900"], "49c011ad1cc299fc8ba83f1356a61858")) # 2
                             case 8:
                                 output.append((["0a89192cee6d4750d5692c2bbd117514", "2c69a5a9cb47f5305bfe8e5221e06dad",
                                                 "2e3a2ee20d4ce477800b6709341a367f", "5f16814ee52de8dac2d6ce5be62d67c6",
