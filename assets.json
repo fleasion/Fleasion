@@ -1,5 +1,5 @@
 {
-    "version": "v1.6.25",
+    "version": "v1.6.26",
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
         "blue": "38342d3214ad04067e03106bdff41914",
@@ -781,7 +781,8 @@
                 "m1014": "e3127367f34eee2bddffb781d6e58b14",
                 "model 1889": "36e23e6f189d128d3afd0e35a61b4ba1",
                 "stryker": "763e4f8819e4bee0524bbf7edc923336",
-                "mg36": "c8f34ff669250e9285e19dd7cf1b6f94"
+                "mg36": "c8f34ff669250e9285e19dd7cf1b6f94",
+                "mp5": "10ab4fe6db63177208dba80d8c7f84c5"
             },
             "bo1": {
                 "m60": "e10fa5ec18b2301055b34415ece23a44",
@@ -796,7 +797,11 @@
                 "wa2000": "4aa7de10e52e16d968263dbd2c8ee955",
                 "sgmix": "a378372f1e33d7529f9339df2d5b23f9",
                 "mp5k": "9a93305a8920d036a62a7b1355d87fbf",
-                "rpk": "060bd0a080b3d4699f5a205f0de9d036"
+                "rpk": "060bd0a080b3d4699f5a205f0de9d036",
+                "ak47": "c99155fcaa3840f7a2900daba237ef63",
+                "ak74": "816b5ca5cce0491ebd15730c37fad2a3",
+                "galil": "0227451dd753726f95e330780b7872cf",
+                "colt python": "cab30979a55a72e4ad4dfb6ff5b6854a"
             },
             "bo2": {
                 "dsr": "44a7d2043d615f35eb4b19318b0b7eeb",
@@ -851,7 +856,12 @@
                 "svg": "6f9b4389b986491f9cc29465272cc77f",
                 "locus": "53711294c777df908a418b2faf1f53ec",
                 "kuda": "cb6175cdb93dd331a506d1ba8ebe745c",
-                "gorgon": "9048fd58dc29f97e34b6991312034f22"
+                "gorgon": "9048fd58dc29f97e34b6991312034f22",
+                "drakon": "cc185b884b93beab899a13989292bb10",
+                "dingo": "53fc851e2a9123ed43475f5716f2188b",
+                "kvk 99m": "ab8f35c50574ea24008c9e6774754058",
+                "tempest": "313466c1cea16924bfdb0ea61ddf987a",
+                "diy 11 renovator": "815982d7db6429525dc10904939732be"
             },
             "ghosts": {
                 "honey badger": "d2eeb0bf970857c891076c86b19cc0ca",
@@ -1058,6 +1068,10 @@
                 "righteous bison": "63819c856c3c73ab1357440580267fcd",
                 "tomislav": "dd818511acabaa9be13cd68952100790",
                 "capper": "d6590a3ef22be160a8d5fae9bef8ead0"
+            },
+            "bf4": {
+                "aek 971": "1554ad8e491d3d319885e6bce5782281",
+                "aek 971 sil": "e0539969fbce361cabcfe4f9422262db"
             },
             "custom": {
                 "pew": "7eac4541692ca64abc5485b4875b237c",
