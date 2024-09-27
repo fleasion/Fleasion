@@ -1,4 +1,4 @@
-# v1.8.20
+# v1.8.21
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -231,7 +231,7 @@ else:
     print(f"Unsupported OS - {os}")
     exit()
 
-mod_cache = False
+mod_cache = True
 pf_cache = False
 
 mod_cache_check_path = os.path.join(folder_path, '3dbc81ab51ae36ab1de45855c9bb2b15') # 29ec14d6f908cabca7fae131487d96d8, 016a313606e2f99a85bb1a91083206fc
@@ -457,7 +457,7 @@ def get_hashes():
                         output.append((["960b11e6e7d549c8b12044201025093f "], "058e54ef5ad3fb914c34a6f446a36702"))
                     case 5:
                         fizzy_option = input(
-                            f"\nEnter misc option:\n1: {GREEN}G50 > USP MATCH{DEFAULT}\n2: {GREEN}Potato Grip > Flashlight Launcher{DEFAULT}\n3: {GREEN}SCAR-L > AR2{DEFAULT}\n4: {GREEN}M870 > Gravity Gun{DEFAULT}\n5: {GREEN}ZIP22 > Spray Bottle{DEFAULT}\n6: {GREEN}NTW > Tau Cannon{DEFAULT}\n7: {GREEN}ASP Baton > Stun Stick{DEFAULT}\n8: {GREEN}Hardballer > Hyperlaser{DEFAULT}\n9: {GREEN}Skeleton Grip Laser{DEFAULT}\n10: {GREEN}Flashlight Laser{DEFAULT}\n: ")
+                            f"\nEnter misc option:\n1:  {GREEN}G50 > USP MATCH{DEFAULT}\n2:  {GREEN}Potato Grip > Flashlight Launcher{DEFAULT}\n3:  {GREEN}SCAR-L > AR2{DEFAULT}\n4:  {GREEN}M870 > Gravity Gun{DEFAULT}\n5:  {GREEN}ZIP22 > Spray Bottle{DEFAULT}\n6:  {GREEN}NTW > Tau Cannon{DEFAULT}\n7:  {GREEN}ASP Baton > Stun Stick{DEFAULT}\n8:  {GREEN}Hardballer > Hyperlaser{DEFAULT}\n9:  {GREEN}Skeleton Grip Laser{DEFAULT}\n10: {GREEN}Flashlight Laser{DEFAULT}\n11: {GREEN}Hecate > Railgun{DEFAULT}\n: ")
                         match int(fizzy_option):
                             case 1:# usp
                                 output.append((["3f00e33051288bffa1ac79b773b830fa", "4aec7e58da2e2becaf7c89b07c0e7f2d",
@@ -523,73 +523,88 @@ def get_hashes():
                             case 7: # stun stick
                                 output.append((["0a80927d93180dd5a41cf776d351f2b0"], "bb1ab18ed6822cadd12bc7485c925265")) # 1
                                 output.append((["22ed03bb2af84d4ddaad3bcc306a2900"], "49c011ad1cc299fc8ba83f1356a61858")) # 2
-                            case 8:
-                                output.append((["0a89192cee6d4750d5692c2bbd117514", "2c69a5a9cb47f5305bfe8e5221e06dad",
-                                                "2e3a2ee20d4ce477800b6709341a367f", "5f16814ee52de8dac2d6ce5be62d67c6",
-                                                "7c18935a9aa64adb36c8833e04325c6f", "9e877683e8b814ff1042ed85ac7f57d8",
-                                                "9ec1d61969c60760ba4563231a10d20f", "99de3c8563576612eb2593f18e4fc885",
-                                                "163febf1c4242e4f27accd72f306d6c6", "548df330e8cdb635e871bb8c14e8e0a3",
-                                                "689e339d1004552834acde0c566b27f3", "1511ed3cefa2e2065ba2c71bb0246f02",
-                                                "036330297ca114d10e33be1a511146aa", "a585fa17681937f2c050096ee15afa51",
-                                                "a78182f462e53a1becd34fa35a6c3b60", "ae518b8a68134743b97335b671a9646e",
-                                                "bdaf13233d32c85d82fdf3eb99f86198", "d223f617fa26c8823bd7b0cb1263dd5e",
-                                                "e9aefc8d611afa7253d19d657e003e56", "f8f6d6280f9ebab38590ac6221e9cd97"],
-                                               "058e54ef5ad3fb914c34a6f446a36702"))
-                                output.append((["9db5a1d17c1898c8bbf4f9801fa399fb"], "116aa5d47b919e6dfca38b321c9b54ae"))
-                                output.append((["9ebc44df0f589329aa8f376f93b232bc"], "dc91c288b0b881300391ddb0acded9c0"))
+                            case 8: # hyperlaser
+                                output.append((["2c7cc1d2eadbaee51d2b4b123e269b42", "26c675ccc0ea8b28ad9f85ebaafbe1a8",
+                                                "8fffd6838407d7f4dc1efb02cb9ccb6d", "de12a644d7fd4653e475228e4dab0bb3",
+                                                "39aa3db66a0eef06d5c73f849d966ce2", "54de49c3aff858496a8bcb58efd2783e",
+                                                "877a9ed1757b48f0d455d18f74a04e56", "0008903fcc9679741bdd95e6d8252f21",
+                                                "79241ea61c9bb223e859e9a89cb3c256", "7038395e929cb30254bc2254de22b22b",
+                                                "a2e0d08ec56b4992a8062073d2ea4f74", "a5ccf730568459759cda8555c00b3604",
+                                                "a22f3d07c7ac98aa9d0e055352394d96", "ab6b62d04145f8c6c43ed5afdbaa5cb4",
+                                                "b7f88c69a58890f1379912c78cb11e84", "c3d955811260580a07d38542de411973",
+                                                "c09e6e448208c8f889cfb8dac1af1c85", "ca4878171b6a937fb4c49b61a394ee7e",
+                                                "cd942702f5a5d4ec695cfa4e0ac0ddea", "d7eb2bcb9cac8e3f00a23d5b6aa2d7b4"],
+                                                "cbf0cf37278b713d69a1224d87764b4e")) # remove
+                                output.append((["d19f07035f25d77bbe2e0a7aa9670a0b"], "8a081b4f86b31acdb2b437091852bb00")) # base
+                                output.append((["9ebc44df0f589329aa8f376f93b232bc"], "dc91c288b0b881300391ddb0acded9c0")) # sound
                                 variant_option = input(
                                     f"\nEnter misc option:\n1: {GREEN}Colorable{DEFAULT}\n2: {GREEN}Blue/Purple{DEFAULT}\n3: {GREEN}Yellow/Green{DEFAULT}\n4: {GREEN}Pink/Orange{DEFAULT}\n: ")
                                 match int(variant_option):
                                     case 1:
-                                        output.append((["cfa7d012e8010e2034966d75b53b033f"], "612d2995b2621bbd74853e6586e5b143"))
+                                        output.append((["4a5fad33b4e710bea55514ee22855f1c"], "20d66fca7a5d5338aad3ed21518b82a7"))
                                     case 2:
-                                        output.append((["cfa7d012e8010e2034966d75b53b033f"], "5cc8e95a61df22732ab90a53f94857dd"))
+                                        output.append((["4a5fad33b4e710bea55514ee22855f1c"], "725aa3f6672e0a1d6b1166b5aaeb3a07"))
                                     case 3:
-                                        output.append((["cfa7d012e8010e2034966d75b53b033f"], "f6fb6ba8ddf16b6fea9220b1c7dd22aa"))
+                                        output.append((["4a5fad33b4e710bea55514ee22855f1c"], "83927615cf74b04b0d49d484ae1642be"))
                                     case 4:
-                                        output.append((["cfa7d012e8010e2034966d75b53b033f"], "ef4260fb36c2811cdb8f6d461d592983"))
-                            case 9:
+                                        output.append((["4a5fad33b4e710bea55514ee22855f1c"], "2645527bc93d40703a5dc62d7fccd1a6"))
+                            case 9: # skelaser
                                 variant_option = input(
                                     f"\nEnter misc option:\n1: {GREEN}Skelaser White{DEFAULT}\n2: {GREEN}Skelaser Yellow{DEFAULT}\n3: {GREEN}Skelaser Teal{DEFAULT}\n4: {GREEN}Skelaser Pink{DEFAULT}\n5: {GREEN}Skelaser White Dark{DEFAULT}\n6: {GREEN}Skelaser Yellow Dark{DEFAULT}\n7: {GREEN}Skelaser Teal Dark{DEFAULT}\n8: {GREEN}Skelaser Pink Dark{DEFAULT}\n: ")
                                 match int(variant_option):
                                     case 1:
-                                        output.append((["0f0786855a64aee40604f9d850eb3217"], "e86fb3178b8a39b54441df22b7de7d6a"))
+                                        output.append((["7e5ca08b80173590bc6c243803c364b2"], "ff11e1e6d15e3a0027a6466c3757492e"))
                                     case 2:
-                                        output.append((["0f0786855a64aee40604f9d850eb3217"], "c764c5996197b3b38fee61e2f1c7fb17"))
+                                        output.append((["7e5ca08b80173590bc6c243803c364b2"], "4e45dc479574c1d8f56efab5d1dad1c0"))
                                     case 3:
-                                        output.append((["0f0786855a64aee40604f9d850eb3217"], "89e1b68c63daa025471b9c3ab21ed82c"))
+                                        output.append((["7e5ca08b80173590bc6c243803c364b2"], "35f12a7c9767d6ff27cd93b86ae7f8a9"))
                                     case 4:
-                                        output.append((["0f0786855a64aee40604f9d850eb3217"], "98f3ab09e8e11e20ba2763030187864d"))
+                                        output.append((["7e5ca08b80173590bc6c243803c364b2"], "c95d885dcb18887b863742ab31e07beb"))
                                     case 5:
-                                        output.append((["0f0786855a64aee40604f9d850eb3217"], "1abc7b88c409c3463f25fa3c3f87fb7d"))
+                                        output.append((["7e5ca08b80173590bc6c243803c364b2"], "8b8809f54101d4b3e605f2846ec55bb8"))
                                     case 6:
-                                        output.append((["0f0786855a64aee40604f9d850eb3217"], "83d7d89ef8108ff3079c702b8d6d98d8"))
+                                        output.append((["7e5ca08b80173590bc6c243803c364b2"], "0c770dee4b2220a0170fcfbd38563708"))
                                     case 7:
-                                        output.append((["0f0786855a64aee40604f9d850eb3217"], "e22aa038866003ea7b1cac7420ed0429"))
+                                        output.append((["7e5ca08b80173590bc6c243803c364b2"], "8723c87d95c36b505876bc0e6d5f0b9a"))
                                     case 8:
-                                        output.append((["0f0786855a64aee40604f9d850eb3217"], "f619d133b6d9d164d36c8b3067108f0f"))
-                            case 10:
-                                output.append((["deeae172f9761e48eb196753c46f1fa3", "960b11e6e7d549c8b12044201025093f",
-                                                "3b07e8eecef3c62771ab9759204061ad"], "058e54ef5ad3fb914c34a6f446a36702"))
+                                        output.append((["7e5ca08b80173590bc6c243803c364b2"], "0a0880164b1f8246306f686c620f8646"))
+                            case 10: # flashlight laser
+                                output.append((["bbb75d4abce8f70a47b398c123cdf74a", "960b11e6e7d549c8b12044201025093f"], "ac59980bedb36f4b240633b08b532d08"))
+                                output.append((["0042c394f10fe47aea7ae73e2f9c1e34"], "89d3b69c9ecac557c02d38c94f8d0404"))
                                 variant_option = input(
-                                    f"\nEnter misc option:\n1: {GREEN}Flashlight Laser White{DEFAULT}\n2: {GREEN}Flashlight Laser Yellow{DEFAULT}\n3: {GREEN}Flashlight Laser Teal{DEFAULT}\n4: {GREEN}Flashlight Laser Pink{DEFAULT}\n5: {GREEN}Flashlight Laser White Dark{DEFAULT}\n6: {GREEN}Flashlight Laser Yellow Dark{DEFAULT}\n7: {GREEN}Flashlight Laser Teal Dark{DEFAULT}\n8: {GREEN}Flashlight Laser Pink Dark{DEFAULT}\n: ")
+                                    f"\nEnter misc option:\n1: {GREEN}Flashlight Laser Yellow{DEFAULT}\n2: {GREEN}Flashlight Laser Pink{DEFAULT}\n3: {GREEN}Flashlight Laser Orange{DEFAULT}\n4: {GREEN}Flashlight Laser Blue{DEFAULT}\n5: {GREEN}Flashlight Laser Black{DEFAULT}\n: ")
                                 match int(variant_option):
                                     case 1:
-                                        output.append((["201d2aa5244aabcafde4f96b0df79aa2"], "5255b02d41f1d3883767f0ccd7c803f1"))
+                                        output.append((["c145dd83b9597185498b2016e47b63bd"], "2de1f3817d64e4cf1fc795fe831a6ee0"))
                                     case 2:
-                                        output.append((["201d2aa5244aabcafde4f96b0df79aa2"], "9c439bc79a498811331a1a59f9a39b8b"))
+                                        output.append((["c145dd83b9597185498b2016e47b63bd"], "9ed8b8ab4d44e0858b0b41b26301c856"))
                                     case 3:
-                                        output.append((["201d2aa5244aabcafde4f96b0df79aa2"], "e0dfd3d84c8a9812daba5787baf8cbe2"))
+                                        output.append((["c145dd83b9597185498b2016e47b63bd"], "e848b385c5c22cbe5b459f632594aeba"))
                                     case 4:
-                                        output.append((["201d2aa5244aabcafde4f96b0df79aa2"], "265756e09928b57378baacf44dcaa632"))
+                                        output.append((["c145dd83b9597185498b2016e47b63bd"], "d1aa1593e65527cc15fa74391292a97e"))
                                     case 5:
-                                        output.append((["201d2aa5244aabcafde4f96b0df79aa2"], "6f43bf88d6a4c50d4e404ea0d7e2cb5d"))
-                                    case 6:
-                                        output.append((["201d2aa5244aabcafde4f96b0df79aa2"], "d99085575e00b7dd01287060e4543c09"))
-                                    case 7:
-                                        output.append((["201d2aa5244aabcafde4f96b0df79aa2"], "8d42b0e61b84663156799b4f5e4638a9"))
-                                    case 8:
-                                        output.append((["201d2aa5244aabcafde4f96b0df79aa2"], "6f0d64d9ab1919afa348719c42dbfb72"))
+                                        output.append((["c145dd83b9597185498b2016e47b63bd"], "87c39fab4e93362e08bf20363b9047b8"))
+                            case 11: # railgun
+                                output.append((["2cd3c942c8bd338d3423e46569d661e8", "6f78a52ba1ca6e565b5c6370f105fbe6",
+                                                "08daf715288b6ac105b411ef9a69aec9", "9c923f6ea89adac0236b78f59bc7990e",
+                                                "18be493aee6c5723a3b8a5b978cf8f5b", "23fd14be6f8aed0bbd2f3908ea28af0a",
+                                                "45fd977e73428e6fa46690a7b569f7ac", "186a295afd823459da91b65a8f0d0882",
+                                                "203fd2640e860d6e419bd149d071e3cf", "412d8d242c842c288a7a34355868142f",
+                                                "f95f145472479670dd246f0e9b95dc17", "7ff908bb00a8e45334e964adbf83c432",
+                                                "e4d0b9a6217d87ea88e55f2c166b6625"],"cbf0cf37278b713d69a1224d87764b4e")) # remove
+                                output.append((["5099a4c2d1cb7558d084c3148250e5cd"], "52f25d13dfc45710017fef78165f34a8")) # sound
+                                variant_option = input(
+                                    f"\nEnter barrel option:\n1: {GREEN}Regular Barrel{DEFAULT}\n2: {GREEN}Long Barrel{DEFAULT}\n3: {GREEN}Short Barrel{DEFAULT}\n: ")
+                                match int(variant_option):
+                                    case 1:
+                                        output.append((["01771db08b6584ed3e6f3a15b1441c9d"], "ae393a7250d928b6e0ce033214ec280b")) # reciever
+                                        output.append((["ce1a43f672c4e3ab42a70197c05cabca"], "13f1ff5a948b5f83b4d709a0e79082b7")) # regular barrel
+                                    case 2:
+                                        output.append((["01771db08b6584ed3e6f3a15b1441c9d"], "c2eaf5366b0d3f9e840a4973dee4a224")) # reciever
+                                        output.append((["ce1a43f672c4e3ab42a70197c05cabca"], "99e2d8fce4d8d0293e17f577552859b7")) # heavy barrel
+                                    case 3:
+                                        output.append((["01771db08b6584ed3e6f3a15b1441c9d"], "d1c16712773a1b8be9a377d8f7dac129")) # reciever
+                                        output.append((["ce1a43f672c4e3ab42a70197c05cabca"], "c75332b54add2f21f1b8a8e4a35360d3")) # light barrel
 
                     case _:
                         print("Enter a Valid Option!")
