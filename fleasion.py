@@ -1,4 +1,4 @@
-# v1.8.21
+# v1.8.22
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -231,7 +231,7 @@ else:
     print(f"Unsupported OS - {os}")
     exit()
 
-mod_cache = True
+mod_cache = False
 pf_cache = False
 
 mod_cache_check_path = os.path.join(folder_path, '3dbc81ab51ae36ab1de45855c9bb2b15') # 29ec14d6f908cabca7fae131487d96d8, 016a313606e2f99a85bb1a91083206fc
