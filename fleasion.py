@@ -1,4 +1,4 @@
-# v1.8.22
+# v1.8.23
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -231,8 +231,8 @@ else:
     print(f"Unsupported OS - {os}")
     exit()
 
-mod_cache = False
-pf_cache = False
+mod_cache = True
+pf_cache = True
 
 mod_cache_check_path = os.path.join(folder_path, '3dbc81ab51ae36ab1de45855c9bb2b15') # 29ec14d6f908cabca7fae131487d96d8, 016a313606e2f99a85bb1a91083206fc
 pf_cache_check_path = os.path.join(folder_path, '7b8ca4a4ec7addd0f55179a86e49a5a1' if os_name == 'Linux' else '8a7090ac9b2e858f4aee9e19a0bfd562')
@@ -358,8 +358,8 @@ def get_hashes():
                         output.append((dlist('arm models'), '5873cfba79134ecfec6658f559d8f320'))
                     case 2:
                         output.append((data["arm models"]["bare arms"], "5873cfba79134ecfec6658f559d8f320"))
-                        output.append((['2245ea538d66f8c9eb7f453aa3e421c2', 'd599df8997da0b6a3e5b12ab948f648b'],
-                                       'c9672591983da8fffedb9cec7df1e521'))  # c9672591983da8fffedb9cec7df1e521 needs to be updated with new hash
+                        output.append((['f5b0bcba5570d196909a78c7a697467c', '7f828aee555e5e1161d4b39faddda970'],
+                                       'c9672591983da8fffedb9cec7df1e521'))
                     case 3:
                         delete_stuff(data["arm models"]["everything"])
                     case _:
@@ -459,131 +459,132 @@ def get_hashes():
                         fizzy_option = input(
                             f"\nEnter misc option:\n1:  {GREEN}G50 > USP MATCH{DEFAULT}\n2:  {GREEN}Potato Grip > Flashlight Launcher{DEFAULT}\n3:  {GREEN}SCAR-L > AR2{DEFAULT}\n4:  {GREEN}M870 > Gravity Gun{DEFAULT}\n5:  {GREEN}ZIP22 > Spray Bottle{DEFAULT}\n6:  {GREEN}NTW > Tau Cannon{DEFAULT}\n7:  {GREEN}ASP Baton > Stun Stick{DEFAULT}\n8:  {GREEN}Hardballer > Hyperlaser{DEFAULT}\n9:  {GREEN}Skeleton Grip Laser{DEFAULT}\n10: {GREEN}Flashlight Laser{DEFAULT}\n11: {GREEN}Hecate > Railgun{DEFAULT}\n: ")
                         match int(fizzy_option):
-                            case 1:# usp
-                                output.append((["3f00e33051288bffa1ac79b773b830fa", "4aec7e58da2e2becaf7c89b07c0e7f2d",
-                                                "8d78017e9c36ae56fc89f892bba17d34", "9e9c258127dca3d284dddc5f936c09e5",
-                                                "41420741eea2b3983b2beded8b2981ff", "a2f269e8d2c55f0cdde158431671a263",
-                                                "a5f760e77f806ec6566015065b714261", "a5761bc5fa46b848e9f29ff796dee639",
-                                                "ae04c2e9fcd4c671d5bdf3f459bb0a57", "b744c4060252f3dce52c44121b8b1cfa",
-                                                "c1f8f6a19a221ad29b6083914d4e87a2", "dc70acca1b103352b74656e4f178e732",
-                                                "7199cdc55e4ebe5d79ddbe80fa30abff", "4eab4fdb38b9e916e08a2b7923c833de"],
-                                               "cbf0cf37278b713d69a1224d87764b4e")) # remove
-                                output.append((["08cd26b8f4d9ce9e0246ff45897b4d1a"], "b2eee454c6784021549b23e9ba565b91")) # bolt
-                                output.append((["4800cddb752e523b14f61aa7224f5b4d"], "f212626256eaf96426ac179bb2bc6989")) # frame
-                                output.append((["67cac3bcd1c1459f08766ae47cdce777"], "8ef03950bd07ae5ae305c91cd651d780")) # mag
-                                output.append((["29d21c6a319af85e851b10ee403beda6"], "cbf0cf37278b713d69a1224d87764b4e")) # sound
-                            case 2: # grenade launcher
-                                output.append((["9ad745fe192c66514499d082097c7969", "771a8d71308bcfb93af7a248e08a27ad",
-                                                "960b11e6e7d549c8b12044201025093f", "db4a504a99eab17744a3ae7a018302c8"],
-                                                "cbf0cf37278b713d69a1224d87764b4e")) # remove
-                                output.append((["af9664cbb6a3830f94212ddbc25b2614"], "758e9dd654e8f31b7cf75f12faaec60c")) # potato
-                            case 3: # ar2
+                            case 1:
+                                output.append((["bdd9569ccf5265e1bcba9cfdf31158b4", "cdb896f02cec15070658302308e932a6",
+                                                "1e2e2de92f74d63670f37492036fb3c8", "4d18ba857b6fb937b724ffe12d4c1334",
+                                                "5af556d14ce3becb61476b01831469ba", "012aa01d8daeb6911ffa7894540aeda0",
+                                                "742acba73607468f2aabed2393a485a8", "803dcfcc5d67796131c24808ecc81f5f",
+                                                "dd56a65175d19f74f80ef965b581f8fe", "dd88384e2ab892de5289087d483f342f",
+                                                "f9cea0253df6177c8a4d9ade17aeb519", "bd24d07dd480698db934a646b411c91f"],
+                                               "058e54ef5ad3fb914c34a6f446a36702"))
+                                output.append((["bddc9f845043a1557c1f60598b74dec9"], "3a24d59b1e8f104c593603d9a08f1849"))
+                                output.append((["581fb1e75493f5cd07c392c56cfb6913"], "01b511d3d6a49e919136a7620c1c2d75"))
+                                output.append((["b95f48b67fc264b3e0bed3ea67def86c"], "ce8f927a0723aecdf885ad8d2062d65f"))
+                                output.append((["29d21c6a319af85e851b10ee403beda6"], "cbf0cf37278b713d69a1224d87764b4e"))
+                            case 2:
+                                output.append((["771a8d71308bcfb93af7a248e08a27ad", "db4a504a99eab17744a3ae7a018302c8",
+                                                "dd9165376b8856778ab93d26ed52790e"], "058e54ef5ad3fb914c34a6f446a36702"))
+                                output.append((["cd2870bb0ec785064a86d3ce2f2ec2cc"], "ca7d634e856f90edf499da0c26133900"))
+                            case 3:
                                 output.append((["0bc8f39140a0ed5dcc3a184749497983", "4a140edf7ee3f64b158f111bfbd23154",
-                                                 "4e9ec9484f5eb5f3ce1097a95cc19bb5", "79e7a1e7070822ee72a306d6fd42cb12",
-                                                 "90f5503364604d6d86c23ad0ad19923f", "370ff8236b7456bd985d69a692dd8d3d",
-                                                 "618dd900de44d24b976c71539e7fcbf8", "7269ca818c16352b4c8716687ae7a6f9",
-                                                 "105267e688312ddfe3c6d9f4bda1fdd0", "415893cfc6a5a3e72e58a4887a38444e",
+                                                 "4e9ec9484f5eb5f3ce1097a95cc19bb5", "618dd900de44d24b976c71539e7fcbf8",
+                                                 "7489cccbe6ce147ccbcc4416ff169633", "105267e688312ddfe3c6d9f4bda1fdd0",
                                                  "534417e331b5ace39ce942d9985d0a08", "665251ee6dc57621dba36792fb9b633c",
-                                                 "d4f1c0fcbb0b10d7657864f5561a537e"], "cbf0cf37278b713d69a1224d87764b4e")) # remove
-                                output.append((["6ab1746849d42266dbdbc5dded1ae178"], "0225d605b591d1786cf624a0ece1474f")) # reciever
-                                output.append((["4886f9319b426a67c51781608ff45bb7"], "51b13c298b701895a96dc6c1538c6200")) # mag
-                                output.append((["36944683beb83ae89a2f643c2fc89c0a"], "37190ca5952db9fe7c0eae8d2c719423")) # sound
-                            case 4: # gravity gun
-                                output.append((["64f69091b866e02a95cd63c19c6e702f", "155eb145fe6a1cacb755bfb677b77ff8",
-                                                "266f0876a067d4eaaa3c0816cf1c84db", "812ae82827cd0a680d4b32d5f9caafb1",
-                                                "713765ee540fdeaed408890b7fa9fe55", "dfb5ae54c345b331ad4ba0572516c892"],
-                                                "cbf0cf37278b713d69a1224d87764b4e")) # remove
-                                output.append((["418e878c09489775b598eeff69167012"], "2eedfa5dd91367bf1c3e26d73dff4376")) # bolt
-                                output.append((["8e48c1c8446432e97a912689fcd8881c"], "6e3ef32a93233c5d428cbed7a925025d")) # glow
-                                output.append((["d680fdf7ede413dcd3356c7a2164095d"], "d7e0faf9673c57b894170a68513ec1e4")) # stock
-                                output.append((["840a637bcf78d82ea1817980c7b4e034"], "3c91d1da83166b85175b843f70abfabd")) # sound
-                            case 5: # spray bottle
-                                output.append((["015994d41c68c743958355fc579055ee", "a2f269e8d2c55f0cdde158431671a263",
-                                                "b8c043c9acf732234c301bad93955752", "d1e7985581bc5793809c36eca52f2047",
-                                                "d5f2bfadc1608830ea5f618440261bb5", "e038b421ec7b7238683bffc3ce243572"],
-                                                "cbf0cf37278b713d69a1224d87764b4e")) # remove
-                                output.append((["348e3732062fafc55e0c5b62c54eed6f"], "0018e91fa2c9144285480245d476045f")) # bottle
-                                output.append((["a4d45b530a3f0abea9eddc54f30298f2"], "87c55a91cfcd08689795a9458a290415")) # bottle rings
-                            case 6: # tau cannon
-                                output.append((["f7b22c7fb3c2819422c9cd9f476703e5", "7aa291082a3151ab79734459b3ba86f9",
-                                                "7ffcca6ba69d52cfa071197f982ea720", "22cff8974a00c35ccb6705443ff47648",
-                                                "45fd977e73428e6fa46690a7b569f7ac", "84cfa981d4fcea3b622143de97afaf93",
-                                                "91a51183f2d8fc4b80a35b9084dae5bf", "516dad980b6314a6c4ef20bc86490baf",
-                                                "23395e5987a27b2d7c9483803583fbfc", "312127313eb3d42585164d4b6da56325",
-                                                "bc40ab191e605b5b415cf341b4a0c477", "bed3dd4d286f501b869a944a59954c12",
-                                                "dcbf9f73ba646a9c0dcd5330163ab904", "de82a9be0bd0997280d1f6d624adba27",
-                                                "e5f9de7f337a1e0edc91475564e68165", "e29e204d4133976dc14f119edee042e6",
-                                                "ebfe8e8806de75804755ce39f2d503d9", "ecbacf7ca6ba9fadadae885dea8dd22d",
-                                                "eccbf1d6ccab88a050873993d3412412"], "058e54ef5ad3fb914c34a6f446a36702"))
-                                output.append((["5d4fc4a397521b1f502dc6b5e02ebe04"], "ef673c8c6dd91e4b3838ee04ce59e6d2")) # mag
-                                output.append((["3fc23807190d4700757599c4418b62cc"], "0f8ad48af8f75c64438aa7d38419c7ab")) # part1 43d3a2cb1557fc51be6bcb0d329489d3
-                                output.append((["43d3a2cb1557fc51be6bcb0d329489d3"], "ec94a4a602c83e551bbfcccdf3d0000d")) # part1 (2) 3fc23807190d4700757599c4418b62cc
-                                output.append((["98c46e363b32e6c2be25f3a375951f66"], "36ba75eb9dd62725fcb25d36acbeb47b")) # part2
-                                output.append((["cd5656b20061988925ce2e5faf274150"], "a488627070a3f389c4a6dddb85ef7430")) # sound
-                            case 7: # stun stick
-                                output.append((["0a80927d93180dd5a41cf776d351f2b0"], "bb1ab18ed6822cadd12bc7485c925265")) # 1
-                                output.append((["22ed03bb2af84d4ddaad3bcc306a2900"], "49c011ad1cc299fc8ba83f1356a61858")) # 2
-                            case 8: # hyperlaser
-                                output.append((["2c7cc1d2eadbaee51d2b4b123e269b42", "26c675ccc0ea8b28ad9f85ebaafbe1a8",
-                                                "8fffd6838407d7f4dc1efb02cb9ccb6d", "de12a644d7fd4653e475228e4dab0bb3",
-                                                "39aa3db66a0eef06d5c73f849d966ce2", "54de49c3aff858496a8bcb58efd2783e",
-                                                "877a9ed1757b48f0d455d18f74a04e56", "0008903fcc9679741bdd95e6d8252f21",
-                                                "79241ea61c9bb223e859e9a89cb3c256", "7038395e929cb30254bc2254de22b22b",
-                                                "a2e0d08ec56b4992a8062073d2ea4f74", "a5ccf730568459759cda8555c00b3604",
-                                                "a22f3d07c7ac98aa9d0e055352394d96", "ab6b62d04145f8c6c43ed5afdbaa5cb4",
-                                                "b7f88c69a58890f1379912c78cb11e84", "c3d955811260580a07d38542de411973",
-                                                "c09e6e448208c8f889cfb8dac1af1c85", "ca4878171b6a937fb4c49b61a394ee7e",
-                                                "cd942702f5a5d4ec695cfa4e0ac0ddea", "d7eb2bcb9cac8e3f00a23d5b6aa2d7b4"],
-                                                "cbf0cf37278b713d69a1224d87764b4e")) # remove
-                                output.append((["d19f07035f25d77bbe2e0a7aa9670a0b"], "8a081b4f86b31acdb2b437091852bb00")) # base
-                                output.append((["9ebc44df0f589329aa8f376f93b232bc"], "dc91c288b0b881300391ddb0acded9c0")) # sound
+                                                 "aa0ee79510e22fbd065137957572e64d", "b1d53f0b6ce3d9efde41f85b5e9c3be3",
+                                                 "d4f1c0fcbb0b10d7657864f5561a537e"], "058e54ef5ad3fb914c34a6f446a36702"))
+                                output.append((["d807565c66ffa1ef5c2bcb8df71c3316"], "d0ab035539878e8b7f8db4afbcf35c68"))
+                                output.append((["1bd29c76c25b635d72913cf651070211"], "9c824a1771dadc30fc47357781827d0b"))
+                                output.append((["36944683beb83ae89a2f643c2fc89c0a"], "37190ca5952db9fe7c0eae8d2c719423"))
+                            case 4:
+                                output.append((["4a6f27c3d1c02fec75a680fa4e38cbc4", "64f69091b866e02a95cd63c19c6e702f",
+                                                "481db139e933fe0326cd430c7440ff7f", "638bb4c3c30dee35672f2868367ee986",
+                                                "77930c7e6a5743577138c2cbee275207"], "058e54ef5ad3fb914c34a6f446a36702"))
+                                output.append((["d60b4c8da51f667748666d3b654447ef"], "11f5cb8d23e68bb0b46249a2324ef2e3"))
+                                output.append((["f2fff6168a25903e756ce8b46fd5f222"], "7a8cdc037786af2ae38bc857a6f689bc"))
+                                output.append((["a6f57f8e44e3e36ff63507b3201a2369"], "691ab049bccc077f4b555732c8bc95cd"))
+                                output.append((["840a637bcf78d82ea1817980c7b4e034"], "3c91d1da83166b85175b843f70abfabd"))
+                            case 5:
+                                output.append((["6f18fab6028f963fe3b6a63ffd56db9f", "25b1de3e08c6909b19323d1ec31fff77",
+                                                "223f269a9fdee763c0b125c20cdc7919", "885cad81b3f28d0333067fa763783cfc",
+                                                "d5f2bfadc1608830ea5f618440261bb5"], "058e54ef5ad3fb914c34a6f446a36702"))
+                                output.append((["272147901810ade7bb3de69b6de16a41"], "4a125b503471ff8e3a1a67762c0f2271"))
+                                output.append((["368c5e823b66669d3fa3702d5bb83405"], "2d422447505c871a2370c8f9d86abfcf"))
+                            case 6:
+                                output.append((["3cf53b6dc15596a5dbf8b3e412180d7a", "7ead80946bc6e1319cb3345e60f5380f",
+                                                "51ac841d64d72a6fd7ca820f5400612c", "52a63ced811527c03386c04366d8c5c1",
+                                                "076ee7fe43824b3d094c82d7f2d31dfa", "445cadb9fe251623c21dc0228c564558",
+                                                "529149dabb358f45dc37f65fbe69fe05", "0555544b3a949bdfd6d678fe1ee1db11",
+                                                "a0f18c32520357cc642f7370bffdbd9a", "a775b83d510837e6504d7702b9173745",
+                                                "b879ca0a2be08a97e1025f424414b720", "bfce01d85c5b112edf874697e8361d33",
+                                                "c65d35d2a5b08f0de1cd5719b2a832d4", "d04a47352d271f4af0f7f18dc1271ec3",
+                                                "eac5a3cb5fb92e128152d356e8ac69c1", "f7b22c7fb3c2819422c9cd9f476703e5",
+                                                "f617b5d8f7d6a6ccbf6810b3a74e2c5d", "fd1e15a13f6223d92333a0e3890d0e1d",
+                                                "64b85c4c6cbb582731cddfa47837fca4"], "058e54ef5ad3fb914c34a6f446a36702"))
+                                output.append((["1dfc54edfbac54afef3149068cb5bd03"], "855b6209128f87538780d72daf80d8f1"))
+                                output.append((["ce02760297d953caa05ffdb7dbde7da7"], "631400c77a40f183add73cb09ac57634"))
+                                output.append((["153f63fb7e56c72c1ff4d99f73820019"], "70e7686f15cc964445dd26a003da5f76"))
+                                output.append((["61fd2d1c541098583c023d41ca3d1e2e"], "c88ed6c1af512dc5ceba8930909bb11b"))
+                                output.append((["cd5656b20061988925ce2e5faf274150"], "a488627070a3f389c4a6dddb85ef7430"))
+                            case 7:
+                                output.append((["e0c825a5deb0871b8e12376dd4fa40ba"], "f6a75145709a83372de39deacfe9ce27"))
+                                output.append((["02d75c76b65f1f837b2f8b1684c7b9c4"], "49c011ad1cc299fc8ba83f1356a61858"))
+                            case 8:
+                                output.append((["0a89192cee6d4750d5692c2bbd117514", "2c69a5a9cb47f5305bfe8e5221e06dad",
+                                                "2e3a2ee20d4ce477800b6709341a367f", "5f16814ee52de8dac2d6ce5be62d67c6",
+                                                "7c18935a9aa64adb36c8833e04325c6f", "9e877683e8b814ff1042ed85ac7f57d8",
+                                                "9ec1d61969c60760ba4563231a10d20f", "99de3c8563576612eb2593f18e4fc885",
+                                                "163febf1c4242e4f27accd72f306d6c6", "548df330e8cdb635e871bb8c14e8e0a3",
+                                                "689e339d1004552834acde0c566b27f3", "1511ed3cefa2e2065ba2c71bb0246f02",
+                                                "036330297ca114d10e33be1a511146aa", "a585fa17681937f2c050096ee15afa51",
+                                                "a78182f462e53a1becd34fa35a6c3b60", "ae518b8a68134743b97335b671a9646e",
+                                                "bdaf13233d32c85d82fdf3eb99f86198", "d223f617fa26c8823bd7b0cb1263dd5e",
+                                                "e9aefc8d611afa7253d19d657e003e56", "f8f6d6280f9ebab38590ac6221e9cd97"],
+                                               "058e54ef5ad3fb914c34a6f446a36702"))
+                                output.append((["9db5a1d17c1898c8bbf4f9801fa399fb"], "116aa5d47b919e6dfca38b321c9b54ae"))
+                                output.append((["9ebc44df0f589329aa8f376f93b232bc"], "dc91c288b0b881300391ddb0acded9c0"))
                                 variant_option = input(
                                     f"\nEnter misc option:\n1: {GREEN}Colorable{DEFAULT}\n2: {GREEN}Blue/Purple{DEFAULT}\n3: {GREEN}Yellow/Green{DEFAULT}\n4: {GREEN}Pink/Orange{DEFAULT}\n: ")
                                 match int(variant_option):
                                     case 1:
-                                        output.append((["4a5fad33b4e710bea55514ee22855f1c"], "20d66fca7a5d5338aad3ed21518b82a7"))
+                                        output.append((["cfa7d012e8010e2034966d75b53b033f"], "612d2995b2621bbd74853e6586e5b143"))
                                     case 2:
-                                        output.append((["4a5fad33b4e710bea55514ee22855f1c"], "725aa3f6672e0a1d6b1166b5aaeb3a07"))
+                                        output.append((["cfa7d012e8010e2034966d75b53b033f"], "5cc8e95a61df22732ab90a53f94857dd"))
                                     case 3:
-                                        output.append((["4a5fad33b4e710bea55514ee22855f1c"], "83927615cf74b04b0d49d484ae1642be"))
+                                        output.append((["cfa7d012e8010e2034966d75b53b033f"], "f6fb6ba8ddf16b6fea9220b1c7dd22aa"))
                                     case 4:
-                                        output.append((["4a5fad33b4e710bea55514ee22855f1c"], "2645527bc93d40703a5dc62d7fccd1a6"))
-                            case 9: # skelaser
+                                        output.append((["cfa7d012e8010e2034966d75b53b033f"], "ef4260fb36c2811cdb8f6d461d592983"))
+                            case 9:
                                 variant_option = input(
                                     f"\nEnter misc option:\n1: {GREEN}Skelaser White{DEFAULT}\n2: {GREEN}Skelaser Yellow{DEFAULT}\n3: {GREEN}Skelaser Teal{DEFAULT}\n4: {GREEN}Skelaser Pink{DEFAULT}\n5: {GREEN}Skelaser White Dark{DEFAULT}\n6: {GREEN}Skelaser Yellow Dark{DEFAULT}\n7: {GREEN}Skelaser Teal Dark{DEFAULT}\n8: {GREEN}Skelaser Pink Dark{DEFAULT}\n: ")
                                 match int(variant_option):
                                     case 1:
-                                        output.append((["7e5ca08b80173590bc6c243803c364b2"], "ff11e1e6d15e3a0027a6466c3757492e"))
+                                        output.append((["0f0786855a64aee40604f9d850eb3217"], "e86fb3178b8a39b54441df22b7de7d6a"))
                                     case 2:
-                                        output.append((["7e5ca08b80173590bc6c243803c364b2"], "4e45dc479574c1d8f56efab5d1dad1c0"))
+                                        output.append((["0f0786855a64aee40604f9d850eb3217"], "c764c5996197b3b38fee61e2f1c7fb17"))
                                     case 3:
-                                        output.append((["7e5ca08b80173590bc6c243803c364b2"], "35f12a7c9767d6ff27cd93b86ae7f8a9"))
+                                        output.append((["0f0786855a64aee40604f9d850eb3217"], "89e1b68c63daa025471b9c3ab21ed82c"))
                                     case 4:
-                                        output.append((["7e5ca08b80173590bc6c243803c364b2"], "c95d885dcb18887b863742ab31e07beb"))
+                                        output.append((["0f0786855a64aee40604f9d850eb3217"], "98f3ab09e8e11e20ba2763030187864d"))
                                     case 5:
-                                        output.append((["7e5ca08b80173590bc6c243803c364b2"], "8b8809f54101d4b3e605f2846ec55bb8"))
+                                        output.append((["0f0786855a64aee40604f9d850eb3217"], "1abc7b88c409c3463f25fa3c3f87fb7d"))
                                     case 6:
-                                        output.append((["7e5ca08b80173590bc6c243803c364b2"], "0c770dee4b2220a0170fcfbd38563708"))
+                                        output.append((["0f0786855a64aee40604f9d850eb3217"], "83d7d89ef8108ff3079c702b8d6d98d8"))
                                     case 7:
-                                        output.append((["7e5ca08b80173590bc6c243803c364b2"], "8723c87d95c36b505876bc0e6d5f0b9a"))
+                                        output.append((["0f0786855a64aee40604f9d850eb3217"], "e22aa038866003ea7b1cac7420ed0429"))
                                     case 8:
-                                        output.append((["7e5ca08b80173590bc6c243803c364b2"], "0a0880164b1f8246306f686c620f8646"))
-                            case 10: # flashlight laser
-                                output.append((["bbb75d4abce8f70a47b398c123cdf74a", "960b11e6e7d549c8b12044201025093f"], "ac59980bedb36f4b240633b08b532d08"))
-                                output.append((["0042c394f10fe47aea7ae73e2f9c1e34"], "89d3b69c9ecac557c02d38c94f8d0404"))
+                                        output.append((["0f0786855a64aee40604f9d850eb3217"], "f619d133b6d9d164d36c8b3067108f0f"))
+                            case 10:
+                                output.append((["deeae172f9761e48eb196753c46f1fa3", "960b11e6e7d549c8b12044201025093f",
+                                                "3b07e8eecef3c62771ab9759204061ad"], "058e54ef5ad3fb914c34a6f446a36702"))
                                 variant_option = input(
-                                    f"\nEnter misc option:\n1: {GREEN}Flashlight Laser Yellow{DEFAULT}\n2: {GREEN}Flashlight Laser Pink{DEFAULT}\n3: {GREEN}Flashlight Laser Orange{DEFAULT}\n4: {GREEN}Flashlight Laser Blue{DEFAULT}\n5: {GREEN}Flashlight Laser Black{DEFAULT}\n: ")
+                                    f"\nEnter misc option:\n1: {GREEN}Flashlight Laser White{DEFAULT}\n2: {GREEN}Flashlight Laser Yellow{DEFAULT}\n3: {GREEN}Flashlight Laser Teal{DEFAULT}\n4: {GREEN}Flashlight Laser Pink{DEFAULT}\n5: {GREEN}Flashlight Laser White Dark{DEFAULT}\n6: {GREEN}Flashlight Laser Yellow Dark{DEFAULT}\n7: {GREEN}Flashlight Laser Teal Dark{DEFAULT}\n8: {GREEN}Flashlight Laser Pink Dark{DEFAULT}\n: ")
                                 match int(variant_option):
                                     case 1:
-                                        output.append((["c145dd83b9597185498b2016e47b63bd"], "2de1f3817d64e4cf1fc795fe831a6ee0"))
+                                        output.append((["201d2aa5244aabcafde4f96b0df79aa2"], "5255b02d41f1d3883767f0ccd7c803f1"))
                                     case 2:
-                                        output.append((["c145dd83b9597185498b2016e47b63bd"], "9ed8b8ab4d44e0858b0b41b26301c856"))
+                                        output.append((["201d2aa5244aabcafde4f96b0df79aa2"], "9c439bc79a498811331a1a59f9a39b8b"))
                                     case 3:
-                                        output.append((["c145dd83b9597185498b2016e47b63bd"], "e848b385c5c22cbe5b459f632594aeba"))
+                                        output.append((["201d2aa5244aabcafde4f96b0df79aa2"], "e0dfd3d84c8a9812daba5787baf8cbe2"))
                                     case 4:
-                                        output.append((["c145dd83b9597185498b2016e47b63bd"], "d1aa1593e65527cc15fa74391292a97e"))
+                                        output.append((["201d2aa5244aabcafde4f96b0df79aa2"], "265756e09928b57378baacf44dcaa632"))
                                     case 5:
-                                        output.append((["c145dd83b9597185498b2016e47b63bd"], "87c39fab4e93362e08bf20363b9047b8"))
+                                        output.append((["201d2aa5244aabcafde4f96b0df79aa2"], "6f43bf88d6a4c50d4e404ea0d7e2cb5d"))
+                                    case 6:
+                                        output.append((["201d2aa5244aabcafde4f96b0df79aa2"], "d99085575e00b7dd01287060e4543c09"))
+                                    case 7:
+                                        output.append((["201d2aa5244aabcafde4f96b0df79aa2"], "8d42b0e61b84663156799b4f5e4638a9"))
+                                    case 8:
+                                        output.append((["201d2aa5244aabcafde4f96b0df79aa2"], "6f0d64d9ab1919afa348719c42dbfb72"))
                             case 11: # railgun
                                 output.append((["2cd3c942c8bd338d3423e46569d661e8", "6f78a52ba1ca6e565b5c6370f105fbe6",
                                                 "08daf715288b6ac105b411ef9a69aec9", "9c923f6ea89adac0236b78f59bc7990e",
