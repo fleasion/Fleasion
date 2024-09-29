@@ -1,5 +1,5 @@
 {
-    "version": "v1.6.27",
+    "version": "v1.7.0",
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
         "blue": "38342d3214ad04067e03106bdff41914",
@@ -99,8 +99,9 @@
             "ak12br": "e4c264d9f0d7d3f916433c5da110798a",
             "ak12br 127": "48a5782ade5e549b53e497dbb006e94c",
             "g3a3": "965aa9983436c1ae9db8eca9c41aeb27",
+            "g3a3 .45": "956c00897423f232d5bb8d3815fcdbc6",
             "ag-3": "3fd76a9c309eaaf5fa156b25856dc44d",
-            "hk417": "f47002ee882b4e8cf633f8c1efa7b31b",
+            "hk417": "a2161c0b1e42eb7e0829b83c3f893f7d",
             "henry": "63b90c7bf708f833ca2f8c568747eb7e",
             "fal 50": "4bf96b79cc64f22f9d4fbf5d468edf50",
             "hcar": "e58c65364f82bf293c488974cda82e10"
@@ -201,7 +202,7 @@
             "five-0": "8a85b4bff8597eebe7d25a5fb42be1df",
             "ar-9": "c097e84035333cf3e497614acde9e0e9",
             "four-t-5": "3fd970428da9704d79203e61384209c6",
-            "typewriter": "aa346bfe681f6b13e00d8e7e614a5cce",
+            "typewriter": "5a7cbfb1b8e702dc5f9ea5dc2fd3b125",
             "blockson": "d2b575a13ea346c423543e1c8a7936d2"
         },
         "dmrs": {
@@ -220,7 +221,7 @@
         },
         "lmgs": {
             "colt lmg": "88fcf537ca11e98ea9f6ebdb5929bfd7",
-            "m60": "9877e2301abfd337e428ba10f4a04e5e",
+            "m60e6": "b6752c85817fabf9c204b93e7f050451",
             "aug hbar": "feb10a78b7cfb4cb20562b595237de35",
             "mg36": "b9e21999a84f260a2c3f11d36ecec8e4",
             "rpk12": "ab5dbe6d83ae419019b3386544151cfc",
@@ -236,7 +237,9 @@
             "stoner 96": "06c3c208f74820d18030083e64e47250",
             "chainsaw": "06c3c208f74820d18030083e64e47250",
             "mg42": "ccd7108d8ee0e875a84f68ba9da4a9b0",
-            "diamond hk51b": "532f5ef0ab07c83d11cd4ea9ff35158d",
+            "hk51bling": "532f5ef0ab07c83d11cd4ea9ff35158d",
+            "hk51bling special ammo": "5457419c6f4d745b44c6a716a3926ab7",
+            "hk51bling subsonic ruby": "4cb135933a9f50d2f8727b71002bd82d",
             "juggun": "06c3c208f74820d18030083e64e47250",
             "hornet": "3414acb94339a49813d5c90d3f5917e1"
         },
@@ -3066,125 +3069,242 @@
         "86e5449d3e114dbf31837b639f8afa7f"
     ],
     "arm models": {
-        "everything": [
-            "5de75379be644ee64d7ad3101d3acce0",
-            "7ea2f992988aea2fd6431f9906174fe4",
-            "191ec6c40ea986e1641bcf1a97c12d5a",
-            "fd394f715c7bcfbf59980169aca0a49a",
-            "7f828aee555e5e1161d4b39faddda970",
-            "f5b0bcba5570d196909a78c7a697467c",
-            "d9e318993f8d4b0a91483c5d85711d64",
-            "8b7961b26ffda6cae6ddf5206835674f",
-            "4b5cd0393ccb5ab89eb809d76d226654",
-            "6fa2166e91cf2a9fef1dae169d5fbd47",
-            "333694db923a5ac328dccc5d40e2ec47",
-            "440932a01e4edc5d4c7ee61a29adc6c7",
-            "cd597c841c800220efed993cb97ed83e",
-            "18ff02c763205099ce8542cebc98ae71",
-            "0417f106902be46503fc75266526817a",
-            "e9288ba5cd7483d53aacfa02d7eca591",
-            "51a460d4ed40684b29a58aa652f306d8",
-            "f465bf377c4bc2f40a75400067f4bf1b",
-            "c2c4cff4f8efe65c9d025c2dca68208a",
-            "0f09a234ff8721dba8f4c6bd12e9b965",
-            "fcdad40167a13e43046bbb4fdf847b0d",
-            "5d270c9246ceca89fcd7c75944152990",
-            "5adc80791bf7fb4c1262d6c355674897",
-            "8ed4281962822c3c40b24ccdedc562b4",
-            "c2cce731ec61058330d6bce974c166b3",
-            "a6a1aa86662153d932b0aef32f0011fb",
-            "09f8c2d5c94150c4db35beef31045d04"
-        ],
-        "left arm": [
-            "51a460d4ed40684b29a58aa652f306d8",
-            "f465bf377c4bc2f40a75400067f4bf1b",
-            "c2c4cff4f8efe65c9d025c2dca68208a",
-            "0f09a234ff8721dba8f4c6bd12e9b965",
-            "fcdad40167a13e43046bbb4fdf847b0d",
-            "5d270c9246ceca89fcd7c75944152990",
-            "5adc80791bf7fb4c1262d6c355674897",
-            "8ed4281962822c3c40b24ccdedc562b4",
-            "c2cce731ec61058330d6bce974c166b3",
-            "a6a1aa86662153d932b0aef32f0011fb",
-            "09f8c2d5c94150c4db35beef31045d04",
-            "e9288ba5cd7483d53aacfa02d7eca591",
-            "18ff02c763205099ce8542cebc98ae71",
-            "440932a01e4edc5d4c7ee61a29adc6c7",
-            "4b5cd0393ccb5ab89eb809d76d226654",
-            "d9e318993f8d4b0a91483c5d85711d64",
-            "7f828aee555e5e1161d4b39faddda970",
-            "191ec6c40ea986e1641bcf1a97c12d5a",
-            "5de75379be644ee64d7ad3101d3acce0",
-            "333694db923a5ac328dccc5d40e2ec47",
-            "e9288ba5cd7483d53aacfa02d7eca591"
-        ],
-        "right arm": [
-            "7ea2f992988aea2fd6431f9906174fe4",
-            "fd394f715c7bcfbf59980169aca0a49a",
-            "f5b0bcba5570d196909a78c7a697467c",
-            "8b7961b26ffda6cae6ddf5206835674f",
-            "6fa2166e91cf2a9fef1dae169d5fbd47",
-            "cd597c841c800220efed993cb97ed83e",
-            "0417f106902be46503fc75266526817a",
-            "333694db923a5ac328dccc5d40e2ec47",
-            "e9288ba5cd7483d53aacfa02d7eca591"
-        ],
-        "bare arms": [
-            "5de75379be644ee64d7ad3101d3acce0",
-            "7ea2f992988aea2fd6431f9906174fe4",
-            "191ec6c40ea986e1641bcf1a97c12d5a",
-            "fd394f715c7bcfbf59980169aca0a49a",
-            "d9e318993f8d4b0a91483c5d85711d64",
-            "8b7961b26ffda6cae6ddf5206835674f",
-            "4b5cd0393ccb5ab89eb809d76d226654",
-            "6fa2166e91cf2a9fef1dae169d5fbd47",
-            "333694db923a5ac328dccc5d40e2ec47",
-            "440932a01e4edc5d4c7ee61a29adc6c7",
-            "cd597c841c800220efed993cb97ed83e",
-            "18ff02c763205099ce8542cebc98ae71",
-            "0417f106902be46503fc75266526817a",
-            "e9288ba5cd7483d53aacfa02d7eca591",
-            "51a460d4ed40684b29a58aa652f306d8",
-            "f465bf377c4bc2f40a75400067f4bf1b",
-            "c2c4cff4f8efe65c9d025c2dca68208a",
-            "0f09a234ff8721dba8f4c6bd12e9b965",
-            "fcdad40167a13e43046bbb4fdf847b0d",
-            "5d270c9246ceca89fcd7c75944152990",
-            "5adc80791bf7fb4c1262d6c355674897",
-            "8ed4281962822c3c40b24ccdedc562b4",
-            "c2cce731ec61058330d6bce974c166b3",
-            "a6a1aa86662153d932b0aef32f0011fb",
-            "09f8c2d5c94150c4db35beef31045d04"
-        ],
-        "watch": [
-            "51a460d4ed40684b29a58aa652f306d8",
-            "f465bf377c4bc2f40a75400067f4bf1b",
-            "c2c4cff4f8efe65c9d025c2dca68208a",
-            "0f09a234ff8721dba8f4c6bd12e9b965",
-            "fcdad40167a13e43046bbb4fdf847b0d",
-            "5d270c9246ceca89fcd7c75944152990",
-            "5adc80791bf7fb4c1262d6c355674897",
-            "8ed4281962822c3c40b24ccdedc562b4",
-            "c2cce731ec61058330d6bce974c166b3",
-            "a6a1aa86662153d932b0aef32f0011fb",
-            "09f8c2d5c94150c4db35beef31045d04"
-        ],
-        "left glove": [
-            "5de75379be644ee64d7ad3101d3acce0",
-            "d9e318993f8d4b0a91483c5d85711d64",
-            "4b5cd0393ccb5ab89eb809d76d226654",
-            "191ec6c40ea986e1641bcf1a97c12d5a",
-            "440932a01e4edc5d4c7ee61a29adc6c7",
-            "333694db923a5ac328dccc5d40e2ec47"
-        ],
-        "right glove": [
-            "7ea2f992988aea2fd6431f9906174fe4",
-            "8b7961b26ffda6cae6ddf5206835674f",
-            "6fa2166e91cf2a9fef1dae169d5fbd47",
-            "fd394f715c7bcfbf59980169aca0a49a",
-            "cd597c841c800220efed993cb97ed83e",
-            "333694db923a5ac328dccc5d40e2ec47"
-        ]
+        "v1": {
+            "everything": [
+                "5de75379be644ee64d7ad3101d3acce0",
+                "7ea2f992988aea2fd6431f9906174fe4",
+                "191ec6c40ea986e1641bcf1a97c12d5a",
+                "fd394f715c7bcfbf59980169aca0a49a",
+                "7f828aee555e5e1161d4b39faddda970",
+                "f5b0bcba5570d196909a78c7a697467c",
+                "d9e318993f8d4b0a91483c5d85711d64",
+                "8b7961b26ffda6cae6ddf5206835674f",
+                "4b5cd0393ccb5ab89eb809d76d226654",
+                "6fa2166e91cf2a9fef1dae169d5fbd47",
+                "333694db923a5ac328dccc5d40e2ec47",
+                "440932a01e4edc5d4c7ee61a29adc6c7",
+                "cd597c841c800220efed993cb97ed83e",
+                "18ff02c763205099ce8542cebc98ae71",
+                "0417f106902be46503fc75266526817a",
+                "e9288ba5cd7483d53aacfa02d7eca591",
+                "51a460d4ed40684b29a58aa652f306d8",
+                "f465bf377c4bc2f40a75400067f4bf1b",
+                "c2c4cff4f8efe65c9d025c2dca68208a",
+                "0f09a234ff8721dba8f4c6bd12e9b965",
+                "fcdad40167a13e43046bbb4fdf847b0d",
+                "5d270c9246ceca89fcd7c75944152990",
+                "5adc80791bf7fb4c1262d6c355674897",
+                "8ed4281962822c3c40b24ccdedc562b4",
+                "c2cce731ec61058330d6bce974c166b3",
+                "a6a1aa86662153d932b0aef32f0011fb",
+                "09f8c2d5c94150c4db35beef31045d04"
+            ],
+            "left arm": [
+                "51a460d4ed40684b29a58aa652f306d8",
+                "f465bf377c4bc2f40a75400067f4bf1b",
+                "c2c4cff4f8efe65c9d025c2dca68208a",
+                "0f09a234ff8721dba8f4c6bd12e9b965",
+                "fcdad40167a13e43046bbb4fdf847b0d",
+                "5d270c9246ceca89fcd7c75944152990",
+                "5adc80791bf7fb4c1262d6c355674897",
+                "8ed4281962822c3c40b24ccdedc562b4",
+                "c2cce731ec61058330d6bce974c166b3",
+                "a6a1aa86662153d932b0aef32f0011fb",
+                "09f8c2d5c94150c4db35beef31045d04",
+                "e9288ba5cd7483d53aacfa02d7eca591",
+                "18ff02c763205099ce8542cebc98ae71",
+                "440932a01e4edc5d4c7ee61a29adc6c7",
+                "4b5cd0393ccb5ab89eb809d76d226654",
+                "d9e318993f8d4b0a91483c5d85711d64",
+                "7f828aee555e5e1161d4b39faddda970",
+                "191ec6c40ea986e1641bcf1a97c12d5a",
+                "5de75379be644ee64d7ad3101d3acce0",
+                "333694db923a5ac328dccc5d40e2ec47",
+                "e9288ba5cd7483d53aacfa02d7eca591"
+            ],
+            "right arm": [
+                "7ea2f992988aea2fd6431f9906174fe4",
+                "fd394f715c7bcfbf59980169aca0a49a",
+                "f5b0bcba5570d196909a78c7a697467c",
+                "8b7961b26ffda6cae6ddf5206835674f",
+                "6fa2166e91cf2a9fef1dae169d5fbd47",
+                "cd597c841c800220efed993cb97ed83e",
+                "0417f106902be46503fc75266526817a",
+                "333694db923a5ac328dccc5d40e2ec47",
+                "e9288ba5cd7483d53aacfa02d7eca591"
+            ],
+            "bare arms": [
+                "5de75379be644ee64d7ad3101d3acce0",
+                "7ea2f992988aea2fd6431f9906174fe4",
+                "191ec6c40ea986e1641bcf1a97c12d5a",
+                "fd394f715c7bcfbf59980169aca0a49a",
+                "d9e318993f8d4b0a91483c5d85711d64",
+                "8b7961b26ffda6cae6ddf5206835674f",
+                "4b5cd0393ccb5ab89eb809d76d226654",
+                "6fa2166e91cf2a9fef1dae169d5fbd47",
+                "333694db923a5ac328dccc5d40e2ec47",
+                "440932a01e4edc5d4c7ee61a29adc6c7",
+                "cd597c841c800220efed993cb97ed83e",
+                "18ff02c763205099ce8542cebc98ae71",
+                "0417f106902be46503fc75266526817a",
+                "e9288ba5cd7483d53aacfa02d7eca591",
+                "51a460d4ed40684b29a58aa652f306d8",
+                "f465bf377c4bc2f40a75400067f4bf1b",
+                "c2c4cff4f8efe65c9d025c2dca68208a",
+                "0f09a234ff8721dba8f4c6bd12e9b965",
+                "fcdad40167a13e43046bbb4fdf847b0d",
+                "5d270c9246ceca89fcd7c75944152990",
+                "5adc80791bf7fb4c1262d6c355674897",
+                "8ed4281962822c3c40b24ccdedc562b4",
+                "c2cce731ec61058330d6bce974c166b3",
+                "a6a1aa86662153d932b0aef32f0011fb",
+                "09f8c2d5c94150c4db35beef31045d04"
+            ],
+            "watch": [
+                "51a460d4ed40684b29a58aa652f306d8",
+                "f465bf377c4bc2f40a75400067f4bf1b",
+                "c2c4cff4f8efe65c9d025c2dca68208a",
+                "0f09a234ff8721dba8f4c6bd12e9b965",
+                "fcdad40167a13e43046bbb4fdf847b0d",
+                "5d270c9246ceca89fcd7c75944152990",
+                "5adc80791bf7fb4c1262d6c355674897",
+                "8ed4281962822c3c40b24ccdedc562b4",
+                "c2cce731ec61058330d6bce974c166b3",
+                "a6a1aa86662153d932b0aef32f0011fb",
+                "09f8c2d5c94150c4db35beef31045d04"
+            ],
+            "left glove": [
+                "5de75379be644ee64d7ad3101d3acce0",
+                "d9e318993f8d4b0a91483c5d85711d64",
+                "4b5cd0393ccb5ab89eb809d76d226654",
+                "191ec6c40ea986e1641bcf1a97c12d5a",
+                "440932a01e4edc5d4c7ee61a29adc6c7",
+                "333694db923a5ac328dccc5d40e2ec47"
+            ],
+            "right glove": [
+                "7ea2f992988aea2fd6431f9906174fe4",
+                "8b7961b26ffda6cae6ddf5206835674f",
+                "6fa2166e91cf2a9fef1dae169d5fbd47",
+                "fd394f715c7bcfbf59980169aca0a49a",
+                "cd597c841c800220efed993cb97ed83e",
+                "333694db923a5ac328dccc5d40e2ec47"
+            ]
+        },
+        "v2": {
+            "everything": [
+                "000414ac76211d8b468f7661a2a7e813",
+                "107a13e3d47256b9f345f75b124a21e7",
+                "168c0635e0982c6425b542a34acc6606",
+                "2245ea538d66f8c9eb7f453aa3e421c2",
+                "3ae9ee6f5f6fc37836e48aad3b5ce10d",
+                "3c6965b098f23a6a540599ba5655857a",
+                "46542360ec7db18ba2459afd13ae2b0d",
+                "4b100807b3758bdf603bd08aaef55992",
+                "5d37c32d675f7513d936256a066f0c6f",
+                "5ef48eb00fb2ec14656df53d3e3e90f8",
+                "66df2a52f351f9809564527b51cf0e0f",
+                "66ece1d373d7d1e022d334575b169fe8",
+                "724e59870c49057448afe92b1a3e8c12",
+                "a9eb25491ccb0664ed228194e2ff7b77",
+                "bcfa3858f7bd02c6f100debc55a62137",
+                "d599df8997da0b6a3e5b12ab948f648b",
+                "da57f5eb717f2e5de248bc46b18b0a25",
+                "f9133e619e09b2e0050f5c220cc39840",
+                "cac8d16053738e5789b54dd06f9434c3",
+                "a1b1022d272a349ac657304568967355",
+                "d3698f440e3322ed49228fcf3be6049f",
+                "ac3583fd6e68045132688c92031e63fc",
+                "bee79a572db0aabceb80980cbd0f0584",
+                "7699a2332f2aa27ceb6922e2359059a5",
+                "8e3b3625df0f4e741a23aa65239defa7",
+                "f79c5813cda4d5bd33e6a4311c13e754"
+            ],
+            "left arm": [
+                "107a13e3d47256b9f345f75b124a21e7",
+                "3ae9ee6f5f6fc37836e48aad3b5ce10d",
+                "3c6965b098f23a6a540599ba5655857a",
+                "4b100807b3758bdf603bd08aaef55992",
+                "5d37c32d675f7513d936256a066f0c6f",
+                "bcfa3858f7bd02c6f100debc55a62137",
+                "d599df8997da0b6a3e5b12ab948f648b",
+                "8e3b3625df0f4e741a23aa65239defa7",
+                "f79c5813cda4d5bd33e6a4311c13e754",
+                "000414ac76211d8b468f7661a2a7e813",
+                "5ef48eb00fb2ec14656df53d3e3e90f8",
+                "724e59870c49057448afe92b1a3e8c12",
+                "f9133e619e09b2e0050f5c220cc39840",
+                "cac8d16053738e5789b54dd06f9434c3",
+                "ac3583fd6e68045132688c92031e63fc",
+                "a1b1022d272a349ac657304568967355",
+                "bee79a572db0aabceb80980cbd0f0584",
+                "d3698f440e3322ed49228fcf3be6049f",
+                "66df2a52f351f9809564527b51cf0e0f"
+            ],
+            "right arm": [
+                "168c0635e0982c6425b542a34acc6606",
+                "2245ea538d66f8c9eb7f453aa3e421c2",
+                "46542360ec7db18ba2459afd13ae2b0d",
+                "66ece1d373d7d1e022d334575b169fe8",
+                "a9eb25491ccb0664ed228194e2ff7b77",
+                "da57f5eb717f2e5de248bc46b18b0a25",
+                "7699a2332f2aa27ceb6922e2359059a5",
+                "66df2a52f351f9809564527b51cf0e0f"
+            ],
+            "bare arms": [
+                "000414ac76211d8b468f7661a2a7e813",
+                "107a13e3d47256b9f345f75b124a21e7",
+                "168c0635e0982c6425b542a34acc6606",
+                "3ae9ee6f5f6fc37836e48aad3b5ce10d",
+                "3c6965b098f23a6a540599ba5655857a",
+                "46542360ec7db18ba2459afd13ae2b0d",
+                "4b100807b3758bdf603bd08aaef55992",
+                "5d37c32d675f7513d936256a066f0c6f",
+                "5ef48eb00fb2ec14656df53d3e3e90f8",
+                "66df2a52f351f9809564527b51cf0e0f",
+                "66ece1d373d7d1e022d334575b169fe8",
+                "724e59870c49057448afe92b1a3e8c12",
+                "a9eb25491ccb0664ed228194e2ff7b77",
+                "bcfa3858f7bd02c6f100debc55a62137",
+                "da57f5eb717f2e5de248bc46b18b0a25",
+                "f9133e619e09b2e0050f5c220cc39840",
+                "cac8d16053738e5789b54dd06f9434c3",
+                "a1b1022d272a349ac657304568967355",
+                "d3698f440e3322ed49228fcf3be6049f",
+                "ac3583fd6e68045132688c92031e63fc",
+                "bee79a572db0aabceb80980cbd0f0584",
+                "7699a2332f2aa27ceb6922e2359059a5",
+                "8e3b3625df0f4e741a23aa65239defa7",
+                "f79c5813cda4d5bd33e6a4311c13e754"
+            ],
+            "watch": [
+                "000414ac76211d8b468f7661a2a7e813",
+                "5ef48eb00fb2ec14656df53d3e3e90f8",
+                "724e59870c49057448afe92b1a3e8c12",
+                "f9133e619e09b2e0050f5c220cc39840",
+                "cac8d16053738e5789b54dd06f9434c3",
+                "ac3583fd6e68045132688c92031e63fc",
+                "a1b1022d272a349ac657304568967355",
+                "bee79a572db0aabceb80980cbd0f0584",
+                "d3698f440e3322ed49228fcf3be6049f"
+            ],
+            "left glove": [
+                "3ae9ee6f5f6fc37836e48aad3b5ce10d",
+                "3c6965b098f23a6a540599ba5655857a",
+                "4b100807b3758bdf603bd08aaef55992",
+                "5d37c32d675f7513d936256a066f0c6f",
+                "8e3b3625df0f4e741a23aa65239defa7",
+                "f79c5813cda4d5bd33e6a4311c13e754",
+                "66df2a52f351f9809564527b51cf0e0f"
+            ],
+            "right glove": [
+                "168c0635e0982c6425b542a34acc6606",
+                "46542360ec7db18ba2459afd13ae2b0d",
+                "66ece1d373d7d1e022d334575b169fe8",
+                "a9eb25491ccb0664ed228194e2ff7b77",
+                "7699a2332f2aa27ceb6922e2359059a5",
+                "66df2a52f351f9809564527b51cf0e0f"
+            ]
+        }
     },
     "textures": [
         "001bb9eb8e1494affad1a50e43c8c3c9",
@@ -3760,5 +3880,485 @@
             "f1869598676fe96aa65c41f192ed375a",
             "fd91f9a596d8a570525a0df365649095"
         ]
+    },
+    "fizzy": {
+        "v1": {
+            "usp": {
+                "remove": [
+                    "bdd9569ccf5265e1bcba9cfdf31158b4",
+                    "cdb896f02cec15070658302308e932a6",
+                    "1e2e2de92f74d63670f37492036fb3c8",
+                    "4d18ba857b6fb937b724ffe12d4c1334",
+                    "5af556d14ce3becb61476b01831469ba",
+                    "012aa01d8daeb6911ffa7894540aeda0",
+                    "742acba73607468f2aabed2393a485a8",
+                    "803dcfcc5d67796131c24808ecc81f5f",
+                    "dd56a65175d19f74f80ef965b581f8fe",
+                    "dd88384e2ab892de5289087d483f342f",
+                    "f9cea0253df6177c8a4d9ade17aeb519",
+                    "bd24d07dd480698db934a646b411c91f"
+                    ],
+                "replace": [
+                    "bddc9f845043a1557c1f60598b74dec9",
+                    "581fb1e75493f5cd07c392c56cfb6913",
+                    "b95f48b67fc264b3e0bed3ea67def86c",
+                    "29d21c6a319af85e851b10ee403beda6"
+                    ],
+                "replacement": [
+                    "3a24d59b1e8f104c593603d9a08f1849",
+                    "01b511d3d6a49e919136a7620c1c2d75",
+                    "ce8f927a0723aecdf885ad8d2062d65f",
+                    "cbf0cf37278b713d69a1224d87764b4e"
+                ]
+            },
+            "flashlight launcher": {
+                "remove": [
+                    "771a8d71308bcfb93af7a248e08a27ad",
+                    "db4a504a99eab17744a3ae7a018302c8",
+                    "dd9165376b8856778ab93d26ed52790e"
+                    ],
+                "replace": [
+                    "cd2870bb0ec785064a86d3ce2f2ec2cc"
+                ],
+                "replacement": [
+                    "ca7d634e856f90edf499da0c26133900"
+                ]
+            },
+            "ar2": {
+                "remove": [
+                    "0bc8f39140a0ed5dcc3a184749497983",
+                    "4a140edf7ee3f64b158f111bfbd23154",
+                    "4e9ec9484f5eb5f3ce1097a95cc19bb5",
+                    "618dd900de44d24b976c71539e7fcbf8",
+                    "7489cccbe6ce147ccbcc4416ff169633",
+                    "105267e688312ddfe3c6d9f4bda1fdd0",
+                    "534417e331b5ace39ce942d9985d0a08",
+                    "665251ee6dc57621dba36792fb9b633c",
+                    "aa0ee79510e22fbd065137957572e64d",
+                    "b1d53f0b6ce3d9efde41f85b5e9c3be3",
+                    "d4f1c0fcbb0b10d7657864f5561a537e"
+                    ],
+                "replace": [
+                    "d807565c66ffa1ef5c2bcb8df71c3316",
+                    "1bd29c76c25b635d72913cf651070211",
+                    "36944683beb83ae89a2f643c2fc89c0a"
+                ],
+                "replacement": [
+                    "d0ab035539878e8b7f8db4afbcf35c68",
+                    "9c824a1771dadc30fc47357781827d0b",
+                    "37190ca5952db9fe7c0eae8d2c719423"
+                ]
+            },
+            "gravity gun": {
+                "remove": [
+                    "4a6f27c3d1c02fec75a680fa4e38cbc4",
+                    "64f69091b866e02a95cd63c19c6e702f",
+                    "481db139e933fe0326cd430c7440ff7f",
+                    "638bb4c3c30dee35672f2868367ee986",
+                    "77930c7e6a5743577138c2cbee275207"
+                    ],
+                "replace": [
+                    "d60b4c8da51f667748666d3b654447ef",
+                    "f2fff6168a25903e756ce8b46fd5f222",
+                    "a6f57f8e44e3e36ff63507b3201a2369",
+                    "840a637bcf78d82ea1817980c7b4e034"
+                ],
+                "replacement": [
+                    "11f5cb8d23e68bb0b46249a2324ef2e3",
+                    "7a8cdc037786af2ae38bc857a6f689bc",
+                    "691ab049bccc077f4b555732c8bc95cd",
+                    "3c91d1da83166b85175b843f70abfabd"
+                ]
+            },
+            "spray bottle": {
+                "remove": [
+                    "6f18fab6028f963fe3b6a63ffd56db9f",
+                    "25b1de3e08c6909b19323d1ec31fff77",
+                    "223f269a9fdee763c0b125c20cdc7919",
+                    "885cad81b3f28d0333067fa763783cfc",
+                    "d5f2bfadc1608830ea5f618440261bb5"
+                    ],
+                "replace": [
+                    "272147901810ade7bb3de69b6de16a41",
+                    "368c5e823b66669d3fa3702d5bb83405"
+                ],
+                "replacement": [
+                    "4a125b503471ff8e3a1a67762c0f2271",
+                    "2d422447505c871a2370c8f9d86abfcf"
+                ]
+            },
+            "tau cannon": {
+                "remove": [
+                    "3cf53b6dc15596a5dbf8b3e412180d7a",
+                    "7ead80946bc6e1319cb3345e60f5380f",
+                    "51ac841d64d72a6fd7ca820f5400612c",
+                    "52a63ced811527c03386c04366d8c5c1",
+                    "076ee7fe43824b3d094c82d7f2d31dfa",
+                    "445cadb9fe251623c21dc0228c564558",
+                    "529149dabb358f45dc37f65fbe69fe05",
+                    "0555544b3a949bdfd6d678fe1ee1db11",
+                    "a0f18c32520357cc642f7370bffdbd9a",
+                    "a775b83d510837e6504d7702b9173745",
+                    "b879ca0a2be08a97e1025f424414b720",
+                    "bfce01d85c5b112edf874697e8361d33",
+                    "c65d35d2a5b08f0de1cd5719b2a832d4",
+                    "d04a47352d271f4af0f7f18dc1271ec3",
+                    "eac5a3cb5fb92e128152d356e8ac69c1",
+                    "f7b22c7fb3c2819422c9cd9f476703e5",
+                    "f617b5d8f7d6a6ccbf6810b3a74e2c5d",
+                    "fd1e15a13f6223d92333a0e3890d0e1d",
+                    "64b85c4c6cbb582731cddfa47837fca4"
+                    ],
+                "replace": [
+                    "1dfc54edfbac54afef3149068cb5bd03",
+                    "ce02760297d953caa05ffdb7dbde7da7",
+                    "153f63fb7e56c72c1ff4d99f73820019",
+                    "61fd2d1c541098583c023d41ca3d1e2e",
+                    "cd5656b20061988925ce2e5faf274150"
+                ],
+                "replacement": [
+                    "855b6209128f87538780d72daf80d8f1",
+                    "631400c77a40f183add73cb09ac57634",
+                    "70e7686f15cc964445dd26a003da5f76",
+                    "c88ed6c1af512dc5ceba8930909bb11b",
+                    "a488627070a3f389c4a6dddb85ef7430"
+                ]
+            },
+            "stun stick": {
+                "replace": [
+                    "e0c825a5deb0871b8e12376dd4fa40ba",
+                    "02d75c76b65f1f837b2f8b1684c7b9c4"
+                ],
+                "replacement": [
+                    "f6a75145709a83372de39deacfe9ce27",
+                    "49c011ad1cc299fc8ba83f1356a61858"
+                ]
+            },
+            "hyperlaser": {
+                "remove": [
+                    "0a89192cee6d4750d5692c2bbd117514",
+                    "2c69a5a9cb47f5305bfe8e5221e06dad",
+                    "2e3a2ee20d4ce477800b6709341a367f",
+                    "5f16814ee52de8dac2d6ce5be62d67c6",
+                    "7c18935a9aa64adb36c8833e04325c6f",
+                    "9e877683e8b814ff1042ed85ac7f57d8",
+                    "9ec1d61969c60760ba4563231a10d20f",
+                    "99de3c8563576612eb2593f18e4fc885",
+                    "163febf1c4242e4f27accd72f306d6c6",
+                    "548df330e8cdb635e871bb8c14e8e0a3",
+                    "689e339d1004552834acde0c566b27f3",
+                    "1511ed3cefa2e2065ba2c71bb0246f02",
+                    "036330297ca114d10e33be1a511146aa",
+                    "a585fa17681937f2c050096ee15afa51",
+                    "a78182f462e53a1becd34fa35a6c3b60",
+                    "ae518b8a68134743b97335b671a9646e",
+                    "bdaf13233d32c85d82fdf3eb99f86198",
+                    "d223f617fa26c8823bd7b0cb1263dd5e",
+                    "e9aefc8d611afa7253d19d657e003e56",
+                    "f8f6d6280f9ebab38590ac6221e9cd97"
+                    ],
+                "replace": [
+                    "9db5a1d17c1898c8bbf4f9801fa399fb",
+                    "9ebc44df0f589329aa8f376f93b232bc"
+                ],
+                "replacement": [
+                    "116aa5d47b919e6dfca38b321c9b54ae",
+                    "dc91c288b0b881300391ddb0acded9c0"
+                ],
+                "custom": {
+                    "default": ["cfa7d012e8010e2034966d75b53b033f"],
+                    "colorable": "612d2995b2621bbd74853e6586e5b143",
+                    "blue/purple": "5cc8e95a61df22732ab90a53f94857dd",
+                    "yellow/green": "f6fb6ba8ddf16b6fea9220b1c7dd22aa",
+                    "pink/orange": "ef4260fb36c2811cdb8f6d461d592983"
+                }
+            },
+            "skeleton grip laser": {
+                "custom": {
+                    "default": ["0f0786855a64aee40604f9d850eb3217"],
+                    "white": "e86fb3178b8a39b54441df22b7de7d6a",
+                    "yellow": "c764c5996197b3b38fee61e2f1c7fb17",
+                    "teal": "89e1b68c63daa025471b9c3ab21ed82c",
+                    "pink": "98f3ab09e8e11e20ba2763030187864d",
+                    "white dark": "1abc7b88c409c3463f25fa3c3f87fb7d",
+                    "yellow dark": "83d7d89ef8108ff3079c702b8d6d98d8",
+                    "teal dark": "e22aa038866003ea7b1cac7420ed0429",
+                    "pink dark": "f619d133b6d9d164d36c8b3067108f0f"
+                }
+            },
+            "flashlight laser": {
+                "remove": [
+                    "deeae172f9761e48eb196753c46f1fa3",
+                    "960b11e6e7d549c8b12044201025093f",
+                    "3b07e8eecef3c62771ab9759204061ad"
+                    ],
+                "custom": {
+                    "default": ["201d2aa5244aabcafde4f96b0df79aa2"],
+                    "white": "5255b02d41f1d3883767f0ccd7c803f1",
+                    "yellow": "9c439bc79a498811331a1a59f9a39b8b",
+                    "teal": "e0dfd3d84c8a9812daba5787baf8cbe2",
+                    "pink": "265756e09928b57378baacf44dcaa632",
+                    "white dark": "6f43bf88d6a4c50d4e404ea0d7e2cb5d",
+                    "yellow dark": "d99085575e00b7dd01287060e4543c09",
+                    "teal dark": "8d42b0e61b84663156799b4f5e4638a9",
+                    "pink dark": "6f0d64d9ab1919afa348719c42dbfb72"
+                }
+            }
+        },
+        "v2": {
+            "usp": {
+                "remove": [
+                    "3f00e33051288bffa1ac79b773b830fa",
+                    "4aec7e58da2e2becaf7c89b07c0e7f2d",
+                    "8d78017e9c36ae56fc89f892bba17d34",
+                    "9e9c258127dca3d284dddc5f936c09e5",
+                    "41420741eea2b3983b2beded8b2981ff",
+                    "a2f269e8d2c55f0cdde158431671a263",
+                    "a5f760e77f806ec6566015065b714261",
+                    "a5761bc5fa46b848e9f29ff796dee639",
+                    "ae04c2e9fcd4c671d5bdf3f459bb0a57",
+                    "b744c4060252f3dce52c44121b8b1cfa",
+                    "c1f8f6a19a221ad29b6083914d4e87a2",
+                    "dc70acca1b103352b74656e4f178e732",
+                    "7199cdc55e4ebe5d79ddbe80fa30abff",
+                    "4eab4fdb38b9e916e08a2b7923c833de"
+                    ],
+                "replace": [
+                    "08cd26b8f4d9ce9e0246ff45897b4d1a",
+                    "4800cddb752e523b14f61aa7224f5b4d",
+                    "67cac3bcd1c1459f08766ae47cdce777",
+                    "29d21c6a319af85e851b10ee403beda6"
+                    ],
+                "replacement": [
+                    "b2eee454c6784021549b23e9ba565b91",
+                    "f212626256eaf96426ac179bb2bc6989",
+                    "8ef03950bd07ae5ae305c91cd651d780",
+                    "cbf0cf37278b713d69a1224d87764b4e"
+                ]
+            },
+            "flashlight launcher": {
+                "remove": [
+                    "9ad745fe192c66514499d082097c7969",
+                    "771a8d71308bcfb93af7a248e08a27ad",
+                    "960b11e6e7d549c8b12044201025093f",
+                    "db4a504a99eab17744a3ae7a018302c8"
+                    ],
+                "replace": [
+                    "af9664cbb6a3830f94212ddbc25b2614"
+                ],
+                "replacement": [
+                    "758e9dd654e8f31b7cf75f12faaec60c"
+                ]
+            },
+            "ar2": {
+                "remove": [
+                    "0bc8f39140a0ed5dcc3a184749497983",
+                    "4a140edf7ee3f64b158f111bfbd23154",
+                    "4e9ec9484f5eb5f3ce1097a95cc19bb5",
+                    "79e7a1e7070822ee72a306d6fd42cb12",
+                    "90f5503364604d6d86c23ad0ad19923f",
+                    "370ff8236b7456bd985d69a692dd8d3d",
+                    "618dd900de44d24b976c71539e7fcbf8",
+                    "7269ca818c16352b4c8716687ae7a6f9",
+                    "105267e688312ddfe3c6d9f4bda1fdd0",
+                    "415893cfc6a5a3e72e58a4887a38444e",
+                    "534417e331b5ace39ce942d9985d0a08",
+                    "665251ee6dc57621dba36792fb9b633c",
+                    "d4f1c0fcbb0b10d7657864f5561a537e"
+                    ],
+                "replace": [
+                    "6ab1746849d42266dbdbc5dded1ae178",
+                    "4886f9319b426a67c51781608ff45bb7",
+                    "36944683beb83ae89a2f643c2fc89c0a"
+                ],
+                "replacement": [
+                    "0225d605b591d1786cf624a0ece1474f",
+                    "51b13c298b701895a96dc6c1538c6200",
+                    "37190ca5952db9fe7c0eae8d2c719423"
+                ]
+            },
+            "gravity gun": {
+                "remove": [
+                    "64f69091b866e02a95cd63c19c6e702f",
+                    "155eb145fe6a1cacb755bfb677b77ff8",
+                    "266f0876a067d4eaaa3c0816cf1c84db",
+                    "812ae82827cd0a680d4b32d5f9caafb1",
+                    "713765ee540fdeaed408890b7fa9fe55",
+                    "dfb5ae54c345b331ad4ba0572516c892"
+                    ],
+                "replace": [
+                    "418e878c09489775b598eeff69167012",
+                    "8e48c1c8446432e97a912689fcd8881c",
+                    "d680fdf7ede413dcd3356c7a2164095d",
+                    "840a637bcf78d82ea1817980c7b4e034"
+                ],
+                "replacement": [
+                    "2eedfa5dd91367bf1c3e26d73dff4376",
+                    "6e3ef32a93233c5d428cbed7a925025d",
+                    "d7e0faf9673c57b894170a68513ec1e4",
+                    "3c91d1da83166b85175b843f70abfabd"
+                ]
+            },
+            "spray bottle": {
+                "remove": [
+                    "015994d41c68c743958355fc579055ee",
+                    "a2f269e8d2c55f0cdde158431671a263",
+                    "b8c043c9acf732234c301bad93955752",
+                    "d1e7985581bc5793809c36eca52f2047",
+                    "d5f2bfadc1608830ea5f618440261bb5",
+                    "e038b421ec7b7238683bffc3ce243572"
+                    ],
+                "replace": [
+                    "348e3732062fafc55e0c5b62c54eed6f",
+                    "a4d45b530a3f0abea9eddc54f30298f2"
+                ],
+                "replacement": [
+                    "0018e91fa2c9144285480245d476045f",
+                    "87c55a91cfcd08689795a9458a290415"
+                ]
+            },
+            "tau cannon": {
+                "remove": [
+                    "f7b22c7fb3c2819422c9cd9f476703e5",
+                    "7aa291082a3151ab79734459b3ba86f9",
+                    "7ffcca6ba69d52cfa071197f982ea720",
+                    "22cff8974a00c35ccb6705443ff47648",
+                    "45fd977e73428e6fa46690a7b569f7ac",
+                    "84cfa981d4fcea3b622143de97afaf93",
+                    "91a51183f2d8fc4b80a35b9084dae5bf",
+                    "516dad980b6314a6c4ef20bc86490baf",
+                    "23395e5987a27b2d7c9483803583fbfc",
+                    "312127313eb3d42585164d4b6da56325",
+                    "bc40ab191e605b5b415cf341b4a0c477",
+                    "bed3dd4d286f501b869a944a59954c12",
+                    "dcbf9f73ba646a9c0dcd5330163ab904",
+                    "de82a9be0bd0997280d1f6d624adba27",
+                    "e5f9de7f337a1e0edc91475564e68165",
+                    "e29e204d4133976dc14f119edee042e6",
+                    "ebfe8e8806de75804755ce39f2d503d9",
+                    "ecbacf7ca6ba9fadadae885dea8dd22d",
+                    "eccbf1d6ccab88a050873993d3412412"
+                    ],
+                "replace": [
+                    "5d4fc4a397521b1f502dc6b5e02ebe04",
+                    "3fc23807190d4700757599c4418b62cc",
+                    "43d3a2cb1557fc51be6bcb0d329489d3",
+                    "98c46e363b32e6c2be25f3a375951f66",
+                    "cd5656b20061988925ce2e5faf274150"
+                ],
+                "replacement": [
+                    "ef673c8c6dd91e4b3838ee04ce59e6d2",
+                    "0f8ad48af8f75c64438aa7d38419c7ab",
+                    "ec94a4a602c83e551bbfcccdf3d0000d",
+                    "36ba75eb9dd62725fcb25d36acbeb47b",
+                    "a488627070a3f389c4a6dddb85ef7430"
+                ]
+            },
+            "stun stick": {
+                "replace": [
+                    "0a80927d93180dd5a41cf776d351f2b0",
+                    "22ed03bb2af84d4ddaad3bcc306a2900"
+                ],
+                "replacement": [
+                    "bb1ab18ed6822cadd12bc7485c925265",
+                    "49c011ad1cc299fc8ba83f1356a61858"
+                ]
+            },
+            "hyperlaser": {
+                "remove": [
+                    "2c7cc1d2eadbaee51d2b4b123e269b42",
+                    "26c675ccc0ea8b28ad9f85ebaafbe1a8",
+                    "8fffd6838407d7f4dc1efb02cb9ccb6d",
+                    "de12a644d7fd4653e475228e4dab0bb3",
+                    "39aa3db66a0eef06d5c73f849d966ce2",
+                    "54de49c3aff858496a8bcb58efd2783e",
+                    "877a9ed1757b48f0d455d18f74a04e56",
+                    "0008903fcc9679741bdd95e6d8252f21",
+                    "79241ea61c9bb223e859e9a89cb3c256",
+                    "7038395e929cb30254bc2254de22b22b",
+                    "a2e0d08ec56b4992a8062073d2ea4f74",
+                    "a5ccf730568459759cda8555c00b3604",
+                    "a22f3d07c7ac98aa9d0e055352394d96",
+                    "ab6b62d04145f8c6c43ed5afdbaa5cb4",
+                    "b7f88c69a58890f1379912c78cb11e84",
+                    "c3d955811260580a07d38542de411973",
+                    "c09e6e448208c8f889cfb8dac1af1c85",
+                    "ca4878171b6a937fb4c49b61a394ee7e",
+                    "cd942702f5a5d4ec695cfa4e0ac0ddea",
+                    "d7eb2bcb9cac8e3f00a23d5b6aa2d7b4"
+                    ],
+                "replace": [
+                    "d19f07035f25d77bbe2e0a7aa9670a0b",
+                    "9ebc44df0f589329aa8f376f93b232bc"
+                ],
+                "replacement": [
+                    "8a081b4f86b31acdb2b437091852bb00",
+                    "dc91c288b0b881300391ddb0acded9c0"
+                ],
+                "custom": {
+                    "default": ["4a5fad33b4e710bea55514ee22855f1c"],
+                    "colorable": "20d66fca7a5d5338aad3ed21518b82a7",
+                    "blue/purple": "725aa3f6672e0a1d6b1166b5aaeb3a07",
+                    "yellow/green": "83927615cf74b04b0d49d484ae1642be",
+                    "pink/orange": "2645527bc93d40703a5dc62d7fccd1a6"
+                }
+            },
+            "skeleton grip laser": {
+                "custom": {
+                    "default": ["7e5ca08b80173590bc6c243803c364b2"],
+                    "white": "ff11e1e6d15e3a0027a6466c3757492e",
+                    "yellow": "4e45dc479574c1d8f56efab5d1dad1c0",
+                    "teal": "35f12a7c9767d6ff27cd93b86ae7f8a9",
+                    "pink": "c95d885dcb18887b863742ab31e07beb",
+                    "white dark": "8b8809f54101d4b3e605f2846ec55bb8",
+                    "yellow dark": "0c770dee4b2220a0170fcfbd38563708",
+                    "teal dark": "8723c87d95c36b505876bc0e6d5f0b9a",
+                    "pink dark": "0a0880164b1f8246306f686c620f8646"
+                }
+            },
+            "flashlight laser": {
+                "remove": [
+                    "bbb75d4abce8f70a47b398c123cdf74a",
+                    "960b11e6e7d549c8b12044201025093f"
+                    ],
+                "custom": {
+                    "default": ["c145dd83b9597185498b2016e47b63bd"],
+                    "yellow": "2de1f3817d64e4cf1fc795fe831a6ee0",
+                    "pink": "9ed8b8ab4d44e0858b0b41b26301c856",
+                    "orange": "e848b385c5c22cbe5b459f632594aeba",
+                    "blue": "d1aa1593e65527cc15fa74391292a97e",
+                    "black": "87c39fab4e93362e08bf20363b9047b8"
+                }
+            },
+            "railgun": {
+                "remove": [
+                    "2cd3c942c8bd338d3423e46569d661e8",
+                    "6f78a52ba1ca6e565b5c6370f105fbe6",
+                    "08daf715288b6ac105b411ef9a69aec9",
+                    "9c923f6ea89adac0236b78f59bc7990e",
+                    "18be493aee6c5723a3b8a5b978cf8f5b",
+                    "23fd14be6f8aed0bbd2f3908ea28af0a",
+                    "45fd977e73428e6fa46690a7b569f7ac",
+                    "186a295afd823459da91b65a8f0d0882",
+                    "203fd2640e860d6e419bd149d071e3cf",
+                    "412d8d242c842c288a7a34355868142f",
+                    "f95f145472479670dd246f0e9b95dc17",
+                    "7ff908bb00a8e45334e964adbf83c432",
+                    "e4d0b9a6217d87ea88e55f2c166b6625"
+                    ],
+                "replace": [
+                    "5099a4c2d1cb7558d084c3148250e5cd"
+                ],
+                "replacement": [
+                    "52f25d13dfc45710017fef78165f34a8"
+                ],
+                "custom": {
+                    "default": ["01771db08b6584ed3e6f3a15b1441c9d", "ce1a43f672c4e3ab42a70197c05cabca"],
+                    "regular": ["ae393a7250d928b6e0ce033214ec280b", "13f1ff5a948b5f83b4d709a0e79082b7"],
+                    "heavy": ["c2eaf5366b0d3f9e840a4973dee4a224", "99e2d8fce4d8d0293e17f577552859b7"],
+                    "light": ["d1c16712773a1b8be9a377d8f7dac129", "c75332b54add2f21f1b8a8e4a35360d3"]
+                }
+            }
+        }
     }
 }
