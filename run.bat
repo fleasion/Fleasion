@@ -1,5 +1,5 @@
 @echo off
-: v1.3.3
+: v1.3.4
 
 : fleasion by @cro.p
 : distributed in https://discord.gg/v9gXTuCz8B
@@ -41,9 +41,9 @@ goto py
 :py
 cls
 echo Downloading python...
-curl -SL -k -o python.exe https://www.python.org/ftp/python/3.12.6/python-3.12.6-amd64.exe --ssl-no-revoke
+curl -SL -k -o python-installer.exe https://www.python.org/ftp/python/3.12.6/python-3.12.6-amd64.exe --ssl-no-revoke
 echo Installing..
-python.exe /quiet InstallAllUsers=1 PrependPath=1 Include_test=0 Include_doc=0
+python-installer.exe /quiet InstallAllUsers=1 PrependPath=1 Include_test=0 Include_doc=0
 
 : Check if pip and requests package is installed and install if necessary
 
@@ -81,7 +81,7 @@ set finished=True
 exit /b
 
 :error
-if finished= True exit
+if finished = True exit
 echo x=msgbox("Your Python installation either failed or isn't added to PATH."+vbCrLf+" "+vbCrLf+"A webpage will be opened to show you manual instructions of preparing Fleasion yourself.", vbSystemModal + vbCritical, "Fleasion dependency setup failed") > %temp%\fleasion-error.vbs
 start /min cscript //nologo %temp%\fleasion-error.vbs
 start "" https://github.com/CroppingFlea479/Fleasion/#if-runbat-fails
