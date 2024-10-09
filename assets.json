@@ -1,5 +1,5 @@
 {
-    "version": "v1.7.0",
+    "version": "v1.7.1",
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
         "blue": "38342d3214ad04067e03106bdff41914",
@@ -785,7 +785,13 @@
                 "model 1889": "36e23e6f189d128d3afd0e35a61b4ba1",
                 "stryker": "763e4f8819e4bee0524bbf7edc923336",
                 "mg36": "c8f34ff669250e9285e19dd7cf1b6f94",
-                "mp5": "10ab4fe6db63177208dba80d8c7f84c5"
+                "mp5": "10ab4fe6db63177208dba80d8c7f84c5",
+                "ak47u": "d782faf0f738aa42fc778765ad5aa165",
+                "p99": "ca309e5ad5a850c89ccab188f268bfff",
+                "pecheneg": "74b6a0d8d5682b2bba5086b88b659085",
+                "ump45": "0be45a3b544532be36046a59ad35d2f2",
+                "static-hv": "fd53365b6e281548c5a63d2a9a3e9162",
+                "superi 46": "760d4d6e65ef3589d4b6a0cca331d0fa"
             },
             "bo1": {
                 "m60": "e10fa5ec18b2301055b34415ece23a44",
@@ -864,7 +870,9 @@
                 "dingo": "53fc851e2a9123ed43475f5716f2188b",
                 "kvk 99m": "ab8f35c50574ea24008c9e6774754058",
                 "tempest": "313466c1cea16924bfdb0ea61ddf987a",
-                "diy 11 renovator": "815982d7db6429525dc10904939732be"
+                "diy 11 renovator": "815982d7db6429525dc10904939732be",
+                "kn-44": "1108c065f568896fe9fa311837b4dc48",
+                "vmp": "7a6303f2100f549775b2d54b72ef0d8e"
             },
             "ghosts": {
                 "honey badger": "d2eeb0bf970857c891076c86b19cc0ca",
@@ -876,7 +884,11 @@
                 ".44 magnum": "b77cfe9e020f50550008f34322176832",
                 "ak12": "d4a2678222c46e4a3a375d525a5c1214",
                 "chainsaw": "422931288ef1a7bf8334ae52bd8d1b11",
-                "m37 iar": "610ee49df7efd7e9f4049100747f2539"
+                "m37 iar": "610ee49df7efd7e9f4049100747f2539",
+                "mr-28": "208ef24bcdd452f45e4c1d37e5530452",
+                "remington 5": "54d0d4b50ca3da6801fbaebbc976beb5",
+                "sc-2010": "5e9fed130e55a9a00cbbe521fe713489",
+                "vepr": "f0c514944fc49c82fdc6c2723f60fbed"
             },
             "waw": {
                 "stg44": "26b599516776a7a421b8b99e8c35811a",
@@ -1076,6 +1088,22 @@
                 "aek 971": "1554ad8e491d3d319885e6bce5782281",
                 "aek 971 sil": "e0539969fbce361cabcfe4f9422262db"
             },
+            "ror2": {
+                "railgunner cryocharge": "cb80797bd8bd42e8f4a0a663ea5a34aa",
+                "railgunner supercharge": "a8873a9554a8fed68d055c4a1ca2fafe"
+            },
+            "sgwc2": {
+                "ak12 sil": "c1b4d305449a4be856bb1db4806a07e4",
+                "ak102 sil": "af49080cbd2eefb5552227474c303014",
+                "cp33 sil": "8d1f25ccfdc09ca32ee9f426495d476e",
+                "deagle sil": "8f74cbb0a883f11751386f95c0bcb0ff",
+                "dvl-10 m1": "4efe31101b48fe6a56d9041540aa4337",
+                "js 762 sil": "aa6f616533791023da744033f33f52fd",
+                "m107a1": "902991b0ab5f17900f76bc5df83f5ae7",
+                "remington r5 sil": "922acf0ad23fade045afa8926c9e04ad",
+                "taurus tracker 44": "d254828ee5624580a9c7e8c14fb8ba11",
+                "vss": "3edeadf5a0359b31a33a9025ab0d8688"
+            },
             "custom": {
                 "pew": "7eac4541692ca64abc5485b4875b237c",
                 "laser": "ad20c7ec88aeeaa36c6b7147e9a38ae9",
@@ -1185,6 +1213,14 @@
             "fortnite shield crack 1": "7a0e39642fe1051d4486dfa8850f9c26",
             "fortnite shield crack 2": "87b10c7e66e30b7a7a56166518f84801",
             "gd counter": "8d1cdbb62859b10b7222f0f6f4cce4f2",
+            "diabotical": "3c63bbc2af0e7262374b06505696b4d2",
+            "halo": "14d5285ed663960a8fc95a7000a0e1ea",
+            "neo": "2f61d33fd18607f04610ebf3b410ed95",
+            "deepquake": "169df1a02a4f7ea4ed7bdaa76be00991",
+            "elacour 1": "de1b067acc90d9a90d0c639f35bef7a5",
+            "elacour 2": "2f61d33fd18607f04610ebf3b410ed95",
+            "redcoat": "6e8b925feefbff34756e2763d014f805",
+            "thalash": "2bf5844fde0ea4a706e110a737855b11",
             "remove": "5873cfba79134ecfec6658f559d8f320"
         },
         "kill sounds": {
@@ -1221,6 +1257,12 @@
             "gd chest": "a0359a727da80faa172439e8d155dc77",
             "gd explode": "00255b54658813753207ceb03c46e5d3",
             "pvz garden warfare": "ad50fb6e2893869063f6b4b6b4b3903f",
+            "bubble": "88aa775944848725b50463f8d3391d23",
+            "bamboo": "1d70b3f978d3173a009cfa7b351be2bc",
+            "quack": "603264a48e4187e63abad41e44eada35",
+            "teardrop": "3306c58d6d6495f51c55b736ef271569",
+            "lavak": "3dbe8bf92cee378b7d7bc63f856d99c0",
+            "ror2 railgunner crit": "6e23c9505c3da190723d07d6a1290b3e",
             "remove": "5873cfba79134ecfec6658f559d8f320"
         }
     },
@@ -3897,13 +3939,13 @@
                     "dd88384e2ab892de5289087d483f342f",
                     "f9cea0253df6177c8a4d9ade17aeb519",
                     "bd24d07dd480698db934a646b411c91f"
-                    ],
+                ],
                 "replace": [
                     "bddc9f845043a1557c1f60598b74dec9",
                     "581fb1e75493f5cd07c392c56cfb6913",
                     "b95f48b67fc264b3e0bed3ea67def86c",
                     "29d21c6a319af85e851b10ee403beda6"
-                    ],
+                ],
                 "replacement": [
                     "3a24d59b1e8f104c593603d9a08f1849",
                     "01b511d3d6a49e919136a7620c1c2d75",
@@ -3916,7 +3958,7 @@
                     "771a8d71308bcfb93af7a248e08a27ad",
                     "db4a504a99eab17744a3ae7a018302c8",
                     "dd9165376b8856778ab93d26ed52790e"
-                    ],
+                ],
                 "replace": [
                     "cd2870bb0ec785064a86d3ce2f2ec2cc"
                 ],
@@ -3937,7 +3979,7 @@
                     "aa0ee79510e22fbd065137957572e64d",
                     "b1d53f0b6ce3d9efde41f85b5e9c3be3",
                     "d4f1c0fcbb0b10d7657864f5561a537e"
-                    ],
+                ],
                 "replace": [
                     "d807565c66ffa1ef5c2bcb8df71c3316",
                     "1bd29c76c25b635d72913cf651070211",
@@ -3956,7 +3998,7 @@
                     "481db139e933fe0326cd430c7440ff7f",
                     "638bb4c3c30dee35672f2868367ee986",
                     "77930c7e6a5743577138c2cbee275207"
-                    ],
+                ],
                 "replace": [
                     "d60b4c8da51f667748666d3b654447ef",
                     "f2fff6168a25903e756ce8b46fd5f222",
@@ -3977,7 +4019,7 @@
                     "223f269a9fdee763c0b125c20cdc7919",
                     "885cad81b3f28d0333067fa763783cfc",
                     "d5f2bfadc1608830ea5f618440261bb5"
-                    ],
+                ],
                 "replace": [
                     "272147901810ade7bb3de69b6de16a41",
                     "368c5e823b66669d3fa3702d5bb83405"
@@ -4008,7 +4050,7 @@
                     "f617b5d8f7d6a6ccbf6810b3a74e2c5d",
                     "fd1e15a13f6223d92333a0e3890d0e1d",
                     "64b85c4c6cbb582731cddfa47837fca4"
-                    ],
+                ],
                 "replace": [
                     "1dfc54edfbac54afef3149068cb5bd03",
                     "ce02760297d953caa05ffdb7dbde7da7",
@@ -4056,7 +4098,7 @@
                     "d223f617fa26c8823bd7b0cb1263dd5e",
                     "e9aefc8d611afa7253d19d657e003e56",
                     "f8f6d6280f9ebab38590ac6221e9cd97"
-                    ],
+                ],
                 "replace": [
                     "9db5a1d17c1898c8bbf4f9801fa399fb",
                     "9ebc44df0f589329aa8f376f93b232bc"
@@ -4066,7 +4108,9 @@
                     "dc91c288b0b881300391ddb0acded9c0"
                 ],
                 "custom": {
-                    "default": ["cfa7d012e8010e2034966d75b53b033f"],
+                    "default": [
+                        "cfa7d012e8010e2034966d75b53b033f"
+                    ],
                     "colorable": "612d2995b2621bbd74853e6586e5b143",
                     "blue/purple": "5cc8e95a61df22732ab90a53f94857dd",
                     "yellow/green": "f6fb6ba8ddf16b6fea9220b1c7dd22aa",
@@ -4075,7 +4119,9 @@
             },
             "skeleton grip laser": {
                 "custom": {
-                    "default": ["0f0786855a64aee40604f9d850eb3217"],
+                    "default": [
+                        "0f0786855a64aee40604f9d850eb3217"
+                    ],
                     "white": "e86fb3178b8a39b54441df22b7de7d6a",
                     "yellow": "c764c5996197b3b38fee61e2f1c7fb17",
                     "teal": "89e1b68c63daa025471b9c3ab21ed82c",
@@ -4091,9 +4137,11 @@
                     "deeae172f9761e48eb196753c46f1fa3",
                     "960b11e6e7d549c8b12044201025093f",
                     "3b07e8eecef3c62771ab9759204061ad"
-                    ],
+                ],
                 "custom": {
-                    "default": ["201d2aa5244aabcafde4f96b0df79aa2"],
+                    "default": [
+                        "201d2aa5244aabcafde4f96b0df79aa2"
+                    ],
                     "white": "5255b02d41f1d3883767f0ccd7c803f1",
                     "yellow": "9c439bc79a498811331a1a59f9a39b8b",
                     "teal": "e0dfd3d84c8a9812daba5787baf8cbe2",
@@ -4122,13 +4170,13 @@
                     "dc70acca1b103352b74656e4f178e732",
                     "7199cdc55e4ebe5d79ddbe80fa30abff",
                     "4eab4fdb38b9e916e08a2b7923c833de"
-                    ],
+                ],
                 "replace": [
                     "08cd26b8f4d9ce9e0246ff45897b4d1a",
                     "4800cddb752e523b14f61aa7224f5b4d",
                     "67cac3bcd1c1459f08766ae47cdce777",
                     "29d21c6a319af85e851b10ee403beda6"
-                    ],
+                ],
                 "replacement": [
                     "b2eee454c6784021549b23e9ba565b91",
                     "f212626256eaf96426ac179bb2bc6989",
@@ -4142,7 +4190,7 @@
                     "771a8d71308bcfb93af7a248e08a27ad",
                     "960b11e6e7d549c8b12044201025093f",
                     "db4a504a99eab17744a3ae7a018302c8"
-                    ],
+                ],
                 "replace": [
                     "af9664cbb6a3830f94212ddbc25b2614"
                 ],
@@ -4165,7 +4213,7 @@
                     "534417e331b5ace39ce942d9985d0a08",
                     "665251ee6dc57621dba36792fb9b633c",
                     "d4f1c0fcbb0b10d7657864f5561a537e"
-                    ],
+                ],
                 "replace": [
                     "6ab1746849d42266dbdbc5dded1ae178",
                     "4886f9319b426a67c51781608ff45bb7",
@@ -4185,7 +4233,7 @@
                     "812ae82827cd0a680d4b32d5f9caafb1",
                     "713765ee540fdeaed408890b7fa9fe55",
                     "dfb5ae54c345b331ad4ba0572516c892"
-                    ],
+                ],
                 "replace": [
                     "418e878c09489775b598eeff69167012",
                     "8e48c1c8446432e97a912689fcd8881c",
@@ -4207,7 +4255,7 @@
                     "d1e7985581bc5793809c36eca52f2047",
                     "d5f2bfadc1608830ea5f618440261bb5",
                     "e038b421ec7b7238683bffc3ce243572"
-                    ],
+                ],
                 "replace": [
                     "348e3732062fafc55e0c5b62c54eed6f",
                     "a4d45b530a3f0abea9eddc54f30298f2"
@@ -4238,7 +4286,7 @@
                     "ebfe8e8806de75804755ce39f2d503d9",
                     "ecbacf7ca6ba9fadadae885dea8dd22d",
                     "eccbf1d6ccab88a050873993d3412412"
-                    ],
+                ],
                 "replace": [
                     "5d4fc4a397521b1f502dc6b5e02ebe04",
                     "3fc23807190d4700757599c4418b62cc",
@@ -4286,7 +4334,7 @@
                     "ca4878171b6a937fb4c49b61a394ee7e",
                     "cd942702f5a5d4ec695cfa4e0ac0ddea",
                     "d7eb2bcb9cac8e3f00a23d5b6aa2d7b4"
-                    ],
+                ],
                 "replace": [
                     "d19f07035f25d77bbe2e0a7aa9670a0b",
                     "9ebc44df0f589329aa8f376f93b232bc"
@@ -4296,7 +4344,9 @@
                     "dc91c288b0b881300391ddb0acded9c0"
                 ],
                 "custom": {
-                    "default": ["4a5fad33b4e710bea55514ee22855f1c"],
+                    "default": [
+                        "4a5fad33b4e710bea55514ee22855f1c"
+                    ],
                     "colorable": "20d66fca7a5d5338aad3ed21518b82a7",
                     "blue/purple": "725aa3f6672e0a1d6b1166b5aaeb3a07",
                     "yellow/green": "83927615cf74b04b0d49d484ae1642be",
@@ -4305,7 +4355,9 @@
             },
             "skeleton grip laser": {
                 "custom": {
-                    "default": ["7e5ca08b80173590bc6c243803c364b2"],
+                    "default": [
+                        "7e5ca08b80173590bc6c243803c364b2"
+                    ],
                     "white": "ff11e1e6d15e3a0027a6466c3757492e",
                     "yellow": "4e45dc479574c1d8f56efab5d1dad1c0",
                     "teal": "35f12a7c9767d6ff27cd93b86ae7f8a9",
@@ -4320,9 +4372,11 @@
                 "remove": [
                     "bbb75d4abce8f70a47b398c123cdf74a",
                     "960b11e6e7d549c8b12044201025093f"
-                    ],
+                ],
                 "custom": {
-                    "default": ["c145dd83b9597185498b2016e47b63bd"],
+                    "default": [
+                        "c145dd83b9597185498b2016e47b63bd"
+                    ],
                     "yellow": "2de1f3817d64e4cf1fc795fe831a6ee0",
                     "pink": "9ed8b8ab4d44e0858b0b41b26301c856",
                     "orange": "e848b385c5c22cbe5b459f632594aeba",
@@ -4345,7 +4399,7 @@
                     "f95f145472479670dd246f0e9b95dc17",
                     "7ff908bb00a8e45334e964adbf83c432",
                     "e4d0b9a6217d87ea88e55f2c166b6625"
-                    ],
+                ],
                 "replace": [
                     "5099a4c2d1cb7558d084c3148250e5cd"
                 ],
@@ -4353,10 +4407,22 @@
                     "52f25d13dfc45710017fef78165f34a8"
                 ],
                 "custom": {
-                    "default": ["01771db08b6584ed3e6f3a15b1441c9d", "ce1a43f672c4e3ab42a70197c05cabca"],
-                    "regular": ["ae393a7250d928b6e0ce033214ec280b", "13f1ff5a948b5f83b4d709a0e79082b7"],
-                    "heavy": ["c2eaf5366b0d3f9e840a4973dee4a224", "99e2d8fce4d8d0293e17f577552859b7"],
-                    "light": ["d1c16712773a1b8be9a377d8f7dac129", "c75332b54add2f21f1b8a8e4a35360d3"]
+                    "default": [
+                        "01771db08b6584ed3e6f3a15b1441c9d",
+                        "ce1a43f672c4e3ab42a70197c05cabca"
+                    ],
+                    "regular": [
+                        "ae393a7250d928b6e0ce033214ec280b",
+                        "13f1ff5a948b5f83b4d709a0e79082b7"
+                    ],
+                    "heavy": [
+                        "c2eaf5366b0d3f9e840a4973dee4a224",
+                        "99e2d8fce4d8d0293e17f577552859b7"
+                    ],
+                    "light": [
+                        "d1c16712773a1b8be9a377d8f7dac129",
+                        "c75332b54add2f21f1b8a8e4a35360d3"
+                    ]
                 }
             }
         }
