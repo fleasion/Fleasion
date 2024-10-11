@@ -1,4 +1,4 @@
-# v1.9.1
+# v1.9.2
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -236,7 +236,7 @@ else:
     exit()
 
 mod_cache = False
-pf_cache = True
+pf_cache = os_name == 'Linux'
 
 mod_cache_check_path = os.path.join(folder_path,
                                     '3dbc81ab51ae36ab1de45855c9bb2b15')  # 29ec14d6f908cabca7fae131487d96d8, 016a313606e2f99a85bb1a91083206fc
@@ -381,7 +381,7 @@ def get_hashes():
                 if os_name == "Linux":
                     output.append(([data["linux"]["defaults"]["sleeves"]], dlist("skins")))
                 else:
-                    output.append((['aa33dd87fc9db92e891361e069da1849'], dlist("skins")))
+                    output.append((['8813bbc8c0f7c0901fc38c1c85935fec'], dlist("skins"))) # aa33dd87fc9db92e891361e069da1849
             case 4:
                 if os_name == "Linux":
                     output.append((data["linux"]["textures"], 'd625adff6a3d75081d11b3407b0b417c'))
