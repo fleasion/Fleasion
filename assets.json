@@ -1,5 +1,5 @@
 {
-    "version": "v1.7.3",
+    "version": "v1.7.4",
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
         "blue": "38342d3214ad04067e03106bdff41914",
@@ -791,6 +791,9 @@
                 "p99": "ca309e5ad5a850c89ccab188f268bfff",
                 "pecheneg": "74b6a0d8d5682b2bba5086b88b659085",
                 "ump45": "0be45a3b544532be36046a59ad35d2f2",
+                "m249": "bb3ad74009b840563db4b3db8fe8a00e"
+            },
+            "mwiii": {
                 "static-hv": "fd53365b6e281548c5a63d2a9a3e9162",
                 "superi 46": "760d4d6e65ef3589d4b6a0cca331d0fa"
             },
@@ -873,7 +876,13 @@
                 "tempest": "313466c1cea16924bfdb0ea61ddf987a",
                 "diy 11 renovator": "815982d7db6429525dc10904939732be",
                 "kn-44": "1108c065f568896fe9fa311837b4dc48",
-                "vmp": "7a6303f2100f549775b2d54b72ef0d8e"
+                "vmp": "7a6303f2100f549775b2d54b72ef0d8e",
+                "hvk-30": "3cf009a81015f5c8f2f06c19bb377ebf",
+                "weevil": "7aced76edebb093dc667b419f571db2e",
+                "ffar": "805bcb880eccb2e35545c16235291ca4",
+                "m16": "7d5fb40d68b28f6981f7708981cae28f",
+                "hg40": "24cee4455c2a402d3425c0014c03b8c4",
+                "xmc": "7600ab327325f06b824105fa1bb232d7"
             },
             "ghosts": {
                 "honey badger": "d2eeb0bf970857c891076c86b19cc0ca",
@@ -892,7 +901,7 @@
                 "vepr": "f0c514944fc49c82fdc6c2723f60fbed"
             },
             "waw": {
-                "stg44": "26b599516776a7a421b8b99e8c35811a",
+                "stg44": "94484ad32d576acabf865a4254f005e1",
                 "stg44 suppressed": "c49498afd8a261d52af0b5ea9d368bd5",
                 "bar": "472c83e218327507ce1fd4f07a6a625a",
                 "db": "a9c4c1e4eef780b72010a19664c1e672",
@@ -909,6 +918,15 @@
                 "m1911": "3ada33d2bb0488a6693d03ac955c4a31",
                 "357": "e68c27896a5c7a0d5f3cbc115653d7e9",
                 "raygun": "52248a93493c7debb5ea47fde801d905"
+            },
+            "aw": {
+                "ae4": "27b4d866e15c83c7f12676ebe0af80ff",
+                "ak12": "c6fa9da4e22232e9cbc7bfcf85e769e4",
+                "epm3": "34947158c1f00294179f9e884149dcd6",
+                "mors": "1cc10ed047fc804e3f1ca83c03efb515",
+                "ohm": "794e3bd15cd965f9fbdae3e2faf9b9ab",
+                "repulsor": "6d40d25073cc7702d868ca461b23e3ba",
+                "tac-19": "18089e3ea8bddb06dff23c3f89f2547b"
             },
             "cs new": {
                 "ak47": "ab1f6064687ac5e207389af752478c43",
@@ -1105,6 +1123,23 @@
                 "taurus tracker 44": "d254828ee5624580a9c7e8c14fb8ba11",
                 "vss": "3edeadf5a0359b31a33a9025ab0d8688"
             },
+            "valorant": {
+                "vandal": "d39d8877d34b9ae752b4ebf38e6b0565",
+                "shorty": "08ec55b2a5179bea43f84acc9828b6dd",
+                "stinger": "8eefc2ad283a1e34d64a4a849b60b74f",
+                "spectre": "c460b80fb62b644e07a8fc39583013a8",
+                "sheriff": "f437abd0c34d61d3e8ff764c0fabc4ba",
+                "phantom": "46d5e8b96fcfde250d650fd9825e99f8",
+                "operator": "5c970a159b57301273a2396981cf4a31",
+                "marshal": "c9fe4a153b0f89d4bfdbf2ea62012655",
+                "judge": "fbf398bcaa8dc00d377acc2ab626795b",
+                "guardian": "54d20e5e685dbed61500ff77e20fbaf0",
+                "ghost": "19899e3cc48261af99ddf12eb0ffa02c",
+                "frenzy": "b2d3115bc150c5cf5fef0944020264f4",
+                "classic": "ee83908ca715516f0d3f9e6aff4f6de3",
+                "bulldog": "7e37166b2827a3411720acc411876ba7",
+                "bucky": "b3b1745c6a1cc1ea2221ffc0b7266d1e"
+            },
             "custom": {
                 "pew": "7eac4541692ca64abc5485b4875b237c",
                 "laser": "ad20c7ec88aeeaa36c6b7147e9a38ae9",
@@ -1176,6 +1211,7 @@
             "airstrike explosion": "40ba6cb1789a618ab02e0cfe4e2f7159",
             "tf2 explosion": "e8ebbfd722e5be7302faad1e9d2a98af",
             "bo1 grenade": "0b585b91d8ad9fea5e7564c042ba6570",
+            "8bit bomb": "1ddc99d3dd90cc2a23a6ec79bca573d7",
             "remove": "5873cfba79134ecfec6658f559d8f320"
         },
         "hit sounds": {
@@ -1222,6 +1258,14 @@
             "elacour 2": "2f61d33fd18607f04610ebf3b410ed95",
             "redcoat": "6e8b925feefbff34756e2763d014f805",
             "thalash": "2bf5844fde0ea4a706e110a737855b11",
+            "bamboo": "4e6a5c2cfcbda2d517eff9981cd2a242",
+            "8bit": {
+                "8bit 1": "88bb60d1d2c37feee229ef69c2d4d76f",
+                "8bit 2": "52c1c0b0b6341992e59e05eaeac75bd8",
+                "8bit 3": "5a29977d3d15e1cf70bb52498fc2d70e",
+                "8bit 4": "9de98be7f3b38db6af3b682c91ac949c",
+                "8bit 5": "8cceaab1caba625ffa35280123c87d8e"
+            },
             "remove": "5873cfba79134ecfec6658f559d8f320"
         },
         "kill sounds": {
@@ -1259,11 +1303,25 @@
             "gd explode": "00255b54658813753207ceb03c46e5d3",
             "pvz garden warfare": "ad50fb6e2893869063f6b4b6b4b3903f",
             "bubble": "88aa775944848725b50463f8d3391d23",
-            "bamboo": "1d70b3f978d3173a009cfa7b351be2bc",
+            "cardboard roll": "1d70b3f978d3173a009cfa7b351be2bc",
             "quack": "603264a48e4187e63abad41e44eada35",
             "teardrop": "3306c58d6d6495f51c55b736ef271569",
             "lavak": "3dbe8bf92cee378b7d7bc63f856d99c0",
             "ror2 railgunner crit": "6e23c9505c3da190723d07d6a1290b3e",
+            "toin": "cb307df8a27317a710a4a6bf33e4c726",
+            "valorant": {
+                "valorant": "46a596454a748e9acb916d409123ceb6",
+                "champions 2024": "c6f4acd310cd664c872cd06d840287ca",
+                "champions 2022": "76a32f9a8fab81017076debb40736364",
+                "xerofang": "95da0efd2b5f5eba9291ad2644fe5d6b",
+                "reaver": "489612d55dc9c8668d3f70873fdfd40a",
+                "prime": "f94508c5b8eb56dbc027a0f643e49c07",
+                "nocturnum": "3ba163a85641c3e8d0ba46535c774dc5",
+                "kuronami": "607cbf712f135b97f05c868a5dd3531d",
+                "oni": "6d999fc689949ae1badd3b778a968d1c",
+                "sentinels of light": "e7bd14683b6e0b6612462d55ac72cace",
+                "prelude to chaos": "96b6cb666464ec02305320c501943bfa"
+            },
             "remove": "5873cfba79134ecfec6658f559d8f320"
         }
     },
