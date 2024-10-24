@@ -1,4 +1,4 @@
-# v1.9.4
+# v1.9.5
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -241,12 +241,12 @@ pf_cache = False
 mod_cache_check_path = os.path.join(folder_path,
                                     '3dbc81ab51ae36ab1de45855c9bb2b15')  # 29ec14d6f908cabca7fae131487d96d8, 016a313606e2f99a85bb1a91083206fc
 pf_cache_check_path = os.path.join(folder_path,
-                                   '7b8ca4a4ec7addd0f55179a86e49a5a1' if os_name == 'Linux' else '8a7090ac9b2e858f4aee9e19a0bfd562') # 8312aa61609257e46c873694f81caffc
+                                   '7b8ca4a4ec7addd0f55179a86e49a5a1' if os_name == 'Linux' else '8312aa61609257e46c873694f81caffc') # 8a7090ac9b2e858f4aee9e19a0bfd562
 
 if os.path.exists(mod_cache_check_path):
     mod_cache = True
 if os.path.exists(pf_cache_check_path):
-    pf_cache = True
+    pf_cache = os_name == 'Linux'
 
 if not mod_cache or not pf_cache:
     print(
@@ -381,7 +381,7 @@ def get_hashes():
                 if os_name == "Linux":
                     output.append(([data["linux"]["defaults"]["sleeves"]], dlist("skins")))
                 else:
-                    output.append((['aa33dd87fc9db92e891361e069da1849'], dlist("skins"))) # 8813bbc8c0f7c0901fc38c1c85935fec
+                    output.append((['8813bbc8c0f7c0901fc38c1c85935fec'], dlist("skins"))) # aa33dd87fc9db92e891361e069da1849
             case 4:
                 if os_name == "Linux":
                     output.append((data["linux"]["textures"], 'd625adff6a3d75081d11b3407b0b417c'))
