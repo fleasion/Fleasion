@@ -1,4 +1,5 @@
-v1.2.5
+ 
+v1.2.6
 <h1 align=center>DISCLAIMER!</h1>
 
 <p align=center>
@@ -41,7 +42,7 @@ v1.2.5
 
 <h1 align=center>Getting ready</h1>
 
-<li>Download the run file
+<li>Download the <b>Source code (zip)</b> from <a href="https://github.com/CroppingFlea479/Fleasion/releases/latest">here</a> and extract it. (you will want something like <a href=https://www.7-zip.org/download.html><b>7zip</b></a> to extract it)
 <li>Run <code>run.bat</code>. It will set everything up and/or make sure you have the dependencies.
 <li>The Fleasion script will then run, follow the prompts given.
 
@@ -61,7 +62,7 @@ v1.2.5
       <img src=https://github.com/user-attachments/assets/20428d0e-c943-4782-ac59-773d63452dcf width=800 height=100>
     </a>
   </p>
-  <li> After it finishes, download the <b>Source code (zip)</b> from <a href="https://github.com/CroppingFlea479/Fleasion/releases/tag/v1.7.1">here</a> and extract it. (you will want something like <a href=https://www.7-zip.org/download.html><b>7zip</b></a> to extract it)
+  <li> After it finishes, download the <b>Source code (zip)</b> from <a href="https://github.com/CroppingFlea479/Fleasion/releases/latest">here</a> and extract it. (you will want something like <a href=https://www.7-zip.org/download.html><b>7zip</b></a> to extract it)
   <li> Open the extracted folder and run <code>fleasion.py</code> directly.
 
 <p></p>
