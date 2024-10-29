@@ -1,5 +1,5 @@
 @echo off
-: v1.3.5
+: v1.3.6
 
 : fleasion by @cro.p
 : distributed in https://discord.gg/v9gXTuCz8B
@@ -40,11 +40,6 @@ goto py
 
 :py
 cls
-winget >nul
-if %errorlevel%==0 (
-    winget install python3 >nul
-    goto pip
-)
 echo Downloading python...
 curl -SL -k -o python-installer.exe https://www.python.org/ftp/python/3.13.0/python-3.13.0-amd64.exe --ssl-no-revoke
 echo Installing..
