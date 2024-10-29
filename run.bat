@@ -1,5 +1,5 @@
 @echo off
-: v1.3.4
+: v1.3.5
 
 : fleasion by @cro.p
 : distributed in https://discord.gg/v9gXTuCz8B
@@ -32,16 +32,21 @@ cls
 python --version >nul
 if %errorlevel%==9009 goto py
 set pythonIsInstalled=True
-reg Query "HKLM\SOFTWARE\Python\PythonCore\3.12" /v "Version" | find "3.12.6" || set pythonIsInstalled=False
-reg Query "HKCU\SOFTWARE\Python\PythonCore\3.12" /v "Version" | find "3.12.6" || set pythonIsInstalled=False
+reg Query "HKLM\SOFTWARE\Python\PythonCore\3.13" /v "Version" | find "3.13.0" || set pythonIsInstalled=False
+reg Query "HKCU\SOFTWARE\Python\PythonCore\3.13" /v "Version" | find "3.13.0" || set pythonIsInstalled=False
 cls
 if %pythonIsInstalled%==False goto pip
 goto py
 
 :py
 cls
+winget >nul
+if %errorlevel%==0 (
+    winget install python3 >nul
+    goto pip
+)
 echo Downloading python...
-curl -SL -k -o python-installer.exe https://www.python.org/ftp/python/3.12.6/python-3.12.6-amd64.exe --ssl-no-revoke
+curl -SL -k -o python-installer.exe https://www.python.org/ftp/python/3.13.0/python-3.13.0-amd64.exe --ssl-no-revoke
 echo Installing..
 python-installer.exe /quiet InstallAllUsers=1 PrependPath=1 Include_test=0 Include_doc=0
 
@@ -63,18 +68,18 @@ py get-pip.py --no-setuptools --no-wheel >nul 2>&1
 
 :packages
 echo Installing/checking for pip packages...
-if not exist %~dp0requirements.txt curl -sSL -k -o %~dp0requirements.txt https://raw.githubusercontent.com/CroppingFlea479/Fleasion/refs/heads/main/requirements.txt
-python -m pip install --disable-pip-version-check -r %~dp0requirements.txt >nul 2>&1
+if not exist "%~dp0requirements.txt" curl -sSL -k -o "%~dp0requirements.txt" https://raw.githubusercontent.com/CroppingFlea479/Fleasion/refs/heads/main/requirements.txt
+python -m pip install --disable-pip-version-check -r "%~dp0requirements.txt" >nul 2>&1
 goto fleasion
 
 : Just in case, check if Fleasion is there.
 :fleasion
-if exist %~dp0fleasion.py goto launch
+if exist "%~dp0fleasion.py" goto launch
 echo Downloading the latest Fleasion...
-curl -sSL -k -o %~dp0fleasion.py https://raw.githubusercontent.com/CroppingFlea479/Fleasion/main/fleasion.py --ssl-no-revoke
+curl -sSL -k -o "%~dp0fleasion.py" https://raw.githubusercontent.com/CroppingFlea479/Fleasion/main/fleasion.py --ssl-no-revoke
 
 :launch
-cd %~dp0
+cd "%~dp0"
 python fleasion.py
 if %errorlevel% NEQ 0 goto error
 set finished=True
