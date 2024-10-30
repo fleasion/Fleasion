@@ -1,5 +1,5 @@
 @echo off
-: v1.3.6
+: v1.3.7
 
 : fleasion by @cro.p
 : distributed in https://discord.gg/v9gXTuCz8B
