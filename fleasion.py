@@ -1,4 +1,4 @@
-# v1.9.5
+# v1.9.6
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -24,7 +24,7 @@ RUNSH_FILE = 'run.sh'
 GREEN, RED, BLUE, DEFAULT = '\033[32m', '\033[31m', '\033[34m', '\033[0m'
 os_name = platform.system()
 clear_command = 'cls' if os_name == 'Windows' else 'clear'
-mesh_version = 'v2'
+mesh_version = 'v1'
 
 
 def fetch_lines(url, num_lines=1):
