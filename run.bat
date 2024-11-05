@@ -1,5 +1,5 @@
 @echo off
-: v1.3.7
+: v1.3.8
 
 : fleasion by @cro.p
 : distributed in https://discord.gg/v9gXTuCz8B
@@ -63,18 +63,18 @@ py get-pip.py --no-setuptools --no-wheel >nul 2>&1
 
 :packages
 echo Installing/checking for pip packages...
-if not exist "%~dp0requirements.txt" curl -sSL -k -o "%~dp0requirements.txt" https://raw.githubusercontent.com/CroppingFlea479/Fleasion/refs/heads/main/requirements.txt
-python -m pip install --disable-pip-version-check -r "%~dp0requirements.txt" >nul 2>&1
+if not exist "%dir%requirements.txt" curl -sSL -k -o "%dir%requirements.txt" https://raw.githubusercontent.com/CroppingFlea479/Fleasion/refs/heads/main/requirements.txt
+python -m pip install --disable-pip-version-check -r "%dir%requirements.txt" >nul 2>&1
 goto fleasion
 
 : Just in case, check if Fleasion is there.
 :fleasion
-if exist "%~dp0fleasion.py" goto launch
+if exist "%dir%fleasion.py" goto launch
 echo Downloading the latest Fleasion...
-curl -sSL -k -o "%~dp0fleasion.py" https://raw.githubusercontent.com/CroppingFlea479/Fleasion/main/fleasion.py --ssl-no-revoke
+curl -sSL -k -o "%dir%fleasion.py" https://raw.githubusercontent.com/CroppingFlea479/Fleasion/main/fleasion.py --ssl-no-revoke
 
 :launch
-cd "%~dp0"
+cd "%dir%"
 python fleasion.py
 if %errorlevel% NEQ 0 goto error
 set finished=True
