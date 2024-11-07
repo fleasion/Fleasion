@@ -24,7 +24,7 @@ RUNSH_FILE = 'run.sh'
 GREEN, RED, BLUE, DEFAULT = '\033[32m', '\033[31m', '\033[34m', '\033[0m'
 os_name = platform.system()
 clear_command = 'cls' if os_name == 'Windows' else 'clear'
-mesh_version = 'v1'
+mesh_version = 'v2'
 
 
 def fetch_lines(url, num_lines=1):
