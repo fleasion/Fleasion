@@ -1,5 +1,5 @@
 {
-    "version": "v1.7.5",
+    "version": "v1.7.6",
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
         "blue": "38342d3214ad04067e03106bdff41914",
@@ -97,8 +97,7 @@
             "m14": "aaa860a948eef6dd44da3647f8602e45",
             "ecr": "6e1198245f77f3d0239c671d3a5e620f",
             "scar-h": "73822c7f3754dcf609adb0db24fdd6d7",
-            "ak12br": "e4c264d9f0d7d3f916433c5da110798a",
-            "ak12br 127": "48a5782ade5e549b53e497dbb006e94c",
+            "ak-12br": "e4c264d9f0d7d3f916433c5da110798a",
             "g3a3": "965aa9983436c1ae9db8eca9c41aeb27",
             "g3a3 .45": "956c00897423f232d5bb8d3815fcdbc6",
             "ag-3": "3fd76a9c309eaaf5fa156b25856dc44d",
@@ -115,13 +114,13 @@
             "scar pdw": "695a0d9dbf3efc457a2a057479fcc07e",
             "scar pdw 762": "73822c7f3754dcf609adb0db24fdd6d7",
             "scar pdw 9mm": "95fe12467b808ea006d62a7666fa4c95",
-            "aku12": "a4115d956e46469abb2e59ce232ec386",
+            "ak-12u": "a4115d956e46469abb2e59ce232ec386",
             "ppk12": "7cf3ed120d6ba9a6bb5e3fa5f2aec8c7",
             "groza-1": "73c95b365c8ee7087399d007105cf50e",
             "groza-1 545": "f69935414556262d035126b84a00a9f1",
             "groza-1 556": "45da664fbbe57bdc973e0cae5c9b32f8",
             "ots-126": "b7157a16dcce56a8d8715531e17928fa",
-            "ak12c": "6c195ae9056322e18a7d23752dfb9de4",
+            "ar9": "6c195ae9056322e18a7d23752dfb9de4",
             "honey badger": "18a6668af40b844e4433d077cbaa94ff",
             "honey badger suppressorless": "63b59ec3cee007e3e37fd48423fbaf4f",
             "k1a": "0cf22303011282724ccfba76d4c32021",
@@ -147,8 +146,8 @@
         "shotguns": {
             "ksg 12": "4f8b8be3a12d8d2ec7edf551d0480112",
             "model 870": "840a637bcf78d82ea1817980c7b4e034",
-            "dbv12": "3b2aa1d28fe5610198f140d825c500cc",
-            "dbv12 30-06": "b762a9a12a38f1f6325fd043232a69db",
+            "ak12/76": "3b2aa1d28fe5610198f140d825c500cc",
+            "ak12/30-06": "b762a9a12a38f1f6325fd043232a69db",
             "ks-23m": "0f64ac4ef4b81faeee8f458eaec77c15",
             "saiga-12": "74a698d57c52eccbf251dbf8b3f753cc",
             "saiga-223": "93cdc79e7699263dadc3ab1ce1bd6048",
@@ -218,7 +217,9 @@
             "m21": "d9077d40dab42b3987f7653e23f08326",
             "tcr": "3e284a89ee6b8be771546d1083a8d18a",
             "sa58": "4bf96b79cc64f22f9d4fbf5d468edf50",
-            "scar ssr": "6f9487707a6409d637f12b31fe991a7e"
+            "scar ssr": "6f9487707a6409d637f12b31fe991a7e",
+            "svk-12": "52c51cb7546267414971eb1adef30748",
+            "svk-12/12.7": "3ce6628bab9cbc51e9c27adadca93a83"
         },
         "lmgs": {
             "colt lmg": "88fcf537ca11e98ea9f6ebdb5929bfd7",
