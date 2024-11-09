@@ -1,5 +1,5 @@
 {
-    "version": "v1.7.4",
+    "version": "v1.7.5",
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
         "blue": "38342d3214ad04067e03106bdff41914",
@@ -382,8 +382,6 @@
                     "m14": "aaa860a948eef6dd44da3647f8602e45",
                     "ecr": "6e1198245f77f3d0239c671d3a5e620f",
                     "scar-h": "73822c7f3754dcf609adb0db24fdd6d7",
-                    "ak12br": "e4c264d9f0d7d3f916433c5da110798a",
-                    "ak12br 127": "48a5782ade5e549b53e497dbb006e94c",
                     "g3a3": "965aa9983436c1ae9db8eca9c41aeb27",
                     "ag-3": "3fd76a9c309eaaf5fa156b25856dc44d",
                     "hk417": "f47002ee882b4e8cf633f8c1efa7b31b",
@@ -399,13 +397,13 @@
                     "scar pdw": "695a0d9dbf3efc457a2a057479fcc07e",
                     "scar pdw 762": "73822c7f3754dcf609adb0db24fdd6d7",
                     "scar pdw 9mm": "95fe12467b808ea006d62a7666fa4c95",
-                    "aku12": "a4115d956e46469abb2e59ce232ec386",
+                    "ak-12u": "a4115d956e46469abb2e59ce232ec386",
                     "ppk12": "7cf3ed120d6ba9a6bb5e3fa5f2aec8c7",
                     "groza-1": "73c95b365c8ee7087399d007105cf50e",
                     "groza-1 545": "f69935414556262d035126b84a00a9f1",
                     "groza-1 556": "45da664fbbe57bdc973e0cae5c9b32f8",
                     "ots-126": "b7157a16dcce56a8d8715531e17928fa",
-                    "ak12c": "6c195ae9056322e18a7d23752dfb9de4",
+                    "ak9": "6c195ae9056322e18a7d23752dfb9de4",
                     "honey badger": "18a6668af40b844e4433d077cbaa94ff",
                     "honey badger suppressorless": "63b59ec3cee007e3e37fd48423fbaf4f",
                     "k1a": "0cf22303011282724ccfba76d4c32021",
@@ -431,8 +429,8 @@
                 "shotguns": {
                     "ksg 12": "4f8b8be3a12d8d2ec7edf551d0480112",
                     "model 870": "840a637bcf78d82ea1817980c7b4e034",
-                    "dbv12": "3b2aa1d28fe5610198f140d825c500cc",
-                    "dbv12 30-06": "b762a9a12a38f1f6325fd043232a69db",
+                    "ak12/76": "3b2aa1d28fe5610198f140d825c500cc",
+                    "ak12/30-06": "b762a9a12a38f1f6325fd043232a69db",
                     "ks-23m": "0f64ac4ef4b81faeee8f458eaec77c15",
                     "saiga-12": "74a698d57c52eccbf251dbf8b3f753cc",
                     "saiga-223": "93cdc79e7699263dadc3ab1ce1bd6048",
@@ -502,7 +500,9 @@
                     "m21": "d9077d40dab42b3987f7653e23f08326",
                     "tcr": "3e284a89ee6b8be771546d1083a8d18a",
                     "sa58": "4bf96b79cc64f22f9d4fbf5d468edf50",
-                    "scar ssr": "6f9487707a6409d637f12b31fe991a7e"
+                    "scar ssr": "6f9487707a6409d637f12b31fe991a7e",
+                    "svk-12": "52c51cb7546267414971eb1adef30748",
+                    "svk-12/12.7": "3ce6628bab9cbc51e9c27adadca93a83"
                 },
                 "lmgs": {
                     "colt lmg": "88fcf537ca11e98ea9f6ebdb5929bfd7",
@@ -511,6 +511,7 @@
                     "mg36": "b9e21999a84f260a2c3f11d36ecec8e4",
                     "rpk12": "ab5dbe6d83ae419019b3386544151cfc",
                     "l86 lsw": "caa3ca6a3d864b72c6788071449718be",
+                    "ak-12br": "e4c264d9f0d7d3f916433c5da110798a",
                     "rpk": "58d65544f95e7a6dc159266c4c10a62e",
                     "hk21e": "023ea0a2bd651c9fc0a3331c7c586c4a",
                     "hamr": "0225f48765a68211fa0d3056e23b143d",
@@ -882,7 +883,8 @@
                 "ffar": "805bcb880eccb2e35545c16235291ca4",
                 "m16": "7d5fb40d68b28f6981f7708981cae28f",
                 "hg40": "24cee4455c2a402d3425c0014c03b8c4",
-                "xmc": "7600ab327325f06b824105fa1bb232d7"
+                "xmc": "7600ab327325f06b824105fa1bb232d7",
+                "xr-2": "147674577a90e09d5573f138aadf234b"
             },
             "ghosts": {
                 "honey badger": "d2eeb0bf970857c891076c86b19cc0ca",
@@ -926,7 +928,8 @@
                 "mors": "1cc10ed047fc804e3f1ca83c03efb515",
                 "ohm": "794e3bd15cd965f9fbdae3e2faf9b9ab",
                 "repulsor": "6d40d25073cc7702d868ca461b23e3ba",
-                "tac-19": "18089e3ea8bddb06dff23c3f89f2547b"
+                "tac-19": "18089e3ea8bddb06dff23c3f89f2547b",
+                "asm1": "9bd52125860001624995f70e0a0ad2ba"
             },
             "cs new": {
                 "ak47": "ab1f6064687ac5e207389af752478c43",
@@ -969,6 +972,16 @@
                 "scar20": "36977fda2eda51b066a5e77ad00a6c81",
                 "ump-45": "1db039b252a4fec529e13700b82f73c6",
                 "tec-9": "37605a19def3af546a2ec9054442b9d0"
+            },
+            "cs 1.6": {
+                "scout": "f5220cbf6e9a0e6cc64b660c111be065",
+                "ump45": "091674a2eab6c2976dc908310913f9b3",
+                "m4a1 silenced": "cf35e14d1c899edf93a48ff3ad3f8a62",
+                "m4a1 unsilenced": "572509171890c5d0280e82a84ac410b9",
+                "awp": "0f2bbbe8e45444eaf711d655b5c58154",
+                "famas": "b86fdc8966630e07d4d2a880d3b5c073",
+                "ak47": "dd5f7de767d999f02b219d701e7539b5",
+                "deagle": "9a8fc4c6b2c4379850964c46a76ea575"
             },
             "halo": {
                 "h2 br": "58f3ba79d09429d6d5d3304bc26e08bc",
@@ -1259,6 +1272,11 @@
             "redcoat": "6e8b925feefbff34756e2763d014f805",
             "thalash": "2bf5844fde0ea4a706e110a737855b11",
             "bamboo": "4e6a5c2cfcbda2d517eff9981cd2a242",
+            "yoshi eat": "2b8483a8147a3b6a8484b83356329a01",
+            "tonk": "95a85d9c1969f481f9afa6b433cd6a9b",
+            "pizza tower": "303c1b3748043ba1d92c2dcc0aa64c29",
+            "dj scratch": "da502ffad664ea9ad9bfc16122e8b07a",
+            "discord": "5f42b9e660a9ad84165b411bd3d9bdad",
             "8bit": {
                 "8bit 1": "88bb60d1d2c37feee229ef69c2d4d76f",
                 "8bit 2": "52c1c0b0b6341992e59e05eaeac75bd8",
@@ -1278,7 +1296,8 @@
                 "796946525a9eaaa7266d9185b25e318c",
                 "1feefea40850972e3e63bcb0d86baca0"
             ],
-            "tf2": "80cda01cdd99bfaae5d7dc50f689bafa",
+            "tf2 1": "80cda01cdd99bfaae5d7dc50f689bafa",
+            "tf2 2": "0cc800883f9824fe1380110c147ec633",
             "xonotic": "2178841e2915c199051ffcfb3ff99b6c",
             "titanfall 2": "2134b97ee3e15c20a189d474d5269802",
             "apex shield break": "cccbb89c427e68e9a54061bd34331362",
@@ -1309,6 +1328,7 @@
             "lavak": "3dbe8bf92cee378b7d7bc63f856d99c0",
             "ror2 railgunner crit": "6e23c9505c3da190723d07d6a1290b3e",
             "toin": "cb307df8a27317a710a4a6bf33e4c726",
+            "high beep": "8dbb0fcc912d13cf8be3e524a3c81092",
             "valorant": {
                 "valorant": "46a596454a748e9acb916d409123ceb6",
                 "champions 2024": "c6f4acd310cd664c872cd06d840287ca",
@@ -1321,6 +1341,15 @@
                 "oni": "6d999fc689949ae1badd3b778a968d1c",
                 "sentinels of light": "e7bd14683b6e0b6612462d55ac72cace",
                 "prelude to chaos": "96b6cb666464ec02305320c501943bfa"
+            },
+            "touhou": {
+                "dead": "ffb71a903ac8a82cf1f7dc98a23492dd",
+                "spellcard": "8232bb89f2d90a10f79f614cb58acff8",
+                "twinkle 1": "6f27905b5057e85739117d67d9abc5ad",
+                "twinkle 2": "f7afa265cd66ad5e73f9f429525c31a3",
+                "bonus 1": "9967dcbddb1b70220286b48c4a90d388",
+                "bonus 2": "7f2a357783b062c6247e347f326dfbbf",
+                "attack": "1ba7b115581e1eaee4f455dce4df8aa1"
             },
             "remove": "5873cfba79134ecfec6658f559d8f320"
         }
