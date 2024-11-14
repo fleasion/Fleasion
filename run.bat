@@ -1,10 +1,13 @@
 @echo off
-: v1.3.8
+: v1.3.9
 
 : fleasion by @cro.p
 : distributed in https://discord.gg/v9gXTuCz8B
 : https://github.com/CroppingFlea479/Fleasion
 : script base by @8ar and modified by @3tcy
+
+: Allow symbols like & in variables if quoted
+setlocal enableDelayedExpansion
 
 : Windows version check (W7 is unsupported)
 for /f "tokens=2 delims=[]" %%a in ('ver') do set ver=%%a
@@ -16,8 +19,8 @@ if supported==True echo.
 else goto unsupported
 
 : Change partition to the one where the run script is located if it's different
-set dir=%~dp0
-set drive=%dir:~0,2%
+set dir="%~dp0"
+set drive="%dir:~0,2%"
 if %drive% NEQ "C:" %drive%
 cd %temp%
 
@@ -32,11 +35,11 @@ cls
 python --version >nul
 if %errorlevel%==9009 goto py
 set pythonIsInstalled=True
-reg Query "HKLM\SOFTWARE\Python\PythonCore\3.13" /v "Version" | find "3.13.0" || set pythonIsInstalled=False
-reg Query "HKCU\SOFTWARE\Python\PythonCore\3.13" /v "Version" | find "3.13.0" || set pythonIsInstalled=False
+reg Query "HKLM\SOFTWARE\Python\PythonCore\3.13" /v "Version" | find "3.13.0" || goto py
+reg Query "HKCU\SOFTWARE\Python\PythonCore\3.13" /v "Version" | find "3.13.0" || goto py
 cls
-if %pythonIsInstalled%==False goto pip
-goto py
+goto pip
+
 
 :py
 cls
