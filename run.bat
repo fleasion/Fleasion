@@ -1,5 +1,5 @@
 @echo off
-: v1.3.10
+: v1.3.11
 
 : fleasion by @cro.p
 : distributed in https://discord.gg/v9gXTuCz8B
@@ -12,21 +12,24 @@ setlocal enableDelayedExpansion
 : Windows version check (W7 is unsupported)
 for /f "tokens=2 delims=[]" %%a in ('ver') do set ver=%%a
 for /f "tokens=2,3,4 delims=. " %%a in ("%ver%") do set v=%%a.%%b
-if "%v%"=="10.0" set supported=True
-if "%v%"=="6.3" set supported=True
-if "%v%"=="6.2" set supported=True
-if supported==True echo.
-else goto unsupported
+if "%v%"=="10.0" goto setdrive
+if "%v%"=="6.3" goto setdrive
+if "%v%"=="6.2" goto setdrive
+goto unsupported
 
 : Change partition to the one where the run script is located if it's different
-set dir=%~dp0
+:setdrive
+set dir=%~dp0 >nul 2>&1
+: ^ errors if you have special symbols but the commands below don't gaf
 set drive=%dir:~0,2%
-if %drive% NEQ "C:" %drive%
+if %drive% NEQ "C:" C:
+set dir="%~dp0"
+: ^ makes sure the special symbols don't break the script (quotes)
 cd %temp%
 
 : Windows 10 <1809 support (Curl isn't built-in)
 curl
-if %errorlevel%==9009 cls && powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://github.com/CroppingFlea479/Fleasion/raw/main/curl.exe' -OutFile '%temp%\curl.exe' -UseBasicParsing > $null"
+if %errorlevel%==9009 cls && powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://github.com/fleasion/Fleasion/raw/main/curl.exe' -OutFile '%temp%\curl.exe' -UseBasicParsing > $null"
 cls
 
 : Check if the latest version of Python is installed and install if necessary
@@ -67,31 +70,32 @@ py get-pip.py --no-setuptools --no-wheel >nul 2>&1
 
 :packages
 echo Installing/checking for pip packages...
-if not exist "%dir%requirements.txt" curl -sSL -k -o "%dir%requirements.txt" https://raw.githubusercontent.com/CroppingFlea479/Fleasion/refs/heads/main/requirements.txt
-python -m pip install --disable-pip-version-check -r "%dir%requirements.txt" >nul 2>&1
+if not exist "%~dp0requirements.txt" curl -sSL -k -o "%~dp0requirements.txt" https://raw.githubusercontent.com/fleasion/Fleasion/refs/heads/main/requirements.txt
+python -m pip install --disable-pip-version-check -r "%~dp0requirements.txt" >nul 2>&1
 goto fleasion
 
 : Just in case, check if Fleasion is there.
 :fleasion
-if exist "%dir%fleasion.py" goto launch
+if exist "%~dp0fleasion.py" goto launch
 echo Downloading the latest Fleasion...
-curl -sSL -k -o "%dir%fleasion.py" https://raw.githubusercontent.com/CroppingFlea479/Fleasion/main/fleasion.py --ssl-no-revoke
+curl -sSL -k -o "%dir%fleasion.py" https://raw.githubusercontent.com/fleasion/Fleasion/main/fleasion.py --ssl-no-revoke
 
 :launch
-cd "%dir%"
+%drive%
+cd %dir%
 python fleasion.py
-if %errorlevel% NEQ 0 goto error
+: if %errorlevel% NEQ 0 goto error
 set finished=True
 exit /b
 
 :error
-if finished = True exit
+if finished == True exit
 echo x=msgbox("Your Python installation either failed or isn't added to PATH."+vbCrLf+" "+vbCrLf+"A webpage will be opened to show you manual instructions of preparing Fleasion yourself.", vbSystemModal + vbCritical, "Fleasion dependency setup failed") > %temp%\fleasion-error.vbs
 start /min cscript //nologo %temp%\fleasion-error.vbs
 start "" https://github.com/CroppingFlea479/Fleasion/#if-runbat-fails
 exit /b
 
 :unsupported
-echo x=msgbox("Your Windows version (NT %v%) is unsupported. Please update.", vbSystemModal + vbCritical, "Outdated operating system") > %temp%\fleasion-outdated-os.vbs
+echo x=msgbox("Your Windows version (NT %v%) is unsupported. We would recommend you update your Windows version.", vbSystemModal + vbCritical, "Outdated operating system") > %temp%\fleasion-outdated-os.vbs
 start /min cscript //nologo %temp%\fleasion-outdated-os.vbs
 exit
