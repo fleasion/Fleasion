@@ -23,6 +23,7 @@ set dir=%~dp0 >nul 2>&1
 : ^ errors if you have special symbols but the commands below don't gaf
 set drive=%dir:~0,2%
 if %drive% NEQ "C:" C:
+set dir="%~dp0"
 cd %temp%
 
 : Windows 10 <1809 support (Curl isn't built-in)
