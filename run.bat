@@ -23,8 +23,6 @@ set dir=%~dp0 >nul 2>&1
 : ^ errors if you have special symbols but the commands below don't gaf
 set drive=%dir:~0,2%
 if %drive% NEQ "C:" C:
-set dir="%~dp0"
-: ^ makes sure the special symbols don't break the script (quotes)
 cd %temp%
 
 : Windows 10 <1809 support (Curl isn't built-in)
@@ -80,7 +78,7 @@ goto fleasion
 :fleasion
 if exist "%~dp0fleasion.py" goto launch
 echo Downloading the latest Fleasion...
-curl -sSL -k -o "%dir%fleasion.py" https://raw.githubusercontent.com/fleasion/Fleasion/main/fleasion.py --ssl-no-revoke
+curl -sSL -k -o "%~dp0fleasion.py" https://raw.githubusercontent.com/fleasion/Fleasion/main/fleasion.py --ssl-no-revoke
 
 :launch
 %drive%
