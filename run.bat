@@ -1,5 +1,5 @@
 @echo off
-: v1.3.9
+: v1.3.10
 
 : fleasion by @cro.p
 : distributed in https://discord.gg/v9gXTuCz8B
@@ -19,8 +19,8 @@ if supported==True echo.
 else goto unsupported
 
 : Change partition to the one where the run script is located if it's different
-set dir="%~dp0"
-set drive="%dir:~0,2%"
+set dir=%~dp0
+set drive=%dir:~0,2%
 if %drive% NEQ "C:" %drive%
 cd %temp%
 
@@ -35,9 +35,10 @@ cls
 python --version >nul
 if %errorlevel%==9009 goto py
 set pythonIsInstalled=True
-reg Query "HKLM\SOFTWARE\Python\PythonCore\3.13" /v "Version" | find "3.13.0" || goto py
-reg Query "HKCU\SOFTWARE\Python\PythonCore\3.13" /v "Version" | find "3.13.0" || goto py
+reg Query "HKLM\SOFTWARE\Python\PythonCore\3.13" /v "Version" | find "3.13.0" || set pythonIsInstalled=False
+reg Query "HKCU\SOFTWARE\Python\PythonCore\3.13" /v "Version" | find "3.13.0" || set pythonIsInstalled=False
 cls
+if pythonIsInstalled==False goto py
 goto pip
 
 
