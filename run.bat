@@ -51,6 +51,7 @@ echo Downloading python...
 curl -SL -k -o python-installer.exe https://www.python.org/ftp/python/3.13.0/python-3.13.0-amd64.exe --ssl-no-revoke
 echo Installing..
 python-installer.exe /quiet InstallAllUsers=1 PrependPath=1 Include_test=0 Include_doc=0
+del python-installer.exe
 
 : Check if pip and requests package is installed and install if necessary
 
@@ -67,6 +68,7 @@ echo Downloading pip...
 curl -sSL -k -o get-pip.py https://bootstrap.pypa.io/get-pip.py --ssl-no-revoke
 echo Installing..
 py get-pip.py --no-setuptools --no-wheel >nul 2>&1
+del get-pip.py
 
 :packages
 echo Installing/checking for pip packages...
