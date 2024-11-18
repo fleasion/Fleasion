@@ -1,4 +1,4 @@
-# v1.9.7
+# v1.9.8
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -251,6 +251,10 @@ if os.path.exists(pf_cache_check_path):
 if not mod_cache or not pf_cache:
     print(
         f"{RED}Missing cache, join prompted {'experiences' if not mod_cache or not pf_cache else 'experience'}.{DEFAULT}")
+    cache_skip = input(f'{BLUE}Type "skip" to bypass the check or press enter to continue.{RED}\nYou will still need to join the relevant experiences to cache assets if you wish to replace them.{DEFAULT}\n: ')
+    if cache_skip.lower() == 'skip':
+        mod_cache, pf_cache = True, True
+        os.system(clear_command)
 if not mod_cache:
     webbrowser.open_new_tab("https://www.roblox.com/games/18504289170/texture-game")
 if not pf_cache:
@@ -661,7 +665,7 @@ while True:
         print(" ")
     start = False
     menu = input(
-        f"Enter the number corresponding to what you'd like to do:\n1: {GREEN}Ingame asset replacements{DEFAULT}\n2: {GREEN}Presets{DEFAULT}\n3: {GREEN}Block (experimental, dont use){DEFAULT}\n4: {GREEN}Cache Settings{DEFAULT}\n5: {GREEN}Settings{DEFAULT}\n6: {GREEN}Exit{DEFAULT}\n: ")
+        f"Enter the number corresponding to what you'd like to do:\n1: {GREEN}Ingame asset replacements{DEFAULT}\n2: {GREEN}Presets{DEFAULT}\n3: {GREEN}Block (experimental, dont use){DEFAULT}\n4: {GREEN}Cache Settings{DEFAULT}\n5: {GREEN}Settings{DEFAULT}\n6: {GREEN}Changelog{DEFAULT}\n7: {GREEN}Exit{DEFAULT}\n: ")
     if menu == '1':
         replacements = get_hashes()
         for replacement in replacements:
@@ -901,6 +905,11 @@ while True:
                     print(f"{RED}Error: {e}{DEFAULT}")
 
     elif menu == '6':
+        print(f'\n{GREEN}Changelog:{DEFAULT}')
+        print(data['changelog'])
+        input()
+
+    elif menu == '7':
         print("\nExiting the program.")
         break
 
