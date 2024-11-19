@@ -1,4 +1,3 @@
- 
 v1.2.6
 <h1 align=center>DISCLAIMER!</h1>
 
