@@ -1,4 +1,4 @@
-# v1.9.8
+# v1.9.9
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/v9gXTuCz8B
 
@@ -250,11 +250,14 @@ if os.path.exists(pf_cache_check_path):
 
 if not mod_cache or not pf_cache:
     print(
-        f"{RED}Missing cache, join prompted {'experiences' if not mod_cache or not pf_cache else 'experience'}.{DEFAULT}")
+        f"{RED}Missing Cache.{DEFAULT}")
     cache_skip = input(f'{BLUE}Type "skip" to bypass the check or press enter to continue.{RED}\nYou will still need to join the relevant experiences to cache assets if you wish to replace them.{DEFAULT}\n: ')
     if cache_skip.lower() == 'skip':
         mod_cache, pf_cache = True, True
         os.system(clear_command)
+    else:
+        print(f'{BLUE}Join prompted experiences.{DEFAULT}')
+        print(f'Missing:{f'\n- {GREEN}PF{DEFAULT} Cache' if not pf_cache else ''}{f'\n- {GREEN}Modding{DEFAULT} Cache' if not mod_cache else ''}\n')
 if not mod_cache:
     webbrowser.open_new_tab("https://www.roblox.com/games/18504289170/texture-game")
 if not pf_cache:
