@@ -2,7 +2,7 @@ v1.2.7
 <h1 align=center>DISCLAIMER!</h1>
 
 <p align=center>
-  <b> This tool is NOT intended for gaining an unfair advantage or exploiting the game. <br> Do not modify enemy players. Map and Player tweaks will get you banned. <br> Custom tweaks are at your own risk. </b> <br> While misuse is possible, doing so is against the rules and will cause in-game consequences.  <br> All provided presets adhere to the terms of service and will not result in punishment. <br> A guide on obtaining relevant hashes will not be shared due to its potential for abuse.<br><br>If you want a texture/audio added, ping <a href=https://discord.com/users/749886948579213352>Yolo</a> in our <a href=https://discord.gg/hXyhKehEZF> Discord server.</a>
+  <b> This tool is NOT intended for gaining an unfair advantage or exploiting the game. <br> Do not modify enemy players. Map and Player tweaks will get you banned. <br> Custom tweaks are at your own risk. </b> <br> While misuse is possible, doing so is against the rules and will cause in-game consequences.  <br> All provided presets adhere to the terms of service and will not result in punishment. <br> A guide on obtaining relevant hashes will not be shared due to its potential for abuse.<br><br>If you want a texture/audio added, request it in our <a href=https://discord.com/invite/pdtce585f6> Discord server!</a>
 </p>
 
 <h4 align=center>
@@ -58,7 +58,7 @@ v1.2.7
   ^ If you see this (see image below) <a href=https://github.com/CroppingFlea479/Fleasion/#if-runbat-fails>redo step 1.</a>
   <p align=center>
     <a>
-      <img src=https://github.com/user-attachments/assets/20428d0e-c943-4782-ac59-773d63452dcf width=800 height=100>
+      <img src=https://github.com/user-attachments/assets/52f9e445-f963-4271-aa6e-f6595413531d width=800 height=100>
     </a>
   </p>
   <li> After it finishes, download the <b>Source code (zip)</b> from <a href="https://github.com/CroppingFlea479/Fleasion/releases/latest">here</a> and extract it. (you will want something like <a href=https://www.7-zip.org/download.html><b>7zip</b></a> to extract it)
@@ -70,7 +70,7 @@ v1.2.7
 
   <p align=center>
     <a>
-      <img src=https://github.com/user-attachments/assets/a17717a8-26b3-4aa5-ad98-16fd69b2836f width=600 height=100>
+      <img src=https://github.com/user-attachments/assets/777b7b73-5328-4514-83f6-eb7276ef919b width=629 height=94>
     </a>
   </p>
 
@@ -89,7 +89,7 @@ If you are unsure of why a texture isn't loading, <a href=https://github.com/Cro
 <h1 align=center>Features</h1>
   <p align=center>
     <a>
-      <img src=https://github.com/user-attachments/assets/5426e892-b5d6-434a-92c9-35a7573bcf49 alt=features width=600 height=200>
+      <img src=https://github.com/user-attachments/assets/e4218dcb-07ff-41e4-a829-bbdb5166e9f7 alt=features width=582 height=200>
     </a>
   </p>
 <li> <b>Replacement of textures/audio</b>
