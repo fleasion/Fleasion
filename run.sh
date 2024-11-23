@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# v1.0.0
+# v1.0.1
 
 # fleasion by @cro.p
-# distributed in https://discord.gg/spezi
+# distributed in https://discord.gg/hXyhKehEZF
 # https://github.com/CroppingFlea479/Fleasion
 # run.sh made by @jan_darkk
 
