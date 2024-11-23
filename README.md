@@ -2,19 +2,13 @@ v1.2.7
 <h1 align=center>DISCLAIMER!</h1>
 
 <p align=center>
-  <b> This tool is NOT intended for gaining an unfair advantage or exploiting the game. <br> Do not modify enemy players. Map and Player tweaks will get you banned. <br> Custom tweaks are at your own risk. </b> <br> While misuse is possible, doing so is against the rules and will cause in-game consequences.  <br> All provided presets adhere to the terms of service and will not result in punishment. <br> A guide on obtaining relevant hashes will not be shared due to its potential for abuse.<br><br>If you want a texture/audio added, request it in our <a href=https://discord.com/invite/pdtce585f6> Discord server!</a>
+  <b> This tool is NOT intended for gaining an unfair advantage or exploiting the game. <br> Do not modify enemy players. Map and Player tweaks will get you banned. <br> Custom tweaks are at your own risk. </b> <br> While misuse is possible, doing so is against the rules and will cause in-game consequences.  <br> All provided presets adhere to the terms of service and will not result in punishment. <br> A guide on obtaining relevant hashes will not be shared due to its potential for abuse.
 </p>
 
-<h4 align=center>
-  <a href=#getting-ready>
-    Go to here to get Fleasion after reading this notice
-  </a>
-</h4>
-
-<h1 align="center">Help & Support</h1>
+<h1 align="center">Request & Support</h1>
 
 <h3 align="center">
-  For help and support, join our <a href="https://discord.gg/hXyhKehEZF">Discord server</a> and ask the <a href=#fleasion-team>Fleasion Team</a>.
+  To request a change/asset/etc. or to get help, join our <a href="https://discord.com/invite/pdtce585f6">Discord server</a> and ask the <a href=#fleasion-team>Fleasion Team</a>.
 </h3>
 <p></p>
 
