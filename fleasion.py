@@ -1,6 +1,6 @@
-# v1.9.9
+# v1.9.10
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
-# discord.gg/v9gXTuCz8B
+# discord.gg/hXyhKehEZF
 
 import os
 import sys
