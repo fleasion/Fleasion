@@ -1,6 +1,6 @@
 {
-    "version": "v1.7.7",
-    "changelog": "- Added this changelog.\n- Added an option to skip the cache check.\n\nAsset changes in v1.7.6:\n- Updated PF gun names and sounds after ak12 family update.\n- Added CS 1.6 weapon sounds.\n- Added touhou sound affects.\n- Added misc kill sounds.\n- Added additional cod weapon sounds.\n\nKnown issues:\nKTX (texture hashes) are mostly broken and only sleeves and remove textures work reliably, stuff such as weapon skins is currently broken. Bone arms are also broken. Everything else should (tm) be working.\nIf you are having problems or want to request assets to be added use the discord (discord.gg/spezi).\nPress enter to return to main menu.",
+    "version": "v1.7.8",
+    "changelog": "- Added this changelog.\n- Added an option to skip the cache check.\n\nAsset changes in v1.7.6:\n- Updated PF gun names and sounds after ak12 family update.\n- Added CS 1.6 weapon sounds.\n- Added touhou sound affects.\n- Added misc kill sounds.\n- Added additional cod weapon sounds.\n\nKnown issues:\nKTX (texture hashes) are mostly broken and only sleeves and remove textures work reliably, stuff such as weapon skins is currently broken. Bone arms are also broken. Everything else should (tm) be working.\nIf you are having problems or want to request assets to be added use the discord (discord.gg/hXyhKehEZF).\nPress enter to return to main menu.",
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
         "blue": "38342d3214ad04067e03106bdff41914",
