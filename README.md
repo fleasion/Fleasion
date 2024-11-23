@@ -1,4 +1,4 @@
-v1.2.7
+v1.2.8
 <h1 align=center>DISCLAIMER!</h1>
 
 <p align=center>
@@ -8,9 +8,8 @@ v1.2.7
 <h1 align="center">Request & Support</h1>
 
 <h3 align="center">
-  To request a change/asset/etc. or to get help, join our <a href="https://discord.com/invite/pdtce585f6">Discord server</a> and ask the <a href=#fleasion-team>Fleasion Team</a>.
+  To request a change/asset/etc. or to get help, join our <a href="https://discord.com/invite/pdtce585f6">Discord server!</a>
 </h3>
-<p></p>
 
 <p align="center">
   <a href="https://discord.gg/hXyhKehEZF">
@@ -23,7 +22,6 @@ v1.2.7
 <h3 align="center">
   Watch <a href="https://www.youtube.com/watch?v=P1Iva68epaU"> this tutorial </a> made by <a href=https://www.youtube.com/@FantixYT>Fantix</a>
 </h3>
-<p></p>
 
 <p align="center">
   <a href="https://www.youtube.com/watch?v=P1Iva68epaU" target="_blank">
