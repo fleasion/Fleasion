@@ -1,8 +1,8 @@
-v1.2.6
+v1.2.7
 <h1 align=center>DISCLAIMER!</h1>
 
 <p align=center>
-  <b> This tool is NOT intended for gaining an unfair advantage or exploiting the game. <br> Do not modify enemy players. Map and Player tweaks will get you banned. <br> Custom tweaks are at your own risk. </b> <br> While misuse is possible, doing so is against the rules and will cause in-game consequences.  <br> All provided presets adhere to the terms of service and will not result in punishment. <br> A guide on obtaining relevant hashes will not be shared due to its potential for abuse.<br><br>If you want a texture/audio added, ping <a href=https://discord.com/users/749886948579213352>Yolo</a> in our <a href=https://discord.gg/spezi> Discord server.</a>
+  <b> This tool is NOT intended for gaining an unfair advantage or exploiting the game. <br> Do not modify enemy players. Map and Player tweaks will get you banned. <br> Custom tweaks are at your own risk. </b> <br> While misuse is possible, doing so is against the rules and will cause in-game consequences.  <br> All provided presets adhere to the terms of service and will not result in punishment. <br> A guide on obtaining relevant hashes will not be shared due to its potential for abuse.<br><br>If you want a texture/audio added, ping <a href=https://discord.com/users/749886948579213352>Yolo</a> in our <a href=https://discord.gg/hXyhKehEZF> Discord server.</a>
 </p>
 
 <h4 align=center>
@@ -14,13 +14,13 @@ v1.2.6
 <h1 align="center">Help & Support</h1>
 
 <h3 align="center">
-  For help and support, join <a href=https://www.twitch.tv/sp_ezi>Spezi</a>'s <a href="https://discord.gg/spezi">Discord server</a> and ask the <a href=#fleasion-team>Fleasion Team</a>.
+  For help and support, join our <a href="https://discord.gg/hXyhKehEZF">Discord server</a> and ask the <a href=#fleasion-team>Fleasion Team</a>.
 </h3>
 <p></p>
 
 <p align="center">
-  <a href="https://discord.gg/spezi">
-    <img src="https://invidget.switchblade.xyz/spezi" alt="Join our Discord server">
+  <a href="https://discord.gg/hXyhKehEZF">
+    <img src="https://invidget.switchblade.xyz/hXyhKehEZF" alt="Join our Discord server">
   </a>
 </p>
 
@@ -124,4 +124,4 @@ For a more human readable dump of some of the PF hashes, see this <a href=https:
   </a>
 </h>
 <p></p>
-Distributed in <a href=https://www.twitch.tv/sp_ezi>Spezi</a>'s <a href=https://discord.gg/spezi>Discord Server</a>
+Distributed in the <a href=https://discord.gg/hXyhKehEZF>Fleasion Discord Server</a>
