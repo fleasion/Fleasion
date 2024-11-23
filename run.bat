@@ -1,8 +1,8 @@
 @echo off
-: v1.3.11
+: v1.3.12
 
 : fleasion by @cro.p
-: distributed in https://discord.gg/v9gXTuCz8B
+: distributed in https://discord.gg/hXyhKehEZF
 : https://github.com/CroppingFlea479/Fleasion
 : script base by @8ar and modified by @3tcy
 
