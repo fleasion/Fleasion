@@ -1,4 +1,4 @@
-# v1.9.10
+# v1.9.11
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/hXyhKehEZF
 
@@ -661,7 +661,7 @@ def get_hashes():
     return output
 
 
-print(f"Welcome to: {GREEN}Fleasion!{DEFAULT}\n")
+print(f"Welcome to: {GREEN}Fleasion!{DEFAULT}\n\nFleasion 1 is going to be deprecated soon to make way for a newer and more advanced version that comes with way less bugs and errors!\nWith the spezi server recently being shutdown we encourage you to join the new discord server to see live progress/catch new news and updates, dont worry we arent going anywhere!\n: {GREEN}discord.gg/hXyhKehEZF{DEFAULT}\n")
 start = True
 while True:
     if not start:
