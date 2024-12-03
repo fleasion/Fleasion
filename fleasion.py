@@ -1,4 +1,4 @@
-# v1.9.11
+# v1.9.12
 # Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/hXyhKehEZF
 
@@ -251,7 +251,7 @@ if os.path.exists(pf_cache_check_path):
 if not mod_cache or not pf_cache:
     print(
         f"{RED}Missing Cache.{DEFAULT}")
-    cache_skip = input(f'{BLUE}Type "skip" to bypass the check or press enter to continue.{RED}\nYou will still need to join the relevant experiences to cache assets if you wish to replace them.{DEFAULT}\n: ')
+    cache_skip = input(f'{BLUE}Type "skip" to bypass the check or press {GREEN}enter{BLUE} to continue.{RED}\nYou will still need to join the relevant experiences to cache assets if you wish to replace them.{DEFAULT}\n: ')
     if cache_skip.lower() == 'skip':
         mod_cache, pf_cache = True, True
         os.system(clear_command)
@@ -366,7 +366,7 @@ def get_hashes():
                     print(f"{RED}Error: {e}{DEFAULT}")
             case 2:
                 arm_option = input(
-                    f"\nEnter arm option:\n1: {GREEN}Remove options{DEFAULT}\n2: {GREEN}Bone arms{DEFAULT}\n3: {GREEN}Default arms{DEFAULT}\n: ")
+                    f"\nEnter arm option:\n1: {GREEN}Remove options{DEFAULT}\n2: {GREEN}Bone arms{DEFAULT}\n: ")
                 match int(arm_option):
                     case 1:
                         output.append(
@@ -380,8 +380,6 @@ def get_hashes():
                         if mesh_version == 'v2':
                             output.append((['2245ea538d66f8c9eb7f453aa3e421c2', 'd599df8997da0b6a3e5b12ab948f648b'],
                                            'c9672591983da8fffedb9cec7df1e521'))  # c9672591983da8fffedb9cec7df1e521 needs to be updated with new hash
-                    case 3:
-                        delete_stuff(data["arm models"]["everything"])
                     case _:
                         print("Enter a Valid Option!")
             case 3:
