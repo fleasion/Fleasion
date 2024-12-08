@@ -846,7 +846,8 @@ while True:
                 cache_color = RED if cacheclear == "False" else BLUE
                 with open('presets.json', 'r') as file:
                     data = json.load(file)
-                presetpick = data.get('DONTNAMETHIS', None)
+                #presetpick = data.get('DONTNAMETHIS', None)
+                presetpick = 'N/A'
 
                 print(
                     f"\nSettings:\n1: {GREEN}Auto Cache Clear : {cache_color}{cacheclear}{DEFAULT}\n2: {GREEN}Apply preset on lauch: {DEFAULT}{presetpick}\n"
