@@ -7,10 +7,17 @@ import sys
 import shutil
 import time
 import json
-import requests
 import platform
-import gdown
 import tarfile
+import requests
+
+response = requests.get("https://raw.githubusercontent.com/fleasion/Fleasion/main/requirements.txt")
+response.raise_for_status()
+with open('requirements.txt', "w") as file:
+    file.write(response.text)
+
+import gdown
+
 
 README_URL = 'https://raw.githubusercontent.com/CroppingFlea479/Fleasion/main/README.md'
 FLEASION_URL = 'https://raw.githubusercontent.com/CroppingFlea479/Fleasion/main/fleasion.py'
