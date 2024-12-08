@@ -1,10 +1,10 @@
 {
-    "version": "v1.7.8",
-    "changelog": "- Added this changelog.\n- Added an option to skip the cache check.\n\nAsset changes in v1.7.6:\n- Updated PF gun names and sounds after ak12 family update.\n- Added CS 1.6 weapon sounds.\n- Added touhou sound affects.\n- Added misc kill sounds.\n- Added additional cod weapon sounds.\n\nKnown issues:\nKTX (texture hashes) are mostly broken and only sleeves and remove textures work reliably, stuff such as weapon skins is currently broken. Bone arms are also broken. Everything else should (tm) be working.\nIf you are having problems or want to request assets to be added use the discord (discord.gg/hXyhKehEZF).\nPress enter to return to main menu.",
+    "version": "v1.8.0",
+    "changelog": "Testing Fleasion2 Framework\nFor the rest of the deatils join the discord server\n:discord.gg/hXyhKehEZF",
     "gun smoke": {
         "pink": "5c4932441500b62a3218bbbabe45a117",
         "blue": "38342d3214ad04067e03106bdff41914",
-        "arda garden": "a359199394481b570abbba664bc3fc3f"
+        "arda garden (by genstar himms)": "a359199394481b570abbba664bc3fc3f"
     },
     "hitmarker": {
         "default": "097165b476243d2095ef0a256320b06a",
@@ -98,7 +98,6 @@
             "m14": "aaa860a948eef6dd44da3647f8602e45",
             "ecr": "6e1198245f77f3d0239c671d3a5e620f",
             "scar-h": "73822c7f3754dcf609adb0db24fdd6d7",
-            "ak-12br": "e4c264d9f0d7d3f916433c5da110798a",
             "g3a3": "965aa9983436c1ae9db8eca9c41aeb27",
             "g3a3 .45": "956c00897423f232d5bb8d3815fcdbc6",
             "ag-3": "3fd76a9c309eaaf5fa156b25856dc44d",
@@ -141,6 +140,7 @@
             "c8a2": "d40d970b7a96c87b6ab22af3d6f534dc",
             "x95r": "a683ffc0e7d919528e2b6fcf00c434a2",
             "hk51b": "532f5ef0ab07c83d11cd4ea9ff35158d",
+	    "mini fix": "912ed582b457c48da006ac0c32b93d96",
             "can cannon": "b0fbcd4fdb34beba9419a35d6c46526c",
             "juan carbine": "d61a60de1b50225945b8956be18b42ad"
         },
@@ -176,6 +176,7 @@
             "mp7 loudener": "ae710bc9d1f9c81525bc2edbbfafbaef",
             "mac10": "11752d91006aabc1b9b089c632e9a008",
             "p90": "9e24b7dd4c73ef71d0863afb9a8402e7",
+	    "mp-9": "5de814688c5a19dd21ec8735efd19f3b",
             "colt mars": "6be5f40d32a4f21c2ecb6f93d6fb0b18",
             "mp5": "1d2e09bacbbbacd0de8db314cfa32c42",
             "colt smg": "cc392c38be2e4ca625d11238085e4245",
@@ -229,6 +230,7 @@
             "mg36": "b9e21999a84f260a2c3f11d36ecec8e4",
             "rpk12": "ab5dbe6d83ae419019b3386544151cfc",
             "l86 lsw": "caa3ca6a3d864b72c6788071449718be",
+            "ak-12br": "e4c264d9f0d7d3f916433c5da110798a",
             "rpk": "58d65544f95e7a6dc159266c4c10a62e",
             "hk21e": "023ea0a2bd651c9fc0a3331c7c586c4a",
             "hamr": "0225f48765a68211fa0d3056e23b143d",
@@ -255,6 +257,7 @@
             "trg-42": "c1f443550e43ca38475a426f6b97b3bc",
             "mosin": "9ad455eba2a68a2e3c736b2d552915a8",
             "svds": "8cbdf3645a28e8d2607835e2ad465578",
+            "the fix": "113ba8f4fb7fee30381a4de3a05537fd",
             "m1903": "b3da49a6f3d29e80097487c96a286bf5",
             "m1903 maxim": "b8e6e87edd79d462be595ee6b90afa57",
             "k14": "7a88319bb1b848a1688bb8ef56e70e11",
@@ -294,7 +297,7 @@
             "alien": "d4d2e45c28417d7010c29ca64dd52c67",
             "af2011": "c9883d97c569e2f206c441e9778798af",
             "boxy buster": "b1e963157d570c9e03e75355cd2bb46f",
-            "golden gun": "3d6fefa3e6841cd379dd3e533fecb895",
+            "golden gun": "d0d705da1cd26365e857fd0d9de53506",
             "la rata": "c0c6b4dea684eef70dda83e9c5683061",
             "juan": "d61a60de1b50225945b8956be18b42ad",
             "m7644": "c9883d97c569e2f206c441e9778798af",
@@ -338,7 +341,8 @@
             "saiga-953u": "290c653063df530dd0a110cce09b5764",
             "saiga-50u": "dff6f095809c7634cd5c2a4b9982a671",
             "obrez": "9ad455eba2a68a2e3c736b2d552915a8",
-            "sass 308": "cbe914973bc37bc746daa8f897ebe36c"
+            "sass 308": "cbe914973bc37bc746daa8f897ebe36c",
+            "thunder": "2f14eabec694cbd2fef5139d3085e6b3"
         }
     },
     "replacement sounds": {
@@ -386,7 +390,7 @@
                     "scar-h": "73822c7f3754dcf609adb0db24fdd6d7",
                     "g3a3": "965aa9983436c1ae9db8eca9c41aeb27",
                     "ag-3": "3fd76a9c309eaaf5fa156b25856dc44d",
-                    "hk417": "f47002ee882b4e8cf633f8c1efa7b31b",
+                    "hk417": "a2161c0b1e42eb7e0829b83c3f893f7d",
                     "henry": "63b90c7bf708f833ca2f8c568747eb7e",
                     "fal 50": "4bf96b79cc64f22f9d4fbf5d468edf50",
                     "hcar": "e58c65364f82bf293c488974cda82e10"
@@ -425,6 +429,7 @@
                     "c8a2": "d40d970b7a96c87b6ab22af3d6f534dc",
                     "x95r": "a683ffc0e7d919528e2b6fcf00c434a2",
                     "hk51b": "532f5ef0ab07c83d11cd4ea9ff35158d",
+		    "mini fix": "912ed582b457c48da006ac0c32b93d96",
                     "can cannon": "b0fbcd4fdb34beba9419a35d6c46526c",
                     "juan carbine": "d61a60de1b50225945b8956be18b42ad"
                 },
@@ -460,6 +465,7 @@
                     "mp7 loudener": "ae710bc9d1f9c81525bc2edbbfafbaef",
                     "mac10": "11752d91006aabc1b9b089c632e9a008",
                     "p90": "9e24b7dd4c73ef71d0863afb9a8402e7",
+		    "mp-9": "5de814688c5a19dd21ec8735efd19f3b",
                     "colt mars": "6be5f40d32a4f21c2ecb6f93d6fb0b18",
                     "mp5": "1d2e09bacbbbacd0de8db314cfa32c42",
                     "colt smg": "cc392c38be2e4ca625d11238085e4245",
@@ -508,7 +514,7 @@
                 },
                 "lmgs": {
                     "colt lmg": "88fcf537ca11e98ea9f6ebdb5929bfd7",
-                    "m60": "9877e2301abfd337e428ba10f4a04e5e",
+                    "m60e6": "b6752c85817fabf9c204b93e7f050451",
                     "aug hbar": "feb10a78b7cfb4cb20562b595237de35",
                     "mg36": "b9e21999a84f260a2c3f11d36ecec8e4",
                     "rpk12": "ab5dbe6d83ae419019b3386544151cfc",
@@ -538,6 +544,7 @@
                     "trg-42": "c1f443550e43ca38475a426f6b97b3bc",
                     "mosin": "9ad455eba2a68a2e3c736b2d552915a8",
                     "svds": "8cbdf3645a28e8d2607835e2ad465578",
+           	    "the fix": "113ba8f4fb7fee30381a4de3a05537fd",
                     "m1903": "b3da49a6f3d29e80097487c96a286bf5",
                     "m1903 maxim": "b8e6e87edd79d462be595ee6b90afa57",
                     "k14": "7a88319bb1b848a1688bb8ef56e70e11",
@@ -577,7 +584,7 @@
                     "alien": "d4d2e45c28417d7010c29ca64dd52c67",
                     "af2011": "c9883d97c569e2f206c441e9778798af",
                     "boxy buster": "b1e963157d570c9e03e75355cd2bb46f",
-                    "golden gun": "3d6fefa3e6841cd379dd3e533fecb895",
+                    "golden gun": "d0d705da1cd26365e857fd0d9de53506",
                     "la rata": "c0c6b4dea684eef70dda83e9c5683061",
                     "juan": "d61a60de1b50225945b8956be18b42ad",
                     "m7644": "c9883d97c569e2f206c441e9778798af",
@@ -621,7 +628,8 @@
                     "saiga-953u": "290c653063df530dd0a110cce09b5764",
                     "saiga-50u": "dff6f095809c7634cd5c2a4b9982a671",
                     "obrez": "9ad455eba2a68a2e3c736b2d552915a8",
-                    "sass 308": "cbe914973bc37bc746daa8f897ebe36c"
+                    "sass 308": "cbe914973bc37bc746daa8f897ebe36c",
+            	    "thunder": "2f14eabec694cbd2fef5139d3085e6b3"
                 }
             },
             "old": {
