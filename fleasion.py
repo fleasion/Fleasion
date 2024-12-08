@@ -1,5 +1,5 @@
-# v1.9.12
-# Fleasion, open sourced cache modifier made by @cro.p, intended for Phantom Forces. plz dont abuse D:
+# CLI-1
+# Fleasion-CLI, open sourced cache modifier, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/hXyhKehEZF
 
 import os
@@ -7,9 +7,10 @@ import sys
 import shutil
 import time
 import json
-import webbrowser
 import requests
 import platform
+import gdown
+import tarfile
 
 README_URL = 'https://raw.githubusercontent.com/CroppingFlea479/Fleasion/main/README.md'
 FLEASION_URL = 'https://raw.githubusercontent.com/CroppingFlea479/Fleasion/main/fleasion.py'
@@ -47,6 +48,17 @@ def update_file(file_name, lines):
 
 
 def get_version():
+
+    stored_cache = 'cached_files'
+    if not os.path.exists(stored_cache):
+        url = 'https://drive.google.com/uc?id=127s3WozMOssKWrnWXCQMPBy83LZ-RTrR'
+        gdown.download(url, 'downloaded_file.tar', quiet=False)
+
+        with tarfile.open('downloaded_file.tar', 'r') as tar:
+            tar.extractall()
+        
+        os.remove('downloaded_file.tar')
+        
     global presets_file
     readme_first_line, readme_lines = fetch_lines(README_URL)
     fleasion_first_line, fleasion_lines = fetch_lines(FLEASION_URL)
@@ -118,7 +130,6 @@ def get_version():
 
     time.sleep(1)
     os.system(clear_command)
-
 
 def dlist(area, specific_area=None):
     if specific_area:
@@ -209,72 +220,34 @@ def delete_stuff(files_to_delete):
 
 def preset_check():
     print("\nAvailable presets:")
-    for idx, key in enumerate(presets.keys(), start=1):
+    for idx, key in enumerate([k for k in presets.keys() if k != "DONTNAMETHIS"], start=1):
         print(f"{idx}: {GREEN}{key}{DEFAULT}")
 
     choice = input(": ")
 
     if choice.isdigit():
         choice = int(choice)
-        if 1 <= choice <= len(presets):
-            return list(presets.keys())[choice - 1]
+        valid_keys = [k for k in presets.keys() if k != "DONTNAMETHIS"]
+        if 1 <= choice <= len(valid_keys):
+            return valid_keys[choice - 1]
         else:
             print("Invalid number.")
             return None
     else:
         return choice
 
-
 get_version()
 
+cdir = os.path.dirname(os.path.abspath(__file__))
 if os_name == "Windows":
     folder_path = os.path.join(os.getenv('TEMP'), 'roblox', 'http')
+    temp_path = os.path.join(cdir, 'cached_files')
 elif os_name == "Linux":
     folder_path = os.path.expanduser("~/.var/app/org.vinegarhq.Sober/cache/sober/http")
+    temp_path = os.path.join(cdir, 'cached_files')
 else:
     print(f"Unsupported OS - {os}")
     exit()
-
-mod_cache = False
-pf_cache = False
-
-mod_cache_check_path = os.path.join(folder_path,
-                                    '3dbc81ab51ae36ab1de45855c9bb2b15')  # 29ec14d6f908cabca7fae131487d96d8, 016a313606e2f99a85bb1a91083206fc
-pf_cache_check_path = os.path.join(folder_path,
-                                   '7b8ca4a4ec7addd0f55179a86e49a5a1' if os_name == 'Linux' else '8312aa61609257e46c873694f81caffc') # 8a7090ac9b2e858f4aee9e19a0bfd562
-
-if os.path.exists(mod_cache_check_path):
-    mod_cache = True
-if os.path.exists(pf_cache_check_path):
-    pf_cache = os_name == 'Linux'
-
-if not mod_cache or not pf_cache:
-    print(
-        f"{RED}Missing Cache.{DEFAULT}")
-    cache_skip = input(f'{BLUE}Type "skip" to bypass the check or press {GREEN}enter{BLUE} to continue.{RED}\nYou will still need to join the relevant experiences to cache assets if you wish to replace them.{DEFAULT}\n: ')
-    if cache_skip.lower() == 'skip':
-        mod_cache, pf_cache = True, True
-        os.system(clear_command)
-    else:
-        print(f'{BLUE}Join prompted experiences.{DEFAULT}')
-        print(f'Missing:{f'\n- {GREEN}PF{DEFAULT} Cache' if not pf_cache else ''}{f'\n- {GREEN}Modding{DEFAULT} Cache' if not mod_cache else ''}\n')
-if not mod_cache:
-    webbrowser.open_new_tab("https://www.roblox.com/games/18504289170/texture-game")
-if not pf_cache:
-    webbrowser.open_new_tab("https://www.roblox.com/games/292439477/Phantom-Forces")
-
-while not mod_cache or not pf_cache:
-    if os.path.exists(mod_cache_check_path) and not mod_cache:
-        print(f"{GREEN}Modding{DEFAULT} cache detected")
-        mod_cache = True
-
-    if os.path.exists(pf_cache_check_path) and not pf_cache:
-        print(f"{GREEN}PF{DEFAULT} cache detected")
-        pf_cache = True
-
-    if mod_cache and pf_cache:
-        time.sleep(1)
-        os.system(clear_command)
 
 with open('assets.json', 'r') as file:
     data = json.load(file)
@@ -284,20 +257,20 @@ with open('presets.json', 'r') as file:
 
 
 def replace(files_to_delete, file_to_replace):
+    print(files_to_delete)
+    print(file_to_replace)
     try:
-        copy_file_path = os.path.join(folder_path, file_to_replace)
+        copy_file_path = os.path.join(temp_path, file_to_replace)
         if os.path.exists(copy_file_path):
             for file_to_delete in files_to_delete:
                 delete_file_path = os.path.join(folder_path, file_to_delete)
                 if os.path.exists(delete_file_path):
                     os.remove(delete_file_path)
-                    # print(f'{file_to_delete} has been deleted.')
                 else:
                     print(f'{RED}{file_to_delete} not found.{DEFAULT}')
 
                 new_file_path = os.path.join(folder_path, file_to_delete)
                 shutil.copy(copy_file_path, new_file_path)
-                # print(f'{copy_file_path} has been copied to {new_file_path}.')
                 print(f'{BLUE}{file_to_delete} has been replaced with {file_to_replace}.{DEFAULT}')
         else:
             print(f'{RED}{file_to_replace} not found.{DEFAULT}')
@@ -659,7 +632,7 @@ def get_hashes():
     return output
 
 
-print(f"Welcome to: {GREEN}Fleasion!{DEFAULT}\n\nFleasion 1 is going to be deprecated soon to make way for a newer and more advanced version that comes with way less bugs and errors!\nWith the spezi server recently being shutdown we encourage you to join the new discord server to see live progress/catch new news and updates, dont worry we arent going anywhere!\n: {GREEN}discord.gg/hXyhKehEZF{DEFAULT}\n")
+print(f"Welcome to: {GREEN}Fleasion-CLI!{DEFAULT}\n\nThis legacy version is going to be deprecated soon\nTo stay up to date and see live progress join\n: {GREEN}discord.gg/hXyhKehEZF{DEFAULT}\n")
 start = True
 while True:
     if not start:
@@ -871,9 +844,12 @@ while True:
                         break
 
                 cache_color = RED if cacheclear == "False" else BLUE
+                with open('presets.json', 'r') as file:
+                    data = json.load(file)
+                presetpick = data.get('DONTNAMETHIS', None)
 
                 print(
-                    f"\nSettings:\n1: {GREEN}Auto Cache Clear : {cache_color}{cacheclear}{DEFAULT}\n"
+                    f"\nSettings:\n1: {GREEN}Auto Cache Clear : {cache_color}{cacheclear}{DEFAULT}\n2: {GREEN}Apply preset on lauch: {DEFAULT}{presetpick}\n"
                 )
 
                 settings = input(": ")
