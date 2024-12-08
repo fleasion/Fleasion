@@ -1,5 +1,5 @@
 @echo off
-: v1.3.12
+: v1.3.13
 
 : fleasion by @cro.p
 : distributed in https://discord.gg/hXyhKehEZF
@@ -71,7 +71,8 @@ del get-pip.py
 
 :packages
 echo Installing/checking for pip packages...
-if not exist "%~dp0requirements.txt" curl -sSL -k -o "%~dp0requirements.txt" https://raw.githubusercontent.com/fleasion/Fleasion/refs/heads/main/requirements.txt
+del "%~dp0requirements.txt"
+curl -sSL -k -o "%~dp0requirements.txt" https://raw.githubusercontent.com/fleasion/Fleasion/refs/heads/main/requirements.txt
 python -m pip install --disable-pip-version-check -r "%~dp0requirements.txt" >nul 2>&1
 goto fleasion
 
