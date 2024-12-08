@@ -86,7 +86,7 @@ curl -sSL -k -o "%~dp0fleasion.py" https://raw.githubusercontent.com/fleasion/Fl
 %drive%
 cd %dir%
 python fleasion.py
-: if %errorlevel% NEQ 0 goto error
+if %errorlevel% NEQ 0 goto error
 set finished=True
 exit /b
 
