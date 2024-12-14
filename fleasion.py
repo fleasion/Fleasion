@@ -1,4 +1,4 @@
-# CLI-1
+# CLI-1.01
 # Fleasion-CLI, open sourced cache modifier, intended for Phantom Forces. plz dont abuse D:
 # discord.gg/hXyhKehEZF
 
@@ -264,8 +264,6 @@ with open('presets.json', 'r') as file:
 
 
 def replace(files_to_delete, file_to_replace):
-    print(files_to_delete)
-    print(file_to_replace)
     try:
         copy_file_path = os.path.join(temp_path, file_to_replace)
         if os.path.exists(copy_file_path):
