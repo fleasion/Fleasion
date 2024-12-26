@@ -52,7 +52,7 @@ cls
 echo Downloading python...
 curl -SL -k -o python-installer.exe https://www.python.org/ftp/python/3.13.1/python-3.13.1-amd64.exe --ssl-no-revoke
 echo Installing..
-python-installer.exe /quiet InstallAllUsers=1 PrependPath=1 Include_test=0 Include_doc=0
+python-installer.exe /quiet InstallAllUsers=1 PrependPath=1 Include_test=0 Include_doc=0 LongPathsEnabled=1
 del python-installer.exe
 
 : Fleasion cannot operate without a few pip packages.
