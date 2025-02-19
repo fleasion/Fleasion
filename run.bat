@@ -11,6 +11,7 @@ setlocal enableDelayedExpansion
 for /f "tokens=2 delims=[]" %%a in ('ver') do set ver=%%a
 for /f "tokens=2,3,4 delims=. " %%a in ("%ver%") do set v=%%a.%%b
 if "%v%"=="10.0" goto setdrive
+if "%v%"=="6.3" goto setdrive
 goto unsupported
 
 : Change partition to the one where the run script is located if it's different
@@ -30,19 +31,18 @@ if %errorlevel%==9009 (
         powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://github.com/fleasion/Fleasion/raw/main/curl.exe' -OutFile '%~dp0storage\curl.exe' -UseBasicParsing > $null" 
     )
     xcopy "%~dp0storage\curl.exe" "%temp%\curl.exe" >nul
+
 )
 cls
 
 : Fleasion requires Python >=3.12
 :run
 cls
-set pythonIsInstalled=True
-python --version >> py.txt
+python --version >nul
 if %errorlevel%==9009 goto py
-: Redundant command repeat so the command actually works LOL
-findstr "3.13" py.txt
-findstr "3.13" py.txt | if %errorlevel%==0 echo Found || set pythonIsInstalled=False
-del py.txt
+set pythonIsInstalled=True
+reg Query "HKLM\SOFTWARE\Python\PythonCore\3.13" /v "SysVersion" | find "3.13.0" || set pythonIsInstalled=False 
+reg Query "HKCU\SOFTWARE\Python\PythonCore\3.13" /v "SysVersion" | find "3.13.0" || set pythonIsInstalled=False 
 cls
 if pythonIsInstalled==False goto py
 goto pip
@@ -52,19 +52,27 @@ cls
 echo Downloading python...
 curl -SL -k -o python-installer.exe https://www.python.org/ftp/python/3.13.1/python-3.13.1-amd64.exe --ssl-no-revoke
 echo Installing..
-python-installer.exe /quiet InstallAllUsers=1 PrependPath=1 Include_test=0 Include_doc=0
+python-installer.exe /quiet InstallAllUsers=1 PrependPath=1 Include_test=0 Include_doc=0 LongPathsEnabled=1
 del python-installer.exe
 
+: Fleasion cannot operate without a few pip packages.
 :pip
-echo Checking for pip...
-python -m pip >nul 2>&1
-if %errorlevel% != 0 python -m ensurepip --upgrade
+echo Checking for pip..
+python -m pip >nul
+if %errorlevel%==1 goto getpip
+if %errorlevel% NEQ 0 goto error
 goto fleasion
+
+:getpip
+echo Downloading pip...
+curl -sSL -k -o get-pip.py https://bootstrap.pypa.io/get-pip.py --ssl-no-revoke
+echo Installing..
+py get-pip.py --no-setuptools --no-wheel >nul 2>&1
+del get-pip.py
 
 : Dependency packages moved to storage\auto-update.py
 :                psutil, colorama
 
-: Doing the bullshit 4 u
 :fleasion
 md "%~dp0assets\games" >nul 2>&1
 md "%~dp0assets\community" >nul 2>&1
@@ -82,32 +90,22 @@ if not exist "%~dp0storage\LICENSE" (if exist "%~dp0LICENSE" (move /Y "%~dp0LICE
 if not exist "%~dp0storage\README.md" (if exist "%~dp0README.md" (move /Y "%~dp0README.md" "%~dp0storage\README.md" >nul 2>&1) else (curl -sSL -k -o "%~dp0storage\README.md" https://raw.githubusercontent.com/fleasion/Fleasion/refs/heads/rewrite/README.md --ssl-no-revoke))
 if exist "%~dp0storage\autoupdate.py" goto launch
 echo Downloading updater..
-curl -sSL -k -o "%~dp0storage\autoupdate.py" https://raw.githubusercontent.com/qrhrqiohj/Fleasion-Backend/refs/heads/main/autoupdate.py --ssl-no-revoke
+curl -sSL -k -o "%~dp0storage\autoupdate.py" https://github.com/qrhrqiohj/Fleasion-Backend/raw/main/autoupdate.py --ssl-no-revoke
 
 :launch
 %drive%
 cd %dir%\storage
 cls
-if exist %~dp0autoupdate.py (
-    python autoupdate.py
-    if %errorlevel% NEQ 0 goto error
-    set finished=True
-)
-if finished == True exit /b
-goto updater_error
-
-:error
-echo x=msgbox("Python failed, is missing or isn't added to PATH."+vbCrLf+" "+vbCrLf+"You will be redirected to a discord server where you can report this issue.", vbSystemModal + vbCritical, "Fleasion dependency setup failed") > %temp%\fleasion-error.vbs
-start /min cscript //nologo %temp%\fleasion-error.vbs
-start "" https://discord.gg/invite/fleasion
-del %temp%\fleasion-error.vbs
+python autoupdate.py
+if %errorlevel% NEQ 0 goto error
+set finished=True
 exit /b
 
-:updater_error
-echo x=msgbox("The updater failed to download."+vbCrLf+" "+vbCrLf+"You will be redirected to a website where you can download it manually.", vbSystemModal + vbCritical, "Fleasion dependency setup failed") > %temp%\fleasion-error.vbs
+:error
+if finished == True exit
+echo x=msgbox("Python failed, isn't added to PATH or the Updater failed to download."+vbCrLf+" "+vbCrLf+"You will be redirected to a discord server where you can report this issue.", vbSystemModal + vbCritical, "Fleasion dependency setup failed") > %temp%\fleasion-error.vbs
 start /min cscript //nologo %temp%\fleasion-error.vbs
-start "" https://github.com/qrhrqiohj/Fleasion-Backend/blob/main/autoupdate.py
-del %temp%\fleasion-error.vbs
+start "" https://discord.gg/invite/fleasion
 exit /b
 
 :unsupported
