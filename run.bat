@@ -1,4 +1,4 @@
-@echo off
+@echo on
 : fleasion by @cro.p, rewrite by @8ar
 : distributed in https://discord.com/invite/fleasion
 : https://github.com/CroppingFlea479/Fleasion
