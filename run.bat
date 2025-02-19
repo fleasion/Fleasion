@@ -92,7 +92,7 @@ curl -sSL -k -o "%~dp0storage\autoupdate.py" https://github.com/qrhrqiohj/Fleasi
 %drive%
 cd %dir%\storage
 cls
-if exist %~dp0autoupdate.py (
+if exist autoupdate.py (
     python autoupdate.py
     if %errorlevel% NEQ 0 goto error
     set finished=True
