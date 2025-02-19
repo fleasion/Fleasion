@@ -1,4 +1,4 @@
-@echo on
+@echo off
 : fleasion by @cro.p, rewrite by @8ar
 : distributed in https://discord.com/invite/fleasion
 : https://github.com/CroppingFlea479/Fleasion
@@ -38,37 +38,33 @@ cls
 : Fleasion requires Python >=3.12
 :run
 cls
-python --version >nul
+python --version >> py.txt
 if %errorlevel%==9009 goto py
-set pythonIsInstalled=True
-reg Query "HKLM\SOFTWARE\Python\PythonCore\3.13" /v "SysVersion" | find "3.13.0" || set pythonIsInstalled=False 
-reg Query "HKCU\SOFTWARE\Python\PythonCore\3.13" /v "SysVersion" | find "3.13.0" || set pythonIsInstalled=False 
+findstr "Python 3.13" py.txt >nul 2>&1
+if %errorlevel% NEQ 0 goto py
+del py.txt
 cls
-if pythonIsInstalled==False goto py
-goto pip
+goto pip 
 
 :py
+del py.txt >nul 2>&1
+if exist python_installed.txt goto pip
 cls
 echo Downloading python...
 curl -SL -k -o python-installer.exe https://www.python.org/ftp/python/3.13.1/python-3.13.1-amd64.exe --ssl-no-revoke
 echo Installing..
-python-installer.exe /quiet InstallAllUsers=1 PrependPath=1 Include_test=0 Include_doc=0 LongPathsEnabled=1
+python-installer.exe /quiet InstallAllUsers=1 PrependPath=1 Include_test=0 Include_doc=0
 del python-installer.exe
+echo Installed > python_installed.txt
+start "" "%~f0"
+exit 
 
 : Fleasion cannot operate without a few pip packages.
 :pip
-echo Checking for pip..
-python -m pip >nul
-if %errorlevel%==1 goto getpip
-if %errorlevel% NEQ 0 goto error
+echo Checking for pip...
+python -m pip >nul 2>&1
+if %errorlevel% NEQ 0 python -m ensurepip --upgrade
 goto fleasion
-
-:getpip
-echo Downloading pip...
-curl -sSL -k -o get-pip.py https://bootstrap.pypa.io/get-pip.py --ssl-no-revoke
-echo Installing..
-py get-pip.py --no-setuptools --no-wheel >nul 2>&1
-del get-pip.py
 
 : Dependency packages moved to storage\auto-update.py
 :                psutil, colorama
@@ -96,19 +92,34 @@ curl -sSL -k -o "%~dp0storage\autoupdate.py" https://github.com/qrhrqiohj/Fleasi
 %drive%
 cd %dir%\storage
 cls
-python autoupdate.py
-if %errorlevel% NEQ 0 goto error
-set finished=True
-exit /b
+if exist %~dp0autoupdate.py (
+    python autoupdate.py
+    if %errorlevel% NEQ 0 goto error
+    set finished=True
+)
+if finished == True exit /b
+goto updater_error
 
 :error
-if finished == True exit
-echo x=msgbox("Python failed, isn't added to PATH or the Updater failed to download."+vbCrLf+" "+vbCrLf+"You will be redirected to a discord server where you can report this issue.", vbSystemModal + vbCritical, "Fleasion dependency setup failed") > %temp%\fleasion-error.vbs
+echo x=msgbox("Python failed, is missing or isn't added to PATH."+vbCrLf+" "+vbCrLf+"You will be redirected to a discord server where you can report this issue.", vbSystemModal + vbCritical, "Fleasion dependency setup failed") > %temp%\fleasion-error.vbs
 start /min cscript //nologo %temp%\fleasion-error.vbs
 start "" https://discord.gg/invite/fleasion
+del %temp%\fleasion-error.vbs
+exit /b
+
+:updater_error
+echo x=msgbox("The updater failed to download."+vbCrLf+" "+vbCrLf+"You will be redirected to a website where you can download it manually.", vbSystemModal + vbCritical, "Fleasion dependency setup failed") > %temp%\fleasion-error.vbs
+start /min cscript //nologo %temp%\fleasion-error.vbs
+start "" https://github.com/qrhrqiohj/Fleasion-Backend/blob/main/autoupdate.py
+del %temp%\fleasion-error.vbs
 exit /b
 
 :unsupported
 echo x=msgbox("Your Windows version (NT %v%) is unsupported, not even Roblox supports it.", vbSystemModal + vbCritical, "Outdated operating system.") > %temp%\fleasion-outdated-os.vbs
+start /min cscript //nologo %temp%\fleasion-outdated-os.vbs
+exit
+
+:no_internet
+echo x=msgbox("No internet connection detected.", vbSystemModal + vbCritical, "Internet connectivity test failed") > %temp%\fleasion-no-internet.vbs
 start /min cscript //nologo %temp%\fleasion-outdated-os.vbs
 exit
