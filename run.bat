@@ -106,7 +106,7 @@ del %temp%\fleasion-error.vbs
 exit /b
 
 :updater_error
-echo x=msgbox("The updater failed to download."+vbCrLf+" "+vbCrLf+"You will be redirected to a website where you can download it manually.", vbSystemModal + vbCritical, "Fleasion dependency setup failed") > %temp%\fleasion-error.vbs
+echo x=msgbox("The updater failed to download."+vbCrLf+" "+vbCrLf+"You will be redirected to a website where you can download it manually. Place it into the 'storage' folder in the same folder where the 'run.bat' file you're running is located.", vbSystemModal + vbCritical, "Fleasion dependency setup failed") > %temp%\fleasion-error.vbs
 start /min cscript //nologo %temp%\fleasion-error.vbs
 start "" https://github.com/qrhrqiohj/Fleasion-Backend/blob/main/autoupdate.py
 del %temp%\fleasion-error.vbs
