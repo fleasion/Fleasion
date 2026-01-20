@@ -20,6 +20,7 @@ The cache system has been successfully integrated into Fleasion with the followi
 
 3. **Cache Viewer Tab** (`src/Fleasion/cache/cache_viewer.py`)
    - Integrated as a tab in the Replacer Config window
+   - Split view: Table on left, Preview on right
    - Table view of all cached assets
    - Filter by asset type
    - Search by asset ID
@@ -27,6 +28,20 @@ The cache system has been successfully integrated into Fleasion with the followi
    - Delete individual assets or clear entire cache
    - Real-time statistics
    - Auto-refresh every 2 seconds
+
+4. **3D Mesh Viewer** (`src/Fleasion/cache/obj_viewer.py`)
+   - OpenGL-based 3D viewer for mesh assets
+   - Mouse controls: drag to rotate, scroll to zoom
+   - Auto-rotate mode
+   - Wireframe overlay
+   - Displays vertex/face counts
+   - Works with all Roblox mesh versions (v1-v7)
+
+5. **Mesh Processing** (`src/Fleasion/cache/mesh_processing.py`)
+   - Complete Roblox mesh converter (versions 1.x through 7.00)
+   - Handles Draco-compressed v6/v7 meshes
+   - Converts to OBJ format for viewing
+   - LOD (Level of Detail) support
 
 ### Storage Structure
 ```
@@ -51,9 +66,9 @@ uv sync
 ```
 
 This will install all required dependencies including:
-- pyvista, pyvistaqt, vtk (3D rendering - for future enhancements)
-- pygame (audio playback - for future enhancements)
-- mutagen (audio metadata - for future enhancements)
+- PyOpenGL (3D rendering with OpenGL)
+- pygame (audio playback - for future audio player)
+- mutagen (audio metadata - for future audio player)
 - DracoPy (v6/v7 mesh decoding)
 - Pillow (image processing)
 - numpy, pywin32, requests
@@ -69,7 +84,17 @@ uv run Fleasion
 3. Click on the "Cache" tab
 4. Assets will appear automatically as they're intercepted
 
-### 4. Export Assets
+### 4. Preview Assets
+- Click on any asset in the table to preview it
+- **Meshes (Type 4)**: View in real-time 3D with rotation and zoom
+  - Left-click and drag to rotate
+  - Scroll wheel to zoom
+  - "Reset View" button to reset camera
+  - "Auto Rotate" for animated rotation
+- **Images (Type 1, 13)**: View with automatic scaling
+- **Other types**: Hex dump preview
+
+### 5. Export Assets
 - Select an asset and click "Export Selected" to choose a custom location
 - Click "Export All" to export all filtered assets to the Exports folder
 - Use "Open Export Folder" to view exported files

@@ -4,13 +4,15 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTableWidget,
     QTableWidgetItem, QLabel, QComboBox, QLineEdit, QMessageBox,
-    QHeaderView, QFileDialog, QGroupBox
+    QHeaderView, QFileDialog, QGroupBox, QSplitter, QTextEdit
 )
 from PyQt6.QtGui import QPixmap, QImage
 from PIL import Image
 import io
 
 from .cache_manager import CacheManager
+from .obj_viewer import ObjViewerPanel
+from . import mesh_processing
 from ..utils import log_buffer, open_folder
 
 
@@ -36,8 +38,25 @@ class CacheViewerTab(QWidget):
         # Filters
         self._create_filters(layout)
 
-        # Asset table
-        self._create_table(layout)
+        # Splitter for table and preview
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        # Left side: Asset table
+        table_widget = QWidget()
+        table_layout = QVBoxLayout()
+        table_layout.setContentsMargins(0, 0, 0, 0)
+        self._create_table(table_layout)
+        table_widget.setLayout(table_layout)
+        splitter.addWidget(table_widget)
+
+        # Right side: Preview panel
+        self.preview_panel = self._create_preview_panel()
+        splitter.addWidget(self.preview_panel)
+
+        # Set splitter sizes (table gets more space initially)
+        splitter.setSizes([600, 300])
+
+        layout.addWidget(splitter, stretch=1)
 
         # Actions
         self._create_actions(layout)
@@ -106,8 +125,45 @@ class CacheViewerTab(QWidget):
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
+        self.table.currentItemChanged.connect(self._on_selection_changed)
 
         parent_layout.addWidget(self.table)
+
+    def _create_preview_panel(self):
+        """Create preview panel for viewing assets."""
+        preview_widget = QWidget()
+        preview_layout = QVBoxLayout()
+        preview_layout.setContentsMargins(0, 0, 0, 0)
+
+        preview_group = QGroupBox('Preview')
+        preview_group_layout = QVBoxLayout()
+
+        # 3D Viewer for meshes
+        self.obj_viewer = ObjViewerPanel()
+        preview_group_layout.addWidget(self.obj_viewer)
+
+        # Image viewer (will show/hide as needed)
+        self.image_label = QLabel('Select an asset to preview')
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_label.setStyleSheet('QLabel { background-color: #2b2b2b; color: #888; }')
+        self.image_label.setMinimumHeight(200)
+        preview_group_layout.addWidget(self.image_label)
+
+        # Text viewer for other types
+        self.text_viewer = QTextEdit()
+        self.text_viewer.setReadOnly(True)
+        self.text_viewer.setPlaceholderText('Select an asset to preview')
+        preview_group_layout.addWidget(self.text_viewer)
+
+        # Initially hide all preview widgets
+        self.obj_viewer.hide()
+        self.text_viewer.hide()
+
+        preview_group.setLayout(preview_group_layout)
+        preview_layout.addWidget(preview_group)
+
+        preview_widget.setLayout(preview_layout)
+        return preview_widget
 
     def _create_actions(self, parent_layout):
         """Create action buttons."""
@@ -327,3 +383,114 @@ class CacheViewerTab(QWidget):
             log_buffer.log('Cache', f'Cleared cache: {deleted} assets deleted')
             self._refresh_assets()
             QMessageBox.information(self, 'Success', f'Deleted {deleted} asset(s)')
+
+    def _on_selection_changed(self):
+        """Handle table selection change to preview asset."""
+        asset = self._get_selected_asset()
+        if not asset:
+            self._clear_preview()
+            return
+
+        # Hide all preview widgets first
+        self.obj_viewer.hide()
+        self.image_label.hide()
+        self.text_viewer.hide()
+
+        asset_type = asset['type']
+        asset_id = asset['id']
+
+        try:
+            # Get asset data
+            data = self.cache_manager.get_asset(asset_id, asset_type)
+            if not data:
+                self._show_text_preview(f'Failed to load asset {asset_id}')
+                return
+
+            # Preview based on type
+            if asset_type == 4:  # Mesh
+                self._preview_mesh(data, asset_id)
+            elif asset_type in [1, 13]:  # Image, Decal
+                self._preview_image(data)
+            else:
+                # Show as hex dump for other types
+                self._preview_hex(data, asset)
+
+        except Exception as e:
+            self._show_text_preview(f'Error previewing asset: {e}')
+
+    def _clear_preview(self):
+        """Clear all preview widgets."""
+        self.obj_viewer.hide()
+        self.obj_viewer.clear()
+        self.image_label.hide()
+        self.image_label.setText('Select an asset to preview')
+        self.text_viewer.hide()
+        self.text_viewer.clear()
+
+    def _preview_mesh(self, data: bytes, asset_id: str):
+        """Preview a mesh asset in 3D."""
+        try:
+            # Convert mesh to OBJ
+            obj_content = mesh_processing.convert(data)
+            if obj_content:
+                self.obj_viewer.load_obj(obj_content, asset_id)
+                self.obj_viewer.show()
+            else:
+                self._show_text_preview('Failed to convert mesh to OBJ format')
+        except Exception as e:
+            self._show_text_preview(f'Mesh conversion error: {e}')
+
+    def _preview_image(self, data: bytes):
+        """Preview an image asset."""
+        try:
+            image = Image.open(io.BytesIO(data))
+            # Convert to QPixmap
+            image = image.convert('RGBA')
+            qimage = QImage(
+                image.tobytes(),
+                image.width,
+                image.height,
+                QImage.Format.Format_RGBA8888
+            )
+            pixmap = QPixmap.fromImage(qimage)
+
+            # Scale to fit label while maintaining aspect ratio
+            scaled = pixmap.scaled(
+                800, 600,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            )
+
+            self.image_label.setPixmap(scaled)
+            self.image_label.show()
+        except Exception as e:
+            self._show_text_preview(f'Image preview error: {e}')
+
+    def _preview_hex(self, data: bytes, asset: dict):
+        """Show hex dump preview."""
+        # Show first 1KB as hex dump
+        preview_size = min(1024, len(data))
+        hex_lines = []
+
+        hex_lines.append(f"Asset ID: {asset['id']}")
+        hex_lines.append(f"Type: {asset['type_name']}")
+        hex_lines.append(f"Size: {self._format_size(len(data))}")
+        hex_lines.append(f"\nFirst {preview_size} bytes (hex dump):\n")
+
+        for i in range(0, preview_size, 16):
+            hex_part = ' '.join(f'{b:02x}' for b in data[i:i+16])
+            ascii_part = ''.join(
+                chr(b) if 32 <= b < 127 else '.'
+                for b in data[i:i+16]
+            )
+            hex_lines.append(f'{i:08x}  {hex_part:<48}  {ascii_part}')
+
+        if len(data) > preview_size:
+            hex_lines.append(f'\n... ({len(data) - preview_size} more bytes)')
+
+        self._show_text_preview('\n'.join(hex_lines))
+
+    def _show_text_preview(self, text: str):
+        """Show text in the text viewer."""
+        self.text_viewer.setPlainText(text)
+        self.text_viewer.show()
