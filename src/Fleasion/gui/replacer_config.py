@@ -21,10 +21,12 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QRadioButton,
+    QTabWidget,
     QTextEdit,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
+    QWidget,
 )
 
 from ..utils import CONFIGS_FOLDER, PREJSONS_DIR, get_icon_path, log_buffer, open_folder
@@ -59,18 +61,19 @@ class UndoManager:
 
 
 class ReplacerConfigWindow(QDialog):
-    """Replacer configuration window."""
+    """Replacer configuration window with tabs."""
 
-    def __init__(self, config_manager):
+    def __init__(self, config_manager, proxy_master=None):
         super().__init__()
         self.config_manager = config_manager
+        self.proxy_master = proxy_master
         self.undo_manager = UndoManager()
         self.undo_manager.save_state(self.config_manager.replacement_rules)
         self.config_enabled_vars = {}
 
-        self.setWindowTitle(f'{self.config_manager.settings.get("app_name", "FleasionNT")} - Replacer Config')
-        self.resize(800, 700)
-        self.setMinimumSize(700, 600)
+        self.setWindowTitle(f'{self.config_manager.settings.get("app_name", "FleasionNT")} - Config')
+        self.resize(900, 750)
+        self.setMinimumSize(800, 650)
 
         self._setup_ui()
         self._set_icon()
@@ -84,21 +87,23 @@ class ReplacerConfigWindow(QDialog):
             self.setWindowIcon(QIcon(str(icon_path)))
 
     def _setup_ui(self):
-        """Setup the UI."""
+        """Setup the UI with tabs."""
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(10, 10, 10, 10)
 
-        # Config selector section
-        self._create_config_section(main_layout)
+        # Create tab widget
+        self.tab_widget = QTabWidget()
 
-        # Rules tree section
-        self._create_tree_section(main_layout)
+        # Create Replacer tab
+        replacer_tab = self._create_replacer_tab()
+        self.tab_widget.addTab(replacer_tab, 'Replacer')
 
-        # Edit section
-        self._create_edit_section(main_layout)
+        # Create Cache tab if proxy_master is available
+        if self.proxy_master and hasattr(self.proxy_master, 'cache_manager'):
+            cache_tab = self._create_cache_tab()
+            self.tab_widget.addTab(cache_tab, 'Cache')
 
-        # Footer
-        self._create_footer(main_layout)
+        main_layout.addWidget(self.tab_widget)
 
         self.setLayout(main_layout)
 
@@ -110,6 +115,33 @@ class ReplacerConfigWindow(QDialog):
 
         delete_shortcut = QShortcut(QKeySequence('Delete'), self)
         delete_shortcut.activated.connect(self._delete_selected)
+
+    def _create_replacer_tab(self):
+        """Create the replacer configuration tab."""
+        replacer_widget = QWidget()
+        replacer_layout = QVBoxLayout()
+        replacer_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Config selector section
+        self._create_config_section(replacer_layout)
+
+        # Rules tree section
+        self._create_tree_section(replacer_layout)
+
+        # Edit section
+        self._create_edit_section(replacer_layout)
+
+        # Footer
+        self._create_footer(replacer_layout)
+
+        replacer_widget.setLayout(replacer_layout)
+        return replacer_widget
+
+    def _create_cache_tab(self):
+        """Create the cache viewer tab."""
+        from ..cache import CacheViewerTab
+
+        return CacheViewerTab(self.proxy_master.cache_manager, self)
 
     def _create_config_section(self, parent_layout):
         """Create the configuration selector section."""

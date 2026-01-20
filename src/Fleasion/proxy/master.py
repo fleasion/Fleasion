@@ -17,6 +17,8 @@ from ..utils import (
     wait_for_roblox_exit,
 )
 from .addons import TextureStripper
+from .addons.cache_scraper import CacheScraper
+from ..cache.cache_manager import CacheManager
 
 
 def get_ca_content() -> str | None:
@@ -59,6 +61,7 @@ class ProxyMaster:
 
     def __init__(self, config_manager):
         self.config_manager = config_manager
+        self.cache_manager = CacheManager()
         self._master = None
         self._task = None
         self._running = False
@@ -96,6 +99,9 @@ class ProxyMaster:
             with_termlog=False,
             with_dumper=False,
         )
+        # IMPORTANT: Add cache scraper BEFORE texture stripper
+        # This ensures we cache original assets before any modifications
+        self._master.addons.add(CacheScraper(self.cache_manager))
         self._master.addons.add(TextureStripper(self.config_manager))
         proxy_task = asyncio.create_task(self._master.run())
 

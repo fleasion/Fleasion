@@ -1,0 +1,329 @@
+"""Cache viewer tab - simplified version for viewing cached assets."""
+
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTableWidget,
+    QTableWidgetItem, QLabel, QComboBox, QLineEdit, QMessageBox,
+    QHeaderView, QFileDialog, QGroupBox
+)
+from PyQt6.QtGui import QPixmap, QImage
+from PIL import Image
+import io
+
+from .cache_manager import CacheManager
+from ..utils import log_buffer, open_folder
+
+
+class CacheViewerTab(QWidget):
+    """Tab for viewing and managing cached Roblox assets."""
+
+    def __init__(self, cache_manager: CacheManager, parent=None):
+        super().__init__(parent)
+        self.cache_manager = cache_manager
+        self._setup_ui()
+        self._refresh_timer = QTimer()
+        self._refresh_timer.timeout.connect(self._refresh_assets)
+        self._refresh_timer.start(2000)  # Refresh every 2 seconds
+
+    def _setup_ui(self):
+        """Setup the UI."""
+        layout = QVBoxLayout()
+        layout.setContentsMargins(10, 10, 10, 10)
+
+        # Header with stats
+        self._create_header(layout)
+
+        # Filters
+        self._create_filters(layout)
+
+        # Asset table
+        self._create_table(layout)
+
+        # Actions
+        self._create_actions(layout)
+
+        self.setLayout(layout)
+        self._refresh_assets()
+
+    def _create_header(self, parent_layout):
+        """Create header with statistics."""
+        header_group = QGroupBox('Cache Statistics')
+        header_layout = QHBoxLayout()
+
+        self.stats_label = QLabel('Total: 0 assets | Size: 0 B')
+        header_layout.addWidget(self.stats_label)
+
+        header_layout.addStretch()
+
+        refresh_btn = QPushButton('Refresh')
+        refresh_btn.clicked.connect(self._refresh_assets)
+        header_layout.addWidget(refresh_btn)
+
+        header_group.setLayout(header_layout)
+        parent_layout.addWidget(header_group)
+
+    def _create_filters(self, parent_layout):
+        """Create filter controls."""
+        filter_group = QGroupBox('Filters')
+        filter_layout = QHBoxLayout()
+
+        filter_layout.addWidget(QLabel('Type:'))
+        self.type_filter = QComboBox()
+        self.type_filter.addItem('All Types', None)
+        for type_id, type_name in sorted(CacheManager.ASSET_TYPES.items(), key=lambda x: x[1]):
+            self.type_filter.addItem(type_name, type_id)
+        self.type_filter.currentIndexChanged.connect(self._refresh_assets)
+        filter_layout.addWidget(self.type_filter)
+
+        filter_layout.addWidget(QLabel('Search:'))
+        self.search_box = QLineEdit()
+        self.search_box.setPlaceholderText('Search by ID...')
+        self.search_box.textChanged.connect(self._refresh_assets)
+        filter_layout.addWidget(self.search_box)
+
+        filter_layout.addStretch()
+
+        filter_group.setLayout(filter_layout)
+        parent_layout.addWidget(filter_group)
+
+    def _create_table(self, parent_layout):
+        """Create asset table."""
+        self.table = QTableWidget()
+        self.table.setColumnCount(6)
+        self.table.setHorizontalHeaderLabels([
+            'Asset ID', 'Type', 'Size', 'Cached At', 'URL', 'Hash'
+        ])
+
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
+
+        parent_layout.addWidget(self.table)
+
+    def _create_actions(self, parent_layout):
+        """Create action buttons."""
+        actions_layout = QHBoxLayout()
+
+        export_btn = QPushButton('Export Selected')
+        export_btn.clicked.connect(self._export_selected)
+        actions_layout.addWidget(export_btn)
+
+        export_all_btn = QPushButton('Export All')
+        export_all_btn.clicked.connect(self._export_all)
+        actions_layout.addWidget(export_all_btn)
+
+        delete_btn = QPushButton('Delete Selected')
+        delete_btn.clicked.connect(self._delete_selected)
+        actions_layout.addWidget(delete_btn)
+
+        clear_btn = QPushButton('Clear Cache')
+        clear_btn.clicked.connect(self._clear_cache)
+        actions_layout.addWidget(clear_btn)
+
+        actions_layout.addStretch()
+
+        open_cache_btn = QPushButton('Open Cache Folder')
+        open_cache_btn.clicked.connect(lambda: open_folder(self.cache_manager.cache_dir))
+        actions_layout.addWidget(open_cache_btn)
+
+        open_export_btn = QPushButton('Open Export Folder')
+        open_export_btn.clicked.connect(lambda: open_folder(self.cache_manager.export_dir))
+        actions_layout.addWidget(open_export_btn)
+
+        parent_layout.addLayout(actions_layout)
+
+    def _refresh_assets(self):
+        """Refresh the asset list."""
+        # Get filter type
+        filter_type = self.type_filter.currentData()
+
+        # Get assets
+        assets = self.cache_manager.list_assets(filter_type)
+
+        # Apply search filter
+        search_text = self.search_box.text().strip().lower()
+        if search_text:
+            assets = [a for a in assets if search_text in a['id'].lower()]
+
+        # Update table
+        self.table.setRowCount(len(assets))
+
+        for row, asset in enumerate(assets):
+            # Asset ID
+            id_item = QTableWidgetItem(asset['id'])
+            id_item.setData(Qt.ItemDataRole.UserRole, asset)
+            self.table.setItem(row, 0, id_item)
+
+            # Type
+            type_item = QTableWidgetItem(asset['type_name'])
+            self.table.setItem(row, 1, type_item)
+
+            # Size
+            size = asset.get('size', 0)
+            size_str = self._format_size(size)
+            size_item = QTableWidgetItem(size_str)
+            self.table.setItem(row, 2, size_item)
+
+            # Cached At
+            cached_at = asset.get('cached_at', '')
+            if cached_at:
+                # Format datetime
+                cached_at = cached_at.split('T')[0] + ' ' + cached_at.split('T')[1].split('.')[0]
+            cached_item = QTableWidgetItem(cached_at)
+            self.table.setItem(row, 3, cached_item)
+
+            # URL
+            url = asset.get('url', '')
+            url_item = QTableWidgetItem(url)
+            self.table.setItem(row, 4, url_item)
+
+            # Hash
+            hash_val = asset.get('hash', '')
+            hash_item = QTableWidgetItem(hash_val)
+            self.table.setItem(row, 5, hash_item)
+
+        # Update stats
+        stats = self.cache_manager.get_cache_stats()
+        total_assets = stats['total_assets']
+        total_size = self._format_size(stats['total_size'])
+        self.stats_label.setText(f'Total: {total_assets} assets | Size: {total_size}')
+
+    def _format_size(self, size_bytes: int) -> str:
+        """Format size in bytes to human-readable string."""
+        for unit in ['B', 'KB', 'MB', 'GB']:
+            if size_bytes < 1024.0:
+                return f'{size_bytes:.1f} {unit}'
+            size_bytes /= 1024.0
+        return f'{size_bytes:.1f} TB'
+
+    def _get_selected_asset(self) -> dict | None:
+        """Get the currently selected asset."""
+        current_row = self.table.currentRow()
+        if current_row < 0:
+            return None
+
+        id_item = self.table.item(current_row, 0)
+        if not id_item:
+            return None
+
+        return id_item.data(Qt.ItemDataRole.UserRole)
+
+    def _export_selected(self):
+        """Export the selected asset."""
+        asset = self._get_selected_asset()
+        if not asset:
+            QMessageBox.warning(self, 'No Selection', 'Please select an asset to export')
+            return
+
+        # Ask for export location
+        default_name = f"{asset['id']}.bin"
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            'Export Asset',
+            default_name,
+            'All Files (*.*)'
+        )
+
+        if not file_path:
+            return
+
+        from pathlib import Path
+        export_path = self.cache_manager.export_asset(
+            asset['id'],
+            asset['type'],
+            Path(file_path)
+        )
+
+        if export_path:
+            log_buffer.log('Cache', f"Exported asset {asset['id']} to {export_path}")
+            QMessageBox.information(self, 'Success', f'Asset exported to:\n{export_path}')
+        else:
+            QMessageBox.critical(self, 'Error', 'Failed to export asset')
+
+    def _export_all(self):
+        """Export all visible assets."""
+        # Get current filter
+        filter_type = self.type_filter.currentData()
+        assets = self.cache_manager.list_assets(filter_type)
+
+        search_text = self.search_box.text().strip().lower()
+        if search_text:
+            assets = [a for a in assets if search_text in a['id'].lower()]
+
+        if not assets:
+            QMessageBox.warning(self, 'No Assets', 'No assets to export')
+            return
+
+        reply = QMessageBox.question(
+            self,
+            'Export All',
+            f'Export {len(assets)} asset(s) to the export folder?',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        exported_count = 0
+        for asset in assets:
+            if self.cache_manager.export_asset(asset['id'], asset['type']):
+                exported_count += 1
+
+        log_buffer.log('Cache', f'Exported {exported_count}/{len(assets)} assets')
+        QMessageBox.information(
+            self,
+            'Export Complete',
+            f'Exported {exported_count} asset(s)\n\nLocation: {self.cache_manager.export_dir}'
+        )
+
+    def _delete_selected(self):
+        """Delete the selected asset."""
+        asset = self._get_selected_asset()
+        if not asset:
+            QMessageBox.warning(self, 'No Selection', 'Please select an asset to delete')
+            return
+
+        reply = QMessageBox.question(
+            self,
+            'Delete Asset',
+            f"Delete asset {asset['id']}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            if self.cache_manager.delete_asset(asset['id'], asset['type']):
+                log_buffer.log('Cache', f"Deleted asset {asset['id']}")
+                self._refresh_assets()
+            else:
+                QMessageBox.critical(self, 'Error', 'Failed to delete asset')
+
+    def _clear_cache(self):
+        """Clear all cached assets."""
+        stats = self.cache_manager.get_cache_stats()
+        total_assets = stats['total_assets']
+
+        if total_assets == 0:
+            QMessageBox.information(self, 'Empty Cache', 'Cache is already empty')
+            return
+
+        reply = QMessageBox.question(
+            self,
+            'Clear Cache',
+            f'Delete all {total_assets} cached asset(s)?',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            deleted = self.cache_manager.clear_cache()
+            log_buffer.log('Cache', f'Cleared cache: {deleted} assets deleted')
+            self._refresh_assets()
+            QMessageBox.information(self, 'Success', f'Deleted {deleted} asset(s)')

@@ -140,7 +140,7 @@ class SystemTray:
 
     def _show_replacer_config(self):
         """Show Replacer Config window."""
-        window = ReplacerConfigWindow(self.config_manager)
+        window = ReplacerConfigWindow(self.config_manager, self.proxy_master)
         window.exec()
 
     def _show_delete_cache(self):
