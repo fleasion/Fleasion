@@ -8,3 +8,26 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Reference/development files
+Reference/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local configuration and cache
+*.local
+.env
+.env.local
