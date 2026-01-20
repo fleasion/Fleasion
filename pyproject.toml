@@ -8,14 +8,16 @@ dependencies = [
     'mitmproxy>=12.2.1',
     'pyqt6>=6.8.0',
     'pyopengl>=3.1.0',
-    'pygame>=2.6.0',
-    'mutagen>=1.47.0',
     'DracoPy>=1.3.0',
     'pillow>=11.0.0',
     'numpy>=2.0.0',
     'pywin32>=307',
     'requests>=2.32.0',
 ]
+
+# Optional dependencies for future enhancements when Python 3.14 support is available:
+# - pygame (audio playback) - currently no py314 wheels
+# - mutagen (audio metadata) - currently no py314 wheels
 
 [project.scripts]
 Fleasion = 'Fleasion:main'
