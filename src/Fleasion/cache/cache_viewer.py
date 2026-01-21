@@ -36,6 +36,11 @@ class CacheViewerTab(QWidget):
         self._refresh_timer.timeout.connect(self._check_for_updates)
         self._refresh_timer.start(3000)  # Check every 3 seconds
 
+        # Search debounce timer
+        self._search_timer = QTimer()
+        self._search_timer.setSingleShot(True)
+        self._search_timer.timeout.connect(self._refresh_assets)
+
         # Load persisted resolved names from index
         self._load_persisted_names()
 
@@ -88,7 +93,7 @@ class CacheViewerTab(QWidget):
         filter_layout.addWidget(QLabel('Search:'))
         self.search_box = QLineEdit()
         self.search_box.setPlaceholderText('Search all columns...')
-        self.search_box.textChanged.connect(self._refresh_assets)
+        self.search_box.textChanged.connect(self._on_search_text_changed)
         filter_layout.addWidget(self.search_box)
 
         # Type selector second
@@ -385,6 +390,12 @@ class CacheViewerTab(QWidget):
         if self.cache_scraper:
             enabled = bool(state)
             self.cache_scraper.set_enabled(enabled)
+
+    def _on_search_text_changed(self):
+        """Handle search text change with debouncing."""
+        # Restart the timer - only trigger search after user stops typing for 300ms
+        self._search_timer.stop()
+        self._search_timer.start(300)
 
     def _load_persisted_names(self):
         """Load persisted resolved names from index.json."""
