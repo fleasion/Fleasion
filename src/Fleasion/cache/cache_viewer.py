@@ -39,6 +39,9 @@ class CacheViewerTab(QWidget):
         # Load persisted resolved names from index
         self._load_persisted_names()
 
+        # Refresh to show persisted names
+        QTimer.singleShot(0, self._refresh_assets)
+
         # Start name resolver daemon thread
         threading.Thread(target=self._name_resolver_loop, daemon=True).start()
 
@@ -278,7 +281,8 @@ class CacheViewerTab(QWidget):
                 # Check resolved name if available
                 resolved_name = ''
                 if asset_id in self._asset_info:
-                    resolved_name = self._asset_info[asset_id].get('resolved_name', '').lower()
+                    name = self._asset_info[asset_id].get('resolved_name')
+                    resolved_name = name.lower() if name else ''
 
                 # Match if search text in any field
                 if (search_text in asset_id or
@@ -412,22 +416,29 @@ class CacheViewerTab(QWidget):
     def _on_show_names_toggled(self, checked: bool):
         """Handle Show Names toggle."""
         self._show_names = checked
-        # Update all rows to show either resolved name or hash
-        for asset_id, info in self._asset_info.items():
-            row = info.get('row')
-            if row is None:
-                continue
-            if row >= self.table.rowCount():
-                continue
 
-            if checked and info.get('resolved_name'):
-                display_val = info['resolved_name']
-            else:
-                display_val = info.get('hash', '')
+        # Disable updates for performance
+        self.table.setUpdatesEnabled(False)
+        try:
+            # Update all rows to show either resolved name or hash
+            for asset_id, info in self._asset_info.items():
+                row = info.get('row')
+                if row is None:
+                    continue
+                if row >= self.table.rowCount():
+                    continue
 
-            item = self.table.item(row, 0)
-            if item:
-                item.setText(display_val)
+                if checked and info.get('resolved_name'):
+                    display_val = info['resolved_name']
+                else:
+                    display_val = info.get('hash', '')
+
+                item = self.table.item(row, 0)
+                if item:
+                    item.setText(display_val)
+        finally:
+            # Re-enable updates
+            self.table.setUpdatesEnabled(True)
 
     def _update_row_name(self, asset_id: str, name: str):
         """Update a single row's name cell (thread-safe via QTimer)."""
@@ -446,10 +457,12 @@ class CacheViewerTab(QWidget):
     def _save_resolved_name_to_index(self, asset_id: str, name: str):
         """Save resolved name to index.json for persistence."""
         # Find the asset key in index (format: {type}_{id})
-        for asset_key, asset_data in self.cache_manager.index['assets'].items():
+        # Take a snapshot to avoid dictionary changed during iteration
+        assets_snapshot = dict(self.cache_manager.index['assets'])
+        for asset_key, asset_data in assets_snapshot.items():
             if asset_data['id'] == asset_id:
-                # Update the resolved_name field
-                asset_data['resolved_name'] = name
+                # Update the resolved_name field in the actual index
+                self.cache_manager.index['assets'][asset_key]['resolved_name'] = name
                 # Save index to disk
                 self.cache_manager._save_index()
                 break
@@ -654,7 +667,8 @@ class CacheViewerTab(QWidget):
 
                 resolved_name = ''
                 if asset_id in self._asset_info:
-                    resolved_name = self._asset_info[asset_id].get('resolved_name', '').lower()
+                    name = self._asset_info[asset_id].get('resolved_name')
+                    resolved_name = name.lower() if name else ''
 
                 if (search_text in asset_id or
                     search_text in type_name or
@@ -851,6 +865,17 @@ class CacheViewerTab(QWidget):
 
         # Add actions
         add_to_replacer_action = menu.addAction('Add IDs to Replacer')
+        export_action = menu.addAction('Export Selected')
+        menu.addSeparator()
+
+        # Copy column submenu
+        copy_menu = menu.addMenu('Copy Column')
+        copy_hash_action = copy_menu.addAction('Hash/Name')
+        copy_id_action = copy_menu.addAction('Asset ID')
+        copy_type_action = copy_menu.addAction('Type')
+        copy_url_action = copy_menu.addAction('URL')
+
+        menu.addSeparator()
         delete_action = menu.addAction('Delete Selected')
 
         # Execute menu
@@ -858,8 +883,70 @@ class CacheViewerTab(QWidget):
 
         if action == add_to_replacer_action:
             self._add_selected_to_replacer()
+        elif action == export_action:
+            self._export_selected_multiple()
         elif action == delete_action:
             self._delete_selected()
+        elif action == copy_hash_action:
+            self._copy_column(0)
+        elif action == copy_id_action:
+            self._copy_column(1)
+        elif action == copy_type_action:
+            self._copy_column(2)
+        elif action == copy_url_action:
+            self._copy_column(5)
+
+    def _copy_column(self, column: int):
+        """Copy column contents for selected rows."""
+        selected_rows = self.table.selectionModel().selectedRows()
+        if not selected_rows:
+            return
+
+        values = []
+        for row_index in selected_rows:
+            row = row_index.row()
+            item = self.table.item(row, column)
+            if item:
+                values.append(item.text())
+
+        if values:
+            from PyQt6.QtWidgets import QApplication
+            clipboard = QApplication.clipboard()
+            clipboard.setText('\n'.join(values))
+            log_buffer.log('Cache', f'Copied {len(values)} value(s) to clipboard')
+
+    def _export_selected_multiple(self):
+        """Export multiple selected assets."""
+        selected_rows = self.table.selectionModel().selectedRows()
+        if not selected_rows:
+            QMessageBox.warning(self, 'No Selection', 'Please select asset(s) to export')
+            return
+
+        # Collect assets to export
+        assets_to_export = []
+        for row_index in selected_rows:
+            row = row_index.row()
+            item = self.table.item(row, 0)
+            if item:
+                asset = item.data(Qt.ItemDataRole.UserRole)
+                if asset:
+                    assets_to_export.append(asset)
+
+        if not assets_to_export:
+            return
+
+        # Export all
+        exported_count = 0
+        for asset in assets_to_export:
+            if self.cache_manager.export_asset(asset['id'], asset['type']):
+                exported_count += 1
+
+        log_buffer.log('Cache', f'Exported {exported_count}/{len(assets_to_export)} assets')
+        QMessageBox.information(
+            self,
+            'Export Complete',
+            f'Exported {exported_count} asset(s)\n\nLocation: {self.cache_manager.export_dir}'
+        )
 
     def _add_selected_to_replacer(self):
         """Add selected asset IDs to replacer."""
@@ -877,16 +964,23 @@ class CacheViewerTab(QWidget):
         if not asset_ids:
             return
 
-        # Try to find the replacer entry field (if we're in the replacer config window)
-        parent = self.parent()
-        if parent and hasattr(parent, 'replace_entry'):
+        # Try to find the replacer entry field (walk up parent chain)
+        replacer_window = None
+        widget = self
+        while widget is not None:
+            if hasattr(widget, 'replace_entry'):
+                replacer_window = widget
+                break
+            widget = widget.parent() if hasattr(widget, 'parent') else None
+
+        if replacer_window:
             # Add to existing IDs if there are any
-            current_text = parent.replace_entry.text().strip()
+            current_text = replacer_window.replace_entry.text().strip()
             if current_text:
                 new_text = current_text + ', ' + ', '.join(asset_ids)
             else:
                 new_text = ', '.join(asset_ids)
-            parent.replace_entry.setText(new_text)
+            replacer_window.replace_entry.setText(new_text)
 
             log_buffer.log('Cache', f'Added {len(asset_ids)} asset ID(s) to replacer')
             QMessageBox.information(

@@ -147,12 +147,19 @@ class JsonTreeViewer(QDialog):
 
     def _get_numeric_values(self) -> list[int]:
         """Get numeric values from selected items."""
-        leaves = set()
+        leaves = []
+        leaf_ids = set()  # Track IDs to avoid duplicates
+
         for item in self.tree.selectedItems():
             if self.node_is_leaf.get(id(item)):
-                leaves.add(item)
+                if id(item) not in leaf_ids:
+                    leaves.append(item)
+                    leaf_ids.add(id(item))
             else:
-                leaves.update(self._get_all_leaf_descendants(item))
+                for descendant in self._get_all_leaf_descendants(item):
+                    if id(descendant) not in leaf_ids:
+                        leaves.append(descendant)
+                        leaf_ids.add(id(descendant))
 
         values = []
         for item in leaves:
