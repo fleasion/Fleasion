@@ -1064,6 +1064,18 @@ class CacheViewerTab(QWidget):
                 except Exception:
                     pass
 
+            # Check if it's a KTX file and convert to PNG
+            if decompressed_data.startswith(b'\xABKTX') or decompressed_data.startswith(b'\xABKTX 11\xBB'):
+                # KTX file - convert using ktx_converter
+                from .ktx_converter import convert as ktx_convert
+                try:
+                    png_data = ktx_convert(decompressed_data)
+                    if png_data:
+                        decompressed_data = png_data
+                except Exception as e:
+                    self._show_text_preview(f'KTX conversion error: {e}')
+                    return
+
             image = Image.open(io.BytesIO(decompressed_data))
             # Convert to RGBA
             if image.mode not in ('RGB', 'RGBA'):

@@ -236,7 +236,7 @@ class CacheManager:
 
                 filename = '_'.join(filename_parts)[:200]  # Limit total length
 
-                # Determine extension based on type
+                # Determine extension and conversion based on type
                 if asset_type == 4:  # Mesh - convert to OBJ
                     from . import mesh_processing
                     try:
@@ -248,8 +248,48 @@ class CacheManager:
                     except Exception:
                         pass  # Fall through to binary export
 
-                # Default binary export
-                output_path = export_type_dir / f'{filename}.bin'
+                elif asset_type == 3:  # Audio - export as OGG/MP3
+                    # Check file signature to determine format
+                    if data.startswith(b'OggS'):
+                        output_path = export_type_dir / f'{filename}.ogg'
+                    elif data.startswith(b'ID3') or data.startswith(b'\xFF\xFB'):
+                        output_path = export_type_dir / f'{filename}.mp3'
+                    else:
+                        output_path = export_type_dir / f'{filename}.ogg'  # Default to ogg
+
+                elif asset_type in (1, 13):  # Image, Decal - convert KTX to PNG
+                    # Decompress if needed
+                    decompressed = data
+                    if data.startswith(b'\x1f\x8b'):  # gzip
+                        import gzip
+                        decompressed = gzip.decompress(data)
+                    elif data.startswith(b'(\xb5/\xfd'):  # zstd
+                        import zstandard as zstd
+                        decompressed = zstd.ZstdDecompressor().decompress(data)
+
+                    # Check if KTX and convert
+                    if decompressed.startswith(b'\xABKTX') or decompressed.startswith(b'\xABKTX 11\xBB'):
+                        from . import ktx_converter
+                        try:
+                            png_data = ktx_converter.convert(decompressed)
+                            if png_data:
+                                output_path = export_type_dir / f'{filename}.png'
+                                output_path.write_bytes(png_data)
+                                return output_path
+                        except Exception:
+                            pass
+                    # Check if already PNG
+                    elif decompressed.startswith(b'\x89PNG'):
+                        output_path = export_type_dir / f'{filename}.png'
+                        output_path.write_bytes(decompressed)
+                        return output_path
+
+                elif asset_type == 24:  # Animation - export as RBXMX
+                    output_path = export_type_dir / f'{filename}.rbxmx'
+
+                else:
+                    # Default binary export
+                    output_path = export_type_dir / f'{filename}.bin'
 
             output_path.write_bytes(data)
             return output_path
