@@ -35,10 +35,7 @@ class CacheViewerTab(QWidget):
         layout = QVBoxLayout()
         layout.setContentsMargins(10, 10, 10, 10)
 
-        # Header with stats
-        self._create_header(layout)
-
-        # Filters
+        # Filters (includes scraper toggle and stats)
         self._create_filters(layout)
 
         # Splitter for table and preview
@@ -67,36 +64,27 @@ class CacheViewerTab(QWidget):
         self.setLayout(layout)
         self._refresh_assets()
 
-    def _create_header(self, parent_layout):
-        """Create header with statistics."""
-        header_group = QGroupBox('Cache Statistics')
-        header_layout = QHBoxLayout()
-
-        # Cache scraper toggle (off by default)
-        self.scraper_toggle = QCheckBox('Enable Cache Scraper')
-        self.scraper_toggle.setChecked(False)
-        self.scraper_toggle.stateChanged.connect(self._toggle_scraper)
-        header_layout.addWidget(self.scraper_toggle)
-
-        header_layout.addStretch()
-
-        self.stats_label = QLabel('Total: 0 assets | Size: 0 B')
-        header_layout.addWidget(self.stats_label)
-
-        header_layout.addStretch()
-
-        refresh_btn = QPushButton('Refresh')
-        refresh_btn.clicked.connect(self._refresh_assets)
-        header_layout.addWidget(refresh_btn)
-
-        header_group.setLayout(header_layout)
-        parent_layout.addWidget(header_group)
-
     def _create_filters(self, parent_layout):
         """Create filter controls."""
         filter_group = QGroupBox('Filters')
         filter_layout = QHBoxLayout()
 
+        # Cache scraper toggle (off by default)
+        self.scraper_toggle = QCheckBox('Enable Cache Scraper')
+        self.scraper_toggle.setChecked(False)
+        self.scraper_toggle.stateChanged.connect(self._toggle_scraper)
+        filter_layout.addWidget(self.scraper_toggle)
+
+        filter_layout.addWidget(QLabel('|'))
+
+        # Search box first
+        filter_layout.addWidget(QLabel('Search:'))
+        self.search_box = QLineEdit()
+        self.search_box.setPlaceholderText('Search by ID...')
+        self.search_box.textChanged.connect(self._refresh_assets)
+        filter_layout.addWidget(self.search_box)
+
+        # Type selector second
         filter_layout.addWidget(QLabel('Type:'))
         self.type_filter = QComboBox()
         self.type_filter.addItem('All Types', None)
@@ -105,13 +93,11 @@ class CacheViewerTab(QWidget):
         self.type_filter.currentIndexChanged.connect(self._refresh_assets)
         filter_layout.addWidget(self.type_filter)
 
-        filter_layout.addWidget(QLabel('Search:'))
-        self.search_box = QLineEdit()
-        self.search_box.setPlaceholderText('Search by ID...')
-        self.search_box.textChanged.connect(self._refresh_assets)
-        filter_layout.addWidget(self.search_box)
-
         filter_layout.addStretch()
+
+        # Stats label
+        self.stats_label = QLabel('Total: 0 assets | Size: 0 B')
+        filter_layout.addWidget(self.stats_label)
 
         filter_group.setLayout(filter_layout)
         parent_layout.addWidget(filter_group)
@@ -204,6 +190,10 @@ class CacheViewerTab(QWidget):
         clear_btn = QPushButton('Clear Cache')
         clear_btn.clicked.connect(self._clear_cache)
         actions_layout.addWidget(clear_btn)
+
+        delete_db_btn = QPushButton('Delete DB')
+        delete_db_btn.clicked.connect(self._delete_database)
+        actions_layout.addWidget(delete_db_btn)
 
         actions_layout.addStretch()
 
@@ -441,6 +431,32 @@ class CacheViewerTab(QWidget):
             self._refresh_assets()
             QMessageBox.information(self, 'Success', f'Deleted {deleted} asset(s)')
 
+    def _delete_database(self):
+        """Delete the entire cache database and files."""
+        reply = QMessageBox.question(
+            self,
+            'Delete Database',
+            'This will delete all cached assets AND the database index.\nThis cannot be undone. Continue?',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            try:
+                import shutil
+                cache_dir = self.cache_manager.cache_dir
+                if cache_dir.exists():
+                    shutil.rmtree(cache_dir)
+                    cache_dir.mkdir(parents=True, exist_ok=True)
+                # Reset the index
+                self.cache_manager.index = {'assets': {}}
+                self.cache_manager._save_index()
+                self._last_asset_count = 0
+                self._refresh_assets()
+                log_buffer.log('Cache', 'Database deleted and reset')
+                QMessageBox.information(self, 'Success', 'Database deleted successfully')
+            except Exception as e:
+                QMessageBox.critical(self, 'Error', f'Failed to delete database: {e}')
+
     def _on_selection_changed(self):
         """Handle table selection change to preview asset."""
         asset = self._get_selected_asset()
@@ -477,6 +493,8 @@ class CacheViewerTab(QWidget):
                 self._preview_image(data)
             elif asset_type == 3:  # Audio
                 self._preview_audio(data, asset_id)
+            elif asset_type == 24:  # Animation
+                self._preview_animation(data, asset_id)
             else:
                 # Show as hex dump for other types
                 self._preview_hex(data, asset)
@@ -570,6 +588,35 @@ class CacheViewerTab(QWidget):
         except Exception as e:
             self._show_text_preview(f'Audio preview error: {e}')
             log_buffer.log('Cache', f'Audio preview error: {e}')
+
+    def _preview_animation(self, data: bytes, asset_id: str):
+        """Preview an animation asset (RBXM XML format)."""
+        try:
+            # Try to decode as XML
+            text = data.decode('utf-8', errors='replace')
+
+            # Check if it's XML
+            if text.strip().startswith('<'):
+                # Format XML for display
+                import xml.etree.ElementTree as ET
+                try:
+                    root = ET.fromstring(data)
+                    # Pretty print XML
+                    import xml.dom.minidom
+                    dom = xml.dom.minidom.parseString(data)
+                    pretty_xml = dom.toprettyxml(indent='  ')
+                    # Remove extra blank lines
+                    lines = [line for line in pretty_xml.split('\n') if line.strip()]
+                    self._show_text_preview('\n'.join(lines[:500]))  # Limit lines
+                except Exception:
+                    # Fallback to raw text
+                    self._show_text_preview(f'Animation ID: {asset_id}\nSize: {self._format_size(len(data))}\n\n{text[:5000]}')
+            else:
+                # Binary format, show hex
+                self._preview_hex(data, {'id': asset_id, 'type_name': 'Animation'})
+
+        except Exception as e:
+            self._show_text_preview(f'Animation preview error: {e}')
 
     def _preview_hex(self, data: bytes, asset: dict):
         """Show hex dump preview."""
