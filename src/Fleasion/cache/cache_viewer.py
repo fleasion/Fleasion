@@ -12,6 +12,7 @@ import io
 
 from .cache_manager import CacheManager
 from .obj_viewer import ObjViewerPanel
+from .audio_player import AudioPlayerWidget
 from . import mesh_processing
 from ..utils import log_buffer, open_folder
 
@@ -149,6 +150,14 @@ class CacheViewerTab(QWidget):
         self.image_label.setMinimumHeight(200)
         preview_group_layout.addWidget(self.image_label)
 
+        # Audio player
+        self.audio_player = None  # Created dynamically when needed
+        self.audio_container = QWidget()
+        self.audio_container_layout = QVBoxLayout()
+        self.audio_container_layout.setContentsMargins(0, 0, 0, 0)
+        self.audio_container.setLayout(self.audio_container_layout)
+        preview_group_layout.addWidget(self.audio_container)
+
         # Text viewer for other types
         self.text_viewer = QTextEdit()
         self.text_viewer.setReadOnly(True)
@@ -157,6 +166,7 @@ class CacheViewerTab(QWidget):
 
         # Initially hide all preview widgets
         self.obj_viewer.hide()
+        self.audio_container.hide()
         self.text_viewer.hide()
 
         preview_group.setLayout(preview_group_layout)
@@ -394,7 +404,14 @@ class CacheViewerTab(QWidget):
         # Hide all preview widgets first
         self.obj_viewer.hide()
         self.image_label.hide()
+        self.audio_container.hide()
         self.text_viewer.hide()
+
+        # Stop any playing audio
+        if self.audio_player:
+            self.audio_player.stop()
+            self.audio_player.deleteLater()
+            self.audio_player = None
 
         asset_type = asset['type']
         asset_id = asset['id']
@@ -411,6 +428,8 @@ class CacheViewerTab(QWidget):
                 self._preview_mesh(data, asset_id)
             elif asset_type in [1, 13]:  # Image, Decal
                 self._preview_image(data)
+            elif asset_type == 3:  # Audio
+                self._preview_audio(data, asset_id)
             else:
                 # Show as hex dump for other types
                 self._preview_hex(data, asset)
@@ -424,6 +443,11 @@ class CacheViewerTab(QWidget):
         self.obj_viewer.clear()
         self.image_label.hide()
         self.image_label.setText('Select an asset to preview')
+        self.audio_container.hide()
+        if self.audio_player:
+            self.audio_player.stop()
+            self.audio_player.deleteLater()
+            self.audio_player = None
         self.text_viewer.hide()
         self.text_viewer.clear()
 
@@ -465,6 +489,40 @@ class CacheViewerTab(QWidget):
             self.image_label.show()
         except Exception as e:
             self._show_text_preview(f'Image preview error: {e}')
+
+    def _preview_audio(self, data: bytes, asset_id: str):
+        """Preview an audio asset."""
+        import tempfile
+        from pathlib import Path
+
+        try:
+            # Create temporary file for audio
+            temp_dir = Path(tempfile.gettempdir()) / 'fleasion_audio'
+            temp_dir.mkdir(exist_ok=True)
+
+            # Determine file extension (default to mp3)
+            temp_file = temp_dir / f'{asset_id}.mp3'
+
+            # Write audio data to temp file
+            with open(temp_file, 'wb') as f:
+                f.write(data)
+
+            # Create audio player
+            self.audio_player = AudioPlayerWidget(str(temp_file), self)
+
+            # Clear previous audio widgets
+            while self.audio_container_layout.count():
+                child = self.audio_container_layout.takeAt(0)
+                if child.widget():
+                    child.widget().deleteLater()
+
+            # Add new audio player
+            self.audio_container_layout.addWidget(self.audio_player)
+            self.audio_container.show()
+
+        except Exception as e:
+            self._show_text_preview(f'Audio preview error: {e}')
+            log_buffer.log('Cache', f'Audio preview error: {e}')
 
     def _preview_hex(self, data: bytes, asset: dict):
         """Show hex dump preview."""

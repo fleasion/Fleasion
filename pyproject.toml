@@ -13,6 +13,8 @@ dependencies = [
     'numpy>=2.0.0',
     'pywin32>=307',
     'requests>=2.32.0',
+    "sounddevice>=0.5.3",
+    "soundfile>=0.13.1",
 ]
 
 # Optional dependencies for future enhancements when Python 3.14 support is available:
