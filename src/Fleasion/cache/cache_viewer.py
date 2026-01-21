@@ -398,19 +398,62 @@ class CacheViewerTab(QWidget):
             if item:
                 item.setText(name)
 
-    def _fetch_asset_names(self, asset_ids: list[str]) -> dict[str, str] | None:
+    def _get_roblosecurity(self) -> str | None:
+        """Get .ROBLOSECURITY cookie from Roblox local storage."""
+        import os
+        import json
+        import base64
+        import re
+
+        try:
+            import win32crypt
+        except ImportError:
+            return None
+
+        path = os.path.expandvars(r'%LocalAppData%/Roblox/LocalStorage/RobloxCookies.dat')
+        try:
+            if not os.path.exists(path):
+                return None
+            with open(path, 'r') as f:
+                data = json.load(f)
+            cookies_data = data.get('CookiesData')
+            if not cookies_data:
+                return None
+            enc = base64.b64decode(cookies_data)
+            dec = win32crypt.CryptUnprotectData(enc, None, None, None, 0)[1]
+            s = dec.decode(errors='ignore')
+            m = re.search(r'\.ROBLOSECURITY\s+([^\s;]+)', s)
+            return m.group(1) if m else None
+        except Exception:
+            return None
+
+    def _fetch_asset_names(self, asset_ids: list[str], cookie: str | None) -> dict[str, str] | None:
         """Fetch asset names from Roblox Develop API (batch up to 50)."""
         import requests
 
         if not asset_ids:
             return None
 
+        # Build session with auth
+        sess = requests.Session()
+        sess.trust_env = False
+        sess.proxies = {}
+        sess.headers.update({
+            'User-Agent': 'Roblox/WinInet',
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'Referer': 'https://www.roblox.com/',
+            'Origin': 'https://www.roblox.com',
+        })
+        if cookie:
+            sess.headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
+
         # Build query: assetIds=123,456,789
         query = ','.join(str(aid) for aid in asset_ids)
         url = f'https://develop.roblox.com/v1/assets?assetIds={query}'
 
         try:
-            response = requests.get(url, timeout=10)
+            response = sess.get(url, timeout=10)
             response.raise_for_status()
         except Exception as e:
             log_buffer.log('Cache', f'[Name Resolver] Failed to fetch names: {e}')
@@ -436,6 +479,13 @@ class CacheViewerTab(QWidget):
                 time.sleep(0.2)
                 continue
 
+            # Get authentication cookie
+            cookie = self._get_roblosecurity()
+            if not cookie:
+                # No cookie - wait longer to avoid spam
+                time.sleep(5)
+                continue
+
             # Build pending list - assets without resolved names
             pending = [
                 asset_id
@@ -456,7 +506,7 @@ class CacheViewerTab(QWidget):
 
             # Fetch names
             try:
-                names = self._fetch_asset_names(batch)
+                names = self._fetch_asset_names(batch, cookie)
             except Exception as e:
                 log_buffer.log('Cache', f'[Name Resolver] Fetch failed: {e}')
                 time.sleep(delay)
