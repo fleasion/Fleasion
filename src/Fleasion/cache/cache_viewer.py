@@ -205,18 +205,6 @@ class CacheViewerTab(QWidget):
         """Create action buttons."""
         actions_layout = QHBoxLayout()
 
-        export_btn = QPushButton('Export Selected')
-        export_btn.clicked.connect(self._export_selected)
-        actions_layout.addWidget(export_btn)
-
-        export_all_btn = QPushButton('Export All')
-        export_all_btn.clicked.connect(self._export_all)
-        actions_layout.addWidget(export_all_btn)
-
-        delete_btn = QPushButton('Delete Selected')
-        delete_btn.clicked.connect(self._delete_selected)
-        actions_layout.addWidget(delete_btn)
-
         delete_db_btn = QPushButton('Delete DB')
         delete_db_btn.clicked.connect(self._clear_cache)
         actions_layout.addWidget(delete_db_btn)
@@ -457,14 +445,18 @@ class CacheViewerTab(QWidget):
     def _save_resolved_name_to_index(self, asset_id: str, name: str):
         """Save resolved name to index.json for persistence."""
         # Find the asset key in index (format: {type}_{id})
-        # Take a snapshot to avoid dictionary changed during iteration
-        assets_snapshot = dict(self.cache_manager.index['assets'])
-        for asset_key, asset_data in assets_snapshot.items():
+        # Use list() to get a snapshot of keys to avoid dictionary changed during iteration
+        asset_keys = list(self.cache_manager.index['assets'].keys())
+        for asset_key in asset_keys:
+            # Check if key still exists (in case it was deleted)
+            if asset_key not in self.cache_manager.index['assets']:
+                continue
+            asset_data = self.cache_manager.index['assets'][asset_key]
             if asset_data['id'] == asset_id:
-                # Update the resolved_name field in the actual index
-                self.cache_manager.index['assets'][asset_key]['resolved_name'] = name
-                # Save index to disk
-                self.cache_manager._save_index()
+                # Update the resolved_name field
+                asset_data['resolved_name'] = name
+                # Don't save on every update - too slow
+                # Let periodic saves or user actions handle persistence
                 break
 
     def _get_roblosecurity(self) -> str | None:
@@ -600,6 +592,12 @@ class CacheViewerTab(QWidget):
                 # Update UI on main thread
                 if self._show_names:
                     QTimer.singleShot(0, lambda aid=asset_id, n=name: self._update_row_name(aid, n))
+
+            # Save index after batch update (less frequent saves)
+            try:
+                self.cache_manager._save_index()
+            except Exception as e:
+                log_buffer.log('Cache', f'[Name Resolver] Failed to save index: {e}')
 
             time.sleep(delay)
 

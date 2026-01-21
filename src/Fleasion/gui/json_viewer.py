@@ -187,7 +187,6 @@ class JsonTreeViewer(QDialog):
 
         # Find matches
         matches = []
-        iterator = QTreeWidgetItem.__iter__
 
         def search_item(item):
             if query in item.text(0).lower():
