@@ -13,6 +13,15 @@ class LogsWindow(QDialog):
         super().__init__()
         self.setWindowTitle(f'{APP_NAME} - Logs')
         self.resize(600, 400)
+
+        # Set window flags to allow minimize/maximize
+        self.setWindowFlags(
+            Qt.WindowType.Window |
+            Qt.WindowType.WindowMinimizeButtonHint |
+            Qt.WindowType.WindowMaximizeButtonHint |
+            Qt.WindowType.WindowCloseButtonHint
+        )
+
         self._last_count = 0
         self._setup_ui()
         self._set_icon()

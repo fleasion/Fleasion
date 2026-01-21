@@ -124,6 +124,33 @@ class ConfigManager:
         self._save_settings()
 
     @property
+    def export_naming(self) -> list[str]:
+        """Get export naming options (name, id, hash)."""
+        return self.settings.get('export_naming', ['id'])
+
+    @export_naming.setter
+    def export_naming(self, value: list[str]):
+        """Set export naming options."""
+        self.settings['export_naming'] = value
+        self._save_settings()
+
+    def is_export_naming_enabled(self, option: str) -> bool:
+        """Check if an export naming option is enabled."""
+        return option in self.export_naming
+
+    def toggle_export_naming(self, option: str) -> bool:
+        """Toggle an export naming option. Returns new state."""
+        options = self.export_naming.copy()
+        if option in options:
+            options.remove(option)
+            new_state = False
+        else:
+            options.append(option)
+            new_state = True
+        self.export_naming = options
+        return new_state
+
+    @property
     def enabled_configs(self) -> list[str]:
         """Get list of enabled configs."""
         return self.settings.get('enabled_configs', [])

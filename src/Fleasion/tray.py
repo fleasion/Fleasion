@@ -15,6 +15,9 @@ class SystemTray:
         self.config_manager = config_manager
         self.proxy_master = proxy_master
 
+        # Keep references to open windows to prevent garbage collection
+        self.open_windows = []
+
         # Create tray icon
         self.tray = QSystemTrayIcon()
         self._set_icon()
@@ -113,6 +116,21 @@ class SystemTray:
 
         settings_menu.addMenu(theme_menu)
 
+        # Export naming submenu
+        export_menu = QMenu('Export Naming', settings_menu)
+
+        # Export naming actions (checkboxes)
+        self.export_naming_actions = {}
+        for option in ['name', 'id', 'hash']:
+            action = QAction(option.capitalize(), export_menu)
+            action.setCheckable(True)
+            action.setChecked(self.config_manager.is_export_naming_enabled(option))
+            action.triggered.connect(lambda checked, opt=option: self._toggle_export_naming(opt))
+            export_menu.addAction(action)
+            self.export_naming_actions[option] = action
+
+        settings_menu.addMenu(export_menu)
+
         self.menu.addMenu(settings_menu)
 
 
@@ -128,34 +146,57 @@ class SystemTray:
         # Save to config
         self.config_manager.theme = theme
 
+    def _toggle_export_naming(self, option: str):
+        """Toggle an export naming option."""
+        new_state = self.config_manager.toggle_export_naming(option)
+        self.export_naming_actions[option].setChecked(new_state)
+
     def _show_about(self):
         """Show About window."""
         window = AboutWindow(self.proxy_master.is_running)
-        window.exec()
+        window.destroyed.connect(lambda: self._remove_window(window))
+        self.open_windows.append(window)
+        window.show()
 
     def _show_logs(self):
         """Show Logs window."""
         window = LogsWindow()
-        window.exec()
+        window.destroyed.connect(lambda: self._remove_window(window))
+        self.open_windows.append(window)
+        window.show()
 
     def _show_replacer_config(self):
         """Show Replacer Config window."""
         window = ReplacerConfigWindow(self.config_manager, self.proxy_master)
-        window.exec()
+        window.destroyed.connect(lambda: self._remove_window(window))
+        self.open_windows.append(window)
+        window.show()
 
     def _show_delete_cache(self):
         """Show Delete Cache window."""
         window = DeleteCacheWindow()
-        window.exec()
+        window.destroyed.connect(lambda: self._remove_window(window))
+        self.open_windows.append(window)
+        window.show()
+
+    def _remove_window(self, window):
+        """Remove window from tracking list."""
+        if window in self.open_windows:
+            self.open_windows.remove(window)
 
     def _copy_discord(self):
         """Copy Discord invite to clipboard."""
-        QApplication.clipboard().setText(f'https://{APP_DISCORD}')
-        from .utils import show_message_box
+        from PyQt6.QtWidgets import QMessageBox
 
-        show_message_box(
-            APP_NAME, f'Discord invite copied!\n\nhttps://{APP_DISCORD}', 0x40
-        )
+        QApplication.clipboard().setText(f'https://{APP_DISCORD}')
+
+        # Create PyQt6 message box
+        msg_box = QMessageBox()
+        msg_box.setWindowTitle(APP_NAME)
+        msg_box.setText('Discord invite copied!')
+        msg_box.setInformativeText(f'https://{APP_DISCORD}')
+        msg_box.setIcon(QMessageBox.Icon.Information)
+        msg_box.exec()
 
     def _exit_app(self):
         """Exit the application."""

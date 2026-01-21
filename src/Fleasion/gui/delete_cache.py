@@ -19,6 +19,15 @@ class DeleteCacheWindow(QDialog):
         super().__init__()
         self.setWindowTitle(f'{APP_NAME} - Delete Cache')
         self.setFixedSize(400, 200)
+
+        # Set window flags to allow minimize
+        from PyQt6.QtCore import Qt
+        self.setWindowFlags(
+            Qt.WindowType.Window |
+            Qt.WindowType.WindowMinimizeButtonHint |
+            Qt.WindowType.WindowCloseButtonHint
+        )
+
         self._setup_ui()
         self._set_icon()
         self._start_deletion()
@@ -44,14 +53,8 @@ class DeleteCacheWindow(QDialog):
         self.status_text = QTextEdit()
         self.status_text.setReadOnly(True)
         self.status_text.setFont(self._get_monospace_font())
-        self.status_text.setFixedHeight(90)
+        self.status_text.setFixedHeight(120)
         layout.addWidget(self.status_text)
-
-        # Close button
-        self.close_btn = QPushButton('Close')
-        self.close_btn.setEnabled(False)
-        self.close_btn.clicked.connect(self.accept)
-        layout.addWidget(self.close_btn)
 
         self.setLayout(layout)
 
@@ -74,7 +77,6 @@ class DeleteCacheWindow(QDialog):
     def _on_done(self):
         """Called when deletion is complete."""
         self.status_text.append('\nDone.')
-        self.close_btn.setEnabled(True)
 
     def _start_deletion(self):
         """Start the cache deletion in a background thread."""

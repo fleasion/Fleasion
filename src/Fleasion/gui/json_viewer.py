@@ -25,6 +25,15 @@ class JsonTreeViewer(QDialog):
         super().__init__(parent)
         self.setWindowTitle(f'JSON - {filename}')
         self.resize(700, 500)
+
+        # Set window flags to allow minimize/maximize
+        self.setWindowFlags(
+            Qt.WindowType.Window |
+            Qt.WindowType.WindowMinimizeButtonHint |
+            Qt.WindowType.WindowMaximizeButtonHint |
+            Qt.WindowType.WindowCloseButtonHint
+        )
+
         self.data = data
         self.on_import_ids = on_import_ids
         self.on_import_replacement = on_import_replacement

@@ -39,11 +39,12 @@ class CacheManager:
         80: 'CodeSnippet',
     }
 
-    def __init__(self):
+    def __init__(self, config_manager=None):
         """Initialize cache manager."""
         self.cache_dir = CONFIG_DIR / 'FleasionNT' / 'Cache'
         self.export_dir = CONFIG_DIR / 'FleasionNT' / 'Exports'
         self.index_file = self.cache_dir / 'index.json'
+        self.config_manager = config_manager
 
         # Create cache directory structure
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -189,14 +190,15 @@ class CacheManager:
         return assets
 
     def export_asset(self, asset_id: str, asset_type: int,
-                    output_path: Optional[Path] = None) -> Optional[Path]:
+                    output_path: Optional[Path] = None, resolved_name: str = None) -> Optional[Path]:
         """
-        Export an asset to the exports folder.
+        Export an asset to the exports folder with smart naming and conversion.
 
         Args:
             asset_id: Asset ID
             asset_type: Asset type ID
             output_path: Optional custom output path
+            resolved_name: Optional resolved asset name for filename
 
         Returns:
             Path to exported file or None on failure
@@ -210,7 +212,44 @@ class CacheManager:
                 type_name = self.get_asset_type_name(asset_type)
                 export_type_dir = self.export_dir / type_name
                 export_type_dir.mkdir(exist_ok=True)
-                output_path = export_type_dir / f'{asset_id}.bin'
+
+                # Determine filename based on config settings
+                asset_info = self.get_asset_info(asset_id, asset_type)
+                hash_val = asset_info.get('hash', '') if asset_info else ''
+
+                # Build filename from enabled naming options
+                filename_parts = []
+                if self.config_manager:
+                    naming_options = self.config_manager.export_naming
+                    if 'name' in naming_options and resolved_name:
+                        # Sanitize resolved name
+                        sanitized_name = ''.join(c if c.isalnum() or c in (' ', '-', '_') else '_' for c in resolved_name)
+                        filename_parts.append(sanitized_name[:100])
+                    if 'id' in naming_options and asset_id:
+                        filename_parts.append(asset_id)
+                    if 'hash' in naming_options and hash_val:
+                        filename_parts.append(hash_val)
+
+                # Fallback if no options enabled or no config manager
+                if not filename_parts:
+                    filename_parts.append(asset_id if asset_id else hash_val)
+
+                filename = '_'.join(filename_parts)[:200]  # Limit total length
+
+                # Determine extension based on type
+                if asset_type == 4:  # Mesh - convert to OBJ
+                    from . import mesh_processing
+                    try:
+                        obj_data = mesh_processing.convert(data)
+                        if obj_data:
+                            output_path = export_type_dir / f'{filename}.obj'
+                            output_path.write_text(obj_data, encoding='utf-8')
+                            return output_path
+                    except Exception:
+                        pass  # Fall through to binary export
+
+                # Default binary export
+                output_path = export_type_dir / f'{filename}.bin'
 
             output_path.write_bytes(data)
             return output_path

@@ -75,6 +75,14 @@ class ReplacerConfigWindow(QDialog):
         self.resize(900, 750)
         self.setMinimumSize(800, 650)
 
+        # Set window flags to allow minimize/maximize
+        self.setWindowFlags(
+            Qt.WindowType.Window |
+            Qt.WindowType.WindowMinimizeButtonHint |
+            Qt.WindowType.WindowMaximizeButtonHint |
+            Qt.WindowType.WindowCloseButtonHint
+        )
+
         self._setup_ui()
         self._set_icon()
         self._refresh_tree()
@@ -579,7 +587,7 @@ class ReplacerConfigWindow(QDialog):
 
         layout.addLayout(btn_layout)
         dialog.setLayout(layout)
-        dialog.exec()
+        dialog.show()
 
     def _edit_replace_with(self, idx: int):
         """Edit replace with ID."""
@@ -778,4 +786,4 @@ class ReplacerConfigWindow(QDialog):
             self.replace_radio.setChecked(True)
 
         viewer = JsonTreeViewer(self, data, Path(file_path).name, on_ids, on_repl)
-        viewer.exec()
+        viewer.show()

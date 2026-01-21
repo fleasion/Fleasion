@@ -61,7 +61,7 @@ class ProxyMaster:
 
     def __init__(self, config_manager):
         self.config_manager = config_manager
-        self.cache_manager = CacheManager()
+        self.cache_manager = CacheManager(config_manager)
         self._master = None
         self._task = None
         self._running = False

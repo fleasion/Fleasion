@@ -13,6 +13,14 @@ class AboutWindow(QDialog):
         super().__init__()
         self.setWindowTitle(f'About {APP_NAME}')
         self.setFixedSize(350, 200)
+
+        # Set window flags to allow minimize/maximize
+        self.setWindowFlags(
+            Qt.WindowType.Window |
+            Qt.WindowType.WindowMinimizeButtonHint |
+            Qt.WindowType.WindowCloseButtonHint
+        )
+
         self._setup_ui(proxy_running)
         self._set_icon()
 

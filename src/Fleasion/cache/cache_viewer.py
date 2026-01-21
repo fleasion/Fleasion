@@ -694,7 +694,13 @@ class CacheViewerTab(QWidget):
 
         exported_count = 0
         for asset in assets:
-            if self.cache_manager.export_asset(asset['id'], asset['type']):
+            asset_id = asset['id']
+            # Get resolved name if available
+            resolved_name = None
+            if asset_id in self._asset_info:
+                resolved_name = self._asset_info[asset_id].get('resolved_name')
+
+            if self.cache_manager.export_asset(asset['id'], asset['type'], resolved_name=resolved_name):
                 exported_count += 1
 
         log_buffer.log('Cache', f'Exported {exported_count}/{len(assets)} assets')
@@ -783,7 +789,7 @@ class CacheViewerTab(QWidget):
         from ..gui import DeleteCacheWindow
 
         window = DeleteCacheWindow()
-        window.exec()
+        window.show()
 
     def _on_selection_changed(self):
         """Handle table selection change to preview asset."""
@@ -852,11 +858,10 @@ class CacheViewerTab(QWidget):
         export_action = menu.addAction('Export Selected')
         menu.addSeparator()
 
-        # Copy column submenu
-        copy_menu = menu.addMenu('Copy Column')
+        # Copy submenu
+        copy_menu = menu.addMenu('Copy')
         copy_hash_action = copy_menu.addAction('Hash/Name')
         copy_id_action = copy_menu.addAction('Asset ID')
-        copy_type_action = copy_menu.addAction('Type')
         copy_url_action = copy_menu.addAction('URL')
 
         menu.addSeparator()
@@ -875,8 +880,6 @@ class CacheViewerTab(QWidget):
             self._copy_column(0)
         elif action == copy_id_action:
             self._copy_column(1)
-        elif action == copy_type_action:
-            self._copy_column(2)
         elif action == copy_url_action:
             self._copy_column(5)
 
@@ -919,10 +922,16 @@ class CacheViewerTab(QWidget):
         if not assets_to_export:
             return
 
-        # Export all
+        # Export all with resolved names
         exported_count = 0
         for asset in assets_to_export:
-            if self.cache_manager.export_asset(asset['id'], asset['type']):
+            asset_id = asset['id']
+            # Get resolved name if available
+            resolved_name = None
+            if asset_id in self._asset_info:
+                resolved_name = self._asset_info[asset_id].get('resolved_name')
+
+            if self.cache_manager.export_asset(asset['id'], asset['type'], resolved_name=resolved_name):
                 exported_count += 1
 
         log_buffer.log('Cache', f'Exported {exported_count}/{len(assets_to_export)} assets')
@@ -1028,9 +1037,29 @@ class CacheViewerTab(QWidget):
     def _preview_image(self, data: bytes):
         """Preview an image asset."""
         try:
-            image = Image.open(io.BytesIO(data))
-            # Convert to QPixmap
-            image = image.convert('RGBA')
+            # Try to decompress if it's compressed
+            decompressed_data = data
+            if data.startswith(b'\x1f\x8b'):  # gzip magic number
+                import gzip
+                try:
+                    decompressed_data = gzip.decompress(data)
+                except Exception:
+                    pass
+            elif data.startswith(b'(\xb5/\xfd'):  # zstd magic number
+                try:
+                    import zstandard as zstd
+                    dctx = zstd.ZstdDecompressor()
+                    decompressed_data = dctx.decompress(data)
+                except Exception:
+                    pass
+
+            image = Image.open(io.BytesIO(decompressed_data))
+            # Convert to RGBA
+            if image.mode not in ('RGB', 'RGBA'):
+                image = image.convert('RGBA')
+            elif image.mode == 'RGB':
+                image = image.convert('RGBA')
+
             qimage = QImage(
                 image.tobytes(),
                 image.width,

@@ -236,10 +236,11 @@ class AudioPlayerWidget(QWidget):
                 self.progress_slider.setValue(int(self.duration * 1000))
 
     def _format_time(self, seconds: float) -> str:
-        """Format seconds as MM:SS."""
+        """Format seconds as MM:SS.mmm."""
         minutes = int(seconds // 60)
         secs = int(seconds % 60)
-        return f'{minutes:02d}:{secs:02d}'
+        millis = int((seconds % 1) * 1000)
+        return f'{minutes:02d}:{secs:02d}.{millis:03d}'
 
     def _format_size(self, size_bytes: int) -> str:
         """Format file size."""
