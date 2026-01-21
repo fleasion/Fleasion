@@ -1,7 +1,13 @@
-"""Cache scraper addon - intercepts and caches Roblox assets BEFORE replacement."""
+"""Cache scraper addon - intercepts and caches Roblox assets BEFORE replacement.
 
-import re
-from urllib.parse import urlparse, parse_qs
+Uses a two-stage approach matching the Reference implementation:
+1. Stage 1: Intercept assetdelivery.roblox.com/v1/assets/batch to track asset IDs and CDN locations
+2. Stage 2: Intercept fts.rbxcdn.com to download and cache actual asset content
+"""
+
+import gzip
+import json
+from urllib.parse import urlparse
 
 from mitmproxy import http
 
@@ -12,26 +18,9 @@ from ...utils import log_buffer
 class CacheScraper:
     """Mitmproxy addon that intercepts and caches Roblox assets."""
 
-    # Roblox asset delivery domains
-    ASSET_DOMAINS = [
-        'assetdelivery.roblox.com',
-        'c0.rbxcdn.com',
-        'c1.rbxcdn.com',
-        'c2.rbxcdn.com',
-        'c3.rbxcdn.com',
-        'c4.rbxcdn.com',
-        'c5.rbxcdn.com',
-        'c6.rbxcdn.com',
-        'c7.rbxcdn.com',
-        't0.rbxcdn.com',
-        't1.rbxcdn.com',
-        't2.rbxcdn.com',
-        't3.rbxcdn.com',
-        't4.rbxcdn.com',
-        't5.rbxcdn.com',
-        't6.rbxcdn.com',
-        't7.rbxcdn.com',
-    ]
+    DELIVERY_ENDPOINT = '/v1/assets/batch'
+    ASSET_DELIVERY_HOST = 'assetdelivery.roblox.com'
+    CDN_HOST = 'fts.rbxcdn.com'
 
     def __init__(self, cache_manager: CacheManager):
         """
@@ -42,13 +31,16 @@ class CacheScraper:
         """
         self.cache_manager = cache_manager
         self.enabled = True
+        # Track asset IDs and their CDN locations (like Reference cache_logs)
+        self.cache_logs: dict = {}
 
     def response(self, flow: http.HTTPFlow) -> None:
         """
         Handle HTTP responses - cache assets before any modification.
 
-        This runs BEFORE the texture_stripper addon, ensuring we cache
-        the original unmodified assets.
+        Uses a two-stage approach:
+        1. Intercept assetdelivery.roblox.com/v1/assets/batch to track asset IDs and locations
+        2. Intercept fts.rbxcdn.com to download and cache actual content
 
         Args:
             flow: HTTP flow containing request and response
@@ -57,160 +49,188 @@ class CacheScraper:
             return
 
         # Only process successful responses
-        if flow.response.status_code != 200:
-            return
-
-        # Check if this is a Roblox asset domain
-        host = flow.request.pretty_host.lower()
-        if not any(domain in host for domain in self.ASSET_DOMAINS):
+        if flow.response is None or flow.response.status_code != 200:
             return
 
         url = flow.request.pretty_url
-        path = flow.request.path
+        parsed_url = urlparse(url)
+        hostname = parsed_url.hostname
 
-        # Extract asset ID and type from URL
-        asset_info = self._extract_asset_info(url, path)
-        if not asset_info:
-            return
+        # Stage 1: Track asset IDs and their CDN locations from asset delivery API
+        if hostname == self.ASSET_DELIVERY_HOST:
+            if parsed_url.path == self.DELIVERY_ENDPOINT:
+                self._handle_asset_delivery(flow)
 
-        asset_id = asset_info['id']
-        asset_type = asset_info['type']
+        # Stage 2: Cache actual content from CDN
+        elif hostname == self.CDN_HOST:
+            self._handle_cdn_download(flow, url, parsed_url)
 
-        # Get response content (before any modifications)
-        content = flow.response.content
-
-        if not content or len(content) == 0:
-            return
-
-        # Extract metadata
-        metadata = {
-            'url': url,
-            'content_type': flow.response.headers.get('content-type', ''),
-            'content_length': len(content),
-        }
-
-        # Store the asset
-        success = self.cache_manager.store_asset(
-            asset_id=asset_id,
-            asset_type=asset_type,
-            data=content,
-            url=url,
-            metadata=metadata
-        )
-
-        if success:
-            type_name = self.cache_manager.get_asset_type_name(asset_type)
-            log_buffer.log(
-                'Cache',
-                f'Cached {type_name} asset: {asset_id} ({len(content)} bytes)'
-            )
-
-    def _extract_asset_info(self, url: str, path: str) -> dict | None:
+    def _handle_asset_delivery(self, flow: http.HTTPFlow) -> None:
         """
-        Extract asset ID and type from URL.
+        Handle asset delivery batch response - extract asset IDs and CDN locations.
 
         Args:
-            url: Full URL
-            path: URL path
+            flow: HTTP flow
+        """
+        try:
+            req_encoding = flow.request.headers.get('Content-Encoding', '').lower()
+            res_encoding = flow.response.headers.get('Content-Encoding', '').lower()
+
+            req_json = self._parse_body(flow.request.content, req_encoding)
+            res_json = self._parse_body(flow.response.content, res_encoding)
+
+            if not req_json or not res_json:
+                return
+
+            if not isinstance(req_json, list) or not isinstance(res_json, list):
+                return
+
+            tracked_count = 0
+            for index, item in enumerate(req_json):
+                if not isinstance(item, dict):
+                    continue
+
+                if 'assetId' not in item:
+                    continue
+
+                asset_id = item['assetId']
+
+                # Skip if already tracked
+                if asset_id in self.cache_logs:
+                    continue
+
+                # Get corresponding response item
+                if index >= len(res_json):
+                    continue
+
+                res_item = res_json[index]
+                if not isinstance(res_item, dict):
+                    continue
+
+                # Extract location and type
+                location = res_item.get('location')
+                asset_type = res_item.get('assetTypeId')
+
+                if location is not None and asset_type is not None:
+                    self.cache_logs[asset_id] = {
+                        'location': location,
+                        'assetTypeId': asset_type,
+                    }
+                    tracked_count += 1
+
+            if tracked_count > 0:
+                log_buffer.log('Cache', f'Tracking {tracked_count} asset(s) for caching')
+
+        except Exception as e:
+            log_buffer.log('Cache', f'Error in asset delivery handler: {e}')
+
+    def _handle_cdn_download(self, flow: http.HTTPFlow, url: str, parsed_url) -> None:
+        """
+        Handle CDN download - cache the actual asset content.
+
+        Args:
+            flow: HTTP flow
+            url: Request URL
+            parsed_url: Parsed URL
+        """
+        try:
+            req_base = url.split('?')[0]
+
+            # Find matching asset in cache_logs
+            for asset_id, info in self.cache_logs.items():
+                if not isinstance(info, dict):
+                    continue
+
+                location = info.get('location')
+                if not location:
+                    continue
+
+                # Skip if already cached
+                if 'cached' in info:
+                    continue
+
+                # Check if this URL matches the tracked location
+                cached_base = location.split('?')[0]
+                if cached_base != req_base:
+                    continue
+
+                # Get asset content
+                content = flow.response.content
+                if not content:
+                    continue
+
+                # Mark as cached in tracking log
+                info['cached'] = True
+
+                # Extract hash from path
+                cache_hash = parsed_url.path.rsplit('/', 1)[-1]
+                asset_type = info.get('assetTypeId', 0)
+
+                # Build metadata
+                metadata = {
+                    'url': url,
+                    'content_type': flow.response.headers.get('content-type', ''),
+                    'content_length': len(content),
+                    'hash': cache_hash,
+                }
+
+                # Store in cache manager
+                success = self.cache_manager.store_asset(
+                    asset_id=str(asset_id),
+                    asset_type=asset_type,
+                    data=content,
+                    url=url,
+                    metadata=metadata
+                )
+
+                if success:
+                    type_name = self.cache_manager.get_asset_type_name(asset_type)
+                    log_buffer.log(
+                        'Cache',
+                        f'Cached {type_name}: {asset_id} ({len(content)} bytes)'
+                    )
+
+                # Found match, stop searching
+                break
+
+        except Exception as e:
+            log_buffer.log('Cache', f'Error in CDN handler: {e}')
+
+    def _parse_body(self, content: bytes, encoding: str):
+        """
+        Parse body content, handling gzip compression.
+
+        Args:
+            content: Raw content bytes
+            encoding: Content encoding
 
         Returns:
-            Dict with 'id' and 'type' keys, or None if not an asset URL
+            Parsed JSON or None
         """
-        # Pattern 1: /v1/assets?id=123456789&assetType=4
-        if '/v1/assets' in path or '/v1/asset' in path:
-            parsed = urlparse(url)
-            params = parse_qs(parsed.query)
+        if not content:
+            return None
 
-            asset_id = params.get('id', params.get('assetId', [None]))[0]
-            asset_type = params.get('assetType', params.get('type', ['0']))[0]
-
-            if asset_id:
+        try:
+            if encoding == 'gzip':
                 try:
-                    return {
-                        'id': str(asset_id),
-                        'type': int(asset_type) if asset_type else 0
-                    }
-                except ValueError:
+                    content = gzip.decompress(content)
+                except OSError:
+                    # Not actually gzipped, use raw bytes
                     pass
 
-        # Pattern 2: /asset?id=123456789
-        match = re.search(r'[?&]id=(\d+)', url)
-        if match:
-            asset_id = match.group(1)
+            return json.loads(content)
 
-            # Try to extract type from URL
-            type_match = re.search(r'[?&](?:assetType|type)=(\d+)', url)
-            asset_type = int(type_match.group(1)) if type_match else 0
-
-            return {
-                'id': asset_id,
-                'type': asset_type
-            }
-
-        # Pattern 3: Direct CDN URLs like /123456789
-        # These are usually meshes or textures
-        match = re.search(r'/(\d{8,})', path)
-        if match:
-            asset_id = match.group(1)
-
-            # Infer type from domain/path
-            asset_type = self._infer_type_from_url(url, path)
-
-            return {
-                'id': asset_id,
-                'type': asset_type
-            }
-
-        return None
-
-    def _infer_type_from_url(self, url: str, path: str) -> int:
-        """
-        Infer asset type from URL patterns.
-
-        Args:
-            url: Full URL
-            path: URL path
-
-        Returns:
-            Asset type ID (0 if unknown)
-        """
-        url_lower = url.lower()
-        path_lower = path.lower()
-
-        # Texture/Image URLs (most common on CDN)
-        if any(x in url_lower for x in ['t0.rbxcdn', 't1.rbxcdn', 't2.rbxcdn',
-                                          't3.rbxcdn', 't4.rbxcdn', 't5.rbxcdn',
-                                          't6.rbxcdn', 't7.rbxcdn']):
-            return 1  # Image
-
-        # Content/asset URLs
-        if any(x in url_lower for x in ['c0.rbxcdn', 'c1.rbxcdn', 'c2.rbxcdn',
-                                          'c3.rbxcdn', 'c4.rbxcdn', 'c5.rbxcdn',
-                                          'c6.rbxcdn', 'c7.rbxcdn']):
-            # Could be mesh, audio, or other
-            if '.mesh' in path_lower or 'meshes' in path_lower:
-                return 4  # Mesh
-            elif '.mp3' in path_lower or '.ogg' in path_lower or 'audio' in path_lower:
-                return 3  # Audio
-            elif '.rbxm' in path_lower:
-                return 10  # Model
-            else:
-                return 0  # Unknown
-
-        # AssetDelivery service
-        if 'assetdelivery' in url_lower:
-            # Try to infer from path
-            if 'mesh' in path_lower:
-                return 4  # Mesh
-            elif 'texture' in path_lower or 'image' in path_lower:
-                return 1  # Image
-            elif 'audio' in path_lower:
-                return 3  # Audio
-
-        return 0  # Unknown type
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            log_buffer.log('Cache', f'Failed to parse JSON: {e}')
+            return None
 
     def set_enabled(self, enabled: bool):
         """Enable or disable the cache scraper."""
         self.enabled = enabled
         status = 'enabled' if enabled else 'disabled'
         log_buffer.log('Cache', f'Cache scraper {status}')
+
+    def clear_tracking(self):
+        """Clear the asset tracking log."""
+        self.cache_logs.clear()
+        log_buffer.log('Cache', 'Cleared asset tracking log')
