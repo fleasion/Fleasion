@@ -217,13 +217,13 @@ class CacheViewerTab(QWidget):
         delete_btn.clicked.connect(self._delete_selected)
         actions_layout.addWidget(delete_btn)
 
-        clear_btn = QPushButton('Clear Cache')
-        clear_btn.clicked.connect(self._clear_cache)
-        actions_layout.addWidget(clear_btn)
-
         delete_db_btn = QPushButton('Delete DB')
-        delete_db_btn.clicked.connect(self._delete_database)
+        delete_db_btn.clicked.connect(self._clear_cache)
         actions_layout.addWidget(delete_db_btn)
+
+        delete_cache_btn = QPushButton('Delete Cache')
+        delete_cache_btn.clicked.connect(self._delete_roblox_cache)
+        actions_layout.addWidget(delete_cache_btn)
 
         self.stop_preview_btn = QPushButton('Stop Preview')
         self.stop_preview_btn.clicked.connect(self._stop_preview)
@@ -754,29 +754,7 @@ class CacheViewerTab(QWidget):
                 )
 
     def _clear_cache(self):
-        """Clear all cached assets."""
-        stats = self.cache_manager.get_cache_stats()
-        total_assets = stats['total_assets']
-
-        if total_assets == 0:
-            QMessageBox.information(self, 'Empty Cache', 'Cache is already empty')
-            return
-
-        reply = QMessageBox.question(
-            self,
-            'Clear Cache',
-            f'Delete all {total_assets} cached asset(s)?',
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-
-        if reply == QMessageBox.StandardButton.Yes:
-            deleted = self.cache_manager.clear_cache()
-            log_buffer.log('Cache', f'Cleared cache: {deleted} assets deleted')
-            self._refresh_assets()
-            QMessageBox.information(self, 'Success', f'Deleted {deleted} asset(s)')
-
-    def _delete_database(self):
-        """Delete the entire cache database and files."""
+        """Delete the entire cache database and files (old Delete DB functionality)."""
         reply = QMessageBox.question(
             self,
             'Delete Database',
@@ -795,11 +773,19 @@ class CacheViewerTab(QWidget):
                 self.cache_manager.index = {'assets': {}}
                 self.cache_manager._save_index()
                 self._last_asset_count = 0
+                self._asset_info.clear()
                 self._refresh_assets()
                 log_buffer.log('Cache', 'Database deleted and reset')
                 QMessageBox.information(self, 'Success', 'Database deleted successfully')
             except Exception as e:
                 QMessageBox.critical(self, 'Error', f'Failed to delete database: {e}')
+
+    def _delete_roblox_cache(self):
+        """Delete Roblox cache using system tray method."""
+        from ..gui import DeleteCacheWindow
+
+        window = DeleteCacheWindow()
+        window.exec()
 
     def _on_selection_changed(self):
         """Handle table selection change to preview asset."""
