@@ -13,6 +13,7 @@ import io
 from .cache_manager import CacheManager
 from .obj_viewer import ObjViewerPanel
 from .audio_player import AudioPlayerWidget
+from .animation_viewer import AnimationViewerPanel
 from . import mesh_processing
 from ..utils import log_buffer, open_folder
 
@@ -69,14 +70,6 @@ class CacheViewerTab(QWidget):
         filter_group = QGroupBox('Filters')
         filter_layout = QHBoxLayout()
 
-        # Cache scraper toggle (off by default)
-        self.scraper_toggle = QCheckBox('Enable Cache Scraper')
-        self.scraper_toggle.setChecked(False)
-        self.scraper_toggle.stateChanged.connect(self._toggle_scraper)
-        filter_layout.addWidget(self.scraper_toggle)
-
-        filter_layout.addWidget(QLabel('|'))
-
         # Search box first
         filter_layout.addWidget(QLabel('Search:'))
         self.search_box = QLineEdit()
@@ -94,6 +87,14 @@ class CacheViewerTab(QWidget):
         filter_layout.addWidget(self.type_filter)
 
         filter_layout.addStretch()
+
+        # Cache scraper toggle on right side (off by default)
+        self.scraper_toggle = QCheckBox('Enable Cache Scraper')
+        self.scraper_toggle.setChecked(False)
+        self.scraper_toggle.stateChanged.connect(self._toggle_scraper)
+        filter_layout.addWidget(self.scraper_toggle)
+
+        filter_layout.addWidget(QLabel('|'))
 
         # Stats label
         self.stats_label = QLabel('Total: 0 assets | Size: 0 B')
@@ -154,6 +155,10 @@ class CacheViewerTab(QWidget):
         self.audio_container.setLayout(self.audio_container_layout)
         preview_group_layout.addWidget(self.audio_container)
 
+        # Animation viewer
+        self.animation_viewer = AnimationViewerPanel()
+        preview_group_layout.addWidget(self.animation_viewer)
+
         # Text viewer for other types
         self.text_viewer = QTextEdit()
         self.text_viewer.setReadOnly(True)
@@ -163,6 +168,7 @@ class CacheViewerTab(QWidget):
         # Initially hide all preview widgets
         self.obj_viewer.hide()
         self.audio_container.hide()
+        self.animation_viewer.hide()
         self.text_viewer.hide()
 
         preview_group.setLayout(preview_group_layout)
@@ -468,6 +474,7 @@ class CacheViewerTab(QWidget):
         self.obj_viewer.hide()
         self.image_label.hide()
         self.audio_container.hide()
+        self.animation_viewer.hide()
         self.text_viewer.hide()
 
         # Stop any playing audio
@@ -475,6 +482,9 @@ class CacheViewerTab(QWidget):
             self.audio_player.stop()
             self.audio_player.deleteLater()
             self.audio_player = None
+
+        # Stop animation playback
+        self.animation_viewer.stop()
 
         asset_type = asset['type']
         asset_id = asset['id']
@@ -513,6 +523,8 @@ class CacheViewerTab(QWidget):
             self.audio_player.stop()
             self.audio_player.deleteLater()
             self.audio_player = None
+        self.animation_viewer.hide()
+        self.animation_viewer.clear()
         self.text_viewer.hide()
         self.text_viewer.clear()
 
@@ -592,7 +604,12 @@ class CacheViewerTab(QWidget):
     def _preview_animation(self, data: bytes, asset_id: str):
         """Preview an animation asset (RBXM XML format)."""
         try:
-            # Try to decode as XML
+            # Try to load in the animation viewer
+            if self.animation_viewer.load_animation(data):
+                self.animation_viewer.show()
+                return
+
+            # Fallback: try to decode as XML for text display
             text = data.decode('utf-8', errors='replace')
 
             # Check if it's XML
@@ -600,7 +617,7 @@ class CacheViewerTab(QWidget):
                 # Format XML for display
                 import xml.etree.ElementTree as ET
                 try:
-                    root = ET.fromstring(data)
+                    ET.fromstring(data)
                     # Pretty print XML
                     import xml.dom.minidom
                     dom = xml.dom.minidom.parseString(data)

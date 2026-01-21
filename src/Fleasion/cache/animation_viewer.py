@@ -1,4 +1,8 @@
-"""Animation viewer widget using OpenGL for Python 3.14 compatibility."""
+"""Animation viewer widget using OpenGL for Python 3.14 compatibility.
+
+This implementation properly handles motor joint hierarchies and quaternion
+interpolation, matching the Reference pyvista/vtk implementation.
+"""
 
 import math
 import os
@@ -17,51 +21,159 @@ from PyQt6.QtWidgets import (
 )
 
 
+# Math helpers
+
+def lerp(a: float, b: float, t: float) -> float:
+    """Linear interpolation."""
+    return a + (b - a) * t
+
+
+def quat_from_rot3(r: List[List[float]]) -> Tuple[float, float, float, float]:
+    """Convert 3x3 rotation matrix to quaternion (w, x, y, z)."""
+    trace = r[0][0] + r[1][1] + r[2][2]
+    if trace > 0.0:
+        s = math.sqrt(trace + 1.0) * 2.0
+        w = 0.25 * s
+        x = (r[2][1] - r[1][2]) / s
+        y = (r[0][2] - r[2][0]) / s
+        z = (r[1][0] - r[0][1]) / s
+    elif (r[0][0] > r[1][1]) and (r[0][0] > r[2][2]):
+        s = math.sqrt(1.0 + r[0][0] - r[1][1] - r[2][2]) * 2.0
+        w = (r[2][1] - r[1][2]) / s
+        x = 0.25 * s
+        y = (r[0][1] + r[1][0]) / s
+        z = (r[0][2] + r[2][0]) / s
+    elif r[1][1] > r[2][2]:
+        s = math.sqrt(1.0 + r[1][1] - r[0][0] - r[2][2]) * 2.0
+        w = (r[0][2] - r[2][0]) / s
+        x = (r[0][1] + r[1][0]) / s
+        y = 0.25 * s
+        z = (r[1][2] + r[2][1]) / s
+    else:
+        s = math.sqrt(1.0 + r[2][2] - r[0][0] - r[1][1]) * 2.0
+        w = (r[1][0] - r[0][1]) / s
+        x = (r[0][2] + r[2][0]) / s
+        y = (r[1][2] + r[2][1]) / s
+        z = 0.25 * s
+    n = math.sqrt(w * w + x * x + y * y + z * z) or 1.0
+    return (w / n, x / n, y / n, z / n)
+
+
+def rot3_from_quat(q: Tuple[float, float, float, float]) -> List[List[float]]:
+    """Convert quaternion to 3x3 rotation matrix."""
+    w, x, y, z = q
+    xx, yy, zz = x * x, y * y, z * z
+    xy, xz, yz = x * y, x * z, y * z
+    wx, wy, wz = w * x, w * y, w * z
+    return [
+        [1 - 2 * (yy + zz), 2 * (xy - wz), 2 * (xz + wy)],
+        [2 * (xy + wz), 1 - 2 * (xx + zz), 2 * (yz - wx)],
+        [2 * (xz - wy), 2 * (yz + wx), 1 - 2 * (xx + yy)],
+    ]
+
+
+def quat_slerp(
+    q0: Tuple[float, float, float, float],
+    q1: Tuple[float, float, float, float],
+    t: float
+) -> Tuple[float, float, float, float]:
+    """Spherical linear interpolation between quaternions."""
+    w0, x0, y0, z0 = q0
+    w1, x1, y1, z1 = q1
+    dot = w0 * w1 + x0 * x1 + y0 * y1 + z0 * z1
+    if dot < 0.0:
+        dot = -dot
+        w1, x1, y1, z1 = -w1, -x1, -y1, -z1
+    if dot > 0.9995:
+        w = w0 + (w1 - w0) * t
+        x = x0 + (x1 - x0) * t
+        y = y0 + (y1 - y0) * t
+        z = z0 + (z1 - z0) * t
+        n = math.sqrt(w * w + x * x + y * y + z * z) or 1.0
+        return (w / n, x / n, y / n, z / n)
+    theta_0 = math.acos(max(-1.0, min(1.0, dot)))
+    sin_0 = math.sin(theta_0) or 1e-8
+    theta = theta_0 * t
+    s0 = math.sin(theta_0 - theta) / sin_0
+    s1 = math.sin(theta) / sin_0
+    return (w0 * s0 + w1 * s1, x0 * s0 + x1 * s1, y0 * s0 + y1 * s1, z0 * s0 + z1 * s1)
+
+
+# Matrix operations using numpy
+
+def mat_identity() -> np.ndarray:
+    """Create identity 4x4 matrix."""
+    return np.eye(4, dtype=np.float32)
+
+
+def mat_from_cframe(pos: Tuple[float, float, float], r: List[float]) -> np.ndarray:
+    """Create 4x4 matrix from CFrame position and rotation values."""
+    m = np.eye(4, dtype=np.float32)
+    m[0, 0:3] = r[0:3]
+    m[1, 0:3] = r[3:6]
+    m[2, 0:3] = r[6:9]
+    m[0, 3] = pos[0]
+    m[1, 3] = pos[1]
+    m[2, 3] = pos[2]
+    return m
+
+
+def mat_mul(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Multiply two 4x4 matrices."""
+    return np.matmul(a, b)
+
+
+def mat_inv(a: np.ndarray) -> np.ndarray:
+    """Invert 4x4 matrix."""
+    return np.linalg.inv(a)
+
+
+def mat_get_translation(m: np.ndarray) -> Tuple[float, float, float]:
+    """Get translation from 4x4 matrix."""
+    return (float(m[0, 3]), float(m[1, 3]), float(m[2, 3]))
+
+
+def mat_set_translation(m: np.ndarray, t: Tuple[float, float, float]) -> None:
+    """Set translation in 4x4 matrix."""
+    m[0, 3] = t[0]
+    m[1, 3] = t[1]
+    m[2, 3] = t[2]
+
+
+def mat_get_rot3(m: np.ndarray) -> List[List[float]]:
+    """Get 3x3 rotation from 4x4 matrix."""
+    return [
+        [float(m[0, 0]), float(m[0, 1]), float(m[0, 2])],
+        [float(m[1, 0]), float(m[1, 1]), float(m[1, 2])],
+        [float(m[2, 0]), float(m[2, 1]), float(m[2, 2])],
+    ]
+
+
+def mat_set_rot3(m: np.ndarray, r: List[List[float]]) -> None:
+    """Set 3x3 rotation in 4x4 matrix."""
+    m[0, 0:3] = r[0]
+    m[1, 0:3] = r[1]
+    m[2, 0:3] = r[2]
+
+
+def matrix_trs_lerp(m0: np.ndarray, m1: np.ndarray, t: float) -> np.ndarray:
+    """Interpolate between two matrices using TRS decomposition and slerp."""
+    t0 = mat_get_translation(m0)
+    t1 = mat_get_translation(m1)
+    tt = (lerp(t0[0], t1[0], t), lerp(t0[1], t1[1], t), lerp(t0[2], t1[2], t))
+
+    q0 = quat_from_rot3(mat_get_rot3(m0))
+    q1 = quat_from_rot3(mat_get_rot3(m1))
+    qt = quat_slerp(q0, q1, t)
+    rt = rot3_from_quat(qt)
+
+    out = mat_identity()
+    mat_set_rot3(out, rt)
+    mat_set_translation(out, tt)
+    return out
+
+
 # Data structures
-
-@dataclass
-class Vector3:
-    """3D vector."""
-    x: float
-    y: float
-    z: float
-
-    def to_tuple(self) -> Tuple[float, float, float]:
-        return (self.x, self.y, self.z)
-
-
-@dataclass
-class Matrix4x4:
-    """4x4 transformation matrix."""
-    m: np.ndarray  # 4x4 numpy array
-
-    @staticmethod
-    def identity():
-        return Matrix4x4(np.eye(4))
-
-    @staticmethod
-    def from_cframe(pos: Tuple[float, float, float], rot: List[float]):
-        """Create matrix from position and rotation."""
-        m = np.eye(4)
-        m[0, 0:3] = rot[0:3]
-        m[1, 0:3] = rot[3:6]
-        m[2, 0:3] = rot[6:9]
-        m[0:3, 3] = pos
-        return Matrix4x4(m)
-
-    def multiply(self, other: 'Matrix4x4') -> 'Matrix4x4':
-        return Matrix4x4(np.matmul(self.m, other.m))
-
-    def inverse(self) -> 'Matrix4x4':
-        return Matrix4x4(np.linalg.inv(self.m))
-
-    def get_translation(self) -> Tuple[float, float, float]:
-        return tuple(self.m[0:3, 3])
-
-    def lerp(self, other: 'Matrix4x4', t: float) -> 'Matrix4x4':
-        """Linear interpolation between two matrices."""
-        return Matrix4x4((1 - t) * self.m + t * other.m)
-
 
 @dataclass
 class Part:
@@ -69,8 +181,8 @@ class Part:
     referent: str
     name: str
     size: Tuple[float, float, float]
-    cframe: Matrix4x4
-    mesh_data: Optional[Dict] = None  # Vertices, faces, normals
+    cframe: np.ndarray
+    mesh_data: Optional[Dict] = None
 
 
 @dataclass
@@ -79,20 +191,20 @@ class Motor6D:
     name: str
     part0_ref: str
     part1_ref: str
-    c0: Matrix4x4
-    c1: Matrix4x4
+    c0: np.ndarray
+    c1: np.ndarray
 
 
 @dataclass
 class Keyframe:
     """Animation keyframe."""
     time: float
-    pose_by_part_name: Dict[str, Matrix4x4]
+    pose_by_part_name: Dict[str, np.ndarray]
 
 
 # XML parsing helpers
 
-def _text(elem: Optional[ET.Element], default='') -> str:
+def _text(elem: Optional[ET.Element], default: str = '') -> str:
     """Get text from XML element."""
     return elem.text if elem is not None and elem.text is not None else default
 
@@ -160,7 +272,7 @@ def load_rig(rig_path: str) -> Tuple[Dict[str, Part], List[Motor6D]]:
             name = _text(find_prop(props, 'string', ['Name']), cls)
             size = parse_vector3(size_elem)
             pos, r = parse_cframe(cf_elem)
-            parts[ref] = Part(ref, name, size, Matrix4x4.from_cframe(pos, r))
+            parts[ref] = Part(ref, name, size, mat_from_cframe(pos, r))
 
         if cls == 'Motor6D':
             name = _text(find_prop(props, 'string', ['Name']))
@@ -178,14 +290,135 @@ def load_rig(rig_path: str) -> Tuple[Dict[str, Part], List[Motor6D]]:
                 name=name,
                 part0_ref=_text(p0),
                 part1_ref=_text(p1),
-                c0=Matrix4x4.from_cframe(pos0, r0),
-                c1=Matrix4x4.from_cframe(pos1, r1),
+                c0=mat_from_cframe(pos0, r0),
+                c1=mat_from_cframe(pos1, r1),
             ))
 
     return parts, motors
 
 
-def load_animation(anim_path: str) -> List[Keyframe]:
+def load_animation_from_xml(anim_data: bytes) -> List[Keyframe]:
+    """Load animation from XML bytes (RBXMX format)."""
+    try:
+        root = ET.fromstring(anim_data)
+    except ET.ParseError:
+        return []
+
+    keys: List[Keyframe] = []
+    for item in root.iter('Item'):
+        if item.attrib.get('class') != 'Keyframe':
+            continue
+        props = item.find('Properties')
+        if props is None:
+            continue
+
+        t_elem = find_prop(props, 'float', ['Time'])
+        if t_elem is None:
+            continue
+        t = float(_text(t_elem, '0'))
+
+        poses: Dict[str, np.ndarray] = {}
+        for pose_item in item.iter('Item'):
+            if pose_item.attrib.get('class') != 'Pose':
+                continue
+            pprops = pose_item.find('Properties')
+            if pprops is None:
+                continue
+
+            pname = _text(find_prop(pprops, 'string', ['Name']))
+            cf = find_prop(pprops, 'CoordinateFrame', ['CFrame']) or find_prop(pprops, 'CFrame', ['CFrame'])
+            if not pname or cf is None:
+                continue
+
+            pos, r = parse_cframe(cf)
+            poses[pname] = mat_from_cframe(pos, r)
+
+        keys.append(Keyframe(t, poses))
+
+    keys.sort(key=lambda k: k.time)
+    return keys
+
+
+def load_animation_from_rbxm(anim_data: bytes) -> List[Keyframe]:
+    """Load animation from binary RBXM format."""
+    try:
+        from .rbxm_parser import parse_rbxm, find_by_class
+    except ImportError:
+        print('RBXM parser not available')
+        return []
+
+    try:
+        instances = parse_rbxm(anim_data)
+
+        # Find all Keyframe instances
+        keyframe_instances = find_by_class(instances, 'Keyframe')
+
+        if not keyframe_instances:
+            print('No Keyframe instances found in RBXM')
+            return []
+
+        keys: List[Keyframe] = []
+
+        for kf_inst in keyframe_instances:
+            # Get keyframe time
+            time_val = kf_inst.properties.get('Time', 0.0)
+            if isinstance(time_val, (int, float)):
+                t = float(time_val)
+            else:
+                t = 0.0
+
+            # Find all Pose children (recursively)
+            poses: Dict[str, np.ndarray] = {}
+            _collect_poses(kf_inst, poses)
+
+            if poses:
+                keys.append(Keyframe(t, poses))
+
+        keys.sort(key=lambda k: k.time)
+        return keys
+
+    except Exception as e:
+        print(f'Error parsing RBXM animation: {e}')
+        import traceback
+        traceback.print_exc()
+        return []
+
+
+def _collect_poses(instance, poses: Dict[str, np.ndarray]):
+    """Recursively collect Pose instances from a Keyframe."""
+    for child in instance.children:
+        if child.class_name == 'Pose':
+            name = child.properties.get('Name', '')
+            cframe = child.properties.get('CFrame')
+
+            if name and cframe:
+                # CFrame is a dict with 'position' and 'rotation'
+                pos = cframe.get('position', (0, 0, 0))
+                rot = cframe.get('rotation', [1, 0, 0, 0, 1, 0, 0, 0, 1])
+                poses[name] = mat_from_cframe(pos, rot)
+
+            # Recursively check for nested poses
+            _collect_poses(child, poses)
+
+
+def load_animation_data(anim_data: bytes) -> List[Keyframe]:
+    """Load animation from either XML or binary RBXM format."""
+    # Try to detect format
+    if anim_data.startswith(b'<roblox!'):
+        # Binary RBXM format
+        return load_animation_from_rbxm(anim_data)
+    elif anim_data.strip().startswith(b'<'):
+        # XML format
+        return load_animation_from_xml(anim_data)
+    else:
+        # Try binary first, then XML
+        keys = load_animation_from_rbxm(anim_data)
+        if keys:
+            return keys
+        return load_animation_from_xml(anim_data)
+
+
+def load_animation_from_file(anim_path: str) -> List[Keyframe]:
     """Load animation from XML file."""
     tree = ET.parse(anim_path)
     root = tree.getroot()
@@ -203,7 +436,7 @@ def load_animation(anim_path: str) -> List[Keyframe]:
             continue
         t = float(_text(t_elem, '0'))
 
-        poses: Dict[str, Matrix4x4] = {}
+        poses: Dict[str, np.ndarray] = {}
         for pose_item in item.iter('Item'):
             if pose_item.attrib.get('class') != 'Pose':
                 continue
@@ -217,7 +450,7 @@ def load_animation(anim_path: str) -> List[Keyframe]:
                 continue
 
             pos, r = parse_cframe(cf)
-            poses[pname] = Matrix4x4.from_cframe(pos, r)
+            poses[pname] = mat_from_cframe(pos, r)
 
         keys.append(Keyframe(t, poses))
 
@@ -241,15 +474,34 @@ def sample_keyframes(keys: List[Keyframe], t: float) -> Tuple[Keyframe, Keyframe
     return keys[-1], keys[-1], 0.0
 
 
-def load_obj_mesh(mesh_path: str) -> Dict:
+def pick_root_ref(parts: Dict[str, Part]) -> str:
+    """Pick the root part reference."""
+    preferred = ('HumanoidRootPart', 'LowerTorso', 'Torso', 'UpperTorso', 'Head')
+    for want in preferred:
+        for ref, p in parts.items():
+            if p.name == want:
+                return ref
+    return next(iter(parts.keys()))
+
+
+def detect_rig_type(parts: Dict[str, Part]) -> str:
+    """Detect if rig is R6 or R15."""
+    names = {p.name for p in parts.values()}
+    if 'Torso' in names and 'UpperTorso' not in names:
+        return 'R6'
+    return 'R15'
+
+
+# Mesh loading
+
+def load_obj_mesh(mesh_path: str) -> Optional[Dict]:
     """Load OBJ mesh file."""
+    if not os.path.exists(mesh_path):
+        return None
+
     vertices = []
     normals = []
     faces = []
-
-    if not os.path.exists(mesh_path):
-        # Return cube fallback
-        return create_cube_mesh(1, 1, 1)
 
     try:
         with open(mesh_path, 'r') as f:
@@ -263,19 +515,25 @@ def load_obj_mesh(mesh_path: str) -> Dict:
                 elif parts[0] == 'vn':
                     normals.append([float(parts[1]), float(parts[2]), float(parts[3])])
                 elif parts[0] == 'f':
-                    # Parse face (supports v, v/vt, v/vt/vn, v//vn)
                     face_verts = []
+                    face_norms = []
                     for vertex_str in parts[1:]:
                         indices = vertex_str.split('/')
                         v_idx = int(indices[0]) - 1
                         face_verts.append(v_idx)
-                    faces.append(face_verts)
+                        if len(indices) >= 3 and indices[2]:
+                            n_idx = int(indices[2]) - 1
+                            face_norms.append(n_idx)
+                    faces.append({'v': face_verts, 'n': face_norms if face_norms else None})
 
-        return {'vertices': np.array(vertices), 'faces': faces, 'normals': np.array(normals) if normals else None}
-
+        return {
+            'vertices': np.array(vertices, dtype=np.float32),
+            'normals': np.array(normals, dtype=np.float32) if normals else None,
+            'faces': faces
+        }
     except Exception as e:
         print(f'Error loading mesh {mesh_path}: {e}')
-        return create_cube_mesh(1, 1, 1)
+        return None
 
 
 def create_cube_mesh(sx: float, sy: float, sz: float) -> Dict:
@@ -284,17 +542,42 @@ def create_cube_mesh(sx: float, sy: float, sz: float) -> Dict:
     vertices = np.array([
         [-hx, -hy, -hz], [hx, -hy, -hz], [hx, hy, -hz], [-hx, hy, -hz],
         [-hx, -hy, hz], [hx, -hy, hz], [hx, hy, hz], [-hx, hy, hz]
-    ])
+    ], dtype=np.float32)
+
+    # Face normals
+    normals = np.array([
+        [0, 0, -1], [0, 0, 1], [0, -1, 0], [0, 1, 0], [-1, 0, 0], [1, 0, 0]
+    ], dtype=np.float32)
+
     faces = [
-        [0, 1, 2, 3], [4, 5, 6, 7], [0, 1, 5, 4],
-        [2, 3, 7, 6], [0, 3, 7, 4], [1, 2, 6, 5]
+        {'v': [0, 1, 2, 3], 'n': [0, 0, 0, 0]},  # Front
+        {'v': [5, 4, 7, 6], 'n': [1, 1, 1, 1]},  # Back
+        {'v': [0, 1, 5, 4], 'n': [2, 2, 2, 2]},  # Bottom
+        {'v': [3, 2, 6, 7], 'n': [3, 3, 3, 3]},  # Top
+        {'v': [0, 3, 7, 4], 'n': [4, 4, 4, 4]},  # Left
+        {'v': [1, 2, 6, 5], 'n': [5, 5, 5, 5]},  # Right
     ]
-    return {'vertices': vertices, 'faces': faces, 'normals': None}
+    return {'vertices': vertices, 'normals': normals, 'faces': faces}
+
+
+def get_animpreview_dir() -> Path:
+    """Get the animpreview tools directory."""
+    return Path(__file__).parent / 'tools' / 'animpreview'
+
+
+def get_mesh_dir() -> Path:
+    """Get the mesh parts directory."""
+    return get_animpreview_dir() / 'R15AndR6Parts'
+
+
+def get_rig_path(rig_type: str) -> Path:
+    """Get the rig file path."""
+    return get_animpreview_dir() / f'{rig_type}RIG.rbxmx'
 
 
 # OpenGL viewer widget
 
-class AnimationViewerWidget(QOpenGLWidget):
+class AnimationGLWidget(QOpenGLWidget):
     """OpenGL widget for displaying animated rigs."""
 
     def __init__(self, parent=None):
@@ -305,130 +588,267 @@ class AnimationViewerWidget(QOpenGLWidget):
         self.current_time = 0.0
         self.duration = 0.0
 
+        # Root tracking
+        self.root_ref: Optional[str] = None
+        self.root_name: str = ''
+        self.base_root_world: Optional[np.ndarray] = None
+
+        # World transforms for each part
+        self.world_transforms: Dict[str, np.ndarray] = {}
+
         # Camera
         self.rotation_x = 20
-        self.rotation_y = 45
+        self.rotation_y = 205
         self.zoom = 10
+        self.camera_target = (0, 2, 0)
         self.last_pos = None
 
-    def load_animation_data(self, rig_path: str, anim_path: str, mesh_dir: Optional[str] = None):
-        """Load rig and animation data."""
+        # Rig type
+        self.rig_type = 'R15'
+
+    def load_animation_data(self, anim_data: bytes) -> bool:
+        """Load animation from raw bytes and setup rig."""
         try:
-            self.parts, self.motors = load_rig(rig_path)
-            self.keyframes = load_animation(anim_path)
+            # Parse animation (handles both XML and binary RBXM)
+            self.keyframes = load_animation_data(anim_data)
+            if not self.keyframes:
+                print('No keyframes found in animation data')
+                return False
 
-            if self.keyframes:
-                self.duration = self.keyframes[-1].time
+            self.duration = max(kf.time for kf in self.keyframes) if self.keyframes else 0
 
-            # Load meshes for parts if mesh_dir provided
-            if mesh_dir:
-                rig_type = self._detect_rig_type()
-                for part in self.parts.values():
-                    mesh_path = os.path.join(mesh_dir, f'{rig_type}{part.name}.obj')
-                    part.mesh_data = load_obj_mesh(mesh_path)
+            # Detect rig type from animation pose names
+            all_pose_names: set = set()
+            for kf in self.keyframes:
+                all_pose_names.update(kf.pose_by_part_name.keys())
+
+            # R6 uses Torso, R15 uses UpperTorso/LowerTorso
+            if 'Torso' in all_pose_names and 'UpperTorso' not in all_pose_names:
+                self.rig_type = 'R6'
             else:
-                # Use cube fallback for all parts
-                for part in self.parts.values():
-                    part.mesh_data = create_cube_mesh(*part.size)
+                self.rig_type = 'R15'
 
+            # Load rig
+            rig_path = get_rig_path(self.rig_type)
+            if not rig_path.exists():
+                print(f'Rig file not found: {rig_path}')
+                return False
+
+            self.parts, self.motors = load_rig(str(rig_path))
+            if not self.parts:
+                print('No parts found in rig')
+                return False
+
+            # Load meshes
+            mesh_dir = get_mesh_dir()
+            for part in self.parts.values():
+                # Try exact name first
+                mesh_path = mesh_dir / f'{self.rig_type}{part.name}.obj'
+                mesh = load_obj_mesh(str(mesh_path))
+                if mesh is None:
+                    # R6 parts have spaces (e.g., "Left Arm" -> "R6Left Arm.obj")
+                    mesh_path = mesh_dir / f'{self.rig_type}{part.name.replace("_", " ")}.obj'
+                    mesh = load_obj_mesh(str(mesh_path))
+                if mesh is None:
+                    # Try without any prefix manipulation
+                    for file in mesh_dir.glob(f'{self.rig_type}*.obj'):
+                        if part.name.lower().replace(' ', '') in file.stem.lower().replace(' ', ''):
+                            mesh = load_obj_mesh(str(file))
+                            if mesh:
+                                break
+                if mesh is None:
+                    mesh = create_cube_mesh(*part.size)
+                part.mesh_data = mesh
+
+            # Setup root
+            self.root_ref = pick_root_ref(self.parts)
+            self.root_name = self.parts[self.root_ref].name
+            self.base_root_world = self.parts[self.root_ref].cframe.copy()
+
+            self.current_time = 0
             self.update()
+            return True
 
         except Exception as e:
             print(f'Error loading animation: {e}')
-
-    def _detect_rig_type(self) -> str:
-        """Detect if rig is R6 or R15."""
-        names = {p.name for p in self.parts.values()}
-        if 'Torso' in names and 'UpperTorso' not in names:
-            return 'R6'
-        return 'R15'
+            import traceback
+            traceback.print_exc()
+            return False
 
     def initializeGL(self):
         """Initialize OpenGL settings."""
         glEnable(GL_DEPTH_TEST)
         glEnable(GL_LIGHTING)
         glEnable(GL_LIGHT0)
+        glEnable(GL_LIGHT1)
         glEnable(GL_COLOR_MATERIAL)
+        glEnable(GL_NORMALIZE)
         glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE)
 
+        # Main light
         glLightfv(GL_LIGHT0, GL_POSITION, [1, 1, 1, 0])
         glLightfv(GL_LIGHT0, GL_AMBIENT, [0.3, 0.3, 0.3, 1])
-        glLightfv(GL_LIGHT0, GL_DIFFUSE, [0.7, 0.7, 0.7, 1])
+        glLightfv(GL_LIGHT0, GL_DIFFUSE, [0.8, 0.8, 0.8, 1])
+        glLightfv(GL_LIGHT0, GL_SPECULAR, [0.2, 0.2, 0.2, 1])
 
-        glClearColor(0.2, 0.2, 0.2, 1.0)
+        # Fill light
+        glLightfv(GL_LIGHT1, GL_POSITION, [-1, 0.5, -1, 0])
+        glLightfv(GL_LIGHT1, GL_DIFFUSE, [0.3, 0.3, 0.3, 1])
 
-    def resizeGL(self, w, h):
+        glClearColor(0.15, 0.15, 0.18, 1.0)
+
+    def resizeGL(self, w: int, h: int):
         """Handle resize."""
         glViewport(0, 0, w, h)
         glMatrixMode(GL_PROJECTION)
         glLoadIdentity()
-        gluPerspective(45, w / h if h > 0 else 1, 0.1, 100.0)
+        aspect = w / h if h > 0 else 1
+        gluPerspective(30, aspect, 0.1, 500.0)
         glMatrixMode(GL_MODELVIEW)
 
     def paintGL(self):
-        """Render the animation."""
+        """Render the animation frame."""
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         glLoadIdentity()
 
         # Camera
-        gluLookAt(0, 0, self.zoom, 0, 0, 0, 0, 1, 0)
+        cam_x = self.camera_target[0]
+        cam_y = self.camera_target[1]
+        cam_z = self.camera_target[2]
+        gluLookAt(0, 0, self.zoom, cam_x, cam_y, cam_z, 0, 1, 0)
+        glTranslatef(-cam_x, -cam_y, -cam_z)
         glRotatef(self.rotation_x, 1, 0, 0)
         glRotatef(self.rotation_y, 0, 1, 0)
 
-        # Get current pose
-        if self.keyframes:
-            kf_a, kf_b, t = sample_keyframes(self.keyframes, self.current_time)
-            current_poses = self._interpolate_poses(kf_a, kf_b, t)
-        else:
-            current_poses = {}
+        # Update world transforms
+        self._update_world_transforms()
 
         # Render parts
-        for part in self.parts.values():
+        for ref, part in self.parts.items():
             if not part.mesh_data:
                 continue
 
+            world_mat = self.world_transforms.get(ref)
+            if world_mat is None:
+                world_mat = part.cframe
+
             glPushMatrix()
 
-            # Apply part transformation
-            cframe = current_poses.get(part.name, part.cframe)
-            self._apply_matrix(cframe)
+            # Apply world transform (transpose for OpenGL column-major)
+            gl_mat = world_mat.T.flatten().tolist()
+            glMultMatrixf(gl_mat)
 
-            # Draw mesh
-            glColor3f(0.7, 0.7, 0.9)
+            # Color based on part
+            if part.name.lower() == 'humanoidrootpart':
+                glColor4f(1.0, 0.2, 0.2, 0.5)
+                glEnable(GL_BLEND)
+                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+            else:
+                glColor3f(0.82, 0.82, 0.84)
+                glDisable(GL_BLEND)
+
             self._draw_mesh(part.mesh_data)
 
             glPopMatrix()
 
-    def _interpolate_poses(self, kf_a: Keyframe, kf_b: Keyframe, t: float) -> Dict[str, Matrix4x4]:
-        """Interpolate between two keyframes."""
-        result = {}
+        # Draw grid
+        self._draw_grid()
+
+    def _update_world_transforms(self):
+        """Update world transforms for all parts based on current animation frame."""
+        if not self.keyframes or self.root_ref is None:
+            return
+
+        # Sample keyframes
+        kf_a, kf_b, alpha = sample_keyframes(self.keyframes, self.current_time)
+
+        # Interpolate poses
+        pose: Dict[str, np.ndarray] = {}
         all_names = set(kf_a.pose_by_part_name.keys()) | set(kf_b.pose_by_part_name.keys())
+        ident = mat_identity()
 
         for name in all_names:
-            ma = kf_a.pose_by_part_name.get(name, Matrix4x4.identity())
-            mb = kf_b.pose_by_part_name.get(name, Matrix4x4.identity())
-            result[name] = ma.lerp(mb, t)
+            a = kf_a.pose_by_part_name.get(name)
+            b = kf_b.pose_by_part_name.get(name)
+            if a is None:
+                pose[name] = b if b is not None else ident
+            elif b is None:
+                pose[name] = a
+            else:
+                pose[name] = matrix_trs_lerp(a, b, alpha)
 
-        return result
+        # Start with root
+        root_pose = pose.get(self.root_name, ident)
+        world: Dict[str, np.ndarray] = {}
+        if self.base_root_world is not None:
+            world[self.root_ref] = mat_mul(self.base_root_world, root_pose)
+        else:
+            world[self.root_ref] = root_pose
 
-    def _apply_matrix(self, matrix: Matrix4x4):
-        """Apply 4x4 matrix to OpenGL."""
-        # Transpose for OpenGL column-major format
-        m = matrix.m.T.flatten()
-        glMultMatrixf(m)
+        # Propagate through motor hierarchy (multiple passes for full propagation)
+        for _ in range(25):
+            changed = False
+            for motor in self.motors:
+                if motor.part0_ref not in world:
+                    continue
+                child = self.parts.get(motor.part1_ref)
+                if child is None:
+                    continue
+
+                # Get child pose transform
+                T = pose.get(child.name, ident)
+
+                # Calculate world transform: parent_world * C0 * pose * inv(C1)
+                part1_world = mat_mul(
+                    mat_mul(mat_mul(world[motor.part0_ref], motor.c0), T),
+                    mat_inv(motor.c1)
+                )
+
+                world[motor.part1_ref] = part1_world
+                changed = True
+
+            if not changed:
+                break
+
+        self.world_transforms = world
 
     def _draw_mesh(self, mesh_data: Dict):
-        """Draw mesh data."""
+        """Draw mesh data using OpenGL."""
         vertices = mesh_data['vertices']
+        normals = mesh_data.get('normals')
         faces = mesh_data['faces']
 
         for face in faces:
+            v_indices = face['v']
+            n_indices = face.get('n')
+
             glBegin(GL_POLYGON)
-            for idx in face:
-                if 0 <= idx < len(vertices):
-                    v = vertices[idx]
+            for i, v_idx in enumerate(v_indices):
+                if 0 <= v_idx < len(vertices):
+                    # Set normal if available
+                    if normals is not None and n_indices and i < len(n_indices):
+                        n_idx = n_indices[i]
+                        if 0 <= n_idx < len(normals):
+                            n = normals[n_idx]
+                            glNormal3f(n[0], n[1], n[2])
+
+                    v = vertices[v_idx]
                     glVertex3f(v[0], v[1], v[2])
             glEnd()
+
+    def _draw_grid(self):
+        """Draw a reference grid."""
+        glDisable(GL_LIGHTING)
+        glColor3f(0.3, 0.3, 0.3)
+        glBegin(GL_LINES)
+        grid_size = 10
+        for i in range(-grid_size, grid_size + 1):
+            glVertex3f(i, 0, -grid_size)
+            glVertex3f(i, 0, grid_size)
+            glVertex3f(-grid_size, 0, i)
+            glVertex3f(grid_size, 0, i)
+        glEnd()
+        glEnable(GL_LIGHTING)
 
     def mousePressEvent(self, event):
         """Handle mouse press."""
@@ -450,7 +870,7 @@ class AnimationViewerWidget(QOpenGLWidget):
         """Handle mouse wheel for zoom."""
         delta = event.angleDelta().y()
         self.zoom -= delta * 0.01
-        self.zoom = max(1, min(50, self.zoom))
+        self.zoom = max(2, min(50, self.zoom))
         self.update()
 
     def set_time(self, time: float):
@@ -466,14 +886,15 @@ class AnimationViewerPanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.viewer = AnimationViewerWidget()
+        self.gl_widget = AnimationGLWidget()
         self.is_playing = False
+        self.is_loaded = False
 
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # Viewer
-        layout.addWidget(self.viewer)
+        # OpenGL viewer
+        layout.addWidget(self.gl_widget, stretch=1)
 
         # Controls
         controls_layout = QHBoxLayout()
@@ -481,6 +902,7 @@ class AnimationViewerPanel(QWidget):
         self.play_pause_btn = QPushButton('Play')
         self.play_pause_btn.clicked.connect(self._toggle_play_pause)
         self.play_pause_btn.setFixedWidth(80)
+        self.play_pause_btn.setEnabled(False)
         controls_layout.addWidget(self.play_pause_btn)
 
         self.time_slider = QSlider(Qt.Orientation.Horizontal)
@@ -489,6 +911,7 @@ class AnimationViewerPanel(QWidget):
         self.time_slider.sliderPressed.connect(self._on_slider_press)
         self.time_slider.sliderReleased.connect(self._on_slider_release)
         self.time_slider.valueChanged.connect(self._on_slider_changed)
+        self.time_slider.setEnabled(False)
         controls_layout.addWidget(self.time_slider)
 
         self.time_label = QLabel('0.00s / 0.00s')
@@ -503,10 +926,20 @@ class AnimationViewerPanel(QWidget):
         self.timer.timeout.connect(self._update_playback)
         self.slider_pressed = False
 
-    def load_animation(self, rig_path: str, anim_path: str, mesh_dir: Optional[str] = None):
-        """Load animation data."""
-        self.viewer.load_animation_data(rig_path, anim_path, mesh_dir)
-        self._update_time_label()
+    def load_animation(self, anim_data: bytes) -> bool:
+        """Load animation from raw bytes."""
+        success = self.gl_widget.load_animation_data(anim_data)
+        self.is_loaded = success
+
+        if success:
+            self.play_pause_btn.setEnabled(True)
+            self.time_slider.setEnabled(True)
+            self._update_time_label()
+        else:
+            self.play_pause_btn.setEnabled(False)
+            self.time_slider.setEnabled(False)
+
+        return success
 
     def _toggle_play_pause(self):
         """Toggle playback."""
@@ -521,16 +954,18 @@ class AnimationViewerPanel(QWidget):
 
     def _update_playback(self):
         """Update playback position."""
-        if not self.slider_pressed:
-            new_time = self.viewer.current_time + 0.016  # Add 16ms
-            if new_time >= self.viewer.duration:
+        if not self.slider_pressed and self.is_loaded:
+            new_time = self.gl_widget.current_time + 0.016
+            if new_time >= self.gl_widget.duration:
                 new_time = 0  # Loop
-            self.viewer.set_time(new_time)
+            self.gl_widget.set_time(new_time)
 
             # Update slider
-            if self.viewer.duration > 0:
-                slider_val = int((new_time / self.viewer.duration) * 1000)
+            if self.gl_widget.duration > 0:
+                slider_val = int((new_time / self.gl_widget.duration) * 1000)
+                self.time_slider.blockSignals(True)
                 self.time_slider.setValue(slider_val)
+                self.time_slider.blockSignals(False)
 
             self._update_time_label()
 
@@ -542,27 +977,38 @@ class AnimationViewerPanel(QWidget):
         """Handle slider release."""
         self.slider_pressed = False
 
-    def _on_slider_changed(self, value):
+    def _on_slider_changed(self, value: int):
         """Handle slider change."""
-        if self.viewer.duration > 0:
-            new_time = (value / 1000.0) * self.viewer.duration
-            self.viewer.set_time(new_time)
+        if self.gl_widget.duration > 0:
+            new_time = (value / 1000.0) * self.gl_widget.duration
+            self.gl_widget.set_time(new_time)
             self._update_time_label()
 
     def _update_time_label(self):
         """Update time display."""
-        current = self.viewer.current_time
-        duration = self.viewer.duration
+        current = self.gl_widget.current_time
+        duration = self.gl_widget.duration
         self.time_label.setText(f'{current:.2f}s / {duration:.2f}s')
 
     def clear(self):
         """Clear animation data."""
         self.is_playing = False
+        self.is_loaded = False
         self.timer.stop()
         self.play_pause_btn.setText('Play')
-        self.viewer.parts = {}
-        self.viewer.motors = []
-        self.viewer.keyframes = []
-        self.viewer.current_time = 0
-        self.viewer.duration = 0
-        self.viewer.update()
+        self.play_pause_btn.setEnabled(False)
+        self.time_slider.setEnabled(False)
+        self.time_slider.setValue(0)
+        self.gl_widget.parts = {}
+        self.gl_widget.motors = []
+        self.gl_widget.keyframes = []
+        self.gl_widget.current_time = 0
+        self.gl_widget.duration = 0
+        self.gl_widget.world_transforms = {}
+        self.gl_widget.update()
+
+    def stop(self):
+        """Stop playback."""
+        self.is_playing = False
+        self.timer.stop()
+        self.play_pause_btn.setText('Play')
