@@ -26,6 +26,7 @@ class CacheViewerTab(QWidget):
         self.cache_manager = cache_manager
         self.cache_scraper = cache_scraper
         self._last_asset_count = 0  # Track for change detection
+        self._selected_asset_id: str | None = None  # Track selected asset by ID
         self._setup_ui()
         self._refresh_timer = QTimer()
         self._refresh_timer.timeout.connect(self._check_for_updates)
@@ -201,6 +202,11 @@ class CacheViewerTab(QWidget):
         delete_db_btn.clicked.connect(self._delete_database)
         actions_layout.addWidget(delete_db_btn)
 
+        self.stop_preview_btn = QPushButton('Stop Preview')
+        self.stop_preview_btn.clicked.connect(self._stop_preview)
+        self.stop_preview_btn.hide()
+        actions_layout.addWidget(self.stop_preview_btn)
+
         actions_layout.addStretch()
 
         open_cache_btn = QPushButton('Open Cache Folder')
@@ -245,13 +251,22 @@ class CacheViewerTab(QWidget):
         self.table.setUpdatesEnabled(False)
         self.table.setSortingEnabled(False)
 
+        # Track row to restore selection
+        row_to_select: int | None = None
+
         try:
             # Update table
             self.table.setRowCount(len(assets))
 
             for row, asset in enumerate(assets):
+                asset_id = asset['id']
+
+                # Track if this is the previously selected asset
+                if self._selected_asset_id and asset_id == self._selected_asset_id:
+                    row_to_select = row
+
                 # Asset ID
-                id_item = QTableWidgetItem(asset['id'])
+                id_item = QTableWidgetItem(asset_id)
                 id_item.setData(Qt.ItemDataRole.UserRole, asset)
                 self.table.setItem(row, 0, id_item)
 
@@ -289,6 +304,12 @@ class CacheViewerTab(QWidget):
             # Re-enable updates
             self.table.setUpdatesEnabled(True)
             self.table.setSortingEnabled(True)
+
+        # Restore selection if the asset still exists
+        if row_to_select is not None:
+            self.table.blockSignals(True)
+            self.table.selectRow(row_to_select)
+            self.table.blockSignals(False)
 
         # Update stats
         try:
@@ -467,8 +488,12 @@ class CacheViewerTab(QWidget):
         """Handle table selection change to preview asset."""
         asset = self._get_selected_asset()
         if not asset:
+            self._selected_asset_id = None
             self._clear_preview()
             return
+
+        # Track selected asset ID for persistence across refreshes
+        self._selected_asset_id = asset['id']
 
         # Hide all preview widgets first
         self.obj_viewer.hide()
@@ -512,6 +537,13 @@ class CacheViewerTab(QWidget):
         except Exception as e:
             self._show_text_preview(f'Error previewing asset: {e}')
 
+    def _stop_preview(self):
+        """Stop current preview and hide button."""
+        self._selected_asset_id = None
+        self._clear_preview()
+        self.stop_preview_btn.hide()
+        self.table.clearSelection()
+
     def _clear_preview(self):
         """Clear all preview widgets."""
         self.obj_viewer.hide()
@@ -536,6 +568,7 @@ class CacheViewerTab(QWidget):
             if obj_content:
                 self.obj_viewer.load_obj(obj_content, asset_id)
                 self.obj_viewer.show()
+                self.stop_preview_btn.show()
             else:
                 self._show_text_preview('Failed to convert mesh to OBJ format')
         except Exception as e:
@@ -564,6 +597,7 @@ class CacheViewerTab(QWidget):
 
             self.image_label.setPixmap(scaled)
             self.image_label.show()
+            self.stop_preview_btn.show()
         except Exception as e:
             self._show_text_preview(f'Image preview error: {e}')
 
@@ -596,6 +630,7 @@ class CacheViewerTab(QWidget):
             # Add new audio player
             self.audio_container_layout.addWidget(self.audio_player)
             self.audio_container.show()
+            self.stop_preview_btn.show()
 
         except Exception as e:
             self._show_text_preview(f'Audio preview error: {e}')
@@ -607,6 +642,7 @@ class CacheViewerTab(QWidget):
             # Try to load in the animation viewer
             if self.animation_viewer.load_animation(data):
                 self.animation_viewer.show()
+                self.stop_preview_btn.show()
                 return
 
             # Fallback: try to decode as XML for text display

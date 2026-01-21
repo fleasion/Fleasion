@@ -193,6 +193,12 @@ class Motor6D:
     part1_ref: str
     c0: np.ndarray
     c1: np.ndarray
+    c1_inv: np.ndarray = None  # Cached inverse of c1
+
+    def __post_init__(self):
+        """Cache the inverse of c1 for performance."""
+        if self.c1_inv is None:
+            self.c1_inv = mat_inv(self.c1)
 
 
 @dataclass
@@ -606,6 +612,10 @@ class AnimationGLWidget(QOpenGLWidget):
         # Rig type
         self.rig_type = 'R15'
 
+        # Display lists for mesh caching (major performance boost)
+        self.display_lists: Dict[str, int] = {}
+        self.grid_display_list: int = 0
+
     def load_animation_data(self, anim_data: bytes) -> bool:
         """Load animation from raw bytes and setup rig."""
         try:
@@ -723,7 +733,7 @@ class AnimationGLWidget(QOpenGLWidget):
         # Update world transforms
         self._update_world_transforms()
 
-        # Render parts
+        # Render parts using cached display lists
         for ref, part in self.parts.items():
             if not part.mesh_data:
                 continue
@@ -747,7 +757,9 @@ class AnimationGLWidget(QOpenGLWidget):
                 glColor3f(0.82, 0.82, 0.84)
                 glDisable(GL_BLEND)
 
-            self._draw_mesh(part.mesh_data)
+            # Use display list for fast rendering
+            dl = self._get_or_compile_display_list(ref, part.mesh_data)
+            glCallList(dl)
 
             glPopMatrix()
 
@@ -785,12 +797,17 @@ class AnimationGLWidget(QOpenGLWidget):
         else:
             world[self.root_ref] = root_pose
 
-        # Propagate through motor hierarchy (multiple passes for full propagation)
-        for _ in range(25):
+        # Propagate through motor hierarchy (limited passes)
+        num_motors = len(self.motors)
+        max_passes = min(num_motors + 2, 15)  # Limit iterations
+
+        for _ in range(max_passes):
             changed = False
             for motor in self.motors:
                 if motor.part0_ref not in world:
                     continue
+                if motor.part1_ref in world:
+                    continue  # Already computed
                 child = self.parts.get(motor.part1_ref)
                 if child is None:
                     continue
@@ -799,9 +816,10 @@ class AnimationGLWidget(QOpenGLWidget):
                 T = pose.get(child.name, ident)
 
                 # Calculate world transform: parent_world * C0 * pose * inv(C1)
+                # Use cached c1_inv for performance
                 part1_world = mat_mul(
                     mat_mul(mat_mul(world[motor.part0_ref], motor.c0), T),
-                    mat_inv(motor.c1)
+                    motor.c1_inv
                 )
 
                 world[motor.part1_ref] = part1_world
@@ -812,8 +830,11 @@ class AnimationGLWidget(QOpenGLWidget):
 
         self.world_transforms = world
 
-    def _draw_mesh(self, mesh_data: Dict):
-        """Draw mesh data using OpenGL."""
+    def _compile_mesh_display_list(self, part_ref: str, mesh_data: Dict) -> int:
+        """Compile mesh into a display list for fast rendering."""
+        dl = glGenLists(1)
+        glNewList(dl, GL_COMPILE)
+
         vertices = mesh_data['vertices']
         normals = mesh_data.get('normals')
         faces = mesh_data['faces']
@@ -825,19 +846,29 @@ class AnimationGLWidget(QOpenGLWidget):
             glBegin(GL_POLYGON)
             for i, v_idx in enumerate(v_indices):
                 if 0 <= v_idx < len(vertices):
-                    # Set normal if available
                     if normals is not None and n_indices and i < len(n_indices):
                         n_idx = n_indices[i]
                         if 0 <= n_idx < len(normals):
                             n = normals[n_idx]
                             glNormal3f(n[0], n[1], n[2])
-
                     v = vertices[v_idx]
                     glVertex3f(v[0], v[1], v[2])
             glEnd()
 
-    def _draw_grid(self):
-        """Draw a reference grid."""
+        glEndList()
+        return dl
+
+    def _get_or_compile_display_list(self, part_ref: str, mesh_data: Dict) -> int:
+        """Get cached display list or compile a new one."""
+        if part_ref not in self.display_lists:
+            self.display_lists[part_ref] = self._compile_mesh_display_list(part_ref, mesh_data)
+        return self.display_lists[part_ref]
+
+    def _compile_grid_display_list(self) -> int:
+        """Compile grid into a display list."""
+        dl = glGenLists(1)
+        glNewList(dl, GL_COMPILE)
+
         glDisable(GL_LIGHTING)
         glColor3f(0.3, 0.3, 0.3)
         glBegin(GL_LINES)
@@ -849,6 +880,15 @@ class AnimationGLWidget(QOpenGLWidget):
             glVertex3f(grid_size, 0, i)
         glEnd()
         glEnable(GL_LIGHTING)
+
+        glEndList()
+        return dl
+
+    def _draw_grid(self):
+        """Draw a reference grid using cached display list."""
+        if self.grid_display_list == 0:
+            self.grid_display_list = self._compile_grid_display_list()
+        glCallList(self.grid_display_list)
 
     def mousePressEvent(self, event):
         """Handle mouse press."""
@@ -921,13 +961,18 @@ class AnimationViewerPanel(QWidget):
 
         self.setLayout(layout)
 
-        # Playback timer
+        # Playback timer with elapsed time tracking
         self.timer = QTimer()
         self.timer.timeout.connect(self._update_playback)
         self.slider_pressed = False
+        self.last_tick_time: Optional[float] = None
 
     def load_animation(self, anim_data: bytes) -> bool:
         """Load animation from raw bytes."""
+        # Clear display lists before loading new animation
+        self.gl_widget.display_lists.clear()
+        self.gl_widget.grid_display_list = 0
+
         success = self.gl_widget.load_animation_data(anim_data)
         self.is_loaded = success
 
@@ -947,17 +992,34 @@ class AnimationViewerPanel(QWidget):
             self.is_playing = False
             self.play_pause_btn.setText('Play')
             self.timer.stop()
+            self.last_tick_time = None
         else:
             self.is_playing = True
             self.play_pause_btn.setText('Pause')
-            self.timer.start(16)  # ~60 FPS
+            self.last_tick_time = None
+            self.timer.start(33)  # ~30 FPS for smoother playback
 
     def _update_playback(self):
-        """Update playback position."""
+        """Update playback position using actual elapsed time."""
+        import time as time_module
+
         if not self.slider_pressed and self.is_loaded:
-            new_time = self.gl_widget.current_time + 0.016
+            current_tick = time_module.perf_counter()
+
+            if self.last_tick_time is not None:
+                # Use actual elapsed time for accurate playback speed
+                delta = current_tick - self.last_tick_time
+                # Clamp delta to prevent huge jumps
+                delta = min(delta, 0.1)
+            else:
+                delta = 0.033  # Default ~30fps
+
+            self.last_tick_time = current_tick
+
+            new_time = self.gl_widget.current_time + delta
             if new_time >= self.gl_widget.duration:
                 new_time = 0  # Loop
+                self.last_tick_time = None  # Reset on loop
             self.gl_widget.set_time(new_time)
 
             # Update slider
@@ -995,6 +1057,7 @@ class AnimationViewerPanel(QWidget):
         self.is_playing = False
         self.is_loaded = False
         self.timer.stop()
+        self.last_tick_time = None
         self.play_pause_btn.setText('Play')
         self.play_pause_btn.setEnabled(False)
         self.time_slider.setEnabled(False)
@@ -1005,6 +1068,8 @@ class AnimationViewerPanel(QWidget):
         self.gl_widget.current_time = 0
         self.gl_widget.duration = 0
         self.gl_widget.world_transforms = {}
+        self.gl_widget.display_lists.clear()
+        self.gl_widget.grid_display_list = 0
         self.gl_widget.update()
 
     def stop(self):

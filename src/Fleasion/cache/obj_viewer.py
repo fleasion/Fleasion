@@ -1,24 +1,23 @@
-"""Simple 3D OBJ viewer widget using PyQt6 OpenGL."""
+"""Simple 3D OBJ viewer widget using PyQt6 OpenGL with display list caching."""
 
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QSurfaceFormat
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
-from PyQt6.QtGui import QPainter, QColor
 import numpy as np
 from OpenGL.GL import *
 from OpenGL.GLU import *
-import math
 
 
 class ObjViewerWidget(QOpenGLWidget):
-    """OpenGL widget for displaying OBJ files."""
+    """OpenGL widget for displaying OBJ files with optimized rendering."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.vertices = []
         self.faces = []
         self.normals = []
+        self.face_normals = []  # Pre-computed face normals
 
         self.rotation_x = 0
         self.rotation_y = 0
@@ -26,6 +25,10 @@ class ObjViewerWidget(QOpenGLWidget):
         self.auto_rotate = False
 
         self.last_pos = None
+
+        # Display list for cached rendering
+        self.mesh_display_list = 0
+        self.needs_rebuild = False
 
         # Setup format
         fmt = QSurfaceFormat()
@@ -42,6 +45,7 @@ class ObjViewerWidget(QOpenGLWidget):
         self.vertices = []
         self.faces = []
         self.normals = []
+        self.face_normals = []
 
         for line in obj_content.splitlines():
             line = line.strip()
@@ -53,26 +57,24 @@ class ObjViewerWidget(QOpenGLWidget):
                 continue
 
             if parts[0] == 'v':
-                # Vertex position
                 self.vertices.append([float(parts[1]), float(parts[2]), float(parts[3])])
             elif parts[0] == 'vn':
-                # Vertex normal
                 self.normals.append([float(parts[1]), float(parts[2]), float(parts[3])])
             elif parts[0] == 'f':
-                # Face (triangle)
                 face = []
-                for part in parts[1:4]:  # Take first 3 vertices for triangle
-                    # Handle format: v, v/vt, v/vt/vn, v//vn
+                for part in parts[1:4]:
                     indices = part.split('/')
-                    v_idx = int(indices[0]) - 1  # OBJ is 1-indexed
+                    v_idx = int(indices[0]) - 1
                     face.append(v_idx)
                 if len(face) == 3:
                     self.faces.append(face)
 
-        # Center and normalize the model
         if self.vertices:
             self._normalize_model()
+            self._compute_face_normals()
 
+        # Mark for display list rebuild
+        self.needs_rebuild = True
         self.update()
 
     def _normalize_model(self):
@@ -81,32 +83,85 @@ class ObjViewerWidget(QOpenGLWidget):
             return
 
         vertices = np.array(self.vertices)
-
-        # Center
         center = vertices.mean(axis=0)
         vertices -= center
 
-        # Normalize to unit cube
         max_dim = np.abs(vertices).max()
         if max_dim > 0:
             vertices /= max_dim
 
         self.vertices = vertices.tolist()
 
+    def _compute_face_normals(self):
+        """Pre-compute face normals for performance."""
+        self.face_normals = []
+        vertices = np.array(self.vertices)
+
+        for face in self.faces:
+            if len(face) >= 3:
+                v0 = vertices[face[0]]
+                v1 = vertices[face[1]]
+                v2 = vertices[face[2]]
+
+                edge1 = v1 - v0
+                edge2 = v2 - v0
+                normal = np.cross(edge1, edge2)
+                norm = np.linalg.norm(normal)
+                if norm > 0:
+                    normal = normal / norm
+                else:
+                    normal = np.array([0.0, 1.0, 0.0])
+
+                self.face_normals.append(normal.tolist())
+            else:
+                self.face_normals.append([0.0, 1.0, 0.0])
+
+    def _build_display_list(self):
+        """Build display list for fast rendering."""
+        if self.mesh_display_list != 0:
+            glDeleteLists(self.mesh_display_list, 1)
+
+        self.mesh_display_list = glGenLists(1)
+        glNewList(self.mesh_display_list, GL_COMPILE)
+
+        if self.vertices and self.faces:
+            # Draw filled mesh
+            glColor3f(0.7, 0.7, 0.9)
+            glBegin(GL_TRIANGLES)
+
+            for i, face in enumerate(self.faces):
+                if len(face) >= 3 and i < len(self.face_normals):
+                    glNormal3fv(self.face_normals[i])
+                    for idx in face[:3]:
+                        if 0 <= idx < len(self.vertices):
+                            glVertex3fv(self.vertices[idx])
+
+            glEnd()
+
+        glEndList()
+        self.needs_rebuild = False
+
     def initializeGL(self):
         """Initialize OpenGL."""
         glEnable(GL_DEPTH_TEST)
         glEnable(GL_LIGHTING)
         glEnable(GL_LIGHT0)
+        glEnable(GL_LIGHT1)
         glEnable(GL_COLOR_MATERIAL)
+        glEnable(GL_NORMALIZE)
         glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE)
 
-        # Set up lighting
+        # Main light
         glLightfv(GL_LIGHT0, GL_POSITION, [1.0, 1.0, 1.0, 0.0])
-        glLightfv(GL_LIGHT0, GL_AMBIENT, [0.2, 0.2, 0.2, 1.0])
-        glLightfv(GL_LIGHT0, GL_DIFFUSE, [0.8, 0.8, 0.8, 1.0])
+        glLightfv(GL_LIGHT0, GL_AMBIENT, [0.3, 0.3, 0.3, 1.0])
+        glLightfv(GL_LIGHT0, GL_DIFFUSE, [0.7, 0.7, 0.7, 1.0])
+        glLightfv(GL_LIGHT0, GL_SPECULAR, [0.2, 0.2, 0.2, 1.0])
 
-        glClearColor(0.2, 0.2, 0.2, 1.0)
+        # Fill light from below
+        glLightfv(GL_LIGHT1, GL_POSITION, [-1.0, -0.5, -1.0, 0.0])
+        glLightfv(GL_LIGHT1, GL_DIFFUSE, [0.2, 0.2, 0.2, 1.0])
+
+        glClearColor(0.15, 0.15, 0.18, 1.0)
         glShadeModel(GL_SMOOTH)
 
     def resizeGL(self, w: int, h: int):
@@ -119,7 +174,7 @@ class ObjViewerWidget(QOpenGLWidget):
         glMatrixMode(GL_MODELVIEW)
 
     def paintGL(self):
-        """Render the scene."""
+        """Render the scene using cached display list."""
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         glLoadIdentity()
 
@@ -131,44 +186,13 @@ class ObjViewerWidget(QOpenGLWidget):
         if not self.vertices or not self.faces:
             return
 
-        # Draw mesh
-        glColor3f(0.7, 0.7, 0.9)
-        glBegin(GL_TRIANGLES)
+        # Rebuild display list if needed
+        if self.needs_rebuild:
+            self._build_display_list()
 
-        for face in self.faces:
-            if len(face) >= 3:
-                # Calculate face normal
-                v0 = np.array(self.vertices[face[0]])
-                v1 = np.array(self.vertices[face[1]])
-                v2 = np.array(self.vertices[face[2]])
-
-                edge1 = v1 - v0
-                edge2 = v2 - v0
-                normal = np.cross(edge1, edge2)
-                norm = np.linalg.norm(normal)
-                if norm > 0:
-                    normal /= norm
-
-                glNormal3fv(normal)
-
-                for idx in face[:3]:
-                    glVertex3fv(self.vertices[idx])
-
-        glEnd()
-
-        # Draw wireframe
-        glDisable(GL_LIGHTING)
-        glColor3f(0.3, 0.3, 0.3)
-        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
-
-        glBegin(GL_TRIANGLES)
-        for face in self.faces:
-            for idx in face[:3]:
-                glVertex3fv(self.vertices[idx])
-        glEnd()
-
-        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
-        glEnable(GL_LIGHTING)
+        # Draw cached mesh
+        if self.mesh_display_list != 0:
+            glCallList(self.mesh_display_list)
 
     def mousePressEvent(self, event):
         """Handle mouse press."""
@@ -183,8 +207,8 @@ class ObjViewerWidget(QOpenGLWidget):
         dy = event.pos().y() - self.last_pos.y()
 
         if event.buttons() & Qt.MouseButton.LeftButton:
-            self.rotation_x += dy
-            self.rotation_y += dx
+            self.rotation_x += dy * 0.5
+            self.rotation_y += dx * 0.5
             self.update()
 
         self.last_pos = event.pos()
@@ -200,7 +224,7 @@ class ObjViewerWidget(QOpenGLWidget):
         """Enable/disable auto-rotation."""
         self.auto_rotate = enabled
         if enabled:
-            self.timer.start(16)  # ~60 FPS
+            self.timer.start(33)  # ~30 FPS
         else:
             self.timer.stop()
 
@@ -217,6 +241,21 @@ class ObjViewerWidget(QOpenGLWidget):
         self.zoom = -5.0
         self.update()
 
+    def clear(self):
+        """Clear the mesh data and display list."""
+        self.vertices = []
+        self.faces = []
+        self.normals = []
+        self.face_normals = []
+        if self.mesh_display_list != 0:
+            try:
+                glDeleteLists(self.mesh_display_list, 1)
+            except Exception:
+                pass
+            self.mesh_display_list = 0
+        self.needs_rebuild = False
+        self.update()
+
 
 class ObjViewerPanel(QWidget):
     """Panel with 3D viewer and controls."""
@@ -228,6 +267,7 @@ class ObjViewerPanel(QWidget):
     def _setup_ui(self):
         """Setup UI."""
         layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
 
         # Info label
         self.info_label = QLabel('No mesh loaded')
@@ -245,10 +285,10 @@ class ObjViewerPanel(QWidget):
         reset_btn.clicked.connect(self.viewer.reset_view)
         controls_layout.addWidget(reset_btn)
 
-        rotate_btn = QPushButton('Auto Rotate')
-        rotate_btn.setCheckable(True)
-        rotate_btn.toggled.connect(self.viewer.set_auto_rotate)
-        controls_layout.addWidget(rotate_btn)
+        self.rotate_btn = QPushButton('Auto Rotate')
+        self.rotate_btn.setCheckable(True)
+        self.rotate_btn.toggled.connect(self.viewer.set_auto_rotate)
+        controls_layout.addWidget(self.rotate_btn)
 
         controls_layout.addStretch()
 
@@ -263,7 +303,6 @@ class ObjViewerPanel(QWidget):
         """Load OBJ file content."""
         self.viewer.load_obj_data(obj_content)
 
-        # Update info
         vertex_count = len(self.viewer.vertices)
         face_count = len(self.viewer.faces)
 
@@ -272,8 +311,7 @@ class ObjViewerPanel(QWidget):
 
     def clear(self):
         """Clear the viewer."""
-        self.viewer.vertices = []
-        self.viewer.faces = []
-        self.viewer.update()
+        self.viewer.clear()
+        self.rotate_btn.setChecked(False)
         self.info_label.setText('No mesh loaded')
         self.stats_label.setText('')
