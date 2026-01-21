@@ -24,10 +24,11 @@ class CacheViewerTab(QWidget):
         super().__init__(parent)
         self.cache_manager = cache_manager
         self.cache_scraper = cache_scraper
+        self._last_asset_count = 0  # Track for change detection
         self._setup_ui()
         self._refresh_timer = QTimer()
-        self._refresh_timer.timeout.connect(self._refresh_assets)
-        self._refresh_timer.start(2000)  # Refresh every 2 seconds
+        self._refresh_timer.timeout.connect(self._check_for_updates)
+        self._refresh_timer.start(3000)  # Check every 3 seconds
 
     def _setup_ui(self):
         """Setup the UI."""
@@ -216,6 +217,21 @@ class CacheViewerTab(QWidget):
 
         parent_layout.addLayout(actions_layout)
 
+    def _check_for_updates(self):
+        """Check if cache has new assets and update stats only."""
+        try:
+            stats = self.cache_manager.get_cache_stats()
+            total_assets = stats['total_assets']
+            total_size = self._format_size(stats['total_size'])
+            self.stats_label.setText(f'Total: {total_assets} assets | Size: {total_size}')
+
+            # Only refresh table if asset count changed
+            if total_assets != self._last_asset_count:
+                self._last_asset_count = total_assets
+                self._refresh_assets()
+        except Exception:
+            pass  # Ignore errors during background refresh
+
     def _refresh_assets(self):
         """Refresh the asset list."""
         # Get filter type
@@ -229,48 +245,64 @@ class CacheViewerTab(QWidget):
         if search_text:
             assets = [a for a in assets if search_text in a['id'].lower()]
 
-        # Update table
-        self.table.setRowCount(len(assets))
+        # Disable updates while populating (major performance boost)
+        self.table.setUpdatesEnabled(False)
+        self.table.setSortingEnabled(False)
 
-        for row, asset in enumerate(assets):
-            # Asset ID
-            id_item = QTableWidgetItem(asset['id'])
-            id_item.setData(Qt.ItemDataRole.UserRole, asset)
-            self.table.setItem(row, 0, id_item)
+        try:
+            # Update table
+            self.table.setRowCount(len(assets))
 
-            # Type
-            type_item = QTableWidgetItem(asset['type_name'])
-            self.table.setItem(row, 1, type_item)
+            for row, asset in enumerate(assets):
+                # Asset ID
+                id_item = QTableWidgetItem(asset['id'])
+                id_item.setData(Qt.ItemDataRole.UserRole, asset)
+                self.table.setItem(row, 0, id_item)
 
-            # Size
-            size = asset.get('size', 0)
-            size_str = self._format_size(size)
-            size_item = QTableWidgetItem(size_str)
-            self.table.setItem(row, 2, size_item)
+                # Type
+                type_item = QTableWidgetItem(asset['type_name'])
+                self.table.setItem(row, 1, type_item)
 
-            # Cached At
-            cached_at = asset.get('cached_at', '')
-            if cached_at:
-                # Format datetime
-                cached_at = cached_at.split('T')[0] + ' ' + cached_at.split('T')[1].split('.')[0]
-            cached_item = QTableWidgetItem(cached_at)
-            self.table.setItem(row, 3, cached_item)
+                # Size
+                size = asset.get('size', 0)
+                size_str = self._format_size(size)
+                size_item = QTableWidgetItem(size_str)
+                self.table.setItem(row, 2, size_item)
 
-            # URL
-            url = asset.get('url', '')
-            url_item = QTableWidgetItem(url)
-            self.table.setItem(row, 4, url_item)
+                # Cached At
+                cached_at = asset.get('cached_at', '')
+                if cached_at:
+                    # Format datetime
+                    try:
+                        cached_at = cached_at.split('T')[0] + ' ' + cached_at.split('T')[1].split('.')[0]
+                    except (IndexError, AttributeError):
+                        pass
+                cached_item = QTableWidgetItem(cached_at)
+                self.table.setItem(row, 3, cached_item)
 
-            # Hash
-            hash_val = asset.get('hash', '')
-            hash_item = QTableWidgetItem(hash_val)
-            self.table.setItem(row, 5, hash_item)
+                # URL
+                url = asset.get('url', '')
+                url_item = QTableWidgetItem(url)
+                self.table.setItem(row, 4, url_item)
+
+                # Hash
+                hash_val = asset.get('hash', '')
+                hash_item = QTableWidgetItem(hash_val)
+                self.table.setItem(row, 5, hash_item)
+        finally:
+            # Re-enable updates
+            self.table.setUpdatesEnabled(True)
+            self.table.setSortingEnabled(True)
 
         # Update stats
-        stats = self.cache_manager.get_cache_stats()
-        total_assets = stats['total_assets']
-        total_size = self._format_size(stats['total_size'])
-        self.stats_label.setText(f'Total: {total_assets} assets | Size: {total_size}')
+        try:
+            stats = self.cache_manager.get_cache_stats()
+            total_assets = stats['total_assets']
+            total_size = self._format_size(stats['total_size'])
+            self.stats_label.setText(f'Total: {total_assets} assets | Size: {total_size}')
+            self._last_asset_count = total_assets
+        except Exception:
+            pass
 
     def _format_size(self, size_bytes: int) -> str:
         """Format size in bytes to human-readable string."""
