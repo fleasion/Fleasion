@@ -543,6 +543,9 @@ class CacheViewerTab(QWidget):
         self._clear_preview()
         self.stop_preview_btn.hide()
         self.table.clearSelection()
+        # Show default preview message
+        self.image_label.setText('Select an asset to preview')
+        self.image_label.show()
 
     def _clear_preview(self):
         """Clear all preview widgets."""
