@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QPixmap, QImage
 from PIL import Image
 import io
+import threading
 
 from .cache_manager import CacheManager
 from .obj_viewer import ObjViewerPanel
@@ -27,10 +28,15 @@ class CacheViewerTab(QWidget):
         self.cache_scraper = cache_scraper
         self._last_asset_count = 0  # Track for change detection
         self._selected_asset_id: str | None = None  # Track selected asset by ID
+        self._show_names = True  # Show names instead of hashes (on by default)
+        self._asset_info: dict[str, dict] = {}  # asset_id -> {resolved_name, hash, row}
         self._setup_ui()
         self._refresh_timer = QTimer()
         self._refresh_timer.timeout.connect(self._check_for_updates)
         self._refresh_timer.start(3000)  # Check every 3 seconds
+
+        # Start name resolver daemon thread
+        threading.Thread(target=self._name_resolver_loop, daemon=True).start()
 
     def _setup_ui(self):
         """Setup the UI."""
@@ -89,6 +95,14 @@ class CacheViewerTab(QWidget):
 
         filter_layout.addStretch()
 
+        # Show names toggle (on by default)
+        self.show_names_toggle = QCheckBox('Show Names')
+        self.show_names_toggle.setChecked(True)
+        self.show_names_toggle.toggled.connect(self._on_show_names_toggled)
+        filter_layout.addWidget(self.show_names_toggle)
+
+        filter_layout.addWidget(QLabel('|'))
+
         # Cache scraper toggle on right side (off by default)
         self.scraper_toggle = QCheckBox('Enable Cache Scraper')
         self.scraper_toggle.setChecked(False)
@@ -109,7 +123,7 @@ class CacheViewerTab(QWidget):
         self.table = QTableWidget()
         self.table.setColumnCount(6)
         self.table.setHorizontalHeaderLabels([
-            'Asset ID', 'Type', 'Size', 'Cached At', 'URL', 'Hash'
+            'Hash/Name', 'Asset ID', 'Type', 'Size', 'Cached At', 'URL'
         ])
 
         header = self.table.horizontalHeader()
@@ -117,8 +131,8 @@ class CacheViewerTab(QWidget):
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
 
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
@@ -260,27 +274,47 @@ class CacheViewerTab(QWidget):
 
             for row, asset in enumerate(assets):
                 asset_id = asset['id']
+                hash_val = asset.get('hash', '')
 
                 # Track if this is the previously selected asset
                 if self._selected_asset_id and asset_id == self._selected_asset_id:
                     row_to_select = row
 
-                # Asset ID
+                # Initialize or update asset info tracking
+                if asset_id not in self._asset_info:
+                    self._asset_info[asset_id] = {
+                        'hash': hash_val,
+                        'resolved_name': None,
+                        'row': row,
+                    }
+                else:
+                    self._asset_info[asset_id]['row'] = row
+
+                # Hash/Name (column 0) - show resolved name or hash based on toggle
+                info = self._asset_info[asset_id]
+                if self._show_names and info.get('resolved_name'):
+                    display_val = info['resolved_name']
+                else:
+                    display_val = hash_val
+                name_item = QTableWidgetItem(display_val)
+                name_item.setData(Qt.ItemDataRole.UserRole, asset)
+                self.table.setItem(row, 0, name_item)
+
+                # Asset ID (column 1)
                 id_item = QTableWidgetItem(asset_id)
-                id_item.setData(Qt.ItemDataRole.UserRole, asset)
-                self.table.setItem(row, 0, id_item)
+                self.table.setItem(row, 1, id_item)
 
-                # Type
+                # Type (column 2)
                 type_item = QTableWidgetItem(asset['type_name'])
-                self.table.setItem(row, 1, type_item)
+                self.table.setItem(row, 2, type_item)
 
-                # Size
+                # Size (column 3)
                 size = asset.get('size', 0)
                 size_str = self._format_size(size)
                 size_item = QTableWidgetItem(size_str)
-                self.table.setItem(row, 2, size_item)
+                self.table.setItem(row, 3, size_item)
 
-                # Cached At
+                # Cached At (column 4)
                 cached_at = asset.get('cached_at', '')
                 if cached_at:
                     # Format datetime
@@ -289,17 +323,12 @@ class CacheViewerTab(QWidget):
                     except (IndexError, AttributeError):
                         pass
                 cached_item = QTableWidgetItem(cached_at)
-                self.table.setItem(row, 3, cached_item)
+                self.table.setItem(row, 4, cached_item)
 
-                # URL
+                # URL (column 5)
                 url = asset.get('url', '')
                 url_item = QTableWidgetItem(url)
-                self.table.setItem(row, 4, url_item)
-
-                # Hash
-                hash_val = asset.get('hash', '')
-                hash_item = QTableWidgetItem(hash_val)
-                self.table.setItem(row, 5, hash_item)
+                self.table.setItem(row, 5, url_item)
         finally:
             # Re-enable updates
             self.table.setUpdatesEnabled(True)
@@ -334,6 +363,123 @@ class CacheViewerTab(QWidget):
         if self.cache_scraper:
             enabled = bool(state)
             self.cache_scraper.set_enabled(enabled)
+
+    def _on_show_names_toggled(self, checked: bool):
+        """Handle Show Names toggle."""
+        self._show_names = checked
+        # Update all rows to show either resolved name or hash
+        for asset_id, info in self._asset_info.items():
+            row = info.get('row')
+            if row is None:
+                continue
+            if row >= self.table.rowCount():
+                continue
+
+            if checked and info.get('resolved_name'):
+                display_val = info['resolved_name']
+            else:
+                display_val = info.get('hash', '')
+
+            item = self.table.item(row, 0)
+            if item:
+                item.setText(display_val)
+
+    def _update_row_name(self, asset_id: str, name: str):
+        """Update a single row's name cell (thread-safe via QTimer)."""
+        info = self._asset_info.get(asset_id)
+        if not info:
+            return
+        row = info.get('row')
+        if row is None or row >= self.table.rowCount():
+            return
+        # Only update if Show Names is enabled
+        if self._show_names:
+            item = self.table.item(row, 0)
+            if item:
+                item.setText(name)
+
+    def _fetch_asset_names(self, asset_ids: list[str]) -> dict[str, str] | None:
+        """Fetch asset names from Roblox Develop API (batch up to 50)."""
+        import requests
+
+        if not asset_ids:
+            return None
+
+        # Build query: assetIds=123,456,789
+        query = ','.join(str(aid) for aid in asset_ids)
+        url = f'https://develop.roblox.com/v1/assets?assetIds={query}'
+
+        try:
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+        except Exception as e:
+            log_buffer.log('Cache', f'[Name Resolver] Failed to fetch names: {e}')
+            return None
+
+        data = response.json().get('data', [])
+        result = {}
+        for item in data:
+            aid = item.get('id')
+            name = item.get('name', 'Unknown')
+            if aid is not None:
+                result[str(aid)] = name
+
+        return result
+
+    def _name_resolver_loop(self):
+        """Background thread to resolve asset names."""
+        import time
+
+        while True:
+            # Skip if Show Names is OFF
+            if not self._show_names:
+                time.sleep(0.2)
+                continue
+
+            # Build pending list - assets without resolved names
+            pending = [
+                asset_id
+                for asset_id, info in self._asset_info.items()
+                if info.get('resolved_name') is None and info.get('row') is not None
+            ]
+
+            if not pending:
+                time.sleep(0.2)
+                continue
+
+            # Batch size and delay
+            batch_size = 50
+            delay = 0.2 if len(pending) > 50 else 0.5
+
+            # Take the first batch
+            batch = pending[:batch_size]
+
+            # Fetch names
+            try:
+                names = self._fetch_asset_names(batch)
+            except Exception as e:
+                log_buffer.log('Cache', f'[Name Resolver] Fetch failed: {e}')
+                time.sleep(delay)
+                continue
+
+            if not names:
+                time.sleep(delay)
+                continue
+
+            # Update cache and UI
+            for asset_id, name in names.items():
+                info = self._asset_info.get(asset_id)
+                if not info:
+                    continue
+
+                # Store resolved name
+                info['resolved_name'] = name
+
+                # Update UI on main thread
+                if self._show_names:
+                    QTimer.singleShot(0, lambda aid=asset_id, n=name: self._update_row_name(aid, n))
+
+            time.sleep(delay)
 
     def _get_selected_asset(self) -> dict | None:
         """Get the currently selected asset."""
