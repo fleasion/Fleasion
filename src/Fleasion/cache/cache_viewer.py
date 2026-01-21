@@ -4,7 +4,8 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTableWidget,
     QTableWidgetItem, QLabel, QComboBox, QLineEdit, QMessageBox,
-    QHeaderView, QFileDialog, QGroupBox, QSplitter, QTextEdit, QCheckBox
+    QHeaderView, QFileDialog, QGroupBox, QSplitter, QTextEdit, QCheckBox,
+    QMenu
 )
 from PyQt6.QtGui import QPixmap, QImage
 from PIL import Image
@@ -34,6 +35,9 @@ class CacheViewerTab(QWidget):
         self._refresh_timer = QTimer()
         self._refresh_timer.timeout.connect(self._check_for_updates)
         self._refresh_timer.start(3000)  # Check every 3 seconds
+
+        # Load persisted resolved names from index
+        self._load_persisted_names()
 
         # Start name resolver daemon thread
         threading.Thread(target=self._name_resolver_loop, daemon=True).start()
@@ -80,7 +84,7 @@ class CacheViewerTab(QWidget):
         # Search box first
         filter_layout.addWidget(QLabel('Search:'))
         self.search_box = QLineEdit()
-        self.search_box.setPlaceholderText('Search by ID...')
+        self.search_box.setPlaceholderText('Search all columns...')
         self.search_box.textChanged.connect(self._refresh_assets)
         filter_layout.addWidget(self.search_box)
 
@@ -135,10 +139,12 @@ class CacheViewerTab(QWidget):
         header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
 
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
         self.table.currentItemChanged.connect(self._on_selection_changed)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_context_menu)
 
         parent_layout.addWidget(self.table)
 
@@ -256,10 +262,34 @@ class CacheViewerTab(QWidget):
         # Get assets
         assets = self.cache_manager.list_assets(filter_type)
 
-        # Apply search filter
+        # Apply search filter across all columns
         search_text = self.search_box.text().strip().lower()
         if search_text:
-            assets = [a for a in assets if search_text in a['id'].lower()]
+            filtered = []
+            for a in assets:
+                # Check all searchable fields
+                asset_id = a['id'].lower()
+                type_name = a['type_name'].lower()
+                url = a.get('url', '').lower()
+                hash_val = a.get('hash', '').lower()
+                size_str = self._format_size(a.get('size', 0)).lower()
+                cached_at = a.get('cached_at', '').lower()
+
+                # Check resolved name if available
+                resolved_name = ''
+                if asset_id in self._asset_info:
+                    resolved_name = self._asset_info[asset_id].get('resolved_name', '').lower()
+
+                # Match if search text in any field
+                if (search_text in asset_id or
+                    search_text in type_name or
+                    search_text in url or
+                    search_text in hash_val or
+                    search_text in resolved_name or
+                    search_text in size_str or
+                    search_text in cached_at):
+                    filtered.append(a)
+            assets = filtered
 
         # Disable updates while populating (major performance boost)
         self.table.setUpdatesEnabled(False)
@@ -364,6 +394,21 @@ class CacheViewerTab(QWidget):
             enabled = bool(state)
             self.cache_scraper.set_enabled(enabled)
 
+    def _load_persisted_names(self):
+        """Load persisted resolved names from index.json."""
+        for asset_key, asset_data in self.cache_manager.index['assets'].items():
+            asset_id = asset_data['id']
+            resolved_name = asset_data.get('resolved_name')
+            if resolved_name:
+                if asset_id not in self._asset_info:
+                    self._asset_info[asset_id] = {
+                        'hash': asset_data.get('hash', ''),
+                        'resolved_name': resolved_name,
+                        'row': None,
+                    }
+                else:
+                    self._asset_info[asset_id]['resolved_name'] = resolved_name
+
     def _on_show_names_toggled(self, checked: bool):
         """Handle Show Names toggle."""
         self._show_names = checked
@@ -397,6 +442,17 @@ class CacheViewerTab(QWidget):
             item = self.table.item(row, 0)
             if item:
                 item.setText(name)
+
+    def _save_resolved_name_to_index(self, asset_id: str, name: str):
+        """Save resolved name to index.json for persistence."""
+        # Find the asset key in index (format: {type}_{id})
+        for asset_key, asset_data in self.cache_manager.index['assets'].items():
+            if asset_data['id'] == asset_id:
+                # Update the resolved_name field
+                asset_data['resolved_name'] = name
+                # Save index to disk
+                self.cache_manager._save_index()
+                break
 
     def _get_roblosecurity(self) -> str | None:
         """Get .ROBLOSECURITY cookie from Roblox local storage."""
@@ -522,8 +578,11 @@ class CacheViewerTab(QWidget):
                 if not info:
                     continue
 
-                # Store resolved name
+                # Store resolved name in memory
                 info['resolved_name'] = name
+
+                # Save to index.json for persistence
+                self._save_resolved_name_to_index(asset_id, name)
 
                 # Update UI on main thread
                 if self._show_names:
@@ -581,9 +640,31 @@ class CacheViewerTab(QWidget):
         filter_type = self.type_filter.currentData()
         assets = self.cache_manager.list_assets(filter_type)
 
+        # Apply search filter across all columns (same as _refresh_assets)
         search_text = self.search_box.text().strip().lower()
         if search_text:
-            assets = [a for a in assets if search_text in a['id'].lower()]
+            filtered = []
+            for a in assets:
+                asset_id = a['id'].lower()
+                type_name = a['type_name'].lower()
+                url = a.get('url', '').lower()
+                hash_val = a.get('hash', '').lower()
+                size_str = self._format_size(a.get('size', 0)).lower()
+                cached_at = a.get('cached_at', '').lower()
+
+                resolved_name = ''
+                if asset_id in self._asset_info:
+                    resolved_name = self._asset_info[asset_id].get('resolved_name', '').lower()
+
+                if (search_text in asset_id or
+                    search_text in type_name or
+                    search_text in url or
+                    search_text in hash_val or
+                    search_text in resolved_name or
+                    search_text in size_str or
+                    search_text in cached_at):
+                    filtered.append(a)
+            assets = filtered
 
         if not assets:
             QMessageBox.warning(self, 'No Assets', 'No assets to export')
@@ -612,25 +693,51 @@ class CacheViewerTab(QWidget):
         )
 
     def _delete_selected(self):
-        """Delete the selected asset."""
-        asset = self._get_selected_asset()
-        if not asset:
-            QMessageBox.warning(self, 'No Selection', 'Please select an asset to delete')
+        """Delete the selected asset(s)."""
+        selected_rows = self.table.selectionModel().selectedRows()
+        if not selected_rows:
+            QMessageBox.warning(self, 'No Selection', 'Please select asset(s) to delete')
             return
 
+        # Collect assets to delete
+        assets_to_delete = []
+        for row_index in selected_rows:
+            row = row_index.row()
+            item = self.table.item(row, 0)
+            if item:
+                asset = item.data(Qt.ItemDataRole.UserRole)
+                if asset:
+                    assets_to_delete.append(asset)
+
+        if not assets_to_delete:
+            return
+
+        # Confirm deletion
+        count = len(assets_to_delete)
         reply = QMessageBox.question(
             self,
-            'Delete Asset',
-            f"Delete asset {asset['id']}?",
+            'Delete Assets',
+            f"Delete {count} asset(s)?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
 
         if reply == QMessageBox.StandardButton.Yes:
-            if self.cache_manager.delete_asset(asset['id'], asset['type']):
-                log_buffer.log('Cache', f"Deleted asset {asset['id']}")
-                self._refresh_assets()
+            deleted_count = 0
+            for asset in assets_to_delete:
+                if self.cache_manager.delete_asset(asset['id'], asset['type']):
+                    deleted_count += 1
+                    log_buffer.log('Cache', f"Deleted asset {asset['id']}")
+
+            self._refresh_assets()
+
+            if deleted_count == count:
+                QMessageBox.information(self, 'Success', f'Deleted {deleted_count} asset(s)')
             else:
-                QMessageBox.critical(self, 'Error', 'Failed to delete asset')
+                QMessageBox.warning(
+                    self,
+                    'Partial Success',
+                    f'Deleted {deleted_count}/{count} asset(s). Some assets failed to delete.'
+                )
 
     def _clear_cache(self):
         """Clear all cached assets."""
@@ -732,6 +839,55 @@ class CacheViewerTab(QWidget):
 
         except Exception as e:
             self._show_text_preview(f'Error previewing asset: {e}')
+
+    def _show_context_menu(self, position):
+        """Show right-click context menu."""
+        menu = QMenu(self)
+
+        # Get selected rows
+        selected_rows = self.table.selectionModel().selectedRows()
+        if not selected_rows:
+            return
+
+        # Add actions
+        add_to_replacer_action = menu.addAction('Add IDs to Replacer')
+        delete_action = menu.addAction('Delete Selected')
+
+        # Execute menu
+        action = menu.exec(self.table.viewport().mapToGlobal(position))
+
+        if action == add_to_replacer_action:
+            self._add_selected_to_replacer()
+        elif action == delete_action:
+            self._delete_selected()
+
+    def _add_selected_to_replacer(self):
+        """Add selected asset IDs to replacer."""
+        selected_rows = self.table.selectionModel().selectedRows()
+        if not selected_rows:
+            return
+
+        asset_ids = []
+        for row_index in selected_rows:
+            row = row_index.row()
+            id_item = self.table.item(row, 1)  # Asset ID is column 1
+            if id_item:
+                asset_ids.append(id_item.text())
+
+        if not asset_ids:
+            return
+
+        # Copy to clipboard
+        from PyQt6.QtWidgets import QApplication
+        clipboard = QApplication.clipboard()
+        clipboard.setText(','.join(asset_ids))
+
+        log_buffer.log('Cache', f'Copied {len(asset_ids)} asset ID(s) to clipboard')
+        QMessageBox.information(
+            self,
+            'Copied to Clipboard',
+            f'Copied {len(asset_ids)} asset ID(s) to clipboard:\n{", ".join(asset_ids[:5])}{"..." if len(asset_ids) > 5 else ""}'
+        )
 
     def _stop_preview(self):
         """Stop current preview and hide button."""
