@@ -1,6 +1,6 @@
 """Logs window."""
 
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import QDialog, QTextEdit, QVBoxLayout
 
 from ..utils import APP_NAME, get_icon_path, log_buffer
