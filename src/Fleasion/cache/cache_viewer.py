@@ -877,17 +877,35 @@ class CacheViewerTab(QWidget):
         if not asset_ids:
             return
 
-        # Copy to clipboard
-        from PyQt6.QtWidgets import QApplication
-        clipboard = QApplication.clipboard()
-        clipboard.setText(','.join(asset_ids))
+        # Try to find the replacer entry field (if we're in the replacer config window)
+        parent = self.parent()
+        if parent and hasattr(parent, 'replace_entry'):
+            # Add to existing IDs if there are any
+            current_text = parent.replace_entry.text().strip()
+            if current_text:
+                new_text = current_text + ', ' + ', '.join(asset_ids)
+            else:
+                new_text = ', '.join(asset_ids)
+            parent.replace_entry.setText(new_text)
 
-        log_buffer.log('Cache', f'Copied {len(asset_ids)} asset ID(s) to clipboard')
-        QMessageBox.information(
-            self,
-            'Copied to Clipboard',
-            f'Copied {len(asset_ids)} asset ID(s) to clipboard:\n{", ".join(asset_ids[:5])}{"..." if len(asset_ids) > 5 else ""}'
-        )
+            log_buffer.log('Cache', f'Added {len(asset_ids)} asset ID(s) to replacer')
+            QMessageBox.information(
+                self,
+                'Added to Replacer',
+                f'Added {len(asset_ids)} asset ID(s) to replacer:\n{", ".join(asset_ids[:5])}{"..." if len(asset_ids) > 5 else ""}'
+            )
+        else:
+            # Fallback: copy to clipboard if not in replacer window
+            from PyQt6.QtWidgets import QApplication
+            clipboard = QApplication.clipboard()
+            clipboard.setText(', '.join(asset_ids))
+
+            log_buffer.log('Cache', f'Copied {len(asset_ids)} asset ID(s) to clipboard')
+            QMessageBox.information(
+                self,
+                'Copied to Clipboard',
+                f'Copied {len(asset_ids)} asset ID(s) to clipboard:\n{", ".join(asset_ids[:5])}{"..." if len(asset_ids) > 5 else ""}'
+            )
 
     def _stop_preview(self):
         """Stop current preview and hide button."""
