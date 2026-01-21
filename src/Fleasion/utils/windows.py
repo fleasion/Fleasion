@@ -57,6 +57,7 @@ def delete_cache() -> list[str]:
     else:
         messages.append('Roblox is not running')
 
+    # Delete rbx-storage.db
     if not STORAGE_DB.exists():
         messages.append('Storage database not found')
     else:
@@ -64,9 +65,51 @@ def delete_cache() -> list[str]:
             STORAGE_DB.unlink()
             messages.append('Storage database deleted successfully')
         except PermissionError:
-            messages.append('Failed: Permission denied - file is locked')
+            messages.append('Failed: Permission denied - attempting to unlock...')
+            # Try to unlock and retry
+            try:
+                import win32file
+                import win32con
+                import pywintypes
+
+                # Try to force unlock by opening with delete sharing
+                try:
+                    handle = win32file.CreateFile(
+                        str(STORAGE_DB),
+                        win32con.GENERIC_READ | win32con.GENERIC_WRITE,
+                        win32con.FILE_SHARE_DELETE,
+                        None,
+                        win32con.OPEN_EXISTING,
+                        0,
+                        None
+                    )
+                    win32file.CloseHandle(handle)
+                except pywintypes.error:
+                    pass
+
+                # Retry deletion
+                STORAGE_DB.unlink()
+                messages.append('Unlocked and deleted successfully')
+            except ImportError:
+                messages.append('Failed: pywin32 not available for unlock')
+            except Exception as e:
+                messages.append(f'Failed to unlock: {e}')
         except OSError as e:
             messages.append(f'Failed: {e}')
+
+    # Delete rbx-storage folder
+    import shutil
+    storage_folder = STORAGE_DB.parent / 'rbx-storage'
+    if storage_folder.exists():
+        try:
+            shutil.rmtree(storage_folder)
+            messages.append('Storage folder deleted successfully')
+        except PermissionError:
+            messages.append('Failed to delete storage folder: Permission denied')
+        except OSError as e:
+            messages.append(f'Failed to delete storage folder: {e}')
+    else:
+        messages.append('Storage folder not found')
 
     return messages
 
