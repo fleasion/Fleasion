@@ -4,7 +4,7 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTableWidget,
     QTableWidgetItem, QLabel, QComboBox, QLineEdit, QMessageBox,
-    QHeaderView, QFileDialog, QGroupBox, QSplitter, QTextEdit
+    QHeaderView, QFileDialog, QGroupBox, QSplitter, QTextEdit, QCheckBox
 )
 from PyQt6.QtGui import QPixmap, QImage
 from PIL import Image
@@ -20,9 +20,10 @@ from ..utils import log_buffer, open_folder
 class CacheViewerTab(QWidget):
     """Tab for viewing and managing cached Roblox assets."""
 
-    def __init__(self, cache_manager: CacheManager, parent=None):
+    def __init__(self, cache_manager: CacheManager, cache_scraper=None, parent=None):
         super().__init__(parent)
         self.cache_manager = cache_manager
+        self.cache_scraper = cache_scraper
         self._setup_ui()
         self._refresh_timer = QTimer()
         self._refresh_timer.timeout.connect(self._refresh_assets)
@@ -69,6 +70,14 @@ class CacheViewerTab(QWidget):
         """Create header with statistics."""
         header_group = QGroupBox('Cache Statistics')
         header_layout = QHBoxLayout()
+
+        # Cache scraper toggle (off by default)
+        self.scraper_toggle = QCheckBox('Enable Cache Scraper')
+        self.scraper_toggle.setChecked(False)
+        self.scraper_toggle.stateChanged.connect(self._toggle_scraper)
+        header_layout.addWidget(self.scraper_toggle)
+
+        header_layout.addStretch()
 
         self.stats_label = QLabel('Total: 0 assets | Size: 0 B')
         header_layout.addWidget(self.stats_label)
@@ -270,6 +279,12 @@ class CacheViewerTab(QWidget):
                 return f'{size_bytes:.1f} {unit}'
             size_bytes /= 1024.0
         return f'{size_bytes:.1f} TB'
+
+    def _toggle_scraper(self, state):
+        """Toggle cache scraper on/off."""
+        if self.cache_scraper:
+            enabled = bool(state)
+            self.cache_scraper.set_enabled(enabled)
 
     def _get_selected_asset(self) -> dict | None:
         """Get the currently selected asset."""

@@ -177,7 +177,8 @@ class CacheManager:
         Returns:
             List of asset metadata dictionaries
         """
-        assets = list(self.index['assets'].values())
+        # Take a snapshot to avoid dictionary changed during iteration
+        assets = list(dict(self.index['assets']).values())
 
         if asset_type is not None:
             assets = [a for a in assets if a['type'] == asset_type]
@@ -270,12 +271,15 @@ class CacheManager:
 
     def get_cache_stats(self) -> dict:
         """Get cache statistics."""
-        total_assets = len(self.index['assets'])
-        total_size = sum(a.get('size', 0) for a in self.index['assets'].values())
+        # Take a snapshot to avoid dictionary changed during iteration
+        assets_snapshot = dict(self.index['assets'])
+
+        total_assets = len(assets_snapshot)
+        total_size = sum(a.get('size', 0) for a in assets_snapshot.values())
 
         types_count = {}
-        for asset_info in self.index['assets'].values():
-            type_name = asset_info['type_name']
+        for asset_info in assets_snapshot.values():
+            type_name = asset_info.get('type_name', 'Unknown')
             types_count[type_name] = types_count.get(type_name, 0) + 1
 
         return {
