@@ -1,6 +1,6 @@
-"""JSON tree viewer widget."""
+'''JSON tree viewer widget.'''
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -16,8 +16,78 @@ from PyQt6.QtWidgets import (
 from ..utils import get_icon_path
 
 
+class JsonSearchWorker(QThread):
+    '''Worker thread for searching JSON tree without blocking UI.'''
+
+    results_ready = pyqtSignal(list)  # List of matching items
+    progress = pyqtSignal(int, int)  # Current, total
+
+    def __init__(self, root_items: list, query: str):
+        super().__init__()
+        self.root_items = root_items
+        self.query = query.lower().strip()
+        self._stop_requested = False
+
+    def stop(self):
+        self._stop_requested = True
+
+    def run(self):
+        '''Search tree items in background.'''
+        if not self.query or self._stop_requested:
+            return
+
+        matches = []
+        total_items = 0
+
+        # First, count total items for progress
+        def count_items(item):
+            count = 1
+            for i in range(item.childCount()):
+                count += count_items(item.child(i))
+            return count
+
+        for root_item in self.root_items:
+            total_items += count_items(root_item)
+
+        # Now search with progress reporting
+        processed = 0
+        batch_size = 50  # Report progress every 50 items
+
+        def search_item(item):
+            nonlocal processed
+            if self._stop_requested:
+                return False
+
+            processed += 1
+
+            # Report progress in batches
+            if processed % batch_size == 0:
+                self.progress.emit(processed, total_items)
+
+            # Check if this item matches
+            if self.query in item.text(0).lower():
+                matches.append(item)
+
+            # Search children
+            for i in range(item.childCount()):
+                if not search_item(item.child(i)):
+                    return False
+
+            return True
+
+        # Search all root items
+        for root_item in self.root_items:
+            if not search_item(root_item):
+                break
+
+        # Emit final results if not stopped
+        if not self._stop_requested:
+            self.progress.emit(total_items, total_items)
+            self.results_ready.emit(matches)
+
+
 class JsonTreeViewer(QDialog):
-    """JSON tree viewer dialog."""
+    '''JSON tree viewer dialog.'''
 
     def __init__(
         self, parent, data, filename: str, on_import_ids, on_import_replacement
@@ -39,6 +109,11 @@ class JsonTreeViewer(QDialog):
         self.on_import_replacement = on_import_replacement
         self.node_values = {}
         self.node_is_leaf = {}
+
+        # Search worker
+        self._search_worker: JsonSearchWorker | None = None
+        self._is_searching = False
+
         self._setup_ui()
         self._populate_tree()
         self._set_icon()
@@ -80,6 +155,12 @@ class JsonTreeViewer(QDialog):
         search_layout.addWidget(collapse_btn)
 
         layout.addLayout(search_layout)
+
+        # Search progress label
+        self.search_progress_label = QLabel('')
+        self.search_progress_label.setStyleSheet('color: #888; font-size: 11px;')
+        self.search_progress_label.hide()
+        layout.addWidget(self.search_progress_label)
 
         # Tree widget
         self.tree = QTreeWidget()
@@ -191,15 +272,62 @@ class JsonTreeViewer(QDialog):
         self.selection_label.setText(f'Selected: {len(vals)} numeric value(s)')
 
     def _on_search_text_changed(self):
-        """Handle search text change with debounce."""
+        '''Handle search text change with debounce.'''
         self._search_debounce.stop()
-        self._search_debounce.start(250)  # 250ms debounce
+        self._search_debounce.start(400)  # 400ms debounce
 
     def _do_search(self):
-        """Execute the actual search after debounce."""
-        query = self.search_input.text().lower().strip()
+        '''Execute the actual search after debounce using worker thread.'''
+        query = self.search_input.text().strip()
+
+        # Clear search if empty
         if not query:
+            self.tree.clearSelection()
+            self.search_progress_label.hide()
             return
+
+        # Stop any existing search
+        if self._search_worker is not None:
+            self._search_worker.stop()
+            self._search_worker.quit()
+            self._search_worker.wait()
+            self._search_worker = None
+
+        # Get all root items
+        root_items = []
+        for i in range(self.tree.topLevelItemCount()):
+            root_items.append(self.tree.topLevelItem(i))
+
+        # For small trees, search synchronously
+        total_items = 0
+        for item in root_items:
+            total_items += self._count_items(item)
+
+        if total_items < 1000:
+            self._do_search_sync(query)
+            return
+
+        # For large trees, use worker thread
+        self._is_searching = True
+        self.search_progress_label.setText('Searching...')
+        self.search_progress_label.show()
+
+        self._search_worker = JsonSearchWorker(root_items, query)
+        self._search_worker.results_ready.connect(self._on_search_complete)
+        self._search_worker.progress.connect(self._on_search_progress)
+        self._search_worker.finished.connect(self._on_search_finished)
+        self._search_worker.start()
+
+    def _count_items(self, item: QTreeWidgetItem) -> int:
+        '''Count total items in a tree.'''
+        count = 1
+        for i in range(item.childCount()):
+            count += self._count_items(item.child(i))
+        return count
+
+    def _do_search_sync(self, query: str):
+        '''Execute search synchronously for small trees.'''
+        query_lower = query.lower().strip()
 
         # Disable updates during search
         self.tree.setUpdatesEnabled(False)
@@ -212,7 +340,7 @@ class JsonTreeViewer(QDialog):
             matches = []
 
             def search_item(item):
-                if query in item.text(0).lower():
+                if query_lower in item.text(0).lower():
                     matches.append(item)
                     # Expand parents
                     parent = item.parent()
@@ -225,12 +353,56 @@ class JsonTreeViewer(QDialog):
             for i in range(self.tree.topLevelItemCount()):
                 search_item(self.tree.topLevelItem(i))
 
+            # Select matches
             if matches:
                 for item in matches:
                     item.setSelected(True)
                 self.tree.scrollToItem(matches[0])
+
+            self.search_progress_label.hide()
+
         finally:
             self.tree.setUpdatesEnabled(True)
+
+    def _on_search_progress(self, current: int, total: int):
+        '''Handle search progress update.'''
+        if total > 0:
+            percent = int((current / total) * 100)
+            self.search_progress_label.setText(f'Searching... {percent}% ({current:,}/{total:,})')
+
+    def _on_search_complete(self, matches: list):
+        '''Handle search results from worker thread.'''
+        # Disable updates during selection
+        self.tree.setUpdatesEnabled(False)
+
+        try:
+            # Clear selection
+            self.tree.clearSelection()
+
+            # Expand parents and select matches
+            if matches:
+                for item in matches:
+                    # Expand parents
+                    parent = item.parent()
+                    while parent:
+                        parent.setExpanded(True)
+                        parent = parent.parent()
+
+                    # Select item
+                    item.setSelected(True)
+
+                # Scroll to first match
+                self.tree.scrollToItem(matches[0])
+
+            # Update progress label
+            self.search_progress_label.setText(f'Found {len(matches)} match(es)')
+
+        finally:
+            self.tree.setUpdatesEnabled(True)
+
+    def _on_search_finished(self):
+        '''Handle search worker finished.'''
+        self._is_searching = False
 
     def _expand_all(self):
         """Expand all items."""

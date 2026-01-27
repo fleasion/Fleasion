@@ -21,6 +21,73 @@ from . import mesh_processing
 from ..utils import log_buffer, open_folder
 
 
+class SearchWorkerThread(QThread):
+    '''Worker thread for filtering assets without blocking UI.'''
+
+    results_ready = pyqtSignal(list)
+
+    def __init__(self, assets: list, search_text: str, asset_info: dict):
+        super().__init__()
+        self.assets = assets
+        self.search_text = search_text.strip().lower()
+        self.asset_info = asset_info
+        self._stop_requested = False
+
+    def stop(self):
+        self._stop_requested = True
+
+    def run(self):
+        '''Filter assets in background thread.'''
+        if not self.search_text or self._stop_requested:
+            self.results_ready.emit(self.assets)
+            return
+
+        filtered = []
+        batch_size = 100  # Process in batches to allow interruption
+
+        for i in range(0, len(self.assets), batch_size):
+            if self._stop_requested:
+                return
+
+            batch = self.assets[i:i + batch_size]
+
+            for a in batch:
+                if self._stop_requested:
+                    return
+
+                asset_id = a['id']
+
+                # Fast path: check ID first
+                if self.search_text in asset_id.lower():
+                    filtered.append(a)
+                    continue
+
+                # Check type name
+                if self.search_text in a['type_name'].lower():
+                    filtered.append(a)
+                    continue
+
+                # Check resolved name if available
+                if asset_id in self.asset_info:
+                    name = self.asset_info[asset_id].get('resolved_name')
+                    if name and self.search_text in name.lower():
+                        filtered.append(a)
+                        continue
+
+                # Check other fields
+                url = a.get('url', '').lower()
+                hash_val = a.get('hash', '').lower()
+                cached_at = a.get('cached_at', '').lower()
+
+                if (self.search_text in url or
+                    self.search_text in hash_val or
+                    self.search_text in cached_at):
+                    filtered.append(a)
+
+        if not self._stop_requested:
+            self.results_ready.emit(filtered)
+
+
 def _get_roblosecurity() -> str | None:
     """Get .ROBLOSECURITY cookie from Roblox local storage."""
     import os
@@ -260,7 +327,10 @@ class TexturePackLoaderThread(QThread):
 
 
 def _filter_assets_sync(assets: list, search_text: str, asset_info: dict) -> list:
-    """Filter assets synchronously - fast enough for most use cases."""
+    """Filter assets synchronously with optimized string matching.
+
+    Uses fast path for common cases and precomputed lowercase search.
+    """
     if not search_text:
         return assets
 
@@ -268,27 +338,43 @@ def _filter_assets_sync(assets: list, search_text: str, asset_info: dict) -> lis
     if not search_lower:
         return assets
 
+    # Precompute search fragments for better performance
+    search_parts = search_lower.split()
+    if not search_parts:
+        return assets
+
     filtered = []
+
+    # Process in batches to avoid blocking UI
     for a in assets:
-        # Check all searchable fields
-        asset_id = a['id'].lower()
+        # Fast path: check most common fields first
+        asset_id = a['id']
+
+        # Quick ID check (exact or prefix match)
+        if search_lower in asset_id.lower():
+            filtered.append(a)
+            continue
+
+        # Check type name
         type_name = a['type_name'].lower()
+        if search_lower in type_name:
+            filtered.append(a)
+            continue
+
+        # Check resolved name if available (most common search target)
+        if asset_id in asset_info:
+            name = asset_info[asset_id].get('resolved_name')
+            if name and search_lower in name.lower():
+                filtered.append(a)
+                continue
+
+        # Slower checks: URL, hash, cached_at
         url = a.get('url', '').lower()
         hash_val = a.get('hash', '').lower()
         cached_at = a.get('cached_at', '').lower()
 
-        # Check resolved name if available
-        resolved_name = ''
-        if asset_id in asset_info:
-            name = asset_info[asset_id].get('resolved_name')
-            resolved_name = name.lower() if name else ''
-
-        # Match if search text in any field
-        if (search_lower in asset_id or
-            search_lower in type_name or
-            search_lower in url or
+        if (search_lower in url or
             search_lower in hash_val or
-            search_lower in resolved_name or
             search_lower in cached_at):
             filtered.append(a)
 
@@ -314,6 +400,11 @@ class CacheViewerTab(QWidget):
         self._mesh_loader: MeshLoaderThread | None = None
         self._animation_loader: AnimationLoaderThread | None = None
         self._texturepack_loader: TexturePackLoaderThread | None = None
+
+        # Search worker thread
+        self._search_worker: SearchWorkerThread | None = None
+        self._pending_search_text: str = ''
+        self._is_searching: bool = False
 
         # Texturepack data for context menu
         self._texturepack_data: dict = {}  # map_name -> {id, hash, data}
@@ -570,19 +661,35 @@ class CacheViewerTab(QWidget):
             pass  # Ignore errors during background refresh
 
     def _refresh_assets(self):
-        """Refresh the asset list with synchronous filtering."""
+        '''Refresh the asset list using search worker for large datasets.'''
+        # Stop any existing search
+        if self._search_worker is not None:
+            self._search_worker.stop()
+            self._search_worker.quit()
+            self._search_worker.wait()
+            self._search_worker = None
+
         # Get filter type
         filter_type = self.type_filter.currentData()
 
         # Get assets
         assets = self.cache_manager.list_assets(filter_type)
 
-        # Get search text and filter synchronously
+        # Get search text
         search_text = self.search_box.text()
-        filtered_assets = _filter_assets_sync(assets, search_text, self._asset_info)
 
-        # Populate table
-        self._populate_table(filtered_assets)
+        # For small datasets or empty search, use synchronous filter
+        if not search_text.strip() or len(assets) < 500:
+            filtered_assets = _filter_assets_sync(assets, search_text, self._asset_info)
+            self._populate_table(filtered_assets)
+            return
+
+        # For large datasets with search, use worker thread
+        self._is_searching = True
+        self._search_worker = SearchWorkerThread(assets, search_text, self._asset_info)
+        self._search_worker.results_ready.connect(self._on_search_complete)
+        self._search_worker.finished.connect(self._on_search_finished)
+        self._search_worker.start()
 
     def _populate_table(self, assets: list):
         """Populate the table with assets."""
@@ -690,13 +797,44 @@ class CacheViewerTab(QWidget):
             self.cache_scraper.set_enabled(enabled)
 
     def _on_search_text_changed(self):
-        """Handle search text change - debounce to avoid too many searches."""
+        '''Handle search text change - debounce to avoid too many searches.'''
         self._search_debounce.stop()
-        self._search_debounce.start(200)  # 200ms debounce
+        self._search_debounce.start(300)  # 300ms debounce
 
     def _do_search(self):
-        """Execute the actual search after debounce."""
-        self._refresh_assets()
+        '''Execute the actual search after debounce using worker thread.'''
+        # Stop any existing search
+        if self._search_worker is not None:
+            self._search_worker.stop()
+            self._search_worker.quit()
+            self._search_worker.wait()
+            self._search_worker = None
+
+        # Get filter type and assets
+        filter_type = self.type_filter.currentData()
+        assets = self.cache_manager.list_assets(filter_type)
+        search_text = self.search_box.text()
+
+        # For empty search or small datasets, use synchronous filter
+        if not search_text.strip() or len(assets) < 500:
+            filtered = _filter_assets_sync(assets, search_text, self._asset_info)
+            self._populate_table(filtered)
+            return
+
+        # For large datasets with search text, use worker thread
+        self._is_searching = True
+        self._search_worker = SearchWorkerThread(assets, search_text, self._asset_info)
+        self._search_worker.results_ready.connect(self._on_search_complete)
+        self._search_worker.finished.connect(self._on_search_finished)
+        self._search_worker.start()
+
+    def _on_search_complete(self, filtered_assets: list):
+        '''Handle search results from worker thread.'''
+        self._populate_table(filtered_assets)
+
+    def _on_search_finished(self):
+        '''Handle search worker thread finished.'''
+        self._is_searching = False
 
     def _load_persisted_names(self):
         """Load persisted resolved names from index.json."""
