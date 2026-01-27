@@ -39,6 +39,7 @@ DEFAULT_SETTINGS = {
     'enabled_configs': [],
     'last_config': 'Default',
     'theme': 'System',  # System, Light, Dark
+    'audio_volume': 70,  # 0-100
 }
 
 

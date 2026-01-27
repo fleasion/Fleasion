@@ -11,6 +11,7 @@ from PyQt6.QtGui import QPixmap, QImage
 from PIL import Image
 import io
 import threading
+import gzip as gzip_module
 
 from .cache_manager import CacheManager
 from .obj_viewer import ObjViewerPanel
@@ -18,6 +19,168 @@ from .audio_player import AudioPlayerWidget
 from .animation_viewer import AnimationViewerPanel
 from . import mesh_processing
 from ..utils import log_buffer, open_folder
+
+
+def _get_roblosecurity() -> str | None:
+    """Get .ROBLOSECURITY cookie from Roblox local storage."""
+    import os
+    import json
+    import base64
+    import re
+
+    try:
+        import win32crypt
+    except ImportError:
+        return None
+
+    path = os.path.expandvars(r'%LocalAppData%/Roblox/LocalStorage/RobloxCookies.dat')
+    try:
+        if not os.path.exists(path):
+            return None
+        with open(path, 'r') as f:
+            data = json.load(f)
+        cookies_data = data.get('CookiesData')
+        if not cookies_data:
+            return None
+        enc = base64.b64decode(cookies_data)
+        dec = win32crypt.CryptUnprotectData(enc, None, None, None, 0)[1]
+        s = dec.decode(errors='ignore')
+        m = re.search(r'\.ROBLOSECURITY\s+([^\s;]+)', s)
+        return m.group(1) if m else None
+    except Exception:
+        return None
+
+
+class ImageLoaderThread(QThread):
+    """Worker thread for loading and processing images."""
+
+    image_ready = pyqtSignal(QPixmap)
+    error = pyqtSignal(str)
+
+    def __init__(self, data: bytes):
+        super().__init__()
+        self.data = data
+        self._stop_requested = False
+
+    def stop(self):
+        self._stop_requested = True
+
+    def run(self):
+        try:
+            log_buffer.log('Preview', f'Loading image ({len(self.data)} bytes)')
+
+            image = Image.open(io.BytesIO(self.data))
+
+            if self._stop_requested:
+                return
+
+            # Convert to RGBA
+            if image.mode not in ('RGB', 'RGBA'):
+                image = image.convert('RGBA')
+            elif image.mode == 'RGB':
+                image = image.convert('RGBA')
+
+            if self._stop_requested:
+                return
+
+            qimage = QImage(
+                image.tobytes(),
+                image.width,
+                image.height,
+                QImage.Format.Format_RGBA8888
+            )
+            pixmap = QPixmap.fromImage(qimage)
+
+            if not self._stop_requested:
+                log_buffer.log('Preview', f'Image loaded: {image.width}x{image.height}')
+                self.image_ready.emit(pixmap)
+
+        except Exception as e:
+            if not self._stop_requested:
+                log_buffer.log('Preview', f'Image load error: {e}')
+                self.error.emit(str(e))
+
+
+class MeshLoaderThread(QThread):
+    """Worker thread for loading and converting meshes."""
+
+    mesh_ready = pyqtSignal(str)  # OBJ content
+    error = pyqtSignal(str)
+
+    def __init__(self, data: bytes, asset_id: str):
+        super().__init__()
+        self.data = data
+        self.asset_id = asset_id
+        self._stop_requested = False
+
+    def stop(self):
+        self._stop_requested = True
+
+    def run(self):
+        try:
+            log_buffer.log('Preview', f'Loading mesh {self.asset_id} ({len(self.data)} bytes)')
+
+            # Decompress if gzip
+            decompressed = self.data
+            if self.data.startswith(b'\x1f\x8b'):
+                decompressed = gzip_module.decompress(self.data)
+                log_buffer.log('Preview', f'Decompressed mesh: {len(decompressed)} bytes')
+
+            if self._stop_requested:
+                return
+
+            # Convert to OBJ
+            obj_content = mesh_processing.convert(decompressed)
+
+            if self._stop_requested:
+                return
+
+            if obj_content:
+                log_buffer.log('Preview', f'Mesh converted successfully')
+                self.mesh_ready.emit(obj_content)
+            else:
+                self.error.emit('Failed to convert mesh to OBJ format')
+
+        except Exception as e:
+            if not self._stop_requested:
+                log_buffer.log('Preview', f'Mesh conversion error: {e}')
+                self.error.emit(str(e))
+
+
+class AnimationLoaderThread(QThread):
+    """Worker thread for loading animation data asynchronously."""
+
+    animation_ready = pyqtSignal(bytes)  # Animation data ready to load into viewer
+    error = pyqtSignal(str)
+
+    def __init__(self, data: bytes, asset_id: str):
+        super().__init__()
+        self.data = data
+        self.asset_id = asset_id
+        self._stop_requested = False
+
+    def stop(self):
+        self._stop_requested = True
+
+    def run(self):
+        try:
+            # Decompress if gzip
+            decompressed = self.data
+            if self.data.startswith(b'\x1f\x8b'):
+                decompressed = gzip_module.decompress(self.data)
+                log_buffer.log('Preview', f'Decompressed animation: {len(decompressed)} bytes')
+
+            if self._stop_requested:
+                return
+
+            # Emit the data for the main thread to load into the viewer
+            # The actual animation loading must happen on main thread due to OpenGL context
+            self.animation_ready.emit(decompressed)
+
+        except Exception as e:
+            if not self._stop_requested:
+                log_buffer.log('Preview', f'Animation load error: {e}')
+                self.error.emit(str(e))
 
 
 class TexturePackLoaderThread(QThread):
@@ -29,7 +192,7 @@ class TexturePackLoaderThread(QThread):
 
     def __init__(self, maps: dict, cache_manager: 'CacheManager'):
         super().__init__()
-        self.maps = maps  # {map_name: asset_id}
+        self.maps = maps
         self.cache_manager = cache_manager
         self._stop_requested = False
 
@@ -37,38 +200,46 @@ class TexturePackLoaderThread(QThread):
         self._stop_requested = True
 
     def run(self):
-        """Fetch textures from cache or API."""
         import requests
+        from urllib.parse import urlparse
+
+        log_buffer.log('Preview', f'Loading texture pack with {len(self.maps)} maps')
 
         for map_name, map_id in self.maps.items():
             if self._stop_requested:
                 return
 
             try:
-                # Try to get cached texture data (type 1 = Image)
                 data = self.cache_manager.get_asset(str(map_id), 1)
                 hash_val = ''
 
                 if data:
-                    # Get hash from cache
                     asset_info = self.cache_manager.get_asset_info(str(map_id), 1)
                     hash_val = asset_info.get('hash', '') if asset_info else ''
+                    log_buffer.log('Preview', f'Loaded {map_name} from cache')
                 else:
-                    # Not cached - fetch from API
                     if self._stop_requested:
                         return
 
                     api_url = f'https://assetdelivery.roblox.com/v1/asset/?id={map_id}'
                     headers = {'User-Agent': 'Roblox/WinInet'}
 
-                    # Try to get auth cookie
-                    cookie = self._get_roblosecurity()
+                    cookie = _get_roblosecurity()
                     if cookie:
                         headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
 
-                    response = requests.get(api_url, headers=headers, timeout=10)
+                    log_buffer.log('Preview', f'Fetching {map_name} from API')
+                    response = requests.get(api_url, headers=headers, timeout=10, allow_redirects=True)
                     if response.status_code == 200 and response.content:
                         data = response.content
+                        # Extract hash from final URL (after redirects)
+                        final_url = response.url
+                        parsed = urlparse(final_url)
+                        # Hash is the last part of the path (e.g., /v2/asset/.../hash)
+                        path_parts = parsed.path.rsplit('/', 1)
+                        if len(path_parts) > 1 and path_parts[-1]:
+                            hash_val = path_parts[-1]
+                            log_buffer.log('Preview', f'Got hash from URL: {hash_val}')
                     else:
                         self.texture_error.emit(map_name, f'API error: {response.status_code}')
                         continue
@@ -80,62 +251,101 @@ class TexturePackLoaderThread(QThread):
 
             except Exception as e:
                 if not self._stop_requested:
+                    log_buffer.log('Preview', f'Texture {map_name} error: {e}')
                     self.texture_error.emit(map_name, str(e))
 
         if not self._stop_requested:
+            log_buffer.log('Preview', 'Texture pack loading complete')
             self.finished_loading.emit()
 
-    def _get_roblosecurity(self) -> str | None:
-        """Get .ROBLOSECURITY cookie from Roblox local storage."""
-        import os
-        import json
-        import base64
-        import re
 
-        try:
-            import win32crypt
-        except ImportError:
-            return None
+class SearchWorkerThread(QThread):
+    """Worker thread for filtering assets in background."""
 
-        path = os.path.expandvars(r'%LocalAppData%/Roblox/LocalStorage/RobloxCookies.dat')
+    results_ready = pyqtSignal(list)  # Filtered asset list
+
+    def __init__(self, assets: list, search_text: str, asset_info: dict):
+        super().__init__()
+        self.assets = assets
+        self.search_text = search_text.strip().lower()
+        self.asset_info = asset_info
+        self._stop_requested = False
+
+    def stop(self):
+        self._stop_requested = True
+
+    def run(self):
         try:
-            if not os.path.exists(path):
-                return None
-            with open(path, 'r') as f:
-                data = json.load(f)
-            cookies_data = data.get('CookiesData')
-            if not cookies_data:
-                return None
-            enc = base64.b64decode(cookies_data)
-            dec = win32crypt.CryptUnprotectData(enc, None, None, None, 0)[1]
-            s = dec.decode(errors='ignore')
-            m = re.search(r'\.ROBLOSECURITY\s+([^\s;]+)', s)
-            return m.group(1) if m else None
+            if not self.search_text:
+                if not self._stop_requested:
+                    self.results_ready.emit(self.assets)
+                return
+
+            filtered = []
+            for a in self.assets:
+                if self._stop_requested:
+                    return
+
+                # Check all searchable fields
+                asset_id = a['id'].lower()
+                type_name = a['type_name'].lower()
+                url = a.get('url', '').lower()
+                hash_val = a.get('hash', '').lower()
+                cached_at = a.get('cached_at', '').lower()
+
+                # Check resolved name if available
+                resolved_name = ''
+                if asset_id in self.asset_info:
+                    name = self.asset_info[asset_id].get('resolved_name')
+                    resolved_name = name.lower() if name else ''
+
+                # Match if search text in any field
+                if (self.search_text in asset_id or
+                    self.search_text in type_name or
+                    self.search_text in url or
+                    self.search_text in hash_val or
+                    self.search_text in resolved_name or
+                    self.search_text in cached_at):
+                    filtered.append(a)
+
+            if not self._stop_requested:
+                self.results_ready.emit(filtered)
+
         except Exception:
-            return None
+            if not self._stop_requested:
+                self.results_ready.emit([])
 
 
 class CacheViewerTab(QWidget):
     """Tab for viewing and managing cached Roblox assets."""
 
-    def __init__(self, cache_manager: CacheManager, cache_scraper=None, parent=None):
+    def __init__(self, cache_manager: CacheManager, cache_scraper=None, parent=None, config_manager=None):
         super().__init__(parent)
         self.cache_manager = cache_manager
         self.cache_scraper = cache_scraper
+        self.config_manager = config_manager
         self._last_asset_count = 0  # Track for change detection
         self._selected_asset_id: str | None = None  # Track selected asset by ID
         self._show_names = True  # Show names instead of hashes (on by default)
         self._asset_info: dict[str, dict] = {}  # asset_id -> {resolved_name, hash, row}
         self._current_pixmap = None  # Store current image for resize
+
+        # Worker threads for async preview loading
+        self._image_loader: ImageLoaderThread | None = None
+        self._mesh_loader: MeshLoaderThread | None = None
+        self._animation_loader: AnimationLoaderThread | None = None
+        self._texturepack_loader: TexturePackLoaderThread | None = None
+        self._search_worker: SearchWorkerThread | None = None
+
         self._setup_ui()
         self._refresh_timer = QTimer()
         self._refresh_timer.timeout.connect(self._check_for_updates)
         self._refresh_timer.start(3000)  # Check every 3 seconds
 
-        # Search debounce timer
-        self._search_timer = QTimer()
-        self._search_timer.setSingleShot(True)
-        self._search_timer.timeout.connect(self._refresh_assets)
+        # Search debounce timer (short delay to batch rapid keystrokes)
+        self._search_debounce = QTimer()
+        self._search_debounce.setSingleShot(True)
+        self._search_debounce.timeout.connect(self._do_search)
 
         # Load persisted resolved names from index
         self._load_persisted_names()
@@ -279,6 +489,13 @@ class CacheViewerTab(QWidget):
         self.obj_viewer = ObjViewerPanel()
         self.preview_container_layout.addWidget(self.obj_viewer)
 
+        # Loading indicator
+        self.loading_label = QLabel('Loading...')
+        self.loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.loading_label.setStyleSheet('QLabel { background-color: #2b2b2b; color: #aaa; font-size: 14px; padding: 20px; }')
+        self.preview_container_layout.addWidget(self.loading_label)
+        self.loading_label.hide()
+
         # Image viewer (will show/hide as needed)
         self.image_label = QLabel('Select an asset to preview')
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -306,7 +523,6 @@ class CacheViewerTab(QWidget):
 
         # Texture pack container (dynamically created)
         self.texturepack_widget = None
-        self.texturepack_loader = None
 
         # Set up scroll area
         self.preview_container.setLayout(self.preview_container_layout)
@@ -370,43 +586,29 @@ class CacheViewerTab(QWidget):
             pass  # Ignore errors during background refresh
 
     def _refresh_assets(self):
-        """Refresh the asset list."""
+        """Refresh the asset list using background thread for search."""
+        # Stop any existing search (non-blocking)
+        if self._search_worker is not None:
+            self._search_worker.stop()
+            self._search_worker.results_ready.disconnect()
+            self._search_worker = None
+
         # Get filter type
         filter_type = self.type_filter.currentData()
 
         # Get assets
         assets = self.cache_manager.list_assets(filter_type)
 
-        # Apply search filter across all columns
-        search_text = self.search_box.text().strip().lower()
-        if search_text:
-            filtered = []
-            for a in assets:
-                # Check all searchable fields
-                asset_id = a['id'].lower()
-                type_name = a['type_name'].lower()
-                url = a.get('url', '').lower()
-                hash_val = a.get('hash', '').lower()
-                size_str = self._format_size(a.get('size', 0)).lower()
-                cached_at = a.get('cached_at', '').lower()
+        # Get search text
+        search_text = self.search_box.text()
 
-                # Check resolved name if available
-                resolved_name = ''
-                if asset_id in self._asset_info:
-                    name = self._asset_info[asset_id].get('resolved_name')
-                    resolved_name = name.lower() if name else ''
+        # Start search worker thread
+        self._search_worker = SearchWorkerThread(assets, search_text, self._asset_info)
+        self._search_worker.results_ready.connect(self._on_search_results)
+        self._search_worker.start()
 
-                # Match if search text in any field
-                if (search_text in asset_id or
-                    search_text in type_name or
-                    search_text in url or
-                    search_text in hash_val or
-                    search_text in resolved_name or
-                    search_text in size_str or
-                    search_text in cached_at):
-                    filtered.append(a)
-            assets = filtered
-
+    def _on_search_results(self, assets: list):
+        """Handle search results from background thread."""
         # Disable updates while populating (major performance boost)
         self.table.setUpdatesEnabled(False)
         self.table.setSortingEnabled(False)
@@ -511,10 +713,13 @@ class CacheViewerTab(QWidget):
             self.cache_scraper.set_enabled(enabled)
 
     def _on_search_text_changed(self):
-        """Handle search text change with debouncing."""
-        # Restart the timer - only trigger search after user stops typing for 300ms
-        self._search_timer.stop()
-        self._search_timer.start(300)
+        """Handle search text change - debounce to avoid too many searches."""
+        self._search_debounce.stop()
+        self._search_debounce.start(100)  # 100ms debounce
+
+    def _do_search(self):
+        """Execute the actual search after debounce."""
+        self._refresh_assets()
 
     def _load_persisted_names(self):
         """Load persisted resolved names from index.json."""
@@ -908,6 +1113,9 @@ class CacheViewerTab(QWidget):
                 self.cache_manager._save_index()
                 self._last_asset_count = 0
                 self._asset_info.clear()
+                # Clear scraper tracking so assets can be re-scraped
+                if self.cache_scraper:
+                    self.cache_scraper.clear_tracking()
                 self._refresh_assets()
                 log_buffer.log('Cache', 'Database deleted and reset')
                 QMessageBox.information(self, 'Success', 'Database deleted successfully')
@@ -932,12 +1140,21 @@ class CacheViewerTab(QWidget):
         # Track selected asset ID for persistence across refreshes
         self._selected_asset_id = asset['id']
 
+        # Stop all loaders first
+        self._stop_all_loaders()
+
         # Hide all preview widgets first
         self.obj_viewer.hide()
         self.image_label.hide()
+        self.loading_label.hide()
         self.audio_container.hide()
         self.animation_viewer.hide()
         self.text_viewer.hide()
+
+        # Clean up texture pack widget
+        if self.texturepack_widget is not None:
+            self.texturepack_widget.deleteLater()
+            self.texturepack_widget = None
 
         # Stop any playing audio
         if self.audio_player:
@@ -958,11 +1175,21 @@ class CacheViewerTab(QWidget):
                 self._show_text_preview(f'Failed to load asset {asset_id}')
                 return
 
+            # Show loading for async previews
+            if asset_type in [4, 1, 13, 63]:  # Mesh, Image, Decal, TexturePack
+                self._show_loading()
+
             # Preview based on type
             if asset_type == 4:  # Mesh
                 self._preview_mesh(data, asset_id)
-            elif asset_type == 39:  # SolidModel - binary RBXM with embedded mesh
-                self._preview_solidmodel(data, asset_id)
+            elif asset_type == 39:  # SolidModel
+                self._show_text_preview(
+                    f'SolidModel (Type 39) preview is not currently supported.\n\n'
+                    f'Asset ID: {asset_id}\n'
+                    f'Size: {len(data):,} bytes\n\n'
+                    f'SolidModels contain CSG (Constructive Solid Geometry) data\n'
+                    f'which cannot be converted to standard mesh format.'
+                )
             elif asset_type in [1, 13]:  # Image, Decal
                 self._preview_image(data)
             elif asset_type == 3:  # Audio
@@ -1139,13 +1366,17 @@ class CacheViewerTab(QWidget):
         self.image_label.show()
 
     def _clear_preview(self):
-        """Clear all preview widgets."""
+        """Clear all preview widgets and stop any running loaders."""
+        # Stop all worker threads first
+        self._stop_all_loaders()
+
+        # Hide and clear UI widgets
         self.obj_viewer.hide()
         self.obj_viewer.clear()
         self.image_label.hide()
         self.image_label.clear()
         self.image_label.setText('Select an asset to preview')
-        self._current_pixmap = None  # Clear stored pixmap
+        self._current_pixmap = None
         self.audio_container.hide()
         if self.audio_player:
             self.audio_player.stop()
@@ -1155,156 +1386,79 @@ class CacheViewerTab(QWidget):
         self.animation_viewer.clear()
         self.text_viewer.hide()
         self.text_viewer.clear()
+
         # Clean up texture pack widgets
         if self.texturepack_widget is not None:
             self.texturepack_widget.deleteLater()
             self.texturepack_widget = None
-        if self.texturepack_loader is not None:
-            self.texturepack_loader.stop()
-            self.texturepack_loader.quit()
-            self.texturepack_loader.wait()
-            self.texturepack_loader = None
+
+    def _stop_all_loaders(self):
+        """Stop all running preview loader threads."""
+        if self._image_loader is not None:
+            self._image_loader.stop()
+            self._image_loader.quit()
+            self._image_loader.wait()
+            self._image_loader = None
+
+        if self._mesh_loader is not None:
+            self._mesh_loader.stop()
+            self._mesh_loader.quit()
+            self._mesh_loader.wait()
+            self._mesh_loader = None
+
+        if self._animation_loader is not None:
+            self._animation_loader.stop()
+            self._animation_loader.quit()
+            self._animation_loader.wait()
+            self._animation_loader = None
+
+        if self._texturepack_loader is not None:
+            self._texturepack_loader.stop()
+            self._texturepack_loader.quit()
+            self._texturepack_loader.wait()
+            self._texturepack_loader = None
 
     def _on_splitter_moved(self, pos: int, index: int):
         """Handle splitter resize to rescale image."""
         if self._current_pixmap is not None and self.image_label.isVisible():
             self._scale_and_show_image(self._current_pixmap)
 
+    def _show_loading(self):
+        """Show loading indicator."""
+        self.loading_label.show()
+
+    def _hide_loading(self):
+        """Hide loading indicator."""
+        self.loading_label.hide()
+
     def _preview_mesh(self, data: bytes, asset_id: str):
-        """Preview a mesh asset in 3D."""
-        import gzip as gzip_module
+        """Preview a mesh asset in 3D using background thread."""
+        self._mesh_loader = MeshLoaderThread(data, asset_id)
+        self._mesh_loader.mesh_ready.connect(self._on_mesh_ready)
+        self._mesh_loader.error.connect(lambda e: self._show_text_preview(f'Mesh error: {e}'))
+        self._mesh_loader.start()
 
-        try:
-            # Decompress if gzip compressed
-            decompressed = data
-            if data.startswith(b'\x1f\x8b'):  # gzip magic
-                decompressed = gzip_module.decompress(data)
-
-            # Convert mesh to OBJ
-            obj_content = mesh_processing.convert(decompressed)
-            if obj_content:
-                self.obj_viewer.load_obj(obj_content, asset_id)
-                self.obj_viewer.show()
-                self.stop_preview_btn.show()
-            else:
-                self._show_text_preview('Failed to convert mesh to OBJ format')
-        except Exception as e:
-            self._show_text_preview(f'Mesh conversion error: {e}')
-
-    def _preview_solidmodel(self, data: bytes, asset_id: str):
-        """Preview a SolidModel asset (binary RBXM with CSG/PartOperation data)."""
-        import gzip as gzip_module
-
-        try:
-            # Decompress if gzip compressed
-            decompressed = data
-            if data.startswith(b'\x1f\x8b'):  # gzip magic
-                decompressed = gzip_module.decompress(data)
-
-            # Check if it's actually a mesh format (version X.XX)
-            if decompressed.startswith(b'version '):
-                # This is actually a regular mesh, not a SolidModel
-                obj_content = mesh_processing.convert(decompressed)
-                if obj_content:
-                    self.obj_viewer.load_obj(obj_content, asset_id)
-                    self.obj_viewer.show()
-                    self.stop_preview_btn.show()
-                    return
-
-            # SolidModel is binary RBXM format with PartOperationAsset (CSG data)
-            # Try to extract any embedded mesh data
-            obj_content = self._extract_solidmodel_mesh(decompressed)
-            if obj_content:
-                self.obj_viewer.load_obj(obj_content, asset_id)
-                self.obj_viewer.show()
-                self.stop_preview_btn.show()
-            else:
-                # Show info about the binary format
-                info_lines = [f'SolidModel {asset_id}', '']
-
-                if decompressed.startswith(b'<roblox!'):
-                    info_lines.append('Format: Binary RBXM (CSG/PartOperation)')
-                    # Try to find class names
-                    import re
-                    classes = re.findall(rb'\x00([A-Z][a-zA-Z]+(?:Asset)?)\x00', decompressed)
-                    if classes:
-                        unique_classes = list(dict.fromkeys(c.decode() for c in classes[:10]))
-                        info_lines.append(f'Classes: {", ".join(unique_classes)}')
-                else:
-                    info_lines.append(f'Format: Unknown (header: {decompressed[:20]})')
-
-                info_lines.append('')
-                info_lines.append('3D preview not supported for CSG/PartOperation data.')
-                info_lines.append('This format contains solid geometry operations,')
-                info_lines.append('not standard mesh vertex/face data.')
-
-                self._show_text_preview('\n'.join(info_lines))
-        except Exception as e:
-            self._show_text_preview(f'SolidModel preview error: {e}')
-
-    def _extract_solidmodel_mesh(self, data: bytes) -> str | None:
-        """
-        Extract mesh data from SolidModel binary RBXM format.
-
-        SolidModels are stored as binary RBXM with PartOperationAsset containing
-        CSG mesh data. The mesh is embedded in a proprietary format.
-
-        Returns OBJ content string or None if extraction fails.
-        """
-        # Check for RBXM header
-        if not data.startswith(b'<roblox!'):
-            return None
-
-        # Try to find embedded mesh data
-        # Look for mesh version header within the binary data
-        import re
-
-        # Search for mesh version signature
-        match = re.search(rb'version \d+\.\d+', data)
-        if match:
-            mesh_start = match.start()
-            # Extract mesh data from this point
-            mesh_data = data[mesh_start:]
-
-            # Try to convert with mesh_processing
-            try:
-                obj_content = mesh_processing.convert(mesh_data)
-                if obj_content:
-                    return obj_content
-            except Exception:
-                pass
-
-        return None
+    def _on_mesh_ready(self, obj_content: str):
+        """Handle mesh loaded from background thread."""
+        self._hide_loading()
+        self.obj_viewer.load_obj(obj_content, '')
+        self.obj_viewer.show()
+        self.stop_preview_btn.show()
 
     def _preview_image(self, data: bytes):
-        """Preview an image asset. Data should already be PNG from API."""
-        try:
-            # Load image with PIL
-            image = Image.open(io.BytesIO(data))
+        """Preview an image asset using background thread."""
+        self._image_loader = ImageLoaderThread(data)
+        self._image_loader.image_ready.connect(self._on_image_ready)
+        self._image_loader.error.connect(lambda e: self._show_text_preview(f'Image error: {e}'))
+        self._image_loader.start()
 
-            # Convert to RGBA
-            if image.mode not in ('RGB', 'RGBA'):
-                image = image.convert('RGBA')
-            elif image.mode == 'RGB':
-                image = image.convert('RGBA')
-
-            qimage = QImage(
-                image.tobytes(),
-                image.width,
-                image.height,
-                QImage.Format.Format_RGBA8888
-            )
-            pixmap = QPixmap.fromImage(qimage)
-
-            # Store original for resizing
-            self._current_pixmap = pixmap
-
-            # Scale to fit available container
-            self._scale_and_show_image(pixmap)
-            self.image_label.show()
-            self.stop_preview_btn.show()
-        except Exception as e:
-            self._show_text_preview(f'Image preview error: {e}')
+    def _on_image_ready(self, pixmap: QPixmap):
+        """Handle image loaded from background thread."""
+        self._hide_loading()
+        self._current_pixmap = pixmap
+        self._scale_and_show_image(pixmap)
+        self.image_label.show()
+        self.stop_preview_btn.show()
 
     def _scale_and_show_image(self, pixmap: QPixmap):
         """Scale pixmap to fit container and display it."""
@@ -1334,11 +1488,11 @@ class CacheViewerTab(QWidget):
             if self.texturepack_widget is not None:
                 self.texturepack_widget.deleteLater()
                 self.texturepack_widget = None
-            if self.texturepack_loader is not None:
-                self.texturepack_loader.stop()
-                self.texturepack_loader.quit()
-                self.texturepack_loader.wait()
-                self.texturepack_loader = None
+            if self._texturepack_loader is not None:
+                self._texturepack_loader.stop()
+                self._texturepack_loader.quit()
+                self._texturepack_loader.wait()
+                self._texturepack_loader = None
 
             # Parse XML to get texture map IDs
             xml_text = data.decode('utf-8', errors='replace')
@@ -1366,15 +1520,12 @@ class CacheViewerTab(QWidget):
             self._tp_image_labels = {}
 
             # Create placeholder for each texture map
-            # Store headers for updating hash later
-            self._tp_headers = {}
             for map_name, map_id in maps.items():
-                # Header with name and id (hash added when texture loads)
+                # Header with name and id
                 header = QLabel(f'{map_name}  |  {map_id}')
                 header.setStyleSheet('font-weight: bold; color: #888; padding: 5px;')
                 header.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
                 tp_layout.addWidget(header)
-                self._tp_headers[map_name] = (header, map_id)
 
                 # Image placeholder
                 img_label = QLabel('Loading...')
@@ -1390,16 +1541,19 @@ class CacheViewerTab(QWidget):
             self.stop_preview_btn.show()
 
             # Start async loading of textures
-            self.texturepack_loader = TexturePackLoaderThread(maps, self.cache_manager)
-            self.texturepack_loader.texture_loaded.connect(self._on_texturepack_texture_loaded)
-            self.texturepack_loader.texture_error.connect(self._on_texturepack_texture_error)
-            self.texturepack_loader.start()
+            self._texturepack_loader = TexturePackLoaderThread(maps, self.cache_manager)
+            self._texturepack_loader.texture_loaded.connect(self._on_texturepack_texture_loaded)
+            self._texturepack_loader.texture_error.connect(self._on_texturepack_texture_error)
+            self._texturepack_loader.start()
 
         except Exception as e:
             self._show_text_preview(f'Texture pack preview error: {e}')
 
     def _on_texturepack_texture_loaded(self, map_name: str, map_id: str, hash_val: str, data: bytes):
         """Handle loaded texture from texture pack."""
+        # Hide loading on first texture
+        self._hide_loading()
+
         try:
             if map_name not in self._tp_image_labels:
                 return
@@ -1412,14 +1566,8 @@ class CacheViewerTab(QWidget):
             except RuntimeError:
                 return
 
-            # Update header with hash if available
-            if map_name in self._tp_headers:
-                header, mid = self._tp_headers[map_name]
-                try:
-                    if hash_val:
-                        header.setText(f'{map_name}  |  {mid}  |  {hash_val}')
-                except RuntimeError:
-                    pass
+            # Header already has name and ID, no need to update with hash
+            # (hash is too long for preview, but preserved in export logic)
 
             # Load image
             image = Image.open(io.BytesIO(data))
@@ -1427,6 +1575,15 @@ class CacheViewerTab(QWidget):
                 image = image.convert('RGBA')
             elif image.mode == 'RGB':
                 image = image.convert('RGBA')
+
+            # Scale up small images to 512x512 minimum
+            min_size = 512
+            if image.width < min_size or image.height < min_size:
+                # Scale to at least 512 on the smaller dimension
+                scale_factor = max(min_size / image.width, min_size / image.height)
+                new_width = int(image.width * scale_factor)
+                new_height = int(image.height * scale_factor)
+                image = image.resize((new_width, new_height), Image.Resampling.NEAREST)
 
             qimage = QImage(
                 image.tobytes(),
@@ -1487,8 +1644,8 @@ class CacheViewerTab(QWidget):
             with open(temp_file, 'wb') as f:
                 f.write(data)
 
-            # Create audio player
-            self.audio_player = AudioPlayerWidget(str(temp_file), self)
+            # Create audio player with config manager for volume persistence
+            self.audio_player = AudioPlayerWidget(str(temp_file), self, self.config_manager)
 
             # Clear previous audio widgets
             while self.audio_container_layout.count():
@@ -1506,9 +1663,18 @@ class CacheViewerTab(QWidget):
             log_buffer.log('Cache', f'Audio preview error: {e}')
 
     def _preview_animation(self, data: bytes, asset_id: str):
-        """Preview an animation asset (RBXM XML format)."""
+        """Preview an animation asset (RBXM XML format) using background thread."""
+        self._show_loading()
+        self._animation_loader = AnimationLoaderThread(data, asset_id)
+        self._animation_loader.animation_ready.connect(self._on_animation_ready)
+        self._animation_loader.error.connect(lambda e: self._show_text_preview(f'Animation error: {e}'))
+        self._animation_loader.start()
+
+    def _on_animation_ready(self, data: bytes):
+        """Handle animation data ready from background thread."""
+        self._hide_loading()
         try:
-            # Try to load in the animation viewer
+            # Load in the animation viewer (must be on main thread for OpenGL)
             if self.animation_viewer.load_animation(data):
                 self.animation_viewer.show()
                 self.stop_preview_btn.show()
@@ -1532,10 +1698,10 @@ class CacheViewerTab(QWidget):
                     self._show_text_preview('\n'.join(lines[:500]))  # Limit lines
                 except Exception:
                     # Fallback to raw text
-                    self._show_text_preview(f'Animation ID: {asset_id}\nSize: {self._format_size(len(data))}\n\n{text[:5000]}')
+                    self._show_text_preview(f'Animation data\nSize: {self._format_size(len(data))}\n\n{text[:5000]}')
             else:
                 # Binary format, show hex
-                self._preview_hex(data, {'id': asset_id, 'type_name': 'Animation'})
+                self._preview_hex(data, {'id': '', 'type_name': 'Animation'})
 
         except Exception as e:
             self._show_text_preview(f'Animation preview error: {e}')
@@ -1566,5 +1732,6 @@ class CacheViewerTab(QWidget):
 
     def _show_text_preview(self, text: str):
         """Show text in the text viewer."""
+        self._hide_loading()
         self.text_viewer.setPlainText(text)
         self.text_viewer.show()

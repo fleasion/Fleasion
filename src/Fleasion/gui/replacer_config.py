@@ -150,7 +150,12 @@ class ReplacerConfigWindow(QDialog):
         from ..cache import CacheViewerTab
 
         cache_scraper = getattr(self.proxy_master, 'cache_scraper', None)
-        return CacheViewerTab(self.proxy_master.cache_manager, cache_scraper, self)
+        return CacheViewerTab(
+            self.proxy_master.cache_manager,
+            cache_scraper,
+            self,
+            config_manager=self.config_manager
+        )
 
     def _create_config_section(self, parent_layout):
         """Create the configuration selector section."""

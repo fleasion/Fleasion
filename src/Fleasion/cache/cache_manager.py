@@ -295,6 +295,9 @@ class CacheManager:
             Path to export directory or None on failure
         """
         import xml.etree.ElementTree as ET
+        import requests
+
+        from ..utils import log_buffer
 
         try:
             # Parse XML
@@ -310,29 +313,50 @@ class CacheManager:
                     maps[elem.capitalize()] = node.text
 
             if not maps:
+                log_buffer.log('Export', f'No texture maps found in texture pack {asset_id}')
                 return None
 
-            # Create base folder for this texture pack
-            pack_dir = export_type_dir / base_filename
-            pack_dir.mkdir(exist_ok=True)
-
+            # Export directly to TexturePack folder with texture type subfolders
             exported_count = 0
             for map_name, map_id in maps.items():
-                # Create subfolder for this texture type
-                type_dir = pack_dir / map_name
+                # Create subfolder for this texture type directly in TexturePack folder
+                type_dir = export_type_dir / map_name
                 type_dir.mkdir(exist_ok=True)
 
                 # Get cached texture (type 1 = Image)
                 texture_data = self.get_asset(str(map_id), 1)
+                texture_hash = ''
+
+                if texture_data:
+                    # Get hash from cache
+                    texture_info = self.get_asset_info(str(map_id), 1)
+                    texture_hash = texture_info.get('hash', '') if texture_info else ''
+                else:
+                    # Not in cache - fetch from API
+                    log_buffer.log('Export', f'Fetching {map_name} texture {map_id} from API')
+                    try:
+                        from urllib.parse import urlparse
+                        api_url = f'https://assetdelivery.roblox.com/v1/asset/?id={map_id}'
+                        headers = {'User-Agent': 'Roblox/WinInet'}
+                        response = requests.get(api_url, headers=headers, timeout=15, allow_redirects=True)
+                        if response.status_code == 200 and response.content:
+                            texture_data = response.content
+                            # Extract hash from final URL path
+                            final_url = response.url
+                            parsed = urlparse(final_url)
+                            path_parts = parsed.path.rsplit('/', 1)
+                            if len(path_parts) > 1 and path_parts[-1]:
+                                texture_hash = path_parts[-1]
+                    except Exception as e:
+                        log_buffer.log('Export', f'Failed to fetch texture {map_id}: {e}')
+                        continue
+
                 if not texture_data:
+                    log_buffer.log('Export', f'No data for texture {map_id}')
                     continue
 
-                # Get hash
-                texture_info = self.get_asset_info(str(map_id), 1)
-                texture_hash = texture_info.get('hash', '') if texture_info else ''
-
-                # Build filename: Name_ID_Hash.png
-                filename_parts = [map_name, map_id]
+                # Build filename: ID_Hash.png (no map_name since folder already indicates type)
+                filename_parts = [map_id]
                 if texture_hash:
                     filename_parts.append(texture_hash)
                 texture_filename = '_'.join(filename_parts)
@@ -341,11 +365,18 @@ class CacheManager:
                 texture_path = type_dir / f'{texture_filename}.png'
                 texture_path.write_bytes(texture_data)
                 exported_count += 1
+                log_buffer.log('Export', f'Exported {map_name} texture to {texture_path.name}')
 
-            return pack_dir if exported_count > 0 else None
+            if exported_count > 0:
+                log_buffer.log('Export', f'Exported {exported_count} textures from pack {asset_id}')
+                return export_type_dir
+            else:
+                log_buffer.log('Export', f'No textures exported for pack {asset_id}')
+                return None
 
         except Exception as e:
-            print(f'Failed to export texture pack {asset_id}: {e}')
+            from ..utils import log_buffer
+            log_buffer.log('Export', f'Failed to export texture pack {asset_id}: {e}')
             return None
 
     def delete_asset(self, asset_id: str, asset_type: int) -> bool:

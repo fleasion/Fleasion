@@ -6,13 +6,14 @@ import struct
 import json
 import numpy as np
 
+from ..utils import log_buffer
+
 try:
     import DracoPy
     DRACO_AVAILABLE = True
 except ImportError:
     DRACO_AVAILABLE = False
-    print("Warning: DracoPy not installed. v6/v7 mesh conversion will not work.")
-    print("Install with: pip install DracoPy")
+    log_buffer.log('Mesh', 'DracoPy not installed. v6/v7 mesh conversion will not work.')
 
 
 # Shared Data Structures
@@ -157,7 +158,7 @@ def process_v1(data: bytes) -> str:
     try:
         lines = data.decode('utf-8', errors='replace').splitlines()
         if len(lines) < 3:
-            print("Invalid v1 mesh: not enough lines")
+            log_buffer.log('Mesh',"Invalid v1 mesh: not enough lines")
             return None
 
         version = lines[0].strip()
@@ -167,7 +168,7 @@ def process_v1(data: bytes) -> str:
             # Convert ][  to ],[  for valid JSON array
             content = json.loads("[" + lines[2].replace("][", "],[") + "]")
         except json.JSONDecodeError as e:
-            print(f"Failed to parse v1 JSON: {e}")
+            log_buffer.log('Mesh',f"Failed to parse v1 JSON: {e}")
             return None
 
         # Each vertex group has 3 elements: position, normal, uv
@@ -199,7 +200,7 @@ def process_v1(data: bytes) -> str:
         return write_obj_data(verts, norms, uvs, faces)
 
     except Exception as e:
-        print(f"Error processing v1 mesh: {e}")
+        log_buffer.log('Mesh',f"Error processing v1 mesh: {e}")
         return None
 
 
@@ -229,7 +230,7 @@ def process_v2_to_v5(data: bytes, version_num: str) -> str:
 
         if version_num in expected_header_size:
             if header_size != expected_header_size[version_num]:
-                print(
+                log_buffer.log('Mesh',
                     f"Warning: Unexpected header size {header_size} for version {version_num}")
 
         # Read mesh data counts
@@ -242,7 +243,7 @@ def process_v2_to_v5(data: bytes, version_num: str) -> str:
 
         remaining = header_size - 12
         if remaining < 0:
-            print(
+            log_buffer.log('Mesh',
                 f"Warning: header_size {header_size} smaller than expected at v{version_num}")
             remaining = 0
 
@@ -275,7 +276,7 @@ def process_v2_to_v5(data: bytes, version_num: str) -> str:
                     if lod1_offset < len(faces):
                         original_count = len(faces)
                         faces = faces[:lod1_offset]
-                        print(
+                        log_buffer.log('Mesh',
                             f"Applied LOD: {original_count} → {len(faces)} faces")
             except:
                 pass  # Use full face count if LOD parsing fails
@@ -293,7 +294,7 @@ def process_v2_to_v5(data: bytes, version_num: str) -> str:
         return write_obj_data(v_lines, n_lines, t_lines, f_lines)
 
     except Exception as e:
-        print(f"Error processing v{version_num} mesh: {e}")
+        log_buffer.log('Mesh',f"Error processing v{version_num} mesh: {e}")
         return None
 
 
@@ -308,7 +309,7 @@ def process_v6_v7(data: bytes) -> str:
         OBJ file content as string, or None on failure
     """
     if not DRACO_AVAILABLE:
-        print("DracoPy not available - cannot process v6/v7 meshes")
+        log_buffer.log('Mesh',"DracoPy not available - cannot process v6/v7 meshes")
         return None
 
     try:
@@ -343,7 +344,7 @@ def process_v6_v7(data: bytes) -> str:
 
             # Extract chunk content
             if offset + data_size > len(data):
-                print(f"Warning: Chunk {chunk_type} exceeds file size")
+                log_buffer.log('Mesh',f"Warning: Chunk {chunk_type} exceeds file size")
                 break
 
             chunk_content = data[offset:offset + data_size]
@@ -357,7 +358,7 @@ def process_v6_v7(data: bytes) -> str:
             offset += data_size
 
         if not coremesh_data:
-            print("No COREMESH chunk found in v6/v7 mesh")
+            log_buffer.log('Mesh',"No COREMESH chunk found in v6/v7 mesh")
             return None
 
         # Decode Draco-compressed mesh
@@ -365,7 +366,7 @@ def process_v6_v7(data: bytes) -> str:
             mesh = DracoPy.decode(coremesh_data)
 
             if mesh is None or not hasattr(mesh, 'points'):
-                print("Draco decode failed: invalid mesh data")
+                log_buffer.log('Mesh',"Draco decode failed: invalid mesh data")
                 return None
 
             # Extract vertex positions
@@ -373,7 +374,7 @@ def process_v6_v7(data: bytes) -> str:
             num_verts = len(positions)
 
             if num_verts == 0:
-                print("Draco mesh has no vertices")
+                log_buffer.log('Mesh',"Draco mesh has no vertices")
                 return None
 
             # Create vertex array
@@ -388,7 +389,7 @@ def process_v6_v7(data: bytes) -> str:
                     for i in range(num_verts):
                         verts[i].nx, verts[i].ny, verts[i].nz = normals[i]
                 else:
-                    print(
+                    log_buffer.log('Mesh',
                         f"Warning: Normal count mismatch ({len(normals)} vs {num_verts})")
 
             # Extract UV coordinates if available
@@ -400,7 +401,7 @@ def process_v6_v7(data: bytes) -> str:
                         verts[i].tu = u
                         verts[i].tv = 1.0 - v  # Flip V for Roblox
                 else:
-                    print(
+                    log_buffer.log('Mesh',
                         f"Warning: UV count mismatch ({len(tex_coords)} vs {num_verts})")
 
             # Extract faces
@@ -411,7 +412,7 @@ def process_v6_v7(data: bytes) -> str:
                     # Reverse winding order and convert to 1-based indexing
                     faces.append(Face(a + 1, c + 1, b + 1))
 
-            print(
+            log_buffer.log('Mesh',
                 f"Draco mesh decoded: {num_verts:,} vertices, {len(faces):,} faces")
 
             # Apply LOD trimming if LODS chunk is present
@@ -444,11 +445,11 @@ def process_v6_v7(data: bytes) -> str:
                         max_faces = offset2 - offset1
 
                         if max_faces < len(faces):
-                            print(
+                            log_buffer.log('Mesh',
                                 f"Applying high-quality LOD: {len(faces):,} → {max_faces:,} faces")
 
                 except Exception as e:
-                    print(f"LOD parsing failed: {e}")
+                    log_buffer.log('Mesh',f"LOD parsing failed: {e}")
 
             # Trim faces to LOD limit
             if max_faces < len(faces):
@@ -467,13 +468,13 @@ def process_v6_v7(data: bytes) -> str:
             return write_obj_data(v_lines, n_lines, t_lines, f_lines)
 
         except Exception as e:
-            print(f"DracoPy decoding error: {e}")
+            log_buffer.log('Mesh',f"DracoPy decoding error: {e}")
             import traceback
             traceback.print_exc()
             return None
 
     except Exception as e:
-        print(f"Error processing v6/v7 mesh: {e}")
+        log_buffer.log('Mesh',f"Error processing v6/v7 mesh: {e}")
         import traceback
         traceback.print_exc()
         return None
@@ -493,12 +494,12 @@ def convert(data: bytes, output_path: str = None) -> str:
         OBJ file content as string, or None on failure
     """
     if not data or len(data) < 12:
-        print("Invalid mesh data: file too small")
+        log_buffer.log('Mesh',"Invalid mesh data: file too small")
         return None
 
     # Detect version from header
     header = data[:12].decode('utf-8', errors='ignore').strip()
-    print(f"Detected mesh version: {header}")
+    log_buffer.log('Mesh',f"Detected mesh version: {header}")
 
     obj_content = None
 
@@ -515,7 +516,7 @@ def convert(data: bytes, output_path: str = None) -> str:
         obj_content = process_v6_v7(data)
 
     else:
-        print(f"Unsupported mesh version: {header}")
+        log_buffer.log('Mesh',f"Unsupported mesh version: {header}")
         return None
 
     # Write to file if path provided
@@ -523,9 +524,9 @@ def convert(data: bytes, output_path: str = None) -> str:
         try:
             with open(output_path, 'w', encoding='utf-8') as f:
                 f.write(obj_content)
-            print(f"OBJ file written to: {output_path}")
+            log_buffer.log('Mesh',f"OBJ file written to: {output_path}")
         except Exception as e:
-            print(f"Failed to write OBJ file: {e}")
+            log_buffer.log('Mesh',f"Failed to write OBJ file: {e}")
 
     return obj_content
 
@@ -537,14 +538,14 @@ if __name__ == "__main__":
     from pathlib import Path
 
     if len(sys.argv) < 2:
-        print("Usage: python mesh_processing.py <mesh_file>")
-        print("Example: python mesh_processing.py model.mesh")
+        log_buffer.log('Mesh',"Usage: python mesh_processing.py <mesh_file>")
+        log_buffer.log('Mesh',"Example: python mesh_processing.py model.mesh")
         sys.exit(1)
 
     mesh_path = Path(sys.argv[1])
 
     if not mesh_path.exists():
-        print(f"File not found: {mesh_path}")
+        log_buffer.log('Mesh',f"File not found: {mesh_path}")
         sys.exit(1)
 
     # Read mesh data
@@ -555,9 +556,9 @@ if __name__ == "__main__":
     obj_content = convert(data, str(output_path))
 
     if obj_content:
-        print(f"\n✓ Conversion successful!")
-        print(f"  Input:  {mesh_path}")
-        print(f"  Output: {output_path}")
+        log_buffer.log('Mesh',f"\n✓ Conversion successful!")
+        log_buffer.log('Mesh',f"  Input:  {mesh_path}")
+        log_buffer.log('Mesh',f"  Output: {output_path}")
     else:
-        print("\n✗ Conversion failed")
+        log_buffer.log('Mesh',"\n✗ Conversion failed")
         sys.exit(1)

@@ -19,20 +19,26 @@ class AudioPlayerWidget(QWidget):
 
     stopped = pyqtSignal()
 
-    def __init__(self, audio_file_path: str, parent=None):
+    def __init__(self, audio_file_path: str, parent=None, config_manager=None):
         """
         Initialize audio player.
 
         Args:
             audio_file_path: Path to audio file (mp3, ogg, wav, etc.)
             parent: Parent widget
+            config_manager: ConfigManager for persisting volume
         """
         super().__init__(parent)
         self.audio_file_path = audio_file_path
+        self.config_manager = config_manager
         self.is_playing = False
         self.position = 0.0  # Current position in seconds
         self.duration = 0.0
-        self.volume = 0.7
+        # Load volume from settings if available
+        if config_manager:
+            self.volume = config_manager.audio_volume / 100.0
+        else:
+            self.volume = 0.7
 
         # Audio data
         self.audio_data = None
@@ -217,6 +223,9 @@ class AudioPlayerWidget(QWidget):
     def _set_volume(self, value):
         """Set volume level."""
         self.volume = value / 100.0
+        # Persist volume setting
+        if self.config_manager:
+            self.config_manager.audio_volume = value
 
     def _update_progress(self):
         """Update progress slider and time label."""

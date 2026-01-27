@@ -124,6 +124,17 @@ class ConfigManager:
         self._save_settings()
 
     @property
+    def audio_volume(self) -> int:
+        """Get audio volume setting (0-100)."""
+        return self.settings.get('audio_volume', 70)
+
+    @audio_volume.setter
+    def audio_volume(self, value: int):
+        """Set audio volume setting (0-100)."""
+        self.settings['audio_volume'] = max(0, min(100, value))
+        self._save_settings()
+
+    @property
     def export_naming(self) -> list[str]:
         """Get export naming options (name, id, hash)."""
         return self.settings.get('export_naming', ['id'])
