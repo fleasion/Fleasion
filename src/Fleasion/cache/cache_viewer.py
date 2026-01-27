@@ -817,7 +817,11 @@ class CacheViewerTab(QWidget):
         # For empty search, show all immediately
         if not search_text.strip():
             self._populate_table(assets)
+            self.search_box.setEnabled(True)
             return
+
+        # Disable search box while searching to prevent UI freezing
+        self.search_box.setEnabled(False)
 
         # Always use worker thread to prevent UI freezing
         self._is_searching = True
@@ -833,6 +837,7 @@ class CacheViewerTab(QWidget):
     def _on_search_finished(self):
         '''Handle search worker thread finished.'''
         self._is_searching = False
+        self.search_box.setEnabled(True)
 
     def _load_persisted_names(self):
         """Load persisted resolved names from index.json."""

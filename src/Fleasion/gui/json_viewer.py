@@ -113,6 +113,8 @@ class JsonTreeViewer(QDialog):
         # Search worker
         self._search_worker: JsonSearchWorker | None = None
         self._is_searching = False
+        self._search_matches: list[QTreeWidgetItem] = []
+        self._current_match_index: int = 0
 
         self._setup_ui()
         self._populate_tree()
@@ -140,6 +142,7 @@ class JsonTreeViewer(QDialog):
         search_layout.addWidget(QLabel('Search:'))
         self.search_input = QLineEdit()
         self.search_input.textChanged.connect(self._on_search_text_changed)
+        self.search_input.returnPressed.connect(self._cycle_to_next_match)
         search_layout.addWidget(self.search_input)
 
         clear_btn = QPushButton('Clear')
@@ -284,6 +287,8 @@ class JsonTreeViewer(QDialog):
         if not query:
             self.tree.clearSelection()
             self.search_progress_label.hide()
+            self._search_matches = []
+            self._current_match_index = 0
             return
 
         # Stop any existing search
@@ -317,6 +322,10 @@ class JsonTreeViewer(QDialog):
 
     def _on_search_complete(self, matches: list):
         '''Handle search results from worker thread.'''
+        # Store matches for cycling
+        self._search_matches = matches
+        self._current_match_index = 0
+
         # Disable updates during selection
         self.tree.setUpdatesEnabled(False)
 
@@ -324,7 +333,7 @@ class JsonTreeViewer(QDialog):
             # Clear selection
             self.tree.clearSelection()
 
-            # Expand parents and select matches
+            # Expand parents for all matches
             if matches:
                 for item in matches:
                     # Expand parents
@@ -333,14 +342,17 @@ class JsonTreeViewer(QDialog):
                         parent.setExpanded(True)
                         parent = parent.parent()
 
-                    # Select item
-                    item.setSelected(True)
-
-                # Scroll to first match
+                # Select only first match
+                matches[0].setSelected(True)
                 self.tree.scrollToItem(matches[0])
 
             # Update progress label
-            self.search_progress_label.setText(f'Found {len(matches)} match(es)')
+            if len(matches) > 1:
+                self.search_progress_label.setText(f'Found {len(matches)} match(es) - Press Enter to cycle')
+            elif len(matches) == 1:
+                self.search_progress_label.setText(f'Found 1 match')
+            else:
+                self.search_progress_label.setText('No matches found')
 
         finally:
             self.tree.setUpdatesEnabled(True)
@@ -348,6 +360,26 @@ class JsonTreeViewer(QDialog):
     def _on_search_finished(self):
         '''Handle search worker finished.'''
         self._is_searching = False
+
+    def _cycle_to_next_match(self):
+        '''Cycle to next search match when Enter is pressed.'''
+        if not self._search_matches:
+            return
+
+        # Move to next match (wrap around)
+        self._current_match_index = (self._current_match_index + 1) % len(self._search_matches)
+
+        # Clear selection and select current match
+        self.tree.clearSelection()
+        current_item = self._search_matches[self._current_match_index]
+        current_item.setSelected(True)
+        self.tree.scrollToItem(current_item)
+
+        # Update progress label with current position
+        if len(self._search_matches) > 1:
+            self.search_progress_label.setText(
+                f'Match {self._current_match_index + 1}/{len(self._search_matches)} - Press Enter to cycle'
+            )
 
     def _expand_all(self):
         """Expand all items."""
