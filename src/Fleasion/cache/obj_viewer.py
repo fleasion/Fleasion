@@ -336,11 +336,6 @@ class ObjViewerPanel(QWidget):
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # Info label
-        self.info_label = QLabel('No mesh loaded')
-        self.info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self.info_label)
-
         # 3D Viewer
         self.viewer = ObjViewerWidget()
         layout.addWidget(self.viewer, stretch=1)
@@ -373,12 +368,10 @@ class ObjViewerPanel(QWidget):
         vertex_count = len(self.viewer.vertices)
         face_count = len(self.viewer.faces)
 
-        self.info_label.setText(f'Asset ID: {asset_id}')
         self.stats_label.setText(f'{vertex_count:,} vertices, {face_count:,} faces')
 
     def clear(self):
         """Clear the viewer."""
         self.viewer.clear()
         self.rotate_btn.setChecked(False)
-        self.info_label.setText('No mesh loaded')
         self.stats_label.setText('')

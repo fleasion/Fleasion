@@ -157,9 +157,8 @@ class AudioPlayerWidget(QWidget):
     def _playback_worker(self):
         """Worker thread for audio playback."""
         try:
-            # Initialize current_frame from position if not already set
-            if self.current_frame == 0:
-                self.current_frame = int(self.position * self.sample_rate)
+            # Always sync current_frame with position when starting playback
+            self.current_frame = int(self.position * self.sample_rate)
 
             # Create audio stream
             def callback(outdata, frames, time_info, status):

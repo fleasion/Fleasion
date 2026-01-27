@@ -1286,9 +1286,8 @@ class CacheViewerTab(QWidget):
             log_buffer.log('Cache', f'Copied {len(values)} value(s) to clipboard')
 
     def _copy_converted(self):
-        """Copy converted data for selected assets (saves to file or clipboard)."""
-        from PyQt6.QtWidgets import QApplication, QFileDialog
-        from pathlib import Path
+        """Copy converted data for selected assets directly to clipboard."""
+        from PyQt6.QtWidgets import QApplication
         selected_rows = self.table.selectionModel().selectedRows()
         if not selected_rows:
             return
@@ -1313,29 +1312,15 @@ class CacheViewerTab(QWidget):
                 QMessageBox.warning(self, 'Error', f'Failed to load asset {asset_id}')
                 return
 
-            # Get resolved name if available
-            resolved_name = None
-            if asset_id in self._asset_info:
-                resolved_name = self._asset_info[asset_id].get('resolved_name')
-
             # Convert based on type
-            if asset_type == 4:  # Mesh - save as OBJ file
+            if asset_type == 4:  # Mesh - copy OBJ to clipboard
                 from . import mesh_processing
                 try:
                     obj_content = mesh_processing.convert(data)
                     if obj_content:
-                        # Save to file
-                        default_name = f'{resolved_name or asset_id}.obj'
-                        file_path, _ = QFileDialog.getSaveFileName(
-                            self,
-                            'Save Mesh as OBJ',
-                            str(Path.home() / default_name),
-                            'OBJ Files (*.obj);;All Files (*)'
-                        )
-                        if file_path:
-                            Path(file_path).write_text(obj_content, encoding='utf-8')
-                            log_buffer.log('Cache', f'Saved mesh as OBJ: {file_path}')
-                            QMessageBox.information(self, 'Success', f'Mesh saved as:\n{file_path}')
+                        QApplication.clipboard().setText(obj_content)
+                        log_buffer.log('Cache', f'Copied mesh as OBJ to clipboard')
+                        QMessageBox.information(self, 'Success', 'Mesh OBJ data copied to clipboard')
                     else:
                         QMessageBox.warning(self, 'Error', 'Failed to convert mesh to OBJ')
                 except Exception as e:
@@ -1359,103 +1344,34 @@ class CacheViewerTab(QWidget):
                 except Exception as e:
                     QMessageBox.warning(self, 'Error', f'Image copy error: {e}')
 
-            elif asset_type == 3:  # Audio - save as file
-                try:
-                    # Determine extension
-                    if data.startswith(b'OggS'):
-                        ext = 'ogg'
-                        file_filter = 'OGG Audio (*.ogg);;All Files (*)'
-                    elif data.startswith(b'ID3') or data.startswith(b'\xFF\xFB'):
-                        ext = 'mp3'
-                        file_filter = 'MP3 Audio (*.mp3);;All Files (*)'
-                    else:
-                        ext = 'ogg'
-                        file_filter = 'OGG Audio (*.ogg);;All Files (*)'
+            elif asset_type == 3:  # Audio - cannot copy to clipboard
+                QMessageBox.information(
+                    self,
+                    'Audio Files',
+                    'Audio files cannot be copied to clipboard.\n\nUse "Copy Raw" instead to save the audio file.'
+                )
 
-                    default_name = f'{resolved_name or asset_id}.{ext}'
-                    file_path, _ = QFileDialog.getSaveFileName(
-                        self,
-                        'Save Audio File',
-                        str(Path.home() / default_name),
-                        file_filter
-                    )
-                    if file_path:
-                        Path(file_path).write_bytes(data)
-                        log_buffer.log('Cache', f'Saved audio: {file_path}')
-                        QMessageBox.information(self, 'Success', f'Audio saved as:\n{file_path}')
-                except Exception as e:
-                    QMessageBox.warning(self, 'Error', f'Audio save error: {e}')
-
-            elif asset_type == 24:  # Animation - save as RBXMX file
+            elif asset_type == 24:  # Animation - copy XML to clipboard
                 try:
                     # Decompress if needed
                     if data.startswith(b'\x1f\x8b'):
                         data = gzip_module.decompress(data)
 
-                    default_name = f'{resolved_name or asset_id}.rbxmx'
-                    file_path, _ = QFileDialog.getSaveFileName(
-                        self,
-                        'Save Animation as RBXMX',
-                        str(Path.home() / default_name),
-                        'RBXMX Files (*.rbxmx);;All Files (*)'
-                    )
-                    if file_path:
-                        Path(file_path).write_bytes(data)
-                        log_buffer.log('Cache', f'Saved animation: {file_path}')
-                        QMessageBox.information(self, 'Success', f'Animation saved as:\n{file_path}')
-                except Exception as e:
-                    QMessageBox.warning(self, 'Error', f'Animation save error: {e}')
-
-            elif asset_type == 63:  # TexturePack - export individual textures to folder
-                try:
-                    import xml.etree.ElementTree as ET
-
-                    # Parse XML to get texture map IDs
                     xml_text = data.decode('utf-8', errors='replace')
-                    root = ET.fromstring(xml_text)
-
-                    map_order = ['color', 'normal', 'metalness', 'roughness']
-                    maps = {}
-                    for elem in map_order:
-                        node = root.find(elem)
-                        if node is not None and node.text:
-                            maps[elem.capitalize()] = node.text
-
-                    if not maps:
-                        QMessageBox.warning(self, 'Error', 'No texture maps found in TexturePack')
-                        return
-
-                    # Ask user for output folder
-                    folder = QFileDialog.getExistingDirectory(
-                        self,
-                        'Select Folder to Save TexturePack Textures',
-                        str(Path.home())
-                    )
-                    if folder:
-                        folder_path = Path(folder)
-                        exported_count = 0
-
-                        for map_name, map_id in maps.items():
-                            # Get texture from cache or API
-                            texture_data = self.cache_manager.get_asset(str(map_id), 1)
-
-                            if texture_data:
-                                # Save texture
-                                texture_path = folder_path / f'{map_name}_{map_id}.png'
-                                texture_path.write_bytes(texture_data)
-                                exported_count += 1
-
-                        if exported_count > 0:
-                            log_buffer.log('Cache', f'Saved {exported_count} TexturePack textures to: {folder}')
-                            QMessageBox.information(
-                                self,
-                                'Success',
-                                f'Saved {exported_count} texture(s) to:\n{folder}'
-                            )
-                        else:
-                            QMessageBox.warning(self, 'Warning', 'No textures could be saved')
+                    QApplication.clipboard().setText(xml_text)
+                    log_buffer.log('Cache', f'Copied animation XML to clipboard')
+                    QMessageBox.information(self, 'Success', 'Animation XML copied to clipboard')
                 except Exception as e:
-                    QMessageBox.warning(self, 'Error', f'TexturePack save error: {e}')
+                    QMessageBox.warning(self, 'Error', f'Animation copy error: {e}')
+
+            elif asset_type == 63:  # TexturePack - copy XML to clipboard
+                try:
+                    xml_text = data.decode('utf-8', errors='replace')
+                    QApplication.clipboard().setText(xml_text)
+                    log_buffer.log('Cache', f'Copied TexturePack XML to clipboard')
+                    QMessageBox.information(self, 'Success', 'TexturePack XML copied to clipboard')
+                except Exception as e:
+                    QMessageBox.warning(self, 'Error', f'TexturePack copy error: {e}')
 
         except Exception as e:
             QMessageBox.warning(self, 'Error', f'Copy error: {e}')
