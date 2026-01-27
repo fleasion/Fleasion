@@ -135,9 +135,7 @@ class AudioPlayerWidget(QWidget):
         # Reset if at end (finished playing)
         if self.position >= self.duration:
             self.position = 0
-
-        # Reset current_frame since position tracking uses start_frame + current_frame
-        self.current_frame = 0
+            self.current_frame = 0
 
         self.is_playing = True
         self.play_pause_btn.setText('Pause')
@@ -159,17 +157,18 @@ class AudioPlayerWidget(QWidget):
     def _playback_worker(self):
         """Worker thread for audio playback."""
         try:
-            # Calculate start frame
-            start_frame = int(self.position * self.sample_rate)
+            # Initialize current_frame from position if not already set
+            if self.current_frame == 0:
+                self.current_frame = int(self.position * self.sample_rate)
 
             # Create audio stream
             def callback(outdata, frames, time_info, status):
                 if status:
                     print(f'Audio callback status: {status}')
 
-                # Get audio chunk
-                end_frame = min(start_frame + self.current_frame + frames, len(self.audio_data))
-                chunk_size = end_frame - (start_frame + self.current_frame)
+                # Get audio chunk from current frame
+                end_frame = min(self.current_frame + frames, len(self.audio_data))
+                chunk_size = end_frame - self.current_frame
 
                 if chunk_size <= 0:
                     # End of audio
@@ -178,7 +177,7 @@ class AudioPlayerWidget(QWidget):
                     return
 
                 # Get audio data and apply volume
-                chunk = self.audio_data[start_frame + self.current_frame:end_frame] * self.volume
+                chunk = self.audio_data[self.current_frame:end_frame] * self.volume
                 outdata[:chunk_size] = chunk
 
                 # Fill remaining with silence
