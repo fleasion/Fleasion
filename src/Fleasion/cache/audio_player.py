@@ -147,6 +147,9 @@ class AudioPlayerWidget(QWidget):
 
     def _pause(self):
         """Pause playback."""
+        # Capture current position immediately before stopping
+        self.position = self.current_frame / self.sample_rate
+
         self.is_playing = False
         self.play_pause_btn.setText('Play')
         self.stop_playback = True
