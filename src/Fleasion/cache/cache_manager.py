@@ -257,32 +257,14 @@ class CacheManager:
                     else:
                         output_path = export_type_dir / f'{filename}.ogg'  # Default to ogg
 
-                elif asset_type in (1, 13):  # Image, Decal - convert KTX to PNG
-                    # Decompress if needed
-                    decompressed = data
-                    if data.startswith(b'\x1f\x8b'):  # gzip
-                        import gzip
-                        decompressed = gzip.decompress(data)
-                    elif data.startswith(b'(\xb5/\xfd'):  # zstd
-                        import zstandard as zstd
-                        decompressed = zstd.ZstdDecompressor().decompress(data)
+                elif asset_type in (1, 13):  # Image, Decal - export as PNG
+                    # Data should already be PNG (converted from KTX at scrape time)
+                    output_path = export_type_dir / f'{filename}.png'
+                    output_path.write_bytes(data)
+                    return output_path
 
-                    # Check if KTX and convert
-                    if decompressed.startswith(b'\xABKTX') or decompressed.startswith(b'\xABKTX 11\xBB'):
-                        from . import ktx_converter
-                        try:
-                            png_data = ktx_converter.convert(decompressed)
-                            if png_data:
-                                output_path = export_type_dir / f'{filename}.png'
-                                output_path.write_bytes(png_data)
-                                return output_path
-                        except Exception:
-                            pass
-                    # Check if already PNG
-                    elif decompressed.startswith(b'\x89PNG'):
-                        output_path = export_type_dir / f'{filename}.png'
-                        output_path.write_bytes(decompressed)
-                        return output_path
+                elif asset_type == 63:  # TexturePack - export individual textures
+                    return self._export_texturepack(data, asset_id, export_type_dir, filename)
 
                 elif asset_type == 24:  # Animation - export as RBXMX
                     output_path = export_type_dir / f'{filename}.rbxmx'
@@ -296,6 +278,74 @@ class CacheManager:
 
         except Exception as e:
             print(f'Failed to export asset {asset_id}: {e}')
+            return None
+
+    def _export_texturepack(self, data: bytes, asset_id: str,
+                           export_type_dir: Path, base_filename: str) -> Optional[Path]:
+        """
+        Export texture pack by extracting all textures to subfolders.
+
+        Args:
+            data: XML data of texture pack
+            asset_id: Asset ID of the texture pack
+            export_type_dir: Base export directory for TexturePack
+            base_filename: Base filename for the export
+
+        Returns:
+            Path to export directory or None on failure
+        """
+        import xml.etree.ElementTree as ET
+
+        try:
+            # Parse XML
+            xml_text = data.decode('utf-8', errors='replace')
+            root = ET.fromstring(xml_text)
+
+            # Extract texture map IDs
+            map_order = ['color', 'normal', 'metalness', 'roughness']
+            maps = {}
+            for elem in map_order:
+                node = root.find(elem)
+                if node is not None and node.text:
+                    maps[elem.capitalize()] = node.text
+
+            if not maps:
+                return None
+
+            # Create base folder for this texture pack
+            pack_dir = export_type_dir / base_filename
+            pack_dir.mkdir(exist_ok=True)
+
+            exported_count = 0
+            for map_name, map_id in maps.items():
+                # Create subfolder for this texture type
+                type_dir = pack_dir / map_name
+                type_dir.mkdir(exist_ok=True)
+
+                # Get cached texture (type 1 = Image)
+                texture_data = self.get_asset(str(map_id), 1)
+                if not texture_data:
+                    continue
+
+                # Get hash
+                texture_info = self.get_asset_info(str(map_id), 1)
+                texture_hash = texture_info.get('hash', '') if texture_info else ''
+
+                # Build filename: Name_ID_Hash.png
+                filename_parts = [map_name, map_id]
+                if texture_hash:
+                    filename_parts.append(texture_hash)
+                texture_filename = '_'.join(filename_parts)
+
+                # Write texture
+                texture_path = type_dir / f'{texture_filename}.png'
+                texture_path.write_bytes(texture_data)
+                exported_count += 1
+
+            return pack_dir if exported_count > 0 else None
+
+        except Exception as e:
+            print(f'Failed to export texture pack {asset_id}: {e}')
             return None
 
     def delete_asset(self, asset_id: str, asset_type: int) -> bool:

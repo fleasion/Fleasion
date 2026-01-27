@@ -3,10 +3,15 @@
 Uses a two-stage approach matching the Reference implementation:
 1. Stage 1: Intercept assetdelivery.roblox.com/v1/assets/batch to track asset IDs and CDN locations
 2. Stage 2: Intercept fts.rbxcdn.com to download and cache actual asset content
+
+For KTX textures and TexturePacks, fetches converted PNG data from asset delivery API.
 """
 
 import gzip
 import json
+import os
+import re
+import base64
 from urllib.parse import urlparse
 
 from mitmproxy import http
@@ -166,6 +171,20 @@ class CacheScraper:
                 cache_hash = parsed_url.path.rsplit('/', 1)[-1]
                 asset_type = info.get('assetTypeId', 0)
 
+                # For KTX textures (types 1, 13), fetch PNG from API instead
+                if asset_type in (1, 13) and content.startswith(b'\xABKTX'):
+                    api_content = self._fetch_from_api(asset_id)
+                    if api_content and api_content.startswith(b'\x89PNG'):
+                        content = api_content
+                        log_buffer.log('Cache', f'Converted KTX to PNG for asset {asset_id}')
+
+                # For TexturePacks (type 63), fetch XML from API
+                elif asset_type == 63:
+                    api_content = self._fetch_from_api(asset_id)
+                    if api_content and (api_content.startswith(b'<roblox>') or b'<roblox>' in api_content[:100]):
+                        content = api_content
+                        log_buffer.log('Cache', f'Fetched TexturePack XML for asset {asset_id}')
+
                 # Build metadata
                 metadata = {
                     'url': url,
@@ -222,6 +241,50 @@ class CacheScraper:
 
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
             log_buffer.log('Cache', f'Failed to parse JSON: {e}')
+            return None
+
+    def _fetch_from_api(self, asset_id: str) -> bytes | None:
+        """Fetch asset content from Roblox asset delivery API."""
+        import requests
+
+        try:
+            cookie = self._get_roblosecurity()
+            headers = {'User-Agent': 'Roblox/WinInet'}
+            if cookie:
+                headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
+
+            api_url = f'https://assetdelivery.roblox.com/v1/asset/?id={asset_id}'
+            response = requests.get(api_url, headers=headers, timeout=10)
+
+            if response.status_code == 200 and response.content:
+                return response.content
+        except Exception as e:
+            log_buffer.log('Cache', f'API fetch error for {asset_id}: {e}')
+
+        return None
+
+    def _get_roblosecurity(self) -> str | None:
+        """Get .ROBLOSECURITY cookie from Roblox local storage."""
+        try:
+            import win32crypt
+        except ImportError:
+            return None
+
+        path = os.path.expandvars(r'%LocalAppData%/Roblox/LocalStorage/RobloxCookies.dat')
+        try:
+            if not os.path.exists(path):
+                return None
+            with open(path, 'r') as f:
+                data = json.load(f)
+            cookies_data = data.get('CookiesData')
+            if not cookies_data:
+                return None
+            enc = base64.b64decode(cookies_data)
+            dec = win32crypt.CryptUnprotectData(enc, None, None, None, 0)[1]
+            s = dec.decode(errors='ignore')
+            m = re.search(r'\.ROBLOSECURITY\s+([^\s;]+)', s)
+            return m.group(1) if m else None
+        except Exception:
             return None
 
     def set_enabled(self, enabled: bool):

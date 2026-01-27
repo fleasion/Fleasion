@@ -1,11 +1,11 @@
 """Cache viewer tab - simplified version for viewing cached assets."""
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTableWidget,
     QTableWidgetItem, QLabel, QComboBox, QLineEdit, QMessageBox,
     QHeaderView, QFileDialog, QGroupBox, QSplitter, QTextEdit, QCheckBox,
-    QMenu
+    QMenu, QScrollArea
 )
 from PyQt6.QtGui import QPixmap, QImage
 from PIL import Image
@@ -18,6 +18,49 @@ from .audio_player import AudioPlayerWidget
 from .animation_viewer import AnimationViewerPanel
 from . import mesh_processing
 from ..utils import log_buffer, open_folder
+
+
+class TexturePackLoaderThread(QThread):
+    """Worker thread for loading texture pack images asynchronously."""
+
+    texture_loaded = pyqtSignal(str, str, str, bytes)  # map_name, map_id, hash, image_data
+    texture_error = pyqtSignal(str, str)  # map_name, error_message
+    finished_loading = pyqtSignal()
+
+    def __init__(self, maps: dict, cache_manager: 'CacheManager'):
+        super().__init__()
+        self.maps = maps  # {map_name: asset_id}
+        self.cache_manager = cache_manager
+        self._stop_requested = False
+
+    def stop(self):
+        self._stop_requested = True
+
+    def run(self):
+        """Fetch textures from cache."""
+        for map_name, map_id in self.maps.items():
+            if self._stop_requested:
+                return
+
+            try:
+                # Get cached texture data (type 1 = Image)
+                data = self.cache_manager.get_asset(str(map_id), 1)
+                if not data:
+                    self.texture_error.emit(map_name, f'Not cached: {map_id}')
+                    continue
+
+                # Get hash from cache
+                asset_info = self.cache_manager.get_asset_info(str(map_id), 1)
+                hash_val = asset_info.get('hash', '') if asset_info else ''
+
+                self.texture_loaded.emit(map_name, str(map_id), hash_val, data)
+
+            except Exception as e:
+                if not self._stop_requested:
+                    self.texture_error.emit(map_name, str(e))
+
+        if not self._stop_requested:
+            self.finished_loading.emit()
 
 
 class CacheViewerTab(QWidget):
@@ -165,16 +208,28 @@ class CacheViewerTab(QWidget):
         preview_group = QGroupBox('Preview')
         preview_group_layout = QVBoxLayout()
 
+        # Scrollable container for all preview content
+        self.preview_scroll = QScrollArea()
+        self.preview_scroll.setWidgetResizable(True)
+        self.preview_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.preview_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+        # Container widget inside scroll area
+        self.preview_container = QWidget()
+        self.preview_container_layout = QVBoxLayout()
+        self.preview_container_layout.setContentsMargins(5, 5, 5, 5)
+        self.preview_container_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+
         # 3D Viewer for meshes
         self.obj_viewer = ObjViewerPanel()
-        preview_group_layout.addWidget(self.obj_viewer)
+        self.preview_container_layout.addWidget(self.obj_viewer)
 
         # Image viewer (will show/hide as needed)
         self.image_label = QLabel('Select an asset to preview')
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image_label.setStyleSheet('QLabel { background-color: #2b2b2b; color: #888; }')
-        self.image_label.setMinimumHeight(200)
-        preview_group_layout.addWidget(self.image_label)
+        self.image_label.setScaledContents(False)
+        self.preview_container_layout.addWidget(self.image_label)
 
         # Audio player
         self.audio_player = None  # Created dynamically when needed
@@ -182,17 +237,26 @@ class CacheViewerTab(QWidget):
         self.audio_container_layout = QVBoxLayout()
         self.audio_container_layout.setContentsMargins(0, 0, 0, 0)
         self.audio_container.setLayout(self.audio_container_layout)
-        preview_group_layout.addWidget(self.audio_container)
+        self.preview_container_layout.addWidget(self.audio_container)
 
         # Animation viewer
         self.animation_viewer = AnimationViewerPanel()
-        preview_group_layout.addWidget(self.animation_viewer)
+        self.preview_container_layout.addWidget(self.animation_viewer)
 
         # Text viewer for other types
         self.text_viewer = QTextEdit()
         self.text_viewer.setReadOnly(True)
         self.text_viewer.setPlaceholderText('Select an asset to preview')
-        preview_group_layout.addWidget(self.text_viewer)
+        self.preview_container_layout.addWidget(self.text_viewer)
+
+        # Texture pack container (dynamically created)
+        self.texturepack_widget = None
+        self.texturepack_loader = None
+
+        # Set up scroll area
+        self.preview_container.setLayout(self.preview_container_layout)
+        self.preview_scroll.setWidget(self.preview_container)
+        preview_group_layout.addWidget(self.preview_scroll)
 
         # Initially hide all preview widgets
         self.obj_viewer.hide()
@@ -842,12 +906,16 @@ class CacheViewerTab(QWidget):
             # Preview based on type
             if asset_type == 4:  # Mesh
                 self._preview_mesh(data, asset_id)
+            elif asset_type == 39:  # SolidModel - binary RBXM with embedded mesh
+                self._preview_solidmodel(data, asset_id)
             elif asset_type in [1, 13]:  # Image, Decal
                 self._preview_image(data)
             elif asset_type == 3:  # Audio
                 self._preview_audio(data, asset_id)
             elif asset_type == 24:  # Animation
                 self._preview_animation(data, asset_id)
+            elif asset_type == 63:  # TexturePack
+                self._preview_texturepack(data, asset_id)
             else:
                 # Show as hex dump for other types
                 self._preview_hex(data, asset)
@@ -1020,6 +1088,7 @@ class CacheViewerTab(QWidget):
         self.obj_viewer.hide()
         self.obj_viewer.clear()
         self.image_label.hide()
+        self.image_label.clear()
         self.image_label.setText('Select an asset to preview')
         self.audio_container.hide()
         if self.audio_player:
@@ -1030,12 +1099,27 @@ class CacheViewerTab(QWidget):
         self.animation_viewer.clear()
         self.text_viewer.hide()
         self.text_viewer.clear()
+        # Clean up texture pack widgets
+        if self.texturepack_widget is not None:
+            self.texturepack_widget.deleteLater()
+            self.texturepack_widget = None
+        if self.texturepack_loader is not None:
+            self.texturepack_loader.stop()
+            self.texturepack_loader.quit()
+            self.texturepack_loader.wait()
+            self.texturepack_loader = None
 
     def _preview_mesh(self, data: bytes, asset_id: str):
         """Preview a mesh asset in 3D."""
         try:
+            # Decompress if gzip compressed
+            decompressed = data
+            if data.startswith(b'\x1f\x8b'):  # gzip magic
+                import gzip
+                decompressed = gzip.decompress(data)
+
             # Convert mesh to OBJ
-            obj_content = mesh_processing.convert(data)
+            obj_content = mesh_processing.convert(decompressed)
             if obj_content:
                 self.obj_viewer.load_obj(obj_content, asset_id)
                 self.obj_viewer.show()
@@ -1045,38 +1129,71 @@ class CacheViewerTab(QWidget):
         except Exception as e:
             self._show_text_preview(f'Mesh conversion error: {e}')
 
-    def _preview_image(self, data: bytes):
-        """Preview an image asset."""
+    def _preview_solidmodel(self, data: bytes, asset_id: str):
+        """Preview a SolidModel asset (binary RBXM with embedded CSG mesh)."""
         try:
-            # Try to decompress if it's compressed
-            decompressed_data = data
-            if data.startswith(b'\x1f\x8b'):  # gzip magic number
+            # Decompress if gzip compressed
+            decompressed = data
+            if data.startswith(b'\x1f\x8b'):  # gzip magic
                 import gzip
-                try:
-                    decompressed_data = gzip.decompress(data)
-                except Exception:
-                    pass
-            elif data.startswith(b'(\xb5/\xfd'):  # zstd magic number
-                try:
-                    import zstandard as zstd
-                    dctx = zstd.ZstdDecompressor()
-                    decompressed_data = dctx.decompress(data)
-                except Exception:
-                    pass
+                decompressed = gzip.decompress(data)
 
-            # Check if it's a KTX file and convert to PNG
-            if decompressed_data.startswith(b'\xABKTX') or decompressed_data.startswith(b'\xABKTX 11\xBB'):
-                # KTX file - convert using ktx_converter
-                from .ktx_converter import convert as ktx_convert
-                try:
-                    png_data = ktx_convert(decompressed_data)
-                    if png_data:
-                        decompressed_data = png_data
-                except Exception as e:
-                    self._show_text_preview(f'KTX conversion error: {e}')
-                    return
+            # SolidModel is binary RBXM format with PartOperationAsset
+            # Try to extract mesh data from the RBXM structure
+            obj_content = self._extract_solidmodel_mesh(decompressed)
+            if obj_content:
+                self.obj_viewer.load_obj(obj_content, asset_id)
+                self.obj_viewer.show()
+                self.stop_preview_btn.show()
+            else:
+                self._show_text_preview(
+                    f'SolidModel {asset_id}\n\n'
+                    'Binary RBXM format with embedded CSG mesh.\n'
+                    '3D preview not yet supported for this format.'
+                )
+        except Exception as e:
+            self._show_text_preview(f'SolidModel preview error: {e}')
 
-            image = Image.open(io.BytesIO(decompressed_data))
+    def _extract_solidmodel_mesh(self, data: bytes) -> str | None:
+        """
+        Extract mesh data from SolidModel binary RBXM format.
+
+        SolidModels are stored as binary RBXM with PartOperationAsset containing
+        CSG mesh data. The mesh is embedded in a proprietary format.
+
+        Returns OBJ content string or None if extraction fails.
+        """
+        # Check for RBXM header
+        if not data.startswith(b'<roblox!'):
+            return None
+
+        # Try to find embedded mesh data
+        # Look for mesh version header within the binary data
+        import re
+
+        # Search for mesh version signature
+        match = re.search(rb'version \d+\.\d+', data)
+        if match:
+            mesh_start = match.start()
+            # Extract mesh data from this point
+            mesh_data = data[mesh_start:]
+
+            # Try to convert with mesh_processing
+            try:
+                obj_content = mesh_processing.convert(mesh_data)
+                if obj_content:
+                    return obj_content
+            except Exception:
+                pass
+
+        return None
+
+    def _preview_image(self, data: bytes):
+        """Preview an image asset. Data should already be PNG from API."""
+        try:
+            # Load image with PIL
+            image = Image.open(io.BytesIO(data))
+
             # Convert to RGBA
             if image.mode not in ('RGB', 'RGBA'):
                 image = image.convert('RGBA')
@@ -1091,18 +1208,161 @@ class CacheViewerTab(QWidget):
             )
             pixmap = QPixmap.fromImage(qimage)
 
-            # Scale to fit label while maintaining aspect ratio
-            scaled = pixmap.scaled(
-                800, 600,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            )
+            # Scale to fit available container width while maintaining aspect ratio
+            container_width = self.preview_scroll.viewport().width() - 20
+            if container_width < 100:
+                container_width = 400  # Default fallback
+
+            if pixmap.width() > container_width:
+                scaled = pixmap.scaledToWidth(
+                    container_width,
+                    Qt.TransformationMode.SmoothTransformation
+                )
+            else:
+                scaled = pixmap
 
             self.image_label.setPixmap(scaled)
             self.image_label.show()
             self.stop_preview_btn.show()
         except Exception as e:
             self._show_text_preview(f'Image preview error: {e}')
+
+    def _preview_texturepack(self, data: bytes, asset_id: str):
+        """Preview a texture pack by showing all texture maps."""
+        import xml.etree.ElementTree as ET
+
+        try:
+            # Clean up previous texture pack if any
+            if self.texturepack_widget is not None:
+                self.texturepack_widget.deleteLater()
+                self.texturepack_widget = None
+            if self.texturepack_loader is not None:
+                self.texturepack_loader.stop()
+                self.texturepack_loader.quit()
+                self.texturepack_loader.wait()
+                self.texturepack_loader = None
+
+            # Parse XML to get texture map IDs
+            xml_text = data.decode('utf-8', errors='replace')
+            root = ET.fromstring(xml_text)
+
+            # Extract texture map IDs in order
+            map_order = ['color', 'normal', 'metalness', 'roughness']
+            maps = {}
+            for elem in map_order:
+                node = root.find(elem)
+                if node is not None and node.text:
+                    maps[elem.capitalize()] = node.text
+
+            if not maps:
+                self._show_text_preview(f'No texture maps found in texture pack {asset_id}')
+                return
+
+            # Create container widget for texture pack preview
+            self.texturepack_widget = QWidget()
+            tp_layout = QVBoxLayout()
+            tp_layout.setContentsMargins(0, 0, 0, 0)
+            tp_layout.setSpacing(10)
+
+            # Store references for async loading
+            self._tp_image_labels = {}
+
+            # Create placeholder for each texture map
+            for map_name, map_id in maps.items():
+                # Get hash from cache
+                asset_info = self.cache_manager.get_asset_info(str(map_id), 1)
+                hash_val = asset_info.get('hash', '') if asset_info else 'N/A'
+
+                # Header with name, id, hash
+                header = QLabel(f'{map_name}  |  {map_id}  |  {hash_val}')
+                header.setStyleSheet('font-weight: bold; color: #888; padding: 5px;')
+                header.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+                tp_layout.addWidget(header)
+
+                # Image placeholder
+                img_label = QLabel('Loading...')
+                img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                img_label.setStyleSheet('background-color: #333; padding: 10px; min-height: 100px;')
+                tp_layout.addWidget(img_label)
+                self._tp_image_labels[map_name] = img_label
+
+            tp_layout.addStretch()
+            self.texturepack_widget.setLayout(tp_layout)
+            self.preview_container_layout.addWidget(self.texturepack_widget)
+            self.texturepack_widget.show()
+            self.stop_preview_btn.show()
+
+            # Start async loading of textures
+            self.texturepack_loader = TexturePackLoaderThread(maps, self.cache_manager)
+            self.texturepack_loader.texture_loaded.connect(self._on_texturepack_texture_loaded)
+            self.texturepack_loader.texture_error.connect(self._on_texturepack_texture_error)
+            self.texturepack_loader.start()
+
+        except Exception as e:
+            self._show_text_preview(f'Texture pack preview error: {e}')
+
+    def _on_texturepack_texture_loaded(self, map_name: str, map_id: str, hash_val: str, data: bytes):
+        """Handle loaded texture from texture pack."""
+        try:
+            if map_name not in self._tp_image_labels:
+                return
+
+            img_label = self._tp_image_labels[map_name]
+
+            # Check if widget still exists
+            try:
+                _ = img_label.isVisible()
+            except RuntimeError:
+                return
+
+            # Load image
+            image = Image.open(io.BytesIO(data))
+            if image.mode not in ('RGB', 'RGBA'):
+                image = image.convert('RGBA')
+            elif image.mode == 'RGB':
+                image = image.convert('RGBA')
+
+            qimage = QImage(
+                image.tobytes(),
+                image.width,
+                image.height,
+                QImage.Format.Format_RGBA8888
+            )
+            pixmap = QPixmap.fromImage(qimage)
+
+            # Scale to fit container
+            container_width = self.preview_scroll.viewport().width() - 30
+            if container_width < 100:
+                container_width = 400
+
+            if pixmap.width() > container_width:
+                scaled = pixmap.scaledToWidth(container_width, Qt.TransformationMode.SmoothTransformation)
+            else:
+                scaled = pixmap
+
+            img_label.setPixmap(scaled)
+            img_label.setStyleSheet('')
+
+        except Exception as e:
+            self._on_texturepack_texture_error(map_name, str(e))
+
+    def _on_texturepack_texture_error(self, map_name: str, error: str):
+        """Handle texture load error."""
+        try:
+            if map_name not in self._tp_image_labels:
+                return
+
+            img_label = self._tp_image_labels[map_name]
+
+            try:
+                _ = img_label.isVisible()
+            except RuntimeError:
+                return
+
+            img_label.setText(f'Error: {error}')
+            img_label.setStyleSheet('color: #ff6b6b; padding: 10px;')
+        except Exception:
+            pass
 
     def _preview_audio(self, data: bytes, asset_id: str):
         """Preview an audio asset."""
