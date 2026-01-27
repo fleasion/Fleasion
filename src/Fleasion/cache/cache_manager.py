@@ -189,16 +189,47 @@ class CacheManager:
 
         return assets
 
-    def export_asset(self, asset_id: str, asset_type: int,
-                    output_path: Optional[Path] = None, resolved_name: str = None) -> Optional[Path]:
+    def get_available_export_formats(self, asset_type: int) -> list[str]:
         """
-        Export an asset to the exports folder with smart naming and conversion.
+        Get available export formats for an asset type.
+
+        Args:
+            asset_type: Asset type ID
+
+        Returns:
+            List of available format names: 'converted', 'bin', 'raw'
+        """
+        formats = ['raw']  # Raw is always available (original cached data)
+
+        # Add 'bin' for decompressed data if applicable
+        formats.append('bin')
+
+        # Add 'converted' for types that support conversion
+        if asset_type == 4:  # Mesh - can convert to OBJ
+            formats.insert(0, 'converted')
+        elif asset_type == 3:  # Audio - proper extension
+            formats.insert(0, 'converted')
+        elif asset_type in (1, 13):  # Image, Decal
+            formats.insert(0, 'converted')
+        elif asset_type == 63:  # TexturePack
+            formats.insert(0, 'converted')
+        elif asset_type == 24:  # Animation
+            formats.insert(0, 'converted')
+
+        return formats
+
+    def export_asset(self, asset_id: str, asset_type: int,
+                    output_path: Optional[Path] = None, resolved_name: str = None,
+                    export_format: str = 'converted') -> Optional[Path]:
+        """
+        Export an asset to the exports folder.
 
         Args:
             asset_id: Asset ID
             asset_type: Asset type ID
             output_path: Optional custom output path
             resolved_name: Optional resolved asset name for filename
+            export_format: Export format - 'converted', 'bin', or 'raw'
 
         Returns:
             Path to exported file or None on failure
@@ -210,8 +241,15 @@ class CacheManager:
 
             if output_path is None:
                 type_name = self.get_asset_type_name(asset_type)
-                export_type_dir = self.export_dir / type_name
-                export_type_dir.mkdir(exist_ok=True)
+
+                # Determine subfolder based on format
+                if export_format == 'converted':
+                    export_type_dir = self.export_dir / 'converted' / type_name
+                elif export_format == 'bin':
+                    export_type_dir = self.export_dir / 'bin' / type_name
+                else:  # raw
+                    export_type_dir = self.export_dir / 'raw' / type_name
+                export_type_dir.mkdir(parents=True, exist_ok=True)
 
                 # Determine filename based on config settings
                 asset_info = self.get_asset_info(asset_id, asset_type)
@@ -236,7 +274,21 @@ class CacheManager:
 
                 filename = '_'.join(filename_parts)[:200]  # Limit total length
 
-                # Determine extension and conversion based on type
+                # Export based on format
+                if export_format == 'raw':
+                    # Raw export - original cached data with .bin extension
+                    output_path = export_type_dir / f'{filename}.bin'
+                    output_path.write_bytes(data)
+                    return output_path
+
+                elif export_format == 'bin':
+                    # Binary export - decompressed if needed, with detected extension
+                    ext = self._detect_extension(data, asset_type)
+                    output_path = export_type_dir / f'{filename}{ext}'
+                    output_path.write_bytes(data)
+                    return output_path
+
+                # Converted export - convert to usable format
                 if asset_type == 4:  # Mesh - convert to OBJ
                     from . import mesh_processing
                     try:
@@ -247,6 +299,8 @@ class CacheManager:
                             return output_path
                     except Exception:
                         pass  # Fall through to binary export
+                    # Fallback
+                    output_path = export_type_dir / f'{filename}.mesh'
 
                 elif asset_type == 3:  # Audio - export as OGG/MP3
                     # Check file signature to determine format
@@ -279,6 +333,25 @@ class CacheManager:
         except Exception as e:
             print(f'Failed to export asset {asset_id}: {e}')
             return None
+
+    def _detect_extension(self, data: bytes, asset_type: int) -> str:
+        """Detect file extension based on data signature."""
+        if data.startswith(b'\x89PNG'):
+            return '.png'
+        elif data.startswith(b'OggS'):
+            return '.ogg'
+        elif data.startswith(b'ID3') or data.startswith(b'\xFF\xFB'):
+            return '.mp3'
+        elif data.startswith(b'version '):
+            return '.mesh'
+        elif data.startswith(b'<roblox'):
+            return '.rbxmx'
+        elif data.startswith(b'\xABKTX'):
+            return '.ktx'
+        elif data.startswith(b'\x1f\x8b'):
+            return '.gz'
+        else:
+            return '.bin'
 
     def _export_texturepack(self, data: bytes, asset_id: str,
                            export_type_dir: Path, base_filename: str) -> Optional[Path]:

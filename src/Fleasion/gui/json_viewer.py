@@ -1,6 +1,6 @@
 """JSON tree viewer widget."""
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -55,11 +55,16 @@ class JsonTreeViewer(QDialog):
         layout = QVBoxLayout()
         layout.setContentsMargins(10, 10, 10, 10)
 
+        # Search debounce timer
+        self._search_debounce = QTimer()
+        self._search_debounce.setSingleShot(True)
+        self._search_debounce.timeout.connect(self._do_search)
+
         # Search bar
         search_layout = QHBoxLayout()
         search_layout.addWidget(QLabel('Search:'))
         self.search_input = QLineEdit()
-        self.search_input.textChanged.connect(self._on_search)
+        self.search_input.textChanged.connect(self._on_search_text_changed)
         search_layout.addWidget(self.search_input)
 
         clear_btn = QPushButton('Clear')
@@ -185,36 +190,47 @@ class JsonTreeViewer(QDialog):
         vals = self._get_numeric_values()
         self.selection_label.setText(f'Selected: {len(vals)} numeric value(s)')
 
-    def _on_search(self):
-        """Handle search."""
+    def _on_search_text_changed(self):
+        """Handle search text change with debounce."""
+        self._search_debounce.stop()
+        self._search_debounce.start(250)  # 250ms debounce
+
+    def _do_search(self):
+        """Execute the actual search after debounce."""
         query = self.search_input.text().lower().strip()
         if not query:
             return
 
-        # Clear selection
-        self.tree.clearSelection()
+        # Disable updates during search
+        self.tree.setUpdatesEnabled(False)
 
-        # Find matches
-        matches = []
+        try:
+            # Clear selection
+            self.tree.clearSelection()
 
-        def search_item(item):
-            if query in item.text(0).lower():
-                matches.append(item)
-                # Expand parents
-                parent = item.parent()
-                while parent:
-                    parent.setExpanded(True)
-                    parent = parent.parent()
-            for i in range(item.childCount()):
-                search_item(item.child(i))
+            # Find matches
+            matches = []
 
-        for i in range(self.tree.topLevelItemCount()):
-            search_item(self.tree.topLevelItem(i))
+            def search_item(item):
+                if query in item.text(0).lower():
+                    matches.append(item)
+                    # Expand parents
+                    parent = item.parent()
+                    while parent:
+                        parent.setExpanded(True)
+                        parent = parent.parent()
+                for i in range(item.childCount()):
+                    search_item(item.child(i))
 
-        if matches:
-            for item in matches:
-                item.setSelected(True)
-            self.tree.scrollToItem(matches[0])
+            for i in range(self.tree.topLevelItemCount()):
+                search_item(self.tree.topLevelItem(i))
+
+            if matches:
+                for item in matches:
+                    item.setSelected(True)
+                self.tree.scrollToItem(matches[0])
+        finally:
+            self.tree.setUpdatesEnabled(True)
 
     def _expand_all(self):
         """Expand all items."""

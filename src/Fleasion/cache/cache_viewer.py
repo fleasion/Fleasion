@@ -259,61 +259,40 @@ class TexturePackLoaderThread(QThread):
             self.finished_loading.emit()
 
 
-class SearchWorkerThread(QThread):
-    """Worker thread for filtering assets in background."""
+def _filter_assets_sync(assets: list, search_text: str, asset_info: dict) -> list:
+    """Filter assets synchronously - fast enough for most use cases."""
+    if not search_text:
+        return assets
 
-    results_ready = pyqtSignal(list)  # Filtered asset list
+    search_lower = search_text.strip().lower()
+    if not search_lower:
+        return assets
 
-    def __init__(self, assets: list, search_text: str, asset_info: dict):
-        super().__init__()
-        self.assets = assets
-        self.search_text = search_text.strip().lower()
-        self.asset_info = asset_info
-        self._stop_requested = False
+    filtered = []
+    for a in assets:
+        # Check all searchable fields
+        asset_id = a['id'].lower()
+        type_name = a['type_name'].lower()
+        url = a.get('url', '').lower()
+        hash_val = a.get('hash', '').lower()
+        cached_at = a.get('cached_at', '').lower()
 
-    def stop(self):
-        self._stop_requested = True
+        # Check resolved name if available
+        resolved_name = ''
+        if asset_id in asset_info:
+            name = asset_info[asset_id].get('resolved_name')
+            resolved_name = name.lower() if name else ''
 
-    def run(self):
-        try:
-            if not self.search_text:
-                if not self._stop_requested:
-                    self.results_ready.emit(self.assets)
-                return
+        # Match if search text in any field
+        if (search_lower in asset_id or
+            search_lower in type_name or
+            search_lower in url or
+            search_lower in hash_val or
+            search_lower in resolved_name or
+            search_lower in cached_at):
+            filtered.append(a)
 
-            filtered = []
-            for a in self.assets:
-                if self._stop_requested:
-                    return
-
-                # Check all searchable fields
-                asset_id = a['id'].lower()
-                type_name = a['type_name'].lower()
-                url = a.get('url', '').lower()
-                hash_val = a.get('hash', '').lower()
-                cached_at = a.get('cached_at', '').lower()
-
-                # Check resolved name if available
-                resolved_name = ''
-                if asset_id in self.asset_info:
-                    name = self.asset_info[asset_id].get('resolved_name')
-                    resolved_name = name.lower() if name else ''
-
-                # Match if search text in any field
-                if (self.search_text in asset_id or
-                    self.search_text in type_name or
-                    self.search_text in url or
-                    self.search_text in hash_val or
-                    self.search_text in resolved_name or
-                    self.search_text in cached_at):
-                    filtered.append(a)
-
-            if not self._stop_requested:
-                self.results_ready.emit(filtered)
-
-        except Exception:
-            if not self._stop_requested:
-                self.results_ready.emit([])
+    return filtered
 
 
 class CacheViewerTab(QWidget):
@@ -335,14 +314,17 @@ class CacheViewerTab(QWidget):
         self._mesh_loader: MeshLoaderThread | None = None
         self._animation_loader: AnimationLoaderThread | None = None
         self._texturepack_loader: TexturePackLoaderThread | None = None
-        self._search_worker: SearchWorkerThread | None = None
+
+        # Texturepack data for context menu
+        self._texturepack_data: dict = {}  # map_name -> {id, hash, data}
+        self._texturepack_xml: str = ''  # Original XML
 
         self._setup_ui()
         self._refresh_timer = QTimer()
         self._refresh_timer.timeout.connect(self._check_for_updates)
         self._refresh_timer.start(3000)  # Check every 3 seconds
 
-        # Search debounce timer (short delay to batch rapid keystrokes)
+        # Search debounce timer (longer delay to batch rapid keystrokes)
         self._search_debounce = QTimer()
         self._search_debounce.setSingleShot(True)
         self._search_debounce.timeout.connect(self._do_search)
@@ -501,6 +483,8 @@ class CacheViewerTab(QWidget):
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image_label.setStyleSheet('QLabel { background-color: #2b2b2b; color: #888; }')
         self.image_label.setScaledContents(False)
+        self.image_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.image_label.customContextMenuRequested.connect(self._show_image_context_menu)
         self.preview_container_layout.addWidget(self.image_label)
 
         # Audio player
@@ -586,29 +570,22 @@ class CacheViewerTab(QWidget):
             pass  # Ignore errors during background refresh
 
     def _refresh_assets(self):
-        """Refresh the asset list using background thread for search."""
-        # Stop any existing search (non-blocking)
-        if self._search_worker is not None:
-            self._search_worker.stop()
-            self._search_worker.results_ready.disconnect()
-            self._search_worker = None
-
+        """Refresh the asset list with synchronous filtering."""
         # Get filter type
         filter_type = self.type_filter.currentData()
 
         # Get assets
         assets = self.cache_manager.list_assets(filter_type)
 
-        # Get search text
+        # Get search text and filter synchronously
         search_text = self.search_box.text()
+        filtered_assets = _filter_assets_sync(assets, search_text, self._asset_info)
 
-        # Start search worker thread
-        self._search_worker = SearchWorkerThread(assets, search_text, self._asset_info)
-        self._search_worker.results_ready.connect(self._on_search_results)
-        self._search_worker.start()
+        # Populate table
+        self._populate_table(filtered_assets)
 
-    def _on_search_results(self, assets: list):
-        """Handle search results from background thread."""
+    def _populate_table(self, assets: list):
+        """Populate the table with assets."""
         # Disable updates while populating (major performance boost)
         self.table.setUpdatesEnabled(False)
         self.table.setSortingEnabled(False)
@@ -715,7 +692,7 @@ class CacheViewerTab(QWidget):
     def _on_search_text_changed(self):
         """Handle search text change - debounce to avoid too many searches."""
         self._search_debounce.stop()
-        self._search_debounce.start(100)  # 100ms debounce
+        self._search_debounce.start(200)  # 200ms debounce
 
     def _do_search(self):
         """Execute the actual search after debounce."""
@@ -1216,7 +1193,44 @@ class CacheViewerTab(QWidget):
 
         # Add actions
         add_to_replacer_action = menu.addAction('Add IDs to Replacer')
-        export_action = menu.addAction('Export Selected')
+
+        # Export submenu with format options
+        export_menu = menu.addMenu('Export Selected')
+
+        # Get asset types from selection to determine available formats
+        asset_types = set()
+        for row_index in selected_rows:
+            row = row_index.row()
+            item = self.table.item(row, 0)
+            if item:
+                asset = item.data(Qt.ItemDataRole.UserRole)
+                if asset:
+                    asset_types.add(asset['type'])
+
+        # Determine available formats (intersection of all selected types)
+        available_formats = None
+        for asset_type in asset_types:
+            formats = set(self.cache_manager.get_available_export_formats(asset_type))
+            if available_formats is None:
+                available_formats = formats
+            else:
+                available_formats &= formats
+
+        if not available_formats:
+            available_formats = {'raw', 'bin'}
+
+        # Add format options
+        export_actions = {}
+        format_labels = {
+            'converted': 'Converted (best format)',
+            'bin': 'Binary (decompressed)',
+            'raw': 'Raw (original cache)',
+        }
+        for fmt in ['converted', 'bin', 'raw']:
+            if fmt in available_formats:
+                action = export_menu.addAction(format_labels[fmt])
+                export_actions[action] = fmt
+
         menu.addSeparator()
 
         # Copy submenu
@@ -1233,8 +1247,8 @@ class CacheViewerTab(QWidget):
 
         if action == add_to_replacer_action:
             self._add_selected_to_replacer()
-        elif action == export_action:
-            self._export_selected_multiple()
+        elif action in export_actions:
+            self._export_selected_multiple(export_format=export_actions[action])
         elif action == delete_action:
             self._delete_selected()
         elif action == copy_hash_action:
@@ -1263,7 +1277,7 @@ class CacheViewerTab(QWidget):
             clipboard.setText('\n'.join(values))
             log_buffer.log('Cache', f'Copied {len(values)} value(s) to clipboard')
 
-    def _export_selected_multiple(self):
+    def _export_selected_multiple(self, export_format: str = 'converted'):
         """Export multiple selected assets."""
         selected_rows = self.table.selectionModel().selectedRows()
         if not selected_rows:
@@ -1292,14 +1306,20 @@ class CacheViewerTab(QWidget):
             if asset_id in self._asset_info:
                 resolved_name = self._asset_info[asset_id].get('resolved_name')
 
-            if self.cache_manager.export_asset(asset['id'], asset['type'], resolved_name=resolved_name):
+            if self.cache_manager.export_asset(
+                asset['id'], asset['type'],
+                resolved_name=resolved_name,
+                export_format=export_format
+            ):
                 exported_count += 1
 
-        log_buffer.log('Cache', f'Exported {exported_count}/{len(assets_to_export)} assets')
+        # Determine export location based on format
+        format_dir = self.cache_manager.export_dir / export_format
+        log_buffer.log('Cache', f'Exported {exported_count}/{len(assets_to_export)} assets as {export_format}')
         QMessageBox.information(
             self,
             'Export Complete',
-            f'Exported {exported_count} asset(s)\n\nLocation: {self.cache_manager.export_dir}'
+            f'Exported {exported_count} asset(s) as {export_format}\n\nLocation: {format_dir}'
         )
 
     def _add_selected_to_replacer(self):
@@ -1479,6 +1499,20 @@ class CacheViewerTab(QWidget):
 
         self.image_label.setPixmap(scaled)
 
+    def _show_image_context_menu(self, pos):
+        """Show context menu for image preview."""
+        if self._current_pixmap is None or self._current_pixmap.isNull():
+            return
+
+        from PyQt6.QtWidgets import QApplication
+
+        menu = QMenu(self)
+        copy_action = menu.addAction('Copy Image')
+
+        action = menu.exec(self.image_label.mapToGlobal(pos))
+        if action == copy_action:
+            QApplication.clipboard().setPixmap(self._current_pixmap)
+
     def _preview_texturepack(self, data: bytes, asset_id: str):
         """Preview a texture pack by showing all texture maps."""
         import xml.etree.ElementTree as ET
@@ -1496,6 +1530,7 @@ class CacheViewerTab(QWidget):
 
             # Parse XML to get texture map IDs
             xml_text = data.decode('utf-8', errors='replace')
+            self._texturepack_xml = xml_text  # Store for context menu
             root = ET.fromstring(xml_text)
 
             # Extract texture map IDs in order
@@ -1510,6 +1545,9 @@ class CacheViewerTab(QWidget):
                 self._show_text_preview(f'No texture maps found in texture pack {asset_id}')
                 return
 
+            # Clear texture data storage
+            self._texturepack_data = {}
+
             # Create container widget for texture pack preview
             self.texturepack_widget = QWidget()
             tp_layout = QVBoxLayout()
@@ -1518,6 +1556,7 @@ class CacheViewerTab(QWidget):
 
             # Store references for async loading
             self._tp_image_labels = {}
+            self._tp_pixmaps = {}  # Store pixmaps for copy
 
             # Create placeholder for each texture map
             for map_name, map_id in maps.items():
@@ -1527,10 +1566,16 @@ class CacheViewerTab(QWidget):
                 header.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
                 tp_layout.addWidget(header)
 
-                # Image placeholder
+                # Image placeholder with context menu
                 img_label = QLabel('Loading...')
                 img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 img_label.setStyleSheet('background-color: #333; padding: 10px; min-height: 100px;')
+                img_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+                img_label.setProperty('map_name', map_name)
+                img_label.setProperty('map_id', map_id)
+                img_label.customContextMenuRequested.connect(
+                    lambda pos, lbl=img_label: self._show_texturepack_context_menu(pos, lbl)
+                )
                 tp_layout.addWidget(img_label)
                 self._tp_image_labels[map_name] = img_label
 
@@ -1566,8 +1611,14 @@ class CacheViewerTab(QWidget):
             except RuntimeError:
                 return
 
-            # Header already has name and ID, no need to update with hash
-            # (hash is too long for preview, but preserved in export logic)
+            # Store texture data for context menu
+            self._texturepack_data[map_name] = {
+                'id': map_id,
+                'hash': hash_val,
+                'data': data
+            }
+            # Update label property with hash
+            img_label.setProperty('map_hash', hash_val)
 
             # Load image
             image = Image.open(io.BytesIO(data))
@@ -1592,6 +1643,9 @@ class CacheViewerTab(QWidget):
                 QImage.Format.Format_RGBA8888
             )
             pixmap = QPixmap.fromImage(qimage)
+
+            # Store original pixmap for copy
+            self._tp_pixmaps[map_name] = pixmap
 
             # Scale to fit container
             container_width = self.preview_scroll.viewport().width() - 30
@@ -1626,6 +1680,48 @@ class CacheViewerTab(QWidget):
             img_label.setStyleSheet('color: #ff6b6b; padding: 10px;')
         except Exception:
             pass
+
+    def _show_texturepack_context_menu(self, pos, label: QLabel):
+        """Show context menu for texturepack image."""
+        from PyQt6.QtWidgets import QApplication
+
+        map_name = label.property('map_name')
+        map_id = label.property('map_id')
+        map_hash = label.property('map_hash') or ''
+
+        menu = QMenu(self)
+
+        # Copy image
+        copy_image_action = menu.addAction('Copy Image')
+
+        menu.addSeparator()
+
+        # Copy name/id/hash
+        copy_name_action = menu.addAction(f'Copy Name ({map_name})')
+        copy_id_action = menu.addAction(f'Copy ID ({map_id})')
+        copy_hash_action = None
+        if map_hash:
+            copy_hash_action = menu.addAction(f'Copy Hash ({map_hash[:16]}...)')
+
+        menu.addSeparator()
+
+        # Copy XML
+        copy_xml_action = menu.addAction('Copy TexturePack XML')
+
+        action = menu.exec(label.mapToGlobal(pos))
+
+        if action == copy_image_action:
+            pixmap = self._tp_pixmaps.get(map_name)
+            if pixmap and not pixmap.isNull():
+                QApplication.clipboard().setPixmap(pixmap)
+        elif action == copy_name_action:
+            QApplication.clipboard().setText(map_name)
+        elif action == copy_id_action:
+            QApplication.clipboard().setText(str(map_id))
+        elif action == copy_hash_action and map_hash:
+            QApplication.clipboard().setText(map_hash)
+        elif action == copy_xml_action:
+            QApplication.clipboard().setText(self._texturepack_xml)
 
     def _preview_audio(self, data: bytes, asset_id: str):
         """Preview an audio asset."""

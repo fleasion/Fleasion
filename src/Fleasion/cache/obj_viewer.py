@@ -183,16 +183,83 @@ class ObjViewerWidget(QOpenGLWidget):
         glRotatef(self.rotation_x, 1.0, 0.0, 0.0)
         glRotatef(self.rotation_y, 0.0, 1.0, 0.0)
 
-        if not self.vertices or not self.faces:
-            return
+        if self.vertices and self.faces:
+            # Rebuild display list if needed
+            if self.needs_rebuild:
+                self._build_display_list()
 
-        # Rebuild display list if needed
-        if self.needs_rebuild:
-            self._build_display_list()
+            # Draw cached mesh
+            if self.mesh_display_list != 0:
+                glCallList(self.mesh_display_list)
 
-        # Draw cached mesh
-        if self.mesh_display_list != 0:
-            glCallList(self.mesh_display_list)
+        # Draw XYZ axis indicator
+        self._draw_axis_indicator()
+
+    def _draw_axis_indicator(self):
+        """Draw XYZ axis indicator in bottom left corner."""
+        # Save current state
+        glPushAttrib(GL_ALL_ATTRIB_BITS)
+        glPushMatrix()
+
+        # Setup viewport for axis indicator (bottom left corner)
+        w, h = self.width(), self.height()
+        indicator_size = 80  # pixels
+        margin = 10
+
+        glViewport(margin, margin, indicator_size, indicator_size)
+
+        # Setup orthographic projection for indicator
+        glMatrixMode(GL_PROJECTION)
+        glPushMatrix()
+        glLoadIdentity()
+        glOrtho(-2, 2, -2, 2, -10, 10)
+
+        glMatrixMode(GL_MODELVIEW)
+        glLoadIdentity()
+
+        # Apply same rotation as main model
+        glRotatef(self.rotation_x, 1.0, 0.0, 0.0)
+        glRotatef(self.rotation_y, 0.0, 1.0, 0.0)
+
+        # Disable lighting for axes
+        glDisable(GL_LIGHTING)
+        glDisable(GL_DEPTH_TEST)
+        glLineWidth(2.0)
+
+        axis_length = 1.5
+
+        # Draw X axis (red)
+        glColor3f(1.0, 0.2, 0.2)
+        glBegin(GL_LINES)
+        glVertex3f(0, 0, 0)
+        glVertex3f(axis_length, 0, 0)
+        glEnd()
+
+        # Draw Y axis (green)
+        glColor3f(0.2, 1.0, 0.2)
+        glBegin(GL_LINES)
+        glVertex3f(0, 0, 0)
+        glVertex3f(0, axis_length, 0)
+        glEnd()
+
+        # Draw Z axis (blue)
+        glColor3f(0.2, 0.4, 1.0)
+        glBegin(GL_LINES)
+        glVertex3f(0, 0, 0)
+        glVertex3f(0, 0, axis_length)
+        glEnd()
+
+        # Restore projection matrix
+        glMatrixMode(GL_PROJECTION)
+        glPopMatrix()
+
+        # Restore modelview and attributes
+        glMatrixMode(GL_MODELVIEW)
+        glPopMatrix()
+        glPopAttrib()
+
+        # Restore viewport
+        glViewport(0, 0, w, h)
 
     def mousePressEvent(self, event):
         """Handle mouse press."""
