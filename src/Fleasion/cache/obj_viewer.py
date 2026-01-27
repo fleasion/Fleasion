@@ -249,25 +249,6 @@ class ObjViewerWidget(QOpenGLWidget):
         glVertex3f(0, 0, axis_length)
         glEnd()
 
-        # Draw axis labels
-        from OpenGL.GLUT import GLUT_BITMAP_HELVETICA_12, glutBitmapCharacter
-        label_offset = axis_length + 0.2
-
-        # X label (red)
-        glColor3f(1.0, 0.2, 0.2)
-        glRasterPos3f(label_offset, 0, 0)
-        glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, ord('X'))
-
-        # Y label (green)
-        glColor3f(0.2, 1.0, 0.2)
-        glRasterPos3f(0, label_offset, 0)
-        glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, ord('Y'))
-
-        # Z label (blue)
-        glColor3f(0.2, 0.4, 1.0)
-        glRasterPos3f(0, 0, label_offset)
-        glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, ord('Z'))
-
         # Restore projection matrix
         glMatrixMode(GL_PROJECTION)
         glPopMatrix()
