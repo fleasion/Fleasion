@@ -298,16 +298,7 @@ class JsonTreeViewer(QDialog):
         for i in range(self.tree.topLevelItemCount()):
             root_items.append(self.tree.topLevelItem(i))
 
-        # For small trees, search synchronously
-        total_items = 0
-        for item in root_items:
-            total_items += self._count_items(item)
-
-        if total_items < 1000:
-            self._do_search_sync(query)
-            return
-
-        # For large trees, use worker thread
+        # Always use worker thread to prevent UI freezing
         self._is_searching = True
         self.search_progress_label.setText('Searching...')
         self.search_progress_label.show()
@@ -317,52 +308,6 @@ class JsonTreeViewer(QDialog):
         self._search_worker.progress.connect(self._on_search_progress)
         self._search_worker.finished.connect(self._on_search_finished)
         self._search_worker.start()
-
-    def _count_items(self, item: QTreeWidgetItem) -> int:
-        '''Count total items in a tree.'''
-        count = 1
-        for i in range(item.childCount()):
-            count += self._count_items(item.child(i))
-        return count
-
-    def _do_search_sync(self, query: str):
-        '''Execute search synchronously for small trees.'''
-        query_lower = query.lower().strip()
-
-        # Disable updates during search
-        self.tree.setUpdatesEnabled(False)
-
-        try:
-            # Clear selection
-            self.tree.clearSelection()
-
-            # Find matches
-            matches = []
-
-            def search_item(item):
-                if query_lower in item.text(0).lower():
-                    matches.append(item)
-                    # Expand parents
-                    parent = item.parent()
-                    while parent:
-                        parent.setExpanded(True)
-                        parent = parent.parent()
-                for i in range(item.childCount()):
-                    search_item(item.child(i))
-
-            for i in range(self.tree.topLevelItemCount()):
-                search_item(self.tree.topLevelItem(i))
-
-            # Select matches
-            if matches:
-                for item in matches:
-                    item.setSelected(True)
-                self.tree.scrollToItem(matches[0])
-
-            self.search_progress_label.hide()
-
-        finally:
-            self.tree.setUpdatesEnabled(True)
 
     def _on_search_progress(self, current: int, total: int):
         '''Handle search progress update.'''

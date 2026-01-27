@@ -85,14 +85,40 @@ class AudioPlayerWidget(QWidget):
         '''Setup the UI.'''
         layout = QVBoxLayout()
         layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
 
-        # Controls
+        # Progress slider (top, 15% smaller width)
+        progress_container = QHBoxLayout()
+        progress_container.addStretch(8)  # 8% left margin
+
+        self.progress_slider = QSlider(Qt.Orientation.Horizontal)
+        self.progress_slider.setRange(0, int(self.duration * 1000))
+        self.progress_slider.sliderPressed.connect(self._start_scrub)
+        self.progress_slider.sliderReleased.connect(self._end_scrub)
+        progress_container.addWidget(self.progress_slider, stretch=84)  # 84% width (15% smaller)
+
+        progress_container.addStretch(8)  # 8% right margin
+        layout.addLayout(progress_container)
+
+        # Time label (centered below progress)
+        self.time_label = QLabel(f'00:00.000 / {self._format_time(self.duration)}')
+        self.time_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.time_label.setStyleSheet('color: #888; font-size: 11px;')
+        layout.addWidget(self.time_label)
+
+        # Controls (play, replay, volume)
         controls_layout = QHBoxLayout()
+        controls_layout.addStretch()
 
         self.play_pause_btn = QPushButton('Play')
         self.play_pause_btn.clicked.connect(self._toggle_play_pause)
-        self.play_pause_btn.setFixedWidth(80)
+        self.play_pause_btn.setFixedWidth(70)
         controls_layout.addWidget(self.play_pause_btn)
+
+        self.replay_btn = QPushButton('Replay')
+        self.replay_btn.clicked.connect(self._replay)
+        self.replay_btn.setFixedWidth(70)
+        controls_layout.addWidget(self.replay_btn)
 
         controls_layout.addWidget(QLabel('Volume:'))
 
@@ -100,23 +126,12 @@ class AudioPlayerWidget(QWidget):
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(int(self.volume * 100))
         self.volume_slider.valueChanged.connect(self._set_volume)
-        self.volume_slider.setFixedWidth(150)
+        self.volume_slider.setFixedWidth(120)
         controls_layout.addWidget(self.volume_slider)
 
         controls_layout.addStretch()
 
         layout.addLayout(controls_layout)
-
-        # Progress slider
-        self.progress_slider = QSlider(Qt.Orientation.Horizontal)
-        self.progress_slider.setRange(0, int(self.duration * 1000))
-        self.progress_slider.sliderPressed.connect(self._start_scrub)
-        self.progress_slider.sliderReleased.connect(self._end_scrub)
-        layout.addWidget(self.progress_slider)
-
-        # Time label
-        self.time_label = QLabel(f'00:00.000 / {self._format_time(self.duration)}')
-        layout.addWidget(self.time_label)
 
         self.setLayout(layout)
 
@@ -153,6 +168,19 @@ class AudioPlayerWidget(QWidget):
 
         if self.stream:
             self.stream.stop()
+
+    def _replay(self):
+        '''Replay from beginning.'''
+        # Stop current playback
+        if self.is_playing:
+            self._pause()
+
+        # Reset position
+        with self.position_lock:
+            self.playback_position = 0
+
+        # Start playing
+        self._play()
 
     def _playback_worker(self):
         '''Worker thread for audio playback.'''

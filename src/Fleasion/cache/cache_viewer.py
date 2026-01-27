@@ -661,7 +661,7 @@ class CacheViewerTab(QWidget):
             pass  # Ignore errors during background refresh
 
     def _refresh_assets(self):
-        '''Refresh the asset list using search worker for large datasets.'''
+        '''Refresh the asset list using search worker for all searches.'''
         # Stop any existing search
         if self._search_worker is not None:
             self._search_worker.stop()
@@ -678,13 +678,12 @@ class CacheViewerTab(QWidget):
         # Get search text
         search_text = self.search_box.text()
 
-        # For small datasets or empty search, use synchronous filter
-        if not search_text.strip() or len(assets) < 500:
-            filtered_assets = _filter_assets_sync(assets, search_text, self._asset_info)
-            self._populate_table(filtered_assets)
+        # For empty search, show all immediately
+        if not search_text.strip():
+            self._populate_table(assets)
             return
 
-        # For large datasets with search, use worker thread
+        # Always use worker thread for searches to prevent UI freezing
         self._is_searching = True
         self._search_worker = SearchWorkerThread(assets, search_text, self._asset_info)
         self._search_worker.results_ready.connect(self._on_search_complete)
@@ -815,13 +814,12 @@ class CacheViewerTab(QWidget):
         assets = self.cache_manager.list_assets(filter_type)
         search_text = self.search_box.text()
 
-        # For empty search or small datasets, use synchronous filter
-        if not search_text.strip() or len(assets) < 500:
-            filtered = _filter_assets_sync(assets, search_text, self._asset_info)
-            self._populate_table(filtered)
+        # For empty search, show all immediately
+        if not search_text.strip():
+            self._populate_table(assets)
             return
 
-        # For large datasets with search text, use worker thread
+        # Always use worker thread to prevent UI freezing
         self._is_searching = True
         self._search_worker = SearchWorkerThread(assets, search_text, self._asset_info)
         self._search_worker.results_ready.connect(self._on_search_complete)
