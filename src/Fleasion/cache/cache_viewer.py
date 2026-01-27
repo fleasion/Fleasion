@@ -1239,6 +1239,12 @@ class CacheViewerTab(QWidget):
         copy_id_action = copy_menu.addAction('Asset ID')
         copy_url_action = copy_menu.addAction('URL')
 
+        # Add "Copy Converted" if at least one selected asset supports conversion
+        copy_converted_action = None
+        if 'converted' in available_formats:
+            copy_menu.addSeparator()
+            copy_converted_action = copy_menu.addAction('Converted Data')
+
         menu.addSeparator()
         delete_action = menu.addAction('Delete Selected')
 
@@ -1257,6 +1263,8 @@ class CacheViewerTab(QWidget):
             self._copy_column(1)
         elif action == copy_url_action:
             self._copy_column(5)
+        elif action == copy_converted_action:
+            self._copy_converted()
 
     def _copy_column(self, column: int):
         """Copy column contents for selected rows."""
@@ -1276,6 +1284,98 @@ class CacheViewerTab(QWidget):
             clipboard = QApplication.clipboard()
             clipboard.setText('\n'.join(values))
             log_buffer.log('Cache', f'Copied {len(values)} value(s) to clipboard')
+
+    def _copy_converted(self):
+        """Copy converted data for selected assets to clipboard."""
+        from PyQt6.QtWidgets import QApplication
+        selected_rows = self.table.selectionModel().selectedRows()
+        if not selected_rows:
+            return
+
+        # Only process first selected asset
+        row = selected_rows[0].row()
+        item = self.table.item(row, 0)
+        if not item:
+            return
+
+        asset = item.data(Qt.ItemDataRole.UserRole)
+        if not asset:
+            return
+
+        asset_id = asset['id']
+        asset_type = asset['type']
+
+        try:
+            # Get asset data
+            data = self.cache_manager.get_asset(asset_id, asset_type)
+            if not data:
+                QMessageBox.warning(self, 'Error', f'Failed to load asset {asset_id}')
+                return
+
+            # Convert based on type
+            converted_data = None
+
+            if asset_type == 4:  # Mesh - convert to OBJ
+                from . import mesh_processing
+                try:
+                    converted_data = mesh_processing.convert(data)
+                    if converted_data:
+                        QApplication.clipboard().setText(converted_data)
+                        log_buffer.log('Cache', f'Copied mesh as OBJ to clipboard')
+                        QMessageBox.information(self, 'Success', 'Mesh copied as OBJ to clipboard')
+                    else:
+                        QMessageBox.warning(self, 'Error', 'Failed to convert mesh to OBJ')
+                except Exception as e:
+                    QMessageBox.warning(self, 'Error', f'Mesh conversion error: {e}')
+
+            elif asset_type in (1, 13):  # Image, Decal - copy as image
+                try:
+                    image = Image.open(io.BytesIO(data))
+                    if image.mode not in ('RGB', 'RGBA'):
+                        image = image.convert('RGBA')
+                    qimage = QImage(
+                        image.tobytes(),
+                        image.width,
+                        image.height,
+                        QImage.Format.Format_RGBA8888
+                    )
+                    pixmap = QPixmap.fromImage(qimage)
+                    QApplication.clipboard().setPixmap(pixmap)
+                    log_buffer.log('Cache', f'Copied image to clipboard')
+                    QMessageBox.information(self, 'Success', 'Image copied to clipboard')
+                except Exception as e:
+                    QMessageBox.warning(self, 'Error', f'Image copy error: {e}')
+
+            elif asset_type == 3:  # Audio - inform user
+                QMessageBox.information(
+                    self,
+                    'Info',
+                    'Audio files cannot be copied to clipboard.\nUse Export instead to save as OGG/MP3.'
+                )
+
+            elif asset_type == 24:  # Animation - copy XML
+                try:
+                    # Decompress if needed
+                    if data.startswith(b'\x1f\x8b'):
+                        data = gzip_module.decompress(data)
+                    text = data.decode('utf-8', errors='replace')
+                    QApplication.clipboard().setText(text)
+                    log_buffer.log('Cache', f'Copied animation XML to clipboard')
+                    QMessageBox.information(self, 'Success', 'Animation XML copied to clipboard')
+                except Exception as e:
+                    QMessageBox.warning(self, 'Error', f'Animation copy error: {e}')
+
+            elif asset_type == 63:  # TexturePack - copy XML
+                try:
+                    text = data.decode('utf-8', errors='replace')
+                    QApplication.clipboard().setText(text)
+                    log_buffer.log('Cache', f'Copied TexturePack XML to clipboard')
+                    QMessageBox.information(self, 'Success', 'TexturePack XML copied to clipboard')
+                except Exception as e:
+                    QMessageBox.warning(self, 'Error', f'TexturePack copy error: {e}')
+
+        except Exception as e:
+            QMessageBox.warning(self, 'Error', f'Copy error: {e}')
 
     def _export_selected_multiple(self, export_format: str = 'converted'):
         """Export multiple selected assets."""

@@ -132,10 +132,12 @@ class AudioPlayerWidget(QWidget):
         if self.audio_data is None:
             return
 
-        # Reset if at end
+        # Reset if at end (finished playing)
         if self.position >= self.duration:
             self.position = 0
-            self.current_frame = 0
+
+        # Reset current_frame since position tracking uses start_frame + current_frame
+        self.current_frame = 0
 
         self.is_playing = True
         self.play_pause_btn.setText('Pause')
