@@ -384,6 +384,9 @@ class JsonTreeViewer(QDialog):
         # Set flag to prevent search triggering during cycling
         self._is_cycling = True
 
+        # Save current search text
+        current_search = self.search_input.text()
+
         try:
             # Move to next match (wrap around)
             self._current_match_index = (self._current_match_index + 1) % len(self._search_matches)
@@ -399,6 +402,10 @@ class JsonTreeViewer(QDialog):
                 self.search_progress_label.setText(
                     f'Match {self._current_match_index + 1}/{len(self._search_matches)} - Press Enter to cycle'
                 )
+
+            # Ensure search text is still there
+            if self.search_input.text() != current_search:
+                self.search_input.setText(current_search)
 
             # Restore focus to search input so user can continue typing
             self.search_input.setFocus()

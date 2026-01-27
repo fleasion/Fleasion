@@ -641,8 +641,6 @@ class CacheViewerTab(QWidget):
 
     def _populate_table(self, assets: list):
         """Populate the table with assets."""
-        from PyQt6.QtWidgets import QApplication
-
         # Disable updates while populating (major performance boost)
         self.table.setUpdatesEnabled(False)
         self.table.setSortingEnabled(False)
@@ -654,72 +652,63 @@ class CacheViewerTab(QWidget):
             # Update table
             self.table.setRowCount(len(assets))
 
-            # Process in batches to keep UI responsive
-            batch_size = 50
-            for batch_start in range(0, len(assets), batch_size):
-                batch_end = min(batch_start + batch_size, len(assets))
+            for row, asset in enumerate(assets):
+                asset_id = asset['id']
+                hash_val = asset.get('hash', '')
 
-                for row in range(batch_start, batch_end):
-                    asset = assets[row]
-                    asset_id = asset['id']
-                    hash_val = asset.get('hash', '')
+                # Track if this is the previously selected asset
+                if self._selected_asset_id and asset_id == self._selected_asset_id:
+                    row_to_select = row
 
-                    # Track if this is the previously selected asset
-                    if self._selected_asset_id and asset_id == self._selected_asset_id:
-                        row_to_select = row
+                # Initialize or update asset info tracking
+                if asset_id not in self._asset_info:
+                    self._asset_info[asset_id] = {
+                        'hash': hash_val,
+                        'resolved_name': None,
+                        'row': row,
+                    }
+                else:
+                    self._asset_info[asset_id]['row'] = row
 
-                    # Initialize or update asset info tracking
-                    if asset_id not in self._asset_info:
-                        self._asset_info[asset_id] = {
-                            'hash': hash_val,
-                            'resolved_name': None,
-                            'row': row,
-                        }
-                    else:
-                        self._asset_info[asset_id]['row'] = row
+                # Hash/Name (column 0) - show resolved name or hash based on toggle
+                info = self._asset_info[asset_id]
+                if self._show_names and info.get('resolved_name'):
+                    display_val = info['resolved_name']
+                else:
+                    display_val = hash_val
+                name_item = QTableWidgetItem(display_val)
+                name_item.setData(Qt.ItemDataRole.UserRole, asset)
+                self.table.setItem(row, 0, name_item)
 
-                    # Hash/Name (column 0) - show resolved name or hash based on toggle
-                    info = self._asset_info[asset_id]
-                    if self._show_names and info.get('resolved_name'):
-                        display_val = info['resolved_name']
-                    else:
-                        display_val = hash_val
-                    name_item = QTableWidgetItem(display_val)
-                    name_item.setData(Qt.ItemDataRole.UserRole, asset)
-                    self.table.setItem(row, 0, name_item)
+                # Asset ID (column 1)
+                id_item = QTableWidgetItem(asset_id)
+                self.table.setItem(row, 1, id_item)
 
-                    # Asset ID (column 1)
-                    id_item = QTableWidgetItem(asset_id)
-                    self.table.setItem(row, 1, id_item)
+                # Type (column 2)
+                type_item = QTableWidgetItem(asset['type_name'])
+                self.table.setItem(row, 2, type_item)
 
-                    # Type (column 2)
-                    type_item = QTableWidgetItem(asset['type_name'])
-                    self.table.setItem(row, 2, type_item)
+                # Size (column 3)
+                size = asset.get('size', 0)
+                size_str = self._format_size(size)
+                size_item = QTableWidgetItem(size_str)
+                self.table.setItem(row, 3, size_item)
 
-                    # Size (column 3)
-                    size = asset.get('size', 0)
-                    size_str = self._format_size(size)
-                    size_item = QTableWidgetItem(size_str)
-                    self.table.setItem(row, 3, size_item)
+                # Cached At (column 4)
+                cached_at = asset.get('cached_at', '')
+                if cached_at:
+                    # Format datetime
+                    try:
+                        cached_at = cached_at.split('T')[0] + ' ' + cached_at.split('T')[1].split('.')[0]
+                    except (IndexError, AttributeError):
+                        pass
+                cached_item = QTableWidgetItem(cached_at)
+                self.table.setItem(row, 4, cached_item)
 
-                    # Cached At (column 4)
-                    cached_at = asset.get('cached_at', '')
-                    if cached_at:
-                        # Format datetime
-                        try:
-                            cached_at = cached_at.split('T')[0] + ' ' + cached_at.split('T')[1].split('.')[0]
-                        except (IndexError, AttributeError):
-                            pass
-                    cached_item = QTableWidgetItem(cached_at)
-                    self.table.setItem(row, 4, cached_item)
-
-                    # URL (column 5)
-                    url = asset.get('url', '')
-                    url_item = QTableWidgetItem(url)
-                    self.table.setItem(row, 5, url_item)
-
-                # Process events after each batch to keep UI responsive
-                QApplication.processEvents()
+                # URL (column 5)
+                url = asset.get('url', '')
+                url_item = QTableWidgetItem(url)
+                self.table.setItem(row, 5, url_item)
         finally:
             # Re-enable updates
             self.table.setUpdatesEnabled(True)
