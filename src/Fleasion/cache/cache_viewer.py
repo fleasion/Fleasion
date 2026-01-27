@@ -326,61 +326,6 @@ class TexturePackLoaderThread(QThread):
             self.finished_loading.emit()
 
 
-def _filter_assets_sync(assets: list, search_text: str, asset_info: dict) -> list:
-    """Filter assets synchronously with optimized string matching.
-
-    Uses fast path for common cases and precomputed lowercase search.
-    """
-    if not search_text:
-        return assets
-
-    search_lower = search_text.strip().lower()
-    if not search_lower:
-        return assets
-
-    # Precompute search fragments for better performance
-    search_parts = search_lower.split()
-    if not search_parts:
-        return assets
-
-    filtered = []
-
-    # Process in batches to avoid blocking UI
-    for a in assets:
-        # Fast path: check most common fields first
-        asset_id = a['id']
-
-        # Quick ID check (exact or prefix match)
-        if search_lower in asset_id.lower():
-            filtered.append(a)
-            continue
-
-        # Check type name
-        type_name = a['type_name'].lower()
-        if search_lower in type_name:
-            filtered.append(a)
-            continue
-
-        # Check resolved name if available (most common search target)
-        if asset_id in asset_info:
-            name = asset_info[asset_id].get('resolved_name')
-            if name and search_lower in name.lower():
-                filtered.append(a)
-                continue
-
-        # Slower checks: URL, hash, cached_at
-        url = a.get('url', '').lower()
-        hash_val = a.get('hash', '').lower()
-        cached_at = a.get('cached_at', '').lower()
-
-        if (search_lower in url or
-            search_lower in hash_val or
-            search_lower in cached_at):
-            filtered.append(a)
-
-    return filtered
-
-
 class CacheViewerTab(QWidget):
     """Tab for viewing and managing cached Roblox assets."""
 
@@ -578,13 +523,17 @@ class CacheViewerTab(QWidget):
         self.image_label.customContextMenuRequested.connect(self._show_image_context_menu)
         self.preview_container_layout.addWidget(self.image_label)
 
-        # Audio player
+        # Audio player - add stretch to center vertically
+        self.preview_container_layout.addStretch(1)
+
         self.audio_player = None  # Created dynamically when needed
         self.audio_container = QWidget()
         self.audio_container_layout = QVBoxLayout()
         self.audio_container_layout.setContentsMargins(0, 0, 0, 0)
         self.audio_container.setLayout(self.audio_container_layout)
         self.preview_container_layout.addWidget(self.audio_container)
+
+        self.preview_container_layout.addStretch(1)
 
         # Animation viewer
         self.animation_viewer = AnimationViewerPanel()

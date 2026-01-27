@@ -1,33 +1,36 @@
-'''Audio player widget using sounddevice for Python 3.14 compatibility.'''
+"""Audio player widget using sounddevice for Python 3.14 compatibility."""
 
-import os
 import threading
 import time
-from pathlib import Path
 
 import numpy as np
 import sounddevice as sd
 import soundfile as sf
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSlider
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSlider,
+    QVBoxLayout,
+    QWidget,
 )
 
 
 class AudioPlayerWidget(QWidget):
-    '''Audio player widget with play/pause, volume, and seek controls.'''
+    """Audio player widget with play/pause, volume, and seek controls."""
 
     stopped = pyqtSignal()
 
     def __init__(self, audio_file_path: str, parent=None, config_manager=None):
-        '''
+        """
         Initialize audio player.
 
         Args:
             audio_file_path: Path to audio file (mp3, ogg, wav, etc.)
             parent: Parent widget
             config_manager: ConfigManager for persisting volume
-        '''
+        """
         super().__init__(parent)
         self.audio_file_path = audio_file_path
         self.config_manager = config_manager
@@ -65,7 +68,7 @@ class AudioPlayerWidget(QWidget):
         self.timer.start(50)  # 20 FPS
 
     def _load_audio(self):
-        '''Load audio file and get metadata.'''
+        """Load audio file and get metadata."""
         try:
             # Load audio file
             self.audio_data, self.sample_rate = sf.read(self.audio_file_path)
@@ -82,7 +85,7 @@ class AudioPlayerWidget(QWidget):
             self.duration = 0
 
     def _setup_ui(self):
-        '''Setup the UI.'''
+        """Setup the UI."""
         layout = QVBoxLayout()
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
@@ -120,7 +123,7 @@ class AudioPlayerWidget(QWidget):
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(int(self.volume * 100))
         self.volume_slider.valueChanged.connect(self._set_volume)
-        self.volume_slider.setFixedWidth(200)
+        self.volume_slider.setFixedWidth(175)
         volume_layout.addWidget(self.volume_slider)
 
         volume_layout.addStretch()
@@ -132,7 +135,7 @@ class AudioPlayerWidget(QWidget):
         self.progress_slider.setRange(0, int(self.duration * 1000))
         self.progress_slider.sliderPressed.connect(self._start_scrub)
         self.progress_slider.sliderReleased.connect(self._end_scrub)
-        self.progress_slider.setFixedWidth(400)
+        self.progress_slider.setFixedWidth(226)
         progress_layout.addWidget(self.progress_slider)
         progress_layout.addStretch()
         controls_container.addLayout(progress_layout)
@@ -148,14 +151,14 @@ class AudioPlayerWidget(QWidget):
         self.setLayout(layout)
 
     def _toggle_play_pause(self):
-        '''Toggle play/pause state.'''
+        """Toggle play/pause state."""
         if not self.is_playing:
             self._play()
         else:
             self._pause()
 
     def _play(self):
-        '''Start playback.'''
+        """Start playback."""
         if self.audio_data is None:
             return
 
@@ -173,7 +176,7 @@ class AudioPlayerWidget(QWidget):
         self.playback_thread.start()
 
     def _pause(self):
-        '''Pause playback.'''
+        """Pause playback."""
         self.is_playing = False
         self.should_stop = True
         self.play_pause_btn.setText('▶')
@@ -182,7 +185,7 @@ class AudioPlayerWidget(QWidget):
             self.stream.stop()
 
     def _replay(self):
-        '''Replay from beginning.'''
+        """Replay from beginning."""
         # Stop current playback
         if self.is_playing:
             self._pause()
@@ -195,7 +198,7 @@ class AudioPlayerWidget(QWidget):
         self._play()
 
     def _playback_worker(self):
-        '''Worker thread for audio playback.'''
+        """Worker thread for audio playback."""
         try:
             def callback(outdata, frames, time_info, status):
                 if status:
@@ -245,13 +248,13 @@ class AudioPlayerWidget(QWidget):
             self.play_pause_btn.setText('▶')
 
     def _start_scrub(self):
-        '''Called when user starts dragging progress slider.'''
+        """Called when user starts dragging progress slider."""
         self.is_scrubbing = True
         if self.is_playing:
             self._pause()
 
     def _end_scrub(self):
-        '''Called when user releases progress slider.'''
+        """Called when user releases progress slider."""
         # Seek to new position
         new_time = self.progress_slider.value() / 1000.0
         new_time = max(0, min(new_time, self.duration))
@@ -262,13 +265,13 @@ class AudioPlayerWidget(QWidget):
         self.is_scrubbing = False
 
     def _set_volume(self, value):
-        '''Set volume level.'''
+        """Set volume level."""
         self.volume = value / 100.0
         if self.config_manager:
             self.config_manager.audio_volume = value
 
     def _update_ui(self):
-        '''Update progress slider and time label.'''
+        """Update progress slider and time label."""
         if not self.is_scrubbing:
             with self.position_lock:
                 current_time = self.playback_position / self.sample_rate
@@ -277,14 +280,14 @@ class AudioPlayerWidget(QWidget):
             self.time_label.setText(f'{self._format_time(current_time)} / {self._format_time(self.duration)}')
 
     def _format_time(self, seconds: float) -> str:
-        '''Format seconds as MM:SS.mmm.'''
+        """Format seconds as MM:SS.mmm."""
         minutes = int(seconds // 60)
         secs = int(seconds % 60)
         millis = int((seconds % 1) * 1000)
         return f'{minutes:02d}:{secs:02d}.{millis:03d}'
 
     def stop(self):
-        '''Stop playback and cleanup.'''
+        """Stop playback and cleanup."""
         self.should_stop = True
         self.is_playing = False
 
@@ -298,6 +301,6 @@ class AudioPlayerWidget(QWidget):
         self.stopped.emit()
 
     def closeEvent(self, event):
-        '''Handle widget close.'''
+        """Handle widget close."""
         self.stop()
         super().closeEvent(event)
