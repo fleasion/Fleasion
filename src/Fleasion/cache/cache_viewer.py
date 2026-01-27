@@ -37,21 +37,44 @@ class TexturePackLoaderThread(QThread):
         self._stop_requested = True
 
     def run(self):
-        """Fetch textures from cache."""
+        """Fetch textures from cache or API."""
+        import requests
+
         for map_name, map_id in self.maps.items():
             if self._stop_requested:
                 return
 
             try:
-                # Get cached texture data (type 1 = Image)
+                # Try to get cached texture data (type 1 = Image)
                 data = self.cache_manager.get_asset(str(map_id), 1)
-                if not data:
-                    self.texture_error.emit(map_name, f'Not cached: {map_id}')
-                    continue
+                hash_val = ''
 
-                # Get hash from cache
-                asset_info = self.cache_manager.get_asset_info(str(map_id), 1)
-                hash_val = asset_info.get('hash', '') if asset_info else ''
+                if data:
+                    # Get hash from cache
+                    asset_info = self.cache_manager.get_asset_info(str(map_id), 1)
+                    hash_val = asset_info.get('hash', '') if asset_info else ''
+                else:
+                    # Not cached - fetch from API
+                    if self._stop_requested:
+                        return
+
+                    api_url = f'https://assetdelivery.roblox.com/v1/asset/?id={map_id}'
+                    headers = {'User-Agent': 'Roblox/WinInet'}
+
+                    # Try to get auth cookie
+                    cookie = self._get_roblosecurity()
+                    if cookie:
+                        headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
+
+                    response = requests.get(api_url, headers=headers, timeout=10)
+                    if response.status_code == 200 and response.content:
+                        data = response.content
+                    else:
+                        self.texture_error.emit(map_name, f'API error: {response.status_code}')
+                        continue
+
+                if self._stop_requested:
+                    return
 
                 self.texture_loaded.emit(map_name, str(map_id), hash_val, data)
 
@@ -61,6 +84,35 @@ class TexturePackLoaderThread(QThread):
 
         if not self._stop_requested:
             self.finished_loading.emit()
+
+    def _get_roblosecurity(self) -> str | None:
+        """Get .ROBLOSECURITY cookie from Roblox local storage."""
+        import os
+        import json
+        import base64
+        import re
+
+        try:
+            import win32crypt
+        except ImportError:
+            return None
+
+        path = os.path.expandvars(r'%LocalAppData%/Roblox/LocalStorage/RobloxCookies.dat')
+        try:
+            if not os.path.exists(path):
+                return None
+            with open(path, 'r') as f:
+                data = json.load(f)
+            cookies_data = data.get('CookiesData')
+            if not cookies_data:
+                return None
+            enc = base64.b64decode(cookies_data)
+            dec = win32crypt.CryptUnprotectData(enc, None, None, None, 0)[1]
+            s = dec.decode(errors='ignore')
+            m = re.search(r'\.ROBLOSECURITY\s+([^\s;]+)', s)
+            return m.group(1) if m else None
+        except Exception:
+            return None
 
 
 class CacheViewerTab(QWidget):
@@ -74,6 +126,7 @@ class CacheViewerTab(QWidget):
         self._selected_asset_id: str | None = None  # Track selected asset by ID
         self._show_names = True  # Show names instead of hashes (on by default)
         self._asset_info: dict[str, dict] = {}  # asset_id -> {resolved_name, hash, row}
+        self._current_pixmap = None  # Store current image for resize
         self._setup_ui()
         self._refresh_timer = QTimer()
         self._refresh_timer.timeout.connect(self._check_for_updates)
@@ -102,7 +155,7 @@ class CacheViewerTab(QWidget):
         self._create_filters(layout)
 
         # Splitter for table and preview
-        splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
 
         # Left side: Asset table
         table_widget = QWidget()
@@ -110,16 +163,19 @@ class CacheViewerTab(QWidget):
         table_layout.setContentsMargins(0, 0, 0, 0)
         self._create_table(table_layout)
         table_widget.setLayout(table_layout)
-        splitter.addWidget(table_widget)
+        self.splitter.addWidget(table_widget)
 
         # Right side: Preview panel
         self.preview_panel = self._create_preview_panel()
-        splitter.addWidget(self.preview_panel)
+        self.splitter.addWidget(self.preview_panel)
 
         # Set splitter sizes (table gets more space initially)
-        splitter.setSizes([600, 300])
+        self.splitter.setSizes([600, 300])
 
-        layout.addWidget(splitter, stretch=1)
+        # Connect splitter moved to rescale image
+        self.splitter.splitterMoved.connect(self._on_splitter_moved)
+
+        layout.addWidget(self.splitter, stretch=1)
 
         # Actions
         self._create_actions(layout)
@@ -218,7 +274,6 @@ class CacheViewerTab(QWidget):
         self.preview_container = QWidget()
         self.preview_container_layout = QVBoxLayout()
         self.preview_container_layout.setContentsMargins(5, 5, 5, 5)
-        self.preview_container_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         # 3D Viewer for meshes
         self.obj_viewer = ObjViewerPanel()
@@ -1090,6 +1145,7 @@ class CacheViewerTab(QWidget):
         self.image_label.hide()
         self.image_label.clear()
         self.image_label.setText('Select an asset to preview')
+        self._current_pixmap = None  # Clear stored pixmap
         self.audio_container.hide()
         if self.audio_player:
             self.audio_player.stop()
@@ -1109,14 +1165,20 @@ class CacheViewerTab(QWidget):
             self.texturepack_loader.wait()
             self.texturepack_loader = None
 
+    def _on_splitter_moved(self, pos: int, index: int):
+        """Handle splitter resize to rescale image."""
+        if self._current_pixmap is not None and self.image_label.isVisible():
+            self._scale_and_show_image(self._current_pixmap)
+
     def _preview_mesh(self, data: bytes, asset_id: str):
         """Preview a mesh asset in 3D."""
+        import gzip as gzip_module
+
         try:
             # Decompress if gzip compressed
             decompressed = data
             if data.startswith(b'\x1f\x8b'):  # gzip magic
-                import gzip
-                decompressed = gzip.decompress(data)
+                decompressed = gzip_module.decompress(data)
 
             # Convert mesh to OBJ
             obj_content = mesh_processing.convert(decompressed)
@@ -1130,27 +1192,53 @@ class CacheViewerTab(QWidget):
             self._show_text_preview(f'Mesh conversion error: {e}')
 
     def _preview_solidmodel(self, data: bytes, asset_id: str):
-        """Preview a SolidModel asset (binary RBXM with embedded CSG mesh)."""
+        """Preview a SolidModel asset (binary RBXM with CSG/PartOperation data)."""
+        import gzip as gzip_module
+
         try:
             # Decompress if gzip compressed
             decompressed = data
             if data.startswith(b'\x1f\x8b'):  # gzip magic
-                import gzip
-                decompressed = gzip.decompress(data)
+                decompressed = gzip_module.decompress(data)
 
-            # SolidModel is binary RBXM format with PartOperationAsset
-            # Try to extract mesh data from the RBXM structure
+            # Check if it's actually a mesh format (version X.XX)
+            if decompressed.startswith(b'version '):
+                # This is actually a regular mesh, not a SolidModel
+                obj_content = mesh_processing.convert(decompressed)
+                if obj_content:
+                    self.obj_viewer.load_obj(obj_content, asset_id)
+                    self.obj_viewer.show()
+                    self.stop_preview_btn.show()
+                    return
+
+            # SolidModel is binary RBXM format with PartOperationAsset (CSG data)
+            # Try to extract any embedded mesh data
             obj_content = self._extract_solidmodel_mesh(decompressed)
             if obj_content:
                 self.obj_viewer.load_obj(obj_content, asset_id)
                 self.obj_viewer.show()
                 self.stop_preview_btn.show()
             else:
-                self._show_text_preview(
-                    f'SolidModel {asset_id}\n\n'
-                    'Binary RBXM format with embedded CSG mesh.\n'
-                    '3D preview not yet supported for this format.'
-                )
+                # Show info about the binary format
+                info_lines = [f'SolidModel {asset_id}', '']
+
+                if decompressed.startswith(b'<roblox!'):
+                    info_lines.append('Format: Binary RBXM (CSG/PartOperation)')
+                    # Try to find class names
+                    import re
+                    classes = re.findall(rb'\x00([A-Z][a-zA-Z]+(?:Asset)?)\x00', decompressed)
+                    if classes:
+                        unique_classes = list(dict.fromkeys(c.decode() for c in classes[:10]))
+                        info_lines.append(f'Classes: {", ".join(unique_classes)}')
+                else:
+                    info_lines.append(f'Format: Unknown (header: {decompressed[:20]})')
+
+                info_lines.append('')
+                info_lines.append('3D preview not supported for CSG/PartOperation data.')
+                info_lines.append('This format contains solid geometry operations,')
+                info_lines.append('not standard mesh vertex/face data.')
+
+                self._show_text_preview('\n'.join(info_lines))
         except Exception as e:
             self._show_text_preview(f'SolidModel preview error: {e}')
 
@@ -1208,24 +1296,34 @@ class CacheViewerTab(QWidget):
             )
             pixmap = QPixmap.fromImage(qimage)
 
-            # Scale to fit available container width while maintaining aspect ratio
-            container_width = self.preview_scroll.viewport().width() - 20
-            if container_width < 100:
-                container_width = 400  # Default fallback
+            # Store original for resizing
+            self._current_pixmap = pixmap
 
-            if pixmap.width() > container_width:
-                scaled = pixmap.scaledToWidth(
-                    container_width,
-                    Qt.TransformationMode.SmoothTransformation
-                )
-            else:
-                scaled = pixmap
-
-            self.image_label.setPixmap(scaled)
+            # Scale to fit available container
+            self._scale_and_show_image(pixmap)
             self.image_label.show()
             self.stop_preview_btn.show()
         except Exception as e:
             self._show_text_preview(f'Image preview error: {e}')
+
+    def _scale_and_show_image(self, pixmap: QPixmap):
+        """Scale pixmap to fit container and display it."""
+        container_width = self.preview_scroll.viewport().width() - 20
+        container_height = self.preview_scroll.viewport().height() - 20
+
+        if container_width < 100:
+            container_width = 400
+        if container_height < 100:
+            container_height = 400
+
+        # Scale to fit within container while maintaining aspect ratio
+        scaled = pixmap.scaled(
+            container_width, container_height,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        )
+
+        self.image_label.setPixmap(scaled)
 
     def _preview_texturepack(self, data: bytes, asset_id: str):
         """Preview a texture pack by showing all texture maps."""
@@ -1268,16 +1366,15 @@ class CacheViewerTab(QWidget):
             self._tp_image_labels = {}
 
             # Create placeholder for each texture map
+            # Store headers for updating hash later
+            self._tp_headers = {}
             for map_name, map_id in maps.items():
-                # Get hash from cache
-                asset_info = self.cache_manager.get_asset_info(str(map_id), 1)
-                hash_val = asset_info.get('hash', '') if asset_info else 'N/A'
-
-                # Header with name, id, hash
-                header = QLabel(f'{map_name}  |  {map_id}  |  {hash_val}')
+                # Header with name and id (hash added when texture loads)
+                header = QLabel(f'{map_name}  |  {map_id}')
                 header.setStyleSheet('font-weight: bold; color: #888; padding: 5px;')
                 header.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
                 tp_layout.addWidget(header)
+                self._tp_headers[map_name] = (header, map_id)
 
                 # Image placeholder
                 img_label = QLabel('Loading...')
@@ -1314,6 +1411,15 @@ class CacheViewerTab(QWidget):
                 _ = img_label.isVisible()
             except RuntimeError:
                 return
+
+            # Update header with hash if available
+            if map_name in self._tp_headers:
+                header, mid = self._tp_headers[map_name]
+                try:
+                    if hash_val:
+                        header.setText(f'{map_name}  |  {mid}  |  {hash_val}')
+                except RuntimeError:
+                    pass
 
             # Load image
             image = Image.open(io.BytesIO(data))
