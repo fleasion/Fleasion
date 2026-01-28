@@ -74,14 +74,10 @@ class SystemTray:
         cache_action.triggered.connect(self._show_delete_cache)
         self.menu.addAction(cache_action)
 
-        about_action = QAction('About', self.menu)
-        about_action.triggered.connect(self._show_about)
-        self.menu.addAction(about_action)
-
         self.menu.addSeparator()
 
         # Discord copy
-        discord_action = QAction('Copy Discord Invite', self.menu)
+        discord_action = QAction('Discord', self.menu)
         discord_action.triggered.connect(self._copy_discord)
         self.menu.addAction(discord_action)
 
@@ -89,6 +85,11 @@ class SystemTray:
         donate_action = QAction('Donate', self.menu)
         donate_action.triggered.connect(self._open_kofi)
         self.menu.addAction(donate_action)
+
+        # About
+        about_action = QAction('About', self.menu)
+        about_action.triggered.connect(self._show_about)
+        self.menu.addAction(about_action)
 
         self.menu.addSeparator()
 
