@@ -181,6 +181,9 @@ class ReplacerConfigWindow(QDialog):
         self.config_combo.setEditable(True)
         self.config_combo.lineEdit().setReadOnly(True)
         self.config_combo.lineEdit().setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # Refresh config list when dropdown is clicked
+        self._original_show_popup = self.config_combo.showPopup
+        self.config_combo.showPopup = self._on_combo_show_popup
         row1.addWidget(self.config_combo)
 
         for text, action in [
@@ -210,6 +213,7 @@ class ReplacerConfigWindow(QDialog):
 
         self.enabled_menu_btn = QPushButton('Select...')
         self.enabled_menu = QMenu(self.enabled_menu_btn)
+        self.enabled_menu.aboutToShow.connect(self._rebuild_enabled_menu)
         self.enabled_menu_btn.setMenu(self.enabled_menu)
         row2.addWidget(self.enabled_menu_btn)
 
@@ -438,6 +442,19 @@ class ReplacerConfigWindow(QDialog):
             self.config_combo.setCurrentIndex(idx)
         self.config_combo.blockSignals(False)
         self._rebuild_enabled_menu()
+
+    def _on_combo_show_popup(self):
+        """Refresh configs when combo dropdown is opened."""
+        current = self.config_combo.currentText()
+        self.config_combo.blockSignals(True)
+        self.config_combo.clear()
+        self.config_combo.addItems(self.config_manager.config_names)
+        idx = self.config_combo.findText(current)
+        if idx >= 0:
+            self.config_combo.setCurrentIndex(idx)
+        self.config_combo.blockSignals(False)
+        # Call original showPopup
+        self._original_show_popup()
 
     def _on_config_change(self):
         """Handle config selection change."""

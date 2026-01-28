@@ -66,13 +66,17 @@ class SystemTray:
         self.menu.addSeparator()
 
         # Windows
+        cache_action = QAction('Delete Cache', self.menu)
+        cache_action.triggered.connect(self._show_delete_cache)
+        self.menu.addAction(cache_action)
+
         logs_action = QAction('Logs', self.menu)
         logs_action.triggered.connect(self._show_logs)
         self.menu.addAction(logs_action)
 
-        cache_action = QAction('Delete Cache', self.menu)
-        cache_action.triggered.connect(self._show_delete_cache)
-        self.menu.addAction(cache_action)
+        about_action = QAction('About', self.menu)
+        about_action.triggered.connect(self._show_about)
+        self.menu.addAction(about_action)
 
         self.menu.addSeparator()
 
@@ -85,11 +89,6 @@ class SystemTray:
         donate_action = QAction('Donate', self.menu)
         donate_action.triggered.connect(self._open_kofi)
         self.menu.addAction(donate_action)
-
-        # About
-        about_action = QAction('About', self.menu)
-        about_action.triggered.connect(self._show_about)
-        self.menu.addAction(about_action)
 
         self.menu.addSeparator()
 
