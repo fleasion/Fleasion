@@ -78,24 +78,23 @@ class ProxyMaster:
         """Run the proxy (internal)."""
         self._running = True
 
-        # Cleanup Roblox and cache (if enabled in settings)
-        if terminate_roblox():
-            log_buffer.log('Cleanup', 'Roblox found, terminating...')
-            if not wait_for_roblox_exit():
-                log_buffer.log('Cleanup', 'Termination timed out')
-            else:
-                log_buffer.log('Cleanup', 'Roblox terminated')
-                # Only clear cache if setting is enabled
-                if self.config_manager.clear_cache_on_launch:
+        # Cleanup Roblox and cache (only if setting is enabled)
+        if self.config_manager.clear_cache_on_launch:
+            if terminate_roblox():
+                log_buffer.log('Cleanup', 'Roblox found, terminating...')
+                if not wait_for_roblox_exit():
+                    log_buffer.log('Cleanup', 'Termination timed out')
+                else:
+                    log_buffer.log('Cleanup', 'Roblox terminated')
                     try:
                         STORAGE_DB.unlink()
                         log_buffer.log('Cleanup', 'Storage deleted')
                     except (FileNotFoundError, PermissionError, OSError) as e:
                         log_buffer.log('Cleanup', f'Storage deletion: {e}')
-                else:
-                    log_buffer.log('Cleanup', 'Cache clear on launch disabled')
+            else:
+                log_buffer.log('Cleanup', 'Roblox not running')
         else:
-            log_buffer.log('Cleanup', 'Roblox not running')
+            log_buffer.log('Cleanup', 'Cache clear on launch disabled - skipping Roblox termination')
 
         # Create master with performance-optimized options
         opts = Options(
