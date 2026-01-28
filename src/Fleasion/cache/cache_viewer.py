@@ -1606,9 +1606,9 @@ class CacheViewerTab(QWidget):
         # Hide and clear UI widgets
         self.obj_viewer.hide()
         self.obj_viewer.clear()
-        self.image_label.hide()
         self.image_label.clear()
         self.image_label.setText('Select an asset to preview')
+        self.image_label.show()
         self._current_pixmap = None
         self.audio_wrapper.hide()
         if self.audio_player:
