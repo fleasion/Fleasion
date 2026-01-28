@@ -197,9 +197,8 @@ pyinstaller --onefile --name "Fleasion NT" --windowed src/Fleasion/app.py
 
 ## Credits
 
-- **@Blockce** &mdash; original script
-- **@1_v** (sky) &mdash; revamped the initial UI with updated internals
-- **@0100152000022000** (sky 2) &mdash; replacement code contributions
+- **@8ar__** &mdash; code
+- **@1_v** (sky), **@Blockce**, **@0100152000022000** (sky 2) &mdash; logic and contributions
 - Donators &mdash; for keeping the passion going
 
 ## License
