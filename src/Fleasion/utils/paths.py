@@ -12,7 +12,7 @@ APP_DISCORD = 'discord.gg/hXyhKehEZF'
 # Process and proxy configuration
 ROBLOX_PROCESS = 'RobloxPlayerBeta.exe'
 PROXY_TARGET_HOST = 'assetdelivery.roblox.com'
-STRIPPABLE_ASSET_TYPES = {'Image', 'TexturePack'}
+STRIPPABLE_ASSET_TYPES = {'TexturePack'}
 
 # Icon
 ICON_FILENAME = 'fleasionlogo2.ico'

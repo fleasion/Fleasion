@@ -175,6 +175,12 @@ class ReplacerConfigWindow(QDialog):
         self.config_combo.addItems(self.config_manager.config_names)
         self.config_combo.setCurrentText(self.config_manager.last_config)
         self.config_combo.currentTextChanged.connect(self._on_config_change)
+        # Center the text in the combo box
+        self.config_combo.setEditable(True)
+        self.config_combo.lineEdit().setReadOnly(True)
+        self.config_combo.lineEdit().setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # Refresh config list when dropdown is opened
+        self.config_combo.showPopup = self._combo_show_popup
         row1.addWidget(self.config_combo)
 
         for text, action in [
@@ -427,6 +433,18 @@ class ReplacerConfigWindow(QDialog):
         self.config_combo.addItems(self.config_manager.config_names)
         self.config_combo.setCurrentText(self.config_manager.last_config)
         self._rebuild_enabled_menu()
+
+    def _combo_show_popup(self):
+        """Refresh configs and show combo popup."""
+        # Refresh config list from disk
+        self.config_manager.refresh_config_names()
+        current = self.config_combo.currentText()
+        self.config_combo.clear()
+        self.config_combo.addItems(self.config_manager.config_names)
+        if current in self.config_manager.config_names:
+            self.config_combo.setCurrentText(current)
+        # Call the original showPopup
+        QComboBox.showPopup(self.config_combo)
 
     def _on_config_change(self):
         """Handle config selection change."""

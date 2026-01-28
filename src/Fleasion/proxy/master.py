@@ -140,6 +140,16 @@ class ProxyMaster:
                     await self._master.shutdown()
                 except Exception:
                     pass
+            # Cancel any remaining tasks to avoid "Event loop is closed" warnings
+            try:
+                loop = asyncio.get_running_loop()
+                for task in asyncio.all_tasks(loop):
+                    if task is not asyncio.current_task():
+                        task.cancel()
+                # Give tasks a moment to cancel
+                await asyncio.sleep(0.1)
+            except Exception:
+                pass
             self._running = False
 
     async def _wait_for_stop(self):

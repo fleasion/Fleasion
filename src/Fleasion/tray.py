@@ -6,6 +6,8 @@ from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 from .gui import AboutWindow, DeleteCacheWindow, LogsWindow, ReplacerConfigWindow, ThemeManager
 from .utils import APP_DISCORD, APP_NAME, APP_VERSION, get_icon_path
 
+APP_KOFI = 'ko-fi.com/fleasion'
+
 
 class SystemTray:
     """System tray icon with menu."""
@@ -56,32 +58,40 @@ class SystemTray:
 
         self.menu.addSeparator()
 
-        # About
-        about_action = QAction('About', self.menu)
-        about_action.triggered.connect(self._show_about)
-        self.menu.addAction(about_action)
-
-        # Logs
-        logs_action = QAction('Logs', self.menu)
-        logs_action.triggered.connect(self._show_logs)
-        self.menu.addAction(logs_action)
-
-        # Replacer Config
+        # Main action - Replacer Config
         config_action = QAction('Replacer Config', self.menu)
         config_action.triggered.connect(self._show_replacer_config)
         self.menu.addAction(config_action)
 
-        # Delete Cache
+        self.menu.addSeparator()
+
+        # Windows
+        logs_action = QAction('Logs', self.menu)
+        logs_action.triggered.connect(self._show_logs)
+        self.menu.addAction(logs_action)
+
         cache_action = QAction('Delete Cache', self.menu)
         cache_action.triggered.connect(self._show_delete_cache)
         self.menu.addAction(cache_action)
 
-        # Copy Discord Invite
-        discord_action = QAction('Copy Discord Invite', self.menu)
-        discord_action.triggered.connect(self._copy_discord)
-        self.menu.addAction(discord_action)
+        about_action = QAction('About', self.menu)
+        about_action.triggered.connect(self._show_about)
+        self.menu.addAction(about_action)
 
         self.menu.addSeparator()
+
+        # Links submenu
+        links_menu = QMenu('Links', self.menu)
+
+        discord_action = QAction('Discord', links_menu)
+        discord_action.triggered.connect(self._open_discord)
+        links_menu.addAction(discord_action)
+
+        kofi_action = QAction('Ko-fi', links_menu)
+        kofi_action.triggered.connect(self._open_kofi)
+        links_menu.addAction(kofi_action)
+
+        self.menu.addMenu(links_menu)
 
         # Settings submenu
         self._create_settings_menu()
@@ -221,19 +231,15 @@ class SystemTray:
         if window in self.open_windows:
             self.open_windows.remove(window)
 
-    def _copy_discord(self):
-        """Copy Discord invite to clipboard."""
-        from PyQt6.QtWidgets import QMessageBox
+    def _open_discord(self):
+        """Open Discord invite in browser."""
+        import webbrowser
+        webbrowser.open(f'https://{APP_DISCORD}')
 
-        QApplication.clipboard().setText(f'https://{APP_DISCORD}')
-
-        # Create PyQt6 message box
-        msg_box = QMessageBox()
-        msg_box.setWindowTitle(APP_NAME)
-        msg_box.setText('Discord invite copied!')
-        msg_box.setInformativeText(f'https://{APP_DISCORD}')
-        msg_box.setIcon(QMessageBox.Icon.Information)
-        msg_box.exec()
+    def _open_kofi(self):
+        """Open Ko-fi page in browser."""
+        import webbrowser
+        webbrowser.open(f'https://{APP_KOFI}')
 
     def _exit_app(self):
         """Exit the application."""

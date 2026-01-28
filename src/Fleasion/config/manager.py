@@ -229,6 +229,11 @@ class ConfigManager:
         CONFIGS_FOLDER.mkdir(parents=True, exist_ok=True)
         return sorted([p.stem for p in CONFIGS_FOLDER.glob('*.json')])
 
+    def refresh_config_names(self):
+        """Refresh config names from disk (for external changes)."""
+        # config_names property already reads from disk, this is just for clarity
+        pass
+
     def get_replacement_rules(self, config_name: str) -> list:
         """Get rules for a specific config."""
         return self._load_config(config_name).get('replacement_rules', [])
