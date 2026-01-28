@@ -58,8 +58,8 @@ class SystemTray:
 
         self.menu.addSeparator()
 
-        # Main action - Replacer Config
-        config_action = QAction('Replacer Config', self.menu)
+        # Main action - Dashboard
+        config_action = QAction('Dashboard', self.menu)
         config_action.triggered.connect(self._show_replacer_config)
         self.menu.addAction(config_action)
 
@@ -80,18 +80,17 @@ class SystemTray:
 
         self.menu.addSeparator()
 
-        # Links submenu
-        links_menu = QMenu('Links', self.menu)
+        # Discord copy
+        discord_action = QAction('Copy Discord Invite', self.menu)
+        discord_action.triggered.connect(self._copy_discord)
+        self.menu.addAction(discord_action)
 
-        discord_action = QAction('Discord', links_menu)
-        discord_action.triggered.connect(self._open_discord)
-        links_menu.addAction(discord_action)
+        # Donate
+        donate_action = QAction('Donate', self.menu)
+        donate_action.triggered.connect(self._open_kofi)
+        self.menu.addAction(donate_action)
 
-        kofi_action = QAction('Ko-fi', links_menu)
-        kofi_action.triggered.connect(self._open_kofi)
-        links_menu.addAction(kofi_action)
-
-        self.menu.addMenu(links_menu)
+        self.menu.addSeparator()
 
         # Settings submenu
         self._create_settings_menu()
@@ -231,10 +230,18 @@ class SystemTray:
         if window in self.open_windows:
             self.open_windows.remove(window)
 
-    def _open_discord(self):
-        """Open Discord invite in browser."""
-        import webbrowser
-        webbrowser.open(f'https://{APP_DISCORD}')
+    def _copy_discord(self):
+        """Copy Discord invite to clipboard."""
+        from PyQt6.QtWidgets import QMessageBox
+
+        QApplication.clipboard().setText(f'https://{APP_DISCORD}')
+
+        msg_box = QMessageBox()
+        msg_box.setWindowTitle(APP_NAME)
+        msg_box.setText('Discord invite copied!')
+        msg_box.setInformativeText(f'https://{APP_DISCORD}')
+        msg_box.setIcon(QMessageBox.Icon.Information)
+        msg_box.exec()
 
     def _open_kofi(self):
         """Open Ko-fi page in browser."""

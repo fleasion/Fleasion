@@ -72,7 +72,7 @@ class ReplacerConfigWindow(QDialog):
         self.undo_manager.save_state(self.config_manager.replacement_rules)
         self.config_enabled_vars = {}
 
-        self.setWindowTitle(f'{self.config_manager.settings.get("app_name", "FleasionNT")} - Config')
+        self.setWindowTitle(f'{self.config_manager.settings.get("app_name", "FleasionNT")} - Dashboard')
         self.resize(900, 750)
         self.setMinimumSize(800, 650)
 
@@ -167,7 +167,7 @@ class ReplacerConfigWindow(QDialog):
         config_group = QGroupBox('Configuration')
         config_layout = QVBoxLayout()
 
-        # Row 1: Config editing selector
+        # Row 1: Config editing selector and enabled configs
         row1 = QHBoxLayout()
         row1.addWidget(QLabel('Editing:'))
 
@@ -176,11 +176,7 @@ class ReplacerConfigWindow(QDialog):
         self.config_combo.setCurrentText(self.config_manager.last_config)
         self.config_combo.currentTextChanged.connect(self._on_config_change)
         # Center the text in the combo box
-        self.config_combo.setEditable(True)
-        self.config_combo.lineEdit().setReadOnly(True)
-        self.config_combo.lineEdit().setAlignment(Qt.AlignmentFlag.AlignCenter)
-        # Refresh config list when dropdown is opened
-        self.config_combo.showPopup = self._combo_show_popup
+        self.config_combo.setStyleSheet('QComboBox { text-align: center; }')
         row1.addWidget(self.config_combo)
 
         for text, action in [
@@ -193,6 +189,19 @@ class ReplacerConfigWindow(QDialog):
             btn.clicked.connect(lambda checked, a=action: self._config_action(a))
             row1.addWidget(btn)
 
+        # Separator
+        row1.addWidget(QLabel('  |  '))
+
+        # Enabled configs selector (inline)
+        row1.addWidget(QLabel('Enabled:'))
+
+        self.enabled_menu_btn = QPushButton('Select...')
+        self.enabled_menu = QMenu(self.enabled_menu_btn)
+        self.enabled_menu_btn.setMenu(self.enabled_menu)
+        row1.addWidget(self.enabled_menu_btn)
+
+        self._rebuild_enabled_menu()
+
         # No Textures checkbox
         self.strip_var = QCheckBox('No Textures')
         self.strip_var.setChecked(self.config_manager.strip_textures)
@@ -201,20 +210,6 @@ class ReplacerConfigWindow(QDialog):
 
         row1.addStretch()
         config_layout.addLayout(row1)
-
-        # Row 2: Enabled configs selector
-        row2 = QHBoxLayout()
-        row2.addWidget(QLabel('Enabled Configs:'))
-
-        self.enabled_menu_btn = QPushButton('Select configs...')
-        self.enabled_menu = QMenu(self.enabled_menu_btn)
-        self.enabled_menu_btn.setMenu(self.enabled_menu)
-        row2.addWidget(self.enabled_menu_btn)
-
-        self._rebuild_enabled_menu()
-
-        row2.addStretch()
-        config_layout.addLayout(row2)
 
         config_group.setLayout(config_layout)
         parent_layout.addWidget(config_group)
@@ -433,18 +428,6 @@ class ReplacerConfigWindow(QDialog):
         self.config_combo.addItems(self.config_manager.config_names)
         self.config_combo.setCurrentText(self.config_manager.last_config)
         self._rebuild_enabled_menu()
-
-    def _combo_show_popup(self):
-        """Refresh configs and show combo popup."""
-        # Refresh config list from disk
-        self.config_manager.refresh_config_names()
-        current = self.config_combo.currentText()
-        self.config_combo.clear()
-        self.config_combo.addItems(self.config_manager.config_names)
-        if current in self.config_manager.config_names:
-            self.config_combo.setCurrentText(current)
-        # Call the original showPopup
-        QComboBox.showPopup(self.config_combo)
 
     def _on_config_change(self):
         """Handle config selection change."""
