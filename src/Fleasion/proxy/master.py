@@ -93,9 +93,23 @@ class ProxyMaster:
         else:
             log_buffer.log('Cleanup', 'Roblox not running')
 
-        # Create master
+        # Create master with performance-optimized options
+        opts = Options(
+            mode=[f'local:{ROBLOX_PROCESS}'],
+            # Enable streaming to prevent buffering large responses
+            stream_large_bodies='1m',  # Stream bodies larger than 1MB
+            # Disable flow dumping for performance
+            flow_detail=0,
+            # Connection optimization
+            connection_strategy='lazy',
+            # Reduce CPU overhead
+            upstream_cert=False,  # We control local traffic
+            # Set explicit listen settings
+            listen_host='127.0.0.1',
+            listen_port=8080,
+        )
         self._master = DumpMaster(
-            Options(mode=[f'local:{ROBLOX_PROCESS}']),
+            opts,
             with_termlog=False,
             with_dumper=False,
         )
@@ -153,10 +167,10 @@ class ProxyMaster:
             self._running = False
 
     async def _wait_for_stop(self):
-        """Wait for stop event."""
+        """Wait for stop event (event-based, not polling)."""
         loop = asyncio.get_event_loop()
-        while not self._stop_event.is_set():
-            await asyncio.sleep(0.1)
+        # Use executor to wait on threading Event without busy polling
+        await loop.run_in_executor(None, self._stop_event.wait)
 
     def start(self):
         """Start the proxy in a background thread."""

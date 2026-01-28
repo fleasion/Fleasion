@@ -21,6 +21,8 @@ class TextureStripper:
         # Maps CDN URLs to replacement URLs/paths
         self.cdn_redirects: dict[str, str] = {}
         self.local_redirects: dict[str, str] = {}
+        # Cache replacement rules per flow to avoid multiple disk reads
+        self._replacements_cache: dict[str, tuple] = {}  # flow_id -> (replacements, removals, cdn, local)
 
     @staticmethod
     def _decode(content: bytes, enc: str):
@@ -34,6 +36,16 @@ class TextureStripper:
         """Encode data based on encoding."""
         raw = json.dumps(data, separators=(',', ':')).encode()
         return gzip.compress(raw) if enc == 'gzip' else raw
+
+    def _get_replacements(self, flow_id: str) -> tuple:
+        """Get cached replacement rules for a flow, or load from disk if not cached."""
+        if flow_id not in self._replacements_cache:
+            self._replacements_cache[flow_id] = self.config_manager.get_all_replacements()
+        return self._replacements_cache[flow_id]
+
+    def _clear_flow_cache(self, flow_id: str):
+        """Clear cached replacements for a completed flow."""
+        self._replacements_cache.pop(flow_id, None)
 
     def request(self, flow: http.HTTPFlow):
         """Process request and apply modifications."""
@@ -101,9 +113,8 @@ class TextureStripper:
             return
 
         modified = False
-        replacements, removals, cdn_replacements, local_replacements = (
-            self.config_manager.get_all_replacements()
-        )
+        # Use cached replacements to avoid repeated disk I/O
+        replacements, removals, cdn_replacements, local_replacements = self._get_replacements(flow.id)
 
         # Track asset IDs that need CDN/local replacement for response processing
         for e in data:
@@ -191,10 +202,8 @@ class TextureStripper:
         # Handle texturepack XML responses - modify nested asset IDs directly
         content_type = flow.response.headers.get('Content-Type', '') if flow.response else ''
         if flow.response and flow.response.raw_content and 'xml' in content_type.lower():
-            # Get ID replacements
-            replacements, removals, cdn_replacements, local_replacements = (
-                self.config_manager.get_all_replacements()
-            )
+            # Use cached replacements
+            replacements, removals, cdn_replacements, local_replacements = self._get_replacements(flow.id)
             # Try to modify texturepack XML with ID replacements
             if replacements:
                 modified_xml = self._modify_texturepack_xml(flow.response.raw_content, replacements)
@@ -240,3 +249,6 @@ class TextureStripper:
                 elif url_type == 'local':
                     self.local_redirects[location] = url_value
                     log_buffer.log('Local', f'Will serve local file for {location[:50]}...')
+
+        # Clear cache for this flow after response is complete
+        self._clear_flow_cache(flow.id)

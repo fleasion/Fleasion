@@ -12,9 +12,11 @@ import json
 import os
 import re
 import base64
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
 
 from mitmproxy import http
+import requests
 
 from ...cache.cache_manager import CacheManager
 from ...utils import log_buffer
@@ -38,6 +40,21 @@ class CacheScraper:
         self.enabled = True
         # Track asset IDs and their CDN locations (like Reference cache_logs)
         self.cache_logs: dict = {}
+        # Fast URL lookup: maps base URL to asset_id for O(1) matching
+        self._url_to_asset: dict[str, str] = {}
+        # Thread pool for async API calls (avoid blocking proxy event loop)
+        self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='cache_api')
+        # Requests session for connection pooling
+        self._session = requests.Session()
+        self._session.headers.update({'User-Agent': 'Roblox/WinInet'})
+        # Configure connection pooling
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=10,
+            pool_maxsize=20,
+            max_retries=2,
+            pool_block=False
+        )
+        self._session.mount('https://', adapter)
 
     def response(self, flow: http.HTTPFlow) -> None:
         """
@@ -121,6 +138,9 @@ class CacheScraper:
                         'location': location,
                         'assetTypeId': asset_type,
                     }
+                    # Build URL lookup for O(1) matching
+                    base_url = location.split('?')[0]
+                    self._url_to_asset[base_url] = asset_id
                     tracked_count += 1
 
             if tracked_count > 0:
@@ -141,76 +161,75 @@ class CacheScraper:
         try:
             req_base = url.split('?')[0]
 
-            # Find matching asset in cache_logs
-            for asset_id, info in self.cache_logs.items():
-                if not isinstance(info, dict):
-                    continue
+            # O(1) URL lookup instead of O(n) linear search
+            asset_id = self._url_to_asset.get(req_base)
+            if not asset_id:
+                return
 
-                location = info.get('location')
-                if not location:
-                    continue
+            # Get asset info
+            info = self.cache_logs.get(asset_id)
+            if not info or not isinstance(info, dict):
+                return
 
-                # Skip if already cached
-                if 'cached' in info:
-                    continue
+            # Skip if already cached
+            if 'cached' in info:
+                return
 
-                # Check if this URL matches the tracked location
-                cached_base = location.split('?')[0]
-                if cached_base != req_base:
-                    continue
+            # Get asset content
+            content = flow.response.content
+            if not content:
+                return
 
-                # Get asset content
-                content = flow.response.content
-                if not content:
-                    continue
+            # Mark as cached in tracking log
+            info['cached'] = True
 
-                # Mark as cached in tracking log
-                info['cached'] = True
+            # Extract hash from path
+            cache_hash = parsed_url.path.rsplit('/', 1)[-1]
+            asset_type = info.get('assetTypeId', 0)
 
-                # Extract hash from path
-                cache_hash = parsed_url.path.rsplit('/', 1)[-1]
-                asset_type = info.get('assetTypeId', 0)
+            # For KTX textures and TexturePacks, queue API conversion in background
+            # DO NOT block the proxy handler waiting for API response
+            needs_api_conversion = False
+            if asset_type in (1, 13) and content.startswith(b'\xABKTX'):
+                # KTX texture - queue PNG conversion
+                needs_api_conversion = True
+            elif asset_type == 63:
+                # TexturePack - queue XML fetch
+                needs_api_conversion = True
 
-                # For KTX textures (types 1, 13), fetch PNG from API instead
-                if asset_type in (1, 13) and content.startswith(b'\xABKTX'):
-                    api_content = self._fetch_from_api(asset_id)
-                    if api_content and api_content.startswith(b'\x89PNG'):
-                        content = api_content
-                        log_buffer.log('Cache', f'Converted KTX to PNG for asset {asset_id}')
-
-                # For TexturePacks (type 63), fetch XML from API
-                elif asset_type == 63:
-                    api_content = self._fetch_from_api(asset_id)
-                    if api_content and (api_content.startswith(b'<roblox>') or b'<roblox>' in api_content[:100]):
-                        content = api_content
-                        log_buffer.log('Cache', f'Fetched TexturePack XML for asset {asset_id}')
-
-                # Build metadata
-                metadata = {
-                    'url': url,
-                    'content_type': flow.response.headers.get('content-type', ''),
-                    'content_length': len(content),
-                    'hash': cache_hash,
-                }
-
-                # Store in cache manager
-                success = self.cache_manager.store_asset(
-                    asset_id=str(asset_id),
-                    asset_type=asset_type,
-                    data=content,
-                    url=url,
-                    metadata=metadata
+            if needs_api_conversion:
+                # Submit to background thread pool - does NOT block
+                self._executor.submit(
+                    self._fetch_and_update_cache,
+                    asset_id,
+                    asset_type,
+                    url,
+                    metadata={'url': url, 'content_type': flow.response.headers.get('content-type', ''), 'hash': cache_hash}
                 )
 
-                if success:
-                    type_name = self.cache_manager.get_asset_type_name(asset_type)
-                    log_buffer.log(
-                        'Cache',
-                        f'Cached {type_name}: {asset_id} ({len(content)} bytes)'
-                    )
+            # Build metadata
+            metadata = {
+                'url': url,
+                'content_type': flow.response.headers.get('content-type', ''),
+                'content_length': len(content),
+                'hash': cache_hash,
+            }
 
-                # Found match, stop searching
-                break
+            # Store in cache manager
+            success = self.cache_manager.store_asset(
+                asset_id=str(asset_id),
+                asset_type=asset_type,
+                data=content,
+                url=url,
+                metadata=metadata
+            )
+
+            if success:
+                type_name = self.cache_manager.get_asset_type_name(asset_type)
+                log_buffer.log(
+                    'Cache',
+                    f'Cached {type_name}: {asset_id} ({len(content)} bytes)'
+                )
 
         except Exception as e:
             log_buffer.log('Cache', f'Error in CDN handler: {e}')
@@ -244,17 +263,16 @@ class CacheScraper:
             return None
 
     def _fetch_from_api(self, asset_id: str) -> bytes | None:
-        """Fetch asset content from Roblox asset delivery API."""
-        import requests
-
+        """Fetch asset content from Roblox asset delivery API (uses connection pooling)."""
         try:
             cookie = self._get_roblosecurity()
-            headers = {'User-Agent': 'Roblox/WinInet'}
+            headers = {}
             if cookie:
                 headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
 
             api_url = f'https://assetdelivery.roblox.com/v1/asset/?id={asset_id}'
-            response = requests.get(api_url, headers=headers, timeout=10)
+            # Use session for connection pooling and reduced timeout
+            response = self._session.get(api_url, headers=headers, timeout=5)
 
             if response.status_code == 200 and response.content:
                 return response.content
@@ -262,6 +280,49 @@ class CacheScraper:
             log_buffer.log('Cache', f'API fetch error for {asset_id}: {e}')
 
         return None
+
+    def _fetch_and_update_cache(self, asset_id: str, asset_type: int, url: str, metadata: dict):
+        """Background worker to fetch API content and update cache (runs in thread pool)."""
+        try:
+            api_content = self._fetch_from_api(asset_id)
+
+            if not api_content:
+                return
+
+            # Validate content type
+            is_valid = False
+            content_desc = ''
+
+            if asset_type in (1, 13) and api_content.startswith(b'\x89PNG'):
+                # KTX converted to PNG
+                is_valid = True
+                content_desc = 'PNG'
+            elif asset_type == 63 and (api_content.startswith(b'<roblox>') or b'<roblox>' in api_content[:100]):
+                # TexturePack XML
+                is_valid = True
+                content_desc = 'XML'
+
+            if not is_valid:
+                return
+
+            # Update metadata
+            metadata['content_length'] = len(api_content)
+
+            # Store in cache (cache_manager has its own locking)
+            success = self.cache_manager.store_asset(
+                asset_id=str(asset_id),
+                asset_type=asset_type,
+                data=api_content,
+                url=url,
+                metadata=metadata
+            )
+
+            if success:
+                type_name = self.cache_manager.get_asset_type_name(asset_type)
+                log_buffer.log('Cache', f'Converted {type_name} to {content_desc}: {asset_id}')
+
+        except Exception as e:
+            log_buffer.log('Cache', f'Background conversion error for {asset_id}: {e}')
 
     def _get_roblosecurity(self) -> str | None:
         """Get .ROBLOSECURITY cookie from Roblox local storage."""
@@ -296,4 +357,5 @@ class CacheScraper:
     def clear_tracking(self):
         """Clear the asset tracking log."""
         self.cache_logs.clear()
+        self._url_to_asset.clear()
         log_buffer.log('Cache', 'Cleared asset tracking log')
