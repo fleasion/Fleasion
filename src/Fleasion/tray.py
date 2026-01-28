@@ -161,6 +161,13 @@ class SystemTray:
         self.auto_delete_cache_action.triggered.connect(self._toggle_auto_delete_cache)
         settings_menu.addAction(self.auto_delete_cache_action)
 
+        # Clear cache on launch
+        self.clear_cache_action = QAction('Clear Cache on Launch', settings_menu)
+        self.clear_cache_action.setCheckable(True)
+        self.clear_cache_action.setChecked(self.config_manager.clear_cache_on_launch)
+        self.clear_cache_action.triggered.connect(self._toggle_clear_cache_on_launch)
+        settings_menu.addAction(self.clear_cache_action)
+
         self.menu.addMenu(settings_menu)
 
 
@@ -210,6 +217,12 @@ class SystemTray:
         new_state = not self.config_manager.auto_delete_cache_on_exit
         self.config_manager.auto_delete_cache_on_exit = new_state
         self.auto_delete_cache_action.setChecked(new_state)
+
+    def _toggle_clear_cache_on_launch(self):
+        """Toggle clear cache on launch setting."""
+        new_state = not self.config_manager.clear_cache_on_launch
+        self.config_manager.clear_cache_on_launch = new_state
+        self.clear_cache_action.setChecked(new_state)
 
     def _apply_always_on_top_to_window(self, window):
         """Apply always on top setting to a window."""

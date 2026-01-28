@@ -179,6 +179,17 @@ class ConfigManager:
         self._save_settings()
 
     @property
+    def clear_cache_on_launch(self) -> bool:
+        """Get clear cache on launch setting."""
+        return self.settings.get('clear_cache_on_launch', True)
+
+    @clear_cache_on_launch.setter
+    def clear_cache_on_launch(self, value: bool):
+        """Set clear cache on launch setting."""
+        self.settings['clear_cache_on_launch'] = value
+        self._save_settings()
+
+    @property
     def export_naming(self) -> list[str]:
         """Get export naming options (name, id, hash)."""
         return self.settings.get('export_naming', ['id'])

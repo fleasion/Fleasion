@@ -44,6 +44,7 @@ DEFAULT_SETTINGS = {
     'open_dashboard_on_launch': True,
     'first_time_setup_complete': False,
     'auto_delete_cache_on_exit': True,
+    'clear_cache_on_launch': True,
 }
 
 

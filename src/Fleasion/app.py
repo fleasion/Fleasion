@@ -92,11 +92,18 @@ def main():
             None,
             'Welcome to Fleasion',
             'Welcome to Fleasion!\n\n'
-            'Fleasion runs in your system tray (bottom-right corner of your screen).\n\n'
-            'Right-click the tray icon to access all features including:\n'
-            '• Dashboard - View statistics and manage settings\n'
+            'HOW IT WORKS:\n'
+            'Fleasion uses a local proxy to intercept network traffic between Roblox and its servers. '
+            'This allows you to modify assets (images, audio, etc.) before they reach your game.\n\n'
+            'IMPORTANT:\n'
+            'After applying any changes in the dashboard, you must clear your Roblox cache '
+            '(or restart Roblox) so assets get re-downloaded through the proxy.\n\n'
+            'SYSTEM TRAY:\n'
+            'Fleasion runs in your system tray (bottom-right corner of your screen).\n'
+            'Right-click the tray icon to access:\n'
+            '• Dashboard - Configure asset replacements\n'
             '• Cache Viewer - Browse and export cached assets\n'
-            '• Replacer Config - Configure asset replacements\n\n'
+            '• Settings - Customize behavior\n\n'
             'The dashboard will open now to get you started.',
             QMessageBox.StandardButton.Ok
         )
