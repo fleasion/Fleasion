@@ -39,6 +39,30 @@ The proxy installs a local CA certificate into Roblox's SSL directory to decrypt
 - Import/export configurations as JSON
 - Community preset support via PreJsons
 
+### Cache Scraper
+
+The cache scraper is a live interception system that captures every asset Roblox downloads during gameplay. Enable it from the Cache Viewer tab and it works automatically in the background while you play.
+
+**Two-stage interception:**
+
+1. **Asset tracking** &mdash; intercepts batch requests to `assetdelivery.roblox.com/v1/assets/batch` to discover asset IDs, their CDN locations, and asset types before anything is downloaded
+2. **CDN capture** &mdash; intercepts the actual downloads from `fts.rbxcdn.com`, caching the raw content with full metadata (URL, content type, hash, size, timestamp)
+
+**Automatic format conversion:**
+
+- **KTX textures** (Images, Decals) &mdash; automatically fetches the converted PNG version from the asset delivery API so you get usable image files instead of raw KTX data
+- **TexturePacks** &mdash; fetches the XML manifest that maps Color, Normal, Metalness, and Roughness texture IDs, then resolves each individual texture
+
+**Performance:**
+
+- All API conversion calls run in a background thread pool (4 workers) so the proxy never blocks waiting on network requests
+- Connection pooling via persistent HTTP sessions reduces overhead on repeated API calls
+- O(1) URL-to-asset lookups using hash maps instead of scanning every tracked asset
+
+**What gets cached:**
+
+Every asset type Roblox uses &mdash; images, decals, audio, meshes, animations, shirts, pants, hats, faces, accessories (80+ types). Each asset is stored with its type, original URL, content hash, file size, and capture timestamp. Assets are compressed on disk when larger than 10KB.
+
 ### Cache Viewer
 - Browse all intercepted assets organized by type (80+ Roblox asset types)
 - Search and filter by ID, name, type, hash, or URL
@@ -59,7 +83,7 @@ The proxy installs a local CA certificate into Roblox's SSL directory to decrypt
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/fleasion.git
+git clone https://github.com/qrhrqiohj/Fleasion.git
 cd fleasion
 
 # Install dependencies with uv
@@ -71,7 +95,7 @@ uv run Fleasion
 
 ### Standalone Executable
 
-Download `Fleasion NT.exe` from the [Releases](https://github.com/yourusername/fleasion/releases) page. No Python installation required.
+Download `Fleasion NT.exe` from the [Releases](https://github.com/qrhrqiohj/Fleasion/releases) page. No Python installation required.
 
 ## Usage
 
@@ -173,7 +197,10 @@ pyinstaller --onefile --name "Fleasion NT" --windowed src/Fleasion/app.py
 
 ## Credits
 
-Script by Blockce, modified by 8ar
+- **@Blockce** &mdash; original script
+- **@1_v** (sky) &mdash; revamped the initial UI with updated internals
+- **@0100152000022000** (sky 2) &mdash; replacement code contributions
+- Donators &mdash; for keeping the passion going
 
 ## License
 

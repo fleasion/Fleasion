@@ -92,7 +92,6 @@ def main():
             None,
             'Welcome to Fleasion',
             'Welcome to Fleasion!\n\n'
-            'SYSTEM TRAY:\n'
             'Fleasion runs in your system tray (bottom-right corner of your screen).\n'
             'Right-click the tray icon to access:\n'
             '• Dashboard - Configure asset replacements\n'

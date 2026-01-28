@@ -442,9 +442,10 @@ class CacheViewerTab(QWidget):
 
         filter_layout.addWidget(QLabel('|'))
 
-        # Cache scraper toggle on right side (off by default)
+        # Cache scraper toggle - reflect actual scraper state
         self.scraper_toggle = QCheckBox('Enable Cache Scraper')
-        self.scraper_toggle.setChecked(False)
+        scraper_enabled = self.cache_scraper.enabled if self.cache_scraper else False
+        self.scraper_toggle.setChecked(scraper_enabled)
         self.scraper_toggle.stateChanged.connect(self._toggle_scraper)
         filter_layout.addWidget(self.scraper_toggle)
 

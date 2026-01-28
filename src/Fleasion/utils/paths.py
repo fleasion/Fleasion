@@ -6,7 +6,7 @@ from pathlib import Path
 # Application metadata
 APP_NAME = 'Fleasion'
 APP_VERSION = '1.4.0'
-APP_AUTHOR = 'Script by Blockce, modified by 8ar, vibed by opus 4.5'
+APP_AUTHOR = 'By @Blockce | UI by @1_v | Code by @0100152000022000'
 APP_DISCORD = 'discord.gg/hXyhKehEZF'
 
 # Process and proxy configuration
