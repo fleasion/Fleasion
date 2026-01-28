@@ -146,6 +146,28 @@ class ConfigManager:
         self._save_settings()
 
     @property
+    def open_dashboard_on_launch(self) -> bool:
+        """Get open dashboard on launch setting."""
+        return self.settings.get('open_dashboard_on_launch', True)
+
+    @open_dashboard_on_launch.setter
+    def open_dashboard_on_launch(self, value: bool):
+        """Set open dashboard on launch setting."""
+        self.settings['open_dashboard_on_launch'] = value
+        self._save_settings()
+
+    @property
+    def first_time_setup_complete(self) -> bool:
+        """Get first time setup complete flag."""
+        return self.settings.get('first_time_setup_complete', False)
+
+    @first_time_setup_complete.setter
+    def first_time_setup_complete(self, value: bool):
+        """Set first time setup complete flag."""
+        self.settings['first_time_setup_complete'] = value
+        self._save_settings()
+
+    @property
     def export_naming(self) -> list[str]:
         """Get export naming options (name, id, hash)."""
         return self.settings.get('export_naming', ['id'])

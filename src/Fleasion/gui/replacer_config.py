@@ -209,6 +209,8 @@ class ReplacerConfigWindow(QDialog):
 
         self.enabled_menu_btn = QPushButton('Select...')
         self.enabled_menu = QMenu(self.enabled_menu_btn)
+        # Install event filter to keep menu open on checkbox click
+        self.enabled_menu.installEventFilter(self)
         self.enabled_menu.aboutToShow.connect(self._rebuild_enabled_menu)
         self.enabled_menu_btn.setMenu(self.enabled_menu)
         row2.addWidget(self.enabled_menu_btn)
@@ -343,6 +345,20 @@ class ReplacerConfigWindow(QDialog):
 
             footer_widget.setLayout(footer_layout)
             parent_layout.addWidget(footer_widget)
+
+    def eventFilter(self, obj, event):
+        """Event filter to keep enabled menu open after clicking checkboxes."""
+        from PyQt6.QtCore import QEvent
+        if obj == self.enabled_menu and event.type() == QEvent.Type.MouseButtonRelease:
+            # Check if click was on a checkable action
+            action = self.enabled_menu.actionAt(event.pos())
+            if action and action.isCheckable():
+                # Toggle the action manually
+                action.setChecked(not action.isChecked())
+                action.triggered.emit(action.isChecked())
+                # Return True to prevent menu from closing
+                return True
+        return super().eventFilter(obj, event)
 
     def _rebuild_enabled_menu(self):
         """Rebuild the enabled configs menu."""

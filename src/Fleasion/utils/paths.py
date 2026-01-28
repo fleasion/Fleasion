@@ -41,6 +41,8 @@ DEFAULT_SETTINGS = {
     'theme': 'System',  # System, Light, Dark
     'audio_volume': 70,  # 0-100
     'always_on_top': False,
+    'open_dashboard_on_launch': True,
+    'first_time_setup_complete': False,
 }
 
 

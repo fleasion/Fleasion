@@ -147,6 +147,13 @@ class SystemTray:
         self.always_on_top_action.triggered.connect(self._toggle_always_on_top)
         settings_menu.addAction(self.always_on_top_action)
 
+        # Open dashboard on launch
+        self.open_dashboard_action = QAction('Open Dashboard on Launch', settings_menu)
+        self.open_dashboard_action.setCheckable(True)
+        self.open_dashboard_action.setChecked(self.config_manager.open_dashboard_on_launch)
+        self.open_dashboard_action.triggered.connect(self._toggle_open_dashboard_on_launch)
+        settings_menu.addAction(self.open_dashboard_action)
+
         self.menu.addMenu(settings_menu)
 
 
@@ -184,6 +191,12 @@ class SystemTray:
                     flags &= ~Qt.WindowType.WindowStaysOnTopHint
                 window.setWindowFlags(flags)
                 window.show()
+
+    def _toggle_open_dashboard_on_launch(self):
+        """Toggle open dashboard on launch setting."""
+        new_state = not self.config_manager.open_dashboard_on_launch
+        self.config_manager.open_dashboard_on_launch = new_state
+        self.open_dashboard_action.setChecked(new_state)
 
     def _apply_always_on_top_to_window(self, window):
         """Apply always on top setting to a window."""
