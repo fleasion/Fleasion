@@ -1,8 +1,10 @@
 """Replacer config window."""
 
 import json
+import urllib.request
 from copy import deepcopy
 from pathlib import Path
+from urllib.error import URLError
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
@@ -20,7 +22,6 @@ from PyQt6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
-    QRadioButton,
     QTabWidget,
     QTextEdit,
     QTreeWidget,
@@ -76,12 +77,16 @@ class ReplacerConfigWindow(QDialog):
         self.setMinimumSize(800, 650)
 
         # Set window flags to allow minimize/maximize
-        self.setWindowFlags(
+        flags = (
             Qt.WindowType.Window |
             Qt.WindowType.WindowMinimizeButtonHint |
             Qt.WindowType.WindowMaximizeButtonHint |
             Qt.WindowType.WindowCloseButtonHint
         )
+        # Apply always on top if enabled
+        if self.config_manager.always_on_top:
+            flags |= Qt.WindowType.WindowStaysOnTopHint
+        self.setWindowFlags(flags)
 
         self._setup_ui()
         self._set_icon()
@@ -188,6 +193,12 @@ class ReplacerConfigWindow(QDialog):
         self.strip_var.stateChanged.connect(self._on_strip_change)
         row1.addWidget(self.strip_var)
 
+        # Always on Top checkbox
+        self.always_on_top_var = QCheckBox('Always on Top')
+        self.always_on_top_var.setChecked(self.config_manager.always_on_top)
+        self.always_on_top_var.stateChanged.connect(self._on_always_on_top_change)
+        row1.addWidget(self.always_on_top_var)
+
         row1.addStretch()
         config_layout.addLayout(row1)
 
@@ -224,7 +235,7 @@ class ReplacerConfigWindow(QDialog):
 
         # Tree
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(['Status', 'Profile Name', 'Action', 'Asset IDs', 'Replace With'])
+        self.tree.setHeaderLabels(['Status', 'Profile Name', 'Mode', 'Asset IDs', 'Replacement'])
         self.tree.setSelectionMode(QTreeWidget.SelectionMode.ExtendedSelection)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._show_context_menu)
@@ -242,41 +253,47 @@ class ReplacerConfigWindow(QDialog):
         """Create the add/edit profile section."""
         edit_group = QGroupBox('Add/Edit Profile')
         edit_layout = QVBoxLayout()
+        edit_layout.setSpacing(4)
 
         # Profile name
         name_layout = QHBoxLayout()
-        name_layout.addWidget(QLabel('Profile Name:'))
+        name_layout.setSpacing(5)
+        label0 = QLabel('Profile Name:')
+        label0.setFixedWidth(85)
+        name_layout.addWidget(label0)
         self.name_entry = QLineEdit()
         name_layout.addWidget(self.name_entry)
+        # Spacer to match browse button width
+        name_layout.addSpacing(85)
         edit_layout.addLayout(name_layout)
-
-        # Action radio buttons
-        action_layout = QHBoxLayout()
-        action_layout.addWidget(QLabel('Action:'))
-        self.replace_radio = QRadioButton('Replace with ID')
-        self.replace_radio.setChecked(True)
-        self.replace_radio.toggled.connect(self._on_action_change)
-        action_layout.addWidget(self.replace_radio)
-
-        self.remove_radio = QRadioButton('Remove entirely')
-        action_layout.addWidget(self.remove_radio)
-        action_layout.addStretch()
-        edit_layout.addLayout(action_layout)
 
         # Asset IDs
         ids_layout = QHBoxLayout()
-        ids_layout.addWidget(QLabel('Asset IDs:'))
+        ids_layout.setSpacing(5)
+        label = QLabel('Asset IDs:')
+        label.setFixedWidth(85)
+        ids_layout.addWidget(label)
         self.replace_entry = QLineEdit()
+        self.replace_entry.setPlaceholderText('IDs separated by commas, spaces, or semicolons')
         ids_layout.addWidget(self.replace_entry)
+        # Spacer to match browse button width
+        ids_layout.addSpacing(85)
         edit_layout.addLayout(ids_layout)
 
-        # Replace with ID
-        with_layout = QHBoxLayout()
-        with_layout.addWidget(QLabel('Replace With ID:'))
-        self.with_entry = QLineEdit()
-        with_layout.addWidget(self.with_entry)
-        with_layout.addStretch()
-        edit_layout.addLayout(with_layout)
+        # Replacement field (auto-detects mode)
+        replace_layout = QHBoxLayout()
+        replace_layout.setSpacing(5)
+        label2 = QLabel('Replace With:')
+        label2.setFixedWidth(85)
+        replace_layout.addWidget(label2)
+        self.replacement_entry = QLineEdit()
+        self.replacement_entry.setPlaceholderText('ID, URL (http://...), path (C:\\...), or empty to remove')
+        replace_layout.addWidget(self.replacement_entry)
+        browse_btn = QPushButton('Browse...')
+        browse_btn.clicked.connect(self._browse_local_file)
+        browse_btn.setFixedWidth(80)
+        replace_layout.addWidget(browse_btn)
+        edit_layout.addLayout(replace_layout)
 
         # Buttons
         btn_layout = QHBoxLayout()
@@ -299,7 +316,9 @@ class ReplacerConfigWindow(QDialog):
 
     def _create_footer(self, parent_layout):
         """Create the footer section."""
+        footer_widget = QWidget()
         footer_layout = QHBoxLayout()
+        footer_layout.setContentsMargins(0, 5, 0, 0)
 
         path_label = QLabel(f'Configs: {CONFIGS_FOLDER}')
         path_label.setStyleSheet('color: gray; font-size: 8pt;')
@@ -319,7 +338,8 @@ class ReplacerConfigWindow(QDialog):
         undo_btn.clicked.connect(self._do_undo)
         footer_layout.addWidget(undo_btn)
 
-        parent_layout.addLayout(footer_layout)
+        footer_widget.setLayout(footer_layout)
+        parent_layout.addWidget(footer_widget)
 
     def _rebuild_enabled_menu(self):
         """Rebuild the enabled configs menu."""
@@ -359,16 +379,47 @@ class ReplacerConfigWindow(QDialog):
         self.tree.clear()
         for i, rule in enumerate(self.config_manager.replacement_rules):
             name = rule.get('name', f'Profile {i + 1}')
-            is_rm = rule.get('remove', False)
             enabled = rule.get('enabled', True)
+
+            # Determine mode and display value
+            mode = rule.get('mode', 'id')
+            # Legacy support
+            if 'remove' in rule and 'mode' not in rule:
+                mode = 'remove' if rule.get('remove') else 'id'
+
+            if mode == 'id':
+                with_id = rule.get('with_id')
+                if with_id is not None:
+                    action = 'ID'
+                    replace_with = str(with_id)
+                else:
+                    action = 'Remove'
+                    replace_with = '-'
+            elif mode == 'cdn':
+                action = 'CDN'
+                cdn_url = rule.get('cdn_url', '')
+                # Truncate long URLs
+                replace_with = cdn_url[:40] + '...' if len(cdn_url) > 40 else cdn_url
+            elif mode == 'local':
+                action = 'Local'
+                local_path = rule.get('local_path', '')
+                # Show just filename
+                from pathlib import Path
+                replace_with = Path(local_path).name if local_path else ''
+            elif mode == 'remove':
+                action = 'Remove'
+                replace_with = '-'
+            else:
+                action = mode.upper()
+                replace_with = '-'
 
             item = QTreeWidgetItem(
                 [
                     'On' if enabled else 'Off',
                     name,
-                    'Remove' if is_rm else 'Replace',
+                    action,
                     f"{len(rule.get('replace_ids', []))} ID(s)",
-                    '-' if is_rm else str(rule.get('with_id', '')),
+                    replace_with,
                 ]
             )
             item.setData(0, Qt.ItemDataRole.UserRole, i)
@@ -388,15 +439,42 @@ class ReplacerConfigWindow(QDialog):
         self.undo_manager.clear()
         self.undo_manager.save_state(self.config_manager.replacement_rules)
         self._refresh_tree()
+
+    def _on_always_on_top_change(self):
+        """Handle always on top checkbox change."""
+        on_top = self.always_on_top_var.isChecked()
+        self.config_manager.always_on_top = on_top
+        self._apply_always_on_top(on_top)
+
+    def _apply_always_on_top(self, on_top: bool):
+        """Apply always on top setting to this window."""
+        flags = self.windowFlags()
+        if on_top:
+            flags |= Qt.WindowType.WindowStaysOnTopHint
+        else:
+            flags &= ~Qt.WindowType.WindowStaysOnTopHint
+        self.setWindowFlags(flags)
+        self.show()  # Need to re-show after changing flags
         log_buffer.log('Config', f'Now editing: {self.config_combo.currentText()}')
 
     def _on_strip_change(self):
         """Handle strip textures change."""
         self.config_manager.strip_textures = self.strip_var.isChecked()
 
-    def _on_action_change(self):
-        """Handle action radio button change."""
-        self.with_entry.setEnabled(self.replace_radio.isChecked())
+    def _browse_local_file(self):
+        """Open file browser for local file selection."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            'Select Local File',
+            '',
+            'All Supported Files (*.png *.jpg *.jpeg *.gif *.webp *.ogg *.mp3 *.wav *.rbxm *.rbxmx);;'
+            'Images (*.png *.jpg *.jpeg *.gif *.webp);;'
+            'Audio (*.ogg *.mp3 *.wav);;'
+            'Roblox Models (*.rbxm *.rbxmx);;'
+            'All Files (*.*)',
+        )
+        if file_path:
+            self.replacement_entry.setText(file_path)
 
     def _config_action(self, action: str):
         """Handle config management actions."""
@@ -497,9 +575,8 @@ class ReplacerConfigWindow(QDialog):
                 menu.addAction('Rename Profile', lambda: self._rename_profile(idx))
             elif column == 3:  # Asset IDs
                 menu.addAction('Edit Asset IDs', lambda: self._edit_asset_ids(idx))
-            elif column == 4:  # Replace With
-                if not rule.get('remove'):
-                    menu.addAction('Edit Replace With ID', lambda: self._edit_replace_with(idx))
+            elif column == 4:  # Replacement
+                menu.addAction('Edit Replacement', lambda: self._edit_replacement(idx))
 
         if menu.actions():
             menu.exec(self.tree.mapToGlobal(pos))
@@ -594,25 +671,53 @@ class ReplacerConfigWindow(QDialog):
         dialog.setLayout(layout)
         dialog.show()
 
-    def _edit_replace_with(self, idx: int):
-        """Edit replace with ID."""
+    def _edit_replacement(self, idx: int):
+        """Edit replacement value for a profile."""
         rules = self.config_manager.replacement_rules
         if idx >= len(rules):
             return
 
         rule = rules[idx]
-        old_id = rule.get('with_id', '')
-        new_id, ok = QInputDialog.getText(
-            self, 'Edit Replace With', 'New ID:', text=str(old_id)
+        mode = rule.get('mode', 'id')
+
+        # Get current value based on mode
+        if mode == 'cdn':
+            old_value = rule.get('cdn_url', '')
+        elif mode == 'local':
+            old_value = rule.get('local_path', '')
+        else:
+            old_value = str(rule.get('with_id', '')) if rule.get('with_id') is not None else ''
+
+        new_value, ok = QInputDialog.getText(
+            self, 'Edit Replacement',
+            'Replacement (ID, URL, file path, or empty to remove):',
+            text=old_value
         )
-        if ok and new_id and new_id.strip():
-            try:
-                rules_copy = [r.copy() for r in rules]
-                rules_copy[idx]['with_id'] = int(new_id.strip())
-                self._save_with_undo(rules_copy)
-                self._refresh_tree()
-            except ValueError:
-                QMessageBox.critical(self, 'Error', 'Invalid ID - must be a number')
+        if not ok:
+            return
+
+        new_value = new_value.strip()
+        new_mode, extra = self._detect_mode(new_value)
+
+        if '_raw' in extra:
+            QMessageBox.critical(self, 'Error', f"Invalid replacement: '{extra['_raw']}'")
+            return
+
+        if new_mode == 'local' and 'local_path' in extra:
+            if not Path(extra['local_path']).exists():
+                QMessageBox.critical(self, 'Error', f"File not found: {extra['local_path']}")
+                return
+
+        rules_copy = [r.copy() for r in rules]
+        # Clear old mode fields
+        rules_copy[idx].pop('with_id', None)
+        rules_copy[idx].pop('cdn_url', None)
+        rules_copy[idx].pop('local_path', None)
+        # Set new mode and value
+        rules_copy[idx]['mode'] = new_mode
+        rules_copy[idx].update(extra)
+        self._save_with_undo(rules_copy)
+        self._refresh_tree()
 
     def _parse_ids(self, text: str) -> list[int]:
         """Parse IDs from text."""
@@ -629,8 +734,39 @@ class ReplacerConfigWindow(QDialog):
         """Clear input fields."""
         self.name_entry.clear()
         self.replace_entry.clear()
-        self.with_entry.clear()
-        self.replace_radio.setChecked(True)
+        self.replacement_entry.clear()
+
+    def _detect_mode(self, value: str) -> tuple[str, dict]:
+        """Auto-detect mode from replacement value.
+
+        Returns tuple of (mode, extra_fields).
+        """
+        value = value.strip()
+
+        if not value:
+            # Empty = remove
+            return 'id', {}
+
+        if value.startswith(('http://', 'https://')):
+            # URL = CDN mode
+            return 'cdn', {'cdn_url': value}
+
+        # Check if it's a file path (contains path separators or drive letter)
+        if '\\' in value or '/' in value or (len(value) > 2 and value[1] == ':'):
+            return 'local', {'local_path': value}
+
+        # Try to parse as integer (asset ID)
+        try:
+            return 'id', {'with_id': int(value)}
+        except ValueError:
+            pass
+
+        # Could be a relative file path without separators
+        if Path(value).exists():
+            return 'local', {'local_path': str(Path(value).resolve())}
+
+        # Default to treating as potential asset ID (will fail validation)
+        return 'id', {'_raw': value}
 
     def _get_rule_from_entries(self) -> dict | None:
         """Get rule from input fields."""
@@ -639,21 +775,54 @@ class ReplacerConfigWindow(QDialog):
             QMessageBox.critical(self, 'Error', 'Enter at least one asset ID')
             return None
 
-        is_rm = self.remove_radio.isChecked()
+        replacement = self.replacement_entry.text().strip()
+        mode, extra = self._detect_mode(replacement)
+
         rule = {
             'name': self.name_entry.text().strip()
             or f'Profile {len(self.config_manager.replacement_rules) + 1}',
             'replace_ids': ids,
-            'remove': is_rm,
+            'mode': mode,
             'enabled': True,
         }
 
-        if not is_rm:
-            try:
-                rule['with_id'] = int(self.with_entry.text().strip())
-            except ValueError:
-                QMessageBox.critical(self, 'Error', 'Invalid Replace With ID')
+        if mode == 'id':
+            if 'with_id' in extra:
+                rule['with_id'] = extra['with_id']
+            elif '_raw' in extra:
+                # Failed to parse as ID
+                QMessageBox.critical(self, 'Error', f"Invalid replacement: '{extra['_raw']}'\nMust be an asset ID, URL, or file path")
                 return None
+            # Empty = remove (no with_id)
+        elif mode == 'cdn':
+            cdn_url = extra['cdn_url']
+            # Validate URL is accessible
+            try:
+                req = urllib.request.Request(cdn_url, method='HEAD')
+                req.add_header('User-Agent', 'Mozilla/5.0')
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    if resp.status >= 400:
+                        QMessageBox.warning(
+                            self, 'Warning',
+                            f'CDN URL returned status {resp.status}. Adding anyway.'
+                        )
+            except URLError as e:
+                reply = QMessageBox.question(
+                    self, 'URL Check Failed',
+                    f'Could not verify CDN URL:\n{e}\n\nAdd anyway?',
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return None
+            except Exception:
+                pass  # Ignore other errors, allow adding
+            rule['cdn_url'] = cdn_url
+        elif mode == 'local':
+            local_path = extra['local_path']
+            if not Path(local_path).exists():
+                QMessageBox.critical(self, 'Error', f'File not found: {local_path}')
+                return None
+            rule['local_path'] = local_path
 
         return rule
 
@@ -665,7 +834,8 @@ class ReplacerConfigWindow(QDialog):
             self._save_with_undo(rules)
             self._refresh_tree()
             self._clear_entries()
-            log_buffer.log('Config', f"Added profile: {rule['name']}")
+            mode = rule.get('mode', 'id').upper()
+            log_buffer.log('Config', f"Added profile: {rule['name']} ({mode})")
 
     def _load_selected(self):
         """Load selected rule into input fields."""
@@ -680,10 +850,22 @@ class ReplacerConfigWindow(QDialog):
         self.name_entry.setText(rule.get('name', ''))
         self.replace_entry.setText(', '.join(str(x) for x in rule.get('replace_ids', [])))
 
-        if rule.get('remove'):
-            self.remove_radio.setChecked(True)
-        else:
-            self.with_entry.setText(str(rule.get('with_id', '')))
+        # Determine mode and set replacement field
+        mode = rule.get('mode', 'id')
+        # Legacy support
+        if 'remove' in rule and 'mode' not in rule:
+            if rule.get('remove'):
+                # For legacy remove, leave replacement empty
+                return
+            mode = 'id'
+
+        if mode == 'id':
+            if (with_id := rule.get('with_id')) is not None:
+                self.replacement_entry.setText(str(with_id))
+        elif mode == 'cdn':
+            self.replacement_entry.setText(rule.get('cdn_url', ''))
+        elif mode == 'local':
+            self.replacement_entry.setText(rule.get('local_path', ''))
 
     def _update_selected(self):
         """Update selected rule."""
@@ -787,8 +969,7 @@ class ReplacerConfigWindow(QDialog):
             )
 
         def on_repl(val):
-            self.with_entry.setText(str(val))
-            self.replace_radio.setChecked(True)
+            self.replacement_entry.setText(str(val))
 
         viewer = JsonTreeViewer(self, data, Path(file_path).name, on_ids, on_repl)
         viewer.show()

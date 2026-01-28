@@ -135,6 +135,17 @@ class ConfigManager:
         self._save_settings()
 
     @property
+    def always_on_top(self) -> bool:
+        """Get always on top setting."""
+        return self.settings.get('always_on_top', False)
+
+    @always_on_top.setter
+    def always_on_top(self, value: bool):
+        """Set always on top setting."""
+        self.settings['always_on_top'] = value
+        self._save_settings()
+
+    @property
     def export_naming(self) -> list[str]:
         """Get export naming options (name, id, hash)."""
         return self.settings.get('export_naming', ['id'])
@@ -304,10 +315,23 @@ class ConfigManager:
         self._save_config(new_name, deepcopy(config))
         return True
 
-    def get_all_replacements(self) -> tuple[dict[int, int], set[int]]:
-        """Get replacements from all enabled configs."""
+    def get_all_replacements(self) -> tuple[dict[int, int], set[int], dict[int, str], dict[int, str]]:
+        """Get replacements from all enabled configs.
+
+        Returns
+        -------
+        tuple
+            - replacements: dict mapping asset IDs to replacement IDs
+            - removals: set of asset IDs to remove entirely
+            - cdn_replacements: dict mapping asset IDs to CDN URLs
+            - local_replacements: dict mapping asset IDs to local file paths
+
+        """
         replacements: dict[int, int] = {}
         removals: set[int] = set()
+        cdn_replacements: dict[int, str] = {}
+        local_replacements: dict[int, str] = {}
+
         for config_name in self.enabled_configs:
             if config_name not in self.config_names:
                 continue
@@ -315,9 +339,35 @@ class ConfigManager:
                 # Skip disabled profiles
                 if not rule.get('enabled', True):
                     continue
+
                 ids = rule.get('replace_ids', [])
-                if rule.get('remove'):
+                mode = rule.get('mode', 'id')
+
+                # Legacy support: convert old 'remove' boolean to mode
+                if 'remove' in rule and 'mode' not in rule:
+                    mode = 'remove' if rule.get('remove') else 'id'
+
+                if mode == 'remove':
                     removals.update(ids)
-                elif (target := rule.get('with_id')) is not None:
-                    replacements.update(dict.fromkeys(ids, target))
-        return replacements, removals
+                elif mode == 'cdn':
+                    cdn_url = rule.get('cdn_url')
+                    if cdn_url:
+                        cdn_replacements.update(dict.fromkeys(ids, cdn_url))
+                    else:
+                        # Empty CDN URL means remove
+                        removals.update(ids)
+                elif mode == 'local':
+                    local_path = rule.get('local_path')
+                    if local_path:
+                        local_replacements.update(dict.fromkeys(ids, local_path))
+                    else:
+                        # Empty local path means remove
+                        removals.update(ids)
+                elif mode == 'id':
+                    # Empty with_id means remove
+                    if (target := rule.get('with_id')) is not None:
+                        replacements.update(dict.fromkeys(ids, target))
+                    else:
+                        removals.update(ids)
+
+        return replacements, removals, cdn_replacements, local_replacements

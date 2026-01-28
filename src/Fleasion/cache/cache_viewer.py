@@ -523,17 +523,13 @@ class CacheViewerTab(QWidget):
         self.image_label.customContextMenuRequested.connect(self._show_image_context_menu)
         self.preview_container_layout.addWidget(self.image_label)
 
-        # Audio player - add stretch to center vertically
-        self.preview_container_layout.addStretch(1)
-
+        # Audio player container
         self.audio_player = None  # Created dynamically when needed
         self.audio_container = QWidget()
         self.audio_container_layout = QVBoxLayout()
         self.audio_container_layout.setContentsMargins(0, 0, 0, 0)
         self.audio_container.setLayout(self.audio_container_layout)
         self.preview_container_layout.addWidget(self.audio_container)
-
-        self.preview_container_layout.addStretch(1)
 
         # Animation viewer
         self.animation_viewer = AnimationViewerPanel()

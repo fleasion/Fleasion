@@ -40,6 +40,7 @@ DEFAULT_SETTINGS = {
     'last_config': 'Default',
     'theme': 'System',  # System, Light, Dark
     'audio_volume': 70,  # 0-100
+    'always_on_top': False,
 }
 
 
