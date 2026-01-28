@@ -616,6 +616,32 @@ class AnimationGLWidget(QOpenGLWidget):
         self.display_lists: Dict[str, int] = {}
         self.grid_display_list: int = 0
 
+    def _create_placeholder_rig(self, pose_names: set) -> Tuple[Dict[int, 'Part'], Dict[str, 'Motor']]:
+        """Create placeholder rig with simple cubes for unsupported animation types."""
+        parts = {}
+        motors = {}
+
+        # Create a cube for each unique part in the animation
+        for idx, part_name in enumerate(sorted(pose_names)):
+            # Create part with a small cube
+            part = Part(
+                ref=idx,
+                name=part_name,
+                cframe=np.eye(4),
+                size=(0.5, 0.5, 0.5)
+            )
+            # Create a simple cube mesh
+            part.mesh_data = create_cube_mesh(0.5, 0.5, 0.5)
+            parts[idx] = part
+
+            # Position blocks in a grid
+            grid_x = idx % 5
+            grid_z = idx // 5
+            part.cframe[0, 3] = grid_x * 1.5 - 3.0  # x offset
+            part.cframe[2, 3] = grid_z * 1.5  # z offset
+
+        return parts, motors
+
     def load_animation_data(self, anim_data: bytes) -> bool:
         """Load animation from raw bytes and setup rig."""
         try:
@@ -635,8 +661,20 @@ class AnimationGLWidget(QOpenGLWidget):
             # R6 uses Torso, R15 uses UpperTorso/LowerTorso
             if 'Torso' in all_pose_names and 'UpperTorso' not in all_pose_names:
                 self.rig_type = 'R6'
-            else:
+            elif 'UpperTorso' in all_pose_names or 'LowerTorso' in all_pose_names:
                 self.rig_type = 'R15'
+            else:
+                # Unsupported rig type - use placeholder blocks
+                print(f'Unsupported animation rig type, using placeholder blocks')
+                self.rig_type = 'PLACEHOLDER'
+                self.parts, self.motors = self._create_placeholder_rig(all_pose_names)
+                self.duration = max(kf.time for kf in self.keyframes) if self.keyframes else 0
+                self.root_ref = list(self.parts.keys())[0] if self.parts else 0
+                self.root_name = self.parts[self.root_ref].name if self.parts else 'Root'
+                self.base_root_world = self.parts[self.root_ref].cframe.copy() if self.parts else np.eye(4)
+                self.current_time = 0
+                self.update()
+                return True
 
             # Load rig
             rig_path = get_rig_path(self.rig_type)
@@ -772,6 +810,34 @@ class AnimationGLWidget(QOpenGLWidget):
     def _update_world_transforms(self):
         """Update world transforms for all parts based on current animation frame."""
         if not self.keyframes or self.root_ref is None:
+            return
+
+        # Handle placeholder rigs (no hierarchy, just animate blocks independently)
+        if self.rig_type == 'PLACEHOLDER':
+            kf_a, kf_b, alpha = sample_keyframes(self.keyframes, self.current_time)
+
+            # Interpolate poses
+            pose: Dict[str, np.ndarray] = {}
+            all_names = set(kf_a.pose_by_part_name.keys()) | set(kf_b.pose_by_part_name.keys())
+            ident = mat_identity()
+
+            for name in all_names:
+                a = kf_a.pose_by_part_name.get(name)
+                b = kf_b.pose_by_part_name.get(name)
+                if a is None:
+                    pose[name] = b if b is not None else ident
+                elif b is None:
+                    pose[name] = a
+                else:
+                    pose[name] = matrix_trs_lerp(a, b, alpha)
+
+            # Apply pose to each part independently (no hierarchy)
+            world: Dict[str, np.ndarray] = {}
+            for ref, part in self.parts.items():
+                part_pose = pose.get(part.name, ident)
+                world[ref] = mat_mul(part.cframe, part_pose)
+
+            self.world_transforms = world
             return
 
         # Sample keyframes

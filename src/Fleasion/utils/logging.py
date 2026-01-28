@@ -1,5 +1,6 @@
 """Logging utilities."""
 
+from datetime import datetime
 from typing import Any
 
 
@@ -12,7 +13,8 @@ class LogBuffer:
 
     def log(self, category: str, message: str):
         """Add a log entry."""
-        entry = f'[{category}] {message}'
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        entry = f'[{timestamp}] [{category}] {message}'
         self._buffer.append(entry)
         # Notify any registered callbacks
         for callback in self._callbacks:
