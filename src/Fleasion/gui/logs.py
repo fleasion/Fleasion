@@ -4,7 +4,6 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import QDialog, QTextEdit, QVBoxLayout
 
 from ..utils import APP_NAME, get_icon_path, log_buffer
-from .theme import ThemeManager
 
 
 class LogsWindow(QDialog):
@@ -12,8 +11,8 @@ class LogsWindow(QDialog):
 
     def __init__(self):
         super().__init__()
-        # Apply theme immediately to prevent white flicker
-        ThemeManager.apply_to_widget(self)
+        # Hide window during construction to prevent white flicker
+        self.hide()
 
         self.setWindowTitle(f'{APP_NAME} - Logs')
         self.resize(600, 400)
@@ -30,6 +29,9 @@ class LogsWindow(QDialog):
         self._setup_ui()
         self._set_icon()
         self._start_updates()
+
+        # Show window after construction is complete
+        self.show()
 
     def _set_icon(self):
         """Set window icon."""
