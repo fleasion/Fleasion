@@ -65,10 +65,10 @@ def main():
             QMessageBox.StandardButton.Ok
         )
         config_manager.first_time_setup_complete = True
-        tray.show_dashboard()
+        tray._show_replacer_config()
     elif config_manager.open_dashboard_on_launch:
         # Open dashboard on launch if enabled
-        tray.show_dashboard()
+        tray._show_replacer_config()
 
     # Run application
     sys.exit(app.exec())
