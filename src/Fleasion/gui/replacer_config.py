@@ -66,9 +66,6 @@ class ReplacerConfigWindow(QDialog):
 
     def __init__(self, config_manager, proxy_master=None):
         super().__init__()
-        # Hide window during construction to prevent white flicker
-        self.hide()
-
         self.config_manager = config_manager
         self.proxy_master = proxy_master
         self.undo_manager = UndoManager()
@@ -94,9 +91,6 @@ class ReplacerConfigWindow(QDialog):
         self._setup_ui()
         self._set_icon()
         self._refresh_tree()
-
-        # Show window after construction is complete
-        self.show()
 
     def _set_icon(self):
         """Set window icon."""

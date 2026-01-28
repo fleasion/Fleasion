@@ -148,14 +148,14 @@ class SystemTray:
         settings_menu.addAction(self.always_on_top_action)
 
         # Open dashboard on launch
-        self.open_dashboard_action = QAction('Open Dashboard on Launch', settings_menu)
+        self.open_dashboard_action = QAction('Open Dashboard on Start', settings_menu)
         self.open_dashboard_action.setCheckable(True)
         self.open_dashboard_action.setChecked(self.config_manager.open_dashboard_on_launch)
         self.open_dashboard_action.triggered.connect(self._toggle_open_dashboard_on_launch)
         settings_menu.addAction(self.open_dashboard_action)
 
         # Auto delete cache on Roblox exit
-        self.auto_delete_cache_action = QAction('Auto Delete Cache on Roblox Exit', settings_menu)
+        self.auto_delete_cache_action = QAction('Auto-Clear Cache on Exit', settings_menu)
         self.auto_delete_cache_action.setCheckable(True)
         self.auto_delete_cache_action.setChecked(self.config_manager.auto_delete_cache_on_exit)
         self.auto_delete_cache_action.triggered.connect(self._toggle_auto_delete_cache)

@@ -11,9 +11,6 @@ class LogsWindow(QDialog):
 
     def __init__(self):
         super().__init__()
-        # Hide window during construction to prevent white flicker
-        self.hide()
-
         self.setWindowTitle(f'{APP_NAME} - Logs')
         self.resize(600, 400)
 
@@ -29,9 +26,6 @@ class LogsWindow(QDialog):
         self._setup_ui()
         self._set_icon()
         self._start_updates()
-
-        # Show window after construction is complete
-        self.show()
 
     def _set_icon(self):
         """Set window icon."""

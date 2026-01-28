@@ -11,9 +11,6 @@ class AboutWindow(QDialog):
 
     def __init__(self, proxy_running: bool = False):
         super().__init__()
-        # Hide window during construction to prevent white flicker
-        self.hide()
-
         self.setWindowTitle(f'About {APP_NAME}')
         self.setFixedSize(350, 200)
 
@@ -26,9 +23,6 @@ class AboutWindow(QDialog):
 
         self._setup_ui(proxy_running)
         self._set_icon()
-
-        # Show window after construction is complete
-        self.show()
 
     def _set_icon(self):
         """Set window icon."""
