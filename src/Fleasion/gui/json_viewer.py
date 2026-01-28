@@ -115,7 +115,6 @@ class JsonTreeViewer(QDialog):
         self._is_searching = False
         self._search_matches: list[QTreeWidgetItem] = []
         self._current_match_index: int = 0
-        self._is_cycling = False  # Flag to prevent search trigger during cycling
 
         self._setup_ui()
         self._populate_tree()
@@ -277,10 +276,6 @@ class JsonTreeViewer(QDialog):
 
     def _on_search_text_changed(self):
         '''Handle search text change with debounce.'''
-        # Don't trigger search if we're cycling through results
-        if self._is_cycling:
-            return
-
         # Stop any existing search
         if self._search_worker is not None:
             self._search_worker.stop()
@@ -381,37 +376,20 @@ class JsonTreeViewer(QDialog):
         if not self._search_matches:
             return
 
-        # Set flag to prevent search triggering during cycling
-        self._is_cycling = True
+        # Move to next match (wrap around)
+        self._current_match_index = (self._current_match_index + 1) % len(self._search_matches)
 
-        # Save current search text
-        current_search = self.search_input.text()
+        # Clear selection and select current match
+        self.tree.clearSelection()
+        current_item = self._search_matches[self._current_match_index]
+        current_item.setSelected(True)
+        self.tree.scrollToItem(current_item)
 
-        try:
-            # Move to next match (wrap around)
-            self._current_match_index = (self._current_match_index + 1) % len(self._search_matches)
-
-            # Clear selection and select current match
-            self.tree.clearSelection()
-            current_item = self._search_matches[self._current_match_index]
-            current_item.setSelected(True)
-            self.tree.scrollToItem(current_item)
-
-            # Update progress label with current position
-            if len(self._search_matches) > 1:
-                self.search_progress_label.setText(
-                    f'Match {self._current_match_index + 1}/{len(self._search_matches)} - Press Enter to cycle'
-                )
-
-            # Ensure search text is still there
-            if self.search_input.text() != current_search:
-                self.search_input.setText(current_search)
-
-            # Restore focus to search input so user can continue typing
-            self.search_input.setFocus()
-        finally:
-            # Clear flag after cycling completes
-            self._is_cycling = False
+        # Update progress label with current position
+        if len(self._search_matches) > 1:
+            self.search_progress_label.setText(
+                f'Match {self._current_match_index + 1}/{len(self._search_matches)} - Press Enter to cycle'
+            )
 
     def _expand_all(self):
         """Expand all items."""
