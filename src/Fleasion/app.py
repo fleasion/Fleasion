@@ -10,7 +10,37 @@ from .config import ConfigManager
 from .prejsons import download_prejsons
 from .proxy import ProxyMaster
 from .tray import SystemTray
-from .utils import run_in_thread
+from .utils import delete_cache, is_roblox_running, log_buffer, run_in_thread
+
+
+class RobloxExitMonitor:
+    """Monitors Roblox process and triggers cache deletion on exit."""
+
+    def __init__(self, config_manager):
+        self.config_manager = config_manager
+        self.was_running = False
+
+    def check_roblox_status(self):
+        """Check if Roblox has exited and trigger cache deletion if needed."""
+        if not self.config_manager.auto_delete_cache_on_exit:
+            self.was_running = False
+            return
+
+        is_running = is_roblox_running()
+
+        # Detect transition from running to not running
+        if self.was_running and not is_running:
+            log_buffer.log('Cache', 'Roblox exited, deleting cache...')
+            # Run cache deletion in background thread
+            run_in_thread(self._delete_cache_background)()
+
+        self.was_running = is_running
+
+    def _delete_cache_background(self):
+        """Delete cache in background thread."""
+        messages = delete_cache()
+        for msg in messages:
+            log_buffer.log('Cache', msg)
 
 
 def main():
@@ -49,6 +79,12 @@ def main():
     status_timer = QTimer()
     status_timer.timeout.connect(tray.update_status)
     status_timer.start(1000)  # Update every second
+
+    # Setup Roblox exit monitor for auto cache deletion
+    roblox_monitor = RobloxExitMonitor(config_manager)
+    roblox_check_timer = QTimer()
+    roblox_check_timer.timeout.connect(roblox_monitor.check_roblox_status)
+    roblox_check_timer.start(2000)  # Check every 2 seconds
 
     # Show first-time message if this is the first run
     if not config_manager.first_time_setup_complete:

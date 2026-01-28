@@ -1,7 +1,7 @@
 """Theme management for PyQt6."""
 
 from PyQt6.QtGui import QPalette, QColor
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QWidget
 from PyQt6.QtCore import Qt
 
 
@@ -23,6 +23,17 @@ class ThemeManager:
             # Reset to system default
             app.setStyle('Fusion')
             app.setPalette(app.style().standardPalette())
+
+    @staticmethod
+    def apply_to_widget(widget: QWidget):
+        """Apply current theme to a specific widget immediately to prevent white flicker."""
+        app = QApplication.instance()
+        if not app:
+            return
+
+        # Apply the application's current palette to the widget
+        widget.setPalette(app.palette())
+        widget.setAutoFillBackground(True)
 
     @staticmethod
     def _apply_light_theme(app: QApplication):

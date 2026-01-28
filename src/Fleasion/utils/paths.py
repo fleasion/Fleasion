@@ -43,6 +43,7 @@ DEFAULT_SETTINGS = {
     'always_on_top': False,
     'open_dashboard_on_launch': True,
     'first_time_setup_complete': False,
+    'auto_delete_cache_on_exit': True,
 }
 
 

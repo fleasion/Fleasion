@@ -66,6 +66,10 @@ class ReplacerConfigWindow(QDialog):
 
     def __init__(self, config_manager, proxy_master=None):
         super().__init__()
+        # Apply theme immediately to prevent white flicker
+        from .theme import ThemeManager
+        ThemeManager.apply_to_widget(self)
+
         self.config_manager = config_manager
         self.proxy_master = proxy_master
         self.undo_manager = UndoManager()

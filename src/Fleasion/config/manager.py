@@ -168,6 +168,17 @@ class ConfigManager:
         self._save_settings()
 
     @property
+    def auto_delete_cache_on_exit(self) -> bool:
+        """Get auto delete cache on Roblox exit setting."""
+        return self.settings.get('auto_delete_cache_on_exit', True)
+
+    @auto_delete_cache_on_exit.setter
+    def auto_delete_cache_on_exit(self, value: bool):
+        """Set auto delete cache on Roblox exit setting."""
+        self.settings['auto_delete_cache_on_exit'] = value
+        self._save_settings()
+
+    @property
     def export_naming(self) -> list[str]:
         """Get export naming options (name, id, hash)."""
         return self.settings.get('export_naming', ['id'])

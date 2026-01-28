@@ -7,6 +7,7 @@ from PyQt6.QtCore import QTimer, pyqtSignal
 from PyQt6.QtWidgets import QDialog, QLabel, QPushButton, QTextEdit, QVBoxLayout
 
 from ..utils import APP_NAME, delete_cache, get_icon_path, log_buffer
+from .theme import ThemeManager
 
 
 class DeleteCacheWindow(QDialog):
@@ -17,6 +18,9 @@ class DeleteCacheWindow(QDialog):
 
     def __init__(self):
         super().__init__()
+        # Apply theme immediately to prevent white flicker
+        ThemeManager.apply_to_widget(self)
+
         self.setWindowTitle(f'{APP_NAME} - Delete Cache')
         self.setFixedSize(400, 200)
 

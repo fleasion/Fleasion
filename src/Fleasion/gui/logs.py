@@ -4,6 +4,7 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import QDialog, QTextEdit, QVBoxLayout
 
 from ..utils import APP_NAME, get_icon_path, log_buffer
+from .theme import ThemeManager
 
 
 class LogsWindow(QDialog):
@@ -11,6 +12,9 @@ class LogsWindow(QDialog):
 
     def __init__(self):
         super().__init__()
+        # Apply theme immediately to prevent white flicker
+        ThemeManager.apply_to_widget(self)
+
         self.setWindowTitle(f'{APP_NAME} - Logs')
         self.resize(600, 400)
 
