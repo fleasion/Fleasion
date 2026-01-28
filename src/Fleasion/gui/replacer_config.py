@@ -173,18 +173,14 @@ class ReplacerConfigWindow(QDialog):
         editing_label.setFixedWidth(50)
         row1.addWidget(editing_label)
 
-        self.config_combo = QComboBox()
-        self.config_combo.addItems(self.config_manager.config_names)
-        self.config_combo.setCurrentText(self.config_manager.last_config)
-        self.config_combo.currentTextChanged.connect(self._on_config_change)
-        # Center the text in the combo box
-        self.config_combo.setEditable(True)
-        self.config_combo.lineEdit().setReadOnly(True)
-        self.config_combo.lineEdit().setAlignment(Qt.AlignmentFlag.AlignCenter)
-        # Refresh config list when dropdown is clicked
-        self._original_show_popup = self.config_combo.showPopup
-        self.config_combo.showPopup = self._on_combo_show_popup
-        row1.addWidget(self.config_combo)
+        # Use button with menu (same style as enabled configs)
+        self.config_menu_btn = QPushButton(self.config_manager.last_config)
+        self.config_menu = QMenu(self.config_menu_btn)
+        self.config_menu.aboutToShow.connect(self._rebuild_editing_menu)
+        self.config_menu_btn.setMenu(self.config_menu)
+        row1.addWidget(self.config_menu_btn)
+
+        self._rebuild_editing_menu()
 
         for text, action in [
             ('New', 'new'),
@@ -433,35 +429,27 @@ class ReplacerConfigWindow(QDialog):
             self.tree.addTopLevelItem(item)
 
     def _refresh_combo(self):
-        """Refresh the config combo box."""
-        self.config_combo.blockSignals(True)
-        self.config_combo.clear()
-        self.config_combo.addItems(self.config_manager.config_names)
-        idx = self.config_combo.findText(self.config_manager.last_config)
-        if idx >= 0:
-            self.config_combo.setCurrentIndex(idx)
-        self.config_combo.blockSignals(False)
+        """Refresh the config button text."""
+        self.config_menu_btn.setText(self.config_manager.last_config)
         self._rebuild_enabled_menu()
 
-    def _on_combo_show_popup(self):
-        """Refresh configs when combo dropdown is opened."""
-        current = self.config_combo.currentText()
-        self.config_combo.blockSignals(True)
-        self.config_combo.clear()
-        self.config_combo.addItems(self.config_manager.config_names)
-        idx = self.config_combo.findText(current)
-        if idx >= 0:
-            self.config_combo.setCurrentIndex(idx)
-        self.config_combo.blockSignals(False)
-        # Call original showPopup
-        self._original_show_popup()
+    def _rebuild_editing_menu(self):
+        """Rebuild the editing config menu."""
+        self.config_menu.clear()
+        for name in self.config_manager.config_names:
+            action = self.config_menu.addAction(name)
+            action.triggered.connect(
+                lambda checked, n=name: self._on_config_select(n)
+            )
 
-    def _on_config_change(self):
-        """Handle config selection change."""
-        self.config_manager.last_config = self.config_combo.currentText()
-        self.undo_manager.clear()
-        self.undo_manager.save_state(self.config_manager.replacement_rules)
-        self._refresh_tree()
+    def _on_config_select(self, name: str):
+        """Handle config selection from menu."""
+        if name != self.config_manager.last_config:
+            self.config_manager.last_config = name
+            self.config_menu_btn.setText(name)
+            self.undo_manager.clear()
+            self.undo_manager.save_state(self.config_manager.replacement_rules)
+            self._refresh_tree()
 
     def _on_strip_change(self):
         """Handle strip textures change."""
