@@ -38,7 +38,7 @@ class ConfigManager:
                 if 'configs' in loaded:
                     self._migrate_old_format(loaded)
                     return {
-                        'strip_textures': loaded.get('strip_textures', True),
+                        'strip_textures': loaded.get('strip_textures', False),
                         'enabled_configs': [],
                         'last_config': loaded.get('active_config', 'Default'),
                         'theme': 'System',
@@ -104,7 +104,7 @@ class ConfigManager:
     @property
     def strip_textures(self) -> bool:
         """Get strip textures setting."""
-        return self.settings.get('strip_textures', True)
+        return self.settings.get('strip_textures', False)
 
     @strip_textures.setter
     def strip_textures(self, value: bool):

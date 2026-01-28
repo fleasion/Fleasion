@@ -35,7 +35,7 @@ REPLACEMENTS_DIR = PREJSONS_DIR / 'replacements'
 
 # Default settings
 DEFAULT_SETTINGS = {
-    'strip_textures': True,
+    'strip_textures': False,
     'enabled_configs': [],
     'last_config': 'Default',
     'theme': 'System',  # System, Light, Dark
