@@ -164,16 +164,17 @@ class SystemTray:
         self.config_manager.always_on_top = new_state
         self.always_on_top_action.setChecked(new_state)
 
-        # Apply to all open windows
+        # Apply to all open windows (only if they're visible)
         from PyQt6.QtCore import Qt
         for window in self.open_windows:
-            flags = window.windowFlags()
-            if new_state:
-                flags |= Qt.WindowType.WindowStaysOnTopHint
-            else:
-                flags &= ~Qt.WindowType.WindowStaysOnTopHint
-            window.setWindowFlags(flags)
-            window.show()
+            if window.isVisible():
+                flags = window.windowFlags()
+                if new_state:
+                    flags |= Qt.WindowType.WindowStaysOnTopHint
+                else:
+                    flags &= ~Qt.WindowType.WindowStaysOnTopHint
+                window.setWindowFlags(flags)
+                window.show()
 
     def _apply_always_on_top_to_window(self, window):
         """Apply always on top setting to a window."""

@@ -257,6 +257,7 @@ class ReplacerConfigWindow(QDialog):
         label0.setFixedWidth(85)
         name_layout.addWidget(label0)
         self.name_entry = QLineEdit()
+        self.name_entry.setPlaceholderText('Optional profile name')
         name_layout.addWidget(self.name_entry)
         edit_layout.addLayout(name_layout)
 
@@ -310,8 +311,9 @@ class ReplacerConfigWindow(QDialog):
     def _create_footer(self, parent_layout):
         """Create the footer section."""
         footer_widget = QWidget()
+        footer_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         footer_layout = QHBoxLayout()
-        footer_layout.setContentsMargins(0, 5, 0, 0)
+        footer_layout.setContentsMargins(0, 5, 0, 5)
 
         path_label = QLabel(f'Configs: {CONFIGS_FOLDER}')
         path_label.setStyleSheet('color: gray; font-size: 8pt;')
@@ -330,6 +332,8 @@ class ReplacerConfigWindow(QDialog):
         undo_btn = QPushButton('Undo (Ctrl+Z)')
         undo_btn.clicked.connect(self._do_undo)
         footer_layout.addWidget(undo_btn)
+
+        footer_layout.addStretch()
 
         footer_widget.setLayout(footer_layout)
         parent_layout.addWidget(footer_widget)
