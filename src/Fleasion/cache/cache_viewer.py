@@ -621,17 +621,22 @@ class CacheViewerTab(QWidget):
             self._search_worker.wait()
             self._search_worker = None
 
+        # Get search text
+        search_text = self.search_box.text().strip()
+
+        # Skip refresh while search text is too short (1 char) - the table
+        # repopulation on large datasets freezes/crashes the UI
+        if len(search_text) == 1:
+            return
+
         # Get filter type
         filter_type = self.type_filter.currentData()
 
         # Get assets
         assets = self.cache_manager.list_assets(filter_type)
 
-        # Get search text
-        search_text = self.search_box.text()
-
         # For empty search, show all immediately
-        if not search_text.strip():
+        if not search_text:
             self._populate_table(assets)
             return
 
@@ -761,13 +766,19 @@ class CacheViewerTab(QWidget):
             self._search_worker.wait()
             self._search_worker = None
 
+        search_text = self.search_box.text().strip()
+
+        # Require at least 2 characters to search - single chars match too
+        # broadly and the table repopulation can freeze the UI on large datasets
+        if len(search_text) == 1:
+            return
+
         # Get filter type and assets
         filter_type = self.type_filter.currentData()
         assets = self.cache_manager.list_assets(filter_type)
-        search_text = self.search_box.text()
 
         # For empty search, show all immediately
-        if not search_text.strip():
+        if not search_text:
             self._populate_table(assets)
             return
 

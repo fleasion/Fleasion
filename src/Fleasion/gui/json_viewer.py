@@ -142,8 +142,22 @@ class JsonTreeViewer(QDialog):
         search_layout.addWidget(QLabel('Search:'))
         self.search_input = QLineEdit()
         self.search_input.textChanged.connect(self._on_search_text_changed)
-        self.search_input.returnPressed.connect(self._cycle_to_next_match)
         search_layout.addWidget(self.search_input)
+
+        # Navigation buttons for cycling through matches
+        self.prev_match_btn = QPushButton('↑')
+        self.prev_match_btn.setFixedWidth(30)
+        self.prev_match_btn.setToolTip('Previous match')
+        self.prev_match_btn.clicked.connect(self._cycle_to_prev_match)
+        self.prev_match_btn.setEnabled(False)
+        search_layout.addWidget(self.prev_match_btn)
+
+        self.next_match_btn = QPushButton('↓')
+        self.next_match_btn.setFixedWidth(30)
+        self.next_match_btn.setToolTip('Next match')
+        self.next_match_btn.clicked.connect(self._cycle_to_next_match)
+        self.next_match_btn.setEnabled(False)
+        search_layout.addWidget(self.next_match_btn)
 
         clear_btn = QPushButton('Clear')
         clear_btn.clicked.connect(lambda: self.search_input.clear())
@@ -172,9 +186,15 @@ class JsonTreeViewer(QDialog):
         self.tree.itemSelectionChanged.connect(self._on_selection_change)
         layout.addWidget(self.tree)
 
-        # Selection label
+        # Selection label + match navigation indicator
+        selection_row = QHBoxLayout()
         self.selection_label = QLabel('Selected: 0 values')
-        layout.addWidget(self.selection_label)
+        selection_row.addWidget(self.selection_label)
+        self.match_label = QLabel('')
+        self.match_label.setStyleSheet('color: #888; font-size: 11px;')
+        selection_row.addWidget(self.match_label)
+        selection_row.addStretch()
+        layout.addLayout(selection_row)
 
         # Import buttons
         btn_layout = QHBoxLayout()
@@ -306,6 +326,10 @@ class JsonTreeViewer(QDialog):
         # Reset matches when search text changes
         self._search_matches = []
         self._current_match_index = 0
+        self.match_label.setText('')
+        # Disable navigation buttons until search completes
+        self.prev_match_btn.setEnabled(False)
+        self.next_match_btn.setEnabled(False)
         self._search_debounce.stop()
         self._search_debounce.start(400)  # 400ms debounce
 
@@ -317,6 +341,7 @@ class JsonTreeViewer(QDialog):
         if not query:
             self.tree.clearSelection()
             self.search_progress_label.hide()
+            self.match_label.setText('')
             self._search_matches = []
             self._current_match_index = 0
             return
@@ -356,6 +381,11 @@ class JsonTreeViewer(QDialog):
         self._search_matches = matches
         self._current_match_index = 0
 
+        # Enable/disable navigation buttons based on match count
+        has_matches = len(matches) > 1
+        self.prev_match_btn.setEnabled(has_matches)
+        self.next_match_btn.setEnabled(has_matches)
+
         # Disable updates during selection
         self.tree.setUpdatesEnabled(False)
 
@@ -376,13 +406,14 @@ class JsonTreeViewer(QDialog):
                 matches[0].setSelected(True)
                 self.tree.scrollToItem(matches[0])
 
-            # Update progress label
+            # Update labels
+            self.search_progress_label.hide()
             if len(matches) > 1:
-                self.search_progress_label.setText(f'Found {len(matches)} match(es) - Press Enter to cycle')
+                self.match_label.setText(f'Match 1/{len(matches)} - Use ↑↓ to navigate')
             elif len(matches) == 1:
-                self.search_progress_label.setText('Found 1 match')
+                self.match_label.setText('Found 1 match')
             else:
-                self.search_progress_label.setText('No matches found')
+                self.match_label.setText('No matches found')
 
         finally:
             self.tree.setUpdatesEnabled(True)
@@ -392,24 +423,34 @@ class JsonTreeViewer(QDialog):
         self._is_searching = False
 
     def _cycle_to_next_match(self):
-        """Cycle to next search match when Enter is pressed."""
-        if not self._search_matches:
+        """Cycle to next search match."""
+        if not self._search_matches or len(self._search_matches) <= 1:
             return
 
         # Move to next match (wrap around)
         self._current_match_index = (self._current_match_index + 1) % len(self._search_matches)
+        self._select_current_match()
 
-        # Clear selection and select current match
+    def _cycle_to_prev_match(self):
+        """Cycle to previous search match."""
+        if not self._search_matches or len(self._search_matches) <= 1:
+            return
+
+        # Move to previous match (wrap around)
+        self._current_match_index = (self._current_match_index - 1) % len(self._search_matches)
+        self._select_current_match()
+
+    def _select_current_match(self):
+        """Select and scroll to the current match, updating the indicator."""
         self.tree.clearSelection()
         current_item = self._search_matches[self._current_match_index]
         current_item.setSelected(True)
         self.tree.scrollToItem(current_item)
 
-        # Update progress label with current position
-        if len(self._search_matches) > 1:
-            self.search_progress_label.setText(
-                f'Match {self._current_match_index + 1}/{len(self._search_matches)} - Press Enter to cycle'
-            )
+        # Update match indicator with current position
+        self.match_label.setText(
+            f'Match {self._current_match_index + 1}/{len(self._search_matches)} - Use ↑↓ to navigate'
+        )
 
     def _expand_all(self):
         """Expand all items."""
