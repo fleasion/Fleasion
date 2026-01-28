@@ -95,25 +95,6 @@ class AudioPlayerWidget(QWidget):
         controls_container.setSpacing(6)
         controls_container.setAlignment(Qt.AlignmentFlag.AlignLeft)
 
-        # Play/Replay buttons row
-        button_layout = QHBoxLayout()
-        button_layout.setSpacing(4)
-
-        self.play_pause_btn = QPushButton('▶')
-        self.play_pause_btn.clicked.connect(self._toggle_play_pause)
-        self.play_pause_btn.setFixedSize(32, 32)
-        self.play_pause_btn.setToolTip('Play/Pause')
-        button_layout.addWidget(self.play_pause_btn)
-
-        self.replay_btn = QPushButton('↻')
-        self.replay_btn.clicked.connect(self._replay)
-        self.replay_btn.setFixedSize(32, 32)
-        self.replay_btn.setToolTip('Replay')
-        button_layout.addWidget(self.replay_btn)
-
-        button_layout.addStretch()
-        controls_container.addLayout(button_layout)
-
         # Volume slider row
         volume_layout = QHBoxLayout()
         volume_layout.setSpacing(8)
@@ -140,10 +121,28 @@ class AudioPlayerWidget(QWidget):
         progress_layout.addStretch()
         controls_container.addLayout(progress_layout)
 
-        # Time label row
+        # Play/Replay buttons and time label row
+        button_time_layout = QHBoxLayout()
+        button_time_layout.setSpacing(8)
+
+        self.play_pause_btn = QPushButton('▶')
+        self.play_pause_btn.clicked.connect(self._toggle_play_pause)
+        self.play_pause_btn.setFixedSize(32, 32)
+        self.play_pause_btn.setToolTip('Play/Pause')
+        button_time_layout.addWidget(self.play_pause_btn)
+
+        self.replay_btn = QPushButton('↻')
+        self.replay_btn.clicked.connect(self._replay)
+        self.replay_btn.setFixedSize(32, 32)
+        self.replay_btn.setToolTip('Replay')
+        button_time_layout.addWidget(self.replay_btn)
+
         self.time_label = QLabel(f'00:00.000 / {self._format_time(self.duration)}')
         self.time_label.setStyleSheet('color: #888; font-size: 11px;')
-        controls_container.addWidget(self.time_label)
+        button_time_layout.addWidget(self.time_label)
+
+        button_time_layout.addStretch()
+        controls_container.addLayout(button_time_layout)
 
         layout.addLayout(controls_container)
         layout.addStretch()
