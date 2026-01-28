@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QTabWidget,
     QTextEdit,
     QTreeWidget,
@@ -193,12 +194,6 @@ class ReplacerConfigWindow(QDialog):
         self.strip_var.stateChanged.connect(self._on_strip_change)
         row1.addWidget(self.strip_var)
 
-        # Always on Top checkbox
-        self.always_on_top_var = QCheckBox('Always on Top')
-        self.always_on_top_var.setChecked(self.config_manager.always_on_top)
-        self.always_on_top_var.stateChanged.connect(self._on_always_on_top_change)
-        row1.addWidget(self.always_on_top_var)
-
         row1.addStretch()
         config_layout.addLayout(row1)
 
@@ -263,8 +258,6 @@ class ReplacerConfigWindow(QDialog):
         name_layout.addWidget(label0)
         self.name_entry = QLineEdit()
         name_layout.addWidget(self.name_entry)
-        # Spacer to match browse button width
-        name_layout.addSpacing(85)
         edit_layout.addLayout(name_layout)
 
         # Asset IDs
@@ -276,8 +269,6 @@ class ReplacerConfigWindow(QDialog):
         self.replace_entry = QLineEdit()
         self.replace_entry.setPlaceholderText('IDs separated by commas, spaces, or semicolons')
         ids_layout.addWidget(self.replace_entry)
-        # Spacer to match browse button width
-        ids_layout.addSpacing(85)
         edit_layout.addLayout(ids_layout)
 
         # Replacement field (auto-detects mode)
@@ -312,6 +303,8 @@ class ReplacerConfigWindow(QDialog):
         edit_layout.addLayout(btn_layout)
 
         edit_group.setLayout(edit_layout)
+        # Prevent edit group from expanding vertically
+        edit_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         parent_layout.addWidget(edit_group)
 
     def _create_footer(self, parent_layout):
@@ -440,23 +433,6 @@ class ReplacerConfigWindow(QDialog):
         self.undo_manager.save_state(self.config_manager.replacement_rules)
         self._refresh_tree()
 
-    def _on_always_on_top_change(self):
-        """Handle always on top checkbox change."""
-        on_top = self.always_on_top_var.isChecked()
-        self.config_manager.always_on_top = on_top
-        self._apply_always_on_top(on_top)
-
-    def _apply_always_on_top(self, on_top: bool):
-        """Apply always on top setting to this window."""
-        flags = self.windowFlags()
-        if on_top:
-            flags |= Qt.WindowType.WindowStaysOnTopHint
-        else:
-            flags &= ~Qt.WindowType.WindowStaysOnTopHint
-        self.setWindowFlags(flags)
-        self.show()  # Need to re-show after changing flags
-        log_buffer.log('Config', f'Now editing: {self.config_combo.currentText()}')
-
     def _on_strip_change(self):
         """Handle strip textures change."""
         self.config_manager.strip_textures = self.strip_var.isChecked()
@@ -467,10 +443,6 @@ class ReplacerConfigWindow(QDialog):
             self,
             'Select Local File',
             '',
-            'All Supported Files (*.png *.jpg *.jpeg *.gif *.webp *.ogg *.mp3 *.wav *.rbxm *.rbxmx);;'
-            'Images (*.png *.jpg *.jpeg *.gif *.webp);;'
-            'Audio (*.ogg *.mp3 *.wav);;'
-            'Roblox Models (*.rbxm *.rbxmx);;'
             'All Files (*.*)',
         )
         if file_path:

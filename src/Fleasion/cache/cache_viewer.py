@@ -523,13 +523,20 @@ class CacheViewerTab(QWidget):
         self.image_label.customContextMenuRequested.connect(self._show_image_context_menu)
         self.preview_container_layout.addWidget(self.image_label)
 
-        # Audio player container
+        # Audio player container with centering wrapper
         self.audio_player = None  # Created dynamically when needed
+        self.audio_wrapper = QWidget()
+        audio_wrapper_layout = QVBoxLayout()
+        audio_wrapper_layout.setContentsMargins(0, 0, 0, 0)
+        audio_wrapper_layout.addStretch(1)
         self.audio_container = QWidget()
         self.audio_container_layout = QVBoxLayout()
         self.audio_container_layout.setContentsMargins(0, 0, 0, 0)
         self.audio_container.setLayout(self.audio_container_layout)
-        self.preview_container_layout.addWidget(self.audio_container)
+        audio_wrapper_layout.addWidget(self.audio_container)
+        audio_wrapper_layout.addStretch(1)
+        self.audio_wrapper.setLayout(audio_wrapper_layout)
+        self.preview_container_layout.addWidget(self.audio_wrapper)
 
         # Animation viewer
         self.animation_viewer = AnimationViewerPanel()
@@ -551,7 +558,7 @@ class CacheViewerTab(QWidget):
 
         # Initially hide all preview widgets
         self.obj_viewer.hide()
-        self.audio_container.hide()
+        self.audio_wrapper.hide()
         self.animation_viewer.hide()
         self.text_viewer.hide()
 
@@ -1205,7 +1212,7 @@ class CacheViewerTab(QWidget):
         self.obj_viewer.hide()
         self.image_label.hide()
         self.loading_label.hide()
-        self.audio_container.hide()
+        self.audio_wrapper.hide()
         self.animation_viewer.hide()
         self.text_viewer.hide()
 
@@ -1603,7 +1610,7 @@ class CacheViewerTab(QWidget):
         self.image_label.clear()
         self.image_label.setText('Select an asset to preview')
         self._current_pixmap = None
-        self.audio_container.hide()
+        self.audio_wrapper.hide()
         if self.audio_player:
             self.audio_player.stop()
             self.audio_player.deleteLater()
@@ -1957,7 +1964,7 @@ class CacheViewerTab(QWidget):
 
             # Add new audio player
             self.audio_container_layout.addWidget(self.audio_player)
-            self.audio_container.show()
+            self.audio_wrapper.show()
             self.stop_preview_btn.show()
 
         except Exception as e:

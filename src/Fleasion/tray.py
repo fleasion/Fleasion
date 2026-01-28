@@ -131,6 +131,13 @@ class SystemTray:
 
         settings_menu.addMenu(export_menu)
 
+        # Always on Top toggle
+        self.always_on_top_action = QAction('Always on Top', settings_menu)
+        self.always_on_top_action.setCheckable(True)
+        self.always_on_top_action.setChecked(self.config_manager.always_on_top)
+        self.always_on_top_action.triggered.connect(self._toggle_always_on_top)
+        settings_menu.addAction(self.always_on_top_action)
+
         self.menu.addMenu(settings_menu)
 
 
@@ -151,11 +158,37 @@ class SystemTray:
         new_state = self.config_manager.toggle_export_naming(option)
         self.export_naming_actions[option].setChecked(new_state)
 
+    def _toggle_always_on_top(self):
+        """Toggle always on top setting."""
+        new_state = not self.config_manager.always_on_top
+        self.config_manager.always_on_top = new_state
+        self.always_on_top_action.setChecked(new_state)
+
+        # Apply to all open windows
+        from PyQt6.QtCore import Qt
+        for window in self.open_windows:
+            flags = window.windowFlags()
+            if new_state:
+                flags |= Qt.WindowType.WindowStaysOnTopHint
+            else:
+                flags &= ~Qt.WindowType.WindowStaysOnTopHint
+            window.setWindowFlags(flags)
+            window.show()
+
+    def _apply_always_on_top_to_window(self, window):
+        """Apply always on top setting to a window."""
+        if self.config_manager.always_on_top:
+            from PyQt6.QtCore import Qt
+            flags = window.windowFlags()
+            flags |= Qt.WindowType.WindowStaysOnTopHint
+            window.setWindowFlags(flags)
+
     def _show_about(self):
         """Show About window."""
         window = AboutWindow(self.proxy_master.is_running)
         window.destroyed.connect(lambda: self._remove_window(window))
         self.open_windows.append(window)
+        self._apply_always_on_top_to_window(window)
         window.show()
 
     def _show_logs(self):
@@ -163,6 +196,7 @@ class SystemTray:
         window = LogsWindow()
         window.destroyed.connect(lambda: self._remove_window(window))
         self.open_windows.append(window)
+        self._apply_always_on_top_to_window(window)
         window.show()
 
     def _show_replacer_config(self):
@@ -170,6 +204,7 @@ class SystemTray:
         window = ReplacerConfigWindow(self.config_manager, self.proxy_master)
         window.destroyed.connect(lambda: self._remove_window(window))
         self.open_windows.append(window)
+        # Note: ReplacerConfigWindow applies always_on_top in its __init__
         window.show()
 
     def _show_delete_cache(self):
@@ -177,6 +212,7 @@ class SystemTray:
         window = DeleteCacheWindow()
         window.destroyed.connect(lambda: self._remove_window(window))
         self.open_windows.append(window)
+        self._apply_always_on_top_to_window(window)
         window.show()
 
     def _remove_window(self, window):
