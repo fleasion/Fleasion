@@ -349,7 +349,14 @@ class ReplacerConfigWindow(QDialog):
         self.enabled_menu.clear()
         self.config_enabled_vars.clear()
 
-        for name in self.config_manager.config_names:
+        # Clean up enabled configs that no longer exist on disk
+        current_configs = self.config_manager.config_names
+        enabled = self.config_manager.enabled_configs
+        for name in enabled[:]:  # Copy list to allow modification
+            if name not in current_configs:
+                self.config_manager.set_config_enabled(name, False)
+
+        for name in current_configs:
             action = self.enabled_menu.addAction(name)
             action.setCheckable(True)
             action.setChecked(self.config_manager.is_config_enabled(name))
@@ -436,7 +443,14 @@ class ReplacerConfigWindow(QDialog):
     def _rebuild_editing_menu(self):
         """Rebuild the editing config menu."""
         self.config_menu.clear()
-        for name in self.config_manager.config_names:
+        current_configs = self.config_manager.config_names
+
+        # If current editing config was deleted, switch to first available
+        if self.config_manager.last_config not in current_configs and current_configs:
+            self.config_manager.last_config = current_configs[0]
+            self.config_menu_btn.setText(current_configs[0])
+
+        for name in current_configs:
             action = self.config_menu.addAction(name)
             action.triggered.connect(
                 lambda checked, n=name: self._on_config_select(n)
