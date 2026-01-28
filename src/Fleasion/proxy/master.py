@@ -96,17 +96,8 @@ class ProxyMaster:
         # Create master with performance-optimized options
         opts = Options(
             mode=[f'local:{ROBLOX_PROCESS}'],
-            # Enable streaming to prevent buffering large responses
-            stream_large_bodies='1m',  # Stream bodies larger than 1MB
-            # Disable flow dumping for performance
-            flow_detail=0,
-            # Connection optimization
-            connection_strategy='lazy',
-            # Reduce CPU overhead
-            upstream_cert=False,  # We control local traffic
-            # Set explicit listen settings
-            listen_host='127.0.0.1',
-            listen_port=8080,
+            # Reduce CPU overhead by not validating upstream certs for local interception
+            upstream_cert=False,
         )
         self._master = DumpMaster(
             opts,
