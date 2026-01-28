@@ -12,7 +12,6 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
     QFileDialog,
-    QFrame,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -309,34 +308,33 @@ class ReplacerConfigWindow(QDialog):
         parent_layout.addWidget(edit_group)
 
     def _create_footer(self, parent_layout):
-        """Create the footer section."""
-        footer_widget = QWidget()
-        footer_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-        footer_layout = QHBoxLayout()
-        footer_layout.setContentsMargins(0, 5, 0, 5)
+            """Create the footer section with buttons snapped to the right."""
+            footer_widget = QWidget()
+            footer_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+            footer_layout = QHBoxLayout()
+            footer_layout.setContentsMargins(0, 5, 0, 5)
 
-        path_label = QLabel(f'Configs: {CONFIGS_FOLDER}')
-        path_label.setStyleSheet('color: gray; font-size: 8pt;')
-        footer_layout.addWidget(path_label)
+            path_label = QLabel(f'Configs: {CONFIGS_FOLDER}')
+            path_label.setStyleSheet('color: gray; font-size: 8pt;')
+            footer_layout.addWidget(path_label)
 
-        footer_layout.addStretch()
+            footer_layout.addStretch()
 
-        configs_btn = QPushButton('Open Configs')
-        configs_btn.clicked.connect(lambda: open_folder(CONFIGS_FOLDER))
-        footer_layout.addWidget(configs_btn)
+            configs_btn = QPushButton('Open Configs')
+            configs_btn.clicked.connect(lambda: open_folder(CONFIGS_FOLDER))
+            footer_layout.addWidget(configs_btn)
 
-        prejsons_btn = QPushButton('Open PreJsons')
-        prejsons_btn.clicked.connect(lambda: open_folder(PREJSONS_DIR))
-        footer_layout.addWidget(prejsons_btn)
+            prejsons_btn = QPushButton('Open PreJsons')
+            prejsons_btn.clicked.connect(lambda: open_folder(PREJSONS_DIR))
+            footer_layout.addWidget(prejsons_btn)
 
-        undo_btn = QPushButton('Undo (Ctrl+Z)')
-        undo_btn.clicked.connect(self._do_undo)
-        footer_layout.addWidget(undo_btn)
+            undo_btn = QPushButton('Undo (Ctrl+Z)')
+            undo_btn.clicked.connect(self._do_undo)
+            footer_layout.addWidget(undo_btn)
+            footer_layout.addSpacing(12)
 
-        footer_layout.addStretch()
-
-        footer_widget.setLayout(footer_layout)
-        parent_layout.addWidget(footer_widget)
+            footer_widget.setLayout(footer_layout)
+            parent_layout.addWidget(footer_widget)
 
     def _rebuild_enabled_menu(self):
         """Rebuild the enabled configs menu."""

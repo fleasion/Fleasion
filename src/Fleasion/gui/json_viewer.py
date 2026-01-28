@@ -1,23 +1,23 @@
-'''JSON tree viewer widget.'''
+"""JSON tree viewer widget."""
 
-from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
-    QMessageBox,
 )
 
 from ..utils import get_icon_path
 
 
 class JsonSearchWorker(QThread):
-    '''Worker thread for searching JSON tree without blocking UI.'''
+    """Worker thread for searching JSON tree without blocking UI."""
 
     results_ready = pyqtSignal(list)  # List of matching items
     progress = pyqtSignal(int, int)  # Current, total
@@ -32,7 +32,7 @@ class JsonSearchWorker(QThread):
         self._stop_requested = True
 
     def run(self):
-        '''Search tree items in background.'''
+        """Search tree items in background."""
         if not self.query or self._stop_requested:
             return
 
@@ -87,7 +87,7 @@ class JsonSearchWorker(QThread):
 
 
 class JsonTreeViewer(QDialog):
-    '''JSON tree viewer dialog.'''
+    """JSON tree viewer dialog."""
 
     def __init__(
         self, parent, data, filename: str, on_import_ids, on_import_replacement
@@ -243,8 +243,24 @@ class JsonTreeViewer(QDialog):
             leaves.extend(self._get_all_leaf_descendants(item.child(i)))
         return leaves
 
-    def _get_numeric_values(self) -> list[int]:
-        """Get numeric values from selected items."""
+    def _is_link_or_path(self, value: str) -> bool:
+        """Check if a string is a link or file path."""
+        if not isinstance(value, str):
+            return False
+        value = value.strip()
+        # Check for URLs
+        if value.startswith(('http://', 'https://', 'ftp://', 'file://')):
+            return True
+        # Check for absolute paths (Unix and Windows)
+        if value.startswith('/') or (len(value) > 2 and value[1] == ':'):
+            return True
+        # Check for relative paths with directory separators
+        if '/' in value or '\\' in value:
+            return True
+        return False
+
+    def _get_selected_values(self) -> list[int | str]:
+        """Get numeric values and links/file paths from selected items."""
         leaves = []
         leaf_ids = set()  # Track IDs to avoid duplicates
 
@@ -259,23 +275,27 @@ class JsonTreeViewer(QDialog):
                         leaves.append(descendant)
                         leaf_ids.add(id(descendant))
 
-        values = []
+        values: list[int | str] = []
         for item in leaves:
             val = self.node_values.get(id(item))
-            if not isinstance(val, bool):
-                try:
-                    values.append(int(val))
-                except (ValueError, TypeError):
-                    pass
+            if isinstance(val, bool):
+                continue
+            # Try to parse as integer first
+            try:
+                values.append(int(val))
+            except (ValueError, TypeError):
+                # Check if it's a link or file path
+                if self._is_link_or_path(val):
+                    values.append(val)
         return values
 
     def _on_selection_change(self):
         """Handle selection change."""
-        vals = self._get_numeric_values()
-        self.selection_label.setText(f'Selected: {len(vals)} numeric value(s)')
+        vals = self._get_selected_values()
+        self.selection_label.setText(f'Selected: {len(vals)} value(s)')
 
     def _on_search_text_changed(self):
-        '''Handle search text change with debounce.'''
+        """Handle search text change with debounce."""
         # Stop any existing search
         if self._search_worker is not None:
             self._search_worker.stop()
@@ -290,7 +310,7 @@ class JsonTreeViewer(QDialog):
         self._search_debounce.start(400)  # 400ms debounce
 
     def _do_search(self):
-        '''Execute the actual search after debounce using worker thread.'''
+        """Execute the actual search after debounce using worker thread."""
         query = self.search_input.text().strip()
 
         # Clear search if empty
@@ -325,13 +345,13 @@ class JsonTreeViewer(QDialog):
         self._search_worker.start()
 
     def _on_search_progress(self, current: int, total: int):
-        '''Handle search progress update.'''
+        """Handle search progress update."""
         if total > 0:
             percent = int((current / total) * 100)
             self.search_progress_label.setText(f'Searching... {percent}% ({current:,}/{total:,})')
 
     def _on_search_complete(self, matches: list):
-        '''Handle search results from worker thread.'''
+        """Handle search results from worker thread."""
         # Store matches for cycling
         self._search_matches = matches
         self._current_match_index = 0
@@ -360,7 +380,7 @@ class JsonTreeViewer(QDialog):
             if len(matches) > 1:
                 self.search_progress_label.setText(f'Found {len(matches)} match(es) - Press Enter to cycle')
             elif len(matches) == 1:
-                self.search_progress_label.setText(f'Found 1 match')
+                self.search_progress_label.setText('Found 1 match')
             else:
                 self.search_progress_label.setText('No matches found')
 
@@ -368,11 +388,11 @@ class JsonTreeViewer(QDialog):
             self.tree.setUpdatesEnabled(True)
 
     def _on_search_finished(self):
-        '''Handle search worker finished.'''
+        """Handle search worker finished."""
         self._is_searching = False
 
     def _cycle_to_next_match(self):
-        '''Cycle to next search match when Enter is pressed.'''
+        """Cycle to next search match when Enter is pressed."""
         if not self._search_matches:
             return
 
@@ -401,18 +421,18 @@ class JsonTreeViewer(QDialog):
 
     def _import_as_replace_ids(self):
         """Import selected values as IDs to replace."""
-        vals = self._get_numeric_values()
+        vals = self._get_selected_values()
         if vals:
             self.on_import_ids(vals)
             self.accept()
         else:
-            QMessageBox.information(self, 'Info', 'No numeric values selected')
+            QMessageBox.information(self, 'Info', 'No valid values selected (numeric or links/paths)')
 
     def _import_as_replacement(self):
         """Import selected value as replacement ID."""
-        vals = self._get_numeric_values()
+        vals = self._get_selected_values()
         if not vals:
-            QMessageBox.information(self, 'Info', 'No numeric values selected')
+            QMessageBox.information(self, 'Info', 'No valid values selected (numeric or links/paths)')
             return
         if len(vals) > 1:
             reply = QMessageBox.question(
