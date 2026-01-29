@@ -46,20 +46,34 @@ class ThemeManager:
 
     @staticmethod
     def _apply_dark_theme(app: QApplication):
-        """Apply dark theme."""
+        """Apply dark theme matching Windows system dark mode colors."""
         app.setStyle('Fusion')
         palette = QPalette()
-        palette.setColor(QPalette.ColorRole.Window, QColor(53, 53, 53))
+
+        # Match Windows system dark theme colors
+        palette.setColor(QPalette.ColorRole.Window, QColor(32, 32, 32))
         palette.setColor(QPalette.ColorRole.WindowText, QColor(255, 255, 255))
-        palette.setColor(QPalette.ColorRole.Base, QColor(35, 35, 35))
+        palette.setColor(QPalette.ColorRole.Base, QColor(45, 45, 45))
         palette.setColor(QPalette.ColorRole.AlternateBase, QColor(53, 53, 53))
-        palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(25, 25, 25))
+        palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(50, 50, 50))
         palette.setColor(QPalette.ColorRole.ToolTipText, QColor(255, 255, 255))
         palette.setColor(QPalette.ColorRole.Text, QColor(255, 255, 255))
-        palette.setColor(QPalette.ColorRole.Button, QColor(53, 53, 53))
+        palette.setColor(QPalette.ColorRole.PlaceholderText, QColor(160, 160, 160))
+        palette.setColor(QPalette.ColorRole.Button, QColor(51, 51, 51))
         palette.setColor(QPalette.ColorRole.ButtonText, QColor(255, 255, 255))
         palette.setColor(QPalette.ColorRole.BrightText, QColor(255, 0, 0))
-        palette.setColor(QPalette.ColorRole.Link, QColor(42, 130, 218))
-        palette.setColor(QPalette.ColorRole.Highlight, QColor(42, 130, 218))
-        palette.setColor(QPalette.ColorRole.HighlightedText, QColor(0, 0, 0))
+        palette.setColor(QPalette.ColorRole.Link, QColor(99, 177, 255))
+        palette.setColor(QPalette.ColorRole.Highlight, QColor(0, 120, 215))
+        palette.setColor(QPalette.ColorRole.HighlightedText, QColor(255, 255, 255))
+        palette.setColor(QPalette.ColorRole.Light, QColor(75, 75, 75))
+        palette.setColor(QPalette.ColorRole.Midlight, QColor(63, 63, 63))
+        palette.setColor(QPalette.ColorRole.Mid, QColor(42, 42, 42))
+        palette.setColor(QPalette.ColorRole.Dark, QColor(25, 25, 25))
+        palette.setColor(QPalette.ColorRole.Shadow, QColor(0, 0, 0))
+
+        # Disabled state colors for input widgets
+        palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text, QColor(128, 128, 128))
+        palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText, QColor(128, 128, 128))
+        palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText, QColor(128, 128, 128))
+
         app.setPalette(palette)
