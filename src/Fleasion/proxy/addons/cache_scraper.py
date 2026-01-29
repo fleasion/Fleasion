@@ -199,13 +199,16 @@ class CacheScraper:
 
             if needs_api_conversion:
                 # Submit to background thread pool - does NOT block
-                self._executor.submit(
-                    self._fetch_and_update_cache,
-                    asset_id,
-                    asset_type,
-                    url,
-                    metadata={'url': url, 'content_type': flow.response.headers.get('content-type', ''), 'hash': cache_hash}
-                )
+                try:
+                    self._executor.submit(
+                        self._fetch_and_update_cache,
+                        asset_id,
+                        asset_type,
+                        url,
+                        metadata={'url': url, 'content_type': flow.response.headers.get('content-type', ''), 'hash': cache_hash}
+                    )
+                except RuntimeError as e:
+                    log_buffer.log('Cache', f'Failed to submit conversion task: {e}')
 
             # Build metadata
             metadata = {

@@ -6,6 +6,7 @@ interpolation, matching the Reference pyvista/vtk implementation.
 
 import math
 import os
+import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
@@ -568,7 +569,8 @@ def create_cube_mesh(sx: float, sy: float, sz: float) -> Dict:
 
 def get_animpreview_dir() -> Path:
     """Get the animpreview tools directory."""
-    return Path(__file__).parent / 'tools' / 'animpreview'
+    base = Path(getattr(sys, '_MEIPASS', Path(__file__).parent))
+    return base / 'tools' / 'animpreview'
 
 
 def get_mesh_dir() -> Path:

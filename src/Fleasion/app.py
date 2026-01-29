@@ -10,7 +10,7 @@ from .config import ConfigManager
 from .prejsons import download_prejsons
 from .proxy import ProxyMaster
 from .tray import SystemTray
-from .utils import delete_cache, is_roblox_running, log_buffer, run_in_thread
+from .utils import delete_cache, get_icon_path, is_roblox_running, log_buffer, run_in_thread
 
 
 class RobloxExitMonitor:
@@ -88,9 +88,9 @@ def main():
 
     # Show first-time message if this is the first run
     if not config_manager.first_time_setup_complete:
-        QMessageBox.information(
-            None,
-            'Welcome to Fleasion',
+        welcome_box = QMessageBox()
+        welcome_box.setWindowTitle('Welcome to Fleasion')
+        welcome_box.setText(
             'Welcome to Fleasion!\n\n'
             'Fleasion runs in your system tray (bottom-right corner of your screen).\n'
             'Right-click the tray icon to access:\n'
@@ -103,9 +103,13 @@ def main():
             'HOW IT WORKS:\n'
             'Fleasion uses a local proxy to intercept network traffic between Roblox and its servers. '
             'This allows you to modify assets (images, audio, etc.) before they reach your game.\n\n'
-            'The dashboard will open now to get you started.',
-            QMessageBox.StandardButton.Ok
+            'The dashboard will open now to get you started.'
         )
+        welcome_box.setIcon(QMessageBox.Icon.Information)
+        if icon_path := get_icon_path():
+            from PyQt6.QtGui import QIcon
+            welcome_box.setWindowIcon(QIcon(str(icon_path)))
+        welcome_box.exec()
         config_manager.first_time_setup_complete = True
         tray._show_replacer_config()
     elif config_manager.open_dashboard_on_launch:

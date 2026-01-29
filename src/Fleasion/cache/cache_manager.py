@@ -3,11 +3,12 @@
 import json
 import gzip
 import hashlib
+import threading
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
 
-from ..utils import CONFIG_DIR
+from ..utils import CONFIG_DIR, log_buffer
 
 
 class CacheManager:
@@ -45,6 +46,7 @@ class CacheManager:
         self.export_dir = CONFIG_DIR / 'FleasionNT' / 'Exports'
         self.index_file = self.cache_dir / 'index.json'
         self.config_manager = config_manager
+        self._lock = threading.Lock()
 
         # Create cache directory structure
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -69,7 +71,7 @@ class CacheManager:
             with self.index_file.open('w', encoding='utf-8') as f:
                 json.dump(self.index, f, indent=2)
         except OSError as e:
-            print(f'Failed to save cache index: {e}')
+            log_buffer.log('Cache', f'Failed to save cache index: {e}')
 
     def get_asset_type_name(self, type_id: int) -> str:
         """Get asset type name from ID."""
@@ -113,25 +115,26 @@ class CacheManager:
             # Calculate hash for deduplication
             file_hash = hashlib.sha256(data).hexdigest()[:16]
 
-            # Update index
-            asset_key = f'{asset_type}_{asset_id}'
-            self.index['assets'][asset_key] = {
-                'id': asset_id,
-                'type': asset_type,
-                'type_name': self.get_asset_type_name(asset_type),
-                'url': url,
-                'size': len(data),
-                'compressed': compressed,
-                'hash': file_hash,
-                'cached_at': datetime.now().isoformat(),
-                'metadata': metadata or {},
-            }
+            # Update index under lock to prevent concurrent corruption
+            with self._lock:
+                asset_key = f'{asset_type}_{asset_id}'
+                self.index['assets'][asset_key] = {
+                    'id': asset_id,
+                    'type': asset_type,
+                    'type_name': self.get_asset_type_name(asset_type),
+                    'url': url,
+                    'size': len(data),
+                    'compressed': compressed,
+                    'hash': file_hash,
+                    'cached_at': datetime.now().isoformat(),
+                    'metadata': metadata or {},
+                }
 
-            self._save_index()
+                self._save_index()
             return True
 
         except Exception as e:
-            print(f'Failed to store asset {asset_id}: {e}')
+            log_buffer.log('Cache', f'Failed to store asset {asset_id}: {e}')
             return False
 
     def get_asset(self, asset_id: str, asset_type: int) -> Optional[bytes]:
@@ -160,7 +163,7 @@ class CacheManager:
                 return asset_path.read_bytes()
 
         except Exception as e:
-            print(f'Failed to retrieve asset {asset_id}: {e}')
+            log_buffer.log('Cache', f'Failed to retrieve asset {asset_id}: {e}')
             return None
 
     def get_asset_info(self, asset_id: str, asset_type: int) -> Optional[dict]:
@@ -331,7 +334,7 @@ class CacheManager:
             return output_path
 
         except Exception as e:
-            print(f'Failed to export asset {asset_id}: {e}')
+            log_buffer.log('Cache', f'Failed to export asset {asset_id}: {e}')
             return None
 
     def _detect_extension(self, data: bytes, asset_type: int) -> str:
@@ -468,15 +471,16 @@ class CacheManager:
             if asset_path.exists():
                 asset_path.unlink()
 
-            asset_key = f'{asset_type}_{asset_id}'
-            if asset_key in self.index['assets']:
-                del self.index['assets'][asset_key]
-                self._save_index()
+            with self._lock:
+                asset_key = f'{asset_type}_{asset_id}'
+                if asset_key in self.index['assets']:
+                    del self.index['assets'][asset_key]
+                    self._save_index()
 
             return True
 
         except Exception as e:
-            print(f'Failed to delete asset {asset_id}: {e}')
+            log_buffer.log('Cache', f'Failed to delete asset {asset_id}: {e}')
             return False
 
     def clear_cache(self, asset_type: Optional[int] = None) -> int:

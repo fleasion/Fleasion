@@ -30,7 +30,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ..utils import CONFIGS_FOLDER, PREJSONS_DIR, get_icon_path, log_buffer, open_folder
+from ..utils import APP_NAME, CONFIGS_FOLDER, PREJSONS_DIR, get_icon_path, log_buffer, open_folder
 from .json_viewer import JsonTreeViewer
 
 
@@ -72,7 +72,7 @@ class ReplacerConfigWindow(QDialog):
         self.undo_manager.save_state(self.config_manager.replacement_rules)
         self.config_enabled_vars = {}
 
-        self.setWindowTitle(f'{self.config_manager.settings.get("app_name", "FleasionNT")} - Dashboard')
+        self.setWindowTitle(f'{APP_NAME} - Dashboard')
         self.resize(900, 750)
         self.setMinimumSize(800, 650)
 

@@ -280,6 +280,9 @@ class SystemTray:
         msg_box.setText('Discord invite copied!')
         msg_box.setInformativeText(f'https://{APP_DISCORD}')
         msg_box.setIcon(QMessageBox.Icon.Information)
+        if icon_path := get_icon_path():
+            from PyQt6.QtGui import QIcon
+            msg_box.setWindowIcon(QIcon(str(icon_path)))
         msg_box.exec()
 
     def _open_kofi(self):

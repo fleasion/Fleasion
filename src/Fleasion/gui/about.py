@@ -12,7 +12,7 @@ class AboutWindow(QDialog):
     def __init__(self, proxy_running: bool = False):
         super().__init__()
         self.setWindowTitle(f'About {APP_NAME}')
-        self.setFixedSize(350, 200)
+        self.setFixedSize(370, 200)
 
         # Set window flags to allow minimize/maximize
         self.setWindowFlags(
