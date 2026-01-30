@@ -62,12 +62,16 @@ class ProxyMaster:
     def __init__(self, config_manager):
         self.config_manager = config_manager
         self.cache_manager = CacheManager(config_manager)
+        # Create cache scraper early so UI always gets a valid reference
+        self.cache_scraper = CacheScraper(self.cache_manager)
+        self.cache_scraper.set_enabled(False)  # Disabled by default
         self._master = None
         self._task = None
         self._running = False
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._thread = None
+        self._loop = None
 
     @property
     def is_running(self) -> bool:
@@ -77,6 +81,7 @@ class ProxyMaster:
     async def _run_proxy(self):
         """Run the proxy (internal)."""
         self._running = True
+        self._loop = asyncio.get_running_loop()
 
         # Cleanup Roblox and cache (only if setting is enabled)
         if self.config_manager.clear_cache_on_launch:
@@ -109,9 +114,6 @@ class ProxyMaster:
         )
         # IMPORTANT: Add cache scraper BEFORE texture stripper
         # This ensures we cache original assets before any modifications
-        # Cache scraper is disabled by default - user can enable in cache tab
-        self.cache_scraper = CacheScraper(self.cache_manager)
-        self.cache_scraper.set_enabled(False)  # Disabled by default
         self._master.addons.add(self.cache_scraper)
         self._master.addons.add(TextureStripper(self.config_manager))
         proxy_task = asyncio.create_task(self._master.run())
@@ -159,6 +161,7 @@ class ProxyMaster:
             except Exception:
                 pass
             self._running = False
+            self._loop = None
 
     async def _wait_for_stop(self):
         """Wait for stop event (event-based, not polling)."""
@@ -191,6 +194,13 @@ class ProxyMaster:
                 return
 
             log_buffer.log('Proxy', 'Stopping proxy...')
+            # Ask mitmproxy to shutdown on its own event loop to avoid pending tasks
+            if self._master and self._loop:
+                try:
+                    fut = asyncio.run_coroutine_threadsafe(self._master.shutdown(), self._loop)
+                    fut.result(timeout=2.0)
+                except Exception:
+                    pass
             self._stop_event.set()
 
         # Wait for thread to finish (with timeout)

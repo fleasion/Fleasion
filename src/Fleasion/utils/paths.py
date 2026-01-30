@@ -5,7 +5,7 @@ from pathlib import Path
 
 # Application metadata
 APP_NAME = 'Fleasion'
-APP_VERSION = '1.4.1'
+APP_VERSION = '1.4.2'
 APP_AUTHOR = 'By @8ar__ | Logic by @blockce, @1_v, @0100152000022000'
 APP_DISCORD = 'discord.gg/hXyhKehEZF'
 

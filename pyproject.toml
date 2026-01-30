@@ -1,6 +1,6 @@
 [project]
 name = 'Fleasion'
-version = '1.4.1'
+version = '1.4.2'
 description = 'Roblox asset interceptor and replacer with PyQt6 GUI'
 readme = 'README.md'
 requires-python = '>=3.14'

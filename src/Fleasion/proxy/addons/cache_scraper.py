@@ -218,21 +218,18 @@ class CacheScraper:
                 'hash': cache_hash,
             }
 
-            # Store in cache manager
-            success = self.cache_manager.store_asset(
-                asset_id=str(asset_id),
-                asset_type=asset_type,
-                data=content,
-                url=url,
-                metadata=metadata
-            )
-
-            if success:
-                type_name = self.cache_manager.get_asset_type_name(asset_type)
-                log_buffer.log(
-                    'Cache',
-                    f'Cached {type_name}: {asset_id} ({len(content)} bytes)'
+            # Store in cache manager asynchronously to avoid blocking proxy handler
+            try:
+                self._executor.submit(
+                    self._store_asset_async,
+                    asset_id,
+                    asset_type,
+                    content,
+                    url,
+                    metadata
                 )
+            except RuntimeError as e:
+                log_buffer.log('Cache', f'Failed to submit cache store task: {e}')
 
         except Exception as e:
             log_buffer.log('Cache', f'Error in CDN handler: {e}')
@@ -326,6 +323,26 @@ class CacheScraper:
 
         except Exception as e:
             log_buffer.log('Cache', f'Background conversion error for {asset_id}: {e}')
+
+    def _store_asset_async(self, asset_id: str, asset_type: int, data: bytes, url: str, metadata: dict):
+        """Background worker to store cached asset data."""
+        try:
+            success = self.cache_manager.store_asset(
+                asset_id=str(asset_id),
+                asset_type=asset_type,
+                data=data,
+                url=url,
+                metadata=metadata
+            )
+
+            if success:
+                type_name = self.cache_manager.get_asset_type_name(asset_type)
+                log_buffer.log(
+                    'Cache',
+                    f'Cached {type_name}: {asset_id} ({len(data)} bytes)'
+                )
+        except Exception as e:
+            log_buffer.log('Cache', f'Cache store error for {asset_id}: {e}')
 
     def _get_roblosecurity(self) -> str | None:
         """Get .ROBLOSECURITY cookie from Roblox local storage."""
