@@ -2,9 +2,7 @@
 
 A Windows application for intercepting and replacing Roblox game assets in real time. Fleasion runs a local proxy that sits between Roblox and its servers, letting you swap textures, audio, meshes, animations, and other assets before they reach the game client.
 
-**Request & Support**
-
-To request a change/asset/etc. or to get help, join our <a href="https://discord.com/invite/pdtce585f6">Discord server!</a>
+To request help or request content, join our community <a href="https://discord.com/invite/pdtce585f6">Discord server!</a>
 
 <a href="https://discord.gg/hXyhKehEZF">
     <img src="https://invidget.switchblade.xyz/hXyhKehEZF" alt="Join our Discord server">
