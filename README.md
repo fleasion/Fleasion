@@ -1,9 +1,44 @@
 v1.2.8
 
-<h1 align=center>⚠️ This README file is for an outdated version of Fleasion. ⚠️</h1>
-<br><br>
-<h1 align=center>DISCLAIMER!</h1>
+<h1 align=center>
+  <a href="https://discord.com/invite/pdtce585f6">
+    BIG FLEASION UPDATE SOON - BETA 3 OUT
+  </a>
+</h1>
 
+<p align=center>
+  <img width="905" height="783" alt="replacer" src="https://github.com/user-attachments/assets/229378a6-112d-470a-9239-c0732e63a679" />
+  
+  <img width="902" height="782" alt="scraper" src="https://github.com/user-attachments/assets/413e1aa5-a044-409c-a8f2-21da1add3cd3" />
+</p>
+
+<p align=center>- general info -</a>
+  
+bootstrappers like Bloxstrap and Fishstrap don't affect Fleasion
+
+we recommend you uninstall whatever the hell Voidstrap is
+
+look up what an antivirus false positive is and don't be surprised that Fleasion is called a trojan by Defender or any other AV that you might have installed
+
+no one is mandated to help you get fleasion to do what you want
+
+read the faq channel and the news channel before asking a rather silly question
+
+reminder that this is not the full thing and that no relevant tutorials actually exist outside of the discord server
+
+
+
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+<br>
+
+<h1 align=center>⚠️ This README is for an outdated version of Fleasion. ⚠️</h1>
+
+<h1 align=center>DISCLAIMER!</h1>
 <p align=center>
   <b> This tool is NOT intended for gaining an unfair advantage or exploiting the game. <br> Do not modify enemy players. Map and Player tweaks will get you banned. <br> Custom tweaks are at your own risk. </b> <br> While misuse is possible, doing so is against the rules and will cause in-game consequences.  <br> All provided presets adhere to the terms of service and will not result in punishment. <br> A guide on obtaining relevant hashes will not be shared due to its potential for abuse.
 </p>
