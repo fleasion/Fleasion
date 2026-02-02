@@ -1,6 +1,6 @@
 
 <h1 align=center>
-  <a href="https://discord.com/invite/pdtce585f6">
+  <a href="https://discord.gg/pdtce585f6">
     BIG FLEASION UPDATE SOON - BETA 3 OUT
   </a>
 </h1>
@@ -19,22 +19,15 @@
 
   
 </p>
+<p align="center">
+  - ✦ general info ✦ -
+</p>
 
-<p align=center>- general info -</a>
-  
-bootstrappers like Bloxstrap and Fishstrap don't affect Fleasion
-
-we recommend you uninstall whatever the hell Voidstrap is
-
-look up what an antivirus false positive is and don't be surprised that Fleasion is called a trojan by Defender or any other AV that you might have installed
-
-no one is mandated to help you get fleasion to do what you want
-
-read the faq channel and the news channel before asking a rather silly question
-
-reminder that this is not the full thing and that no relevant tutorials actually exist outside of the discord server
-
-
+- We recommend you **uninstall Voidstrap** - <a href="https://docs.google.com/document/d/1GWKlxry29ZkkMU4oNZdytEhh0i2d3JENaiwdB_y83nI/edit?tab=t.wo9c7hudy8eu">Here's why</a>
+- There is about a 99% chance that Windows Defender or any other AV software you have installed will detect Fleasion as a trojan (or other kind of malware). This is a false positive. <a href="https://github.com/qrhrqiohj/Fleasion">You can read the source code here.</a>
+- This is not the full Fleasion update; You won't find **any relevant tutorials** *outside* of the <a href="https://discord.gg/pdtce585f6">Discord server</a>
+- Read the <a href="https://discord.com/channels/1309760132770693181/1309772389176967261">FAQ</a> and <a href="https://discord.com/channels/1309760132770693181/1309772476829405297">News</a> channels before asking something rather silly  
+- Bootstrappers like **Bloxstrap** and **Fishstrap** *don't affect* Fleasion at all - to use or not to use..
 
 <br>
 <br>
