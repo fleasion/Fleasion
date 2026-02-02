@@ -1,4 +1,3 @@
-v1.2.8
 
 <h1 align=center>
   <a href="https://discord.com/invite/pdtce585f6">
@@ -7,9 +6,18 @@ v1.2.8
 </h1>
 
 <p align=center>
-  <img width="905" height="783" alt="replacer" src="https://github.com/user-attachments/assets/229378a6-112d-470a-9239-c0732e63a679" />
+  <img width="450" height="390" alt="replacer" src="https://github.com/user-attachments/assets/229378a6-112d-470a-9239-c0732e63a679" />
   
-  <img width="902" height="782" alt="scraper" src="https://github.com/user-attachments/assets/413e1aa5-a044-409c-a8f2-21da1add3cd3" />
+  <img width="450" height="390" alt="scraper" src="https://github.com/user-attachments/assets/413e1aa5-a044-409c-a8f2-21da1add3cd3" />
+
+  <img width="1489" height="839" alt="pf realistic" src="https://github.com/user-attachments/assets/9c306d37-5c0e-4f06-806d-37f2a723dfd3" />
+  
+  <img width="1489" height="839" alt="dahood green" src="https://github.com/user-attachments/assets/93fc07e6-d409-4721-880c-39bcc0f5a958" />
+
+  <a href="https://github.com/user-attachments/assets/3aeae6c2-0187-4a63-a525-f46bbf9cadc3">SCRAPER IN ACTION</a>
+
+
+  
 </p>
 
 <p align=center>- general info -</a>
