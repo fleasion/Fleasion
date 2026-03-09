@@ -33,9 +33,10 @@
 
 <p align=center>This tool is NOT intended for gaining an unfair advantage or exploiting the game. </p>
 
+- Current source code for the beta build of Fleasion is located at https://github.com/qrhrqiohj/Fleasion
 - We recommend you **uninstall Voidstrap** - <a href="https://docs.google.com/document/d/1GWKlxry29ZkkMU4oNZdytEhh0i2d3JENaiwdB_y83nI/edit?tab=t.wo9c7hudy8eu">Here's why</a>
 - There is about a 99% chance that Windows Defender or any other AV software you have installed will detect Fleasion as a trojan (or other kind of malware). This is a false positive. <a href="https://github.com/qrhrqiohj/Fleasion">You can read the source code here.</a>
-- This is not the full Fleasion update; You won't find **any relevant tutorials** *outside* of the <a href="https://discord.gg/pdtce585f6">Discord server</a>
+- This is not the full Fleasion update; Expect more in-depth tutorials after the full release which will be announced in our <a href="https://discord.gg/pdtce585f6">Discord server!</a>
 - Read the <a href="https://discord.com/channels/1309760132770693181/1309772389176967261">FAQ</a> and <a href="https://discord.com/channels/1309760132770693181/1309772476829405297">News</a> channels before asking something rather silly  
 - Bootstrappers like **Bloxstrap** and **Fishstrap** *don't affect* Fleasion at all - to use or not to use..
 
