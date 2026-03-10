@@ -20,6 +20,7 @@ class RobloxExitMonitor:
         self.config_manager = config_manager
         self.was_running = False
 
+    @run_in_thread
     def check_roblox_status(self):
         """Check if Roblox has exited and trigger cache deletion if needed."""
         if not self.config_manager.auto_delete_cache_on_exit:

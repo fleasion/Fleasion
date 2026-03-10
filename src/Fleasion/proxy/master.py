@@ -112,10 +112,10 @@ class ProxyMaster:
             with_termlog=False,
             with_dumper=False,
         )
-        # IMPORTANT: Add cache scraper BEFORE texture stripper
-        # This ensures we cache original assets before any modifications
-        self._master.addons.add(self.cache_scraper)
+        # Add texture stripper BEFORE cache scraper
+        # This ensures we cache injected assets (like CSGs)
         self._master.addons.add(TextureStripper(self.config_manager))
+        self._master.addons.add(self.cache_scraper)
         proxy_task = asyncio.create_task(self._master.run())
 
         # Install certificates

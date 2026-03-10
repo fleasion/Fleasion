@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QSlider, QLabel
 )
 
+from ..utils import log_buffer
 
 # Math helpers
 
@@ -351,7 +352,7 @@ def load_animation_from_rbxm(anim_data: bytes) -> List[Keyframe]:
     try:
         from .rbxm_parser import parse_rbxm, find_by_class
     except ImportError:
-        print('RBXM parser not available')
+        log_buffer.log('AnimationViewer', 'RBXM parser not available')
         return []
 
     try:
@@ -361,7 +362,7 @@ def load_animation_from_rbxm(anim_data: bytes) -> List[Keyframe]:
         keyframe_instances = find_by_class(instances, 'Keyframe')
 
         if not keyframe_instances:
-            print('No Keyframe instances found in RBXM')
+            log_buffer.log('AnimationViewer', 'No Keyframe instances found in RBXM')
             return []
 
         keys: List[Keyframe] = []
@@ -385,9 +386,9 @@ def load_animation_from_rbxm(anim_data: bytes) -> List[Keyframe]:
         return keys
 
     except Exception as e:
-        print(f'Error parsing RBXM animation: {e}')
+        log_buffer.log('AnimationViewer', f'Error parsing RBXM animation: {e}')
         import traceback
-        traceback.print_exc()
+        log_buffer.log('AnimationViewer', traceback.format_exc())
         return []
 
 
@@ -539,7 +540,7 @@ def load_obj_mesh(mesh_path: str) -> Optional[Dict]:
             'faces': faces
         }
     except Exception as e:
-        print(f'Error loading mesh {mesh_path}: {e}')
+        log_buffer.log('AnimationViewer', f'Error loading mesh {mesh_path}: {e}')
         return None
 
 
@@ -607,7 +608,7 @@ class AnimationGLWidget(QOpenGLWidget):
         # Camera
         self.rotation_x = 20
         self.rotation_y = 205
-        self.zoom = 10
+        self.zoom = 20
         self.camera_target = (0, 2, 0)
         self.last_pos = None
 
@@ -627,10 +628,10 @@ class AnimationGLWidget(QOpenGLWidget):
         for idx, part_name in enumerate(sorted(pose_names)):
             # Create part with a small cube
             part = Part(
-                ref=idx,
+                referent=str(idx),
                 name=part_name,
-                cframe=np.eye(4),
-                size=(0.5, 0.5, 0.5)
+                size=(0.5, 0.5, 0.5),
+                cframe=np.eye(4, dtype=np.float32)
             )
             # Create a simple cube mesh
             part.mesh_data = create_cube_mesh(0.5, 0.5, 0.5)
@@ -650,7 +651,7 @@ class AnimationGLWidget(QOpenGLWidget):
             # Parse animation (handles both XML and binary RBXM)
             self.keyframes = load_animation_data(anim_data)
             if not self.keyframes:
-                print('No keyframes found in animation data')
+                log_buffer.log('AnimationViewer', 'No keyframes found in animation data')
                 return False
 
             self.duration = max(kf.time for kf in self.keyframes) if self.keyframes else 0
@@ -667,7 +668,7 @@ class AnimationGLWidget(QOpenGLWidget):
                 self.rig_type = 'R15'
             else:
                 # Unsupported rig type - use placeholder blocks
-                print(f'Unsupported animation rig type, using placeholder blocks')
+                log_buffer.log('AnimationViewer', 'Unsupported animation rig type, using placeholder blocks')
                 self.rig_type = 'PLACEHOLDER'
                 self.parts, self.motors = self._create_placeholder_rig(all_pose_names)
                 self.duration = max(kf.time for kf in self.keyframes) if self.keyframes else 0
@@ -681,12 +682,12 @@ class AnimationGLWidget(QOpenGLWidget):
             # Load rig
             rig_path = get_rig_path(self.rig_type)
             if not rig_path.exists():
-                print(f'Rig file not found: {rig_path}')
+                log_buffer.log('AnimationViewer', f'Rig file not found: {rig_path}')
                 return False
 
             self.parts, self.motors = load_rig(str(rig_path))
             if not self.parts:
-                print('No parts found in rig')
+                log_buffer.log('AnimationViewer', 'No parts found in rig')
                 return False
 
             # Load meshes
@@ -720,9 +721,9 @@ class AnimationGLWidget(QOpenGLWidget):
             return True
 
         except Exception as e:
-            print(f'Error loading animation: {e}')
+            log_buffer.log('AnimationViewer', f'Error loading animation: {e}')
             import traceback
-            traceback.print_exc()
+            log_buffer.log('AnimationViewer', traceback.format_exc())
             return False
 
     def initializeGL(self):

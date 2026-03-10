@@ -4,9 +4,10 @@ import json
 import urllib.request
 from copy import deepcopy
 from pathlib import Path
+from typing import Union
 from urllib.error import URLError
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QByteArray
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -92,6 +93,16 @@ class ReplacerConfigWindow(QDialog):
         self._set_icon()
         self._refresh_tree()
 
+        # Restore geometry
+        geometry_hex = self.config_manager.window_geometry
+        if geometry_hex:
+            self.restoreGeometry(QByteArray.fromHex(geometry_hex.encode('utf-8')))
+
+    def closeEvent(self, event):
+        """Save window geometry on close."""
+        self.config_manager.window_geometry = self.saveGeometry().toHex().data().decode('utf-8')
+        super().closeEvent(event)
+
     def _set_icon(self):
         """Set window icon."""
         if icon_path := get_icon_path():
@@ -114,7 +125,7 @@ class ReplacerConfigWindow(QDialog):
         # Create Cache tab if proxy_master is available
         if self.proxy_master and hasattr(self.proxy_master, 'cache_manager'):
             cache_tab = self._create_cache_tab()
-            self.tab_widget.addTab(cache_tab, 'Cache')
+            self.tab_widget.addTab(cache_tab, 'Scraper')
 
         main_layout.addWidget(self.tab_widget)
 
@@ -165,6 +176,7 @@ class ReplacerConfigWindow(QDialog):
     def _create_config_section(self, parent_layout):
         """Create the configuration selector section."""
         config_group = QGroupBox('Configuration')
+        config_group.setStyleSheet('QGroupBox::title { padding-left: 5px; }')
         config_layout = QVBoxLayout()
 
         # Row 1: Config editing selector
@@ -192,11 +204,7 @@ class ReplacerConfigWindow(QDialog):
             btn.clicked.connect(lambda checked, a=action: self._config_action(a))
             row1.addWidget(btn)
 
-        # No Textures checkbox
-        self.strip_var = QCheckBox('No Textures')
-        self.strip_var.setChecked(self.config_manager.strip_textures)
-        self.strip_var.stateChanged.connect(self._on_strip_change)
-        row1.addWidget(self.strip_var)
+        # Removed: No Textures checkbox
 
         row1.addStretch()
         config_layout.addLayout(row1)
@@ -228,7 +236,7 @@ class ReplacerConfigWindow(QDialog):
         # Label
         label_layout = QHBoxLayout()
         title_label = QLabel('Replacement Profiles:')
-        title_label.setStyleSheet('font-weight: bold;')
+        title_label.setStyleSheet('font-weight: bold; padding-left: 5px;')
         label_layout.addWidget(title_label)
 
         hint_label = QLabel('(Ctrl+Z to undo)')
@@ -256,6 +264,7 @@ class ReplacerConfigWindow(QDialog):
     def _create_edit_section(self, parent_layout):
         """Create the add/edit profile section."""
         edit_group = QGroupBox('Add/Edit Profile')
+        edit_group.setStyleSheet('QGroupBox::title { padding-left: 5px; }')
         edit_layout = QVBoxLayout()
         edit_layout.setSpacing(4)
 
@@ -277,8 +286,18 @@ class ReplacerConfigWindow(QDialog):
         label.setFixedWidth(85)
         ids_layout.addWidget(label)
         self.replace_entry = QLineEdit()
-        self.replace_entry.setPlaceholderText('IDs separated by commas, spaces, or semicolons')
+        self.replace_entry.setPlaceholderText('IDs or AssetTypes separated by commas, spaces, or semicolons')
         ids_layout.addWidget(self.replace_entry)
+        
+        # Add Asset Types filter button
+        self.asset_types_btn = QPushButton('Asset Types')
+        self.asset_types_btn.setFixedWidth(80)
+        self.asset_types_btn.clicked.connect(self._show_asset_types_popup)
+        from ..cache.cache_viewer import CategoryFilterPopup
+        self.asset_types_popup = CategoryFilterPopup(parent=self)
+        self.asset_types_popup.filters_changed.connect(self._on_asset_types_changed)
+        ids_layout.addWidget(self.asset_types_btn)
+        
         edit_layout.addLayout(ids_layout)
 
         # Replacement field (auto-detects mode)
@@ -325,7 +344,7 @@ class ReplacerConfigWindow(QDialog):
             footer_layout.setContentsMargins(0, 5, 0, 5)
 
             path_label = QLabel(f'Configs: {CONFIGS_FOLDER}')
-            path_label.setStyleSheet('color: gray; font-size: 8pt;')
+            path_label.setStyleSheet('color: gray; font-size: 8pt; padding-left: 5px;')
             footer_layout.addWidget(path_label)
 
             footer_layout.addStretch()
@@ -481,16 +500,22 @@ class ReplacerConfigWindow(QDialog):
             self.undo_manager.save_state(self.config_manager.replacement_rules)
             self._refresh_tree()
 
-    def _on_strip_change(self):
         """Handle strip textures change."""
-        self.config_manager.strip_textures = self.strip_var.isChecked()
+        pass
 
     def _browse_local_file(self):
         """Open file browser for local file selection."""
+        current_val = self.replacement_entry.text().strip(' \t"\'')
+        initial_dir = ''
+        if current_val:
+            path = Path(current_val)
+            if path.parent.exists():
+                initial_dir = str(path)
+
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             'Select Local File',
-            '',
+            initial_dir,
             'All Files (*.*)',
         )
         if file_path:
@@ -656,13 +681,8 @@ class ReplacerConfigWindow(QDialog):
 
         def save_ids():
             content = text_edit.toPlainText().strip()
-            new_ids = []
-            for line in content.split('\n'):
-                for part in line.replace(',', ' ').replace(';', ' ').split():
-                    try:
-                        new_ids.append(int(part.strip()))
-                    except ValueError:
-                        pass
+            # Use robust ID parser to avoid deleting valid string-based asset types
+            new_ids = self._parse_ids(content.replace('\n', ','))
             rules_copy = [r.copy() for r in self.config_manager.replacement_rules]
             rules_copy[idx]['replace_ids'] = new_ids
             self._save_with_undo(rules_copy)
@@ -679,9 +699,62 @@ class ReplacerConfigWindow(QDialog):
         copy_btn.clicked.connect(copy_all)
         btn_layout.addWidget(copy_btn)
 
-        save_btn = QPushButton('Save & Close')
+        save_btn = QPushButton('Save and Close')
         save_btn.clicked.connect(lambda: (save_ids(), dialog.accept()))
         btn_layout.addWidget(save_btn)
+        
+        # Add Asset Types menu to Edit Asset IDs
+        types_btn = QPushButton('Asset Types')
+        
+        def show_dialog_types_popup():
+            from ..cache.cache_viewer import CategoryFilterPopup
+            from ..cache.cache_manager import CacheManager
+            
+            content = text_edit.toPlainText().strip()
+            current_ids = self._parse_ids(content.replace('\n', ','))
+            
+            active_filters = set()
+            for item in current_ids:
+                if isinstance(item, str):
+                    for tid, name in CacheManager.ASSET_TYPES.items():
+                        if name.lower() == item.lower():
+                            active_filters.add(tid)
+                            break
+            
+            popup = CategoryFilterPopup(parent=dialog, active_filters=active_filters)
+            
+            def on_filters_changed(filters):
+                curr_content = text_edit.toPlainText().strip()
+                curr_ids = self._parse_ids(curr_content.replace('\n', ','))
+                new_ids = []
+                for item in curr_ids:
+                    if isinstance(item, int):
+                        new_ids.append(item)
+                    elif isinstance(item, str):
+                        is_mapped = False
+                        for tid, name in CacheManager.ASSET_TYPES.items():
+                            if name.lower() == item.lower():
+                                is_mapped = True
+                                break
+                        if not is_mapped:
+                            new_ids.append(item)
+                for tid in filters:
+                    if tid in CacheManager.ASSET_TYPES:
+                        new_ids.append(CacheManager.ASSET_TYPES[tid])
+                
+                if new_ids:
+                    text_edit.setPlainText('\n'.join(str(i) for i in new_ids))
+                else:
+                    text_edit.setPlainText('')
+                    
+            popup.filters_changed.connect(on_filters_changed)
+            
+            # Line up TOP LEFT of our popup menu with TOP LEFT of the Asset Types button
+            pos = types_btn.mapToGlobal(types_btn.rect().topLeft())
+            popup.exec(pos)
+
+        types_btn.clicked.connect(show_dialog_types_popup)
+        btn_layout.addWidget(types_btn)
 
         cancel_btn = QPushButton('Cancel')
         cancel_btn.clicked.connect(dialog.reject)
@@ -708,15 +781,62 @@ class ReplacerConfigWindow(QDialog):
         else:
             old_value = str(rule.get('with_id', '')) if rule.get('with_id') is not None else ''
 
-        new_value, ok = QInputDialog.getText(
-            self, 'Edit Replacement',
-            'Replacement (ID, URL, file path, or empty to remove):',
-            text=old_value
-        )
-        if not ok:
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Edit Replacement')
+        dialog.resize(400, 100)
+        if icon_path := get_icon_path():
+            from PyQt6.QtGui import QIcon
+
+            dialog.setWindowIcon(QIcon(str(icon_path)))
+
+        layout = QVBoxLayout()
+        label = QLabel('Replacement (ID, URL, file path, or empty to remove):')
+        layout.addWidget(label)
+
+        line_edit = QLineEdit()
+        line_edit.setText(old_value)
+        layout.addWidget(line_edit)
+
+        btn_layout = QHBoxLayout()
+
+        browse_btn = QPushButton('Browse...')
+        browse_btn.setFixedWidth(80)
+        browse_btn.setAutoDefault(False)
+        def _on_browse():
+            current_val = line_edit.text().strip(' \t"\'')
+            initial_dir = ''
+            if current_val:
+                path = Path(current_val)
+                if path.parent.exists():
+                    initial_dir = str(path)
+
+            path, _ = QFileDialog.getOpenFileName(dialog, 'Select Local File', initial_dir, 'All Files (*.*)')
+            if path:
+                line_edit.setText(path)
+                dialog.accept()
+        browse_btn.clicked.connect(_on_browse)
+        btn_layout.addWidget(browse_btn)
+
+        btn_layout.addStretch()
+
+        ok_btn = QPushButton('OK')
+        ok_btn.setFixedWidth(80)
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(dialog.accept)
+        btn_layout.addWidget(ok_btn)
+
+        cancel_btn = QPushButton('Cancel')
+        cancel_btn.setFixedWidth(80)
+        cancel_btn.clicked.connect(dialog.reject)
+        btn_layout.addWidget(cancel_btn)
+
+        layout.addLayout(btn_layout)
+        dialog.setLayout(layout)
+
+        if not dialog.exec():
             return
 
-        new_value = new_value.strip()
+        new_value = line_edit.text().strip(' \t"\'')
         new_mode, extra = self._detect_mode(new_value)
 
         if '_raw' in extra:
@@ -739,16 +859,84 @@ class ReplacerConfigWindow(QDialog):
         self._save_with_undo(rules_copy)
         self._refresh_tree()
 
-    def _parse_ids(self, text: str) -> list[int]:
+    def _parse_ids(self, text: str) -> list[Union[int, str]]:
         """Parse IDs from text."""
-        ids = []
-        for part in text.replace(';', ',').replace(' ', ',').split(','):
-            if part.strip():
+        ids: list[Union[int, str]] = []
+        # Replace common separators with comma
+        text = text.replace(';', ',').replace(' ', ',')
+        for part in text.split(','):
+            part = part.strip()
+            if part:
                 try:
-                    ids.append(int(part.strip()))
+                    ids.append(int(part))
                 except ValueError:
-                    pass
+                    ids.append(part)
         return ids
+        
+    def _show_asset_types_popup(self):
+        """Show the asset types popup menu."""
+        from ..cache.cache_manager import CacheManager
+        
+        # Parse current text to update active filters
+        current_text = self.replace_entry.text()
+        current_ids = self._parse_ids(current_text)
+        
+        active_filters = set()
+        for item in current_ids:
+            if isinstance(item, str):
+                # Reverse lookup the asset type integer from name
+                for tid, name in CacheManager.ASSET_TYPES.items():
+                    if name.lower() == item.lower():
+                        active_filters.add(tid)
+                        break
+        
+        # Create fresh popup with current active filters
+        from ..cache.cache_viewer import CategoryFilterPopup
+        self.asset_types_popup = CategoryFilterPopup(parent=self, active_filters=active_filters)
+        self.asset_types_popup.filters_changed.connect(self._on_asset_types_changed)
+        
+        from PyQt6.QtCore import QPoint
+        # BOTTOM RIGHT of the menu should line up with TOP RIGHT of the button
+        global_top_right = self.asset_types_btn.mapToGlobal(self.asset_types_btn.rect().topRight())
+        popup_size = self.asset_types_popup.sizeHint()
+        # exec() sets the top-left coordinate, so subtract width and height
+        pos = QPoint(global_top_right.x() - popup_size.width(), global_top_right.y() - popup_size.height())
+        self.asset_types_popup.exec(pos)
+        
+    def _on_asset_types_changed(self, filters):
+        """Handle asset types selection change."""
+        from ..cache.cache_manager import CacheManager
+        
+        current_text = self.replace_entry.text().strip()
+        current_ids = self._parse_ids(current_text)
+        
+        # We need to maintain non-string IDs from the user's current box, and add/remove string types.
+        # So we keep everything not representing a mapped type.
+        
+        new_ids = []
+        for item in current_ids:
+            if isinstance(item, int):
+                new_ids.append(item)
+            elif isinstance(item, str):
+                is_mapped = False
+                for tid, name in CacheManager.ASSET_TYPES.items():
+                    if name.lower() == item.lower():
+                        is_mapped = True
+                        break
+                if not is_mapped:
+                    new_ids.append(item)
+                    
+        # Add the string representations of the selected filters
+        for tid in filters:
+            if tid in CacheManager.ASSET_TYPES:
+                new_ids.append(CacheManager.ASSET_TYPES[tid])
+                
+        # Format the rest back cleanly
+        if new_ids:
+            # We want commas naturally, but without a weird leading comma if spacing is weird
+            self.replace_entry.setText(', '.join(str(i) for i in new_ids).strip(', '))
+        else:
+            self.replace_entry.setText('')
 
     def _clear_entries(self):
         """Clear input fields."""
