@@ -89,15 +89,17 @@ class AudioPlayerWidget(QWidget):
         layout = QVBoxLayout()
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
+        layout.addStretch()
 
-        # Central container for all controls (left-aligned)
+        # Central container for all controls (centered)
         controls_container = QVBoxLayout()
         controls_container.setSpacing(6)
-        controls_container.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        controls_container.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         # Volume slider row
         volume_layout = QHBoxLayout()
         volume_layout.setSpacing(8)
+        volume_layout.addStretch()
         volume_layout.addWidget(QLabel('Volume:'))
 
         self.volume_slider = QSlider(Qt.Orientation.Horizontal)
@@ -112,6 +114,7 @@ class AudioPlayerWidget(QWidget):
 
         # Progress slider row
         progress_layout = QHBoxLayout()
+        progress_layout.addStretch()
         self.progress_slider = QSlider(Qt.Orientation.Horizontal)
         self.progress_slider.setRange(0, int(self.duration * 1000))
         self.progress_slider.sliderPressed.connect(self._start_scrub)
@@ -124,6 +127,7 @@ class AudioPlayerWidget(QWidget):
         # Play/Replay buttons and time label row
         button_time_layout = QHBoxLayout()
         button_time_layout.setSpacing(8)
+        button_time_layout.addStretch()
 
         self.play_pause_btn = QPushButton('▶')
         self.play_pause_btn.clicked.connect(self._toggle_play_pause)

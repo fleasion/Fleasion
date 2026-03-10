@@ -682,6 +682,9 @@ class CacheViewerTab(QWidget):
 
         # Set splitter sizes (table gets more space initially)
         self.splitter.setSizes([600, 300])
+        
+        # Initially hide the preview panel (as requested: hide if no asset selected)
+        self.preview_panel.setHidden(True)
 
         # Connect splitter moved to rescale image
         self.splitter.splitterMoved.connect(self._on_splitter_moved)
@@ -1532,6 +1535,9 @@ class CacheViewerTab(QWidget):
             self._selected_asset_id = None
             self._clear_preview()
             return
+            
+        # Ensure preview panel is visible when an asset is selected
+        self.preview_panel.show()
 
         # Track selected asset ID for persistence across refreshes
         self._selected_asset_id = asset['id']
@@ -1938,8 +1944,9 @@ class CacheViewerTab(QWidget):
         self.obj_viewer.hide()
         self.obj_viewer.clear()
         self.image_label.clear()
-        self.image_label.setText('Select an asset to preview')
-        self.image_label.show()
+        
+        # Completely hide the preview window as requested
+        self.preview_panel.hide()
         
         # Deselect currently tracked asset in tree/internal state
         self._selected_asset_id = None

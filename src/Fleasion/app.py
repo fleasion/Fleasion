@@ -85,7 +85,7 @@ def main():
     roblox_monitor = RobloxExitMonitor(config_manager)
     roblox_check_timer = QTimer()
     roblox_check_timer.timeout.connect(roblox_monitor.check_roblox_status)
-    roblox_check_timer.start(2000)  # Check every 2 seconds
+    roblox_check_timer.start(1000)  # Check every 1 second
 
     # Show first-time message if this is the first run
     if not config_manager.first_time_setup_complete:

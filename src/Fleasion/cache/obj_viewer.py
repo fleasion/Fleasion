@@ -718,10 +718,6 @@ class ObjViewerPanel(QWidget):
         self.action_grid.setChecked(self.viewer.show_grid)
         self.action_grid.toggled.connect(self._toggle_grid_and_save)
 
-        self.options_menu.addSeparator()
-        self.action_stop_preview = self.options_menu.addAction('Stop Preview')
-        self.action_stop_preview.triggered.connect(self.clear_requested.emit)
-
         self.options_btn.setMenu(self.options_menu)
         controls_layout.addWidget(self.options_btn)
 

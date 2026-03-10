@@ -34,7 +34,7 @@ class AboutWindow(QDialog):
     def _setup_ui(self, proxy_running: bool):
         """Setup the UI."""
         layout = QVBoxLayout()
-        layout.setSpacing(5)
+        layout.setSpacing(3)
         layout.setContentsMargins(20, 20, 20, 20)
 
         # App name
