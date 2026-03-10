@@ -24,6 +24,7 @@ STORAGE_DB = LOCAL_APPDATA / 'Roblox' / 'rbx-storage.db'
 
 # Application directories
 CONFIG_DIR = LOCAL_APPDATA / 'FleasionNT'
+APP_CACHE_DIR = CONFIG_DIR / 'cache'
 CONFIG_FILE = CONFIG_DIR / 'settings.json'
 CONFIGS_FOLDER = CONFIG_DIR / 'configs'
 

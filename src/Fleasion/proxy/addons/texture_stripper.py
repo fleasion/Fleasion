@@ -3,12 +3,14 @@
 import gzip
 import json
 import xml.etree.ElementTree as ET
+import urllib.request
+import hashlib
 from pathlib import Path
 from urllib.parse import urlparse
 
 from mitmproxy import http
 
-from ...utils import PROXY_TARGET_HOST, STRIPPABLE_ASSET_TYPES, log_buffer
+from ...utils import APP_CACHE_DIR, PROXY_TARGET_HOST, STRIPPABLE_ASSET_TYPES, log_buffer
 
 
 # ---------------------------------------------------------------------------
@@ -250,8 +252,51 @@ class TextureStripper:
                             break
 
                 if matched_key in cdn_replacements:
-                    self.pending_requests[f'{flow.id}_{req_id}'] = (req_id, 'cdn', cdn_replacements[matched_key])
-                    log_buffer.log('CDN', f'Tracking asset {aid} for CDN redirect')
+                    cdn_url = cdn_replacements[matched_key]
+                    parsed_url = urlparse(str(cdn_url))
+                    if parsed_url.path.lower().endswith('.obj'):
+                        # Hash URL to get unique filename
+                        url_hash = hashlib.md5(str(cdn_url).encode('utf-8')).hexdigest()
+                        local_cache_path = APP_CACHE_DIR / f'{url_hash}.obj'
+                        
+                        try:
+                            # Create cache directory if it doesn't exist
+                            APP_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+                            
+                            # Download file if not already cached
+                            if not local_cache_path.exists():
+                                log_buffer.log('Downloader', f'Downloading remote OBJ: {cdn_url}')
+                                # Set a reasonable timeout to not hang the proxy indefinitely
+                                req = urllib.request.Request(
+                                    cdn_url,
+                                    headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+                                )
+                                with urllib.request.urlopen(req, timeout=30) as response, open(local_cache_path, 'wb') as out_file:
+                                    import shutil
+                                    shutil.copyfileobj(response, out_file)
+                                log_buffer.log('Downloader', f'Saved OBJ to cache: {local_cache_path.name}')
+                            
+                            # Reroute to the local replacement logic
+                            asset_type_id = e.get('assetTypeId')
+                            at_name = str(e.get('assetType', '')).lower()
+                            mapped_type_id = self.reverse_asset_types_mapping.get(at_name)
+                            is_solidmodel = (asset_type_id == 39) or (mapped_type_id == 39)
+                            
+                            if is_solidmodel:
+                                self.pending_requests[f'{flow.id}_{req_id}'] = (req_id, 'solidmodel_obj', str(local_cache_path))
+                                log_buffer.log('SolidModel', f'Tracking online SolidModel {aid} for local OBJ injection')
+                            else:
+                                self.pending_requests[f'{flow.id}_{req_id}'] = (req_id, 'local', str(local_cache_path))
+                                log_buffer.log('Local', f'Tracking online asset {aid} for local OBJ replacement')
+                                
+                        except Exception as dl_err:
+                            log_buffer.log('Downloader', f'Failed to download OBJ: {dl_err}')
+                            # Fallback to standard CDN redirect if download fails
+                            self.pending_requests[f'{flow.id}_{req_id}'] = (req_id, 'cdn', cdn_url)
+                            log_buffer.log('CDN', f'Tracking asset {aid} for CDN redirect (Fallback)')
+                    else:
+                        self.pending_requests[f'{flow.id}_{req_id}'] = (req_id, 'cdn', cdn_url)
+                        log_buffer.log('CDN', f'Tracking asset {aid} for CDN redirect')
                 elif matched_key in local_replacements:
                     local_path = local_replacements[matched_key]
                     # Detect SolidModel (assetTypeId 39) with an OBJ replacement:
