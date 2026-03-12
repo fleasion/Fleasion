@@ -3,8 +3,8 @@
 import platform
 import sys
 
-from PyQt6.QtCore import QTimer
-from PyQt6.QtWidgets import QApplication, QMessageBox
+from PyQt6.QtCore import QTimer, QSharedMemory
+from PyQt6.QtWidgets import QApplication, QMessageBox, QPushButton
 
 from .config import ConfigManager
 from .prejsons import download_prejsons
@@ -60,6 +60,36 @@ def main():
     # Create Qt application
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
+
+    # Single instance check
+    # We use a unique key for the shared memory
+    shared_memory = QSharedMemory('FleasionSingleInstance')
+    if not shared_memory.create(1):
+        if shared_memory.error() == QSharedMemory.SharedMemoryError.AlreadyExists:
+            # Another instance is already running
+            msg_box = QMessageBox()
+            msg_box.setWindowTitle('Fleasion Already Running')
+            msg_box.setText('Another instance of Fleasion is already running (Check your system tray).')
+            msg_box.setInformativeText('Do you want to run another instance anyway?')
+            msg_box.setIcon(QMessageBox.Icon.Warning)
+            
+            # Set icon if available
+            if icon_path := get_icon_path():
+                from PyQt6.QtGui import QIcon
+                msg_box.setWindowIcon(QIcon(str(icon_path)))
+
+            run_anyway_button = msg_box.addButton('Run Anyway', QMessageBox.ButtonRole.AcceptRole)
+            cancel_button = msg_box.addButton('Cancel', QMessageBox.ButtonRole.RejectRole)
+            msg_box.setDefaultButton(cancel_button)
+
+            msg_box.exec()
+
+            if msg_box.clickedButton() == cancel_button:
+                sys.exit(0)
+            
+            # If "Run Anyway" is clicked, we just proceed. 
+            # Note: shared_memory object will be garbage collected or go out of scope,
+            # but since we didn't successfully create it, we don't hold the lock.
 
     # Initialize config manager
     config_manager = ConfigManager()

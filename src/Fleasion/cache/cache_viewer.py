@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QMenu, QScrollArea, QGridLayout, QFrame
 )
 from PyQt6.QtWidgets import QWidgetAction
-from PyQt6.QtGui import QPixmap, QImage
+from PyQt6.QtGui import QPixmap, QImage, QAction, QCursor
 from PIL import Image
 import io
 import threading
@@ -588,6 +588,90 @@ class CategoryFilterPopup(QMenu):
         self.filters_changed.emit(self.active_filters)
 
 
+
+# --- Column definitions used across the scraper tab ---
+# Column 0 is always the ▼ toggle/counter — not user-configurable.
+# Columns 1-6 are the data columns the user can show/hide.
+COL_TOGGLE_WIDTH = 14
+SCRAPER_COLUMNS = [
+    # (key, label, default_visible, default_width)
+    ('hash_name',  'Hash/Name',  True,  200),
+    ('asset_id',   'Asset ID',   True,  100),
+    ('type',       'Type',       True,  120),
+    ('size',       'Size',       True,   70),
+    ('cached_at',  'Cached At',  True,  135),
+    ('url',        'URL',        False, 300),
+]
+# Logical index → column key  (index 0 = toggle column, 1-6 = data columns)
+_COL_IDX_TO_KEY = ['_toggle'] + [c[0] for c in SCRAPER_COLUMNS]
+# Column key → logical index
+_COL_KEY_TO_IDX = {'_toggle': 0, **{c[0]: i + 1 for i, c in enumerate(SCRAPER_COLUMNS)}}
+
+
+class ColumnVisibilityMenu(QMenu):
+    """
+    A non-closing QMenu that lets the user toggle which Scraper columns are
+    visible.  Styled identically to the ObjViewer options menu (native Qt
+    checkable actions).  The menu only closes when the user clicks outside it.
+    """
+
+    visibility_changed = pyqtSignal(dict)   # {col_key: bool}
+
+    def __init__(self, column_visibility: dict, parent=None):
+        super().__init__(parent)
+        self._col_visibility = dict(column_visibility)
+        self._actions: dict[str, QAction] = {}
+        self._building = True
+
+        for key, label, _default, _w in SCRAPER_COLUMNS:
+            action = QAction(label, self)
+            action.setCheckable(True)
+            action.setChecked(self._col_visibility.get(key, True))
+            action.toggled.connect(lambda checked, k=key: self._on_toggled(k, checked))
+            self.addAction(action)
+            self._actions[key] = action
+
+        self._building = False
+
+    # ------------------------------------------------------------------
+    # Prevent the menu from closing when the user clicks a checkable item.
+    # It will still close on Escape or clicking outside.
+    # ------------------------------------------------------------------
+    def mouseReleaseEvent(self, event):
+        action = self.actionAt(event.pos())
+        if action and action.isCheckable():
+            action.toggle()          # manually toggle without closing
+            return
+        super().mouseReleaseEvent(event)
+
+    def _on_toggled(self, key: str, checked: bool):
+        if self._building:
+            return
+
+        self._col_visibility[key] = checked
+
+        # Enforce: at least one column must remain visible
+        any_visible = any(self._col_visibility.values())
+        if not any_visible:
+            # Revert this action and restore Hash/Name
+            self._building = True
+            self._col_visibility[key] = True
+            self._actions[key].setChecked(True)
+            self._col_visibility['hash_name'] = True
+            self._actions['hash_name'].setChecked(True)
+            self._building = False
+
+        self.visibility_changed.emit(dict(self._col_visibility))
+
+    def update_from(self, col_visibility: dict):
+        """Sync action states from an external dict (e.g. after config load)."""
+        self._building = True
+        for key, action in self._actions.items():
+            action.setChecked(col_visibility.get(key, True))
+        self._col_visibility = dict(col_visibility)
+        self._building = False
+
+
 class CacheViewerTab(QWidget):
     """Tab for viewing and managing cached Roblox assets."""
 
@@ -618,6 +702,20 @@ class CacheViewerTab(QWidget):
         self._texturepack_data: dict = {}  # map_name -> {id, hash, data}
         self._texturepack_xml: str = ''  # Original XML
 
+        # Column visibility – loaded from config, validated, then applied
+        self._col_visibility: dict[str, bool] = self._load_col_visibility()
+        # Column widths (pixels) – None means "use default"
+        self._col_widths: dict[str, int | None] = self._load_col_widths()
+        # Currently active sort column (logical index). Defaults to Cached At (5, shifted by 1).
+        self._sort_col_idx: int = 5
+        self._sort_order = Qt.SortOrder.DescendingOrder
+        # Guard against re-entrant sort-indicator resets when blocking col-0 sort
+        self._in_sort_guard: bool = False
+        # Reference to the shared non-closing visibility menu (created lazily)
+        self._col_visibility_menu: ColumnVisibilityMenu | None = None
+        # Guard: prevent re-entrant column resize saves during programmatic resizes
+        self._resizing_cols: bool = False
+
         self._setup_ui()
         self._refresh_timer = QTimer()
         self._refresh_timer.timeout.connect(self._check_for_updates)
@@ -641,6 +739,221 @@ class CacheViewerTab(QWidget):
 
         # Start name resolver daemon thread
         threading.Thread(target=self._name_resolver_loop, daemon=True).start()
+
+    # ------------------------------------------------------------------
+    # Column visibility / width helpers
+    # ------------------------------------------------------------------
+
+    def _default_col_visibility(self) -> dict[str, bool]:
+        return {key: default_vis for key, _label, default_vis, _w in SCRAPER_COLUMNS}
+
+    def _load_col_visibility(self) -> dict[str, bool]:
+        """Load column visibility from config. Fall back to defaults, validate."""
+        defaults = self._default_col_visibility()
+        if self.config_manager is None:
+            return defaults
+        saved = self.config_manager.settings.get('scraper_column_visibility', {})
+        merged = {**defaults, **{k: bool(v) for k, v in saved.items() if k in defaults}}
+        # Validate: at least one visible
+        if not any(merged.values()):
+            # All off – fall back to Hash/Name only (per spec)
+            merged = {key: False for key, *_ in SCRAPER_COLUMNS}
+            merged['hash_name'] = True
+
+        return merged
+
+    def _load_col_widths(self) -> dict[str, int | None]:
+        """Load saved column widths from config."""
+        defaults: dict[str, int | None] = {key: None for key, *_ in SCRAPER_COLUMNS}
+        if self.config_manager is None:
+            return defaults
+        saved = self.config_manager.settings.get('scraper_column_widths', {})
+        merged = {}
+        for key, _label, _vis, default_w in SCRAPER_COLUMNS:
+            w = saved.get(key)
+            merged[key] = int(w) if isinstance(w, (int, float)) and w > 0 else None
+        return merged
+
+    def _save_col_settings(self):
+        """Persist column visibility and widths to config."""
+        if self.config_manager is None:
+            return
+        self.config_manager.settings['scraper_column_visibility'] = dict(self._col_visibility)
+        self.config_manager.settings['scraper_column_widths'] = dict(self._col_widths)
+        self.config_manager.save()
+
+    def _apply_column_visibility(self, initial: bool = False):
+        """Show/hide table columns (indices 1–6) and update resize modes.
+
+        Column 0 (▼ toggle/counter) is always visible and Fixed — never touched here.
+        The last *visible* data column (index ≥ 1) gets Stretch so it fills the
+        remaining table width with no seam on its right edge.  Every other visible
+        data column is Interactive so the user can drag its seam.
+
+        If the currently active sort column is hidden, reset the sort to
+        'Cached At' (logical index 5).
+        """
+        header = self.table.horizontalHeader()
+
+        # Find which data column will be last visible (idx 1-6)
+        last_visible_idx = -1
+        for i, (key, *_) in enumerate(SCRAPER_COLUMNS, start=1):
+            if self._col_visibility.get(key, True):
+                last_visible_idx = i
+
+        for i, (key, *_) in enumerate(SCRAPER_COLUMNS, start=1):
+            visible = self._col_visibility.get(key, True)
+            header.setSectionHidden(i, not visible)
+            if visible:
+                if i == last_visible_idx:
+                    header.setSectionResizeMode(i, QHeaderView.ResizeMode.Stretch)
+                else:
+                    header.setSectionResizeMode(i, QHeaderView.ResizeMode.Interactive)
+
+        # If sort column just became hidden, reset to Cached At (idx 5)
+        sort_key = _COL_IDX_TO_KEY[self._sort_col_idx] if self._sort_col_idx < len(_COL_IDX_TO_KEY) else None
+        if sort_key and sort_key != '_toggle' and not self._col_visibility.get(sort_key, True):
+            self._sort_col_idx = 5   # Cached At
+            self._sort_order = Qt.SortOrder.DescendingOrder
+            self.table.sortByColumn(5, Qt.SortOrder.DescendingOrder)
+
+        if not initial:
+            self._save_col_settings()
+            QTimer.singleShot(0, self._auto_snap_splitter)
+
+    # ------------------------------------------------------------------
+    # Column-visibility menu helpers
+    # ------------------------------------------------------------------
+
+    def _get_or_create_col_menu(self) -> 'ColumnVisibilityMenu':
+        """Return (and lazily create) the shared ColumnVisibilityMenu."""
+        if self._col_visibility_menu is None:
+            self._col_visibility_menu = ColumnVisibilityMenu(self._col_visibility, self)
+            self._col_visibility_menu.visibility_changed.connect(self._on_col_visibility_changed)
+        else:
+            # Keep it in sync with any external changes
+            self._col_visibility_menu.update_from(self._col_visibility)
+        return self._col_visibility_menu
+
+    def _on_header_section_clicked(self, logical_index: int):
+        """Open the visibility menu when the ▼ column (index 0) is clicked."""
+        if logical_index == 0:
+            menu = self._get_or_create_col_menu()
+            # Position below the ▼ header section
+            header = self.table.horizontalHeader()
+            x = header.sectionPosition(0)
+            pos = header.mapToGlobal(header.rect().bottomLeft())
+            pos.setX(pos.x() + x)
+            menu.exec(pos)
+
+    def _show_col_visibility_from_header(self, pos):
+        """Right-click on any header section: open menu at cursor."""
+        menu = self._get_or_create_col_menu()
+        menu.exec(QCursor.pos())
+
+    def _on_col_visibility_changed(self, new_visibility: dict):
+        """Called when the user toggles a column in the visibility menu."""
+        self._col_visibility = new_visibility
+        self._apply_column_visibility()
+
+    # ------------------------------------------------------------------
+    # Column resize tracking
+    # ------------------------------------------------------------------
+
+    def _on_sort_indicator_changed(self, logical_index: int, order):
+        """Block sort on col 0 (▼ toggle); track sort column for all others."""
+        if self._in_sort_guard:
+            return
+        if logical_index == 0:
+            # Column 0 is the toggle — restore the previous sort immediately
+            self._in_sort_guard = True
+            self.table.sortByColumn(self._sort_col_idx, self._sort_order)
+            self._in_sort_guard = False
+            return
+        self._sort_col_idx = logical_index
+        self._sort_order = order
+
+    def _on_column_resized(self, logical_index: int, _old_size: int, new_size: int):
+        """Save user-dragged column widths to config."""
+        if self._resizing_cols:
+            return
+        # Col 0 is Fixed, last visible is Stretch — neither should be persisted
+        if logical_index == 0:
+            return
+        header = self.table.horizontalHeader()
+        if header.sectionResizeMode(logical_index) == QHeaderView.ResizeMode.Stretch:
+            return
+        key = _COL_IDX_TO_KEY[logical_index]
+        self._col_widths[key] = new_size
+        self._save_col_settings()
+        QTimer.singleShot(0, self._auto_snap_splitter)
+
+    # ------------------------------------------------------------------
+    # Splitter auto-snap
+    # ------------------------------------------------------------------
+
+    def _auto_snap_splitter(self):
+        """Resize the splitter so the preview gets as much space as possible.
+
+        Column 0 is a Fixed-width toggle column (COL_TOGGLE_WIDTH).
+        The vertical header is hidden — its counter role is filled by col 0.
+        The last visible data column is always Stretch; we use only its header
+        label minimum width when computing table_min so that an over-wide
+        user session doesn't prevent the preview from opening at the right size.
+        """
+        if self.preview_panel.isHidden():
+            return
+
+        total = self.splitter.width()
+        if total <= 0:
+            return
+
+        header = self.table.horizontalHeader()
+
+        # Find last visible data column (idx 1-6, Stretch mode)
+        last_visible_idx = -1
+        for i in range(6, 0, -1):
+            if not header.isSectionHidden(i):
+                last_visible_idx = i
+                break
+
+        # Col 0: fixed toggle/counter width (always visible)
+        col_w = COL_TOGGLE_WIDTH
+
+        for i in range(1, 7):
+            if header.isSectionHidden(i):
+                continue
+            if i == last_visible_idx:
+                key = SCRAPER_COLUMNS[i - 1][0]
+                if key == 'url':
+                    fm = header.fontMetrics()
+                    label = SCRAPER_COLUMNS[i - 1][1]
+                    col_w += fm.horizontalAdvance(label) + 24
+                else:
+                    col_w += self.table.sizeHintForColumn(i) + 20
+            else:
+                col_w += self.table.columnWidth(i)
+
+        sb_margin = self.table.verticalScrollBar().sizeHint().width() + 4
+        table_min = col_w + sb_margin
+        splitter_handle = self.splitter.handleWidth()
+
+        if table_min + splitter_handle < total:
+            self.splitter.setSizes([table_min, total - table_min - splitter_handle])
+        else:
+            table_w = max(int(total * 0.6), table_min)
+            preview_w = max(total - table_w - splitter_handle, 50)
+            self.splitter.setSizes([table_w, preview_w])
+
+    # ------------------------------------------------------------------
+    # resizeEvent – update splitter continuously as main window resizes
+    # ------------------------------------------------------------------
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Snap splitter in real-time if preview is open
+        if not self.preview_panel.isHidden():
+            self._auto_snap_splitter()
 
     def _sanitize_filename(self, name: str) -> str:
         """Replace characters that are illegal in Windows filenames with Unicode look‑alikes."""
@@ -765,18 +1078,43 @@ class CacheViewerTab(QWidget):
     def _create_table(self, parent_layout):
         """Create asset table."""
         self.table = QTableWidget()
-        self.table.setColumnCount(6)
+        self.table.setColumnCount(7)
         self.table.setHorizontalHeaderLabels([
-            'Hash/Name', 'Asset ID', 'Type', 'Size', 'Cached At', 'URL'
+            '▼', 'Hash/Name', 'Asset ID', 'Type', 'Size', 'Cached At', 'URL'
         ])
 
         header = self.table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+
+        # Column 0: ▼ toggle — Fixed width, never sorted, never resized by user
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(0, COL_TOGGLE_WIDTH)
+
+        # Apply saved (or default) widths for data columns (1-6)
+        self._resizing_cols = True
+        for i, (key, _label, _vis, default_w) in enumerate(SCRAPER_COLUMNS, start=1):
+            w = self._col_widths.get(key) or default_w
+            self.table.setColumnWidth(i, w)
+        self._resizing_cols = False
+
+        # Apply visibility + resize modes for data columns (last visible → Stretch)
+        self._apply_column_visibility(initial=True)
+
+        # Hide the native row-number vertical header — col 0 now shows the counter
+        self.table.verticalHeader().hide()
+
+        # ── Intercept clicks on col 0 to open the visibility menu ──────────
+        # sortIndicatorChanged fires before Qt's internal sort call, so we can
+        # restore the previous sort inside the guard without a visible flicker.
+        header.sortIndicatorChanged.connect(self._on_sort_indicator_changed)
+        # sectionClicked: open the menu when col 0 is clicked
+        header.sectionClicked.connect(self._on_header_section_clicked)
+
+        # Right-click on any header section also opens the visibility menu
+        header.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        header.customContextMenuRequested.connect(self._show_col_visibility_from_header)
+
+        # Save column widths when the user drags a seam
+        header.sectionResized.connect(self._on_column_resized)
 
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
@@ -845,7 +1183,7 @@ class CacheViewerTab(QWidget):
         self.preview_container_layout.addWidget(self.audio_wrapper)
 
         # Animation viewer
-        self.animation_viewer = AnimationViewerPanel()
+        self.animation_viewer = AnimationViewerPanel(config_manager=self.config_manager)
         self.preview_container_layout.addWidget(self.animation_viewer)
 
         # Text viewer for other types
@@ -984,7 +1322,13 @@ class CacheViewerTab(QWidget):
                 else:
                     self._asset_info[asset_id]['row'] = row
 
-                # Hash/Name (column 0) - show resolved name or hash based on toggle
+                # Column 0: row counter (1-based), not selectable, centred
+                counter_item = NumericSortItem(row, str(row + 1))
+                counter_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                counter_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                self.table.setItem(row, 0, counter_item)
+
+                # Column 1: Hash/Name — also carries the asset UserRole payload
                 info = self._asset_info[asset_id]
                 if self._show_names and info.get('resolved_name'):
                     display_val = info['resolved_name']
@@ -992,47 +1336,42 @@ class CacheViewerTab(QWidget):
                     display_val = hash_val
                 name_item = QTableWidgetItem(display_val)
                 name_item.setData(Qt.ItemDataRole.UserRole, asset)
-                self.table.setItem(row, 0, name_item)
+                self.table.setItem(row, 1, name_item)
 
-                # Asset ID (column 1)
+                # Column 2: Asset ID
                 id_item = QTableWidgetItem(asset_id)
-                self.table.setItem(row, 1, id_item)
+                self.table.setItem(row, 2, id_item)
 
-                # Type (column 2)
+                # Column 3: Type
                 type_name = asset['type_name']
-                
-                # Elide the type name if it's too long, based on window width
                 fm = self.table.fontMetrics()
                 max_w = max(100, int(self.width() * 0.15))
                 elided_type = fm.elidedText(type_name, Qt.TextElideMode.ElideRight, max_w)
-                
                 type_item = QTableWidgetItem(elided_type)
                 if elided_type != type_name:
                     type_item.setToolTip(type_name)
-                    
-                self.table.setItem(row, 2, type_item)
+                self.table.setItem(row, 3, type_item)
 
-                # Size (column 3)
+                # Column 4: Size
                 size = asset.get('size', 0)
                 size_str = self._format_size(size)
                 size_item = NumericSortItem(size, size_str)
-                self.table.setItem(row, 3, size_item)
+                self.table.setItem(row, 4, size_item)
 
-                # Cached At (column 4)
+                # Column 5: Cached At
                 cached_at = asset.get('cached_at', '')
                 if cached_at:
-                    # Format datetime
                     try:
                         cached_at = cached_at.split('T')[0] + ' ' + cached_at.split('T')[1].split('.')[0]
                     except (IndexError, AttributeError):
                         pass
                 cached_item = QTableWidgetItem(cached_at)
-                self.table.setItem(row, 4, cached_item)
+                self.table.setItem(row, 5, cached_item)
 
-                # URL (column 5)
+                # Column 6: URL
                 url = asset.get('url', '')
                 url_item = QTableWidgetItem(url)
-                self.table.setItem(row, 5, url_item)
+                self.table.setItem(row, 6, url_item)
         finally:
             # Re-enable updates
             self.table.blockSignals(False)
@@ -1146,7 +1485,7 @@ class CacheViewerTab(QWidget):
                 else:
                     display_val = info.get('hash', '')
 
-                item = self.table.item(row, 0)
+                item = self.table.item(row, 1)  # Hash/Name is now col 1
                 if item:
                     item.setText(display_val)
         finally:
@@ -1163,7 +1502,7 @@ class CacheViewerTab(QWidget):
             return
         # Only update if Show Names is enabled
         if self._show_names:
-            item = self.table.item(row, 0)
+            item = self.table.item(row, 1)  # Hash/Name is col 1
             if item:
                 item.setText(name)
 
@@ -1332,7 +1671,7 @@ class CacheViewerTab(QWidget):
         if current_row < 0:
             return None
 
-        id_item = self.table.item(current_row, 0)
+        id_item = self.table.item(current_row, 1)  # col 1 = Hash/Name (carries UserRole)
         if not id_item:
             return None
 
@@ -1455,7 +1794,7 @@ class CacheViewerTab(QWidget):
         assets_to_delete = []
         for row_index in selected_rows:
             row = row_index.row()
-            item = self.table.item(row, 0)
+            item = self.table.item(row, 1)
             if item:
                 asset = item.data(Qt.ItemDataRole.UserRole)
                 if asset:
@@ -1536,8 +1875,13 @@ class CacheViewerTab(QWidget):
             self._clear_preview()
             return
             
-        # Ensure preview panel is visible when an asset is selected
+        # Track if preview was hidden before showing it
+        was_hidden = self.preview_panel.isHidden()
         self.preview_panel.show()
+        
+        # Auto-snap splitter ONLY if it was previously hidden (first selection)
+        if was_hidden:
+            QTimer.singleShot(0, self._auto_snap_splitter)
 
         # Track selected asset ID for persistence across refreshes
         self._selected_asset_id = asset['id']
@@ -1620,7 +1964,7 @@ class CacheViewerTab(QWidget):
         asset_types = set()
         for row_index in selected_rows:
             row = row_index.row()
-            item = self.table.item(row, 0)
+            item = self.table.item(row, 1)
             if item:
                 asset = item.data(Qt.ItemDataRole.UserRole)
                 if asset:
@@ -1681,11 +2025,11 @@ class CacheViewerTab(QWidget):
         elif action == delete_action:
             self._delete_selected()
         elif action == copy_hash_action:
-            self._copy_column(0)
+            self._copy_column(1)   # Hash/Name
         elif action == copy_id_action:
-            self._copy_column(1)
+            self._copy_column(2)   # Asset ID
         elif action == copy_url_action:
-            self._copy_column(5)
+            self._copy_column(6)   # URL
         elif action == copy_converted_action:
             self._copy_converted()
 
@@ -1721,7 +2065,7 @@ class CacheViewerTab(QWidget):
 
         # Only process first selected asset
         row = selected_rows[0].row()
-        item = self.table.item(row, 0)
+        item = self.table.item(row, 1)
         if not item:
             return
 
@@ -1838,7 +2182,7 @@ class CacheViewerTab(QWidget):
         assets_to_export = []
         for row_index in selected_rows:
             row = row_index.row()
-            item = self.table.item(row, 0)
+            item = self.table.item(row, 1)
             if item:
                 asset = item.data(Qt.ItemDataRole.UserRole)
                 if asset:
@@ -1931,6 +2275,7 @@ class CacheViewerTab(QWidget):
         self._clear_preview()
         self.stop_preview_btn.hide()
         self.table.clearSelection()
+        self.table.setCurrentItem(None)
         # Show default preview message
         self.image_label.setText('Select an asset to preview')
         self.image_label.show()
@@ -1951,6 +2296,7 @@ class CacheViewerTab(QWidget):
         # Deselect currently tracked asset in tree/internal state
         self._selected_asset_id = None
         self.table.clearSelection()
+        self.table.setCurrentItem(None)
 
         self._current_pixmap = None
         self.audio_wrapper.hide()

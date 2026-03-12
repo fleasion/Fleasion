@@ -19,6 +19,7 @@ class SystemTray:
 
         # Keep references to open windows to prevent garbage collection
         self.open_windows = []
+        self.dashboard_window = None
 
         # Create tray icon
         self.tray = QSystemTrayIcon()
@@ -32,6 +33,9 @@ class SystemTray:
 
         # Apply initial theme
         ThemeManager.apply_theme(self.config_manager.theme)
+
+        # Connect tray activation signal
+        self.tray.activated.connect(self._on_tray_activated)
 
         # Show tray icon
         self.tray.show()
@@ -249,12 +253,37 @@ class SystemTray:
         window.show()
 
     def _show_replacer_config(self):
-        """Show Replacer Config window."""
+        """Show Replacer Config window (Dashboard)."""
+        if self.dashboard_window:
+            self.dashboard_window.show()
+            self.dashboard_window.raise_()
+            self.dashboard_window.activateWindow()
+            return
+
         window = ReplacerConfigWindow(self.config_manager, self.proxy_master)
-        window.destroyed.connect(lambda: self._remove_window(window))
+        window.destroyed.connect(self._on_dashboard_destroyed)
+        self.dashboard_window = window
         self.open_windows.append(window)
         # Note: ReplacerConfigWindow applies always_on_top in its __init__
         window.show()
+
+    def _on_dashboard_destroyed(self):
+        """Handle dashboard destruction."""
+        if self.dashboard_window in self.open_windows:
+            self.open_windows.remove(self.dashboard_window)
+        self.dashboard_window = None
+
+    def _toggle_dashboard(self):
+        """Toggle dashboard visibility."""
+        if self.dashboard_window and self.dashboard_window.isVisible():
+            self.dashboard_window.hide()
+        else:
+            self._show_replacer_config()
+
+    def _on_tray_activated(self, reason):
+        """Handle tray icon activation (e.g., click)."""
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:  # Trigger is usually left-click
+            self._toggle_dashboard()
 
     def _show_delete_cache(self):
         """Show Delete Cache window."""

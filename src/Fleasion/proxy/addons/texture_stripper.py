@@ -5,6 +5,7 @@ import json
 import xml.etree.ElementTree as ET
 import urllib.request
 import hashlib
+import shutil
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -83,6 +84,60 @@ def _inject_obj_into_solidmodel(bin_data: bytes, obj_path: Path) -> bytes:
     log_buffer.log('SolidModel', f'Injected CSGMDL into {injected} root(s)')
     return write_rbxm(doc)
 
+
+# ---------------------------------------------------------------------------
+# Intermediary conversion helpers (lazy — imported on first use)
+# ---------------------------------------------------------------------------
+
+def _try_mesh_to_obj(path: Path, context: str) -> Path | None:
+    """Convert a local .mesh file to a cached OBJ.  Returns None on failure."""
+    try:
+        from ...cache.tools.solidmodel_converter.mesh_intermediary import mesh_file_to_cached_obj
+        return mesh_file_to_cached_obj(path)
+    except Exception as exc:
+        log_buffer.log('Intermediary', f'{context}: .mesh→OBJ failed: {exc}')
+        return None
+
+
+def _try_bin_to_obj(path: Path, context: str) -> Path | None:
+    """Convert a local .bin (binary CSG RBXM) to a cached OBJ.  Returns None on failure."""
+    try:
+        from ...cache.tools.solidmodel_converter.mesh_intermediary import bin_file_to_cached_obj
+        return bin_file_to_cached_obj(path)
+    except Exception as exc:
+        log_buffer.log('Intermediary', f'{context}: .bin→OBJ failed: {exc}')
+        return None
+
+
+def _download_remote_file(url: str, dest: Path, label: str) -> bool:
+    """Download *url* to *dest*.  Returns True on success, False on error."""
+    try:
+        APP_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        if dest.exists():
+            return True  # already cached
+
+        log_buffer.log('Downloader', f'Downloading remote {label}: {url}')
+        req = urllib.request.Request(
+            url,
+            headers={
+                'User-Agent': (
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                    'AppleWebKit/537.36 (KHTML, like Gecko) '
+                    'Chrome/120.0.0.0 Safari/537.36'
+                )
+            },
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp, \
+                open(dest, 'wb') as out_file:
+            shutil.copyfileobj(resp, out_file)
+
+        log_buffer.log('Downloader', f'Saved {label} to cache: {dest.name}')
+        return True
+    except Exception as exc:
+        log_buffer.log('Downloader', f'Failed to download {label}: {exc}')
+        return False
+
+
 class TextureStripper:
     """Mitmproxy addon that strips textures and performs asset replacements."""
 
@@ -150,6 +205,178 @@ class TextureStripper:
         """Clear cached replacements for a completed flow."""
         self._replacements_cache.pop(flow_id, None)
 
+    def _route_local_replacement(
+        self,
+        flow_id: str,
+        req_id: str,
+        aid,
+        local_path: str,
+        is_solidmodel: bool,
+    ) -> None:
+        """Determine the correct pending-request entry for a local file replacement.
+
+        Handles the following cases transparently:
+
+        ┌──────────────┬──────────┬────────────────────────────────────────────────────────────┐
+        │ Asset type   │ Ext      │ Strategy                                                    │
+        ├──────────────┼──────────┼────────────────────────────────────────────────────────────┤
+        │ SolidModel   │ .obj     │ solidmodel_obj injection (existing, unchanged)              │
+        │ SolidModel   │ .mesh    │ .mesh → OBJ intermediary → solidmodel_obj injection         │
+        │ SolidModel   │ .bin     │ .bin → OBJ intermediary → solidmodel_obj injection          │
+        │ Mesh / other │ .bin     │ .bin → OBJ intermediary → local (OBJ→.mesh auto-converts)  │
+        │ Mesh / other │ anything │ local (existing path; OBJ→.mesh handled in local handler)  │
+        └──────────────┴──────────┴────────────────────────────────────────────────────────────┘
+        """
+        path = Path(local_path)
+        ext = path.suffix.lower()
+        key = f'{flow_id}_{req_id}'
+
+        if is_solidmodel:
+            if ext == '.obj':
+                # Existing direct injection path — no conversion needed
+                self.pending_requests[key] = (req_id, 'solidmodel_obj', local_path)
+                log_buffer.log('SolidModel', f'Tracking SolidModel {aid} for OBJ injection')
+
+            elif ext == '.mesh':
+                # .mesh → OBJ intermediary → inject into CDN SolidModel RBXM
+                obj_path = _try_mesh_to_obj(path, f'SolidModel {aid}')
+                if obj_path:
+                    self.pending_requests[key] = (req_id, 'solidmodel_obj', str(obj_path))
+                    log_buffer.log('SolidModel', f'Tracking SolidModel {aid} for .mesh→OBJ injection')
+                else:
+                    log_buffer.log('SolidModel', f'Skipping SolidModel {aid}: .mesh→OBJ conversion failed')
+
+            elif ext == '.bin':
+                # binary CSG RBXM → OBJ intermediary → inject into CDN SolidModel RBXM
+                obj_path = _try_bin_to_obj(path, f'SolidModel {aid}')
+                if obj_path:
+                    self.pending_requests[key] = (req_id, 'solidmodel_obj', str(obj_path))
+                    log_buffer.log('SolidModel', f'Tracking SolidModel {aid} for .bin→OBJ injection')
+                else:
+                    log_buffer.log('SolidModel', f'Skipping SolidModel {aid}: .bin→OBJ conversion failed')
+
+            else:
+                # Unknown extension for SolidModel — fall through to local serving
+                self.pending_requests[key] = (req_id, 'local', local_path)
+                log_buffer.log('Local', f'Tracking SolidModel {aid} for local replacement (ext={ext})')
+
+        else:
+            # Non-SolidModel (Mesh, MeshPart, etc.)
+            if ext == '.bin':
+                # binary CSG RBXM → OBJ intermediary; the local handler will
+                # auto-convert .obj → .mesh before serving it.
+                obj_path = _try_bin_to_obj(path, f'Mesh {aid}')
+                if obj_path:
+                    self.pending_requests[key] = (req_id, 'local', str(obj_path))
+                    log_buffer.log('Local', f'Tracking Mesh {aid} for .bin→OBJ→.mesh replacement')
+                else:
+                    log_buffer.log('Local', f'Skipping Mesh {aid}: .bin→OBJ conversion failed')
+            else:
+                # .mesh, .obj, or any other type — serve directly (existing handler
+                # already auto-converts .obj → .mesh when the local file is served).
+                self.pending_requests[key] = (req_id, 'local', local_path)
+                log_buffer.log('Local', f'Tracking asset {aid} for local replacement')
+
+    def _route_cdn_replacement(
+        self,
+        flow_id: str,
+        req_id: str,
+        aid,
+        cdn_url: str,
+        is_solidmodel: bool,
+    ) -> None:
+        """Determine the correct pending-request entry for a CDN URL replacement.
+
+        For `.obj` URLs the existing download-and-cache logic is preserved
+        exactly.  For `.mesh` and `.bin` URLs that require conversion, the
+        remote file is downloaded to ``APP_CACHE_DIR`` and converted to an
+        intermediary OBJ, which is then routed through the same injection /
+        local-serve paths as local files.
+
+        CDN `.mesh` links targeting a *non-SolidModel* asset (i.e. a regular
+        Mesh/MeshPart) are handled by a direct CDN redirect — Roblox accepts
+        `.mesh` files from CDN without any wrapping, so no download or
+        conversion is required in that case.
+
+        ┌──────────────┬──────────┬────────────────────────────────────────────────────────────┐
+        │ Asset type   │ CDN ext  │ Strategy                                                    │
+        ├──────────────┼──────────┼────────────────────────────────────────────────────────────┤
+        │ SolidModel   │ .obj     │ download → cache → solidmodel_obj (existing)               │
+        │ SolidModel   │ .mesh    │ download → cache → .mesh→OBJ → solidmodel_obj injection    │
+        │ SolidModel   │ .bin     │ download → cache → .bin→OBJ  → solidmodel_obj injection    │
+        │ Mesh / other │ .obj     │ download → cache → local (OBJ→.mesh auto)  (existing)      │
+        │ Mesh / other │ .bin     │ download → cache → .bin→OBJ  → local (OBJ→.mesh auto)      │
+        │ Mesh / other │ .mesh    │ CDN redirect (Roblox accepts .mesh directly — no conversion)│
+        │ any          │ other    │ CDN redirect (existing)                                     │
+        └──────────────┴──────────┴────────────────────────────────────────────────────────────┘
+        """
+        parsed_url = urlparse(str(cdn_url))
+        cdn_ext = Path(parsed_url.path).suffix.lower()
+        key = f'{flow_id}_{req_id}'
+        url_hash = hashlib.md5(str(cdn_url).encode('utf-8')).hexdigest()
+
+        # ── .obj (existing logic, preserved unchanged) ─────────────────────
+        if cdn_ext == '.obj':
+            local_cache_path = APP_CACHE_DIR / f'{url_hash}.obj'
+            ok = _download_remote_file(cdn_url, local_cache_path, '.obj')
+            if ok:
+                if is_solidmodel:
+                    self.pending_requests[key] = (req_id, 'solidmodel_obj', str(local_cache_path))
+                    log_buffer.log('SolidModel', f'Tracking online SolidModel {aid} for local OBJ injection')
+                else:
+                    self.pending_requests[key] = (req_id, 'local', str(local_cache_path))
+                    log_buffer.log('Local', f'Tracking online asset {aid} for local OBJ replacement')
+            else:
+                # Download failed — fall back to a plain CDN redirect
+                self.pending_requests[key] = (req_id, 'cdn', cdn_url)
+                log_buffer.log('CDN', f'Tracking asset {aid} for CDN redirect (OBJ download fallback)')
+            return
+
+        # ── .mesh ──────────────────────────────────────────────────────────
+        if cdn_ext == '.mesh':
+            if not is_solidmodel:
+                # Roblox accepts .mesh directly from CDN — no conversion needed
+                self.pending_requests[key] = (req_id, 'cdn', cdn_url)
+                log_buffer.log('CDN', f'Tracking Mesh {aid} for direct CDN .mesh redirect')
+                return
+
+            # SolidModel needs .mesh → OBJ → CSG injection
+            local_cache_path = APP_CACHE_DIR / f'{url_hash}.mesh'
+            ok = _download_remote_file(cdn_url, local_cache_path, '.mesh')
+            if ok:
+                obj_path = _try_mesh_to_obj(local_cache_path, f'SolidModel CDN {aid}')
+                if obj_path:
+                    self.pending_requests[key] = (req_id, 'solidmodel_obj', str(obj_path))
+                    log_buffer.log('SolidModel', f'Tracking online SolidModel {aid} for .mesh→OBJ injection')
+                    return
+            # Fallback
+            self.pending_requests[key] = (req_id, 'cdn', cdn_url)
+            log_buffer.log('CDN', f'Tracking SolidModel {aid} for CDN redirect (.mesh conversion fallback)')
+            return
+
+        # ── .bin (binary CSG RBXM) ─────────────────────────────────────────
+        if cdn_ext == '.bin':
+            local_cache_path = APP_CACHE_DIR / f'{url_hash}.bin'
+            ok = _download_remote_file(cdn_url, local_cache_path, '.bin')
+            if ok:
+                obj_path = _try_bin_to_obj(local_cache_path, f'CDN {aid}')
+                if obj_path:
+                    if is_solidmodel:
+                        self.pending_requests[key] = (req_id, 'solidmodel_obj', str(obj_path))
+                        log_buffer.log('SolidModel', f'Tracking online SolidModel {aid} for .bin→OBJ injection')
+                    else:
+                        self.pending_requests[key] = (req_id, 'local', str(obj_path))
+                        log_buffer.log('Local', f'Tracking online Mesh {aid} for .bin→OBJ→.mesh replacement')
+                    return
+            # Fallback
+            self.pending_requests[key] = (req_id, 'cdn', cdn_url)
+            log_buffer.log('CDN', f'Tracking asset {aid} for CDN redirect (.bin conversion fallback)')
+            return
+
+        # ── Any other extension — plain CDN redirect (unchanged) ──────────
+        self.pending_requests[key] = (req_id, 'cdn', cdn_url)
+        log_buffer.log('CDN', f'Tracking asset {aid} for CDN redirect')
+
     def request(self, flow: http.HTTPFlow):
         """Process request and apply modifications."""
         url = flow.request.pretty_url
@@ -167,7 +394,7 @@ class TextureStripper:
             if cdn_url in url:
                 try:
                     path = Path(local_path)
-                    
+
                     # Convert .obj to .mesh if necessary
                     if path.suffix.lower() == '.obj':
                         from ...cache.tools.solidmodel_converter.obj_to_mesh import get_or_create_mesh_from_obj
@@ -245,77 +472,33 @@ class TextureStripper:
                         type_keys.append(at_name)
                         if mapped_id := self.reverse_asset_types_mapping.get(str(at_name).lower()):
                             type_keys.append(mapped_id)
-                            
+
                     for tk in type_keys:
                         if tk in cdn_replacements or tk in local_replacements:
                             matched_key = tk
                             break
 
+                # Determine asset type context for routing decisions
+                asset_type_id = e.get('assetTypeId')
+                at_name = str(e.get('assetType', '')).lower()
+                mapped_type_id = self.reverse_asset_types_mapping.get(at_name)
+                is_solidmodel = (asset_type_id == 39) or (mapped_type_id == 39)
+
                 if matched_key in cdn_replacements:
                     cdn_url = cdn_replacements[matched_key]
-                    parsed_url = urlparse(str(cdn_url))
-                    if parsed_url.path.lower().endswith('.obj'):
-                        # Hash URL to get unique filename
-                        url_hash = hashlib.md5(str(cdn_url).encode('utf-8')).hexdigest()
-                        local_cache_path = APP_CACHE_DIR / f'{url_hash}.obj'
-                        
-                        try:
-                            # Create cache directory if it doesn't exist
-                            APP_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-                            
-                            # Download file if not already cached
-                            if not local_cache_path.exists():
-                                log_buffer.log('Downloader', f'Downloading remote OBJ: {cdn_url}')
-                                # Set a reasonable timeout to not hang the proxy indefinitely
-                                req = urllib.request.Request(
-                                    cdn_url,
-                                    headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
-                                )
-                                with urllib.request.urlopen(req, timeout=30) as response, open(local_cache_path, 'wb') as out_file:
-                                    import shutil
-                                    shutil.copyfileobj(response, out_file)
-                                log_buffer.log('Downloader', f'Saved OBJ to cache: {local_cache_path.name}')
-                            
-                            # Reroute to the local replacement logic
-                            asset_type_id = e.get('assetTypeId')
-                            at_name = str(e.get('assetType', '')).lower()
-                            mapped_type_id = self.reverse_asset_types_mapping.get(at_name)
-                            is_solidmodel = (asset_type_id == 39) or (mapped_type_id == 39)
-                            
-                            if is_solidmodel:
-                                self.pending_requests[f'{flow.id}_{req_id}'] = (req_id, 'solidmodel_obj', str(local_cache_path))
-                                log_buffer.log('SolidModel', f'Tracking online SolidModel {aid} for local OBJ injection')
-                            else:
-                                self.pending_requests[f'{flow.id}_{req_id}'] = (req_id, 'local', str(local_cache_path))
-                                log_buffer.log('Local', f'Tracking online asset {aid} for local OBJ replacement')
-                                
-                        except Exception as dl_err:
-                            log_buffer.log('Downloader', f'Failed to download OBJ: {dl_err}')
-                            # Fallback to standard CDN redirect if download fails
-                            self.pending_requests[f'{flow.id}_{req_id}'] = (req_id, 'cdn', cdn_url)
-                            log_buffer.log('CDN', f'Tracking asset {aid} for CDN redirect (Fallback)')
-                    else:
-                        self.pending_requests[f'{flow.id}_{req_id}'] = (req_id, 'cdn', cdn_url)
-                        log_buffer.log('CDN', f'Tracking asset {aid} for CDN redirect')
+                    self._route_cdn_replacement(
+                        flow.id, req_id, aid, cdn_url, is_solidmodel
+                    )
+
                 elif matched_key in local_replacements:
                     local_path = local_replacements[matched_key]
-                    # Detect SolidModel (assetTypeId 39) with an OBJ replacement:
-                    # instead of serving the OBJ directly, we let the original
-                    # CDN request through and inject the mesh on the response.
-                    asset_type_id = e.get('assetTypeId')
-                    at_name = str(e.get('assetType', '')).lower()
-                    mapped_type_id = self.reverse_asset_types_mapping.get(at_name)
-                    is_solidmodel = (asset_type_id == 39) or (mapped_type_id == 39)
-                    if is_solidmodel and str(local_path).lower().endswith('.obj'):
-                        self.pending_requests[f'{flow.id}_{req_id}'] = (req_id, 'solidmodel_obj', local_path)
-                        log_buffer.log('SolidModel', f'Tracking SolidModel {aid} for OBJ injection')
-                    else:
-                        self.pending_requests[f'{flow.id}_{req_id}'] = (req_id, 'local', local_path)
-                        log_buffer.log('Local', f'Tracking asset {aid} for local replacement')
+                    self._route_local_replacement(
+                        flow.id, req_id, aid, local_path, is_solidmodel
+                    )
 
         # Remove assets
         original_len = len(data)
-        
+
         def _should_remove(e: dict) -> bool:
             if not isinstance(e, dict):
                 return False
@@ -332,31 +515,31 @@ class TextureStripper:
                     return True
             return False
 
-        # In python, slice assignment to a list does not need to be typed
         data[:] = [e for e in data if not _should_remove(e)]
-        
+
         if (removed := original_len - len(data)) > 0:
             log_buffer.log('Remover', f'Removed {removed} asset(s)')
             modified = True
 
         # Replace assets (ID/Type mode)
-        def _get_type_ids(e: dict) -> list[int]:
+        def _get_type_ids(e: dict) -> list:
             ids = []
             if (at_id := e.get('assetTypeId')) is not None:
                 ids.append(at_id)
             if (at_name := e.get('assetType')):
+                ids.append(at_name)  # include raw string key e.g. "Mesh"
                 # Map integer ID too
                 if mapped_id := self.reverse_asset_types_mapping.get(str(at_name).lower()):
                     ids.append(mapped_id)
             return ids
-            
+
         for e in data:
             if not isinstance(e, dict):
                 continue
 
             aid = e.get('assetId')
             type_keys = _get_type_ids(e)
-            
+
             # Asset replacement (ID and Type mode)
             matched_key = None
             if aid in replacements:
@@ -366,13 +549,11 @@ class TextureStripper:
                     if tk in replacements:
                         matched_key = tk
                         break
-                        
+
             if matched_key is not None:
                 e['assetId'] = replacements[matched_key]
                 log_buffer.log('Replacer', f'Replaced {aid} -> {replacements[matched_key]}')
                 modified = True
-
-
 
         if modified:
             flow.request.raw_content = self._encode(data, enc)
@@ -393,14 +574,16 @@ class TextureStripper:
                 if node is not None and node.text:
                     try:
                         nested_id = int(str(node.text))
-                    except (ValueError, TypeError):
-                        pass
                         if nested_id in replacements:
                             new_id = replacements[nested_id]
                             node.text = str(new_id)
                             log_buffer.log('TexturePack', f'Replaced {elem_name} ID {nested_id} -> {new_id}')
                             modified = True
-                # Return modified XML
+                    except (ValueError, TypeError):
+                        pass
+
+            # Return modified XML only if something changed
+            if modified:
                 return ET.tostring(root, encoding='unicode').encode('utf-8')
             return None
         except ET.ParseError:
@@ -438,7 +621,7 @@ class TextureStripper:
                         flow.response.raw_content = modified
                         flow.response.headers['Content-Type'] = 'application/octet-stream'
                         flow.response.headers['Content-Length'] = str(len(modified))
-                        # Strip content-encoding so the client sees plain XML
+                        # Strip content-encoding so the client sees plain binary
                         flow.response.headers.pop('Content-Encoding', None)
                         log_buffer.log(
                             'SolidModel',

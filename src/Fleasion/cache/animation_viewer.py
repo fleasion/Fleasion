@@ -5,6 +5,7 @@ interpolation, matching the Reference pyvista/vtk implementation.
 """
 
 import math
+import time
 import os
 import sys
 import xml.etree.ElementTree as ET
@@ -18,8 +19,10 @@ from OpenGL.GLU import *
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QSlider, QLabel
+    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QSlider, QLabel, QMessageBox, QMenu, QWidgetAction
 )
+from PyQt6.QtGui import QAction, QSurfaceFormat, QGuiApplication
+
 
 from ..utils import log_buffer
 
@@ -618,6 +621,25 @@ class AnimationGLWidget(QOpenGLWidget):
         # Display lists for mesh caching (major performance boost)
         self.display_lists: Dict[str, int] = {}
         self.grid_display_list: int = 0
+        
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        
+        # Camera state
+        self.camera_mode = 'orbit'
+        self.cam_pos = np.array([0.0, 0.0, 0.0], dtype=float)
+        self.cam_yaw = 0.0
+        self.cam_pitch = 0.0
+        self.base_speed = 0.1
+        
+        self.auto_rotate = False
+        self.keys_pressed = set()
+        self.last_tick_time = time.time()
+        self.show_grid = True
+        
+        # Main update tick (~60 FPS)
+        self.timer = QTimer()
+        self.timer.timeout.connect(self._update_tick)
+        self.timer.start(16)
 
     def _create_placeholder_rig(self, pose_names: set) -> Tuple[Dict[int, 'Part'], Dict[str, 'Motor']]:
         """Create placeholder rig with simple cubes for unsupported animation types."""
@@ -653,6 +675,13 @@ class AnimationGLWidget(QOpenGLWidget):
             if not self.keyframes:
                 log_buffer.log('AnimationViewer', 'No keyframes found in animation data')
                 return False
+
+            # Retain angles between meshes, but cleanly exit FPS mode & reset distance
+            if self.camera_mode == 'fps':
+                self.camera_mode = 'orbit'
+                self.rotation_x = self.cam_pitch
+                self.rotation_y = self.cam_yaw
+            self.zoom = 20.0
 
             self.duration = max(kf.time for kf in self.keyframes) if self.keyframes else 0
 
@@ -762,14 +791,17 @@ class AnimationGLWidget(QOpenGLWidget):
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         glLoadIdentity()
 
-        # Camera
-        cam_x = self.camera_target[0]
-        cam_y = self.camera_target[1]
-        cam_z = self.camera_target[2]
-        gluLookAt(0, 0, self.zoom, cam_x, cam_y, cam_z, 0, 1, 0)
-        glTranslatef(-cam_x, -cam_y, -cam_z)
-        glRotatef(self.rotation_x, 1, 0, 0)
-        glRotatef(self.rotation_y, 0, 1, 0)
+        # Camera Transform setup
+        if self.camera_mode == 'orbit':
+            glTranslatef(0.0, 0.0, -self.zoom) # Invert zoom to match obj_viewer math
+            glRotatef(self.rotation_x, 1.0, 0.0, 0.0)
+            glRotatef(self.rotation_y, 0.0, 1.0, 0.0)
+            glTranslatef(-self.camera_target[0], -self.camera_target[1], -self.camera_target[2])
+        else:
+            # FPS Look & Move transform
+            glRotatef(self.cam_pitch, 1.0, 0.0, 0.0)
+            glRotatef(self.cam_yaw, 0.0, 1.0, 0.0)
+            glTranslatef(-self.cam_pos[0], -self.cam_pos[1], -self.cam_pos[2])
 
         # Update world transforms
         self._update_world_transforms()
@@ -804,8 +836,8 @@ class AnimationGLWidget(QOpenGLWidget):
 
             glPopMatrix()
 
-        # Draw grid
-        self._draw_grid()
+        if self.show_grid:
+            self._draw_grid()
 
         # Draw XYZ axis indicator
         self._draw_axis_indicator()
@@ -936,31 +968,42 @@ class AnimationGLWidget(QOpenGLWidget):
             self.display_lists[part_ref] = self._compile_mesh_display_list(part_ref, mesh_data)
         return self.display_lists[part_ref]
 
-    def _compile_grid_display_list(self) -> int:
-        """Compile grid into a display list."""
-        dl = glGenLists(1)
-        glNewList(dl, GL_COMPILE)
-
-        glDisable(GL_LIGHTING)
-        glColor3f(0.3, 0.3, 0.3)
-        glBegin(GL_LINES)
-        grid_size = 10
-        for i in range(-grid_size, grid_size + 1):
-            glVertex3f(i, 0, -grid_size)
-            glVertex3f(i, 0, grid_size)
-            glVertex3f(-grid_size, 0, i)
-            glVertex3f(grid_size, 0, i)
-        glEnd()
-        glEnable(GL_LIGHTING)
-
-        glEndList()
-        return dl
-
     def _draw_grid(self):
-        """Draw a reference grid using cached display list."""
-        if self.grid_display_list == 0:
-            self.grid_display_list = self._compile_grid_display_list()
-        glCallList(self.grid_display_list)
+        """Draw a subtle floor grid to provide spatial context."""
+        glPushAttrib(GL_ALL_ATTRIB_BITS)
+        glDisable(GL_LIGHTING)
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        
+        glColor4f(1.0, 1.0, 1.0, 0.08) # Very subtle white lines
+        glLineWidth(1.0)
+        
+        grid_size = 10.0
+        grid_step = 0.5
+        
+        bottom_y = 0.0
+        
+        glBegin(GL_LINES)
+        val = -grid_size
+        while val <= grid_size + 0.001:
+            if abs(val) < 0.01:
+                glColor4f(1.0, 0.2, 0.2, 0.15) # X axis highlight
+            else:
+                glColor4f(1.0, 1.0, 1.0, 0.08)
+            glVertex3f(val, bottom_y, -grid_size)
+            glVertex3f(val, bottom_y, grid_size)
+            
+            if abs(val) < 0.01:
+                glColor4f(0.2, 0.4, 1.0, 0.15) # Z axis highlight
+            else:
+                glColor4f(1.0, 1.0, 1.0, 0.08)
+            glVertex3f(-grid_size, bottom_y, val)
+            glVertex3f(grid_size, bottom_y, val)
+            
+            val += grid_step
+        glEnd()
+        
+        glPopAttrib()
 
     def _draw_axis_indicator(self):
         """Draw XYZ axis indicator in bottom left corner."""
@@ -1033,22 +1076,42 @@ class AnimationGLWidget(QOpenGLWidget):
         self.last_pos = event.pos()
 
     def mouseMoveEvent(self, event):
-        """Handle mouse drag for rotation."""
-        if self.last_pos:
-            dx = event.pos().x() - self.last_pos.x()
-            dy = event.pos().y() - self.last_pos.y()
+        """Handle mouse drag."""
+        if self.last_pos is None:
+            return
 
-            self.rotation_y += dx * 0.5
-            self.rotation_x += dy * 0.5
+        dx = event.pos().x() - self.last_pos.x()
+        dy = event.pos().y() - self.last_pos.y()
 
-            self.last_pos = event.pos()
+        if event.buttons() & Qt.MouseButton.LeftButton:
+            if self.camera_mode == 'orbit':
+                self.rotation_x += dy * 0.5
+                self.rotation_y += dx * 0.5
+            else:
+                self.cam_pitch += dy * 0.5
+                self.cam_yaw += dx * 0.5
             self.update()
 
+        self.last_pos = event.pos()
+
     def wheelEvent(self, event):
-        """Handle mouse wheel for zoom."""
+        """Handle mouse wheel."""
         delta = event.angleDelta().y()
-        self.zoom -= delta * 0.01
-        self.zoom = max(2, min(50, self.zoom))
+        if self.camera_mode == 'orbit':
+            self.zoom -= delta * 0.01
+            self.zoom = max(2, min(200, self.zoom))
+        else:
+            speed = self.base_speed * 5.0 * (delta / 120.0)
+            yaw = math.radians(self.cam_yaw)
+            pitch = math.radians(self.cam_pitch)
+            
+            forward = np.array([
+                math.cos(pitch) * math.sin(yaw), 
+                -math.sin(pitch), 
+                -math.cos(pitch) * math.cos(yaw)
+            ])
+            self.cam_pos += forward * speed
+            
         self.update()
 
     def set_time(self, time: float):
@@ -1057,16 +1120,140 @@ class AnimationGLWidget(QOpenGLWidget):
         self.update()
 
 
+    # Physical scan codes
+    _SCAN_W = 0x11
+    _SCAN_A = 0x1E
+    _SCAN_S = 0x1F
+    _SCAN_D = 0x20
+    _SCAN_Q = 0x10
+    _SCAN_E = 0x12
+    _SCAN_SPACE = 0x39
+    _SCAN_LSHIFT = 0x2A
+    _SCAN_WASD = {_SCAN_W, _SCAN_A, _SCAN_S, _SCAN_D}
+
+    def _is_scan_pressed(self, scan_code):
+        return scan_code in self.keys_pressed
+
+    def keyPressEvent(self, event):
+        scan = event.nativeScanCode()
+        if self.camera_mode == 'orbit':
+            if scan in self._SCAN_WASD:
+                self._transition_to_fps()
+            elif event.key() in {Qt.Key.Key_Space, Qt.Key.Key_Shift}:
+                return
+        self.keys_pressed.add(scan)
+        super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event):
+        scan = event.nativeScanCode()
+        self.keys_pressed.discard(scan)
+        super().keyReleaseEvent(event)
+        
+    def focusOutEvent(self, event):
+        self.keys_pressed.clear()
+        super().focusOutEvent(event)
+
+    def set_auto_rotate(self, enabled: bool):
+        self.auto_rotate = enabled
+        if enabled and self.camera_mode == 'fps':
+            self.reset_view()
+
+    def _transition_to_fps(self):
+        if self.camera_mode == 'fps': return
+        self.camera_mode = 'fps'
+        self.auto_rotate = False
+        
+        pitch = self.rotation_x % 360.0
+        if pitch > 180.0: pitch -= 360.0
+        yaw = self.rotation_y % 360.0
+        if yaw > 180.0: yaw -= 360.0
+
+        self.cam_pitch = pitch
+        self.cam_yaw = yaw
+
+        rx = math.radians(pitch)
+        ry = math.radians(yaw)
+
+        px = -self.zoom * math.cos(rx) * math.sin(ry) + self.camera_target[0]
+        py = self.zoom * math.sin(rx) + self.camera_target[1]
+        pz = self.zoom * math.cos(rx) * math.cos(ry) + self.camera_target[2]
+
+        self.cam_pos = np.array([px, py, pz], dtype=float)
+
+    def _update_tick(self):
+        needs_update = False
+        current_time = time.time()
+        dt = current_time - self.last_tick_time
+        self.last_tick_time = current_time
+        if dt > 0.1: dt = 0.016
+
+        if self.camera_mode == 'orbit':
+            if self.auto_rotate:
+                self.rotation_y += 62.5 * dt
+                needs_update = True
+                
+        elif self.camera_mode == 'fps':
+            speed = self.base_speed * (dt * 62.5)
+            
+            if self._is_scan_pressed(self._SCAN_E): speed *= 3.0
+            if self._is_scan_pressed(self._SCAN_Q): speed *= 0.33
+
+            moved = False
+            yaw = math.radians(self.cam_yaw)
+            pitch = math.radians(self.cam_pitch)
+
+            forward = np.array([math.cos(pitch) * math.sin(yaw), -math.sin(pitch), -math.cos(pitch) * math.cos(yaw)])
+            right = np.array([math.cos(yaw), 0.0, math.sin(yaw)])
+            up = np.array([0.0, 1.0, 0.0])
+
+            if self._is_scan_pressed(self._SCAN_W): self.cam_pos += forward * speed; moved = True
+            if self._is_scan_pressed(self._SCAN_S): self.cam_pos -= forward * speed; moved = True
+            if self._is_scan_pressed(self._SCAN_A): self.cam_pos -= right * speed; moved = True
+            if self._is_scan_pressed(self._SCAN_D): self.cam_pos += right * speed; moved = True
+            if self._is_scan_pressed(self._SCAN_SPACE): self.cam_pos += up * speed; moved = True
+            if self._is_scan_pressed(self._SCAN_LSHIFT):
+                mods = QGuiApplication.keyboardModifiers()
+                if not (mods & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.MetaModifier)):
+                    self.cam_pos -= up * speed
+                    moved = True
+
+            if moved: needs_update = True
+
+        if needs_update: self.update()
+
+    def reset_view(self):
+        self.camera_mode = 'orbit'
+        self.rotation_x = 20.0
+        self.rotation_y = 205.0
+        self.zoom = 20.0
+        self.update()
+
+    def toggle_grid(self, enabled: bool):
+        self.show_grid = enabled
+        self.update()
+
 # Full animation viewer widget with controls
 
 class AnimationViewerPanel(QWidget):
     """Animation viewer with playback controls."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, config_manager=None):
         super().__init__(parent)
+        self.config_manager = config_manager
         self.gl_widget = AnimationGLWidget()
+        
+        if self.config_manager:
+            updated = False
+            if 'obj_show_grid' not in self.config_manager.settings:
+                self.config_manager.settings['obj_show_grid'] = True
+                updated = True
+            if updated:
+                self.config_manager.save()
+            self.gl_widget.show_grid = self.config_manager.settings.get('obj_show_grid', True)
+
         self.is_playing = False
         self.is_loaded = False
+        self.timescale = 1.0
 
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1094,6 +1281,52 @@ class AnimationViewerPanel(QWidget):
 
         self.time_label = QLabel('0.00s / 0.00s')
         controls_layout.addWidget(self.time_label)
+        
+        controls_layout.addStretch()
+        
+        self.options_btn = QPushButton('Options')
+        self.options_menu = QMenu(self)
+
+        self.action_auto_rotate = self.options_menu.addAction('Auto Rotate')
+        self.action_auto_rotate.setCheckable(True)
+        self.action_auto_rotate.toggled.connect(self.gl_widget.set_auto_rotate)
+
+        self.action_grid = self.options_menu.addAction('Grid')
+        self.action_grid.setCheckable(True)
+        self.action_grid.setChecked(self.gl_widget.show_grid)
+        self.action_grid.toggled.connect(self._toggle_grid_and_save)
+
+        # Timescale Slider in Menu
+        self.options_menu.addSeparator()
+        
+        ts_container = QWidget()
+        ts_layout = QVBoxLayout(ts_container)
+        ts_layout.setContentsMargins(10, 2, 10, 2)
+        ts_layout.setSpacing(0) # Tighten gap
+
+        self.ts_label = QLabel("Timescale: 1.0x")
+        self.ts_label.setStyleSheet("color: white; font-weight: normal;")
+        ts_layout.addWidget(self.ts_label)
+
+        ts_slider = QSlider(Qt.Orientation.Horizontal)
+        ts_slider.setRange(1, 80) # 0.1 to 8.0
+        ts_slider.setValue(10)
+        ts_slider.setFixedWidth(120)
+        ts_slider.valueChanged.connect(self._on_timescale_changed)
+        ts_layout.addWidget(ts_slider)
+        
+        ts_action = QWidgetAction(self)
+        ts_action.setDefaultWidget(ts_container)
+        self.options_menu.addAction(ts_action)
+
+        self.options_btn.setMenu(self.options_menu)
+        controls_layout.addWidget(self.options_btn)
+
+        self.help_btn = QPushButton('?')
+        self.help_btn.setMaximumWidth(30)
+        self.help_btn.setToolTip("View Camera Controls")
+        self.help_btn.clicked.connect(self.show_help)
+        controls_layout.addWidget(self.help_btn)
 
         layout.addLayout(controls_layout)
 
@@ -1104,6 +1337,31 @@ class AnimationViewerPanel(QWidget):
         self.timer.timeout.connect(self._update_playback)
         self.slider_pressed = False
         self.last_tick_time: Optional[float] = None
+    def _toggle_grid_and_save(self, enabled: bool):
+        self.gl_widget.toggle_grid(enabled)
+        if self.config_manager:
+            self.config_manager.settings['obj_show_grid'] = enabled
+            self.config_manager.save()
+
+    def show_help(self):
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Camera Controls")
+        msg.setText(
+            "<h3>Orbit Mode (Default)</h3>"
+            "<ul>"
+            "<li><b>Click + Drag:</b> Rotate model</li>"
+            "<li><b>Scroll Wheel:</b> Zoom in/out</li>"
+            "</ul>"
+            "<h3>FPS Mode</h3>"
+            "<p><i>Pressing WASD at any time smoothly transitions you into FPS Mode.</i></p>"
+            "<ul>"
+            "<li><b>W/A/S/D:</b> Move forward/left/back/right</li>"
+            "<li><b>Space / Shift:</b> Move Up / Down</li>"
+            "<li><b>Click + Drag:</b> Look around freely</li>"
+            "<li><b>Scroll Wheel:</b> Move in/out</li>"
+            "</ul>"
+        )
+        msg.exec()
 
     def load_animation(self, anim_data: bytes) -> bool:
         """Load animation from raw bytes."""
@@ -1118,6 +1376,8 @@ class AnimationViewerPanel(QWidget):
             self.play_pause_btn.setEnabled(True)
             self.time_slider.setEnabled(True)
             self._update_time_label()
+            if not self.is_playing:
+                self._toggle_play_pause()
         else:
             self.play_pause_btn.setEnabled(False)
             self.time_slider.setEnabled(False)
@@ -1154,7 +1414,7 @@ class AnimationViewerPanel(QWidget):
 
             self.last_tick_time = current_tick
 
-            new_time = self.gl_widget.current_time + delta
+            new_time = self.gl_widget.current_time + (delta * self.timescale)
             if new_time >= self.gl_widget.duration:
                 new_time = 0  # Loop
                 self.last_tick_time = None  # Reset on loop
@@ -1189,6 +1449,11 @@ class AnimationViewerPanel(QWidget):
         current = self.gl_widget.current_time
         duration = self.gl_widget.duration
         self.time_label.setText(f'{current:.2f}s / {duration:.2f}s')
+
+    def _on_timescale_changed(self, value: int):
+        self.timescale = value / 10.0
+        if hasattr(self, 'ts_label'):
+            self.ts_label.setText(f"Timescale: {self.timescale:.1f}x")
 
     def clear(self):
         """Clear animation data."""

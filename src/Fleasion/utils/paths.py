@@ -46,6 +46,17 @@ DEFAULT_SETTINGS = {
     'first_time_setup_complete': False,
     'auto_delete_cache_on_exit': True,
     'clear_cache_on_launch': True,
+    # Scraper tab – column visibility (URL hidden by default)
+    'scraper_column_visibility': {
+        'hash_name':  True,
+        'asset_id':   True,
+        'type':       True,
+        'size':       True,
+        'cached_at':  True,
+        'url':        False,
+    },
+    # Scraper tab – user-dragged column widths in pixels ({} = use built-in defaults)
+    'scraper_column_widths': {},
 }
 
 

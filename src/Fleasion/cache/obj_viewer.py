@@ -4,7 +4,7 @@ import math
 import time
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QSizePolicy, QMessageBox, QMenu
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QAction, QSurfaceFormat
+from PyQt6.QtGui import QAction, QSurfaceFormat, QGuiApplication
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 import numpy as np
 from OpenGL.GL import *
@@ -624,8 +624,13 @@ class ObjViewerWidget(QOpenGLWidget):
                 self.cam_pos += up * speed
                 moved = True
             if self._is_scan_pressed(self._SCAN_LSHIFT):
-                self.cam_pos -= up * speed
-                moved = True
+                # Only fly down if no extension keys (Ctrl, Alt, Win) are held
+                mods = QGuiApplication.keyboardModifiers()
+                if not (mods & (Qt.KeyboardModifier.ControlModifier | 
+                                Qt.KeyboardModifier.AltModifier | 
+                                Qt.KeyboardModifier.MetaModifier)):
+                    self.cam_pos -= up * speed
+                    moved = True
 
             if moved:
                 needs_update = True
@@ -689,6 +694,18 @@ class ObjViewerPanel(QWidget):
         # 3D Viewer
         self.viewer = ObjViewerWidget()
         if self.config_manager:
+            # Ensure settings exist and are saved if missing
+            updated = False
+            if 'obj_show_wireframe' not in self.config_manager.settings:
+                self.config_manager.settings['obj_show_wireframe'] = False
+                updated = True
+            if 'obj_show_grid' not in self.config_manager.settings:
+                self.config_manager.settings['obj_show_grid'] = True
+                updated = True
+            
+            if updated:
+                self.config_manager.save()
+
             self.viewer.show_wireframe = self.config_manager.settings.get('obj_show_wireframe', False)
             self.viewer.show_grid = self.config_manager.settings.get('obj_show_grid', True)
         layout.addWidget(self.viewer, stretch=1)
