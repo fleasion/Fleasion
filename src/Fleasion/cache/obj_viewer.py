@@ -19,7 +19,8 @@ class ObjViewerWidget(QOpenGLWidget):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         
         # Prevent scrollbars from spawning by allowing the widget to compress gracefully
-        self.setMinimumSize(50, 50)
+        # Slightly larger minimum so viewers are usable on small panels
+        self.setMinimumSize(120, 120)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         
         # Mesh Data
@@ -60,10 +61,29 @@ class ObjViewerWidget(QOpenGLWidget):
         fmt.setSamples(4)
         self.setFormat(fmt)
 
-        # Main update tick (~60 FPS)
+        # Main update tick: use the monitor's refresh rate where possible
         self.timer = QTimer()
         self.timer.timeout.connect(self._update_tick)
-        self.timer.start(16)
+        try:
+            screen = self.screen() or QGuiApplication.primaryScreen()
+            refresh = float(screen.refreshRate()) if screen is not None else 60.0
+            if not refresh or refresh <= 0:
+                refresh = 60.0
+        except Exception:
+            refresh = 60.0
+        interval_ms = max(1, int(round(1000.0 / refresh)))
+        self.timer.start(interval_ms)
+
+    def get_refresh_interval_ms(self) -> int:
+        """Return a safe refresh interval (ms) based on the current screen or primary screen."""
+        try:
+            screen = self.screen() or QGuiApplication.primaryScreen()
+            refresh = float(screen.refreshRate()) if screen is not None else 60.0
+            if not refresh or refresh <= 0:
+                refresh = 60.0
+        except Exception:
+            refresh = 60.0
+        return max(1, int(round(1000.0 / refresh)))
 
     def load_obj_data(self, obj_content: str):
         """Load OBJ file content."""

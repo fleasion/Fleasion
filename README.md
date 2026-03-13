@@ -42,8 +42,8 @@ To build a standalone executable, within the "Fleasion" folder:
 # Install PyInstaller
 uv add pyinstaller --dev
 
-# Build (adjust paths and options as needed)
-uv run pyinstaller --onefile --noconsole --name "Fleasion" --icon "src\Fleasion\fleasionlogo2.ico" --add-data "src\Fleasion\fleasionlogo2.ico;." --collect-all mitmproxy --collect-all PyQt6 --exclude-module PySide6 --exclude-module PyQt5 --paths src launcher.py
+# Build
+uv run pyinstaller Fleasion.spec
 ```
 
 ## System Tray

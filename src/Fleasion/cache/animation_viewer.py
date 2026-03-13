@@ -623,6 +623,8 @@ class AnimationGLWidget(QOpenGLWidget):
         self.grid_display_list: int = 0
         
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        # Slightly larger minimum so viewers are usable on small panels
+        self.setMinimumSize(120, 120)
         
         # Camera state
         self.camera_mode = 'orbit'
@@ -636,10 +638,29 @@ class AnimationGLWidget(QOpenGLWidget):
         self.last_tick_time = time.time()
         self.show_grid = True
         
-        # Main update tick (~60 FPS)
+        # Main update tick: use monitor refresh rate where possible
         self.timer = QTimer()
         self.timer.timeout.connect(self._update_tick)
-        self.timer.start(16)
+        try:
+            screen = self.screen() or QGuiApplication.primaryScreen()
+            refresh = float(screen.refreshRate()) if screen is not None else 60.0
+            if not refresh or refresh <= 0:
+                refresh = 60.0
+        except Exception:
+            refresh = 60.0
+        interval_ms = max(1, int(round(1000.0 / refresh)))
+        self.timer.start(interval_ms)
+
+    def get_refresh_interval_ms(self) -> int:
+        """Return a safe refresh interval (ms) based on the current screen or primary screen."""
+        try:
+            screen = self.screen() or QGuiApplication.primaryScreen()
+            refresh = float(screen.refreshRate()) if screen is not None else 60.0
+            if not refresh or refresh <= 0:
+                refresh = 60.0
+        except Exception:
+            refresh = 60.0
+        return max(1, int(round(1000.0 / refresh)))
 
     def _create_placeholder_rig(self, pose_names: set) -> Tuple[Dict[int, 'Part'], Dict[str, 'Motor']]:
         """Create placeholder rig with simple cubes for unsupported animation types."""
@@ -1395,7 +1416,12 @@ class AnimationViewerPanel(QWidget):
             self.is_playing = True
             self.play_pause_btn.setText('Pause')
             self.last_tick_time = None
-            self.timer.start(33)  # ~30 FPS for smoother playback
+            # Start playback timer at monitor refresh rate for smooth sync
+            try:
+                interval = self.gl_widget.get_refresh_interval_ms()
+            except Exception:
+                interval = 33
+            self.timer.start(interval)
 
     def _update_playback(self):
         """Update playback position using actual elapsed time."""

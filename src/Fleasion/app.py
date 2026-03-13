@@ -44,6 +44,74 @@ class RobloxExitMonitor:
             log_buffer.log('Cache', msg)
 
 
+def kill_other_fleasion_instances():
+    """Kill all other Fleasion instances except the current process."""
+    import json
+    import os
+    import subprocess
+
+    current_pid = os.getpid()
+    parent_pid = os.getppid()
+    safe_pids = {current_pid, parent_pid}
+    exe_name = os.path.basename(sys.executable)
+
+    try:
+        if exe_name.lower() not in ('python.exe', 'python3.exe'):
+            # Compiled executable — find all processes with same image name and kill others
+            result = subprocess.run(
+                ['tasklist', '/FI', f'IMAGENAME eq {exe_name}', '/FO', 'CSV', '/NH'],
+                capture_output=True, text=True, encoding='utf-8', errors='replace',
+                creationflags=subprocess.CREATE_NO_WINDOW, timeout=10
+            )
+            for line in result.stdout.strip().splitlines():
+                line = line.strip().strip('"')
+                parts = line.split('","')
+                if len(parts) >= 2:
+                    try:
+                        pid = int(parts[1])
+                        if pid not in safe_pids:
+                            subprocess.run(
+                                ['taskkill', '/F', '/PID', str(pid)],
+                                capture_output=True,
+                                creationflags=subprocess.CREATE_NO_WINDOW
+                            )
+                    except (ValueError, IndexError):
+                        pass
+        else:
+            # Dev mode — use PowerShell CimInstance to get command lines and identify Fleasion processes.
+            # We exclude both the current PID and its parent PID: under debugpy the parent is the
+            # launcher process that also has 'launcher.py' in its command line, and killing it would
+            # cascade-terminate the current process.
+            ps_cmd = (
+                "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
+                'Select-Object ProcessId, CommandLine | ConvertTo-Json -Depth 1'
+            )
+            result = subprocess.run(
+                ['powershell', '-NoProfile', '-Command', ps_cmd],
+                capture_output=True, text=True, encoding='utf-8', errors='replace',
+                creationflags=subprocess.CREATE_NO_WINDOW, timeout=30
+            )
+            try:
+                data = json.loads(result.stdout)
+                if isinstance(data, dict):
+                    data = [data]
+                for proc in data:
+                    pid = int(proc.get('ProcessId', 0))
+                    cmdline = (proc.get('CommandLine') or '').lower()
+                    if pid in safe_pids or pid == 0:
+                        continue
+                    if 'launcher.py' in cmdline or 'fleasion' in cmdline:
+                        subprocess.run(
+                            ['taskkill', '/F', '/PID', str(pid)],
+                            capture_output=True,
+                            creationflags=subprocess.CREATE_NO_WINDOW
+                        )
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+    except Exception:
+        pass
+
+
 def main():
     """Main application entry point."""
     # Check if running on Windows
@@ -78,6 +146,7 @@ def main():
                 from PyQt6.QtGui import QIcon
                 msg_box.setWindowIcon(QIcon(str(icon_path)))
 
+            kill_others_button = msg_box.addButton('Kill Others', QMessageBox.ButtonRole.AcceptRole)
             run_anyway_button = msg_box.addButton('Run Anyway', QMessageBox.ButtonRole.AcceptRole)
             cancel_button = msg_box.addButton('Cancel', QMessageBox.ButtonRole.RejectRole)
             msg_box.setDefaultButton(cancel_button)
@@ -86,8 +155,11 @@ def main():
 
             if msg_box.clickedButton() == cancel_button:
                 sys.exit(0)
-            
-            # If "Run Anyway" is clicked, we just proceed. 
+
+            if msg_box.clickedButton() == kill_others_button:
+                kill_other_fleasion_instances()
+
+            # If "Run Anyway" or "Kill Others" is clicked, we proceed.
             # Note: shared_memory object will be garbage collected or go out of scope,
             # but since we didn't successfully create it, we don't hold the lock.
 
