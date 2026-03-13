@@ -5,8 +5,8 @@ from pathlib import Path
 
 # Application metadata
 APP_NAME = 'Fleasion'
-APP_VERSION = '1.4.2'
-APP_AUTHOR = 'By @8ar__ | Logic by @blockce, @1_v, @0100152000022000'
+APP_VERSION = '1.5.0'
+APP_AUTHOR = 'By @8ar__ | Logic by @blockce, @1_v, @0100152000022000\n@dis_spencer, @Yeha., @emk530'
 APP_DISCORD = 'discord.gg/hXyhKehEZF'
 
 # Process and proxy configuration
@@ -24,6 +24,7 @@ STORAGE_DB = LOCAL_APPDATA / 'Roblox' / 'rbx-storage.db'
 
 # Application directories
 CONFIG_DIR = LOCAL_APPDATA / 'FleasionNT'
+APP_CACHE_DIR = CONFIG_DIR / 'cache'
 CONFIG_FILE = CONFIG_DIR / 'settings.json'
 CONFIGS_FOLDER = CONFIG_DIR / 'configs'
 
@@ -45,6 +46,18 @@ DEFAULT_SETTINGS = {
     'first_time_setup_complete': False,
     'auto_delete_cache_on_exit': True,
     'clear_cache_on_launch': True,
+    # Scraper tab – column visibility (URL and Creator hidden by default)
+    'scraper_column_visibility': {
+        'hash_name':  True,
+        'creator':    False,
+        'asset_id':   True,
+        'type':       True,
+        'size':       True,
+        'cached_at':  True,
+        'url':        False,
+    },
+    # Scraper tab – user-dragged column widths in pixels ({} = use built-in defaults)
+    'scraper_column_widths': {},
 }
 
 

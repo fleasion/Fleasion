@@ -50,9 +50,15 @@ class AudioPlayerWidget(QWidget):
 
         # Volume
         if config_manager:
-            self.volume = config_manager.audio_volume / 100.0
+            initial_slider = config_manager.audio_volume
         else:
-            self.volume = 0.7
+            initial_slider = 70
+        
+        if initial_slider <= 0:
+            self.volume = 0.0
+        else:
+            # Logarithmic mapping: volume = (10^(value/100) - 1) / 9
+            self.volume = (pow(10, initial_slider / 100.0) - 1.0) / 9.0
 
         # Playback thread and stream
         self.stream = None
@@ -89,20 +95,24 @@ class AudioPlayerWidget(QWidget):
         layout = QVBoxLayout()
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
+        layout.addStretch()
 
-        # Central container for all controls (left-aligned)
+        # Central container for all controls (centered)
         controls_container = QVBoxLayout()
         controls_container.setSpacing(6)
-        controls_container.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        controls_container.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         # Volume slider row
         volume_layout = QHBoxLayout()
         volume_layout.setSpacing(8)
+        volume_layout.addStretch()
         volume_layout.addWidget(QLabel('Volume:'))
 
         self.volume_slider = QSlider(Qt.Orientation.Horizontal)
         self.volume_slider.setRange(0, 100)
-        self.volume_slider.setValue(int(self.volume * 100))
+        # Set initial slider value from config if available, otherwise default to 70
+        initial_val = self.config_manager.audio_volume if self.config_manager else 70
+        self.volume_slider.setValue(initial_val)
         self.volume_slider.valueChanged.connect(self._set_volume)
         self.volume_slider.setFixedWidth(175)
         volume_layout.addWidget(self.volume_slider)
@@ -112,6 +122,7 @@ class AudioPlayerWidget(QWidget):
 
         # Progress slider row
         progress_layout = QHBoxLayout()
+        progress_layout.addStretch()
         self.progress_slider = QSlider(Qt.Orientation.Horizontal)
         self.progress_slider.setRange(0, int(self.duration * 1000))
         self.progress_slider.sliderPressed.connect(self._start_scrub)
@@ -124,6 +135,7 @@ class AudioPlayerWidget(QWidget):
         # Play/Replay buttons and time label row
         button_time_layout = QHBoxLayout()
         button_time_layout.setSpacing(8)
+        button_time_layout.addStretch()
 
         self.play_pause_btn = QPushButton('▶')
         self.play_pause_btn.clicked.connect(self._toggle_play_pause)
@@ -265,7 +277,12 @@ class AudioPlayerWidget(QWidget):
 
     def _set_volume(self, value):
         """Set volume level."""
-        self.volume = value / 100.0
+        # Logarithmic mapping: volume = (10^(value/100) - 1) / 9
+        if value <= 0:
+            self.volume = 0.0
+        else:
+            self.volume = (pow(10, value / 100.0) - 1.0) / 9.0
+            
         if self.config_manager:
             self.config_manager.audio_volume = value
 

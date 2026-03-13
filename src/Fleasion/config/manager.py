@@ -190,6 +190,17 @@ class ConfigManager:
         self._save_settings()
 
     @property
+    def window_geometry(self) -> str:
+        """Get the saved window geometry (hex string)."""
+        return self.settings.get('window_geometry', '')
+
+    @window_geometry.setter
+    def window_geometry(self, value: str):
+        """Set the window geometry."""
+        self.settings['window_geometry'] = value
+        self._save_settings()
+
+    @property
     def export_naming(self) -> list[str]:
         """Get export naming options (name, id, hash)."""
         return self.settings.get('export_naming', ['id'])

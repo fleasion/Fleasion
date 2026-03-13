@@ -1,6 +1,6 @@
 [project]
 name = 'Fleasion'
-version = '1.4.2'
+version = '1.5.0'
 description = 'Roblox asset interceptor and replacer with PyQt6 GUI'
 readme = 'README.md'
 requires-python = '>=3.14'
@@ -16,6 +16,7 @@ dependencies = [
     "sounddevice>=0.5.3",
     "soundfile>=0.13.1",
     "lz4>=4.4.5",
+    "orjson>=3.9.0",
 ]
 
 # Optional dependencies for future enhancements when Python 3.14 support is available:

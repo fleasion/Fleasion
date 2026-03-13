@@ -113,6 +113,17 @@ def delete_cache() -> list[str]:
     else:
         messages.append('Storage folder not found')
 
+    # Delete Fleasion APP_CACHE_DIR
+    from .paths import APP_CACHE_DIR
+    if APP_CACHE_DIR.exists():
+        try:
+            shutil.rmtree(APP_CACHE_DIR)
+            messages.append('Fleasion obj cache deleted successfully')
+        except PermissionError:
+            messages.append('Failed to delete obj cache: Permission denied')
+        except OSError as e:
+            messages.append(f'Failed to delete obj cache: {e}')
+
     return messages
 
 

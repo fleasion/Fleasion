@@ -8,7 +8,6 @@ For KTX textures and TexturePacks, fetches converted PNG data from asset deliver
 """
 
 import gzip
-import json
 import os
 import re
 import base64
@@ -20,6 +19,15 @@ import requests
 
 from ...cache.cache_manager import CacheManager
 from ...utils import log_buffer
+
+# Use orjson if available (2-3x faster), fallback to json
+try:
+    import orjson
+    def loads(s):
+        return orjson.loads(s)
+except ImportError:
+    import json
+    loads = json.loads
 
 
 class CacheScraper:
@@ -256,9 +264,9 @@ class CacheScraper:
                     # Not actually gzipped, use raw bytes
                     pass
 
-            return json.loads(content)
+            return loads(content)
 
-        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        except (ValueError, UnicodeDecodeError) as e:
             log_buffer.log('Cache', f'Failed to parse JSON: {e}')
             return None
 
