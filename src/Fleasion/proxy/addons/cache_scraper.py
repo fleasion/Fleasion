@@ -205,19 +205,6 @@ class CacheScraper:
                 # TexturePack - queue XML fetch
                 needs_api_conversion = True
 
-            if needs_api_conversion:
-                # Submit to background thread pool - does NOT block
-                try:
-                    self._executor.submit(
-                        self._fetch_and_update_cache,
-                        asset_id,
-                        asset_type,
-                        url,
-                        metadata={'url': url, 'content_type': flow.response.headers.get('content-type', ''), 'hash': cache_hash}
-                    )
-                except RuntimeError as e:
-                    log_buffer.log('Cache', f'Failed to submit conversion task: {e}')
-
             # Build metadata
             metadata = {
                 'url': url,
@@ -226,18 +213,35 @@ class CacheScraper:
                 'hash': cache_hash,
             }
 
-            # Store in cache manager asynchronously to avoid blocking proxy handler
-            try:
-                self._executor.submit(
-                    self._store_asset_async,
-                    asset_id,
-                    asset_type,
-                    content,
-                    url,
-                    metadata
-                )
-            except RuntimeError as e:
-                log_buffer.log('Cache', f'Failed to submit cache store task: {e}')
+            if needs_api_conversion:
+                # For KTX/TexturePack assets: fetch PNG/XML via API and store that.
+                # Pass raw CDN bytes as original_content so they are used as a fallback
+                # if the API call fails.  Do NOT also submit _store_asset_async – that
+                # would race with the conversion write and could overwrite the PNG with KTX.
+                try:
+                    self._executor.submit(
+                        self._fetch_and_update_cache,
+                        asset_id,
+                        asset_type,
+                        url,
+                        metadata,
+                        content,  # original_content fallback
+                    )
+                except RuntimeError as e:
+                    log_buffer.log('Cache', f'Failed to submit conversion task: {e}')
+            else:
+                # Non-convertible asset: store raw CDN bytes directly.
+                try:
+                    self._executor.submit(
+                        self._store_asset_async,
+                        asset_id,
+                        asset_type,
+                        content,
+                        url,
+                        metadata
+                    )
+                except RuntimeError as e:
+                    log_buffer.log('Cache', f'Failed to submit cache store task: {e}')
 
         except Exception as e:
             log_buffer.log('Cache', f'Error in CDN handler: {e}')
@@ -289,48 +293,77 @@ class CacheScraper:
 
         return None
 
-    def _fetch_and_update_cache(self, asset_id: str, asset_type: int, url: str, metadata: dict):
-        """Background worker to fetch API content and update cache (runs in thread pool)."""
+    def _fetch_and_update_cache(self, asset_id: str, asset_type: int, url: str, metadata: dict,
+                                original_content: bytes | None = None):
+        """Background worker to fetch API content and update cache (runs in thread pool).
+
+        If the API conversion succeeds, stores the converted bytes (PNG/XML).
+        Falls back to storing original_content (raw CDN bytes) when the API fails or
+        returns an unexpected format, so at least something is cached.
+        """
         try:
             api_content = self._fetch_from_api(asset_id)
 
-            if not api_content:
-                return
+            if api_content:
+                # Validate content type
+                is_valid = False
+                content_desc = ''
 
-            # Validate content type
-            is_valid = False
-            content_desc = ''
+                if asset_type in (1, 13) and api_content.startswith(b'\x89PNG'):
+                    # KTX converted to PNG
+                    is_valid = True
+                    content_desc = 'PNG'
+                elif asset_type == 63 and (api_content.startswith(b'<roblox>') or b'<roblox>' in api_content[:100]):
+                    # TexturePack XML
+                    is_valid = True
+                    content_desc = 'XML'
 
-            if asset_type in (1, 13) and api_content.startswith(b'\x89PNG'):
-                # KTX converted to PNG
-                is_valid = True
-                content_desc = 'PNG'
-            elif asset_type == 63 and (api_content.startswith(b'<roblox>') or b'<roblox>' in api_content[:100]):
-                # TexturePack XML
-                is_valid = True
-                content_desc = 'XML'
+                if is_valid:
+                    # Update metadata
+                    metadata['content_length'] = len(api_content)
 
-            if not is_valid:
-                return
+                    # Store in cache (cache_manager has its own locking)
+                    success = self.cache_manager.store_asset(
+                        asset_id=str(asset_id),
+                        asset_type=asset_type,
+                        data=api_content,
+                        url=url,
+                        metadata=metadata
+                    )
 
-            # Update metadata
-            metadata['content_length'] = len(api_content)
+                    if success:
+                        type_name = self.cache_manager.get_asset_type_name(asset_type)
+                        log_buffer.log('Cache', f'Converted {type_name} to {content_desc}: {asset_id}')
+                    return  # done – converted bytes stored
 
-            # Store in cache (cache_manager has its own locking)
-            success = self.cache_manager.store_asset(
-                asset_id=str(asset_id),
-                asset_type=asset_type,
-                data=api_content,
-                url=url,
-                metadata=metadata
-            )
-
-            if success:
-                type_name = self.cache_manager.get_asset_type_name(asset_type)
-                log_buffer.log('Cache', f'Converted {type_name} to {content_desc}: {asset_id}')
+            # API failed or returned unexpected content; fall back to raw CDN bytes
+            if original_content is not None:
+                metadata['content_length'] = len(original_content)
+                success = self.cache_manager.store_asset(
+                    asset_id=str(asset_id),
+                    asset_type=asset_type,
+                    data=original_content,
+                    url=url,
+                    metadata=metadata
+                )
+                if success:
+                    type_name = self.cache_manager.get_asset_type_name(asset_type)
+                    log_buffer.log('Cache', f'Cached {type_name} (raw fallback, API unavailable): {asset_id}')
 
         except Exception as e:
             log_buffer.log('Cache', f'Background conversion error for {asset_id}: {e}')
+            # Last-resort fallback so we never silently drop an asset
+            if original_content is not None:
+                try:
+                    self.cache_manager.store_asset(
+                        asset_id=str(asset_id),
+                        asset_type=asset_type,
+                        data=original_content,
+                        url=url,
+                        metadata=metadata
+                    )
+                except Exception:
+                    pass
 
     def _store_asset_async(self, asset_id: str, asset_type: int, data: bytes, url: str, metadata: dict):
         """Background worker to store cached asset data."""
@@ -363,8 +396,9 @@ class CacheScraper:
         try:
             if not os.path.exists(path):
                 return None
+            import json as _json
             with open(path, 'r') as f:
-                data = json.load(f)
+                data = _json.load(f)
             cookies_data = data.get('CookiesData')
             if not cookies_data:
                 return None

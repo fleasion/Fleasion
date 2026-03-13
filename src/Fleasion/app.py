@@ -10,7 +10,7 @@ from .config import ConfigManager
 from .prejsons import download_prejsons
 from .proxy import ProxyMaster
 from .tray import SystemTray
-from .utils import delete_cache, get_icon_path, is_roblox_running, log_buffer, run_in_thread
+from .utils import delete_cache, get_icon_path, is_roblox_running, log_buffer, run_in_thread, start_update_check
 
 
 class RobloxExitMonitor:
@@ -171,6 +171,9 @@ def main():
 
     # Start PreJsons download in background
     run_in_thread(download_prejsons)()
+
+    # Check for updates in the background
+    start_update_check()
 
     # Start proxy automatically
     proxy_master.start()
