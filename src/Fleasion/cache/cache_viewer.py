@@ -2577,7 +2577,8 @@ class CacheViewerTab(QWidget):
         asset_ids = []
         for row_index in selected_rows:
             row = row_index.row()
-            id_item = self.table.item(row, 1)  # Asset ID is column 1
+            # Asset ID is in column 3 (columns: 0 marker, 1 Hash/Name, 2 Creator, 3 Asset ID)
+            id_item = self.table.item(row, 3)
             if id_item:
                 asset_ids.append(id_item.text())
 

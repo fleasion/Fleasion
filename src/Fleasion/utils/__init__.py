@@ -25,6 +25,7 @@ from .paths import (
     get_icon_path,
 )
 from .threading import run_in_thread
+from .updater import start_update_check
 from .windows import (
     delete_cache,
     is_roblox_running,
@@ -62,6 +63,7 @@ __all__ = [
     'log_buffer',
     'open_folder',
     'run_in_thread',
+    'start_update_check',
     'show_message_box',
     'terminate_roblox',
     'wait_for_roblox_exit',
