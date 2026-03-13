@@ -187,7 +187,8 @@ class ReplacerConfigWindow(QDialog):
         row1.addWidget(editing_label)
 
         # Use button with menu (same style as enabled configs)
-        self.config_menu_btn = QPushButton(self.config_manager.last_config)
+        # Prepend a single space plus a tiny hair-space to give a subtle gap
+        self.config_menu_btn = QPushButton(' \u200A' + self.config_manager.last_config)
         self.config_menu = QMenu(self.config_menu_btn)
         self.config_menu.aboutToShow.connect(self._rebuild_editing_menu)
         self.config_menu_btn.setMenu(self.config_menu)
@@ -402,6 +403,26 @@ class ReplacerConfigWindow(QDialog):
             self.config_enabled_vars[name] = action
 
         self._update_enabled_menu_text()
+        # Resize the enabled menu to fit its longest entry (account for checkboxes)
+        try:
+            from PyQt6.QtGui import QFontMetrics
+
+            fm = QFontMetrics(self.enabled_menu.font())
+            max_text_width = 0
+            for act in self.enabled_menu.actions():
+                text = act.text() or ''
+                w = fm.horizontalAdvance(text)
+                if w > max_text_width:
+                    max_text_width = w
+
+            icon_space = 28
+            padding = 30
+            target_width = max_text_width + icon_space + padding
+            if hasattr(self, 'enabled_menu_btn'):
+                target_width = max(target_width, self.enabled_menu_btn.width())
+            self.enabled_menu.setFixedWidth(target_width)
+        except Exception:
+            pass
 
     def _update_enabled_menu_text(self):
         """Update the enabled menu button text."""
@@ -483,7 +504,8 @@ class ReplacerConfigWindow(QDialog):
 
     def _refresh_combo(self):
         """Refresh the config button text."""
-        self.config_menu_btn.setText(self.config_manager.last_config)
+        # Keep one leading space plus a hair-space so icon and text are separated
+        self.config_menu_btn.setText(' \u200A' + self.config_manager.last_config)
         self._rebuild_enabled_menu()
         try:
             self._update_editing_button_style()
@@ -498,7 +520,7 @@ class ReplacerConfigWindow(QDialog):
         # If current editing config was deleted, switch to first available
         if self.config_manager.last_config not in current_configs and current_configs:
             self.config_manager.last_config = current_configs[0]
-            self.config_menu_btn.setText(current_configs[0])
+            self.config_menu_btn.setText(' \u200A' + current_configs[0])
 
         for name in current_configs:
             action = self.config_menu.addAction(name)
@@ -520,12 +542,33 @@ class ReplacerConfigWindow(QDialog):
             self._update_editing_button_style()
         except Exception:
             pass
+        # Resize the editing menu to fit the longest profile name (plus icon and padding)
+        try:
+            from PyQt6.QtGui import QFontMetrics
+
+            fm = QFontMetrics(self.config_menu.font())
+            max_text_width = 0
+            for act in self.config_menu.actions():
+                text = act.text() or ''
+                w = fm.horizontalAdvance(text)
+                if w > max_text_width:
+                    max_text_width = w
+
+            icon_space = 22
+            padding = 30
+            target_width = max_text_width + icon_space + padding
+            if hasattr(self, 'config_menu_btn'):
+                target_width = max(target_width, self.config_menu_btn.width())
+            self.config_menu.setFixedWidth(target_width)
+        except Exception:
+            pass
 
     def _on_config_select(self, name: str):
         """Handle config selection from menu."""
         if name != self.config_manager.last_config:
             self.config_manager.last_config = name
-            self.config_menu_btn.setText(name)
+            # Keep a single space plus a hair-space between icon and text
+            self.config_menu_btn.setText(' \u200A' + name)
             self.undo_manager.clear()
             self.undo_manager.save_state(self.config_manager.replacement_rules)
             self._refresh_tree()
@@ -550,14 +593,17 @@ class ReplacerConfigWindow(QDialog):
         except Exception:
             enabled = False
 
-        if enabled:
-            # Make the profile name text a subtle green to indicate it's enabled.
-            # Limit selector to QPushButton so menus (QMenu) don't inherit.
-            self.config_menu_btn.setStyleSheet('QPushButton { color: #55cc66; }')
-        else:
-            # Make the profile name text a softer red to indicate it's disabled.
-            # Limit selector to QPushButton so menus (QMenu) don't inherit.
-            self.config_menu_btn.setStyleSheet('QPushButton { color: #cc5555; }')
+        # Set the same small colored dot icon on the parent dropdown button
+        try:
+            color = '#55cc66' if enabled else '#cc5555'
+            self.config_menu_btn.setIcon(self._make_status_icon(color))
+        except Exception:
+            try:
+                self.config_menu_btn.setIcon(QIcon())
+            except Exception:
+                pass
+        # Ensure button text color isn't used for state; the dot represents state now.
+        self.config_menu_btn.setStyleSheet('')
 
     def _make_status_icon(self, color: str = '#cc5555', size: int = 12) -> QIcon:
         """Create a small circular QIcon of given color for menu actions.

@@ -2270,6 +2270,9 @@ class CacheViewerTab(QWidget):
             copy_menu.addSeparator()
             copy_converted_action = copy_menu.addAction('Converted Data')
 
+        # Add Open Creator action below the Copy menu
+        open_creator_action = menu.addAction('Open Creator')
+
         menu.addSeparator()
         delete_action = menu.addAction('Delete Selected')
 
@@ -2292,6 +2295,8 @@ class CacheViewerTab(QWidget):
             self._copy_creator_info('name')
         elif action == copy_creator_id_action:
             self._copy_creator_info('id')
+        elif action == open_creator_action:
+            self._open_creator_in_browser()
         elif action == copy_converted_action:
             self._copy_converted()
 
@@ -2348,6 +2353,58 @@ class CacheViewerTab(QWidget):
         if values:
             QApplication.clipboard().setText('\n'.join(values))
             log_buffer.log('Scraper', f'Copied {len(values)} creator {mode}(s) to clipboard')
+
+    def _open_creator_in_browser(self):
+        """Open the creator (user or group) page(s) for the selected asset(s) in the default browser."""
+        import webbrowser
+
+        selected_rows = self.table.selectionModel().selectedRows()
+        if not selected_rows:
+            return
+
+        opened = 0
+        seen = set()
+        for row_index in selected_rows:
+            row = row_index.row()
+            item = self.table.item(row, 1)
+            if not item:
+                continue
+            asset = item.data(Qt.ItemDataRole.UserRole)
+            if not asset:
+                continue
+            info = self._asset_info.get(asset['id'])
+            if not info:
+                continue
+            creator_id = info.get('creator_id')
+            creator_type_val = info.get('creator_type')
+            # creator_type may be numeric (1=user, 2=group) or a string; normalise to a boolean
+            if isinstance(creator_type_val, int):
+                is_group = (creator_type_val == 2)
+            else:
+                try:
+                    is_group = 'group' in (str(creator_type_val) or '').lower() or 'community' in (str(creator_type_val) or '').lower()
+                except Exception:
+                    is_group = False
+            if not creator_id:
+                continue
+            key = (('group' if is_group else 'user'), str(creator_id))
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                if is_group:
+                    url = f'https://www.roblox.com/communities/{creator_id}'
+                else:
+                    url = f'https://www.roblox.com/users/{creator_id}'
+                webbrowser.open(url)
+                opened += 1
+            except Exception:
+                log_buffer.log('Scraper', f'Failed to open creator {creator_id} in browser')
+
+        if opened:
+            log_buffer.log('Scraper', f'Opened {opened} creator page(s) in browser')
+
+    def _copy_converted(self):
         """Copy converted files to clipboard as Windows file objects."""
         import tempfile
         from pathlib import Path
