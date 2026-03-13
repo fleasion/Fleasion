@@ -8,14 +8,55 @@ To request help or request content, join our community <a href="https://discord.
     <img src="https://invidget.switchblade.xyz/hXyhKehEZF" alt="Join our Discord server">
 </a>
 
+## Requirements
+
+- **Windows** (required &mdash; uses Windows-specific APIs and mitmproxy local mode)
+- **Python 3.14+**
+- [**uv**](https://docs.astral.sh/uv/) package manager
+
+## Installation & Building
+
+### Standalone Executable
+
+Download `Fleasion.exe` from the [Releases](https://github.com/qrhrqiohj/Fleasion/releases) page. No Python installation required.
+
+### From Source
+
+```bash
+# Clone the repository
+git clone https://github.com/qrhrqiohj/Fleasion.git
+cd fleasion
+
+# Install dependencies with uv
+uv sync
+
+# Run the application
+uv run Fleasion
+```
+
+### Building a Standalone Executable
+
+To build a standalone executable, within the "Fleasion" folder:
+
+```bash
+# Install PyInstaller
+uv add pyinstaller --dev
+
+# Build (adjust paths and options as needed)
+uv run pyinstaller --onefile --noconsole --name "Fleasion" --icon "src\Fleasion\fleasionlogo2.ico" --add-data "src\Fleasion\fleasionlogo2.ico;." --collect-all mitmproxy --collect-all PyQt6 --exclude-module PySide6 --exclude-module PyQt5 --paths src launcher.py
+```
+
 ## System Tray
 
 Fleasion runs in the background as a system tray application (bottom-right corner of your screen). Right-click the tray icon to access:
 
 - **Dashboard** &mdash; configure asset replacements
-- **Cache Viewer** &mdash; browse and export cached assets
+- **Delete Cache** &mdash; manually clear cached assets
 - **Logs** &mdash; view real-time proxy logs
+- **About** &mdash; application information
 - **Settings** &mdash; theme (System/Light/Dark), auto-delete cache on exit, clear cache on launch, and more
+
+Left-click the tray icon to hide/unhide Fleasion window.
 
 ## Important
 
@@ -23,7 +64,7 @@ After applying any changes in the Dashboard, you must **clear your Roblox cache*
 
 - **Clear Cache on Launch** (on by default) &mdash; terminates Roblox and deletes `rbx-storage.db` when the proxy starts
 - **Auto Delete Cache on Exit** (on by default) &mdash; deletes the cache database when Roblox closes
-- Manual cache deletion is available from the tray menu and Cache Viewer
+- Manual cache deletion is available from the tray menu
 
 ## How It Works
 
@@ -44,15 +85,24 @@ The proxy installs a local CA certificate into Roblox's SSL directory to decrypt
 - Multiple configuration profiles &mdash; switch between different setups
 - Import/export configurations as JSON
 - Community preset support via PreJsons
+- **Creator name column** in configuration list (off by default)
+- **Asset name display** next to preview button
 
 ### Cache Scraper
 
-The cache scraper is a live interception system that captures every asset Roblox downloads during gameplay. Enable it from the Cache Viewer tab and it works automatically in the background while you play.
+The cache scraper is a live interception system that captures every asset Roblox downloads during gameplay. Enable it from the Dashboard and it works automatically in the background while you play.
 
 **Two-stage interception:**
 
 1. **Asset tracking** &mdash; intercepts batch requests to `assetdelivery.roblox.com/v1/assets/batch` to discover asset IDs, their CDN locations, and asset types before anything is downloaded
 2. **CDN capture** &mdash; intercepts the actual downloads from `fts.rbxcdn.com`, caching the raw content with full metadata (URL, content type, hash, size, timestamp)
+
+**Features:**
+
+- **Optimized JSON parsing** using orjson for faster performance
+- **Column filtering** &mdash; right-click column headers to show/hide categories (Creator name and Roblox CDN link off by default)
+- **Resizable columns** with saved preferences in settings
+- **Sortable columns** with persistent adjustment storage
 
 **Automatic format conversion:**
 
@@ -69,6 +119,27 @@ The cache scraper is a live interception system that captures every asset Roblox
 
 Every asset type Roblox uses &mdash; images, decals, audio, meshes, animations, shirts, pants, hats, faces, accessories (80+ types). Each asset is stored with its type, original URL, content hash, file size, and capture timestamp. Assets are compressed on disk when larger than 10KB.
 
+### 3D Viewers & Preview
+
+- **Mesh Viewer** (OpenGL-based):
+  - 3D mesh preview with orbit and FPS camera modes
+  - Wireframe and grid visualization (grid on by default for new users)
+  - Optimized rendering with display list caching
+  - Vertex color support
+  - Auto-rotation capability
+
+- **Animation Viewer**:
+  - Live 3D animation playback with R15/R6 rig support
+  - **Freecam movement** for better viewing angles
+  - **Timescale controls** for slowing down or speeding up animations
+  - Grid visualization (on by default)
+
+- **Asset Conversion Support**:
+  - **Mesh to CSG** &mdash; auto-convert `.mesh` files to `.obj` before injecting as CSG
+  - **CSG to Mesh** &mdash; auto-convert CSG models to `.obj` before mesh replacement
+  - **CSG to CSG** &mdash; replace CSG models directly via CDN links
+  - **CDN OBJ Support** &mdash; download and convert OBJ files from CDN links (Discord, Cloudflare, etc.)
+
 ### Cache Viewer
 - Browse all intercepted assets organized by type (80+ Roblox asset types)
 - Search and filter by ID, name, type, hash, or URL
@@ -76,32 +147,7 @@ Every asset type Roblox uses &mdash; images, decals, audio, meshes, animations, 
 - Asset name resolution via Roblox API
 - Export assets in multiple formats (converted, binary, raw)
 - Copy converted files directly to clipboard
-
-## Requirements
-
-- **Windows** (required &mdash; uses Windows-specific APIs and mitmproxy local mode)
-- **Python 3.14+**
-- [**uv**](https://docs.astral.sh/uv/) package manager
-
-## Installation
-
-### From Source
-
-```bash
-# Clone the repository
-git clone https://github.com/qrhrqiohj/Fleasion.git
-cd fleasion
-
-# Install dependencies with uv
-uv sync
-
-# Run the application
-uv run Fleasion
-```
-
-### Standalone Executable
-
-Download `Fleasion.exe` from the [Releases](https://github.com/qrhrqiohj/Fleasion/releases) page. No Python installation required.
+- **Category filtering** with clickable column header menu
 
 ## Usage
 
@@ -136,13 +182,17 @@ src/Fleasion/
 │   ├── cache_viewer.py             # Cache browsing UI with search and preview
 │   ├── animation_viewer.py         # 3D animation preview with R15/R6 rigs
 │   ├── audio_player.py             # Audio playback widget
-│   ├── obj_viewer.py               # 3D mesh viewer (OpenGL)
+│   ├── obj_viewer.py               # 3D mesh viewer (OpenGL) with orbit/FPS camera
 │   ├── mesh_processing.py          # Mesh format conversion (Roblox mesh to OBJ)
 │   ├── rbxm_parser.py              # Roblox binary model file parser
 │   └── tools/
+│       ├── solidmodel_converter/
+│       │   ├── obj_to_mesh.py      # OBJ to Roblox V2.00 mesh format converter
+│       │   ├── obj_to_csg.py       # OBJ to Roblox CSGMDL converter
+│       │   └── csg_mesh.py         # CSGMDL serialization utilities
 │       └── animpreview/            # Animation preview assets (R15/R6 OBJ models and rigs)
 ├── gui/
-│   ├── replacer_config.py          # Main Dashboard window
+│   ├── replacer_config.py          # Main Dashboard window with profile management
 │   ├── json_viewer.py              # JSON tree viewer with search
 │   ├── theme.py                    # Theme management (System/Light/Dark)
 │   ├── about.py                    # About dialog
@@ -168,6 +218,7 @@ Settings are stored in `%LocalAppData%\FleasionNT\`:
 | `Cache/` | Cached asset files and index |
 | `Exports/` | Exported assets |
 | `PreJsons/` | Community preset data |
+| `Temp/ConvertedMeshes/` | Temporary directory for OBJ/mesh conversions |
 
 ## Dependencies
 
@@ -183,18 +234,7 @@ Settings are stored in `%LocalAppData%\FleasionNT\`:
 | requests | HTTP client for API calls |
 | sounddevice + soundfile | Audio playback |
 | lz4 | Compression support |
-
-## Building
-
-To build a standalone executable, within the "Fleasion" folder:
-
-```bash
-# Install PyInstaller
-uv add pyinstaller --dev
-
-# Build (adjust paths and options as needed)
-uv run pyinstaller --onefile --noconsole --name "Fleasion" --icon "src\Fleasion\fleasionlogo2.ico" --add-data "src\Fleasion\fleasionlogo2.ico;." --collect-all mitmproxy --collect-all PyQt6 --exclude-module PySide6 --exclude-module PyQt5 --paths src launcher.py
-```
+| orjson | Fast JSON parsing |
 
 ## Community
 
