@@ -101,7 +101,7 @@ uv run Fleasion
 
 ### Standalone Executable
 
-Download `Fleasion NT.exe` from the [Releases](https://github.com/qrhrqiohj/Fleasion/releases) page. No Python installation required.
+Download `Fleasion.exe` from the [Releases](https://github.com/qrhrqiohj/Fleasion/releases) page. No Python installation required.
 
 ## Usage
 
@@ -186,14 +186,14 @@ Settings are stored in `%LocalAppData%\FleasionNT\`:
 
 ## Building
 
-To build a standalone executable:
+To build a standalone executable, within the "Fleasion" folder:
 
 ```bash
 # Install PyInstaller
 uv add pyinstaller --dev
 
 # Build (adjust paths and options as needed)
-pyinstaller --onefile --name "Fleasion NT" --windowed src/Fleasion/app.py
+uv run pyinstaller --onefile --noconsole --name "Fleasion" --icon "src\Fleasion\fleasionlogo2.ico" --add-data "src\Fleasion\fleasionlogo2.ico;." --collect-all mitmproxy --collect-all PyQt6 --exclude-module PySide6 --exclude-module PyQt5 --paths src launcher.py
 ```
 
 ## Community
@@ -203,7 +203,7 @@ pyinstaller --onefile --name "Fleasion NT" --windowed src/Fleasion/app.py
 
 ## Credits
 
-- **@8ar__** &mdash; code
+- **@8ar__**, **@dis_spencer**&mdash; code
 - **@1_v** (sky), **@Blockce**, **@0100152000022000** (sky 2) &mdash; logic and contributions
 - Donators &mdash; for keeping the passion going
 

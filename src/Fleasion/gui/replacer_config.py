@@ -8,6 +8,7 @@ from typing import Union
 from urllib.error import URLError
 
 from PyQt6.QtCore import Qt, QByteArray
+from PyQt6.QtGui import QPixmap, QPainter, QColor, QIcon
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -113,7 +114,7 @@ class ReplacerConfigWindow(QDialog):
     def _setup_ui(self):
         """Setup the UI with tabs."""
         main_layout = QVBoxLayout()
-        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setContentsMargins(0, 0, 0, 0)
 
         # Create tab widget
         self.tab_widget = QTabWidget()
@@ -406,11 +407,17 @@ class ReplacerConfigWindow(QDialog):
         """Update the enabled menu button text."""
         enabled = self.config_manager.enabled_configs
         if not enabled:
-            self.enabled_menu_btn.setText('None selected')
+            self.enabled_menu_btn.setText('No Configs Enabled')
         elif len(enabled) == 1:
             self.enabled_menu_btn.setText(enabled[0])
         else:
             self.enabled_menu_btn.setText(f'{len(enabled)} configs enabled')
+        # Keep the Editing button styled to reflect whether the currently
+        # selected editing profile is enabled or not.
+        try:
+            self._update_editing_button_style()
+        except Exception:
+            pass
 
     def _on_config_toggle(self, name: str, checked: bool):
         """Handle config toggle."""
@@ -418,6 +425,10 @@ class ReplacerConfigWindow(QDialog):
         self._update_enabled_menu_text()
         status = 'Enabled' if checked else 'Disabled'
         log_buffer.log('Config', f'{status}: {name}')
+        try:
+            self._update_editing_button_style()
+        except Exception:
+            pass
 
     def _refresh_tree(self):
         """Refresh the tree view."""
@@ -474,6 +485,10 @@ class ReplacerConfigWindow(QDialog):
         """Refresh the config button text."""
         self.config_menu_btn.setText(self.config_manager.last_config)
         self._rebuild_enabled_menu()
+        try:
+            self._update_editing_button_style()
+        except Exception:
+            pass
 
     def _rebuild_editing_menu(self):
         """Rebuild the editing config menu."""
@@ -490,6 +505,21 @@ class ReplacerConfigWindow(QDialog):
             action.triggered.connect(
                 lambda checked, n=name: self._on_config_select(n)
             )
+            # Add a small subtle red dot icon for profiles that are not enabled.
+            try:
+                if not self.config_manager.is_config_enabled(name):
+                    action.setIcon(self._make_status_icon('#cc5555'))
+                else:
+                    # Mark enabled profiles with a subtle green dot
+                    action.setIcon(self._make_status_icon('#55cc66'))
+            except Exception:
+                # If querying config state fails, leave icon empty
+                action.setIcon(QIcon())
+        # Ensure the Editing button reflects the enabled state after rebuild
+        try:
+            self._update_editing_button_style()
+        except Exception:
+            pass
 
     def _on_config_select(self, name: str):
         """Handle config selection from menu."""
@@ -501,7 +531,53 @@ class ReplacerConfigWindow(QDialog):
             self._refresh_tree()
 
         """Handle strip textures change."""
-        pass
+        try:
+            self._update_editing_button_style()
+        except Exception:
+            pass
+
+    def _update_editing_button_style(self):
+        """Color the Editing button text red if the currently edited profile
+        is not enabled in the Enabled: menu.
+        """
+        # Guard if UI not yet created
+        if not hasattr(self, 'config_menu_btn') or not hasattr(self, 'config_manager'):
+            return
+
+        name = self.config_manager.last_config
+        try:
+            enabled = self.config_manager.is_config_enabled(name)
+        except Exception:
+            enabled = False
+
+        if enabled:
+            # Make the profile name text a subtle green to indicate it's enabled.
+            # Limit selector to QPushButton so menus (QMenu) don't inherit.
+            self.config_menu_btn.setStyleSheet('QPushButton { color: #55cc66; }')
+        else:
+            # Make the profile name text a softer red to indicate it's disabled.
+            # Limit selector to QPushButton so menus (QMenu) don't inherit.
+            self.config_menu_btn.setStyleSheet('QPushButton { color: #cc5555; }')
+
+    def _make_status_icon(self, color: str = '#cc5555', size: int = 12) -> QIcon:
+        """Create a small circular QIcon of given color for menu actions.
+
+        This uses native Qt QIcon/QPixmap drawing and avoids custom widget
+        widgets so menu entries remain simple QActions.
+        """
+        try:
+            pix = QPixmap(size, size)
+            pix.fill(QColor(0, 0, 0, 0))
+            p = QPainter(pix)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.setBrush(QColor(color))
+            p.setPen(QColor(0, 0, 0, 0))
+            margin = 2
+            p.drawEllipse(margin, margin, size - margin * 2, size - margin * 2)
+            p.end()
+            return QIcon(pix)
+        except Exception:
+            return QIcon()
 
     def _browse_local_file(self):
         """Open file browser for local file selection."""

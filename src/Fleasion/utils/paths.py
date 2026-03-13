@@ -46,9 +46,10 @@ DEFAULT_SETTINGS = {
     'first_time_setup_complete': False,
     'auto_delete_cache_on_exit': True,
     'clear_cache_on_launch': True,
-    # Scraper tab – column visibility (URL hidden by default)
+    # Scraper tab – column visibility (URL and Creator hidden by default)
     'scraper_column_visibility': {
         'hash_name':  True,
+        'creator':    False,
         'asset_id':   True,
         'type':       True,
         'size':       True,

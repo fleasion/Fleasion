@@ -82,8 +82,13 @@ class SearchWorkerThread(QThread):
 
                 # Check resolved name if available
                 if asset_id in self.asset_info:
-                    name = self.asset_info[asset_id].get('resolved_name')
+                    info = self.asset_info[asset_id]
+                    name = info.get('resolved_name')
                     if name and self.search_text in name.lower():
+                        filtered.append(a)
+                        continue
+                    creator_name = info.get('creator_name')
+                    if creator_name and self.search_text in creator_name.lower():
                         filtered.append(a)
                         continue
 
@@ -596,11 +601,12 @@ COL_TOGGLE_WIDTH = 14
 SCRAPER_COLUMNS = [
     # (key, label, default_visible, default_width)
     ('hash_name',  'Hash/Name',  True,  200),
+    ('creator',    'Creator',    False, 120),  # off by default
     ('asset_id',   'Asset ID',   True,  100),
     ('type',       'Type',       True,  120),
     ('size',       'Size',       True,   70),
     ('cached_at',  'Cached At',  True,  135),
-    ('url',        'URL',        False, 300),
+    ('url',        'URL',        False, 300),  # off by default
 ]
 # Logical index → column key  (index 0 = toggle column, 1-6 = data columns)
 _COL_IDX_TO_KEY = ['_toggle'] + [c[0] for c in SCRAPER_COLUMNS]
@@ -684,7 +690,7 @@ class CacheViewerTab(QWidget):
         self._last_asset_count = 0  # Track for change detection
         self._selected_asset_id: str | None = None  # Track selected asset by ID
         self._show_names = True  # Show names instead of hashes (on by default)
-        self._asset_info: dict[str, dict] = {}  # asset_id -> {resolved_name, hash, row}
+        self._asset_info: dict[str, dict] = {}  # asset_id -> {resolved_name, creator_id, creator_name, creator_type, hash, row}
         self._current_pixmap = None  # Store current image for resize
 
         # Worker threads for async preview loading
@@ -706,8 +712,10 @@ class CacheViewerTab(QWidget):
         self._col_visibility: dict[str, bool] = self._load_col_visibility()
         # Column widths (pixels) – None means "use default"
         self._col_widths: dict[str, int | None] = self._load_col_widths()
-        # Currently active sort column (logical index). Defaults to Cached At (5, shifted by 1).
-        self._sort_col_idx: int = 5
+        # Toggle column (col 0) width – start with legacy constant, will be recalculated
+        self._col_toggle_width: int = COL_TOGGLE_WIDTH
+        # Currently active sort column (logical index). Defaults to Cached At (6, shifted by 1).
+        self._sort_col_idx: int = 6
         self._sort_order = Qt.SortOrder.DescendingOrder
         # Guard against re-entrant sort-indicator resets when blocking col-0 sort
         self._in_sort_guard: bool = False
@@ -774,6 +782,34 @@ class CacheViewerTab(QWidget):
             merged[key] = int(w) if isinstance(w, (int, float)) and w > 0 else None
         return merged
 
+    def _recalc_toggle_width(self, total_rows: int | None = None):
+        """Recalculate and apply the minimal width for column 0 so numeric
+        row counters never get truncated. Uses the table font metrics and
+        applies a small padding for spacing.
+        """
+        try:
+            if total_rows is None:
+                total_rows = self.table.rowCount()
+            # At least show '1' width if empty to leave room for header arrow
+            total_rows = max(1, int(total_rows))
+            fm = self.table.fontMetrics()
+            largest_text = str(total_rows)
+            text_w = fm.horizontalAdvance(largest_text)
+            arrow_w = fm.horizontalAdvance('▼')
+            padding = 7
+            w = max(COL_TOGGLE_WIDTH, text_w + padding, arrow_w + padding)
+            self._col_toggle_width = int(w)
+            header = self.table.horizontalHeader()
+            header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+            self.table.setColumnWidth(0, self._col_toggle_width)
+        except Exception:
+            # Fall back silently to the legacy constant on any error
+            self._col_toggle_width = COL_TOGGLE_WIDTH
+            try:
+                self.table.setColumnWidth(0, COL_TOGGLE_WIDTH)
+            except Exception:
+                pass
+
     def _save_col_settings(self):
         """Persist column visibility and widths to config."""
         if self.config_manager is None:
@@ -783,7 +819,7 @@ class CacheViewerTab(QWidget):
         self.config_manager.save()
 
     def _apply_column_visibility(self, initial: bool = False):
-        """Show/hide table columns (indices 1–6) and update resize modes.
+        """Show/hide table columns (indices 1–7) and update resize modes.
 
         Column 0 (▼ toggle/counter) is always visible and Fixed — never touched here.
         The last *visible* data column (index ≥ 1) gets Stretch so it fills the
@@ -791,7 +827,7 @@ class CacheViewerTab(QWidget):
         data column is Interactive so the user can drag its seam.
 
         If the currently active sort column is hidden, reset the sort to
-        'Cached At' (logical index 5).
+        'Cached At' (logical index 6).
         """
         header = self.table.horizontalHeader()
 
@@ -810,12 +846,12 @@ class CacheViewerTab(QWidget):
                 else:
                     header.setSectionResizeMode(i, QHeaderView.ResizeMode.Interactive)
 
-        # If sort column just became hidden, reset to Cached At (idx 5)
+        # If sort column just became hidden, reset to Cached At (idx 6)
         sort_key = _COL_IDX_TO_KEY[self._sort_col_idx] if self._sort_col_idx < len(_COL_IDX_TO_KEY) else None
         if sort_key and sort_key != '_toggle' and not self._col_visibility.get(sort_key, True):
-            self._sort_col_idx = 5   # Cached At
+            self._sort_col_idx = 6   # Cached At
             self._sort_order = Qt.SortOrder.DescendingOrder
-            self.table.sortByColumn(5, Qt.SortOrder.DescendingOrder)
+            self.table.sortByColumn(6, Qt.SortOrder.DescendingOrder)
 
         if not initial:
             self._save_col_settings()
@@ -910,17 +946,17 @@ class CacheViewerTab(QWidget):
 
         header = self.table.horizontalHeader()
 
-        # Find last visible data column (idx 1-6, Stretch mode)
+        # Find last visible data column (idx 1-7, Stretch mode)
         last_visible_idx = -1
-        for i in range(6, 0, -1):
+        for i in range(7, 0, -1):
             if not header.isSectionHidden(i):
                 last_visible_idx = i
                 break
 
         # Col 0: fixed toggle/counter width (always visible)
-        col_w = COL_TOGGLE_WIDTH
+        col_w = self._col_toggle_width
 
-        for i in range(1, 7):
+        for i in range(1, 8):
             if header.isSectionHidden(i):
                 continue
             if i == last_visible_idx:
@@ -1078,16 +1114,19 @@ class CacheViewerTab(QWidget):
     def _create_table(self, parent_layout):
         """Create asset table."""
         self.table = QTableWidget()
-        self.table.setColumnCount(7)
+        self.table.setColumnCount(8)
         self.table.setHorizontalHeaderLabels([
-            '▼', 'Hash/Name', 'Asset ID', 'Type', 'Size', 'Cached At', 'URL'
+            '▼', 'Hash/Name', 'Creator', 'Asset ID', 'Type', 'Size', 'Cached At', 'URL'
         ])
 
         header = self.table.horizontalHeader()
 
         # Column 0: ▼ toggle — Fixed width, never sorted, never resized by user
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-        self.table.setColumnWidth(0, COL_TOGGLE_WIDTH)
+        # Use dynamic width based on number of rows so the numeric counter never
+        # gets truncated. The actual width will be recalculated when rows are
+        # populated via `_recalc_toggle_width`.
+        self.table.setColumnWidth(0, self._col_toggle_width)
 
         # Apply saved (or default) widths for data columns (1-6)
         self._resizing_cols = True
@@ -1132,7 +1171,7 @@ class CacheViewerTab(QWidget):
         preview_layout = QVBoxLayout()
         preview_layout.setContentsMargins(0, 0, 0, 0)
 
-        preview_group = QGroupBox('Preview')
+        self.preview_group = QGroupBox('Preview')
         preview_group_layout = QVBoxLayout()
 
         # Scrollable container for all preview content
@@ -1206,8 +1245,8 @@ class CacheViewerTab(QWidget):
         self.animation_viewer.hide()
         self.text_viewer.hide()
 
-        preview_group.setLayout(preview_group_layout)
-        preview_layout.addWidget(preview_group)
+        self.preview_group.setLayout(preview_group_layout)
+        preview_layout.addWidget(self.preview_group)
 
         preview_widget.setLayout(preview_layout)
         return preview_widget
@@ -1304,6 +1343,10 @@ class CacheViewerTab(QWidget):
             # Update table
             self.table.setRowCount(len(assets))
 
+            # Recalculate toggle column width to fit the largest row number
+            # without truncation.
+            self._recalc_toggle_width(len(assets))
+
             for row, asset in enumerate(assets):
                 asset_id = asset['id']
                 hash_val = asset.get('hash', '')
@@ -1317,6 +1360,9 @@ class CacheViewerTab(QWidget):
                     self._asset_info[asset_id] = {
                         'hash': hash_val,
                         'resolved_name': None,
+                        'creator_id': None,
+                        'creator_name': None,
+                        'creator_type': None,
                         'row': row,
                     }
                 else:
@@ -1338,11 +1384,16 @@ class CacheViewerTab(QWidget):
                 name_item.setData(Qt.ItemDataRole.UserRole, asset)
                 self.table.setItem(row, 1, name_item)
 
-                # Column 2: Asset ID
-                id_item = QTableWidgetItem(asset_id)
-                self.table.setItem(row, 2, id_item)
+                # Column 2: Creator
+                creator_name = info.get('creator_name') or ''
+                creator_item = QTableWidgetItem(creator_name)
+                self.table.setItem(row, 2, creator_item)
 
-                # Column 3: Type
+                # Column 3: Asset ID
+                id_item = QTableWidgetItem(asset_id)
+                self.table.setItem(row, 3, id_item)
+
+                # Column 4: Type
                 type_name = asset['type_name']
                 fm = self.table.fontMetrics()
                 max_w = max(100, int(self.width() * 0.15))
@@ -1350,15 +1401,15 @@ class CacheViewerTab(QWidget):
                 type_item = QTableWidgetItem(elided_type)
                 if elided_type != type_name:
                     type_item.setToolTip(type_name)
-                self.table.setItem(row, 3, type_item)
+                self.table.setItem(row, 4, type_item)
 
-                # Column 4: Size
+                # Column 5: Size
                 size = asset.get('size', 0)
                 size_str = self._format_size(size)
                 size_item = NumericSortItem(size, size_str)
-                self.table.setItem(row, 4, size_item)
+                self.table.setItem(row, 5, size_item)
 
-                # Column 5: Cached At
+                # Column 6: Cached At
                 cached_at = asset.get('cached_at', '')
                 if cached_at:
                     try:
@@ -1366,12 +1417,12 @@ class CacheViewerTab(QWidget):
                     except (IndexError, AttributeError):
                         pass
                 cached_item = QTableWidgetItem(cached_at)
-                self.table.setItem(row, 5, cached_item)
+                self.table.setItem(row, 6, cached_item)
 
-                # Column 6: URL
+                # Column 7: URL
                 url = asset.get('url', '')
                 url_item = QTableWidgetItem(url)
-                self.table.setItem(row, 6, url_item)
+                self.table.setItem(row, 7, url_item)
         finally:
             # Re-enable updates
             self.table.blockSignals(False)
@@ -1455,15 +1506,27 @@ class CacheViewerTab(QWidget):
         for asset_key, asset_data in self.cache_manager.index['assets'].items():
             asset_id = asset_data['id']
             resolved_name = asset_data.get('resolved_name')
-            if resolved_name:
+            creator_id = asset_data.get('resolved_creator_id')
+            creator_name = asset_data.get('resolved_creator_name')
+            creator_type = asset_data.get('resolved_creator_type')
+            if resolved_name is not None or creator_id is not None:
                 if asset_id not in self._asset_info:
                     self._asset_info[asset_id] = {
                         'hash': asset_data.get('hash', ''),
                         'resolved_name': resolved_name,
+                        'creator_id': creator_id,
+                        'creator_name': creator_name,
+                        'creator_type': creator_type,
                         'row': None,
                     }
                 else:
-                    self._asset_info[asset_id]['resolved_name'] = resolved_name
+                    if resolved_name is not None:
+                        self._asset_info[asset_id]['resolved_name'] = resolved_name
+                    if creator_id is not None:
+                        self._asset_info[asset_id]['creator_id'] = creator_id
+                        self._asset_info[asset_id]['creator_name'] = creator_name
+                        self._asset_info[asset_id]['creator_type'] = creator_type
+        # summary: nothing to log here in normal run
 
     def _on_show_names_toggled(self, checked: bool):
         """Handle Show Names toggle."""
@@ -1506,21 +1569,41 @@ class CacheViewerTab(QWidget):
             if item:
                 item.setText(name)
 
+    def _update_row_creator(self, asset_id: str, creator_name: str):
+        """Update a single row's creator cell (thread-safe via QTimer)."""
+        info = self._asset_info.get(asset_id)
+        if not info:
+            return
+        row = info.get('row')
+        if row is None or row >= self.table.rowCount():
+            return
+        item = self.table.item(row, 2)  # Creator is col 2
+        if item:
+            item.setText(creator_name)
+
     def _save_resolved_name_to_index(self, asset_id: str, name: str):
         """Save resolved name to index.json for persistence."""
-        # Find the asset key in index (format: {type}_{id})
-        # Use list() to get a snapshot of keys to avoid dictionary changed during iteration
         asset_keys = list(self.cache_manager.index['assets'].keys())
         for asset_key in asset_keys:
-            # Check if key still exists (in case it was deleted)
             if asset_key not in self.cache_manager.index['assets']:
                 continue
             asset_data = self.cache_manager.index['assets'][asset_key]
             if asset_data['id'] == asset_id:
-                # Update the resolved_name field
                 asset_data['resolved_name'] = name
-                # Don't save on every update - too slow
-                # Let periodic saves or user actions handle persistence
+                break
+
+    def _save_resolved_creator_to_index(self, asset_id: str, creator_id: int | None,
+                                         creator_name: str | None, creator_type: int | None):
+        """Save resolved creator info to index.json for persistence."""
+        asset_keys = list(self.cache_manager.index['assets'].keys())
+        for asset_key in asset_keys:
+            if asset_key not in self.cache_manager.index['assets']:
+                continue
+            asset_data = self.cache_manager.index['assets'][asset_key]
+            if asset_data['id'] == asset_id:
+                asset_data['resolved_creator_id'] = creator_id
+                asset_data['resolved_creator_name'] = creator_name
+                asset_data['resolved_creator_type'] = creator_type
                 break
 
     def _get_roblosecurity(self) -> str | None:
@@ -1552,8 +1635,12 @@ class CacheViewerTab(QWidget):
         except Exception:
             return None
 
-    def _fetch_asset_names(self, asset_ids: list[str], cookie: str | None) -> dict[str, str] | None:
-        """Fetch asset names from Roblox Develop API (batch up to 50)."""
+    def _fetch_asset_names(self, asset_ids: list[str], cookie: str | None) -> dict[str, dict] | None:
+        """Fetch asset names and creator info from Roblox Develop API (batch up to 50).
+
+        Returns a dict keyed by asset_id with values:
+            {'name': str, 'creator_id': int|None, 'creator_type': int|None}
+        """
         import requests
 
         if not asset_ids:
@@ -1571,12 +1658,18 @@ class CacheViewerTab(QWidget):
             'Origin': 'https://www.roblox.com',
         })
         if cookie:
-            sess.headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
+            try:
+                # Prefer setting cookie on the session so requests handles it properly
+                sess.cookies.set('.ROBLOSECURITY', cookie)
+            except Exception:
+                # Fallback to header if cookie set fails
+                sess.headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
 
         # Build query: assetIds=123,456,789
         query = ','.join(str(aid) for aid in asset_ids)
         url = f'https://develop.roblox.com/v1/assets?assetIds={query}'
 
+        
         try:
             response = sess.get(url, timeout=10)
             response.raise_for_status()
@@ -1585,18 +1678,118 @@ class CacheViewerTab(QWidget):
             return None
 
         data = response.json().get('data', [])
+        
         result = {}
         for item in data:
             aid = item.get('id')
-            name = item.get('name', 'Unknown')
-            if aid is not None:
-                result[str(aid)] = name
+            if aid is None:
+                continue
+
+            # Newer API returns a nested 'creator' object; older APIs used
+            # flat 'creatorTargetId' and 'creatorType' fields. Support both.
+            creator_obj = item.get('creator') or {}
+            creator_id = None
+            creator_type = None
+
+            # New format: {'type': 'User'|'Group', 'typeId': 1|2, 'targetId': <id>}
+            if isinstance(creator_obj, dict) and creator_obj:
+                creator_id = creator_obj.get('targetId')
+                creator_type = creator_obj.get('typeId')
+
+            # Fallback to legacy flat fields
+            if creator_id is None:
+                creator_id = item.get('creatorTargetId')
+            if creator_type is None:
+                creator_type = item.get('creatorType')
+
+            # Normalise numeric types (ensure int or None)
+            try:
+                if creator_type is not None:
+                    creator_type = int(creator_type)
+            except Exception:
+                creator_type = None
+            try:
+                if creator_id is not None:
+                    creator_id = int(creator_id)
+            except Exception:
+                creator_id = None
+
+            result[str(aid)] = {
+                'name': item.get('name', 'Unknown'),
+                'creator_id': creator_id,
+                'creator_type': creator_type,  # 1 = User, 2 = Group
+            }
+
+            
+
+        
+
+        return result
+
+    def _fetch_creator_names(self, creators: dict[int, int], sess) -> dict[int, str]:
+        """Resolve creator IDs to display names.
+
+        Args:
+            creators: dict mapping creator_id (int) → creator_type (int)
+                      creator_type 1 = User, 2 = Group
+            sess: requests.Session to reuse
+
+        Returns:
+            dict mapping creator_id (int) → creator display name (str)
+        """
+        import requests
+
+        result: dict[int, str] = {}
+        if not creators:
+            return result
+
+        user_ids = [cid for cid, ctype in creators.items() if ctype == 1]
+        group_ids = [cid for cid, ctype in creators.items() if ctype == 2]
+
+        
+
+        # Batch-resolve users via POST /v1/users
+        if user_ids:
+            try:
+                resp = sess.post(
+                    'https://users.roblox.com/v1/users',
+                    json={'userIds': user_ids, 'excludeBannedUsers': False},
+                    timeout=10,
+                )
+                resp.raise_for_status()
+                for entry in resp.json().get('data', []):
+                    uid = entry.get('id')
+                    name = entry.get('name') or entry.get('displayName') or 'Unknown'
+                    if uid is not None:
+                        result[uid] = name
+                
+            except Exception as e:
+                # If user batch lookup fails, continue without user names
+                log_buffer.log('Scraper', f'[Name Resolver] Failed to fetch user names: {e}')
+
+        # Resolve groups one-by-one (no batch endpoint on v1)
+        for gid in group_ids:
+            try:
+                resp = sess.get(
+                    f'https://groups.roblox.com/v1/groups/{gid}',
+                    timeout=10,
+                )
+                resp.raise_for_status()
+                name = resp.json().get('name', 'Unknown')
+                result[gid] = name
+                
+            except Exception as e:
+                # If a single group lookup fails, skip that group
+                log_buffer.log('Scraper', f'[Name Resolver] Failed to fetch group {gid}: {e}')
+
+        
 
         return result
 
     def _name_resolver_loop(self):
-        """Background thread to resolve asset names."""
+        """Background thread to resolve asset names and creator names."""
         import time
+        import requests
 
         while True:
             # Skip if Show Names is OFF
@@ -1618,6 +1811,8 @@ class CacheViewerTab(QWidget):
                 if info.get('resolved_name') is None and info.get('row') is not None
             ]
 
+            
+
             if not pending:
                 time.sleep(0.2)
                 continue
@@ -1629,33 +1824,78 @@ class CacheViewerTab(QWidget):
             # Take the first batch
             batch = pending[:batch_size]
 
-            # Fetch names
+            # Fetch names + creator IDs
             try:
-                names = self._fetch_asset_names(batch, cookie)
+                asset_data_map = self._fetch_asset_names(batch, cookie)
             except Exception as e:
                 log_buffer.log('Scraper', f'[Name Resolver] Fetch failed: {e}')
                 time.sleep(delay)
                 continue
 
-            if not names:
+            if not asset_data_map:
                 time.sleep(delay)
                 continue
 
+            # Build a reusable session for creator lookups (same auth headers)
+            sess = requests.Session()
+            sess.trust_env = False
+            sess.proxies = {}
+            sess.headers.update({
+                'User-Agent': 'Roblox/WinInet',
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'Referer': 'https://www.roblox.com/',
+                'Origin': 'https://www.roblox.com',
+            })
+            sess.headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
+
+            # Collect creator IDs that need name resolution
+            creators_to_resolve: dict[int, int] = {}  # creator_id → creator_type
+            for asset_id, data in asset_data_map.items():
+                cid = data.get('creator_id')
+                ctype = data.get('creator_type')
+                if cid is not None and ctype is not None and cid not in creators_to_resolve:
+                    creators_to_resolve[cid] = ctype
+
+            log_buffer.log('Scraper', f'[Name Resolver] Collected {len(creators_to_resolve)} unique creator ID(s) to resolve')
+
+            # Fetch creator display names
+            creator_names: dict[int, str] = {}
+            if creators_to_resolve:
+                try:
+                    creator_names = self._fetch_creator_names(creators_to_resolve, sess)
+                except Exception as e:
+                    log_buffer.log('Scraper', f'[Name Resolver] Creator fetch failed: {e}')
+
+            log_buffer.log('Scraper', f'[Name Resolver] Resolved {len(creator_names)} creator name(s)')
+
             # Update cache and UI
-            for asset_id, name in names.items():
+            for asset_id, data in asset_data_map.items():
                 info = self._asset_info.get(asset_id)
                 if not info:
                     continue
 
+                name = data.get('name', 'Unknown')
+                creator_id = data.get('creator_id')
+                creator_type = data.get('creator_type')
+                creator_name = creator_names.get(creator_id) if creator_id is not None else None
                 # Store resolved name in memory
                 info['resolved_name'] = name
+                info['creator_id'] = creator_id
+                info['creator_type'] = creator_type
+                info['creator_name'] = creator_name
+
+                
 
                 # Save to index.json for persistence
                 self._save_resolved_name_to_index(asset_id, name)
+                self._save_resolved_creator_to_index(asset_id, creator_id, creator_name, creator_type)
 
                 # Update UI on main thread
                 if self._show_names:
                     QTimer.singleShot(0, lambda aid=asset_id, n=name: self._update_row_name(aid, n))
+                if creator_name is not None:
+                    QTimer.singleShot(0, lambda aid=asset_id, cn=creator_name: self._update_row_creator(aid, cn))
 
             # Save index after batch update (less frequent saves)
             try:
@@ -1914,6 +2154,21 @@ class CacheViewerTab(QWidget):
         asset_type = asset['type']
         asset_id = asset['id']
 
+        # Update preview group title to show resolved name or hash for clarity
+        try:
+            info = self._asset_info.get(asset_id, {})
+            resolved = info.get('resolved_name') if info else None
+            display = resolved or asset.get('hash') or str(asset_id)
+            # Trim long names/hashes to keep the UI tidy
+            if len(display) > 60:
+                display = display[:57] + '...'
+            self.preview_group.setTitle(f'Preview: {display}')
+        except Exception:
+            try:
+                self.preview_group.setTitle('Preview')
+            except Exception:
+                pass
+
         try:
             # Get asset data
             data = self.cache_manager.get_asset(asset_id, asset_type)
@@ -2005,6 +2260,9 @@ class CacheViewerTab(QWidget):
         copy_hash_action = copy_menu.addAction('Hash/Name')
         copy_id_action = copy_menu.addAction('Asset ID')
         copy_url_action = copy_menu.addAction('URL')
+        copy_menu.addSeparator()
+        copy_creator_name_action = copy_menu.addAction('Creator Name')
+        copy_creator_id_action = copy_menu.addAction('Creator ID')
 
         # Add "Copy Converted" if at least one selected asset supports conversion
         copy_converted_action = None
@@ -2027,9 +2285,13 @@ class CacheViewerTab(QWidget):
         elif action == copy_hash_action:
             self._copy_column(1)   # Hash/Name
         elif action == copy_id_action:
-            self._copy_column(2)   # Asset ID
+            self._copy_column(3)   # Asset ID (shifted by Creator col)
         elif action == copy_url_action:
-            self._copy_column(6)   # URL
+            self._copy_column(7)   # URL (shifted by Creator col)
+        elif action == copy_creator_name_action:
+            self._copy_creator_info('name')
+        elif action == copy_creator_id_action:
+            self._copy_creator_info('id')
         elif action == copy_converted_action:
             self._copy_converted()
 
@@ -2052,7 +2314,40 @@ class CacheViewerTab(QWidget):
             clipboard.setText('\n'.join(values))
             log_buffer.log('Scraper', f'Copied {len(values)} value(s) to clipboard')
 
-    def _copy_converted(self):
+    def _copy_creator_info(self, mode: str):
+        """Copy creator name or creator ID for selected rows.
+
+        Args:
+            mode: 'name' to copy creator display name, 'id' to copy creator ID.
+        """
+        from PyQt6.QtWidgets import QApplication
+
+        selected_rows = self.table.selectionModel().selectedRows()
+        if not selected_rows:
+            return
+
+        values = []
+        for row_index in selected_rows:
+            row = row_index.row()
+            item = self.table.item(row, 1)  # Hash/Name carries UserRole asset data
+            if not item:
+                continue
+            asset = item.data(Qt.ItemDataRole.UserRole)
+            if not asset:
+                continue
+            info = self._asset_info.get(asset['id'])
+            if not info:
+                continue
+            if mode == 'name':
+                val = info.get('creator_name') or ''
+            else:
+                val = str(info.get('creator_id') or '')
+            if val:
+                values.append(val)
+
+        if values:
+            QApplication.clipboard().setText('\n'.join(values))
+            log_buffer.log('Scraper', f'Copied {len(values)} creator {mode}(s) to clipboard')
         """Copy converted files to clipboard as Windows file objects."""
         import tempfile
         from pathlib import Path
@@ -2292,6 +2587,12 @@ class CacheViewerTab(QWidget):
         
         # Completely hide the preview window as requested
         self.preview_panel.hide()
+        # Reset preview group title back to default
+        try:
+            if hasattr(self, 'preview_group'):
+                self.preview_group.setTitle('Preview')
+        except Exception:
+            pass
         
         # Deselect currently tracked asset in tree/internal state
         self._selected_asset_id = None

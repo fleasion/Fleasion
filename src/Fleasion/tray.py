@@ -4,7 +4,7 @@ from PyQt6.QtGui import QAction, QIcon
 from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from .gui import AboutWindow, DeleteCacheWindow, LogsWindow, ReplacerConfigWindow, ThemeManager
-from .utils import APP_DISCORD, APP_NAME, APP_VERSION, get_icon_path
+from .utils import APP_DISCORD, APP_NAME, APP_VERSION, get_icon_path, run_in_thread
 
 APP_KOFI = 'ko-fi.com/fleasion'
 
@@ -321,9 +321,17 @@ class SystemTray:
 
     def _exit_app(self):
         """Exit the application."""
-        # Stop proxy
-        if self.proxy_master.is_running:
-            self.proxy_master.stop()
+        # Stop proxy: always attempt to stop so startup failures (e.g., UAC rejected)
+        # that leave background threads or waiters won't be skipped.
+        try:
+            # Stop proxy asynchronously to avoid blocking the UI/tray menu
+            run_in_thread(self.proxy_master.stop)()
+        except Exception:
+            # Fall back to synchronous stop if async invocation fails
+            try:
+                self.proxy_master.stop()
+            except Exception:
+                pass
 
         # Quit Qt app
         self.app.quit()
