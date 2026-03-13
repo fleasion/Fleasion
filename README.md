@@ -203,8 +203,8 @@ uv run pyinstaller --onefile --noconsole --name "Fleasion" --icon "src\Fleasion\
 
 ## Credits
 
-- **@8ar__**, **@dis_spencer**&mdash; code
-- **@1_v** (sky), **@Blockce**, **@0100152000022000** (sky 2) &mdash; logic and contributions
+- **@8ar__**, **@dis_spencer** &mdash; code
+- **@1_v** (Sky), **@Blockce**, **@0100152000022000** (Sky 2), **@emk530**, **@Yeha.** &mdash; logic and contributions
 - Donators &mdash; for keeping the passion going
 
 ## License
