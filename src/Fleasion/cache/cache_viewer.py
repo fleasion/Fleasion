@@ -1,6 +1,7 @@
 """Cache viewer tab - simplified version for viewing cached assets."""
 
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
+from PyQt6.QtCore import QEvent
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTableWidget,
     QTableWidgetItem, QLabel, QComboBox, QLineEdit, QMessageBox,
@@ -18,8 +19,10 @@ from .cache_manager import CacheManager
 from .obj_viewer import ObjViewerPanel
 from .audio_player import AudioPlayerWidget
 from .animation_viewer import AnimationViewerPanel
+from .cache_json_viewer import CacheJsonViewer
 from . import mesh_processing
 from ..utils import log_buffer, open_folder
+import json
 
 
 class NumericSortItem(QTableWidgetItem):
@@ -104,6 +107,37 @@ class SearchWorkerThread(QThread):
 
         if not self._stop_requested:
             self.results_ready.emit(filtered)
+
+
+class DeleteWorkerThread(QThread):
+    '''Worker thread for deleting multiple assets without blocking UI.'''
+
+    progress = pyqtSignal(int, int)  # (current, total)
+    deletion_complete = pyqtSignal(int, int)  # (deleted_count, failed_count)
+
+    def __init__(self, assets: list, cache_manager):
+        super().__init__()
+        self.assets = assets
+        self.cache_manager = cache_manager
+        self._stop_requested = False
+
+    def stop(self):
+        self._stop_requested = True
+
+    def run(self):
+        '''Delete assets in background thread using batch delete for efficiency.'''
+        if self._stop_requested or not self.assets:
+            self.deletion_complete.emit(0, 0)
+            return
+
+        # Convert assets list to (asset_id, asset_type) tuples
+        assets_to_delete = [(a['id'], a['type']) for a in self.assets]
+        
+        # Use batch delete which only writes index once (much faster than N writes)
+        deleted_count, failed_count = self.cache_manager.delete_assets_batch(assets_to_delete)
+        
+        if not self._stop_requested:
+            self.deletion_complete.emit(deleted_count, failed_count)
 
 
 def _get_roblosecurity() -> str | None:
@@ -680,6 +714,9 @@ class ColumnVisibilityMenu(QMenu):
 
 class CacheViewerTab(QWidget):
     """Tab for viewing and managing cached Roblox assets."""
+    
+    # Signal to request table sync from background threads (thread-safe)
+    _sync_table_requested = pyqtSignal()
 
     def __init__(self, cache_manager: CacheManager, cache_scraper=None, parent=None, config_manager=None):
         super().__init__(parent)
@@ -692,6 +729,10 @@ class CacheViewerTab(QWidget):
         self._show_names = True  # Show names instead of hashes (on by default)
         self._asset_info: dict[str, dict] = {}  # asset_id -> {resolved_name, creator_id, creator_name, creator_type, hash, row}
         self._current_pixmap = None  # Store current image for resize
+        
+        # OPTIMIZATION: Cache asset_id -> row mapping for O(1) lookups instead of O(n) linear search
+        # Updated whenever table structure changes (populate, sort). Validates on read for thread-safety.
+        self._asset_row_cache: dict[str, int] = {}
 
         # Worker threads for async preview loading
         self._image_loader: ImageLoaderThread | None = None
@@ -703,10 +744,16 @@ class CacheViewerTab(QWidget):
         self._search_worker: SearchWorkerThread | None = None
         self._pending_search_text: str = ''
         self._is_searching: bool = False
+        
+        # Delete worker thread
+        self._delete_worker: DeleteWorkerThread | None = None
+        self._is_deleting: bool = False
 
         # Texturepack data for context menu
         self._texturepack_data: dict = {}  # map_name -> {id, hash, data}
         self._texturepack_xml: str = ''  # Original XML
+        # Track whether we've installed the global event filter for audio hotkeys
+        self._audio_key_filter_installed = False
 
         # Column visibility – loaded from config, validated, then applied
         self._col_visibility: dict[str, bool] = self._load_col_visibility()
@@ -741,6 +788,9 @@ class CacheViewerTab(QWidget):
 
         # Load persisted resolved names from index
         self._load_persisted_names()
+
+        # Connect the table sync signal (thread-safe way to update from background threads)
+        self._sync_table_requested.connect(self._sync_visible_rows_with_asset_info)
 
         # Refresh to show persisted names
         QTimer.singleShot(0, self._refresh_assets)
@@ -809,6 +859,31 @@ class CacheViewerTab(QWidget):
                 self.table.setColumnWidth(0, COL_TOGGLE_WIDTH)
             except Exception:
                 pass
+
+    def _renumber_counters(self):
+        """Renumber the left-most counter column so it shows 1..N in the
+        current visible order. This should be called after any sort or
+        when the visible ordering changes.
+        """
+        try:
+            # Block signals to avoid spurious selection/changed events
+            self.table.blockSignals(True)
+            row_count = self.table.rowCount()
+            for r in range(row_count):
+                old = self.table.item(r, 0)
+                flags = old.flags() if old is not None else Qt.ItemFlag.ItemIsEnabled
+                align = old.textAlignment() if old is not None else Qt.AlignmentFlag.AlignCenter
+                new = NumericSortItem(r, str(r + 1))
+                new.setFlags(flags)
+                new.setTextAlignment(align)
+                self.table.setItem(r, 0, new)
+        except Exception:
+            pass
+        finally:
+            self.table.blockSignals(False)
+        
+        # OPTIMIZATION: Update row cache after sort completes so next sync uses fresh positions
+        self._update_asset_row_cache()
 
     def _save_col_settings(self):
         """Persist column visibility and widths to config."""
@@ -908,6 +983,10 @@ class CacheViewerTab(QWidget):
             return
         self._sort_col_idx = logical_index
         self._sort_order = order
+        # After the internal Qt sort completes (this signal fires before
+        # Qt performs the actual sort), renumber the left-most counter
+        # column so it always shows 1..N in the current visible order.
+        QTimer.singleShot(0, self._renumber_counters)
 
     def _on_column_resized(self, logical_index: int, _old_size: int, new_size: int):
         """Save user-dragged column widths to config."""
@@ -1044,7 +1123,8 @@ class CacheViewerTab(QWidget):
         self._create_actions(layout)
 
         self.setLayout(layout)
-        self._refresh_assets()
+        # Don't refresh here - wait for the queued refresh after persisted names are loaded
+        # self._refresh_assets()
 
     def _create_filters(self, parent_layout):
         """Create filter controls."""
@@ -1231,6 +1311,10 @@ class CacheViewerTab(QWidget):
         self.text_viewer.setPlaceholderText('Select an asset to preview')
         self.preview_container_layout.addWidget(self.text_viewer)
 
+        # JSON viewer for JSON files
+        self.json_viewer = CacheJsonViewer()
+        self.preview_container_layout.addWidget(self.json_viewer)
+
         # Texture pack container (dynamically created)
         self.texturepack_widget = None
 
@@ -1244,6 +1328,7 @@ class CacheViewerTab(QWidget):
         self.audio_wrapper.hide()
         self.animation_viewer.hide()
         self.text_viewer.hide()
+        self.json_viewer.hide()
 
         self.preview_group.setLayout(preview_group_layout)
         preview_layout.addWidget(self.preview_group)
@@ -1385,8 +1470,16 @@ class CacheViewerTab(QWidget):
                 self.table.setItem(row, 1, name_item)
 
                 # Column 2: Creator
-                creator_name = info.get('creator_name') or ''
-                creator_item = QTableWidgetItem(creator_name)
+                creator_name = info.get('creator_name')
+                creator_id = info.get('creator_id')
+                if creator_name is not None:
+                    creator_display = creator_name
+                elif creator_id is not None:
+                    # Fallback to creator_id if name not yet resolved
+                    creator_display = str(creator_id)
+                else:
+                    creator_display = ''
+                creator_item = QTableWidgetItem(creator_display)
                 self.table.setItem(row, 2, creator_item)
 
                 # Column 3: Asset ID
@@ -1394,7 +1487,8 @@ class CacheViewerTab(QWidget):
                 self.table.setItem(row, 3, id_item)
 
                 # Column 4: Type
-                type_name = asset['type_name']
+                # Use detected type if available (e.g., 'Json' for detected JSON files)
+                type_name = self.cache_manager.get_type_name_for_asset(asset_id, asset['type'])
                 fm = self.table.fontMetrics()
                 max_w = max(100, int(self.width() * 0.15))
                 elided_type = fm.elidedText(type_name, Qt.TextElideMode.ElideRight, max_w)
@@ -1423,11 +1517,42 @@ class CacheViewerTab(QWidget):
                 url = asset.get('url', '')
                 url_item = QTableWidgetItem(url)
                 self.table.setItem(row, 7, url_item)
+            
+            # CRITICAL FIX: After all cells are created, immediately update any cells
+            # that already have resolved data in _asset_info. This fixes the race condition
+            # where async updates via QTimer don't get applied before the table is visible.
+            for row, asset in enumerate(assets):
+                asset_id = asset['id']
+                info = self._asset_info.get(asset_id)
+                if not info:
+                    continue
+                
+                # Update name if resolved
+                if self._show_names and info.get('resolved_name'):
+                    name_item = self.table.item(row, 1)
+                    if name_item:
+                        name_item.setText(info['resolved_name'])
+                
+                # Update creator if resolved - be explicit with None checks
+                creator_name = info.get('creator_name')
+                creator_id = info.get('creator_id')
+                if creator_name is not None or creator_id is not None:
+                    creator_item = self.table.item(row, 2)
+                    if creator_item:
+                        if creator_name is not None:
+                            creator_item.setText(creator_name)
+                        else:
+                            creator_item.setText(str(creator_id))
         finally:
             # Re-enable updates
             self.table.blockSignals(False)
             self.table.setUpdatesEnabled(True)
             self.table.setSortingEnabled(True)
+
+        # Ensure counters reflect the visible ordering (in case a sort
+        # operation occurred while populating). Defer to the event loop
+        # so any pending sort completes first.
+        QTimer.singleShot(0, self._renumber_counters)
 
         # Restore selection if the asset still exists
         if row_to_select is not None:
@@ -1446,6 +1571,9 @@ class CacheViewerTab(QWidget):
             self._last_asset_count = total_assets
         except Exception:
             pass
+
+        # OPTIMIZATION: Update row cache after table populate so background thread can use cached lookups
+        self._update_asset_row_cache()
 
     def _format_size(self, size_bytes: int) -> str:
         """Format size in bytes to human-readable string."""
@@ -1501,8 +1629,29 @@ class CacheViewerTab(QWidget):
         '''Handle search worker thread finished.'''
         self._is_searching = False
 
+    def _on_deletion_complete(self, deleted_count: int, failed_count: int):
+        '''Handle deletion completion from worker thread.'''
+        self._refresh_assets()
+        
+        total = deleted_count + failed_count
+        if failed_count == 0:
+            QMessageBox.information(self, 'Success', f'Deleted {deleted_count} asset(s)')
+        else:
+            QMessageBox.warning(
+                self,
+                'Partial Success',
+                f'Deleted {deleted_count}/{total} asset(s). {failed_count} asset(s) failed to delete.'
+            )
+        
+        log_buffer.log('Scraper', f'Batch deletion completed: {deleted_count} deleted, {failed_count} failed')
+
+    def _on_deletion_finished(self):
+        '''Handle deletion worker thread finished.'''
+        self._is_deleting = False
+
     def _load_persisted_names(self):
         """Load persisted resolved names from index.json."""
+        loaded_count = 0
         for asset_key, asset_data in self.cache_manager.index['assets'].items():
             asset_id = asset_data['id']
             resolved_name = asset_data.get('resolved_name')
@@ -1519,6 +1668,7 @@ class CacheViewerTab(QWidget):
                         'creator_type': creator_type,
                         'row': None,
                     }
+                    loaded_count += 1
                 else:
                     if resolved_name is not None:
                         self._asset_info[asset_id]['resolved_name'] = resolved_name
@@ -1526,7 +1676,7 @@ class CacheViewerTab(QWidget):
                         self._asset_info[asset_id]['creator_id'] = creator_id
                         self._asset_info[asset_id]['creator_name'] = creator_name
                         self._asset_info[asset_id]['creator_type'] = creator_type
-        # summary: nothing to log here in normal run
+        log_buffer.log('Scraper', f'[Cache Viewer] Loaded {loaded_count} persisted asset names from index')
 
     def _on_show_names_toggled(self, checked: bool):
         """Handle Show Names toggle."""
@@ -1555,6 +1705,103 @@ class CacheViewerTab(QWidget):
             # Re-enable updates
             self.table.setUpdatesEnabled(True)
 
+    def _update_asset_row_cache(self):
+        """Update the asset_id->row mapping cache after table structure changes.
+        
+        Called after table populate or sort operations. This enables O(1) lookups
+        instead of O(n) linear searches in _find_row_for_asset.
+        
+        OPTIMIZATION: Caches asset positions so the background name resolver thread
+        doesn't have to linearly search the table on every sync.
+        """
+        self._asset_row_cache.clear()
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 1)  # Name column has UserRole data
+            if item:
+                asset_data = item.data(Qt.ItemDataRole.UserRole)
+                if asset_data:
+                    asset_id = asset_data.get('id')
+                    if asset_id:
+                        self._asset_row_cache[asset_id] = row
+
+    def _find_row_for_asset(self, asset_id: str) -> int | None:
+        """Find the actual row index for an asset.
+        
+        OPTIMIZATION: Uses cached asset_id->row mapping for O(1) lookup when valid.
+        Falls back to linear search (with validation) if cache miss/stale, which also
+        updates the cache automatically.
+        
+        Args:
+            asset_id: The asset ID to find
+            
+        Returns:
+            The current row index if found, None otherwise
+        """
+        # Try cache first (O(1) path - common case)
+        if asset_id in self._asset_row_cache:
+            row = self._asset_row_cache[asset_id]
+            # Validate cache is still correct (handles sort/filter invalidation)
+            if row < self.table.rowCount():
+                item = self.table.item(row, 1)
+                if item:
+                    asset_data = item.data(Qt.ItemDataRole.UserRole)
+                    if asset_data and asset_data.get('id') == asset_id:
+                        return row  # Cache hit!
+            # Cache is stale, fall through to linear search and update
+        
+        # Linear search (O(n) path - fallback, also updates cache on hit)
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 1)  # Name column (col 1) has UserRole data
+            if item:
+                asset_data = item.data(Qt.ItemDataRole.UserRole)
+                if asset_data and asset_data.get('id') == asset_id:
+                    self._asset_row_cache[asset_id] = row  # Update cache for next time
+                    return row
+        return None
+
+    def _sync_visible_rows_with_asset_info(self):
+        """Update all visible table rows with current data from _asset_info.
+        
+        This is called after the resolver finishes a batch to ensure all
+        resolved names/creators are immediately displayed without waiting
+        for the next table repopulation.
+        
+        CRITICAL FIX: Find rows dynamically using _find_row_for_asset() instead of
+        using stale row indices from _asset_info. When the table is sorted, row numbers
+        change but the stale values in _asset_info['row'] don't get updated, causing
+        names/creators to be applied to the wrong rows. This was the "JSON stealing
+        names" bug - we would write asset A's name to the row that now contains asset B.
+        """
+        self.table.setUpdatesEnabled(False)
+        try:
+            for asset_id, info in self._asset_info.items():
+                # Find the CURRENT row for this asset, not the stale cached row
+                row = self._find_row_for_asset(asset_id)
+                if row is None or row >= self.table.rowCount():
+                    continue
+                
+                # Update name column if we have resolved name
+                if self._show_names and info.get('resolved_name'):
+                    name_item = self.table.item(row, 1)
+                    if name_item and name_item.text() != info['resolved_name']:
+                        name_item.setText(info['resolved_name'])
+                
+                # Update creator column if we have creator info
+                creator_name = info.get('creator_name')
+                creator_id = info.get('creator_id')
+                if creator_name is not None or creator_id is not None:
+                    creator_item = self.table.item(row, 2)
+                    if creator_item:
+                        if creator_name is not None:
+                            desired_text = creator_name
+                        else:
+                            desired_text = str(creator_id)
+                        if creator_item.text() != desired_text:
+                            creator_item.setText(desired_text)
+        finally:
+            self.table.setUpdatesEnabled(True)
+            self.table.viewport().update()
+
     def _update_row_name(self, asset_id: str, name: str):
         """Update a single row's name cell (thread-safe via QTimer)."""
         info = self._asset_info.get(asset_id)
@@ -1568,9 +1815,17 @@ class CacheViewerTab(QWidget):
             item = self.table.item(row, 1)  # Hash/Name is col 1
             if item:
                 item.setText(name)
+                # Force immediate repaint of this row
+                self.table.viewport().update()
 
-    def _update_row_creator(self, asset_id: str, creator_name: str):
-        """Update a single row's creator cell (thread-safe via QTimer)."""
+    def _update_row_creator(self, asset_id: str, creator_id: int | None, creator_name: str | None):
+        """Update a single row's creator cell (thread-safe via QTimer).
+        
+        Args:
+            asset_id: The asset ID
+            creator_id: The numeric creator ID (for fallback display)
+            creator_name: The resolved creator name (preferred display)
+        """
         info = self._asset_info.get(asset_id)
         if not info:
             return
@@ -1579,7 +1834,13 @@ class CacheViewerTab(QWidget):
             return
         item = self.table.item(row, 2)  # Creator is col 2
         if item:
-            item.setText(creator_name)
+            # Prefer name, fallback to ID
+            if creator_name is not None:
+                item.setText(creator_name)
+            elif creator_id is not None:
+                item.setText(str(creator_id))
+            # Force immediate repaint of this row
+            self.table.viewport().update()
 
     def _save_resolved_name_to_index(self, asset_id: str, name: str):
         """Save resolved name to index.json for persistence."""
@@ -1805,10 +2066,16 @@ class CacheViewerTab(QWidget):
                 continue
 
             # Build pending list - assets without resolved names
+            # OPTIMIZATION: Only resolve assets currently in visible rows (not filtered/scrolled off)
+            # This reduces unnecessary API calls and focuses on assets the user can see.
+            # When rows are filtered/hidden, their row >= rowCount, so they're skipped temporarily.
+            # When filter is removed or user scrolls back, they'll be added to pending again.
             pending = [
                 asset_id
                 for asset_id, info in self._asset_info.items()
-                if info.get('resolved_name') is None and info.get('row') is not None
+                if info.get('resolved_name') is None 
+                   and info.get('row') is not None
+                   and info.get('row') < self.table.rowCount()  # Only visible rows
             ]
 
             
@@ -1885,23 +2152,21 @@ class CacheViewerTab(QWidget):
                 info['creator_type'] = creator_type
                 info['creator_name'] = creator_name
 
-                
-
                 # Save to index.json for persistence
                 self._save_resolved_name_to_index(asset_id, name)
                 self._save_resolved_creator_to_index(asset_id, creator_id, creator_name, creator_type)
-
-                # Update UI on main thread
-                if self._show_names:
-                    QTimer.singleShot(0, lambda aid=asset_id, n=name: self._update_row_name(aid, n))
-                if creator_name is not None:
-                    QTimer.singleShot(0, lambda aid=asset_id, cn=creator_name: self._update_row_creator(aid, cn))
 
             # Save index after batch update (less frequent saves)
             try:
                 self.cache_manager._save_index()
             except Exception as e:
                 log_buffer.log('Scraper', f'[Name Resolver] Failed to save index: {e}')
+
+            # CRITICAL: After resolving a batch, immediately sync all visible rows with the updated data
+            # This ensures that the last asset (and all assets) show their resolved names/creators
+            # without waiting for the next _populate_table call
+            # Emit signal which is thread-safe and connected to the sync slot
+            self._sync_table_requested.emit()
 
             time.sleep(delay)
 
@@ -2024,7 +2289,7 @@ class CacheViewerTab(QWidget):
         )
 
     def _delete_selected(self):
-        """Delete the selected asset(s)."""
+        """Delete the selected asset(s) using background worker thread."""
         selected_rows = self.table.selectionModel().selectedRows()
         if not selected_rows:
             QMessageBox.warning(self, 'No Selection', 'Please select asset(s) to delete')
@@ -2053,22 +2318,12 @@ class CacheViewerTab(QWidget):
         )
 
         if reply == QMessageBox.StandardButton.Yes:
-            deleted_count = 0
-            for asset in assets_to_delete:
-                if self.cache_manager.delete_asset(asset['id'], asset['type']):
-                    deleted_count += 1
-                    log_buffer.log('Scraper', f"Deleted asset {asset['id']}")
-
-            self._refresh_assets()
-
-            if deleted_count == count:
-                QMessageBox.information(self, 'Success', f'Deleted {deleted_count} asset(s)')
-            else:
-                QMessageBox.warning(
-                    self,
-                    'Partial Success',
-                    f'Deleted {deleted_count}/{count} asset(s). Some assets failed to delete.'
-                )
+            # Use background worker thread for fast batch deletion
+            self._is_deleting = True
+            self._delete_worker = DeleteWorkerThread(assets_to_delete, self.cache_manager)
+            self._delete_worker.deletion_complete.connect(self._on_deletion_complete)
+            self._delete_worker.finished.connect(self._on_deletion_finished)
+            self._delete_worker.start()
 
     def _clear_cache(self):
         """Delete the entire cache database and files (old Delete DB functionality)."""
@@ -2136,6 +2391,7 @@ class CacheViewerTab(QWidget):
         self.audio_wrapper.hide()
         self.animation_viewer.hide()
         self.text_viewer.hide()
+        self.json_viewer.hide()
 
         # Clean up texture pack widget
         if self.texturepack_widget is not None:
@@ -2147,6 +2403,14 @@ class CacheViewerTab(QWidget):
             self.audio_player.stop()
             self.audio_player.deleteLater()
             self.audio_player = None
+        # Remove global audio key event filter if installed
+        try:
+            if self._audio_key_filter_installed:
+                from PyQt6.QtWidgets import QApplication
+                QApplication.instance().removeEventFilter(self)
+                self._audio_key_filter_installed = False
+        except Exception:
+            pass
 
         # Stop animation playback
         self.animation_viewer.stop()
@@ -2194,8 +2458,13 @@ class CacheViewerTab(QWidget):
             elif asset_type == 63:  # TexturePack
                 self._preview_texturepack(data, asset_id)
             else:
-                # Show as hex dump for other types
-                self._preview_hex(data, asset)
+                # Check if unknown asset is actually JSON
+                is_json, _ = self._is_json_data(data)
+                if is_json:
+                    self._preview_json(data, asset)
+                else:
+                    # Show as hex dump for other types
+                    self._preview_hex(data, asset)
 
         except Exception as e:
             self._show_text_preview(f'Error previewing asset: {e}')
@@ -2512,6 +2781,36 @@ class CacheViewerTab(QWidget):
                     QMessageBox.warning(self, 'Error', f'TexturePack save error: {e}')
                     return
 
+            elif asset_type == 39:  # SolidModel - convert to OBJ and save
+                try:
+                    import gzip as gzip_module
+                    from .tools.solidmodel_converter.converter import deserialize_rbxm, _export_obj_from_doc
+
+                    decompressed = data
+                    if data.startswith(b'\x1f\x8b'):
+                        decompressed = gzip_module.decompress(data)
+
+                    # Deserialize and export to a temporary OBJ file then copy into our temp_dir
+                    doc = deserialize_rbxm(decompressed)
+                    with tempfile.NamedTemporaryFile(suffix='.obj', delete=False) as f:
+                        temp_obj_path = Path(f.name)
+
+                    try:
+                        _export_obj_from_doc(doc, temp_obj_path, decompose=False)
+                        obj_content = temp_obj_path.read_text(encoding='utf-8')
+                        filename = f'{safe_base}.obj'
+                        temp_file = temp_dir / filename
+                        temp_file.write_text(obj_content, encoding='utf-8')
+                    finally:
+                        try:
+                            if temp_obj_path.exists():
+                                temp_obj_path.unlink()
+                        except Exception:
+                            pass
+                except Exception as e:
+                    QMessageBox.warning(self, 'Error', f'SolidModel conversion error: {e}')
+                    return
+
             # Copy file to clipboard
             if temp_file and temp_file.exists():
                 mime_data = QMimeData()
@@ -2699,6 +2998,33 @@ class CacheViewerTab(QWidget):
             self._texturepack_loader.wait()
             self._texturepack_loader = None
 
+    def eventFilter(self, obj, event):
+        """Global event filter to catch space key and toggle audio play/pause."""
+        try:
+            if event.type() == QEvent.Type.KeyPress:
+                # Space toggles play/pause when audio preview is active
+                if event.key() == Qt.Key.Key_Space:
+                    if self.audio_player and self.audio_wrapper.isVisible():
+                        try:
+                            # Toggle play/pause on the audio widget
+                            self.audio_player._toggle_play_pause()
+                        except Exception:
+                            pass
+                        return True
+        except Exception:
+            pass
+        return super().eventFilter(obj, event)
+
+    def _remove_audio_key_filter(self):
+        """Remove global audio key event filter if installed."""
+        try:
+            if self._audio_key_filter_installed:
+                from PyQt6.QtWidgets import QApplication
+                QApplication.instance().removeEventFilter(self)
+                self._audio_key_filter_installed = False
+        except Exception:
+            pass
+
     def _on_splitter_moved(self, pos: int, index: int):
         """Handle splitter resize to rescale image."""
         if self._current_pixmap is not None and self.image_label.isVisible():
@@ -2714,6 +3040,8 @@ class CacheViewerTab(QWidget):
 
     def _preview_mesh(self, data: bytes, asset_id: str):
         """Preview a mesh asset in 3D using background thread."""
+        # Track which asset this loader is for so we can ignore stale results
+        self._mesh_loader_asset_id = asset_id
         self._mesh_loader = MeshLoaderThread(data, asset_id)
         self._mesh_loader.mesh_ready.connect(self._on_mesh_ready)
         self._mesh_loader.error.connect(lambda e: self._show_text_preview(f'Mesh error: {e}'))
@@ -2721,6 +3049,14 @@ class CacheViewerTab(QWidget):
 
     def _on_mesh_ready(self, obj_content: str):
         """Handle mesh loaded from background thread."""
+        # Ignore if selection has changed since loader started
+        try:
+            if getattr(self, '_mesh_loader_asset_id', None) != self._selected_asset_id:
+                log_buffer.log('Preview', 'Stale mesh result ignored')
+                return
+        except Exception:
+            pass
+
         self._hide_loading()
         self.obj_viewer.load_obj(obj_content, '')
         self.obj_viewer.show()
@@ -2728,6 +3064,8 @@ class CacheViewerTab(QWidget):
 
     def _preview_solidmodel(self, data: bytes, asset_id: str):
         """Preview a SolidModel asset in 3D using background thread."""
+        # Track which asset this loader is for so we can ignore stale results
+        self._mesh_loader_asset_id = asset_id
         self._mesh_loader = SolidModelLoaderThread(data, asset_id)
         self._mesh_loader.mesh_ready.connect(self._on_mesh_ready)
         self._mesh_loader.error.connect(lambda e: self._show_text_preview(f'SolidModel error: {e}'))
@@ -2735,6 +3073,8 @@ class CacheViewerTab(QWidget):
 
     def _preview_image(self, data: bytes):
         """Preview an image asset using background thread."""
+        # Track current selection so we ignore stale image results
+        self._image_loader_asset_id = getattr(self, '_selected_asset_id', None)
         self._image_loader = ImageLoaderThread(data)
         self._image_loader.image_ready.connect(self._on_image_ready)
         self._image_loader.error.connect(lambda e: self._show_text_preview(f'Image error: {e}'))
@@ -2742,6 +3082,14 @@ class CacheViewerTab(QWidget):
 
     def _on_image_ready(self, pixmap: QPixmap):
         """Handle image loaded from background thread."""
+        # Ignore if selection has changed since loader started
+        try:
+            if getattr(self, '_image_loader_asset_id', None) != self._selected_asset_id:
+                log_buffer.log('Preview', 'Stale image result ignored')
+                return
+        except Exception:
+            pass
+
         self._hide_loading()
         self._current_pixmap = pixmap
         self._scale_and_show_image(pixmap)
@@ -2997,6 +3345,13 @@ class CacheViewerTab(QWidget):
         from pathlib import Path
 
         try:
+            # Track asset id for this audio preview to avoid stale UI updates
+            self._audio_preview_asset_id = asset_id
+
+            # If selection changed since request, abort
+            if getattr(self, '_selected_asset_id', None) != asset_id:
+                log_buffer.log('Preview', 'Ignored stale audio preview request')
+                return
             # Create temporary file for audio
             temp_dir = Path(tempfile.gettempdir()) / 'fleasion_audio'
             temp_dir.mkdir(exist_ok=True)
@@ -3018,9 +3373,37 @@ class CacheViewerTab(QWidget):
                     child.widget().deleteLater()
 
             # Add new audio player
+            # Ensure selection is still the same asset before showing
+            if getattr(self, '_selected_asset_id', None) != asset_id:
+                try:
+                    self.audio_player.deleteLater()
+                except Exception:
+                    pass
+                # Ensure we don't keep a dangling reference
+                try:
+                    self.audio_player = None
+                except Exception:
+                    pass
+                log_buffer.log('Preview', 'Aborted adding audio widget for stale selection')
+                return
+
             self.audio_container_layout.addWidget(self.audio_player)
             self.audio_wrapper.show()
             self.stop_preview_btn.show()
+
+            # Install global event filter to catch Space for play/pause while audio preview is active
+            try:
+                from PyQt6.QtWidgets import QApplication
+                QApplication.instance().installEventFilter(self)
+                self._audio_key_filter_installed = True
+            except Exception:
+                self._audio_key_filter_installed = False
+
+            # When audio stops or widget is deleted, remove the event filter
+            try:
+                self.audio_player.stopped.connect(lambda: self._remove_audio_key_filter())
+            except Exception:
+                pass
 
         except Exception as e:
             self._show_text_preview(f'Audio preview error: {e}')
@@ -3028,6 +3411,8 @@ class CacheViewerTab(QWidget):
 
     def _preview_animation(self, data: bytes, asset_id: str):
         """Preview an animation asset (RBXM XML format) using background thread."""
+        # Track which asset this animation loader is for
+        self._animation_loader_asset_id = asset_id
         self._show_loading()
         self._animation_loader = AnimationLoaderThread(data, asset_id)
         self._animation_loader.animation_ready.connect(self._on_animation_ready)
@@ -3036,6 +3421,14 @@ class CacheViewerTab(QWidget):
 
     def _on_animation_ready(self, data: bytes):
         """Handle animation data ready from background thread."""
+        # Ignore if selection changed since loader started
+        try:
+            if getattr(self, '_animation_loader_asset_id', None) != self._selected_asset_id:
+                log_buffer.log('Preview', 'Stale animation result ignored')
+                return
+        except Exception:
+            pass
+
         self._hide_loading()
         try:
             # Load in the animation viewer (must be on main thread for OpenGL)
@@ -3070,6 +3463,65 @@ class CacheViewerTab(QWidget):
 
         except Exception as e:
             self._show_text_preview(f'Animation preview error: {e}')
+
+    def _is_json_data(self, data: bytes) -> tuple[bool, dict | list | None]:
+        """
+        Detect if binary data is valid JSON.
+        
+        Returns:
+            tuple: (is_json: bool, parsed_data: dict|list|None)
+        """
+        if not data or len(data) < 2:
+            return False, None
+
+        # Check for gzip compression
+        if data[:2] == b'\x1f\x8b':
+            try:
+                data = gzip_module.decompress(data)
+            except Exception:
+                return False, None
+
+        # Try UTF-8 decoding first (most common)
+        for encoding in ['utf-8', 'utf-16', 'utf-16-le', 'utf-16-be']:
+            try:
+                text = data.decode(encoding)
+                parsed = json.loads(text)
+                return True, parsed
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                continue
+
+        return False, None
+
+    def _preview_json(self, data: bytes, asset: dict):
+        """Display JSON data in the JSON viewer."""
+        is_json, parsed_data = self._is_json_data(data)
+        
+        if not is_json or parsed_data is None:
+            # Fallback to hex dump
+            self._preview_hex(data, asset)
+            return
+
+        # Persist the detected JSON type to the cache index
+        asset_id = asset['id']
+        asset_type = asset['type']
+        try:
+            self.cache_manager.set_detected_type(asset_id, asset_type, 'Json')
+            
+            # Update the table type display immediately to show "Json"
+            current_row = self.table.currentRow()
+            if current_row >= 0:
+                type_item = self.table.item(current_row, 4)  # Type column is index 4
+                if type_item:
+                    # Update to 'Json' (now persistent)
+                    type_item.setText('Json')
+        except Exception:
+            pass
+
+        # Load and display in JSON viewer
+        self.json_viewer.load_json(parsed_data)
+        self._hide_loading()
+        self.json_viewer.show()
+        self.stop_preview_btn.show()
 
     def _preview_hex(self, data: bytes, asset: dict, reason: str = None):
         """Show hex dump preview."""

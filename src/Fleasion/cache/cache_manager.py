@@ -3,6 +3,7 @@
 import gzip
 import hashlib
 import threading
+import json
 from functools import lru_cache
 from pathlib import Path
 from datetime import datetime
@@ -133,6 +134,34 @@ class CacheManager:
         type_dir.mkdir(exist_ok=True)
         return type_dir / f'{asset_id}.bin'
 
+    def _is_json_data(self, data: bytes) -> bool:
+        """
+        Quick check if binary data is valid JSON.
+        
+        Returns:
+            True if data is valid JSON, False otherwise
+        """
+        if not data or len(data) < 2:
+            return False
+
+        # Check for gzip compression
+        if data[:2] == b'\x1f\x8b':
+            try:
+                data = gzip.decompress(data)
+            except Exception:
+                return False
+
+        # Try multiple encodings
+        for encoding in ['utf-8', 'utf-16', 'utf-16-le', 'utf-16-be']:
+            try:
+                text = data.decode(encoding)
+                json.loads(text)
+                return True
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                continue
+
+        return False
+
     def store_asset(self, asset_id: str, asset_type: int, data: bytes,
                    url: str = '', metadata: Optional[dict] = None) -> bool:
         """
@@ -164,13 +193,19 @@ class CacheManager:
             # Calculate hash for deduplication
             file_hash = hashlib.sha256(data).hexdigest()[:16]
 
+            # Check if unknown type is actually JSON
+            detected_type = None
+            type_name = self.get_asset_type_name(asset_type)
+            if type_name.startswith('Unknown') and self._is_json_data(data):
+                detected_type = 'Json'
+
             # Update index under lock to prevent concurrent corruption
             with self._lock:
                 asset_key = f'{asset_type}_{asset_id}'
-                self.index['assets'][asset_key] = {
+                asset_entry = {
                     'id': asset_id,
                     'type': asset_type,
-                    'type_name': self.get_asset_type_name(asset_type),
+                    'type_name': type_name,
                     'url': url,
                     'size': len(data),
                     'compressed': compressed,
@@ -178,6 +213,13 @@ class CacheManager:
                     'cached_at': datetime.now().isoformat(),
                     'metadata': metadata or {},
                 }
+                
+                # Add detected_type if JSON was detected
+                if detected_type:
+                    asset_entry['detected_type'] = detected_type
+                    asset_entry['type_name'] = detected_type
+                
+                self.index['assets'][asset_key] = asset_entry
 
                 # Schedule debounced index write instead of immediate disk write
                 self._schedule_index_commit()
@@ -243,6 +285,36 @@ class CacheManager:
         asset_key = f'{asset_type}_{asset_id}'
         return self.index['assets'].get(asset_key)
 
+    def set_detected_type(self, asset_id: str, asset_type: int, detected_type: str):
+        """
+        Store a detected asset type (e.g., 'Json' for unknown types that are actually JSON).
+        This persists to the cache index and overrides the default type name.
+        
+        Args:
+            asset_id: Asset ID
+            asset_type: Asset type ID
+            detected_type: Detected type name (e.g., 'Json')
+        """
+        try:
+            with self._lock:
+                asset_key = f'{asset_type}_{asset_id}'
+                if asset_key in self.index['assets']:
+                    self.index['assets'][asset_key]['detected_type'] = detected_type
+                    self._schedule_index_commit()
+        except Exception as e:
+            log_buffer.log('Scraper', f'Failed to set detected type for {asset_id}: {e}')
+
+    def get_type_name_for_asset(self, asset_id: str, asset_type: int) -> str:
+        """Get the type name for an asset, considering detected type."""
+        asset_key = f'{asset_type}_{asset_id}'
+        asset_info = self.index['assets'].get(asset_key, {})
+        
+        # Return detected type if available, otherwise use standard type name
+        if 'detected_type' in asset_info:
+            return asset_info['detected_type']
+        
+        return self.get_asset_type_name(asset_type)
+
     def list_assets(self, asset_types: Optional[set[int]] = None) -> list[dict]:
         """
         List all cached assets, optionally filtered by types.
@@ -251,13 +323,18 @@ class CacheManager:
             asset_types: Optional set of asset type IDs to filter by
 
         Returns:
-            List of asset metadata dictionaries
+            List of asset metadata dictionaries (with type_name updated for detected types)
         """
         # Take a snapshot to avoid dictionary changed during iteration
         assets = list(dict(self.index['assets']).values())
 
         if asset_types is not None and len(asset_types) > 0:
             assets = [a for a in assets if a['type'] in asset_types]
+
+        # Update type_name with detected_type if available (this makes detected types persistent in listings)
+        for asset in assets:
+            if 'detected_type' in asset:
+                asset['type_name'] = asset['detected_type']
 
         # Sort by cached_at descending (newest first)
         assets.sort(key=lambda a: a.get('cached_at', ''), reverse=True)
@@ -605,6 +682,57 @@ class CacheManager:
         except Exception as e:
             log_buffer.log('Scraper', f'Failed to delete asset {asset_id}: {e}')
             return False
+
+    def delete_assets_batch(self, assets: list[tuple[str, int]]) -> tuple[int, int]:
+        """
+        Delete multiple assets efficiently by batching index writes.
+        
+        This is MUCH faster than calling delete_asset() multiple times because
+        it only writes the index file ONCE instead of N times for N assets.
+
+        Args:
+            assets: List of (asset_id, asset_type) tuples to delete
+
+        Returns:
+            Tuple of (deleted_count, failed_count)
+        """
+        deleted_count = 0
+        failed_count = 0
+        
+        try:
+            # Delete all asset files first
+            for asset_id, asset_type in assets:
+                try:
+                    asset_path = self.get_asset_path(asset_id, asset_type)
+                    if asset_path.exists():
+                        asset_path.unlink()
+                    deleted_count += 1
+                except Exception as e:
+                    log_buffer.log('Scraper', f'Failed to delete asset file {asset_id}: {e}')
+                    failed_count += 1
+            
+            # Update index once for all deletions
+            with self._lock:
+                for asset_id, asset_type in assets:
+                    asset_key = f'{asset_type}_{asset_id}'
+                    if asset_key in self.index['assets']:
+                        del self.index['assets'][asset_key]
+                
+                # Write index ONLY ONCE after all deletions
+                if deleted_count > 0:
+                    self._save_index()
+            
+            # Invalidate LRU cache for deleted assets
+            with self._asset_cache_lock:
+                for asset_id, asset_type in assets:
+                    cache_key = f'{asset_type}_{asset_id}'
+                    self._asset_cache.pop(cache_key, None)
+            
+            return deleted_count, failed_count
+        
+        except Exception as e:
+            log_buffer.log('Scraper', f'Batch delete failed: {e}')
+            return deleted_count, failed_count
 
     def clear_cache(self, asset_type: Optional[int] = None) -> int:
         """

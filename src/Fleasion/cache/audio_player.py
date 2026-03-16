@@ -256,7 +256,26 @@ class AudioPlayerWidget(QWidget):
             print(f'Playback error: {e}')
         finally:
             self.is_playing = False
-            self.play_pause_btn.setText('▶')
+            # Schedule UI update on the main thread to avoid manipulating
+            # Qt widgets from this worker thread (which can cause
+            # "wrapped C/C++ object ... has been deleted" errors).
+            try:
+                QTimer.singleShot(0, lambda: self._safe_set_play_pause_text('▶'))
+            except Exception:
+                # If scheduling fails for any reason, ignore silently.
+                pass
+
+    def _safe_set_play_pause_text(self, text: str):
+        """Set play/pause button text from the main thread, safely.
+
+        This method swallows exceptions that occur if the underlying
+        C++ widget has been deleted.
+        """
+        try:
+            self.play_pause_btn.setText(text)
+        except Exception:
+            # Widget may have been deleted; ignore.
+            pass
 
     def _start_scrub(self):
         """Called when user starts dragging progress slider."""
