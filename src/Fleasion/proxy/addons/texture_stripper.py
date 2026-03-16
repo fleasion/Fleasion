@@ -43,17 +43,38 @@ def _inject_obj_into_solidmodel(bin_data: bytes, obj_path: Path) -> bytes:
     That class name must be preserved exactly — the engine accepts it from CDN
     binary assets.  We decompress, inject the new MeshData, and re-serialize
     as binary RBXM without touching the class name.
+
+    The CSGMDL version of the replacement blob matches the original asset's
+    version: V5 originals get a V5 replacement, V2–V4 originals keep their
+    existing version (defaulting to V3 when detection fails).
     """
     from ...cache.tools.solidmodel_converter.obj_to_csg import export_csg_mesh
     from ...cache.tools.solidmodel_converter.converter import deserialize_rbxm
     from ...cache.tools.solidmodel_converter.rbxm.serializer import write_rbxm
     from ...cache.tools.solidmodel_converter.rbxm.types import PropertyFormat, RbxProperty
+    from ...cache.tools.solidmodel_converter.csg_mesh import _detect_csgmdl_version
 
     bin_data = _decompress_cdn_response(bin_data)
     doc = deserialize_rbxm(bin_data)
-    csg_bytes = export_csg_mesh(obj_path)
 
     _INJECTABLE = frozenset({'PartOperationAsset', 'UnionOperation', 'NegateOperation', 'PartOperation'})
+
+    # Detect the CSGMDL version used by the original asset so the replacement
+    # uses the same wire format.  Default to V3 (accepted by all modern engines)
+    # when detection fails or the asset has no existing MeshData.
+    csg_version = 3
+    for inst in doc.roots:
+        if inst.class_name in _INJECTABLE:
+            prop = inst.properties.get('MeshData')
+            if prop is not None and prop.value:
+                mesh_bytes = prop.value if isinstance(prop.value, bytes) else bytes(prop.value, 'latin-1')
+                detected = _detect_csgmdl_version(mesh_bytes)
+                if detected is not None:
+                    csg_version = detected
+                    log_buffer.log('SolidModel', f'Detected original CSGMDL v{csg_version}')
+            break
+
+    csg_bytes = export_csg_mesh(obj_path, version=csg_version)
 
     injected = 0
     for inst in doc.roots:

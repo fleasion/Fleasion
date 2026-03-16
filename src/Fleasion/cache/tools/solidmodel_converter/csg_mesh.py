@@ -610,7 +610,9 @@ def serialize_csg_mesh(
     version
         CSGMDL version to write.  Version 3 is the default and is
         universally accepted by the engine.  Version 2 omits the submesh
-        trailer.
+        trailer.  Version 5 uses the new split-encryption layout
+        (XOR-obfuscated 10-byte header, plaintext body with quantised
+        normals/tangents and a Faces5 delta-encoded index stream).
 
     Returns
     -------
@@ -623,6 +625,9 @@ def serialize_csg_mesh(
         If ``indices`` length is not a multiple of 3, or any index is out of
         range for the given ``vertices`` list.
     """
+    if version == 5:
+        return serialize_csg_mesh_v5(vertices, indices)
+
     if len(indices) % 3 != 0:
         msg = f'Index count {len(indices)} is not a multiple of 3'
         raise ValueError(msg)
@@ -684,6 +689,205 @@ def serialize_csg_mesh(
     )
 
     return xor_buffer(bytes(buf))
+
+
+# ---------------------------------------------------------------------------
+# CSGMDL V5 serializer
+# ---------------------------------------------------------------------------
+
+
+def _compute_normal_id(nx: float, ny: float, nz: float) -> int:
+    """Return the Roblox NormalId (1-6) for the dominant axis of a normal vector.
+
+    NormalId encodes which face of a unit cube is most aligned with the
+    surface normal — used by the engine for planar UV generation.
+
+    Mapping: Right=1 (+X), Top=2 (+Y), Back=3 (+Z),
+             Left=4 (-X), Bottom=5 (-Y), Front=6 (-Z).
+    """
+    ax, ay, az = abs(nx), abs(ny), abs(nz)
+    if ax >= ay and ax >= az:
+        return 1 if nx >= 0.0 else 4  # Right / Left
+    if ay >= ax and ay >= az:
+        return 2 if ny >= 0.0 else 5  # Top / Bottom
+    return 3 if nz >= 0.0 else 6      # Back / Front
+
+
+def _encode_faces5(indices: list[int]) -> bytes:
+    """Encode a flat index list using the Faces5 delta-state-machine.
+
+    Each decoded value is ``index_out & 0x7FFFFF`` where ``index_out``
+    starts at 0 and accumulates signed deltas.  Three encoding cases:
+
+    * delta in 0..63       → 1 byte  (delta)
+    * delta in -64..-1     → 1 byte  (delta + 128; stored as 64..127)
+    * any other delta      → 3 bytes (v0 | 0x80, v1, v2 where the
+                             24-bit unsigned delta = v2|(v1<<8)|((v0&0x7F)<<16))
+
+    The delta for each step is the shortest signed path in the 23-bit
+    modular ring (range [-0x400000, 0x3FFFFF]).  Large out-of-range
+    negative jumps wrap to a positive 23-bit value via ``% 0x800000``.
+    """
+    _RING = 0x800000   # 2^23
+    _HALF = 0x400000   # 2^22
+
+    data = bytearray()
+    index_out = 0
+
+    for target in indices:
+        # Shortest signed delta in the 23-bit modular ring
+        raw = target - (index_out & 0x7FFFFF)
+        delta = ((raw + _HALF) % _RING) - _HALF   # → [-0x400000, 0x3FFFFF]
+
+        if 0 <= delta <= 63:
+            data.append(delta)
+        elif -64 <= delta <= -1:
+            data.append(delta + 128)               # maps -64→64, -1→127
+        else:
+            d = delta % _RING                      # unsigned 23-bit representation
+            data.append(0x80 | ((d >> 16) & 0x7F))
+            data.append((d >> 8) & 0xFF)
+            data.append(d & 0xFF)
+
+        index_out += delta
+
+    return bytes(data)
+
+
+def serialize_csg_mesh_v5(
+    vertices: list[CSGVertex],
+    indices: list[int],
+) -> bytes:
+    """Serialize vertices and indices to a CSGMDL version-5 binary blob.
+
+    V5 uses a split-encryption scheme: only the 10-byte header (magic +
+    version field) is XOR-obfuscated; the body is stored in plaintext.
+
+    Body layout
+    -----------
+    ::
+
+        [uint16]              N   — unique attribute entry count
+        N × [float32×3]           positions
+        [uint16=N][uint32=N*6]    N × [int16×3]  normals  (quantised)
+        [uint16=N]                N × [uint8×4]  RGBA colors
+        [uint16=N]                N × [uint8]    NormalId (1-6)
+        [uint16=N]                N × [float32×2] UV coords
+        [uint16=N][uint32=N*6]    N × [int16×3]  tangents (quantised)
+        [uint32]                  vertex_count (total decoded index count)
+        [uint32]                  vertex_data_len
+        [uint8 × vertex_data_len] delta-encoded indices (Faces5)
+        [uint8]                   range_marker_count = 2
+        [uint32]                  range_markers[0] = 0   (start of visual)
+        [uint32]                  range_markers[1] = vertex_count (end)
+
+    Parameters
+    ----------
+    vertices
+        List of :class:`CSGVertex` objects.
+    indices
+        Flat list of triangle indices (every 3 form a face).
+
+    Returns
+    -------
+    bytes
+        Raw CSGMDL v5 bytes ready for storage in a ``MeshData`` property.
+    """
+    if len(indices) % 3 != 0:
+        raise ValueError(f'Index count {len(indices)} is not a multiple of 3')
+    if indices and max(indices) >= len(vertices):
+        raise ValueError(
+            f'Max index {max(indices)} is out of range for {len(vertices)} vertices'
+        )
+
+    N = len(vertices)
+    num_indices = len(indices)
+
+    def _q(x: float) -> int:
+        """Quantize a float in [-1, 1] to a signed 16-bit integer."""
+        return max(-32767, min(32767, round(max(-1.0, min(1.0, x)) * 32767)))
+
+    body = bytearray()
+
+    # ── N (unique attribute count) ───────────────────────────────────────────
+    body += struct.pack('<H', N)
+
+    # ── Positions: N × float32×3 ─────────────────────────────────────────────
+    for v in vertices:
+        body += struct.pack('<3f', v.px, v.py, v.pz)
+
+    # ── Normals: [uint16=N][uint32=N*6] N × int16×3 ──────────────────────────
+    body += struct.pack('<H', N)       # count
+    body += struct.pack('<I', N * 6)   # byte length
+    for v in vertices:
+        body += struct.pack('<3h', _q(v.nx), _q(v.ny), _q(v.nz))
+
+    # ── Colors: [uint16=N] N × uint8×4 ───────────────────────────────────────
+    body += struct.pack('<H', N)       # count
+    for v in vertices:
+        body += struct.pack('<4B', v.cr, v.cg, v.cb, v.ca)
+
+    # ── NormalIds: [uint16=N] N × uint8 ──────────────────────────────────────
+    # Each value is 1-6 (from extra_r if it was parsed from V5, else computed).
+    body += struct.pack('<H', N)       # count
+    for v in vertices:
+        # Prefer the stored UV-gen type if it looks like a valid NormalId (1-6),
+        # otherwise derive it fresh from the vertex normal direction.
+        nid = v.extra_r if 1 <= v.extra_r <= 6 else _compute_normal_id(v.nx, v.ny, v.nz)
+        body += struct.pack('<B', nid)
+
+    # ── UV coords: [uint16=N] N × float32×2 ──────────────────────────────────
+    body += struct.pack('<H', N)       # count
+    for v in vertices:
+        body += struct.pack('<2f', v.u, v.v)
+
+    # ── Tangents: [uint16=N][uint32=N*6] N × int16×3 ─────────────────────────
+    body += struct.pack('<H', N)       # count
+    body += struct.pack('<I', N * 6)   # byte length
+    for v in vertices:
+        body += struct.pack('<3h', _q(v.tx), _q(v.ty), _q(v.tz))
+
+    # ── Faces5 block ─────────────────────────────────────────────────────────
+    encoded_faces = _encode_faces5(indices)
+    body += struct.pack('<I', num_indices)          # vertex_count
+    body += struct.pack('<I', len(encoded_faces))   # vertex_data_len
+    body += encoded_faces                           # delta-encoded indices
+
+    # Two range markers: [start=0, end=num_indices]
+    # This marks all decoded indices as the visual mesh with no collision overlay.
+    body += struct.pack('<B', 2)                    # range_marker_count
+    body += struct.pack('<I', 0)                    # range_markers[0] = start
+    body += struct.pack('<I', num_indices)          # range_markers[1] = end
+
+    # ── Header (XOR-encrypted) ────────────────────────────────────────────────
+    # V5 uses the same 31-byte LcmRand XOR key as V2/V4, but only the
+    # 10-byte header (magic + version) is encrypted; the body is plaintext.
+    header_plain = HEADER_TAG + struct.pack('<i', 5)  # b'CSGMDL' + int32(5)
+    header_enc = xor_buffer(header_plain)             # xor_buffer XORs exactly len(input) bytes
+
+    log.info(
+        'Serialized CSGMDL v5: %d vertices, %d indices (%d triangles), '
+        '%d body bytes (%d encoded face bytes)',
+        N, num_indices, num_indices // 3, len(body), len(encoded_faces),
+    )
+
+    return header_enc + bytes(body)
+
+
+def _detect_csgmdl_version(data: bytes) -> int | None:
+    """Detect the CSGMDL version from raw (XOR-encrypted) bytes.
+
+    Applies the XOR key to the first 10 bytes (the encrypted header) and
+    checks for the ``CSGMDL`` magic tag, returning the version integer on
+    success or ``None`` if the data does not look like a valid CSGMDL blob.
+    """
+    if len(data) < 10:
+        return None
+    decrypted = xor_buffer(data[:10])
+    if decrypted[:6] != HEADER_TAG:
+        return None
+    version = struct.unpack_from('<i', decrypted, 6)[0]
+    return version if MIN_VERSION <= version <= MAX_VERSION else None
 
 
 # ---------------------------------------------------------------------------
