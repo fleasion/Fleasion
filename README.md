@@ -8,19 +8,19 @@ To request help or request content, join our community <a href="https://discord.
     <img src="https://invidget.switchblade.xyz/hXyhKehEZF" alt="Join our Discord server">
 </a>
 
-## Requirements
-
-- **Windows** (required &mdash; uses Windows-specific APIs and mitmproxy local mode)
-- **Python 3.14+**
-- [**uv**](https://docs.astral.sh/uv/) package manager
-
 ## Installation & Building
 
 ### Standalone Executable
 
 Download `Fleasion.exe` from the [Releases](https://github.com/qrhrqiohj/Fleasion/releases) page. No Python installation required.
 
-### From Source
+## Requirements for Building from Source
+
+- **Windows** (required &mdash; uses Windows-specific APIs and mitmproxy local mode)
+- **Python 3.14+**
+- [**uv**](https://docs.astral.sh/uv/) package manager
+
+### Building from Source
 
 ```bash
 # Clone the repository
@@ -99,7 +99,6 @@ The cache scraper is a live interception system that captures every asset Roblox
 
 **Features:**
 
-- **Optimized JSON parsing** using orjson for faster performance
 - **Column filtering** &mdash; right-click column headers to show/hide categories (Creator name and Roblox CDN link off by default)
 - **Resizable columns** with saved preferences in settings
 - **Sortable columns** with persistent adjustment storage
@@ -117,7 +116,7 @@ The cache scraper is a live interception system that captures every asset Roblox
 
 **What gets cached:**
 
-Every asset type Roblox uses &mdash; images, decals, audio, meshes, animations, shirts, pants, hats, faces, accessories (80+ types). Each asset is stored with its type, original URL, content hash, file size, and capture timestamp. Assets are compressed on disk when larger than 10KB.
+Every asset type Roblox uses &mdash; images, decals, audio, meshes, animations, shirts, pants, hats, faces, accessories (80+ types). Each asset is stored with its type, original URL, content hash, file size, and capture timestamp.
 
 ### 3D Viewers & Preview
 
@@ -143,7 +142,7 @@ Every asset type Roblox uses &mdash; images, decals, audio, meshes, animations, 
 ### Cache Viewer
 - Browse all intercepted assets organized by type (80+ Roblox asset types)
 - Search and filter by ID, name, type, hash, or URL
-- **Live preview** for images, meshes (3D viewer), audio (playback), animations (3D rig), and texture packs
+- **Live preview** for images, meshes (3D viewer), audio (playback), animations (3D rig), texture packs, and Jsons.
 - Asset name resolution via Roblox API
 - Export assets in multiple formats (converted, binary, raw)
 - Copy converted files directly to clipboard
