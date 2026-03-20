@@ -77,7 +77,7 @@ Fleasion runs a lightweight custom asyncio HTTPS proxy on `127.0.0.1:443`. On st
 
 All interception happens locally on your machine. The proxy requires administrator privileges to write the hosts file and bind port 443 &mdash; Fleasion will prompt for UAC elevation on first launch.
 
-**VPN compatibility:** because interception uses the system hosts file (application layer) rather than kernel-level packet capture, it is fully compatible with VPN software.
+**VPN compatibility:** Because interception uses the system's hosts file (application layer), it should be compatible with most VPN software, as long as it respects your Windows hosts file.
 
 ## Features
 
