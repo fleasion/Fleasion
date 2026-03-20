@@ -172,6 +172,13 @@ class SystemTray:
         self.clear_cache_action.triggered.connect(self._toggle_clear_cache_on_launch)
         settings_menu.addAction(self.clear_cache_action)
 
+        # Run on Boot (Task Scheduler, admin required)
+        self.run_on_boot_action = QAction('Run on Boot', settings_menu)
+        self.run_on_boot_action.setCheckable(True)
+        self.run_on_boot_action.setChecked(self.config_manager.run_on_boot)
+        self.run_on_boot_action.triggered.connect(self._toggle_run_on_boot)
+        settings_menu.addAction(self.run_on_boot_action)
+
         self.menu.addMenu(settings_menu)
 
 
@@ -221,6 +228,25 @@ class SystemTray:
         new_state = not self.config_manager.auto_delete_cache_on_exit
         self.config_manager.auto_delete_cache_on_exit = new_state
         self.auto_delete_cache_action.setChecked(new_state)
+
+    def _toggle_run_on_boot(self):
+        """Toggle run-on-boot via Windows Task Scheduler."""
+        from .utils.autostart import sync_autostart
+        from .utils import CONFIG_DIR
+        checked = self.run_on_boot_action.isChecked()
+        ok = sync_autostart(checked, CONFIG_DIR)
+        if ok:
+            self.config_manager.run_on_boot = checked
+        else:
+            # Revert UI state and show error dialog with detail
+            self.run_on_boot_action.setChecked(not checked)
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(
+                None, 'Run on Boot Failed',
+                'Failed to register the autostart task.\n'
+                'Check the application log for details (autostart errors are logged at ERROR level).\n\n'
+                'Ensure Fleasion is running as Administrator.',
+            )
 
     def _toggle_clear_cache_on_launch(self):
         """Toggle clear cache on launch setting."""

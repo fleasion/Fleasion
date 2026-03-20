@@ -329,7 +329,15 @@ class CacheManager:
         assets = list(dict(self.index['assets']).values())
 
         if asset_types is not None and len(asset_types) > 0:
-            assets = [a for a in assets if a['type'] in asset_types]
+            int_filters = {t for t in asset_types if isinstance(t, int)}
+            str_filters = {t for t in asset_types if isinstance(t, str)}
+            def _matches(a):
+                if int_filters and a['type'] in int_filters:
+                    return True
+                if str_filters and a.get('detected_type') in str_filters:
+                    return True
+                return False
+            assets = [a for a in assets if _matches(a)]
 
         # Update type_name with detected_type if available (this makes detected types persistent in listings)
         for asset in assets:

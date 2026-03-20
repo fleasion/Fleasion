@@ -101,6 +101,15 @@ class AssetFetcherThread(QThread):
     data_ready = pyqtSignal(bytes)
     error = pyqtSignal(str)
 
+    # Class-level scraper reference — set once by ProxyMaster/app startup.
+    # Avoids threading it through every call site (replacer_config has no scraper ref).
+    _scraper = None
+
+    @classmethod
+    def set_scraper(cls, scraper) -> None:
+        """Called by ProxyMaster after the scraper is ready."""
+        cls._scraper = scraper
+
     def __init__(self, asset_id_or_url):
         super().__init__()
         self._asset = asset_id_or_url
@@ -139,42 +148,62 @@ class AssetFetcherThread(QThread):
             return None
 
     def run(self):
-        import requests
-
         try:
             val = self._asset
+            scraper = self.__class__._scraper
+
             if isinstance(val, int) or (isinstance(val, str) and str(val).strip().lstrip('-').isdigit()):
-                url = f'https://assetdelivery.roblox.com/v1/asset/?id={val}'
-                headers = {'User-Agent': 'Roblox/WinInet'}
-                
-                # Try to get .ROBLOSECURITY cookie for authenticated requests
                 cookie = self._get_roblosecurity()
-                if cookie:
-                    headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
-                
-                resp = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
+                extra = {'Cookie': f'.ROBLOSECURITY={cookie};' } if cookie else None
+
+                if scraper is not None:
+                    data = scraper._https_get(
+                        'assetdelivery.roblox.com',
+                        f'/v1/asset/?id={val}',
+                        extra_headers=extra,
+                    )
+                else:
+                    import requests as _req
+                    headers = {'User-Agent': 'Roblox/WinInet', 'Accept-Encoding': 'gzip, deflate'}
+                    if extra:
+                        headers.update(extra)
+                    r = _req.get(f'https://assetdelivery.roblox.com/v1/asset/?id={val}',
+                                 headers=headers, timeout=15)
+                    data = r.content if r.status_code == 200 else None
+
                 if self._stop_requested:
                     return
-                if resp.status_code == 200 and resp.content:
-                    self.data_ready.emit(resp.content)
+                if data:
+                    self.data_ready.emit(data)
                 else:
-                    self.error.emit(f'HTTP {resp.status_code}')
+                    self.error.emit('No data returned')
+
             elif isinstance(val, str) and (val.startswith('http://') or val.startswith('https://')):
-                headers = {'User-Agent': 'Roblox/WinInet'}
-                
-                # For direct URLs, only add cookie for Roblox domains
-                if 'roblox.com' in val.lower():
-                    cookie = self._get_roblosecurity()
-                    if cookie:
-                        headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
-                
-                resp = requests.get(val, headers=headers, timeout=15, allow_redirects=True)
+                from urllib.parse import urlparse as _up
+                parsed = _up(val)
+                hostname = (parsed.hostname or '').lower()
+                path = parsed.path + ('?' + parsed.query if parsed.query else '')
+                is_roblox = 'roblox.com' in hostname
+
+                cookie = self._get_roblosecurity() if is_roblox else None
+                extra = {'Cookie': f'.ROBLOSECURITY={cookie};'} if cookie else None
+
+                if scraper is not None and is_roblox:
+                    data = scraper._https_get(hostname, path, extra_headers=extra)
+                else:
+                    import requests as _req
+                    headers = {'User-Agent': 'Roblox/WinInet', 'Accept-Encoding': 'gzip, deflate'}
+                    if extra:
+                        headers.update(extra)
+                    r = _req.get(val, headers=headers, timeout=15)
+                    data = r.content if r.status_code == 200 else None
+
                 if self._stop_requested:
                     return
-                if resp.status_code == 200 and resp.content:
-                    self.data_ready.emit(resp.content)
+                if data:
+                    self.data_ready.emit(data)
                 else:
-                    self.error.emit(f'HTTP {resp.status_code}')
+                    self.error.emit('No data returned')
             else:
                 self.error.emit(f'Cannot fetch: {val}')
         except Exception as e:
@@ -260,9 +289,11 @@ class JsonTreeViewer(QDialog):
     """JSON tree viewer dialog."""
 
     def __init__(
-        self, parent, data, filename: str, on_import_ids, on_import_replacement
+        self, parent, data, filename: str, on_import_ids, on_import_replacement,
+        config_manager=None,
     ):
         super().__init__(parent)
+        self.config_manager = config_manager
         self.setWindowTitle(f'JSON - {filename}')
         self.resize(1200, 650)
 
@@ -293,6 +324,7 @@ class JsonTreeViewer(QDialog):
         self._animation_loader = None
         self._current_pixmap: QPixmap | None = None
         self._previewing_value = None  # track what we started previewing (stale guard)
+        self._audio_key_filter_installed = False  # Track if global audio key filter is installed
 
         self._setup_ui()
         self._populate_tree()
@@ -546,7 +578,7 @@ class JsonTreeViewer(QDialog):
         self.preview_container_layout.setContentsMargins(5, 5, 5, 5)
 
         # 3D viewer for meshes
-        self.obj_viewer = ObjViewerPanel()
+        self.obj_viewer = ObjViewerPanel(config_manager=self.config_manager)
         self.obj_viewer.clear_requested.connect(self._clear_preview)
         self.preview_container_layout.addWidget(self.obj_viewer)
 
@@ -582,7 +614,7 @@ class JsonTreeViewer(QDialog):
         self.preview_container_layout.addWidget(self.audio_wrapper)
 
         # Animation viewer
-        self.animation_viewer = AnimationViewerPanel()
+        self.animation_viewer = AnimationViewerPanel(config_manager=self.config_manager)
         self.preview_container_layout.addWidget(self.animation_viewer)
 
         # Text viewer (hex dump / plain text)
@@ -765,7 +797,7 @@ class JsonTreeViewer(QDialog):
             with open(temp_file, 'wb') as f:
                 f.write(data)
 
-            self.audio_player = AudioPlayerWidget(str(temp_file), self)
+            self.audio_player = AudioPlayerWidget(str(temp_file), self, self.config_manager)
 
             while self.audio_container_layout.count():
                 child = self.audio_container_layout.takeAt(0)
@@ -775,6 +807,21 @@ class JsonTreeViewer(QDialog):
             self.audio_container_layout.addWidget(self.audio_player)
             self._hide_loading()
             self.audio_wrapper.show()
+
+            # Install global event filter to catch Space for play/pause while audio preview is active
+            try:
+                from PyQt6.QtWidgets import QApplication
+                QApplication.instance().installEventFilter(self)
+                self._audio_key_filter_installed = True
+            except Exception:
+                self._audio_key_filter_installed = False
+
+            # When audio stops or widget is deleted, remove the event filter
+            try:
+                self.audio_player.stopped.connect(lambda: self._remove_audio_key_filter())
+            except Exception:
+                pass
+
         except Exception as e:
             self._show_text_preview(f'Audio error: {e}')
 
@@ -857,6 +904,9 @@ class JsonTreeViewer(QDialog):
         self.loading_label.hide()
         self._current_pixmap = None
 
+        # Remove audio key filter before cleaning up audio player
+        self._remove_audio_key_filter()
+
         if self.audio_player:
             self.audio_player.stop()
             self.audio_player.deleteLater()
@@ -890,6 +940,34 @@ class JsonTreeViewer(QDialog):
     def _on_splitter_moved(self, pos: int, index: int):
         if self._current_pixmap is not None and self.image_label.isVisible():
             self._scale_and_show_image(self._current_pixmap)
+
+    def eventFilter(self, obj, event):
+        """Global event filter to catch space key and toggle audio play/pause."""
+        try:
+            from PyQt6.QtCore import QEvent
+            if event.type() == QEvent.Type.KeyPress:
+                # Space toggles play/pause when audio preview is active
+                if event.key() == Qt.Key.Key_Space:
+                    if self.audio_player and self.audio_wrapper.isVisible():
+                        try:
+                            # Toggle play/pause on the audio widget
+                            self.audio_player._toggle_play_pause()
+                        except Exception:
+                            pass
+                        return True
+        except Exception:
+            pass
+        return super().eventFilter(obj, event)
+
+    def _remove_audio_key_filter(self):
+        """Remove global audio key event filter if installed."""
+        try:
+            if self._audio_key_filter_installed:
+                from PyQt6.QtWidgets import QApplication
+                QApplication.instance().removeEventFilter(self)
+                self._audio_key_filter_installed = False
+        except Exception:
+            pass
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

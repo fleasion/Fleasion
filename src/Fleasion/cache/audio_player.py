@@ -307,7 +307,7 @@ class AudioPlayerWidget(QWidget):
 
     def _update_ui(self):
         """Update progress slider and time label."""
-        if not self.is_scrubbing:
+        if not self.is_scrubbing and self.sample_rate:
             with self.position_lock:
                 current_time = self.playback_position / self.sample_rate
 

@@ -1301,5 +1301,5 @@ class ReplacerConfigWindow(QDialog):
         def on_repl(val):
             self.replacement_entry.setText(str(val))
 
-        viewer = JsonTreeViewer(self, data, Path(file_path).name, on_ids, on_repl)
+        viewer = JsonTreeViewer(self, data, Path(file_path).name, on_ids, on_repl, config_manager=self.config_manager)
         viewer.show()

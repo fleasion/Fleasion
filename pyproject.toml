@@ -5,7 +5,7 @@ description = 'Roblox asset interceptor and replacer with PyQt6 GUI'
 readme = 'README.md'
 requires-python = '>=3.14'
 dependencies = [
-    'mitmproxy>=12.2.1',
+    'cryptography>=42.0.0',
     'pyqt6>=6.8.0',
     'pyopengl>=3.1.0',
     'DracoPy>=1.3.0',
@@ -19,9 +19,12 @@ dependencies = [
     "orjson>=3.9.0",
 ]
 
-# Optional dependencies for future enhancements when Python 3.14 support is available:
-# - pygame (audio playback) - currently no py314 wheels
-# - mutagen (audio metadata) - currently no py314 wheels
+# Optional / removed:
+# mitmproxy - replaced by custom asyncio proxy (proxy/server.py)
+#   Reason: mitmproxy local: mode uses WinDivert (breaks VPNs, adds overhead on
+#   ALL Roblox traffic). Our custom proxy uses WinINet PAC file - only routes
+#   assetdelivery.roblox.com and fts.rbxcdn.com through the proxy, everything
+#   else goes DIRECT. Compatible with VPNs (loopback is never VPN-routed).
 
 [project.scripts]
 Fleasion = 'Fleasion:main'

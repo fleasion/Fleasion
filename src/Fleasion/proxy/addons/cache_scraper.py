@@ -1,403 +1,403 @@
-"""Cache scraper addon - intercepts and caches Roblox assets BEFORE replacement.
+"""CacheScraper: intercepts and caches Roblox assets before any replacement.
 
-Uses a two-stage approach matching the Reference implementation:
-1. Stage 1: Intercept assetdelivery.roblox.com/v1/assets/batch to track asset IDs and CDN locations
-2. Stage 2: Intercept fts.rbxcdn.com to download and cache actual asset content
-
-For KTX textures and TexturePacks, fetches converted PNG data from asset delivery API.
+This is a single instance (created by ProxyMaster) so all state is instance-level.
+The GUI calls set_enabled() and clear_tracking() directly - no IPC needed since
+everything runs in the same process.
 """
 
+import base64
 import gzip
+import logging
 import os
 import re
-import base64
 from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
 from urllib.parse import urlparse
 
-from mitmproxy import http
 import requests
 
 from ...cache.cache_manager import CacheManager
 from ...utils import log_buffer
 
-# Use orjson if available (2-3x faster), fallback to json
 try:
     import orjson
-    def loads(s):
+    def _loads(s):
         return orjson.loads(s)
 except ImportError:
     import json
-    loads = json.loads
+    def _loads(s):
+        return json.loads(s)
+
+logger = logging.getLogger(__name__)
+
+ASSET_DELIVERY_HOST = 'assetdelivery.roblox.com'
+CDN_HOST = 'fts.rbxcdn.com'
+DELIVERY_ENDPOINT = '/v1/assets/batch'
 
 
 class CacheScraper:
-    """Mitmproxy addon that intercepts and caches Roblox assets."""
+    """Caches Roblox assets as they are intercepted by the proxy."""
 
-    DELIVERY_ENDPOINT = '/v1/assets/batch'
-    ASSET_DELIVERY_HOST = 'assetdelivery.roblox.com'
-    CDN_HOST = 'fts.rbxcdn.com'
-
-    def __init__(self, cache_manager: CacheManager):
-        """
-        Initialize cache scraper.
-
-        Args:
-            cache_manager: CacheManager instance
-        """
+    def __init__(self, cache_manager: CacheManager) -> None:
         self.cache_manager = cache_manager
-        self.enabled = True
-        # Track asset IDs and their CDN locations (like Reference cache_logs)
+        self.enabled: bool = False
+
+        self._lock = Lock()
+        # asset_id -> {'location': str, 'assetTypeId': int, 'cached'?: True}
         self.cache_logs: dict = {}
-        # Fast URL lookup: maps base URL to asset_id for O(1) matching
-        self._url_to_asset: dict[str, str] = {}
-        # Thread pool for async API calls (avoid blocking proxy event loop)
+        # base CDN URL (no query) -> asset_id  (O(1) lookup)
+        self._url_to_asset: dict = {}
+
+        # Background thread pool for API conversion (KTX->PNG etc.)
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='cache_api')
-        # Requests session for connection pooling
-        self._session = requests.Session()
-        self._session.headers.update({'User-Agent': 'Roblox/WinInet'})
-        # Configure connection pooling
-        adapter = requests.adapters.HTTPAdapter(
-            pool_connections=10,
-            pool_maxsize=20,
-            max_retries=2,
-            pool_block=False
-        )
-        self._session.mount('https://', adapter)
 
-    def response(self, flow: http.HTTPFlow) -> None:
-        """
-        Handle HTTP responses - cache assets before any modification.
+        # Real IPs for intercepted hosts - set by ProxyMaster after DNS resolution
+        # (before the hosts file is written). Keyed by hostname.
+        # Used to bypass our own hosts file when making direct API calls.
+        self._real_ips: dict[str, str] = {}
 
-        Uses a two-stage approach:
-        1. Intercept assetdelivery.roblox.com/v1/assets/batch to track asset IDs and locations
-        2. Intercept fts.rbxcdn.com to download and cache actual content
+        # (session removed - API fetches use _https_get() with raw ssl for SNI control)
 
-        Args:
-            flow: HTTP flow containing request and response
-        """
-        if not self.enabled:
+    # ------------------------------------------------------------------
+    # Called from server MITM thread for assetdelivery batch responses
+    # ------------------------------------------------------------------
+
+    def process_batch_response(self, req_body: bytes, resp_body: bytes) -> None:
+        """Stage 1: extract asset IDs and CDN locations from batch response."""
+        if not self.enabled or not req_body or not resp_body:
             return
-
-        # Only process successful responses
-        if flow.response is None or flow.response.status_code != 200:
-            return
-
-        url = flow.request.pretty_url
-        parsed_url = urlparse(url)
-        hostname = parsed_url.hostname
-
-        # Stage 1: Track asset IDs and their CDN locations from asset delivery API
-        if hostname == self.ASSET_DELIVERY_HOST:
-            if parsed_url.path == self.DELIVERY_ENDPOINT:
-                self._handle_asset_delivery(flow)
-
-        # Stage 2: Cache actual content from CDN
-        elif hostname == self.CDN_HOST:
-            self._handle_cdn_download(flow, url, parsed_url)
-
-    def _handle_asset_delivery(self, flow: http.HTTPFlow) -> None:
-        """
-        Handle asset delivery batch response - extract asset IDs and CDN locations.
-
-        Args:
-            flow: HTTP flow
-        """
         try:
-            req_encoding = flow.request.headers.get('Content-Encoding', '').lower()
-            res_encoding = flow.response.headers.get('Content-Encoding', '').lower()
+            req_json = _loads(req_body)
+            res_json = _loads(resp_body)
+        except Exception:
+            return
 
-            req_json = self._parse_body(flow.request.content, req_encoding)
-            res_json = self._parse_body(flow.response.content, res_encoding)
+        if not isinstance(req_json, list) or not isinstance(res_json, list):
+            return
 
-            if not req_json or not res_json:
-                return
-
-            if not isinstance(req_json, list) or not isinstance(res_json, list):
-                return
-
-            tracked_count = 0
-            for index, item in enumerate(req_json):
-                if not isinstance(item, dict):
+        tracked = 0
+        with self._lock:
+            for idx, item in enumerate(req_json):
+                if not isinstance(item, dict) or 'assetId' not in item:
                     continue
-
-                if 'assetId' not in item:
-                    continue
-
                 asset_id = item['assetId']
-
-                # Skip if already tracked
                 if asset_id in self.cache_logs:
                     continue
-
-                # Get corresponding response item
-                if index >= len(res_json):
+                if idx >= len(res_json):
                     continue
-
-                res_item = res_json[index]
+                res_item = res_json[idx]
                 if not isinstance(res_item, dict):
                     continue
-
-                # Extract location and type
                 location = res_item.get('location')
                 asset_type = res_item.get('assetTypeId')
-
                 if location is not None and asset_type is not None:
-                    self.cache_logs[asset_id] = {
-                        'location': location,
-                        'assetTypeId': asset_type,
-                    }
-                    # Build URL lookup for O(1) matching
+                    self.cache_logs[asset_id] = {'location': location, 'assetTypeId': asset_type}
                     base_url = location.split('?')[0]
                     self._url_to_asset[base_url] = asset_id
-                    tracked_count += 1
+                    tracked += 1
 
-            if tracked_count > 0:
-                log_buffer.log('Cache', f'Tracking {tracked_count} asset(s) for caching')
+        if tracked > 0:
+            log_buffer.log('Cache', f'Tracking {tracked} asset(s) for caching')
 
-        except Exception as e:
-            log_buffer.log('Cache', f'Error in asset delivery handler: {e}')
+    # ------------------------------------------------------------------
+    # Called from server MITM thread for fts.rbxcdn.com responses
+    # ------------------------------------------------------------------
 
-    def _handle_cdn_download(self, flow: http.HTTPFlow, url: str, parsed_url) -> None:
-        """
-        Handle CDN download - cache the actual asset content.
+    def process_cdn_response(self, full_url: str, path: str, body: bytes, content_type: str) -> None:
+        """Stage 2: cache the actual CDN asset bytes."""
+        if not self.enabled or not body:
+            return
 
-        Args:
-            flow: HTTP flow
-            url: Request URL
-            parsed_url: Parsed URL
-        """
-        try:
-            req_base = url.split('?')[0]
+        base_url = full_url.split('?')[0]
 
-            # O(1) URL lookup instead of O(n) linear search
-            asset_id = self._url_to_asset.get(req_base)
+        with self._lock:
+            asset_id = self._url_to_asset.get(base_url)
             if not asset_id:
                 return
-
-            # Get asset info
             info = self.cache_logs.get(asset_id)
-            if not info or not isinstance(info, dict):
+            if not info or 'cached' in info:
                 return
-
-            # Skip if already cached
-            if 'cached' in info:
-                return
-
-            # Get asset content
-            content = flow.response.content
-            if not content:
-                return
-
-            # Mark as cached in tracking log
             info['cached'] = True
-
-            # Extract hash from path
-            cache_hash = parsed_url.path.rsplit('/', 1)[-1]
             asset_type = info.get('assetTypeId', 0)
 
-            # For KTX textures and TexturePacks, queue API conversion in background
-            # DO NOT block the proxy handler waiting for API response
-            needs_api_conversion = False
-            if asset_type in (1, 13) and content.startswith(b'\xABKTX'):
-                # KTX texture - queue PNG conversion
-                needs_api_conversion = True
-            elif asset_type == 63:
-                # TexturePack - queue XML fetch
-                needs_api_conversion = True
+        cache_hash = path.rsplit('/', 1)[-1]
+        metadata = {
+            'url': full_url,
+            'content_type': content_type,
+            'content_length': len(body),
+            'hash': cache_hash,
+        }
 
-            # Build metadata
-            metadata = {
-                'url': url,
-                'content_type': flow.response.headers.get('content-type', ''),
-                'content_length': len(content),
-                'hash': cache_hash,
-            }
+        # Decompress the body to inspect its true magic bytes.
+        # The CDN often serves assets gzip-wrapped regardless of type.
+        # We must look at the inner bytes to avoid misidentifying a mesh
+        # as an Image or TexturePack (which causes preview failures).
+        inner = body
+        if body[:2] == b'\x1f\x8b':
+            import gzip as _gzip
+            try:
+                inner = _gzip.decompress(body)
+            except Exception:
+                inner = body
+        elif body[:4] == b'\x28\xb5\x2f\xfd':
+            try:
+                import zstandard
+                inner = zstandard.ZstdDecompressor().decompress(
+                    body, max_output_size=64 * 1024 * 1024)
+            except Exception:
+                inner = body
 
-            if needs_api_conversion:
-                # For KTX/TexturePack assets: fetch PNG/XML via API and store that.
-                # Pass raw CDN bytes as original_content so they are used as a fallback
-                # if the API call fails.  Do NOT also submit _store_asset_async – that
-                # would race with the conversion write and could overwrite the PNG with KTX.
-                try:
-                    self._executor.submit(
-                        self._fetch_and_update_cache,
-                        asset_id,
-                        asset_type,
-                        url,
-                        metadata,
-                        content,  # original_content fallback
-                    )
-                except RuntimeError as e:
-                    log_buffer.log('Cache', f'Failed to submit conversion task: {e}')
-            else:
-                # Non-convertible asset: store raw CDN bytes directly.
-                try:
-                    self._executor.submit(
-                        self._store_asset_async,
-                        asset_id,
-                        asset_type,
-                        content,
-                        url,
-                        metadata
-                    )
-                except RuntimeError as e:
-                    log_buffer.log('Cache', f'Failed to submit cache store task: {e}')
+        needs_conversion = (
+            (asset_type in (1, 13) and inner[:8] == b'\xabKTX 20\xbb') or
+            asset_type == 63
+        )
 
-        except Exception as e:
-            log_buffer.log('Cache', f'Error in CDN handler: {e}')
+        if needs_conversion:
+            try:
+                self._executor.submit(
+                    self._fetch_and_update_cache,
+                    asset_id, asset_type, full_url, metadata, body,
+                )
+            except RuntimeError as exc:
+                log_buffer.log('Cache', f'Failed to submit conversion task: {exc}')
+        else:
+            try:
+                self._executor.submit(
+                    self._store_asset_async,
+                    asset_id, asset_type, inner, full_url, metadata,
+                )
+            except RuntimeError as exc:
+                log_buffer.log('Cache', f'Failed to submit cache store task: {exc}')
 
-    def _parse_body(self, content: bytes, encoding: str):
+    # ------------------------------------------------------------------
+    # Background workers
+    # ------------------------------------------------------------------
+
+    def set_real_ips(self, real_ips: dict[str, str]) -> None:
+        """Called by ProxyMaster after DNS resolution (before hosts file is written).
+        Stores real IPs so API calls can bypass our hosts file redirect.
         """
-        Parse body content, handling gzip compression.
+        self._real_ips = real_ips
+        log_buffer.log('Cache', f'API bypass configured for: {list(real_ips.keys())}')
 
-        Args:
-            content: Raw content bytes
-            encoding: Content encoding
+    def _https_get(self, hostname: str, path: str, extra_headers: dict | None = None,
+                   timeout: float = 8.0, max_redirects: int = 6) -> bytes | None:
+        """Make an HTTPS GET request, bypassing our hosts file by connecting to the
+        real IP while passing the original hostname as SNI and Host header.
 
-        Returns:
-            Parsed JSON or None
+        Uses raw ssl + http.client so we have complete control over SNI — unlike
+        requests/urllib3 which uses the connection-target URL as the SNI hostname,
+        breaking TLS when we swap hostname -> IP.
+
+        Critical: we advertise Accept-Encoding: gzip, deflate but NOT zstd.
+        Roblox's assetdelivery reads Accept-Encoding to decide which CDN URL to
+        redirect to.  Without zstd support signalled, it redirects to the
+        gzip-compressed PNG version of the asset (not the KTX2+zstd game-client
+        version).  This is exactly what the original mitmproxy implementation got
+        because Python's requests library sends gzip/deflate Accept-Encoding by
+        default, never zstd.
         """
-        if not content:
-            return None
+        import ssl
+        import socket
+        import http.client
+        from urllib.parse import urlparse
 
-        try:
-            if encoding == 'gzip':
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
+        cur_hostname = hostname
+        cur_path = path
+
+        for _ in range(max_redirects):
+            real_ip = self._real_ips.get(cur_hostname, cur_hostname)
+            try:
+                raw_sock = socket.create_connection((real_ip, 443), timeout=timeout)
+                ssl_sock = ctx.wrap_socket(raw_sock, server_hostname=cur_hostname)
+            except Exception as exc:
+                log_buffer.log('Cache', f'Socket connect failed {cur_hostname} ({real_ip}): {exc}')
+                return None
+
+            try:
+                conn = http.client.HTTPConnection.__new__(http.client.HTTPSConnection)
+                http.client.HTTPConnection.__init__(conn, real_ip, 443, timeout=timeout)
+                conn.sock = ssl_sock
+
+                # Match the headers that Python's requests library sends by default.
+                # Accept-Encoding: gzip, deflate signals we do NOT support zstd, so
+                # assetdelivery redirects to the PNG CDN URL, not the KTX2+zstd one.
+                req_headers = {
+                    'Host': cur_hostname,
+                    'User-Agent': 'Roblox/WinInet',
+                    'Accept-Encoding': 'gzip, deflate',
+                    'Accept': '*/*',
+                    'Connection': 'close',
+                }
+                if extra_headers:
+                    req_headers.update(extra_headers)
+
+                conn.request('GET', cur_path, headers=req_headers)
+                resp = conn.getresponse()
+
+                if resp.status in (301, 302, 303, 307, 308):
+                    location = resp.headers.get('Location', '')
+                    resp.read()
+                    ssl_sock.close()
+                    if not location:
+                        return None
+                    parsed = urlparse(location)
+                    cur_hostname = (parsed.hostname or cur_hostname).lower()
+                    cur_path = parsed.path
+                    if parsed.query:
+                        cur_path += '?' + parsed.query
+                    continue
+
+                if resp.status == 200:
+                    data = resp.read()
+                    ssl_sock.close()
+                    # Decompress gzip — assetdelivery wraps PNG in gzip when
+                    # Accept-Encoding: gzip was advertised
+                    ce = resp.headers.get('Content-Encoding', '').lower()
+                    if ce == 'gzip' and data:
+                        import gzip as _gzip
+                        try:
+                            data = _gzip.decompress(data)
+                        except Exception:
+                            pass
+                    elif data[:4] == b'\x28\xb5\x2f\xfd':  # zstd magic
+                        try:
+                            import zstandard
+                            data = zstandard.ZstdDecompressor().decompress(
+                                data, max_output_size=32 * 1024 * 1024)
+                        except Exception:
+                            pass
+                    return data if data else None
+
+                resp.read()
+                ssl_sock.close()
+                return None
+            except Exception as exc:
                 try:
-                    content = gzip.decompress(content)
-                except OSError:
-                    # Not actually gzipped, use raw bytes
+                    ssl_sock.close()
+                except Exception:
                     pass
+                log_buffer.log('Cache', f'HTTP error {cur_hostname}: {exc}')
+                return None
 
-            return loads(content)
-
-        except (ValueError, UnicodeDecodeError) as e:
-            log_buffer.log('Cache', f'Failed to parse JSON: {e}')
-            return None
+        return None  # too many redirects
 
     def _fetch_from_api(self, asset_id: str) -> bytes | None:
-        """Fetch asset content from Roblox asset delivery API (uses connection pooling)."""
-        try:
-            cookie = self._get_roblosecurity()
-            headers = {}
-            if cookie:
-                headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
+        """Fetch asset from Roblox delivery API for KTX->PNG / TexturePack conversion.
 
-            api_url = f'https://assetdelivery.roblox.com/v1/asset/?id={asset_id}'
-            # Use session for connection pooling and reduced timeout
-            response = self._session.get(api_url, headers=headers, timeout=5)
+        The /v1/asset/ endpoint performs server-side conversion:
+          - KTX textures  -> PNG
+          - TexturePacks  -> XML
 
-            if response.status_code == 200 and response.content:
-                return response.content
-        except Exception as e:
-            log_buffer.log('Cache', f'API fetch error for {asset_id}: {e}')
-
-        return None
-
-    def _fetch_and_update_cache(self, asset_id: str, asset_type: int, url: str, metadata: dict,
-                                original_content: bytes | None = None):
-        """Background worker to fetch API content and update cache (runs in thread pool).
-
-        If the API conversion succeeds, stores the converted bytes (PNG/XML).
-        Falls back to storing original_content (raw CDN bytes) when the API fails or
-        returns an unexpected format, so at least something is cached.
+        Uses _https_get() which connects by real IP with correct SNI so the
+        CDN TLS handshake succeeds regardless of our hosts file entries.
         """
         try:
-            api_content = self._fetch_from_api(asset_id)
+            cookie = self._get_roblosecurity()
+            extra = {}
+            if cookie:
+                extra['Cookie'] = f'.ROBLOSECURITY={cookie};'
+            return self._https_get(
+                'assetdelivery.roblox.com',
+                f'/v1/asset/?id={asset_id}',
+                extra_headers=extra or None,
+            )
+        except Exception as exc:
+            log_buffer.log('Cache', f'API fetch error for {asset_id}: {exc}')
+        return None
 
+    def _fetch_and_update_cache(
+        self, asset_id: str, asset_type: int, url: str,
+        metadata: dict, original_content: bytes | None = None,
+    ) -> None:
+        try:
+            api_content = self._fetch_from_api(asset_id)
             if api_content:
-                # Validate content type
                 is_valid = False
                 content_desc = ''
-
-                if asset_type in (1, 13) and api_content.startswith(b'\x89PNG'):
-                    # KTX converted to PNG
-                    is_valid = True
-                    content_desc = 'PNG'
-                elif asset_type == 63 and (api_content.startswith(b'<roblox>') or b'<roblox>' in api_content[:100]):
-                    # TexturePack XML
-                    is_valid = True
-                    content_desc = 'XML'
+                if asset_type in (1, 13) and api_content[:4] == b'\x89PNG':
+                    is_valid, content_desc = True, 'PNG'
+                elif asset_type == 63 and b'<roblox>' in api_content[:100]:
+                    is_valid, content_desc = True, 'XML'
 
                 if is_valid:
-                    # Update metadata
                     metadata['content_length'] = len(api_content)
-
-                    # Store in cache (cache_manager has its own locking)
                     success = self.cache_manager.store_asset(
-                        asset_id=str(asset_id),
-                        asset_type=asset_type,
-                        data=api_content,
-                        url=url,
-                        metadata=metadata
+                        asset_id=str(asset_id), asset_type=asset_type,
+                        data=api_content, url=url, metadata=metadata,
                     )
-
                     if success:
                         type_name = self.cache_manager.get_asset_type_name(asset_type)
                         log_buffer.log('Cache', f'Converted {type_name} to {content_desc}: {asset_id}')
-                    return  # done – converted bytes stored
+                    return
 
-            # API failed or returned unexpected content; fall back to raw CDN bytes
             if original_content is not None:
                 metadata['content_length'] = len(original_content)
                 success = self.cache_manager.store_asset(
-                    asset_id=str(asset_id),
-                    asset_type=asset_type,
-                    data=original_content,
-                    url=url,
-                    metadata=metadata
+                    asset_id=str(asset_id), asset_type=asset_type,
+                    data=original_content, url=url, metadata=metadata,
                 )
                 if success:
                     type_name = self.cache_manager.get_asset_type_name(asset_type)
-                    log_buffer.log('Cache', f'Cached {type_name} (raw fallback, API unavailable): {asset_id}')
-
-        except Exception as e:
-            log_buffer.log('Cache', f'Background conversion error for {asset_id}: {e}')
-            # Last-resort fallback so we never silently drop an asset
+                    log_buffer.log('Cache', f'Cached {type_name} (raw fallback): {asset_id}')
+        except Exception as exc:
+            log_buffer.log('Cache', f'Background conversion error for {asset_id}: {exc}')
             if original_content is not None:
                 try:
                     self.cache_manager.store_asset(
-                        asset_id=str(asset_id),
-                        asset_type=asset_type,
-                        data=original_content,
-                        url=url,
-                        metadata=metadata
+                        asset_id=str(asset_id), asset_type=asset_type,
+                        data=original_content, url=url, metadata=metadata,
                     )
                 except Exception:
                     pass
 
-    def _store_asset_async(self, asset_id: str, asset_type: int, data: bytes, url: str, metadata: dict):
-        """Background worker to store cached asset data."""
+    def _store_asset_async(
+        self, asset_id: str, asset_type: int, data: bytes, url: str, metadata: dict,
+    ) -> None:
         try:
             success = self.cache_manager.store_asset(
-                asset_id=str(asset_id),
-                asset_type=asset_type,
-                data=data,
-                url=url,
-                metadata=metadata
+                asset_id=str(asset_id), asset_type=asset_type,
+                data=data, url=url, metadata=metadata,
             )
-
             if success:
                 type_name = self.cache_manager.get_asset_type_name(asset_type)
-                log_buffer.log(
-                    'Cache',
-                    f'Cached {type_name}: {asset_id} ({len(data)} bytes)'
-                )
-        except Exception as e:
-            log_buffer.log('Cache', f'Cache store error for {asset_id}: {e}')
+                log_buffer.log('Cache', f'Cached {type_name}: {asset_id} ({len(data)} bytes)')
+        except Exception as exc:
+            log_buffer.log('Cache', f'Cache store error for {asset_id}: {exc}')
+
+    # ------------------------------------------------------------------
+    # GUI-callable interface (same as before - no change needed in GUI code)
+    # ------------------------------------------------------------------
+
+    def set_enabled(self, enabled: bool) -> None:
+        self.enabled = enabled
+        log_buffer.log('Cache', f'Cache scraper {"enabled" if enabled else "disabled"}')
+
+    def clear_tracking(self) -> None:
+        with self._lock:
+            self.cache_logs.clear()
+            self._url_to_asset.clear()
+        log_buffer.log('Cache', 'Cleared asset tracking log')
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
 
     def _get_roblosecurity(self) -> str | None:
-        """Get .ROBLOSECURITY cookie from Roblox local storage."""
         try:
             import win32crypt
         except ImportError:
             return None
-
         path = os.path.expandvars(r'%LocalAppData%/Roblox/LocalStorage/RobloxCookies.dat')
         try:
             if not os.path.exists(path):
                 return None
             import json as _json
-            with open(path, 'r') as f:
+            with open(path) as f:
                 data = _json.load(f)
             cookies_data = data.get('CookiesData')
             if not cookies_data:
@@ -409,15 +409,3 @@ class CacheScraper:
             return m.group(1) if m else None
         except Exception:
             return None
-
-    def set_enabled(self, enabled: bool):
-        """Enable or disable the cache scraper."""
-        self.enabled = enabled
-        status = 'enabled' if enabled else 'disabled'
-        log_buffer.log('Cache', f'Cache scraper {status}')
-
-    def clear_tracking(self):
-        """Clear the asset tracking log."""
-        self.cache_logs.clear()
-        self._url_to_asset.clear()
-        log_buffer.log('Cache', 'Cleared asset tracking log')
