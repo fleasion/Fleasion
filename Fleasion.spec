@@ -69,7 +69,11 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    upx_exclude=[],
+    upx_exclude=[
+    'Qt6Core.dll', 'Qt6Gui.dll', 'Qt6Widgets.dll',
+    'Qt6Network.dll', 'Qt6OpenGL.dll', 'Qt6Svg.dll',
+    'libEGL.dll', 'libGLESv2.dll',
+    ],
     runtime_tmpdir=None,
     console=False,          # no console window for end users
     # uac_admin is intentionally NOT set here.
