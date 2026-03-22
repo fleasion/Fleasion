@@ -211,32 +211,44 @@ def _find_roblox_dirs() -> list:
 
     found = []
     seen = set()
-    for root in search_roots:
-        try:
-            # Walk up to 3 levels: root/L1/L2/L3/RobloxPlayerBeta.exe
-            for l1 in root.iterdir():
-                if not l1.is_dir():
-                    continue
-                if (l1 / ROBLOX_PROCESS).exists() and str(l1) not in seen:
-                    found.append(l1); seen.add(str(l1))
-                try:
-                    for l2 in l1.iterdir():
-                        if not l2.is_dir():
-                            continue
-                        if (l2 / ROBLOX_PROCESS).exists() and str(l2) not in seen:
-                            found.append(l2); seen.add(str(l2))
-                        try:
-                            for l3 in l2.iterdir():
-                                if not l3.is_dir():
-                                    continue
-                                if (l3 / ROBLOX_PROCESS).exists() and str(l3) not in seen:
-                                    found.append(l3); seen.add(str(l3))
-                        except OSError:
-                            pass
-                except OSError:
-                    pass
-        except OSError:
-            pass
+
+    # Suppress Windows "corrupt disk" / "device not ready" / "no disk in drive"
+    # dialog boxes for the duration of the scan.  Without this, accessing a
+    # drive or directory that has a corrupt filesystem entry causes Windows to
+    # pop up a system modal error dialog even though we already handle the
+    # resulting OSError in Python.
+    #   SEM_FAILCRITICALERRORS  = 0x0001  – send errors to the process, not a dialog
+    #   SEM_NOOPENFILEERRORBOX  = 0x8000  – suppress "file not found" dialogs
+    old_error_mode = ctypes.windll.kernel32.SetErrorMode(0x8001)
+    try:
+        for root in search_roots:
+            try:
+                # Walk up to 3 levels: root/L1/L2/L3/RobloxPlayerBeta.exe
+                for l1 in root.iterdir():
+                    if not l1.is_dir():
+                        continue
+                    if (l1 / ROBLOX_PROCESS).exists() and str(l1) not in seen:
+                        found.append(l1); seen.add(str(l1))
+                    try:
+                        for l2 in l1.iterdir():
+                            if not l2.is_dir():
+                                continue
+                            if (l2 / ROBLOX_PROCESS).exists() and str(l2) not in seen:
+                                found.append(l2); seen.add(str(l2))
+                            try:
+                                for l3 in l2.iterdir():
+                                    if not l3.is_dir():
+                                        continue
+                                    if (l3 / ROBLOX_PROCESS).exists() and str(l3) not in seen:
+                                        found.append(l3); seen.add(str(l3))
+                            except OSError:
+                                pass
+                    except OSError:
+                        pass
+            except OSError:
+                pass
+    finally:
+        ctypes.windll.kernel32.SetErrorMode(old_error_mode)
     return found
 
 
