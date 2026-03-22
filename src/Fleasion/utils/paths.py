@@ -5,7 +5,7 @@ from pathlib import Path
 
 # Application metadata
 APP_NAME = 'Fleasion'
-APP_VERSION = '1.6.0'
+APP_VERSION = '1.6.1'
 APP_AUTHOR = 'By @8ar__ | Logic by @blockce, @1_v, @0100152000022000\n@dis_spencer, @Yeha., @emk530'
 APP_DISCORD = 'discord.gg/hXyhKehEZF'
 
@@ -17,11 +17,13 @@ PROXY_PORT = 443
 STRIPPABLE_ASSET_TYPES = {'TexturePack'}
 
 # Icon
-ICON_FILENAME = 'fleasionlogo2.ico'
+ICON_FILENAME = 'fleasionlogoHR.ico'
 
 # Windows paths
 LOCAL_APPDATA = Path.home() / 'AppData' / 'Local'
 STORAGE_DB = LOCAL_APPDATA / 'Roblox' / 'rbx-storage.db'
+# Microsoft Store (GDK) version of Roblox stores its DB here
+STORAGE_DB_GDK = LOCAL_APPDATA / 'RobloxPCGDK' / 'rbx-storage.db'
 
 # Application directories
 CONFIG_DIR = LOCAL_APPDATA / 'FleasionNT'

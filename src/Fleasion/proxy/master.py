@@ -12,8 +12,8 @@ Interception strategy:
 
 Admin requirement:
   Writing to %SystemRoot%\\System32\\drivers\\etc\\hosts and binding port 443
-  both require administrator privileges.  Fleasion will check for elevation
-  and log a clear error if it is missing.
+  both require administrator privileges. Fleasion will check for elevation
+  and log an error if it is missing.
 
 VPN compatibility:
   Loopback (127.0.0.1) traffic is never routed through VPN adapters.
@@ -36,6 +36,7 @@ from ..utils import (
     PROXY_PORT,
     ROBLOX_PROCESS,
     STORAGE_DB,
+    STORAGE_DB_GDK,
     log_buffer,
     terminate_roblox,
     wait_for_roblox_exit,
@@ -170,56 +171,158 @@ def _remove_hosts_entries(hosts: Set[str]) -> None:
 # ---------------------------------------------------------------------------
 
 def _find_roblox_dirs() -> list:
-    """Walk AppData and LocalAppData up to 3 levels deep looking for
-    any directory containing RobloxPlayerBeta.exe.
+    """Locate every RobloxPlayerBeta.exe installation via registry and known paths.
 
-    This handles standard Roblox installs, Fishstrap (which may remove
-    the version-xxxxxxxxxx naming convention), and any other bootstrapper
-    that places the executable at an arbitrary depth.
+    Methods used (combined):
+      1. Main Registry   — HKCU\\Software (two levels) for REG_SZ "PlayerPath"
+      2. MS Store        — C:\\XboxGames\\Roblox up to two layers deep
+      3. Active Roblox   — HKCU\\...\\roblox-player\\open\\command (Default)
+      4. Regular Roblox  — %LocalAppData%\\Roblox\\Versions one layer deep
     """
-    search_roots = [LOCAL_APPDATA]
-    appdata = Path.home() / 'AppData' / 'Roaming'
-    if appdata.exists():
-        search_roots.append(appdata)
+    import winreg
 
-    found = []
-    seen = set()
-    for root in search_roots:
+    found: list = []
+    seen: set = set()
+
+    def _add(path: Path) -> bool:
+        key = str(path)
+        if key not in seen:
+            found.append(path)
+            seen.add(key)
+            return True
+        return False
+
+    def _scan_for_exe(root: Path, max_depth: int) -> list:
+        """Return all subdirs up to max_depth layers under root that contain RobloxPlayerBeta.exe."""
+        results: list = []
+
+        def _recurse(path: Path, depth: int) -> None:
+            try:
+                for entry in os.scandir(path):
+                    if not entry.is_dir():
+                        continue
+                    if os.path.isfile(os.path.join(entry.path, ROBLOX_PROCESS)):
+                        results.append(Path(entry.path))
+                    if depth < max_depth:
+                        _recurse(Path(entry.path), depth + 1)
+            except OSError:
+                pass
+
+        if root.is_dir():
+            _recurse(root, 1)
+        return results
+
+    # ── 1. Main Registry Search ──────────────────────────────────────────
+    # Walk HKCU\Software and one layer of subkeys; collect any "PlayerPath" value.
+    t = time.perf_counter()
+    reg_found = 0
+
+    def _check_player_path_key(key) -> None:
+        nonlocal reg_found
         try:
-            # Walk up to 3 levels: root/L1/L2/L3/RobloxPlayerBeta.exe
-            for l1 in root.iterdir():
-                if not l1.is_dir():
-                    continue
-                if (l1 / ROBLOX_PROCESS).exists() and str(l1) not in seen:
-                    found.append(l1); seen.add(str(l1))
+            val, rtype = winreg.QueryValueEx(key, 'PlayerPath')
+        except OSError:
+            return
+        if rtype != winreg.REG_SZ or not val:
+            return
+        p = Path(val)
+        # PlayerPath may occasionally point at the exe itself rather than the dir
+        if p.name.lower() == ROBLOX_PROCESS.lower():
+            p = p.parent
+        if os.path.isfile(os.path.join(str(p), ROBLOX_PROCESS)):
+            reg_found += 1
+            _add(p)
+        else:
+            for d in _scan_for_exe(p, 1):
+                reg_found += 1
+                _add(d)
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r'Software') as hkey:
+            i = 0
+            while True:
                 try:
-                    for l2 in l1.iterdir():
-                        if not l2.is_dir():
-                            continue
-                        if (l2 / ROBLOX_PROCESS).exists() and str(l2) not in seen:
-                            found.append(l2); seen.add(str(l2))
-                        try:
-                            for l3 in l2.iterdir():
-                                if not l3.is_dir():
-                                    continue
-                                if (l3 / ROBLOX_PROCESS).exists() and str(l3) not in seen:
-                                    found.append(l3); seen.add(str(l3))
-                        except PermissionError:
-                            pass
-                except PermissionError:
+                    name = winreg.EnumKey(hkey, i); i += 1
+                except OSError:
+                    break
+                try:
+                    with winreg.OpenKey(hkey, name) as sk:
+                        _check_player_path_key(sk)
+                        j = 0
+                        while True:
+                            try:
+                                sub = winreg.EnumKey(sk, j); j += 1
+                            except OSError:
+                                break
+                            try:
+                                with winreg.OpenKey(sk, sub) as ssk:
+                                    _check_player_path_key(ssk)
+                            except OSError:
+                                pass
+                except OSError:
                     pass
-        except PermissionError:
-            pass
+    except OSError:
+        pass
+    log_buffer.log('Certificate', f'  Registry PlayerPath: {int((time.perf_counter() - t) * 1000)} ms ({reg_found} found)')
+
+    # ── 2. MS Store Version ──────────────────────────────────────────────
+    # C:\XboxGames\Roblox, up to two layers deep.
+    t = time.perf_counter()
+    xbox_found = 0
+    for d in _scan_for_exe(Path(r'C:\XboxGames\Roblox'), 2):
+        xbox_found += 1
+        _add(d)
+    log_buffer.log('Certificate', f'  XboxGames\\Roblox: {int((time.perf_counter() - t) * 1000)} ms ({xbox_found} found)')
+
+    # ── 3. Active Roblox ─────────────────────────────────────────────────
+    # Read HKCU\...\roblox-player\shell\open\command (Default); parse the exe
+    # path and search up to two layers under its parent directory.
+    t = time.perf_counter()
+    active_found = 0
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r'SOFTWARE\Classes\roblox-player\shell\open\command',
+        ) as key:
+            try:
+                cmd, rtype = winreg.QueryValueEx(key, '')
+                if rtype == winreg.REG_SZ and cmd:
+                    cmd = cmd.strip()
+                    if cmd.startswith('"'):
+                        exe_path = cmd[1 : cmd.index('"', 1)]
+                    else:
+                        exe_path = cmd.split()[0]
+                    exe_dir = Path(exe_path).parent
+                    for d in _scan_for_exe(exe_dir, 2):
+                        active_found += 1
+                        _add(d)
+            except (OSError, ValueError):
+                pass
+    except OSError:
+        pass
+    log_buffer.log('Certificate', f'  Active Roblox (registry): {int((time.perf_counter() - t) * 1000)} ms ({active_found} found)')
+
+    # ── 4. Regular Roblox ────────────────────────────────────────────────
+    # %LocalAppData%\Roblox\Versions — one layer down.
+    t = time.perf_counter()
+    roblox_found = 0
+    for d in _scan_for_exe(LOCAL_APPDATA / 'Roblox' / 'Versions', 1):
+        roblox_found += 1
+        _add(d)
+    log_buffer.log('Certificate', f'  AppData Roblox\\Versions: {int((time.perf_counter() - t) * 1000)} ms ({roblox_found} found)')
+
     return found
 
 
 def _install_ca_into_roblox(ca_pem: str) -> None:
     """Append our CA cert to ssl/cacert.pem next to every found RobloxPlayerBeta.exe."""
+    t0 = time.perf_counter()
     dirs = _find_roblox_dirs()
+    elapsed_ms = int((time.perf_counter() - t0) * 1000)
     if not dirs:
-        log_buffer.log('Certificate', 'No Roblox installs found to patch')
+        log_buffer.log('Certificate', f'No Roblox installs found to patch (scanned in {elapsed_ms} ms)')
         return
-    log_buffer.log('Certificate', f'Found {len(dirs)} Roblox install(s) to patch')
+    log_buffer.log('Certificate', f'Found {len(dirs)} Roblox install(s) to patch (scanned in {elapsed_ms} ms)')
 
     for d in dirs:
         ssl_dir = d / 'ssl'
@@ -329,6 +432,14 @@ class ProxyMaster:
                         log_buffer.log('Cleanup', 'Storage deleted')
                     except (FileNotFoundError, PermissionError, OSError) as exc:
                         log_buffer.log('Cleanup', f'Storage deletion: {exc}')
+                    if STORAGE_DB_GDK.parent.exists():
+                        try:
+                            STORAGE_DB_GDK.unlink()
+                            log_buffer.log('Cleanup', 'Storage (GDK) deleted')
+                        except FileNotFoundError:
+                            pass
+                        except (PermissionError, OSError) as exc:
+                            log_buffer.log('Cleanup', f'Storage (GDK) deletion: {exc}')
             else:
                 log_buffer.log('Cleanup', 'Roblox not running')
         else:

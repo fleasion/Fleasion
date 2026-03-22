@@ -27,7 +27,7 @@ def _is_admin() -> bool:
         return False
 
 
-def _relaunch_as_admin() -> bool:
+def _relaunch_as_admin(extra_args: str = '') -> bool:
     """Silently attempt to relaunch elevated via UAC.
 
     Shows only the standard Windows UAC prompt (no extra dialog).
@@ -39,7 +39,9 @@ def _relaunch_as_admin() -> bool:
     if getattr(sys, 'frozen', False):
         # Compiled .exe — sys.executable is the .exe itself
         exe = sys.executable
-        params = ' '.join(f'"{a}"' for a in sys.argv[1:]) if len(sys.argv) > 1 else None
+        existing = ' '.join(f'"{a}"' for a in sys.argv[1:]) if len(sys.argv) > 1 else ''
+        combined = (existing + (' ' + extra_args.strip() if extra_args.strip() else '')).strip()
+        params = combined if combined else None
     else:
         # Dev / uv run — locate the uv executable and replay the original
         # invocation through it.  Running the Python interpreter directly in
@@ -61,12 +63,13 @@ def _relaunch_as_admin() -> bool:
                 check = os.path.dirname(check)
             # ShellExecuteW doesn't let us set cwd directly for the child, but
             # we can pass --project to tell uv where to look.
-            params = f'--project "{cwd}" run fleasion'
+            params = (f'--project "{cwd}" run fleasion ' + extra_args.strip()).strip()
         else:
             # Fallback: plain interpreter (may fail if venv is not activated,
             # but it's the best we can do without uv)
             exe = sys.executable
-            params = ' '.join(f'"{a}"' for a in sys.argv)
+            combined = (' '.join(f'"{a}"' for a in sys.argv) + (' ' + extra_args.strip() if extra_args.strip() else '')).strip()
+            params = combined if combined else None
 
     # Use ShellExecuteExW with SEE_MASK_NO_CONSOLE so the elevated process
     # (which may be uv.exe, a console app) never spawns a visible cmd window.
@@ -111,7 +114,7 @@ def _relaunch_as_admin() -> bool:
     return bool(ok)
 
 
-def _attempt_silent_elevation() -> bool:
+def _attempt_silent_elevation(extra_args: str = '') -> bool:
     """Try to elevate silently on startup.
 
     If already admin, returns True immediately.
@@ -123,7 +126,7 @@ def _attempt_silent_elevation() -> bool:
     if _is_admin():
         return True
 
-    success = _relaunch_as_admin()
+    success = _relaunch_as_admin(extra_args=extra_args)
     if success:
         # Elevated copy is now starting up — close this instance silently
         sys.exit(0)
@@ -221,8 +224,8 @@ class RobloxExitMonitor(QObject):
             log_buffer.log('Cache', msg)
 
 
-def kill_other_fleasion_instances():
-    """Kill all other Fleasion instances except the current process."""
+def _other_fleasion_pids() -> list:
+    """Return PIDs of other Fleasion processes (excludes current process and its parent)."""
     import json
     import os
     import subprocess
@@ -231,10 +234,10 @@ def kill_other_fleasion_instances():
     parent_pid = os.getppid()
     safe_pids = {current_pid, parent_pid}
     exe_name = os.path.basename(sys.executable)
+    pids = []
 
     try:
         if exe_name.lower() not in ('python.exe', 'python3.exe'):
-            # Compiled executable — find all processes with same image name and kill others
             result = subprocess.run(
                 ['tasklist', '/FI', f'IMAGENAME eq {exe_name}', '/FO', 'CSV', '/NH'],
                 capture_output=True, text=True, encoding='utf-8', errors='replace',
@@ -247,18 +250,10 @@ def kill_other_fleasion_instances():
                     try:
                         pid = int(parts[1])
                         if pid not in safe_pids:
-                            subprocess.run(
-                                ['taskkill', '/F', '/PID', str(pid)],
-                                capture_output=True,
-                                creationflags=subprocess.CREATE_NO_WINDOW
-                            )
+                            pids.append(pid)
                     except (ValueError, IndexError):
                         pass
         else:
-            # Dev mode — use PowerShell CimInstance to get command lines and identify Fleasion processes.
-            # We exclude both the current PID and its parent PID: under debugpy the parent is the
-            # launcher process that also has 'launcher.py' in its command line, and killing it would
-            # cascade-terminate the current process.
             ps_cmd = (
                 "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
                 'Select-Object ProcessId, CommandLine | ConvertTo-Json -Depth 1'
@@ -278,15 +273,29 @@ def kill_other_fleasion_instances():
                     if pid in safe_pids or pid == 0:
                         continue
                     if 'launcher.py' in cmdline or 'fleasion' in cmdline:
-                        subprocess.run(
-                            ['taskkill', '/F', '/PID', str(pid)],
-                            capture_output=True,
-                            creationflags=subprocess.CREATE_NO_WINDOW
-                        )
+                        pids.append(pid)
             except (json.JSONDecodeError, TypeError, ValueError):
                 pass
     except Exception:
         pass
+
+    return pids
+
+
+
+def kill_other_fleasion_instances():
+    """Kill all other Fleasion instances except the current process."""
+    import subprocess
+
+    for pid in _other_fleasion_pids():
+        try:
+            subprocess.run(
+                ['taskkill', '/F', '/PID', str(pid)],
+                capture_output=True,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+        except Exception:
+            pass
 
 
 def main():
@@ -295,6 +304,8 @@ def main():
     _parser = _ap.ArgumentParser(add_help=False)
     _parser.add_argument('--no-dashboard', action='store_true',
                          help='Suppress dashboard on launch (used by autostart task)')
+    _parser.add_argument('--kill-others', action='store_true',
+                         help='Kill other Fleasion instances on startup (used when relaunching elevated)')
     _args, _ = _parser.parse_known_args()
     _suppress_dashboard = _args.no_dashboard
 
@@ -319,6 +330,12 @@ def main():
     # If we're admin, forcibly attach-and-detach to clear it so the
     # elevated instance can take over cleanly.
     if _is_admin():
+        # If launched with --kill-others, kill before clearing stale memory so
+        # the shared memory slot is freed by the time we try to claim it.
+        if _args.kill_others:
+            kill_other_fleasion_instances()
+            import time as _time
+            _time.sleep(0.3)
         _stale = QSharedMemory('FleasionSingleInstance')
         if _stale.attach():
             _stale.detach()
@@ -326,19 +343,33 @@ def main():
     shared_memory = QSharedMemory('FleasionSingleInstance')
     if not shared_memory.create(1):
         if shared_memory.error() == QSharedMemory.SharedMemoryError.AlreadyExists:
-            # Another instance is already running
+            # Another instance is already running.
+            # Non-admin processes cannot use taskkill on elevated processes — it
+            # silently does nothing.  Branch on whether WE are admin rather than
+            # trying to inspect the other process's token cross-privilege.
             msg_box = QMessageBox()
             msg_box.setWindowTitle('Fleasion Already Running')
             msg_box.setText('Another instance of Fleasion is already running (Check your system tray).')
-            msg_box.setInformativeText('Do you want to run another instance anyway?')
             msg_box.setIcon(QMessageBox.Icon.Warning)
-            
+
             # Set icon if available
             if icon_path := get_icon_path():
                 from PyQt6.QtGui import QIcon
                 msg_box.setWindowIcon(QIcon(str(icon_path)))
 
-            kill_others_button = msg_box.addButton('Kill Others', QMessageBox.ButtonRole.AcceptRole)
+            msg_box.setInformativeText('Do you want to run another instance anyway?')
+
+            if _is_admin():
+                # Already elevated — can kill any process directly.
+                kill_others_button = msg_box.addButton('Kill Others', QMessageBox.ButtonRole.AcceptRole)
+                _kill_requires_elevation = False
+            else:
+                # Not admin — taskkill on an elevated process silently fails.
+                # A single "Elevate & Kill Others" relaunches as admin with
+                # --kill-others so the elevated copy handles it automatically.
+                kill_others_button = msg_box.addButton('Elevate && Kill Others', QMessageBox.ButtonRole.AcceptRole)
+                _kill_requires_elevation = True
+
             run_anyway_button = msg_box.addButton('Run Anyway', QMessageBox.ButtonRole.AcceptRole)
             cancel_button = msg_box.addButton('Cancel', QMessageBox.ButtonRole.RejectRole)
             msg_box.setDefaultButton(cancel_button)
@@ -349,9 +380,21 @@ def main():
                 sys.exit(0)
 
             if msg_box.clickedButton() == kill_others_button:
-                kill_other_fleasion_instances()
+                if _kill_requires_elevation:
+                    # Relaunch elevated with --kill-others.  The elevated copy will
+                    # kill the running instance before claiming the shared memory
+                    # slot — no second dialog shown.
+                    launched = _relaunch_as_admin(extra_args='--kill-others')
+                    if launched:
+                        sys.exit(0)
+                    # UAC denied — the existing admin instance is still running.
+                    # There is no point continuing as a read-only copy alongside it,
+                    # so exit cleanly.
+                    sys.exit(0)
+                else:
+                    kill_other_fleasion_instances()
 
-            # If "Run Anyway" or "Kill Others" is clicked, we proceed.
+            # If "Run Anyway" or "Kill Others" (admin path) is clicked, we proceed.
             # Note: shared_memory object will be garbage collected or go out of scope,
             # but since we didn't successfully create it, we don't hold the lock.
 

@@ -2,7 +2,7 @@
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 datas = [
-    ('src\\Fleasion\\fleasionlogo2.ico', '.'),
+    ('src\\Fleasion\\fleasionlogoHR.ico', '.'),
     ('src\\Fleasion\\cache\\tools\\animpreview', 'tools/animpreview'),
 ]
 binaries = []
@@ -14,6 +14,10 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 # PyQt6 has many optional sub-packages; collect_all ensures nothing is missed
 tmp_ret = collect_all('PyQt6')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+
+# zstandard is a compiled C extension - collect_all ensures the .pyd is bundled
+tmp_ret = collect_all('zstandard')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 # orjson is a compiled extension - make sure it's included
@@ -84,5 +88,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['src\\Fleasion\\fleasionlogo2.ico'],
+    icon=['src\\Fleasion\\fleasionlogoHR.ico'],
 )

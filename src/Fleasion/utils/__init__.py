@@ -23,6 +23,7 @@ from .paths import (
     ROBLOX_PROCESS,
     ROBLOX_STUDIO_PROCESS,
     STORAGE_DB,
+    STORAGE_DB_GDK,
     STRIPPABLE_ASSET_TYPES,
     get_icon_path,
 )
@@ -60,6 +61,7 @@ __all__ = [
     'ROBLOX_PROCESS',
     'ROBLOX_STUDIO_PROCESS',
     'STORAGE_DB',
+    'STORAGE_DB_GDK',
     'STRIPPABLE_ASSET_TYPES',
     'LogBuffer',
     'delete_cache',

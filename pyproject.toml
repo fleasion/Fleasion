@@ -1,6 +1,6 @@
 [project]
 name = 'Fleasion'
-version = '1.6.0'
+version = '1.6.1'
 description = 'Roblox asset interceptor and replacer with PyQt6 GUI'
 readme = 'README.md'
 requires-python = '>=3.14'
@@ -17,6 +17,7 @@ dependencies = [
     "soundfile>=0.13.1",
     "lz4>=4.4.5",
     "orjson>=3.9.0",
+    "zstandard>=0.21.0",
 ]
 
 # Optional / removed:
@@ -32,3 +33,8 @@ Fleasion = 'Fleasion:main'
 [build-system]
 requires = ['uv_build>=0.9.18,<0.10.0']
 build-backend = 'uv_build'
+
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.19.0",
+]

@@ -6,7 +6,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from .paths import ROBLOX_PROCESS, ROBLOX_STUDIO_PROCESS, STORAGE_DB
+from .paths import ROBLOX_PROCESS, ROBLOX_STUDIO_PROCESS, STORAGE_DB, STORAGE_DB_GDK
 
 
 def run_cmd(args: list[str]) -> str:
@@ -49,6 +49,45 @@ def wait_for_roblox_exit(timeout: float = 10.0) -> bool:
     return False
 
 
+def _delete_db_file(db_path: Path, messages: list, label: str = 'Storage database') -> None:
+    """Delete a single rbx-storage.db file, attempting win32 unlock on PermissionError."""
+    if not db_path.exists():
+        messages.append(f'{label} not found')
+        return
+    try:
+        db_path.unlink()
+        messages.append(f'{label} deleted successfully')
+    except PermissionError:
+        messages.append(f'{label}: Permission denied - attempting to unlock...')
+        try:
+            import win32file
+            import win32con
+            import pywintypes
+
+            try:
+                handle = win32file.CreateFile(
+                    str(db_path),
+                    win32con.GENERIC_READ | win32con.GENERIC_WRITE,
+                    win32con.FILE_SHARE_DELETE,
+                    None,
+                    win32con.OPEN_EXISTING,
+                    0,
+                    None
+                )
+                win32file.CloseHandle(handle)
+            except pywintypes.error:
+                pass
+
+            db_path.unlink()
+            messages.append(f'{label}: unlocked and deleted successfully')
+        except ImportError:
+            messages.append(f'{label}: Failed: pywin32 not available for unlock')
+        except Exception as e:
+            messages.append(f'{label}: Failed to unlock: {e}')
+    except OSError as e:
+        messages.append(f'{label}: Failed: {e}')
+
+
 def delete_cache() -> list[str]:
     """Delete Roblox cache with cleanup. Returns list of status messages."""
     messages = []
@@ -64,45 +103,12 @@ def delete_cache() -> list[str]:
     else:
         messages.append('Roblox is not running')
 
-    # Delete rbx-storage.db
-    if not STORAGE_DB.exists():
-        messages.append('Storage database not found')
-    else:
-        try:
-            STORAGE_DB.unlink()
-            messages.append('Storage database deleted successfully')
-        except PermissionError:
-            messages.append('Failed: Permission denied - attempting to unlock...')
-            # Try to unlock and retry
-            try:
-                import win32file
-                import win32con
-                import pywintypes
+    # Delete rbx-storage.db (standard install)
+    _delete_db_file(STORAGE_DB, messages, 'Storage database')
 
-                # Try to force unlock by opening with delete sharing
-                try:
-                    handle = win32file.CreateFile(
-                        str(STORAGE_DB),
-                        win32con.GENERIC_READ | win32con.GENERIC_WRITE,
-                        win32con.FILE_SHARE_DELETE,
-                        None,
-                        win32con.OPEN_EXISTING,
-                        0,
-                        None
-                    )
-                    win32file.CloseHandle(handle)
-                except pywintypes.error:
-                    pass
-
-                # Retry deletion
-                STORAGE_DB.unlink()
-                messages.append('Unlocked and deleted successfully')
-            except ImportError:
-                messages.append('Failed: pywin32 not available for unlock')
-            except Exception as e:
-                messages.append(f'Failed to unlock: {e}')
-        except OSError as e:
-            messages.append(f'Failed: {e}')
+    # Delete rbx-storage.db (Microsoft Store / GDK install) if it exists
+    if STORAGE_DB_GDK.parent.exists():
+        _delete_db_file(STORAGE_DB_GDK, messages, 'Storage database (GDK)')
 
     # Delete rbx-storage folder
     import shutil
