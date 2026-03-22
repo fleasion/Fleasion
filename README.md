@@ -8,19 +8,19 @@ To request help or request content, join our community <a href="https://discord.
     <img src="https://invidget.switchblade.xyz/hXyhKehEZF" alt="Join our Discord server">
 </a>
 
-## Requirements
-
-- **Windows** (required &mdash; uses Windows-specific APIs and mitmproxy local mode)
-- **Python 3.14+**
-- [**uv**](https://docs.astral.sh/uv/) package manager
-
 ## Installation & Building
 
 ### Standalone Executable
 
 Download `Fleasion.exe` from the [Releases](https://github.com/qrhrqiohj/Fleasion/releases) page. No Python installation required.
 
-### From Source
+## Requirements for Building from Source
+
+- **Windows** (required &mdash; uses Windows-specific APIs)
+- **Python 3.14+**
+- [**uv**](https://docs.astral.sh/uv/) package manager
+
+### Building from Source
 
 ```bash
 # Clone the repository
@@ -54,7 +54,7 @@ Fleasion runs in the background as a system tray application (bottom-right corne
 - **Delete Cache** &mdash; manually clear cached assets
 - **Logs** &mdash; view real-time proxy logs
 - **About** &mdash; application information
-- **Settings** &mdash; theme (System/Light/Dark), auto-delete cache on exit, clear cache on launch, and more
+- **Settings** &mdash; theme (System/Light/Dark), auto-delete cache on exit, clear cache on launch, run on boot, and more
 
 Left-click the tray icon to hide/unhide Fleasion window.
 
@@ -68,14 +68,16 @@ After applying any changes in the Dashboard, you must **clear your Roblox cache*
 
 ## How It Works
 
-Fleasion uses [mitmproxy](https://mitmproxy.org/) in local mode to intercept HTTP traffic from `RobloxPlayerBeta.exe`. When Roblox requests assets from its CDN, Fleasion can:
+Fleasion runs a lightweight custom asyncio HTTPS proxy on `127.0.0.1:443`. On startup it redirects `assetdelivery.roblox.com` and `fts.rbxcdn.com` to localhost via the system hosts file, installs a locally-generated CA certificate into Roblox's SSL directory so the TLS handshake succeeds, and intercepts all asset traffic. When Roblox requests assets from its CDN, Fleasion can:
 
 - **Replace** assets by ID &mdash; swap one asset for another (different texture, audio, etc.)
 - **Remove** assets &mdash; strip textures from the batch request entirely
 - **Redirect** to CDN URLs or local files &mdash; serve your own content
 - **Cache** original assets &mdash; browse, preview, and export everything Roblox downloads
 
-The proxy installs a local CA certificate into Roblox's SSL directory to decrypt HTTPS traffic. All interception happens locally on your machine.
+All interception happens locally on your machine. The proxy requires administrator privileges to write the hosts file and bind port 443 &mdash; Fleasion will prompt for UAC elevation on first launch.
+
+**VPN compatibility:** Because interception uses the system's hosts file (application layer), it should be compatible with most VPN software, as long as it respects your Windows hosts file.
 
 ## Features
 
@@ -99,7 +101,6 @@ The cache scraper is a live interception system that captures every asset Roblox
 
 **Features:**
 
-- **Optimized JSON parsing** using orjson for faster performance
 - **Column filtering** &mdash; right-click column headers to show/hide categories (Creator name and Roblox CDN link off by default)
 - **Resizable columns** with saved preferences in settings
 - **Sortable columns** with persistent adjustment storage
@@ -117,7 +118,7 @@ The cache scraper is a live interception system that captures every asset Roblox
 
 **What gets cached:**
 
-Every asset type Roblox uses &mdash; images, decals, audio, meshes, animations, shirts, pants, hats, faces, accessories (80+ types). Each asset is stored with its type, original URL, content hash, file size, and capture timestamp. Assets are compressed on disk when larger than 10KB.
+Every asset type Roblox uses &mdash; images, decals, audio, meshes, animations, shirts, pants, hats, faces, accessories (80+ types). Each asset is stored with its type, original URL, content hash, file size, and capture timestamp.
 
 ### 3D Viewers & Preview
 
@@ -143,7 +144,7 @@ Every asset type Roblox uses &mdash; images, decals, audio, meshes, animations, 
 ### Cache Viewer
 - Browse all intercepted assets organized by type (80+ Roblox asset types)
 - Search and filter by ID, name, type, hash, or URL
-- **Live preview** for images, meshes (3D viewer), audio (playback), animations (3D rig), and texture packs
+- **Live preview** for images, meshes (3D viewer), audio (playback), animations (3D rig), texture packs, and Jsons.
 - Asset name resolution via Roblox API
 - Export assets in multiple formats (converted, binary, raw)
 - Copy converted files directly to clipboard
@@ -160,26 +161,33 @@ Every asset type Roblox uses &mdash; images, decals, audio, meshes, animations, 
 ### First Launch
 
 On first launch, Fleasion will:
-- Install mitmproxy CA certificates into Roblox's SSL directory
+- Generate a local CA certificate and install it into Roblox's SSL directory
+- Prompt for administrator privileges (required to modify the hosts file and bind port 443)
 - Show a welcome dialog explaining how the proxy works
 - Open the Dashboard automatically
+
+### Run on Boot
+
+Fleasion can be configured to launch automatically at Windows logon via **Settings → Run on Boot**. This creates a Windows Task Scheduler task with `RunLevel=HighestAvailable`, so the proxy starts elevated without a UAC prompt on every boot. The task updates itself automatically if the installation path or launch method changes.
 
 ## Project Structure
 
 ```
 src/Fleasion/
-├── app.py                          # Application entrypoint and lifecycle
+├── app.py                          # Application entrypoint, UAC elevation, lifecycle
 ├── tray.py                         # System tray icon and menu
 ├── config/
 │   └── manager.py                  # Settings persistence and config management
 ├── proxy/
-│   ├── master.py                   # mitmproxy orchestration and certificate setup
+│   ├── master.py                   # Proxy orchestration, hosts file management, cert setup
+│   ├── server.py                   # Asyncio TLS proxy server (direct HTTPS interception)
 │   └── addons/
 │       ├── cache_scraper.py        # Asset interception and caching addon
 │       └── texture_stripper.py     # Asset replacement and texture removal addon
 ├── cache/
 │   ├── cache_manager.py            # Asset storage, indexing, and export
 │   ├── cache_viewer.py             # Cache browsing UI with search and preview
+│   ├── cache_json_viewer.py        # Embedded JSON viewer for cache entries
 │   ├── animation_viewer.py         # 3D animation preview with R15/R6 rigs
 │   ├── audio_player.py             # Audio playback widget
 │   ├── obj_viewer.py               # 3D mesh viewer (OpenGL) with orbit/FPS camera
@@ -187,13 +195,22 @@ src/Fleasion/
 │   ├── rbxm_parser.py              # Roblox binary model file parser
 │   └── tools/
 │       ├── solidmodel_converter/
+│       │   ├── converter.py        # RBXM deserializer entry point
 │       │   ├── obj_to_mesh.py      # OBJ to Roblox V2.00 mesh format converter
 │       │   ├── obj_to_csg.py       # OBJ to Roblox CSGMDL converter
-│       │   └── csg_mesh.py         # CSGMDL serialization utilities
+│       │   ├── csg_mesh.py         # CSGMDL serialization utilities
+│       │   ├── mesh_intermediary.py# .mesh/.bin to OBJ intermediary conversion
+│       │   └── rbxm/               # RBXM binary format reader/writer
+│       │       ├── binary_reader.py
+│       │       ├── binary_writer.py
+│       │       ├── deserializer.py
+│       │       ├── serializer.py
+│       │       ├── types.py
+│       │       └── xml_writer.py
 │       └── animpreview/            # Animation preview assets (R15/R6 OBJ models and rigs)
 ├── gui/
 │   ├── replacer_config.py          # Main Dashboard window with profile management
-│   ├── json_viewer.py              # JSON tree viewer with search
+│   ├── json_viewer.py              # JSON tree viewer with search and asset preview
 │   ├── theme.py                    # Theme management (System/Light/Dark)
 │   ├── about.py                    # About dialog
 │   ├── logs.py                     # Real-time log viewer
@@ -202,8 +219,11 @@ src/Fleasion/
 │   └── downloader.py               # Community preset downloader
 └── utils/
     ├── paths.py                    # Application paths and constants
+    ├── certs.py                    # Local CA and leaf certificate generation
+    ├── autostart.py                # Windows Task Scheduler run-on-boot management
     ├── logging.py                  # Thread-safe log buffer
     ├── threading.py                # Threading utilities
+    ├── updater.py                  # Update checker
     └── windows.py                  # Windows-specific operations (process management, cache deletion)
 ```
 
@@ -218,13 +238,14 @@ Settings are stored in `%LocalAppData%\FleasionNT\`:
 | `Cache/` | Cached asset files and index |
 | `Exports/` | Exported assets |
 | `PreJsons/` | Community preset data |
+| `proxy_ca/` | Generated CA certificate and per-host leaf certificates |
 | `Temp/ConvertedMeshes/` | Temporary directory for OBJ/mesh conversions |
 
 ## Dependencies
 
 | Package | Purpose |
 |---|---|
-| mitmproxy | HTTPS proxy framework |
+| cryptography | Local CA and TLS certificate generation |
 | PyQt6 | GUI framework |
 | PyOpenGL | 3D mesh and animation rendering |
 | DracoPy | Mesh decompression (Google Draco) |

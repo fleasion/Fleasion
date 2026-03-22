@@ -1,16 +1,25 @@
 """JSON tree viewer widget."""
 
+import gzip as gzip_module
+import io
+
 from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
     QDialog,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QScrollArea,
+    QSplitter,
+    QTextEdit,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
+    QWidget,
 )
 
 from ..utils import get_icon_path
@@ -86,15 +95,207 @@ class JsonSearchWorker(QThread):
             self.results_ready.emit(matches)
 
 
+class AssetFetcherThread(QThread):
+    """Fetch raw bytes for a Roblox asset ID or direct URL in a background thread."""
+
+    data_ready = pyqtSignal(bytes)
+    error = pyqtSignal(str)
+
+    # Class-level scraper reference — set once by ProxyMaster/app startup.
+    # Avoids threading it through every call site (replacer_config has no scraper ref).
+    _scraper = None
+
+    @classmethod
+    def set_scraper(cls, scraper) -> None:
+        """Called by ProxyMaster after the scraper is ready."""
+        cls._scraper = scraper
+
+    def __init__(self, asset_id_or_url):
+        super().__init__()
+        self._asset = asset_id_or_url
+        self._stop_requested = False
+
+    def stop(self):
+        self._stop_requested = True
+
+    def _get_roblosecurity(self) -> str | None:
+        """Get .ROBLOSECURITY cookie from Roblox local storage."""
+        import os
+        import json
+        import base64
+        import re
+
+        try:
+            import win32crypt
+        except ImportError:
+            return None
+
+        path = os.path.expandvars(r'%LocalAppData%/Roblox/LocalStorage/RobloxCookies.dat')
+        try:
+            if not os.path.exists(path):
+                return None
+            with open(path, 'r') as f:
+                data = json.load(f)
+            cookies_data = data.get('CookiesData')
+            if not cookies_data:
+                return None
+            enc = base64.b64decode(cookies_data)
+            dec = win32crypt.CryptUnprotectData(enc, None, None, None, 0)[1]
+            s = dec.decode(errors='ignore')
+            m = re.search(r'\.ROBLOSECURITY\s+([^\s;]+)', s)
+            return m.group(1) if m else None
+        except Exception:
+            return None
+
+    def run(self):
+        try:
+            val = self._asset
+            scraper = self.__class__._scraper
+
+            if isinstance(val, int) or (isinstance(val, str) and str(val).strip().lstrip('-').isdigit()):
+                cookie = self._get_roblosecurity()
+                extra = {'Cookie': f'.ROBLOSECURITY={cookie};' } if cookie else None
+
+                if scraper is not None:
+                    data = scraper._https_get(
+                        'assetdelivery.roblox.com',
+                        f'/v1/asset/?id={val}',
+                        extra_headers=extra,
+                    )
+                else:
+                    import requests as _req
+                    headers = {'User-Agent': 'Roblox/WinInet', 'Accept-Encoding': 'gzip, deflate'}
+                    if extra:
+                        headers.update(extra)
+                    r = _req.get(f'https://assetdelivery.roblox.com/v1/asset/?id={val}',
+                                 headers=headers, timeout=15)
+                    data = r.content if r.status_code == 200 else None
+
+                if self._stop_requested:
+                    return
+                if data:
+                    self.data_ready.emit(data)
+                else:
+                    self.error.emit('No data returned')
+
+            elif isinstance(val, str) and (val.startswith('http://') or val.startswith('https://')):
+                from urllib.parse import urlparse as _up
+                parsed = _up(val)
+                hostname = (parsed.hostname or '').lower()
+                path = parsed.path + ('?' + parsed.query if parsed.query else '')
+                is_roblox = 'roblox.com' in hostname
+
+                cookie = self._get_roblosecurity() if is_roblox else None
+                extra = {'Cookie': f'.ROBLOSECURITY={cookie};'} if cookie else None
+
+                if scraper is not None and is_roblox:
+                    data = scraper._https_get(hostname, path, extra_headers=extra)
+                else:
+                    import requests as _req
+                    headers = {'User-Agent': 'Roblox/WinInet', 'Accept-Encoding': 'gzip, deflate'}
+                    if extra:
+                        headers.update(extra)
+                    r = _req.get(val, headers=headers, timeout=15)
+                    data = r.content if r.status_code == 200 else None
+
+                if self._stop_requested:
+                    return
+                if data:
+                    self.data_ready.emit(data)
+                else:
+                    self.error.emit('No data returned')
+            else:
+                self.error.emit(f'Cannot fetch: {val}')
+        except Exception as e:
+            if not self._stop_requested:
+                self.error.emit(str(e))
+
+
+class ImageLoaderThread(QThread):
+    """Load image bytes into a QPixmap in a background thread."""
+
+    image_ready = pyqtSignal(QPixmap)
+    error = pyqtSignal(str)
+
+    def __init__(self, data: bytes):
+        super().__init__()
+        self.data = data
+        self._stop_requested = False
+
+    def stop(self):
+        self._stop_requested = True
+
+    def run(self):
+        from PIL import Image
+
+        try:
+            image = Image.open(io.BytesIO(self.data))
+            if image.mode not in ('RGB', 'RGBA'):
+                image = image.convert('RGBA')
+            elif image.mode == 'RGB':
+                image = image.convert('RGBA')
+            if self._stop_requested:
+                return
+            qimage = QImage(
+                image.tobytes(),
+                image.width,
+                image.height,
+                QImage.Format.Format_RGBA8888,
+            )
+            pixmap = QPixmap.fromImage(qimage)
+            if not self._stop_requested:
+                self.image_ready.emit(pixmap)
+        except Exception as e:
+            if not self._stop_requested:
+                self.error.emit(str(e))
+
+
+class MeshLoaderThread(QThread):
+    """Convert raw mesh bytes to OBJ string in a background thread."""
+
+    mesh_ready = pyqtSignal(str)
+    error = pyqtSignal(str)
+
+    def __init__(self, data: bytes):
+        super().__init__()
+        self.data = data
+        self._stop_requested = False
+
+    def stop(self):
+        self._stop_requested = True
+
+    def run(self):
+        from ..cache import mesh_processing
+
+        try:
+            decompressed = self.data
+            if self.data.startswith(b'\x1f\x8b'):
+                decompressed = gzip_module.decompress(self.data)
+            if self._stop_requested:
+                return
+            obj_content = mesh_processing.convert(decompressed)
+            if self._stop_requested:
+                return
+            if obj_content:
+                self.mesh_ready.emit(obj_content)
+            else:
+                self.error.emit('Failed to convert mesh to OBJ format')
+        except Exception as e:
+            if not self._stop_requested:
+                self.error.emit(str(e))
+
+
 class JsonTreeViewer(QDialog):
     """JSON tree viewer dialog."""
 
     def __init__(
-        self, parent, data, filename: str, on_import_ids, on_import_replacement
+        self, parent, data, filename: str, on_import_ids, on_import_replacement,
+        config_manager=None,
     ):
         super().__init__(parent)
+        self.config_manager = config_manager
         self.setWindowTitle(f'JSON - {filename}')
-        self.resize(700, 500)
+        self.resize(1200, 650)
 
         # Set window flags to allow minimize/maximize
         self.setWindowFlags(
@@ -116,6 +317,15 @@ class JsonTreeViewer(QDialog):
         self._search_matches: list[QTreeWidgetItem] = []
         self._current_match_index: int = 0
 
+        # Preview state
+        self._asset_fetcher: AssetFetcherThread | None = None
+        self._image_loader: ImageLoaderThread | None = None
+        self._mesh_loader: MeshLoaderThread | None = None
+        self._animation_loader = None
+        self._current_pixmap: QPixmap | None = None
+        self._previewing_value = None  # track what we started previewing (stale guard)
+        self._audio_key_filter_installed = False  # Track if global audio key filter is installed
+
         self._setup_ui()
         self._populate_tree()
         self._set_icon()
@@ -136,6 +346,14 @@ class JsonTreeViewer(QDialog):
         self._search_debounce = QTimer()
         self._search_debounce.setSingleShot(True)
         self._search_debounce.timeout.connect(self._do_search)
+
+        # ── Splitter: left (search + tree) | right (preview) ──────────────
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        # ---- Left panel ----
+        left_widget = QWidget()
+        left_layout = QVBoxLayout()
+        left_layout.setContentsMargins(0, 0, 0, 0)
 
         # Search bar
         search_layout = QHBoxLayout()
@@ -171,20 +389,32 @@ class JsonTreeViewer(QDialog):
         collapse_btn.clicked.connect(self._collapse_all)
         search_layout.addWidget(collapse_btn)
 
-        layout.addLayout(search_layout)
+        left_layout.addLayout(search_layout)
 
         # Search progress label
         self.search_progress_label = QLabel('')
         self.search_progress_label.setStyleSheet('color: #888; font-size: 11px;')
         self.search_progress_label.hide()
-        layout.addWidget(self.search_progress_label)
+        left_layout.addWidget(self.search_progress_label)
 
         # Tree widget
         self.tree = QTreeWidget()
         self.tree.setHeaderHidden(True)
         self.tree.setSelectionMode(QTreeWidget.SelectionMode.ExtendedSelection)
         self.tree.itemSelectionChanged.connect(self._on_selection_change)
-        layout.addWidget(self.tree)
+        left_layout.addWidget(self.tree)
+
+        left_widget.setLayout(left_layout)
+        self.splitter.addWidget(left_widget)
+
+        # ---- Right panel (preview) ----
+        self.preview_panel = self._create_preview_panel()
+        self.preview_panel.hide()
+        self.splitter.addWidget(self.preview_panel)
+
+        self.splitter.setSizes([550, 550])
+        self.splitter.splitterMoved.connect(self._on_splitter_moved)
+        layout.addWidget(self.splitter, stretch=1)
 
         # Selection label + match navigation indicator
         selection_row = QHBoxLayout()
@@ -310,9 +540,439 @@ class JsonTreeViewer(QDialog):
         return values
 
     def _on_selection_change(self):
-        """Handle selection change."""
+        """Handle selection change and trigger asset preview."""
         vals = self._get_selected_values()
         self.selection_label.setText(f'Selected: {len(vals)} value(s)')
+
+        # Only preview when exactly one leaf value is selected
+        if len(vals) == 1:
+            self._preview_value(vals[0])
+        else:
+            self._clear_preview()
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Preview panel creation
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _create_preview_panel(self) -> QWidget:
+        """Create the right-side preview panel (mirrors cache_viewer's panel)."""
+        from ..cache.animation_viewer import AnimationViewerPanel
+        from ..cache.audio_player import AudioPlayerWidget  # noqa: F401 - used dynamically
+        from ..cache.cache_json_viewer import CacheJsonViewer
+        from ..cache.obj_viewer import ObjViewerPanel
+
+        preview_widget = QWidget()
+        preview_layout = QVBoxLayout()
+        preview_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.preview_group = QGroupBox('Preview')
+        preview_group_layout = QVBoxLayout()
+
+        self.preview_scroll = QScrollArea()
+        self.preview_scroll.setWidgetResizable(True)
+        self.preview_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.preview_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+        self.preview_container = QWidget()
+        self.preview_container_layout = QVBoxLayout()
+        self.preview_container_layout.setContentsMargins(5, 5, 5, 5)
+
+        # 3D viewer for meshes
+        self.obj_viewer = ObjViewerPanel(config_manager=self.config_manager)
+        self.obj_viewer.clear_requested.connect(self._clear_preview)
+        self.preview_container_layout.addWidget(self.obj_viewer)
+
+        # Loading indicator
+        self.loading_label = QLabel('Loading...')
+        self.loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.loading_label.setStyleSheet(
+            'QLabel { background-color: #2b2b2b; color: #aaa; font-size: 14px; padding: 20px; }'
+        )
+        self.preview_container_layout.addWidget(self.loading_label)
+        self.loading_label.hide()
+
+        # Image viewer
+        self.image_label = QLabel('Select a single asset ID or URL to preview')
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_label.setStyleSheet('QLabel { background-color: #2b2b2b; color: #888; }')
+        self.image_label.setScaledContents(False)
+        self.preview_container_layout.addWidget(self.image_label)
+
+        # Audio player container with centering wrapper
+        self.audio_player = None
+        self.audio_wrapper = QWidget()
+        audio_wrapper_layout = QVBoxLayout()
+        audio_wrapper_layout.setContentsMargins(0, 0, 0, 0)
+        audio_wrapper_layout.addStretch(1)
+        self.audio_container = QWidget()
+        self.audio_container_layout = QVBoxLayout()
+        self.audio_container_layout.setContentsMargins(0, 0, 0, 0)
+        self.audio_container.setLayout(self.audio_container_layout)
+        audio_wrapper_layout.addWidget(self.audio_container)
+        audio_wrapper_layout.addStretch(1)
+        self.audio_wrapper.setLayout(audio_wrapper_layout)
+        self.preview_container_layout.addWidget(self.audio_wrapper)
+
+        # Animation viewer
+        self.animation_viewer = AnimationViewerPanel(config_manager=self.config_manager)
+        self.preview_container_layout.addWidget(self.animation_viewer)
+
+        # Text viewer (hex dump / plain text)
+        self.text_viewer = QTextEdit()
+        self.text_viewer.setReadOnly(True)
+        self.text_viewer.setPlaceholderText('No preview available')
+        self.preview_container_layout.addWidget(self.text_viewer)
+
+        # JSON viewer
+        self.json_viewer = CacheJsonViewer()
+        self.preview_container_layout.addWidget(self.json_viewer)
+
+        # Hide all initially
+        self.obj_viewer.hide()
+        self.audio_wrapper.hide()
+        self.animation_viewer.hide()
+        self.text_viewer.hide()
+        self.json_viewer.hide()
+
+        self.preview_container.setLayout(self.preview_container_layout)
+        self.preview_scroll.setWidget(self.preview_container)
+        preview_group_layout.addWidget(self.preview_scroll)
+
+        self.preview_group.setLayout(preview_group_layout)
+        preview_layout.addWidget(self.preview_group)
+        preview_widget.setLayout(preview_layout)
+        return preview_widget
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Preview orchestration
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _preview_value(self, val):
+        """Start preview for a selected asset ID (int) or URL (str)."""
+        if val == self._previewing_value:
+            return  # Already showing this
+
+        self._stop_all_loaders()
+        self._previewing_value = val
+
+        # Show panel
+        self.preview_panel.show()
+        self._hide_all_preview_widgets()
+        self._show_loading()
+
+        # Update group title
+        try:
+            display = str(val)
+            if len(display) > 60:
+                display = display[:57] + '...'
+            self.preview_group.setTitle(f'Preview: {display}')
+        except Exception:
+            pass
+
+        self._asset_fetcher = AssetFetcherThread(val)
+        self._asset_fetcher.data_ready.connect(self._on_asset_fetched)
+        self._asset_fetcher.error.connect(self._on_fetch_error)
+        self._asset_fetcher.start()
+
+    def _on_fetch_error(self, error: str):
+        self._show_text_preview(f'Failed to fetch asset:\n{error}')
+
+    def _on_asset_fetched(self, data: bytes):
+        """Dispatch fetched bytes to the appropriate preview handler."""
+        content_type = self._detect_content_type(data)
+
+        if content_type == 'image':
+            self._preview_image(data)
+        elif content_type == 'mesh':
+            self._preview_mesh(data)
+        elif content_type == 'audio':
+            self._preview_audio(data)
+        elif content_type in ('rbxm', 'rbxmx'):
+            self._preview_animation(data)
+        elif content_type == 'json':
+            self._preview_json(data)
+        else:
+            self._preview_hex(data)
+
+    def _detect_content_type(self, data: bytes) -> str:
+        """Detect content type from magic bytes."""
+        working = data
+        if data[:2] == b'\x1f\x8b':
+            try:
+                working = gzip_module.decompress(data)
+            except Exception:
+                pass
+
+        # Images
+        if working[:4] == b'\x89PNG':
+            return 'image'
+        if working[:2] == b'\xff\xd8':
+            return 'image'
+        if working[:4] == b'RIFF' and working[8:12] == b'WEBP':
+            return 'image'
+        if working[:3] == b'GIF':
+            return 'image'
+
+        # Audio
+        if working[:4] == b'OggS':
+            return 'audio'
+        if working[:3] == b'ID3' or working[:2] in (b'\xff\xfb', b'\xff\xf3', b'\xff\xf2'):
+            return 'audio'
+
+        # Roblox mesh (starts with "version")
+        if working[:7] == b'version':
+            return 'mesh'
+
+        # RBXM binary
+        if working[:8] == b'<roblox!':
+            return 'rbxm'
+
+        # XML (RBXMX / animation)
+        if working[:7] == b'<roblox' or working[:5] == b'<?xml':
+            return 'rbxmx'
+
+        # JSON
+        try:
+            stripped = working.lstrip()
+            if stripped[:1] in (b'{', b'['):
+                import json
+                json.loads(working.decode('utf-8'))
+                return 'json'
+        except Exception:
+            pass
+
+        return 'unknown'
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Per-type preview handlers
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _preview_image(self, data: bytes):
+        self._image_loader = ImageLoaderThread(data)
+        self._image_loader.image_ready.connect(self._on_image_ready)
+        self._image_loader.error.connect(lambda e: self._show_text_preview(f'Image error: {e}'))
+        self._image_loader.start()
+
+    def _on_image_ready(self, pixmap: QPixmap):
+        self._hide_loading()
+        self._current_pixmap = pixmap
+        self._scale_and_show_image(pixmap)
+        self.image_label.show()
+
+    def _scale_and_show_image(self, pixmap: QPixmap):
+        container_w = self.preview_scroll.viewport().width() - 20
+        container_h = self.preview_scroll.viewport().height() - 20
+        if container_w < 100:
+            container_w = 400
+        if container_h < 100:
+            container_h = 400
+        scaled = pixmap.scaled(
+            container_w, container_h,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self.image_label.setPixmap(scaled)
+
+    def _preview_mesh(self, data: bytes):
+        self._mesh_loader = MeshLoaderThread(data)
+        self._mesh_loader.mesh_ready.connect(self._on_mesh_ready)
+        self._mesh_loader.error.connect(lambda e: self._show_text_preview(f'Mesh error: {e}'))
+        self._mesh_loader.start()
+
+    def _on_mesh_ready(self, obj_content: str):
+        self._hide_loading()
+        self.obj_viewer.load_obj(obj_content, '')
+        self.obj_viewer.show()
+
+    def _preview_audio(self, data: bytes):
+        import tempfile
+        from pathlib import Path
+
+        from ..cache.audio_player import AudioPlayerWidget
+
+        try:
+            temp_dir = Path(tempfile.gettempdir()) / 'fleasion_audio'
+            temp_dir.mkdir(exist_ok=True)
+            temp_file = temp_dir / f'preview_{id(self)}.mp3'
+            with open(temp_file, 'wb') as f:
+                f.write(data)
+
+            self.audio_player = AudioPlayerWidget(str(temp_file), self, self.config_manager)
+
+            while self.audio_container_layout.count():
+                child = self.audio_container_layout.takeAt(0)
+                if child.widget():
+                    child.widget().deleteLater()
+
+            self.audio_container_layout.addWidget(self.audio_player)
+            self._hide_loading()
+            self.audio_wrapper.show()
+
+            # Install global event filter to catch Space for play/pause while audio preview is active
+            try:
+                from PyQt6.QtWidgets import QApplication
+                QApplication.instance().installEventFilter(self)
+                self._audio_key_filter_installed = True
+            except Exception:
+                self._audio_key_filter_installed = False
+
+            # When audio stops or widget is deleted, remove the event filter
+            try:
+                self.audio_player.stopped.connect(lambda: self._remove_audio_key_filter())
+            except Exception:
+                pass
+
+        except Exception as e:
+            self._show_text_preview(f'Audio error: {e}')
+
+    def _preview_animation(self, data: bytes):
+        """Preview RBXM/RBXMX animation data."""
+        try:
+            decompressed = data
+            if data[:2] == b'\x1f\x8b':
+                decompressed = gzip_module.decompress(data)
+
+            if self.animation_viewer.load_animation(decompressed):
+                self._hide_loading()
+                self.animation_viewer.show()
+                return
+
+            # Fallback: pretty-print XML
+            text = decompressed.decode('utf-8', errors='replace')
+            if text.strip().startswith('<'):
+                try:
+                    import xml.dom.minidom
+                    dom = xml.dom.minidom.parseString(decompressed)
+                    pretty = dom.toprettyxml(indent='  ')
+                    lines = [ln for ln in pretty.split('\n') if ln.strip()]
+                    self._show_text_preview('\n'.join(lines[:500]))
+                    return
+                except Exception:
+                    pass
+            self._preview_hex(decompressed)
+        except Exception as e:
+            self._show_text_preview(f'Animation error: {e}')
+
+    def _preview_json(self, data: bytes):
+        """Preview JSON data in the embedded JSON viewer."""
+        try:
+            working = data
+            if data[:2] == b'\x1f\x8b':
+                working = gzip_module.decompress(data)
+            import json
+            parsed = json.loads(working.decode('utf-8'))
+            self.json_viewer.load_json(parsed)
+            self._hide_loading()
+            self.json_viewer.show()
+        except Exception as e:
+            self._show_text_preview(f'JSON error: {e}')
+
+    def _preview_hex(self, data: bytes):
+        """Show a hex dump for unrecognised content."""
+        preview_size = min(1024, len(data))
+        lines = [f'Size: {len(data)} bytes\n\nFirst {preview_size} bytes (hex dump):\n']
+        for i in range(0, preview_size, 16):
+            hex_part = ' '.join(f'{b:02x}' for b in data[i:i + 16])
+            ascii_part = ''.join(chr(b) if 32 <= b < 127 else '.' for b in data[i:i + 16])
+            lines.append(f'{i:08x}  {hex_part:<48}  {ascii_part}')
+        if len(data) > preview_size:
+            lines.append(f'\n... ({len(data) - preview_size} more bytes)')
+        self._show_text_preview('\n'.join(lines))
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Preview utilities
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _show_text_preview(self, text: str):
+        self._hide_loading()
+        self.text_viewer.setPlainText(text)
+        self.text_viewer.show()
+
+    def _show_loading(self):
+        self.loading_label.show()
+
+    def _hide_loading(self):
+        self.loading_label.hide()
+
+    def _hide_all_preview_widgets(self):
+        self.obj_viewer.hide()
+        self.image_label.hide()
+        self.audio_wrapper.hide()
+        self.animation_viewer.hide()
+        self.text_viewer.hide()
+        self.json_viewer.hide()
+        self.loading_label.hide()
+        self._current_pixmap = None
+
+        # Remove audio key filter before cleaning up audio player
+        self._remove_audio_key_filter()
+
+        if self.audio_player:
+            self.audio_player.stop()
+            self.audio_player.deleteLater()
+            self.audio_player = None
+
+    def _clear_preview(self):
+        """Hide the preview panel and stop all loaders."""
+        self._stop_all_loaders()
+        self._hide_all_preview_widgets()
+        self.preview_panel.hide()
+        self._previewing_value = None
+        try:
+            self.preview_group.setTitle('Preview')
+        except Exception:
+            pass
+
+    def _stop_all_loaders(self):
+        for loader in (self._asset_fetcher, self._image_loader, self._mesh_loader, self._animation_loader):
+            if loader is not None:
+                try:
+                    loader.stop()
+                    loader.quit()
+                    loader.wait()
+                except Exception:
+                    pass
+        self._asset_fetcher = None
+        self._image_loader = None
+        self._mesh_loader = None
+        self._animation_loader = None
+
+    def _on_splitter_moved(self, pos: int, index: int):
+        if self._current_pixmap is not None and self.image_label.isVisible():
+            self._scale_and_show_image(self._current_pixmap)
+
+    def eventFilter(self, obj, event):
+        """Global event filter to catch space key and toggle audio play/pause."""
+        try:
+            from PyQt6.QtCore import QEvent
+            if event.type() == QEvent.Type.KeyPress:
+                # Space toggles play/pause when audio preview is active
+                if event.key() == Qt.Key.Key_Space:
+                    if self.audio_player and self.audio_wrapper.isVisible():
+                        try:
+                            # Toggle play/pause on the audio widget
+                            self.audio_player._toggle_play_pause()
+                        except Exception:
+                            pass
+                        return True
+        except Exception:
+            pass
+        return super().eventFilter(obj, event)
+
+    def _remove_audio_key_filter(self):
+        """Remove global audio key event filter if installed."""
+        try:
+            if self._audio_key_filter_installed:
+                from PyQt6.QtWidgets import QApplication
+                QApplication.instance().removeEventFilter(self)
+                self._audio_key_filter_installed = False
+        except Exception:
+            pass
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._current_pixmap is not None and self.image_label.isVisible():
+            self._scale_and_show_image(self._current_pixmap)
 
     def _on_search_text_changed(self):
         """Handle search text change with debounce."""

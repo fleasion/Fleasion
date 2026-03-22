@@ -280,7 +280,9 @@ def export_csg_mesh(obj_path: Path, version: int = 2) -> bytes:
         Path to the source ``.obj`` file.  Must be readable.
     version
         CSGMDL format version to emit.  Defaults to 3 (accepted by all
-        modern Roblox engine builds).
+        modern Roblox engine builds).  Pass ``5`` to emit the newer
+        V5 format (split encryption, Faces5 delta indices, quantised
+        normals/tangents).
 
     Returns
     -------

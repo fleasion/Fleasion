@@ -5,13 +5,15 @@ from pathlib import Path
 
 # Application metadata
 APP_NAME = 'Fleasion'
-APP_VERSION = '1.5.1'
+APP_VERSION = '1.6.0'
 APP_AUTHOR = 'By @8ar__ | Logic by @blockce, @1_v, @0100152000022000\n@dis_spencer, @Yeha., @emk530'
 APP_DISCORD = 'discord.gg/hXyhKehEZF'
 
 # Process and proxy configuration
 ROBLOX_PROCESS = 'RobloxPlayerBeta.exe'
+ROBLOX_STUDIO_PROCESS = 'RobloxStudioBeta.exe'
 PROXY_TARGET_HOST = 'assetdelivery.roblox.com'
+PROXY_PORT = 443
 STRIPPABLE_ASSET_TYPES = {'TexturePack'}
 
 # Icon
@@ -19,7 +21,6 @@ ICON_FILENAME = 'fleasionlogo2.ico'
 
 # Windows paths
 LOCAL_APPDATA = Path.home() / 'AppData' / 'Local'
-MITMPROXY_DIR = Path.home() / '.mitmproxy'
 STORAGE_DB = LOCAL_APPDATA / 'Roblox' / 'rbx-storage.db'
 
 # Application directories
@@ -27,6 +28,9 @@ CONFIG_DIR = LOCAL_APPDATA / 'FleasionNT'
 APP_CACHE_DIR = CONFIG_DIR / 'cache'
 CONFIG_FILE = CONFIG_DIR / 'settings.json'
 CONFIGS_FOLDER = CONFIG_DIR / 'configs'
+
+# Proxy CA cert directory (replaces MITMPROXY_DIR)
+PROXY_CA_DIR = CONFIG_DIR / 'proxy_ca'
 
 # PreJsons
 CLOG_URL = 'https://raw.githubusercontent.com/qrhrqiohj/PFTEST/refs/heads/main/CLOG.json'
@@ -46,7 +50,8 @@ DEFAULT_SETTINGS = {
     'first_time_setup_complete': False,
     'auto_delete_cache_on_exit': True,
     'clear_cache_on_launch': True,
-    # Scraper tab – column visibility (URL and Creator hidden by default)
+    'run_on_boot': False,
+    # Scraper tab - column visibility
     'scraper_column_visibility': {
         'hash_name':  True,
         'creator':    False,
@@ -56,7 +61,6 @@ DEFAULT_SETTINGS = {
         'cached_at':  True,
         'url':        False,
     },
-    # Scraper tab – user-dragged column widths in pixels ({} = use built-in defaults)
     'scraper_column_widths': {},
 }
 

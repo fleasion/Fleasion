@@ -190,6 +190,15 @@ class ConfigManager:
         self._save_settings()
 
     @property
+    def run_on_boot(self) -> bool:
+        return self.settings.get('run_on_boot', False)
+
+    @run_on_boot.setter
+    def run_on_boot(self, value: bool):
+        self.settings['run_on_boot'] = value
+        self._save_settings()
+
+    @property
     def window_geometry(self) -> str:
         """Get the saved window geometry (hex string)."""
         return self.settings.get('window_geometry', '')

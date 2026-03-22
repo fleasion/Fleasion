@@ -1018,12 +1018,22 @@ class ReplacerConfigWindow(QDialog):
         self.asset_types_popup.filters_changed.connect(self._on_asset_types_changed)
         
         from PyQt6.QtCore import QPoint
-        # BOTTOM RIGHT of the menu should line up with TOP RIGHT of the button
+        from PyQt6.QtWidgets import QApplication
+
         global_top_right = self.asset_types_btn.mapToGlobal(self.asset_types_btn.rect().topRight())
         popup_size = self.asset_types_popup.sizeHint()
-        # exec() sets the top-left coordinate, so subtract width and height
-        pos = QPoint(global_top_right.x() - popup_size.width(), global_top_right.y() - popup_size.height())
-        self.asset_types_popup.exec(pos)
+
+        # Ideal: bottom-right of popup aligns with top-right of button
+        ideal_x = global_top_right.x() - popup_size.width()
+        ideal_y = global_top_right.y() - popup_size.height()
+
+        # Clamp to the screen the button is on so it never teleports to another monitor
+        screen = QApplication.screenAt(global_top_right) or QApplication.primaryScreen()
+        avail = screen.availableGeometry()
+        x = max(avail.left(), min(ideal_x, avail.right() - popup_size.width()))
+        y = max(avail.top(), min(ideal_y, avail.bottom() - popup_size.height()))
+
+        self.asset_types_popup.exec(QPoint(x, y))
         
     def _on_asset_types_changed(self, filters):
         """Handle asset types selection change."""
@@ -1301,5 +1311,5 @@ class ReplacerConfigWindow(QDialog):
         def on_repl(val):
             self.replacement_entry.setText(str(val))
 
-        viewer = JsonTreeViewer(self, data, Path(file_path).name, on_ids, on_repl)
+        viewer = JsonTreeViewer(self, data, Path(file_path).name, on_ids, on_repl, config_manager=self.config_manager)
         viewer.show()

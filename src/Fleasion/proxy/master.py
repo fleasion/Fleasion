@@ -1,259 +1,322 @@
-"""Proxy master module."""
+"""ProxyMaster: manages the lifecycle of the Fleasion proxy.
+
+Interception strategy:
+  1. Write hosts file entries pointing assetdelivery.roblox.com and
+     fts.rbxcdn.com at 127.0.0.1.  Roblox uses libcurl which honours
+     the OS hosts file unconditionally (unlike WinINet PAC files).
+  2. Run a direct TLS server on 127.0.0.1:443.  Roblox connects directly
+     (no HTTP CONNECT tunnel needed) and we present a leaf cert signed by
+     our local CA.  Roblox's libcurl validates it against the CA we install
+     into each Roblox version's ssl/cacert.pem.
+  3. On stop, remove our hosts entries and stop the server.
+
+Admin requirement:
+  Writing to %SystemRoot%\\System32\\drivers\\etc\\hosts and binding port 443
+  both require administrator privileges.  Fleasion will check for elevation
+  and log a clear error if it is missing.
+
+VPN compatibility:
+  Loopback (127.0.0.1) traffic is never routed through VPN adapters.
+  Only our proxy->CDN upstream connections go through the VPN (correct).
+"""
 
 import asyncio
+import ctypes
+import logging
+import os
+import sys
 import threading
 import time
-import os
-
-# Cache CA content to avoid expensive regeneration on repeated checks
-_CA_CONTENT_CACHE: str | None = None
-
-from mitmproxy import certs
-from mitmproxy.options import Options
-from mitmproxy.tools.dump import DumpMaster
-import mitmproxy.log as mitm_log
-import logging
-
-
-def _clear_mitm_log_handlers() -> None:
-    """Clear mitmproxy master references from any logging handlers.
-
-    Mitmproxy's logging handlers keep a reference to a `master` whose
-    `event_loop` they use to schedule thread-safe callbacks. If the
-    event loop is closed before these handlers are cleared, they will
-    raise a RuntimeError. We defensively clear `master` on handlers and
-    the module global here.
-    """
-    try:
-        # Clear module-level reference first
-        mitm_log.master = None
-    except Exception:
-        pass
-
-    try:
-        # Clear any handler instances that have a `master` attribute
-        # from the root logger and all existing named loggers. Wrap their
-        # `emit` method so they don't attempt to access `master`.
-        root = logging.getLogger()
-        for h in list(root.handlers):
-            if hasattr(h, 'master'):
-                try:
-                    orig_emit = h.emit
-
-                    def _safe_emit(record, _orig=orig_emit):
-                        try:
-                            _orig(record)
-                        except Exception:
-                            # Swallow errors from mitmproxy logging during shutdown
-                            pass
-
-                    try:
-                        setattr(h, 'emit', _safe_emit)
-                    except Exception:
-                        pass
-                    try:
-                        setattr(h, 'master', None)
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
-
-        mgr = logging.Logger.manager
-        for name, obj in list(mgr.loggerDict.items()):
-            if isinstance(obj, logging.Logger):
-                for h in list(obj.handlers):
-                    if hasattr(h, 'master'):
-                        try:
-                            orig_emit = h.emit
-
-                            def _safe_emit_local(record, _orig=orig_emit):
-                                try:
-                                    _orig(record)
-                                except Exception:
-                                    pass
-
-                            try:
-                                if not hasattr(h, '_orig_emit'):
-                                    setattr(h, '_orig_emit', orig_emit)
-                                setattr(h, 'emit', _safe_emit_local)
-                            except Exception:
-                                pass
-                            try:
-                                setattr(h, 'master', None)
-                            except Exception:
-                                pass
-                        except Exception:
-                            pass
-    except Exception:
-        pass
-
-
-def _restore_mitm_log_handlers() -> None:
-    """Restore any previously-wrapped mitmproxy handler emits.
-
-    This re-enables normal logging behavior if the proxy is started
-    again within the same process.
-    """
-    try:
-        root = logging.getLogger()
-        for h in list(root.handlers):
-            if hasattr(h, '_orig_emit'):
-                try:
-                    setattr(h, 'emit', getattr(h, '_orig_emit'))
-                    delattr(h, '_orig_emit')
-                except Exception:
-                    pass
-
-        mgr = logging.Logger.manager
-        for name, obj in list(mgr.loggerDict.items()):
-            if isinstance(obj, logging.Logger):
-                for h in list(obj.handlers):
-                    if hasattr(h, '_orig_emit'):
-                        try:
-                            setattr(h, 'emit', getattr(h, '_orig_emit'))
-                            delattr(h, '_orig_emit')
-                        except Exception:
-                            pass
-    except Exception:
-        pass
+from pathlib import Path
+from typing import Optional, Set
 
 from ..utils import (
     LOCAL_APPDATA,
-    MITMPROXY_DIR,
+    PROXY_CA_DIR,
+    PROXY_PORT,
     ROBLOX_PROCESS,
     STORAGE_DB,
     log_buffer,
     terminate_roblox,
     wait_for_roblox_exit,
 )
-from .addons import TextureStripper
-from .addons.cache_scraper import CacheScraper
+from .addons import CacheScraper, TextureStripper
+from .server import FleasionProxy, INTERCEPT_HOSTS
 from ..cache.cache_manager import CacheManager
+from ..utils.certs import generate_ca, generate_host_cert, get_ca_pem
+
+logger = logging.getLogger(__name__)
+
+HOSTS_FILE = Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32' / 'drivers' / 'etc' / 'hosts'
+_HOSTS_MARKER = '# Fleasion proxy entry'
 
 
-def get_ca_content() -> str | None:
-    """Get the CA certificate content."""
-    MITMPROXY_DIR.mkdir(exist_ok=True)
-    ca_file = MITMPROXY_DIR / 'mitmproxy-ca-cert.pem'
-    global _CA_CONTENT_CACHE
-    if _CA_CONTENT_CACHE is not None:
-        return _CA_CONTENT_CACHE
+def _resolve_real_ips(hosts: set) -> dict:
+    """Resolve real IPs for each host BEFORE we write hosts file entries.
 
-    # If certificate file already exists, read and cache it.
-    if ca_file.exists():
-        _CA_CONTENT_CACHE = ca_file.read_text()
-        return _CA_CONTENT_CACHE
+    We MUST do this first - once hosts file points them to 127.0.0.1, any
+    subsequent socket.getaddrinfo() call would return 127.0.0.1, causing our
+    upstream connections to loop back to ourselves.
+    """
+    import socket
+    real_ips: dict = {}
+    for host in sorted(hosts):
+        try:
+            # getaddrinfo returns all IPs; take the first IPv4 one
+            results = socket.getaddrinfo(host, 443, socket.AF_INET, socket.SOCK_STREAM)
+            ips = [r[4][0] for r in results if r[4][0] != '127.0.0.1']
+            if ips:
+                real_ips[host] = ips
+                log_buffer.log('Proxy', f'Resolved {host} -> {ips[0]}')
+            else:
+                log_buffer.log('Proxy', f'Warning: no real IPs found for {host}')
+        except Exception as exc:
+            log_buffer.log('Proxy', f'DNS resolve failed for {host}: {exc}')
+    return real_ips
 
-    # Otherwise, generate the certificate store (may be slow); measure time.
-    start = time.perf_counter()
+
+def _flush_dns() -> None:
+    """Flush Windows DNS client cache so the hosts file changes take effect immediately."""
+    import subprocess
     try:
-        certs.CertStore.from_store(str(MITMPROXY_DIR), 'mitmproxy', 2048)
-    except Exception as e:
-        log_buffer.log('Certificate', f'CA generation error: {e}')
-        return None
-    gen_elapsed = (time.perf_counter() - start) * 1000.0
-    log_buffer.log('Certificate', f'CA store generated in {gen_elapsed:.0f} ms')
-
-    if ca_file.exists():
-        _CA_CONTENT_CACHE = ca_file.read_text()
-        return _CA_CONTENT_CACHE
-    return None
+        subprocess.run(
+            ['ipconfig', '/flushdns'],
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            timeout=5,
+        )
+        log_buffer.log('Hosts', 'DNS cache flushed')
+    except Exception as exc:
+        log_buffer.log('Hosts', f'DNS flush failed (non-fatal): {exc}')
 
 
-def install_certs() -> bool:
-    """Install mitmproxy certificates into Roblox."""
-    if not (ca := get_ca_content()):
+# ---------------------------------------------------------------------------
+# Admin check
+# ---------------------------------------------------------------------------
+
+def _is_admin() -> bool:
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
         return False
 
-    # Fast scan: check each immediate child of LOCAL_APPDATA for a 'Versions' folder
-    # This finds official Roblox and third-party bootstrappers (e.g., Fishstrap) quickly
-    start_scan = time.perf_counter()
-    dirs: list = []
+
+# ---------------------------------------------------------------------------
+# Hosts file management
+# ---------------------------------------------------------------------------
+
+def _add_hosts_entries(hosts: Set[str]) -> bool:
+    """Append redirect entries for *hosts* to the system hosts file.
+
+    Returns True on success.  Skips entries already present.
+    """
+    try:
+        existing = HOSTS_FILE.read_text(encoding='utf-8', errors='replace')
+    except OSError as exc:
+        log_buffer.log('Hosts', f'Cannot read hosts file: {exc}')
+        return False
+
+    lines_to_add = []
+    for host in sorted(hosts):
+        entry = f'127.0.0.1 {host} {_HOSTS_MARKER}'
+        if host not in existing:
+            lines_to_add.append(entry)
+
+    if not lines_to_add:
+        log_buffer.log('Hosts', 'Hosts entries already present, skipping')
+        return True
+
+    new_content = existing.rstrip('\n') + '\n' + '\n'.join(lines_to_add) + '\n'
+    try:
+        HOSTS_FILE.write_text(new_content, encoding='utf-8')
+        for host in sorted(hosts):
+            log_buffer.log('Hosts', f'Added redirect: {host} -> 127.0.0.1')
+        return True
+    except PermissionError:
+        log_buffer.log('Hosts', 'Permission denied writing hosts file - run as Administrator')
+        return False
+    except OSError as exc:
+        log_buffer.log('Hosts', f'Failed to write hosts file: {exc}')
+        return False
+
+
+def _remove_hosts_entries(hosts: Set[str]) -> None:
+    """Remove any hosts file entries we previously added."""
+    try:
+        existing = HOSTS_FILE.read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        return
+
+    lines = existing.splitlines(keepends=True)
+    filtered = [
+        line for line in lines
+        if _HOSTS_MARKER not in line and not any(
+            f'127.0.0.1 {h}' in line for h in hosts
+        )
+    ]
+
+    if len(filtered) == len(lines):
+        return  # nothing to remove
 
     try:
-        for child in LOCAL_APPDATA.iterdir():
-            if not child.is_dir():
-                continue
-            versions_sub = child / 'Versions'
-            if versions_sub.exists():
-                for entry in versions_sub.iterdir():
-                    if entry.is_dir() and entry.name.startswith('version-'):
-                        dirs.append(entry)
-    except Exception:
-        # Fall back to legacy Roblox-specific checks if iteration fails
-        versions_dir = LOCAL_APPDATA / 'Roblox' / 'Versions'
-        if versions_dir.exists():
-            for entry in versions_dir.iterdir():
-                if entry.is_dir() and entry.name.startswith('version-'):
-                    dirs.append(entry)
+        HOSTS_FILE.write_text(''.join(filtered), encoding='utf-8')
+        log_buffer.log('Hosts', 'Removed proxy hosts entries')
+    except OSError as exc:
+        log_buffer.log('Hosts', f'Failed to clean hosts file: {exc}')
 
-    # Also include any immediate children directly named version-*
-    try:
-        for entry in LOCAL_APPDATA.iterdir():
-            if entry.is_dir() and entry.name.startswith('version-') and entry not in dirs:
-                dirs.append(entry)
-    except Exception:
-        pass
 
-    scan_elapsed = (time.perf_counter() - start_scan) * 1000.0
-    log_buffer.log('Certificate', f'Located version-* candidates ({len(dirs)} found) in {scan_elapsed:.0f} ms')
+# ---------------------------------------------------------------------------
+# Roblox CA installation
+# ---------------------------------------------------------------------------
+
+def _find_roblox_dirs() -> list:
+    """Walk AppData and LocalAppData up to 3 levels deep looking for
+    any directory containing RobloxPlayerBeta.exe.
+
+    This handles standard Roblox installs, Fishstrap (which may remove
+    the version-xxxxxxxxxx naming convention), and any other bootstrapper
+    that places the executable at an arbitrary depth.
+    """
+    search_roots = [LOCAL_APPDATA]
+    appdata = Path.home() / 'AppData' / 'Roaming'
+    if appdata.exists():
+        search_roots.append(appdata)
+
+    found = []
+    seen = set()
+    for root in search_roots:
+        try:
+            # Walk up to 3 levels: root/L1/L2/L3/RobloxPlayerBeta.exe
+            for l1 in root.iterdir():
+                if not l1.is_dir():
+                    continue
+                if (l1 / ROBLOX_PROCESS).exists() and str(l1) not in seen:
+                    found.append(l1); seen.add(str(l1))
+                try:
+                    for l2 in l1.iterdir():
+                        if not l2.is_dir():
+                            continue
+                        if (l2 / ROBLOX_PROCESS).exists() and str(l2) not in seen:
+                            found.append(l2); seen.add(str(l2))
+                        try:
+                            for l3 in l2.iterdir():
+                                if not l3.is_dir():
+                                    continue
+                                if (l3 / ROBLOX_PROCESS).exists() and str(l3) not in seen:
+                                    found.append(l3); seen.add(str(l3))
+                        except PermissionError:
+                            pass
+                except PermissionError:
+                    pass
+        except PermissionError:
+            pass
+    return found
+
+
+def _install_ca_into_roblox(ca_pem: str) -> None:
+    """Append our CA cert to ssl/cacert.pem next to every found RobloxPlayerBeta.exe."""
+    dirs = _find_roblox_dirs()
+    if not dirs:
+        log_buffer.log('Certificate', 'No Roblox installs found to patch')
+        return
+    log_buffer.log('Certificate', f'Found {len(dirs)} Roblox install(s) to patch')
 
     for d in dirs:
-        if d.is_dir() and (d / ROBLOX_PROCESS).exists():
-            ssl_dir = d / 'ssl'
-            ssl_dir.mkdir(exist_ok=True)
-            ca_file = ssl_dir / 'cacert.pem'
-            try:
-                read_start = time.perf_counter()
-                existing = ca_file.read_text() if ca_file.exists() else ''
-                read_elapsed = (time.perf_counter() - read_start) * 1000.0
-                if ca not in existing:
-                    write_start = time.perf_counter()
-                    ca_file.write_text(f'{existing}\n{ca}')
-                    write_elapsed = (time.perf_counter() - write_start) * 1000.0
-                    log_buffer.log('Certificate', f'Wrote cacert.pem for {d.name} in {write_elapsed:.0f} ms (read {read_elapsed:.0f} ms)')
-            except (PermissionError, OSError) as e:
-                log_buffer.log('Certificate', f'Failed to write cacert.pem for {d.name}: {e}')
-    return True
+        ssl_dir = d / 'ssl'
+        ssl_dir.mkdir(exist_ok=True)
+        ca_file = ssl_dir / 'cacert.pem'
+        try:
+            existing = ca_file.read_text() if ca_file.exists() else ''
+            if ca_pem not in existing:
+                ca_file.write_text(f'{existing}\n{ca_pem}')
+                log_buffer.log('Certificate', f'Installed CA into {d.name}')
+            else:
+                log_buffer.log('Certificate', f'CA already installed in {d.name}')
+        except (PermissionError, OSError) as exc:
+            log_buffer.log('Certificate', f'Failed to write CA for {d.name}: {exc}')
 
 
-async def wait_for_cert_install(timeout: float = 10.0) -> bool:
-    """Wait for certificate installation."""
-    for _ in range(int(timeout / 0.1)):
-        if install_certs():
-            return True
-        await asyncio.sleep(0.1)
-    return False
-
+# ---------------------------------------------------------------------------
+# ProxyMaster
+# ---------------------------------------------------------------------------
 
 class ProxyMaster:
-    """Manages the mitmproxy instance."""
+    """Manages the Fleasion proxy lifecycle."""
 
-    def __init__(self, config_manager):
+    def __init__(self, config_manager) -> None:
         self.config_manager = config_manager
         self.cache_manager = CacheManager(config_manager)
-        # Create cache scraper early so UI always gets a valid reference
+
+        # Singleton addon instances - GUI holds references to these directly
         self.cache_scraper = CacheScraper(self.cache_manager)
-        self.cache_scraper.set_enabled(False)  # Disabled by default
-        self._master = None
-        self._task = None
+        self.cache_scraper.set_enabled(False)
+        self._texture_stripper: Optional[TextureStripper] = None
+
+        self._proxy: Optional[FleasionProxy] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._thread: Optional[threading.Thread] = None
         self._running = False
         self._lock = threading.Lock()
-        self._stop_event = threading.Event()
-        self._thread = None
-        self._loop = None
+        self._hosts_installed: bool = False
 
     @property
     def is_running(self) -> bool:
-        """Check if proxy is running."""
         return self._running
 
-    async def _run_proxy(self):
-        """Run the proxy (internal)."""
+    def start(self) -> None:
+        with self._lock:
+            if self._running:
+                return
+
+            def _run():
+                try:
+                    asyncio.run(self._run_proxy())
+                except Exception as exc:
+                    log_buffer.log('Error', f'Proxy failed: {exc}')
+                    self._running = False
+
+            self._thread = threading.Thread(target=_run, daemon=True, name='fleasion-proxy')
+            self._thread.start()
+
+    def stop(self) -> None:
+        with self._lock:
+            if not self._running and not (self._thread and self._thread.is_alive()):
+                return
+            log_buffer.log('Proxy', 'Stopping proxy...')
+
+            # Clean up hosts file first so Roblox stops routing to us immediately
+            if self._hosts_installed:
+                _remove_hosts_entries(set(INTERCEPT_HOSTS))
+                self._hosts_installed = False
+                _flush_dns()  # Clear stale 127.0.0.1 cache so new connections stop coming in
+
+            # Stop the asyncio server
+            if self._proxy and self._loop and self._loop.is_running():
+                try:
+                    fut = asyncio.run_coroutine_threadsafe(self._proxy.stop(), self._loop)
+                    fut.result(timeout=3.0)
+                except Exception:
+                    pass
+
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=5.0)
+            if self._thread.is_alive():
+                log_buffer.log('Proxy', 'Warning: proxy thread did not stop cleanly')
+
+    async def _run_proxy(self) -> None:
         self._running = True
         self._loop = asyncio.get_running_loop()
 
-        # Cleanup Roblox and cache (only if setting is enabled)
+        # ── Admin check ───────────────────────────────────────────────────
+        if not _is_admin():
+            log_buffer.log('Error', (
+                'Fleasion requires administrator privileges to modify the hosts file '
+                'and bind port 443.  Please run as Administrator.'
+            ))
+            self._running = False
+            return
+
+        # ── Optional cache clear on launch ───────────────────────────────
         if self.config_manager.clear_cache_on_launch:
             if terminate_roblox():
                 log_buffer.log('Cleanup', 'Roblox found, terminating...')
@@ -264,143 +327,131 @@ class ProxyMaster:
                     try:
                         STORAGE_DB.unlink()
                         log_buffer.log('Cleanup', 'Storage deleted')
-                    except (FileNotFoundError, PermissionError, OSError) as e:
-                        log_buffer.log('Cleanup', f'Storage deletion: {e}')
+                    except (FileNotFoundError, PermissionError, OSError) as exc:
+                        log_buffer.log('Cleanup', f'Storage deletion: {exc}')
             else:
                 log_buffer.log('Cleanup', 'Roblox not running')
         else:
-            log_buffer.log('Cleanup', 'Cache clear on launch disabled - skipping Roblox termination')
+            log_buffer.log('Cleanup', 'Cache clear on launch disabled - skipping')
 
-        # Create master with performance-optimized options
-        opts = Options(
-            mode=[f'local:{ROBLOX_PROCESS}'],
-            # Reduce CPU overhead by not validating upstream certs for local interception
-            upstream_cert=False,
-        )
-        self._master = DumpMaster(
-            opts,
-            with_termlog=False,
-            with_dumper=False,
-        )
-        # Restore any logging handler emits that were wrapped during a
-        # previous shutdown so mitmproxy logs work for this run.
-        _restore_mitm_log_handlers()
-        # Ensure mitmproxy's module-level master reference points at our
-        # master so its logging handler can schedule callbacks safely.
+        # ── Certificate setup ─────────────────────────────────────────────
+        log_buffer.log('Certificate', 'Generating/loading CA certificates...')
+        t0 = time.perf_counter()
         try:
-            mitm_log.master = self._master
-        except Exception:
-            pass
-        # Add texture stripper BEFORE cache scraper
-        # This ensures we cache injected assets (like CSGs)
-        self._master.addons.add(TextureStripper(self.config_manager))
-        self._master.addons.add(self.cache_scraper)
-        proxy_task = asyncio.create_task(self._master.run())
-
-        # Install certificates (measure elapsed time)
-        start = time.perf_counter()
-        cert_installed = await wait_for_cert_install()
-        elapsed_ms = (time.perf_counter() - start) * 1000.0
-        if not cert_installed:
-            log_buffer.log('Certificate', f'Installation failed (took {elapsed_ms:.0f} ms)')
+            ca_cert_path, ca_key_path = generate_ca(PROXY_CA_DIR)
+        except Exception as exc:
+            log_buffer.log('Certificate', f'CA generation failed: {exc}')
             self._running = False
             return
-        log_buffer.log('Certificate', f'Installation completed in {elapsed_ms:.0f} ms')
+
+        host_certs = {}
+        for host in INTERCEPT_HOSTS:
+            try:
+                cert_path, key_path = generate_host_cert(
+                    host, ca_cert_path, ca_key_path, PROXY_CA_DIR,
+                )
+                host_certs[host] = (cert_path, key_path)
+            except Exception as exc:
+                log_buffer.log('Certificate', f'Leaf cert failed for {host}: {exc}')
+                self._running = False
+                return
+
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        log_buffer.log('Certificate', f'Certificates ready in {elapsed_ms:.0f} ms')
+
+        # Install CA into Roblox ssl dirs
+        ca_pem = get_ca_pem(ca_cert_path)
+        _install_ca_into_roblox(ca_pem)
+
+        # ── Clean up any stale hosts entries from a previous crash ─────
+        # If the previous session crashed without calling stop(), our hosts
+        # entries may still be present. If we resolve IPs while they're there,
+        # getaddrinfo() returns 127.0.0.1 instead of real CDN IPs, causing
+        # every upstream connection to loop back to ourselves.
+        _remove_hosts_entries(set(INTERCEPT_HOSTS))
+        _flush_dns()
+
+        # ── Resolve real CDN IPs BEFORE writing new hosts file entries ────
+        # CRITICAL: must happen after removing stale entries (above) and before
+        # writing new ones. This guarantees getaddrinfo() returns real IPs.
+        real_ips = _resolve_real_ips(set(INTERCEPT_HOSTS))
+
+        # ── Create addon instances ────────────────────────────────────────
+        self._texture_stripper = TextureStripper(self.config_manager)
+        # Give the scraper real IPs for ALL intercepted hosts so its API
+        # calls bypass our hosts file redirect (including CDN redirects).
+        scraper_ips = {
+            host: ips[0]
+            for host, ips in real_ips.items()
+            if ips
+        }
+        self.cache_scraper.set_real_ips(scraper_ips)
+
+        # Wire the scraper into the json_viewer's AssetFetcherThread so the
+        # Preview tab in the standalone JSON viewer also bypasses the hosts file.
+        try:
+            from ..gui.json_viewer import AssetFetcherThread
+            AssetFetcherThread.set_scraper(self.cache_scraper)
+        except Exception:
+            pass
+
+        # ── Start TLS proxy server ────────────────────────────────────────
+        self._proxy = FleasionProxy(
+            texture_stripper=self._texture_stripper,
+            cache_scraper=self.cache_scraper,
+            host_certs=host_certs,
+            upstream_ips=real_ips,
+            port=PROXY_PORT,
+        )
+        try:
+            await self._proxy.start()
+        except OSError as exc:
+            if exc.errno == 10013 or 'access' in str(exc).lower() or '443' in str(exc):
+                log_buffer.log('Error', (
+                    f'Cannot bind port {PROXY_PORT}: access denied. '
+                    'Ensure no other process is using this port and run as Administrator.'
+                ))
+            else:
+                log_buffer.log('Error', f'Failed to start proxy: {exc}')
+            self._running = False
+            return
+        except Exception as exc:
+            log_buffer.log('Error', f'Failed to start proxy: {exc}')
+            self._running = False
+            return
+
+        # ── Write hosts file entries ──────────────────────────────────────
+        if not _add_hosts_entries(set(INTERCEPT_HOSTS)):
+            # Hosts write failed - stop the server and bail
+            await self._proxy.stop()
+            self._running = False
+            return
+        self._hosts_installed = True
+        _flush_dns()  # Make the new entries take effect immediately
+
+
 
         log_buffer.log('Info', '=' * 50)
-        log_buffer.log('Info', 'No Textures Proxy Active')
-        log_buffer.log('Info', f'Intercepting: {ROBLOX_PROCESS}')
+        log_buffer.log('Info', 'Fleasion Proxy Active')
+        log_buffer.log('Info', f'Intercepting: {", ".join(sorted(INTERCEPT_HOSTS))}')
+        log_buffer.log('Info', f'Port: {PROXY_PORT}')
         log_buffer.log('Info', 'Launch Roblox')
         log_buffer.log('Info', '=' * 50)
 
-        # Wait for stop event or proxy task completion
+        # ── Run until the server is stopped ──────────────────────────────
         try:
-            done, pending = await asyncio.wait(
-                [proxy_task, asyncio.create_task(self._wait_for_stop())],
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            for task in pending:
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-        except Exception as e:
-            log_buffer.log('Error', f'Proxy error: {e}')
+            await self._proxy._server.serve_forever()
+        except (asyncio.CancelledError, Exception):
+            pass  # Normal shutdown path
         finally:
-            # Prevent mitmproxy log handler from scheduling calls on a closing
-            # event loop by clearing its global master reference and any
-            # handler instances that reference it.
-            _clear_mitm_log_handlers()
-
-            if self._master:
-                try:
-                    await self._master.shutdown()
-                except Exception:
-                    pass
-            # Cancel any remaining tasks to avoid "Event loop is closed" warnings
+            # Ensure hosts file is cleaned up even if stop() wasn't called
+            if self._hosts_installed:
+                _remove_hosts_entries(set(INTERCEPT_HOSTS))
+                self._hosts_installed = False
+                _flush_dns()
             try:
-                loop = asyncio.get_running_loop()
-                for task in asyncio.all_tasks(loop):
-                    if task is not asyncio.current_task():
-                        task.cancel()
-                # Give tasks a moment to cancel
-                await asyncio.sleep(0.1)
+                await self._proxy.stop()
             except Exception:
                 pass
             self._running = False
             self._loop = None
-
-    async def _wait_for_stop(self):
-        """Wait for stop event (event-based, not polling)."""
-        loop = asyncio.get_event_loop()
-        # Use executor to wait on threading Event without busy polling
-        await loop.run_in_executor(None, self._stop_event.wait)
-
-    def start(self):
-        """Start the proxy in a background thread."""
-        with self._lock:
-            if self._running:
-                return
-
-            self._stop_event.clear()
-
-            def run_proxy_thread():
-                try:
-                    asyncio.run(self._run_proxy())
-                except Exception as e:
-                    log_buffer.log('Error', f'Proxy failed: {e}')
-                    self._running = False
-
-            self._thread = threading.Thread(target=run_proxy_thread, daemon=True)
-            self._thread.start()
-
-    def stop(self):
-        """Stop the proxy."""
-        with self._lock:
-            # Even if startup failed and `self._running` is False, the
-            # background thread may still be alive or waiting on UAC/IO.
-            # Attempt to stop/join the thread and signal the stop event
-            # regardless of the `_running` flag so the app can exit cleanly.
-            if not self._running and not (self._thread and self._thread.is_alive()):
-                return
-
-            log_buffer.log('Proxy', 'Stopping proxy...')
-            # Ask mitmproxy to shutdown on its own event loop to avoid pending tasks
-            # Clear mitmproxy logging references before attempting shutdown.
-            _clear_mitm_log_handlers()
-
-            if self._master and self._loop:
-                try:
-                    fut = asyncio.run_coroutine_threadsafe(self._master.shutdown(), self._loop)
-                    fut.result(timeout=2.0)
-                except Exception:
-                    pass
-            # Ensure any waiters using the threading.Event are released
-            self._stop_event.set()
-
-        # Wait for thread to finish (with timeout)
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=5.0)
-            if self._thread.is_alive():
-                log_buffer.log('Proxy', 'Warning: Proxy thread did not stop cleanly')
