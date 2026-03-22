@@ -171,154 +171,145 @@ def _remove_hosts_entries(hosts: Set[str]) -> None:
 # ---------------------------------------------------------------------------
 
 def _find_roblox_dirs() -> list:
-    """Walk known install locations up to 3 levels deep looking for
-    any directory containing RobloxPlayerBeta.exe.
+    """Locate every RobloxPlayerBeta.exe installation via registry and known paths.
 
-    Searched roots:
-      - %LocalAppData% and %AppData%          (standard Roblox / Fishstrap)
-      - C:\\Program Files and C:\\Program Files (x86)
-      - C:\\XboxGames
-      - C:\\Fishstrap
-      - Root of every non-C fixed/removable drive attached to the PC
-
-    C: paths are scanned synchronously (always local and fast).  Non-C drives
-    are scanned in daemon threads with a 5-second timeout each so that a slow,
-    spinning-up, or unresponsive external drive cannot stall proxy startup.
+    Methods used (combined):
+      1. Main Registry   — HKCU\\Software (two levels) for REG_SZ "PlayerPath"
+      2. MS Store        — C:\\XboxGames\\Roblox up to two layers deep
+      3. Active Roblox   — HKCU\\...\\roblox-player\\open\\command (Default)
+      4. Regular Roblox  — %LocalAppData%\\Roblox\\Versions one layer deep
     """
-    import string
-    import queue as _queue
-
-    # Always-local C: paths — safe to scan synchronously.
-    safe_roots: list[Path] = [LOCAL_APPDATA]
-    appdata = Path.home() / 'AppData' / 'Roaming'
-    if appdata.exists():
-        safe_roots.append(appdata)
-    for extra in (
-        Path(r'C:\Program Files'),
-        Path(r'C:\Program Files (x86)'),
-        Path(r'C:\XboxGames'),
-        Path(r'C:\Fishstrap'),
-    ):
-        if extra.exists():
-            safe_roots.append(extra)
-
-    # Non-C drives — potentially slow (external HDDs, USB, etc.).
-    # Use GetLogicalDrives() bitmask (zero I/O, never blocks) to enumerate
-    # which drive letters exist, then GetDriveTypeW() (kernel table lookup,
-    # also non-blocking) to skip CD-ROMs and network drives.
-    #   DRIVE_REMOVABLE = 2, DRIVE_FIXED = 3
-    risky_roots: list[Path] = []
-    logical_drives_mask = ctypes.windll.kernel32.GetLogicalDrives()
-    for i, letter in enumerate(string.ascii_uppercase):
-        if letter == 'C':
-            continue
-        if not (logical_drives_mask & (1 << i)):
-            continue
-        drive = Path(f'{letter}:\\')
-        drive_type = ctypes.windll.kernel32.GetDriveTypeW(str(drive))
-        if drive_type in (2, 3):  # removable or fixed only
-            risky_roots.append(drive)
+    import winreg
 
     found: list = []
     seen: set = set()
 
-    def _scan_root_into(root: Path, out: list, out_seen: set) -> None:
-        """Three-level walk of *root*.
+    def _add(path: Path) -> bool:
+        key = str(path)
+        if key not in seen:
+            found.append(path)
+            seen.add(key)
+            return True
+        return False
 
-        Uses os.scandir() directly so that DirEntry.is_dir() is free (the flag
-        comes from FindNextFile on Windows with no extra stat call), and combines
-        the 'does the exe exist here?' check with the subdir listing into a
-        single scandir pass per directory — roughly halving the syscall count
-        vs the separate iterdir + exists approach.
-        """
+    def _scan_for_exe(root: Path, max_depth: int) -> list:
+        """Return all subdirs up to max_depth layers under root that contain RobloxPlayerBeta.exe."""
+        results: list = []
+
+        def _recurse(path: Path, depth: int) -> None:
+            try:
+                for entry in os.scandir(path):
+                    if not entry.is_dir():
+                        continue
+                    if os.path.isfile(os.path.join(entry.path, ROBLOX_PROCESS)):
+                        results.append(Path(entry.path))
+                    if depth < max_depth:
+                        _recurse(Path(entry.path), depth + 1)
+            except OSError:
+                pass
+
+        if root.is_dir():
+            _recurse(root, 1)
+        return results
+
+    # ── 1. Main Registry Search ──────────────────────────────────────────
+    # Walk HKCU\Software and one layer of subkeys; collect any "PlayerPath" value.
+    t = time.perf_counter()
+    reg_found = 0
+
+    def _check_player_path_key(key) -> None:
+        nonlocal reg_found
         try:
-            for e1 in os.scandir(root):
-                if not e1.is_dir():
-                    continue
-                has_exe = False
-                l2_dirs: list = []
-                try:
-                    for sub in os.scandir(e1.path):
-                        if sub.name == ROBLOX_PROCESS:
-                            has_exe = True
-                        elif sub.is_dir():
-                            l2_dirs.append(sub.path)
-                except OSError:
-                    pass
-                if has_exe and e1.path not in out_seen:
-                    out.append(Path(e1.path)); out_seen.add(e1.path)
-                for l2_path in l2_dirs:
-                    has_exe2 = False
-                    l3_dirs: list = []
-                    try:
-                        for sub in os.scandir(l2_path):
-                            if sub.name == ROBLOX_PROCESS:
-                                has_exe2 = True
-                            elif sub.is_dir():
-                                l3_dirs.append(sub.path)
-                    except OSError:
-                        pass
-                    if has_exe2 and l2_path not in out_seen:
-                        out.append(Path(l2_path)); out_seen.add(l2_path)
-                    for l3_path in l3_dirs:
-                        # At max depth: single GetFileAttributesW, no need to
-                        # scan the whole directory (which may have hundreds of DLLs).
-                        if os.path.exists(os.path.join(l3_path, ROBLOX_PROCESS)) \
-                                and l3_path not in out_seen:
-                            out.append(Path(l3_path)); out_seen.add(l3_path)
+            val, rtype = winreg.QueryValueEx(key, 'PlayerPath')
         except OSError:
-            pass
+            return
+        if rtype != winreg.REG_SZ or not val:
+            return
+        p = Path(val)
+        # PlayerPath may occasionally point at the exe itself rather than the dir
+        if p.name.lower() == ROBLOX_PROCESS.lower():
+            p = p.parent
+        if os.path.isfile(os.path.join(str(p), ROBLOX_PROCESS)):
+            reg_found += 1
+            _add(p)
+        else:
+            for d in _scan_for_exe(p, 1):
+                reg_found += 1
+                _add(d)
 
-    # Suppress Windows "corrupt disk" / "device not ready" error dialogs for
-    # the entire scan window (process-wide; inherited by spawned threads).
-    #   SEM_FAILCRITICALERRORS  = 0x0001
-    #   SEM_NOOPENFILEERRORBOX  = 0x8000
-    old_error_mode = ctypes.windll.kernel32.SetErrorMode(0x8001)
     try:
-        # Synchronous scan of safe C: roots
-        for root in safe_roots:
-            t_root = time.perf_counter()
-            _scan_root_into(root, found, seen)
-            log_buffer.log('Certificate', f'  {root}: {int((time.perf_counter() - t_root) * 1000)} ms')
-
-        # Threaded scan of external drives — each gets its own 5-second window
-        if risky_roots:
-            result_q: _queue.Queue = _queue.Queue()
-
-            def _drive_worker(root: Path) -> None:
-                local: list = []
-                local_seen: set = set()
-                t_root = time.perf_counter()
-                _scan_root_into(root, local, local_seen)
-                elapsed = int((time.perf_counter() - t_root) * 1000)
-                log_buffer.log('Certificate', f'  {root}: {elapsed} ms ({len(local)} found)')
-                result_q.put(local)
-
-            threads = [
-                threading.Thread(target=_drive_worker, args=(r,), daemon=True)
-                for r in risky_roots
-            ]
-            for t in threads:
-                t.start()
-            # Use a single 5-second deadline shared across all drives so that
-            # N hanging drives don't multiply the wait to N×5 seconds.
-            deadline = time.monotonic() + 5.0
-            for t in threads:
-                remaining = max(0.0, deadline - time.monotonic())
-                t.join(timeout=remaining)
-
-            # Collect results from drives that finished within the timeout
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r'Software') as hkey:
+            i = 0
             while True:
                 try:
-                    for d in result_q.get_nowait():
-                        key = str(d)
-                        if key not in seen:
-                            found.append(d)
-                            seen.add(key)
-                except _queue.Empty:
+                    name = winreg.EnumKey(hkey, i); i += 1
+                except OSError:
                     break
-    finally:
-        ctypes.windll.kernel32.SetErrorMode(old_error_mode)
+                try:
+                    with winreg.OpenKey(hkey, name) as sk:
+                        _check_player_path_key(sk)
+                        j = 0
+                        while True:
+                            try:
+                                sub = winreg.EnumKey(sk, j); j += 1
+                            except OSError:
+                                break
+                            try:
+                                with winreg.OpenKey(sk, sub) as ssk:
+                                    _check_player_path_key(ssk)
+                            except OSError:
+                                pass
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    log_buffer.log('Certificate', f'  Registry PlayerPath: {int((time.perf_counter() - t) * 1000)} ms ({reg_found} found)')
+
+    # ── 2. MS Store Version ──────────────────────────────────────────────
+    # C:\XboxGames\Roblox, up to two layers deep.
+    t = time.perf_counter()
+    xbox_found = 0
+    for d in _scan_for_exe(Path(r'C:\XboxGames\Roblox'), 2):
+        xbox_found += 1
+        _add(d)
+    log_buffer.log('Certificate', f'  XboxGames\\Roblox: {int((time.perf_counter() - t) * 1000)} ms ({xbox_found} found)')
+
+    # ── 3. Active Roblox ─────────────────────────────────────────────────
+    # Read HKCU\...\roblox-player\shell\open\command (Default); parse the exe
+    # path and search up to two layers under its parent directory.
+    t = time.perf_counter()
+    active_found = 0
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r'SOFTWARE\Classes\roblox-player\shell\open\command',
+        ) as key:
+            try:
+                cmd, rtype = winreg.QueryValueEx(key, '')
+                if rtype == winreg.REG_SZ and cmd:
+                    cmd = cmd.strip()
+                    if cmd.startswith('"'):
+                        exe_path = cmd[1 : cmd.index('"', 1)]
+                    else:
+                        exe_path = cmd.split()[0]
+                    exe_dir = Path(exe_path).parent
+                    for d in _scan_for_exe(exe_dir, 2):
+                        active_found += 1
+                        _add(d)
+            except (OSError, ValueError):
+                pass
+    except OSError:
+        pass
+    log_buffer.log('Certificate', f'  Active Roblox (registry): {int((time.perf_counter() - t) * 1000)} ms ({active_found} found)')
+
+    # ── 4. Regular Roblox ────────────────────────────────────────────────
+    # %LocalAppData%\Roblox\Versions — one layer down.
+    t = time.perf_counter()
+    roblox_found = 0
+    for d in _scan_for_exe(LOCAL_APPDATA / 'Roblox' / 'Versions', 1):
+        roblox_found += 1
+        _add(d)
+    log_buffer.log('Certificate', f'  AppData Roblox\\Versions: {int((time.perf_counter() - t) * 1000)} ms ({roblox_found} found)')
 
     return found
 
