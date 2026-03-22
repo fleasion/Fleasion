@@ -13,7 +13,7 @@ Interception strategy:
 Admin requirement:
   Writing to %SystemRoot%\\System32\\drivers\\etc\\hosts and binding port 443
   both require administrator privileges. Fleasion will check for elevation
-  and log a clear error if it is missing.
+  and log an error if it is missing.
 
 VPN compatibility:
   Loopback (127.0.0.1) traffic is never routed through VPN adapters.
