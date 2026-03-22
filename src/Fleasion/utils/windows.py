@@ -6,7 +6,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from .paths import ROBLOX_PROCESS, STORAGE_DB
+from .paths import ROBLOX_PROCESS, ROBLOX_STUDIO_PROCESS, STORAGE_DB
 
 
 def run_cmd(args: list[str]) -> str:
@@ -24,6 +24,11 @@ def run_cmd(args: list[str]) -> str:
 def is_roblox_running() -> bool:
     """Check if Roblox is currently running."""
     return ROBLOX_PROCESS in run_cmd(['tasklist', '/FI', f'IMAGENAME eq {ROBLOX_PROCESS}'])
+
+
+def is_studio_running() -> bool:
+    """Check if Roblox Studio is currently running."""
+    return ROBLOX_STUDIO_PROCESS in run_cmd(['tasklist', '/FI', f'IMAGENAME eq {ROBLOX_STUDIO_PROCESS}'])
 
 
 def terminate_roblox() -> bool:

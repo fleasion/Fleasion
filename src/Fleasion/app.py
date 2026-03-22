@@ -3,14 +3,14 @@
 import platform
 import sys
 
-from PyQt6.QtCore import QTimer, QSharedMemory
-from PyQt6.QtWidgets import QApplication, QMessageBox, QPushButton
+from PyQt6.QtCore import QTimer, QSharedMemory, QObject, pyqtSignal
+from PyQt6.QtWidgets import QApplication, QMessageBox, QPushButton, QDialog, QVBoxLayout, QHBoxLayout, QLabel
 
 from .config import ConfigManager
 from .prejsons import download_prejsons
 from .proxy import ProxyMaster
 from .tray import SystemTray
-from .utils import delete_cache, get_icon_path, is_roblox_running, log_buffer, run_in_thread, start_update_check
+from .utils import delete_cache, get_icon_path, is_roblox_running, is_studio_running, log_buffer, run_in_thread, start_update_check
 
 
 
@@ -132,29 +132,87 @@ def _attempt_silent_elevation() -> bool:
     return False
 
 
-class RobloxExitMonitor:
+class RobloxExitMonitor(QObject):
     """Monitors Roblox process and triggers cache deletion on exit."""
 
+    _studio_detected = pyqtSignal()
+
     def __init__(self, config_manager):
+        super().__init__()
         self.config_manager = config_manager
         self.was_running = False
+        self._studio_was_running = False
+        self._studio_notified = False
+        self._studio_suppress_session = False
+        self._studio_detected.connect(self._on_studio_detected)
 
     @run_in_thread
     def check_roblox_status(self):
         """Check if Roblox has exited and trigger cache deletion if needed."""
-        if not self.config_manager.auto_delete_cache_on_exit:
+        # --- Roblox Player: auto cache deletion on exit ---
+        if self.config_manager.auto_delete_cache_on_exit:
+            is_running = is_roblox_running()
+            if self.was_running and not is_running:
+                log_buffer.log('Cache', 'Roblox exited, deleting cache...')
+                run_in_thread(self._delete_cache_background)()
+            self.was_running = is_running
+        else:
             self.was_running = False
-            return
 
-        is_running = is_roblox_running()
+        # --- Roblox Studio: warn that scraping/modification is paused ---
+        studio_running = is_studio_running()
 
-        # Detect transition from running to not running
-        if self.was_running and not is_running:
-            log_buffer.log('Cache', 'Roblox exited, deleting cache...')
-            # Run cache deletion in background thread
-            run_in_thread(self._delete_cache_background)()
+        if not self._studio_was_running and studio_running:
+            # Studio just opened
+            if not self._studio_suppress_session and not self._studio_notified:
+                self._studio_notified = True
+                self._studio_detected.emit()
 
-        self.was_running = is_running
+        if self._studio_was_running and not studio_running:
+            # Studio just closed — reset so the warning shows again next time
+            self._studio_notified = False
+
+        self._studio_was_running = studio_running
+
+    def _on_studio_detected(self):
+        """Show the Roblox Studio warning dialog (called on the main thread via signal)."""
+        dialog = QDialog()
+        dialog.setWindowTitle('Fleasion — Roblox Studio Detected')
+
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(12)
+
+        label = QLabel(
+            'Roblox Studio is currently open.\n\n'
+            'No asset modification or scraping will occur while '
+            'Roblox Studio is running. Close Roblox Studio to resume normal operation.'
+        )
+        label.setWordWrap(True)
+        layout.addWidget(label)
+
+        btn_layout = QHBoxLayout()
+        suppress_btn = QPushButton("Don't Show for Session")
+        ok_btn = QPushButton('OK')
+        ok_btn.setDefault(True)
+        ok_btn.setFixedWidth(80)
+
+        btn_layout.addWidget(suppress_btn)
+        btn_layout.addStretch()
+        btn_layout.addWidget(ok_btn)
+        layout.addLayout(btn_layout)
+
+        if icon_path := get_icon_path():
+            from PyQt6.QtGui import QIcon
+            dialog.setWindowIcon(QIcon(str(icon_path)))
+
+        ok_btn.clicked.connect(dialog.accept)
+
+        def _suppress():
+            self._studio_suppress_session = True
+            dialog.accept()
+
+        suppress_btn.clicked.connect(_suppress)
+        dialog.exec()
 
     def _delete_cache_background(self):
         """Delete cache in background thread."""

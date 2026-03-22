@@ -11,6 +11,7 @@ APP_DISCORD = 'discord.gg/hXyhKehEZF'
 
 # Process and proxy configuration
 ROBLOX_PROCESS = 'RobloxPlayerBeta.exe'
+ROBLOX_STUDIO_PROCESS = 'RobloxStudioBeta.exe'
 PROXY_TARGET_HOST = 'assetdelivery.roblox.com'
 PROXY_PORT = 443
 STRIPPABLE_ASSET_TYPES = {'TexturePack'}
