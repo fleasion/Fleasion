@@ -2579,7 +2579,7 @@ class CacheViewerTab(QWidget):
                 return
 
             # Show loading for async previews
-            if asset_type in [4, 1, 13, 63]:  # Mesh, Image, Decal, TexturePack
+            if asset_type in [4, 39, 1, 13, 63]:  # Mesh, SolidModel, Image, Decal, TexturePack
                 self._show_loading()
 
             # Preview based on type
@@ -3692,3 +3692,4 @@ class CacheViewerTab(QWidget):
         self._hide_loading()
         self.text_viewer.setPlainText(text)
         self.text_viewer.show()
+        self.stop_preview_btn.show()

@@ -2,7 +2,7 @@
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 datas = [
-    ('src\\Fleasion\\fleasionlogo2.ico', '.'),
+    ('src\\Fleasion\\fleasionlogoHR.ico', '.'),
     ('src\\Fleasion\\cache\\tools\\animpreview', 'tools/animpreview'),
 ]
 binaries = []
@@ -88,5 +88,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['src\\Fleasion\\fleasionlogo2.ico'],
+    icon=['src\\Fleasion\\fleasionlogoHR.ico'],
 )

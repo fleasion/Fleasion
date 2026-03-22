@@ -314,6 +314,11 @@ class AudioPlayerWidget(QWidget):
             self.progress_slider.setValue(int(current_time * 1000))
             self.time_label.setText(f'{self._format_time(current_time)} / {self._format_time(self.duration)}')
 
+        # Keep button in sync with playback state (handles thread-safe UI updates)
+        expected_text = '⏸' if self.is_playing else '▶'
+        if self.play_pause_btn.text() != expected_text:
+            self.play_pause_btn.setText(expected_text)
+
     def _format_time(self, seconds: float) -> str:
         """Format seconds as MM:SS.mmm."""
         minutes = int(seconds // 60)

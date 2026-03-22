@@ -36,6 +36,7 @@ from ..utils import (
     PROXY_PORT,
     ROBLOX_PROCESS,
     STORAGE_DB,
+    STORAGE_DB_GDK,
     log_buffer,
     terminate_roblox,
     wait_for_roblox_exit,
@@ -170,17 +171,43 @@ def _remove_hosts_entries(hosts: Set[str]) -> None:
 # ---------------------------------------------------------------------------
 
 def _find_roblox_dirs() -> list:
-    """Walk AppData and LocalAppData up to 3 levels deep looking for
+    """Walk known install locations up to 3 levels deep looking for
     any directory containing RobloxPlayerBeta.exe.
 
-    This handles standard Roblox installs, Fishstrap (which may remove
-    the version-xxxxxxxxxx naming convention), and any other bootstrapper
-    that places the executable at an arbitrary depth.
+    Searched roots:
+      - %LocalAppData% and %AppData%          (standard Roblox / Fishstrap)
+      - C:\\Program Files and C:\\Program Files (x86)
+      - C:\\XboxGames
+      - C:\\Fishstrap
+      - Root of every non-C drive attached to the PC
     """
+    import string
+
     search_roots = [LOCAL_APPDATA]
     appdata = Path.home() / 'AppData' / 'Roaming'
     if appdata.exists():
         search_roots.append(appdata)
+
+    # Fixed extra roots on the C drive
+    for extra in (
+        Path(r'C:\Program Files'),
+        Path(r'C:\Program Files (x86)'),
+        Path(r'C:\XboxGames'),
+        Path(r'C:\Fishstrap'),
+    ):
+        if extra.exists():
+            search_roots.append(extra)
+
+    # Root of every non-C drive attached to the PC
+    for letter in string.ascii_uppercase:
+        if letter == 'C':
+            continue
+        drive = Path(f'{letter}:\\')
+        try:
+            if drive.exists():
+                search_roots.append(drive)
+        except OSError:
+            pass
 
     found = []
     seen = set()
@@ -204,11 +231,11 @@ def _find_roblox_dirs() -> list:
                                     continue
                                 if (l3 / ROBLOX_PROCESS).exists() and str(l3) not in seen:
                                     found.append(l3); seen.add(str(l3))
-                        except PermissionError:
+                        except OSError:
                             pass
-                except PermissionError:
+                except OSError:
                     pass
-        except PermissionError:
+        except OSError:
             pass
     return found
 
@@ -329,6 +356,14 @@ class ProxyMaster:
                         log_buffer.log('Cleanup', 'Storage deleted')
                     except (FileNotFoundError, PermissionError, OSError) as exc:
                         log_buffer.log('Cleanup', f'Storage deletion: {exc}')
+                    if STORAGE_DB_GDK.parent.exists():
+                        try:
+                            STORAGE_DB_GDK.unlink()
+                            log_buffer.log('Cleanup', 'Storage (GDK) deleted')
+                        except FileNotFoundError:
+                            pass
+                        except (PermissionError, OSError) as exc:
+                            log_buffer.log('Cleanup', f'Storage (GDK) deletion: {exc}')
             else:
                 log_buffer.log('Cleanup', 'Roblox not running')
         else:
