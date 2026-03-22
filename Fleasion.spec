@@ -16,6 +16,10 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('PyQt6')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
+# zstandard is a compiled C extension - collect_all ensures the .pyd is bundled
+tmp_ret = collect_all('zstandard')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+
 # orjson is a compiled extension - make sure it's included
 hiddenimports += collect_submodules('orjson')
 
