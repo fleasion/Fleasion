@@ -12,7 +12,7 @@ Interception strategy:
 
 Admin requirement:
   Writing to %SystemRoot%\\System32\\drivers\\etc\\hosts and binding port 443
-  both require administrator privileges.  Fleasion will check for elevation
+  both require administrator privileges. Fleasion will check for elevation
   and log a clear error if it is missing.
 
 VPN compatibility:
