@@ -17,6 +17,7 @@ dependencies = [
     "soundfile>=0.13.1",
     "lz4>=4.4.5",
     "orjson>=3.9.0",
+    "zstandard>=0.21.0",
 ]
 
 # Optional / removed:
