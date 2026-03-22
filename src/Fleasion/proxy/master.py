@@ -179,16 +179,20 @@ def _find_roblox_dirs() -> list:
       - C:\\Program Files and C:\\Program Files (x86)
       - C:\\XboxGames
       - C:\\Fishstrap
-      - Root of every non-C drive attached to the PC
+      - Root of every non-C fixed/removable drive attached to the PC
+
+    C: paths are scanned synchronously (always local and fast).  Non-C drives
+    are scanned in daemon threads with a 5-second timeout each so that a slow,
+    spinning-up, or unresponsive external drive cannot stall proxy startup.
     """
     import string
+    import queue as _queue
 
-    search_roots = [LOCAL_APPDATA]
+    # Always-local C: paths — safe to scan synchronously.
+    safe_roots: list[Path] = [LOCAL_APPDATA]
     appdata = Path.home() / 'AppData' / 'Roaming'
     if appdata.exists():
-        search_roots.append(appdata)
-
-    # Fixed extra roots on the C drive
+        safe_roots.append(appdata)
     for extra in (
         Path(r'C:\Program Files'),
         Path(r'C:\Program Files (x86)'),
@@ -196,69 +200,138 @@ def _find_roblox_dirs() -> list:
         Path(r'C:\Fishstrap'),
     ):
         if extra.exists():
-            search_roots.append(extra)
+            safe_roots.append(extra)
 
-    # Root of every non-C drive attached to the PC
-    for letter in string.ascii_uppercase:
+    # Non-C drives — potentially slow (external HDDs, USB, etc.).
+    # Use GetLogicalDrives() bitmask (zero I/O, never blocks) to enumerate
+    # which drive letters exist, then GetDriveTypeW() (kernel table lookup,
+    # also non-blocking) to skip CD-ROMs and network drives.
+    #   DRIVE_REMOVABLE = 2, DRIVE_FIXED = 3
+    risky_roots: list[Path] = []
+    logical_drives_mask = ctypes.windll.kernel32.GetLogicalDrives()
+    for i, letter in enumerate(string.ascii_uppercase):
         if letter == 'C':
             continue
+        if not (logical_drives_mask & (1 << i)):
+            continue
         drive = Path(f'{letter}:\\')
+        drive_type = ctypes.windll.kernel32.GetDriveTypeW(str(drive))
+        if drive_type in (2, 3):  # removable or fixed only
+            risky_roots.append(drive)
+
+    found: list = []
+    seen: set = set()
+
+    def _scan_root_into(root: Path, out: list, out_seen: set) -> None:
+        """Three-level walk of *root*.
+
+        Uses os.scandir() directly so that DirEntry.is_dir() is free (the flag
+        comes from FindNextFile on Windows with no extra stat call), and combines
+        the 'does the exe exist here?' check with the subdir listing into a
+        single scandir pass per directory — roughly halving the syscall count
+        vs the separate iterdir + exists approach.
+        """
         try:
-            if drive.exists():
-                search_roots.append(drive)
+            for e1 in os.scandir(root):
+                if not e1.is_dir():
+                    continue
+                has_exe = False
+                l2_dirs: list = []
+                try:
+                    for sub in os.scandir(e1.path):
+                        if sub.name == ROBLOX_PROCESS:
+                            has_exe = True
+                        elif sub.is_dir():
+                            l2_dirs.append(sub.path)
+                except OSError:
+                    pass
+                if has_exe and e1.path not in out_seen:
+                    out.append(Path(e1.path)); out_seen.add(e1.path)
+                for l2_path in l2_dirs:
+                    has_exe2 = False
+                    l3_dirs: list = []
+                    try:
+                        for sub in os.scandir(l2_path):
+                            if sub.name == ROBLOX_PROCESS:
+                                has_exe2 = True
+                            elif sub.is_dir():
+                                l3_dirs.append(sub.path)
+                    except OSError:
+                        pass
+                    if has_exe2 and l2_path not in out_seen:
+                        out.append(Path(l2_path)); out_seen.add(l2_path)
+                    for l3_path in l3_dirs:
+                        # At max depth: single GetFileAttributesW, no need to
+                        # scan the whole directory (which may have hundreds of DLLs).
+                        if os.path.exists(os.path.join(l3_path, ROBLOX_PROCESS)) \
+                                and l3_path not in out_seen:
+                            out.append(Path(l3_path)); out_seen.add(l3_path)
         except OSError:
             pass
 
-    found = []
-    seen = set()
-
-    # Suppress Windows "corrupt disk" / "device not ready" / "no disk in drive"
-    # dialog boxes for the duration of the scan.  Without this, accessing a
-    # drive or directory that has a corrupt filesystem entry causes Windows to
-    # pop up a system modal error dialog even though we already handle the
-    # resulting OSError in Python.
-    #   SEM_FAILCRITICALERRORS  = 0x0001  – send errors to the process, not a dialog
-    #   SEM_NOOPENFILEERRORBOX  = 0x8000  – suppress "file not found" dialogs
+    # Suppress Windows "corrupt disk" / "device not ready" error dialogs for
+    # the entire scan window (process-wide; inherited by spawned threads).
+    #   SEM_FAILCRITICALERRORS  = 0x0001
+    #   SEM_NOOPENFILEERRORBOX  = 0x8000
     old_error_mode = ctypes.windll.kernel32.SetErrorMode(0x8001)
     try:
-        for root in search_roots:
-            try:
-                # Walk up to 3 levels: root/L1/L2/L3/RobloxPlayerBeta.exe
-                for l1 in root.iterdir():
-                    if not l1.is_dir():
-                        continue
-                    if (l1 / ROBLOX_PROCESS).exists() and str(l1) not in seen:
-                        found.append(l1); seen.add(str(l1))
-                    try:
-                        for l2 in l1.iterdir():
-                            if not l2.is_dir():
-                                continue
-                            if (l2 / ROBLOX_PROCESS).exists() and str(l2) not in seen:
-                                found.append(l2); seen.add(str(l2))
-                            try:
-                                for l3 in l2.iterdir():
-                                    if not l3.is_dir():
-                                        continue
-                                    if (l3 / ROBLOX_PROCESS).exists() and str(l3) not in seen:
-                                        found.append(l3); seen.add(str(l3))
-                            except OSError:
-                                pass
-                    except OSError:
-                        pass
-            except OSError:
-                pass
+        # Synchronous scan of safe C: roots
+        for root in safe_roots:
+            t_root = time.perf_counter()
+            _scan_root_into(root, found, seen)
+            log_buffer.log('Certificate', f'  {root}: {int((time.perf_counter() - t_root) * 1000)} ms')
+
+        # Threaded scan of external drives — each gets its own 5-second window
+        if risky_roots:
+            result_q: _queue.Queue = _queue.Queue()
+
+            def _drive_worker(root: Path) -> None:
+                local: list = []
+                local_seen: set = set()
+                t_root = time.perf_counter()
+                _scan_root_into(root, local, local_seen)
+                elapsed = int((time.perf_counter() - t_root) * 1000)
+                log_buffer.log('Certificate', f'  {root}: {elapsed} ms ({len(local)} found)')
+                result_q.put(local)
+
+            threads = [
+                threading.Thread(target=_drive_worker, args=(r,), daemon=True)
+                for r in risky_roots
+            ]
+            for t in threads:
+                t.start()
+            # Use a single 5-second deadline shared across all drives so that
+            # N hanging drives don't multiply the wait to N×5 seconds.
+            deadline = time.monotonic() + 5.0
+            for t in threads:
+                remaining = max(0.0, deadline - time.monotonic())
+                t.join(timeout=remaining)
+
+            # Collect results from drives that finished within the timeout
+            while True:
+                try:
+                    for d in result_q.get_nowait():
+                        key = str(d)
+                        if key not in seen:
+                            found.append(d)
+                            seen.add(key)
+                except _queue.Empty:
+                    break
     finally:
         ctypes.windll.kernel32.SetErrorMode(old_error_mode)
+
     return found
 
 
 def _install_ca_into_roblox(ca_pem: str) -> None:
     """Append our CA cert to ssl/cacert.pem next to every found RobloxPlayerBeta.exe."""
+    t0 = time.perf_counter()
     dirs = _find_roblox_dirs()
+    elapsed_ms = int((time.perf_counter() - t0) * 1000)
     if not dirs:
-        log_buffer.log('Certificate', 'No Roblox installs found to patch')
+        log_buffer.log('Certificate', f'No Roblox installs found to patch (scanned in {elapsed_ms} ms)')
         return
-    log_buffer.log('Certificate', f'Found {len(dirs)} Roblox install(s) to patch')
+    log_buffer.log('Certificate', f'Found {len(dirs)} Roblox install(s) to patch (scanned in {elapsed_ms} ms)')
 
     for d in dirs:
         ssl_dir = d / 'ssl'
