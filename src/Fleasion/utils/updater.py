@@ -94,7 +94,7 @@ def _worker(signal: _UpdateSignal) -> None:
 
     tag: str = (data.get('tag_name') or '').strip()
     # TEST_ONLY: force tag for equality testing
-    # tag = '1.5.1'
+    # tag = '1.6.0'
     if not tag:
         return
 
