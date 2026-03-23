@@ -31,6 +31,7 @@ from .threading import run_in_thread
 from .updater import start_update_check
 from .windows import (
     delete_cache,
+    get_roblox_player_exe_path,
     is_roblox_running,
     is_studio_running,
     open_folder,
@@ -66,6 +67,7 @@ __all__ = [
     'LogBuffer',
     'delete_cache',
     'get_icon_path',
+    'get_roblox_player_exe_path',
     'is_roblox_running',
     'is_studio_running',
     'log_buffer',

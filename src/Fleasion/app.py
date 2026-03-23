@@ -9,9 +9,9 @@ from PyQt6.QtWidgets import QApplication, QMessageBox, QPushButton, QDialog, QVB
 
 from .config import ConfigManager
 from .prejsons import download_prejsons
-from .proxy import ProxyMaster
+from .proxy import ProxyMaster, check_and_patch_running_roblox_ca
 from .tray import SystemTray
-from .utils import delete_cache, get_icon_path, is_roblox_running, is_studio_running, log_buffer, run_in_thread, start_update_check
+from .utils import delete_cache, get_icon_path, get_roblox_player_exe_path, is_roblox_running, is_studio_running, log_buffer, run_in_thread, start_update_check
 
 
 
@@ -145,6 +145,7 @@ class RobloxExitMonitor(QObject):
         super().__init__()
         self.config_manager = config_manager
         self.was_running = False
+        self._player_was_running = False
         self._studio_was_running = False
         self._studio_notified = False
         self._studio_suppress_session = False
@@ -153,9 +154,19 @@ class RobloxExitMonitor(QObject):
     @run_in_thread
     def check_roblox_status(self):
         """Check if Roblox has exited and trigger cache deletion if needed."""
+        is_running = is_roblox_running()
+
+        # --- Roblox Player: launch detection - check CA cert on new launch ---
+        if not self._player_was_running and is_running:
+            exe_path = get_roblox_player_exe_path()
+            if exe_path is not None:
+                run_in_thread(check_and_patch_running_roblox_ca)(exe_path)
+            else:
+                log_buffer.log('Certificate', 'Roblox launch detected but could not resolve exe path for CA check')
+        self._player_was_running = is_running
+
         # --- Roblox Player: auto cache deletion on exit ---
         if self.config_manager.auto_delete_cache_on_exit:
-            is_running = is_roblox_running()
             if self.was_running and not is_running:
                 log_buffer.log('Cache', 'Roblox exited, deleting cache...')
                 run_in_thread(self._delete_cache_background)()

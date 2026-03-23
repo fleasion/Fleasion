@@ -608,6 +608,42 @@ def _install_ca_into_roblox(ca_pem: str) -> None:
             log_buffer.log('Certificate', f'Failed to write CA for {d.name}: {exc}')
 
 
+def check_and_patch_running_roblox_ca(exe_path: 'Path') -> None:
+    """Check if the currently running Roblox instance has our CA in its cacert.pem.
+
+    Called when RobloxPlayerBeta.exe is detected launching at runtime.
+    If the cert is absent it is injected immediately and an alert is logged.
+    """
+    ca_cert_path = PROXY_CA_DIR / 'ca.crt'
+    if not ca_cert_path.exists():
+        return  # CA not generated yet – nothing to patch
+
+    ca_pem = get_ca_pem(ca_cert_path)
+    roblox_dir = exe_path.parent
+    ssl_dir = roblox_dir / 'ssl'
+    ca_file = ssl_dir / 'cacert.pem'
+
+    try:
+        existing = ca_file.read_text(encoding='utf-8', errors='replace') if ca_file.exists() else ''
+    except OSError:
+        existing = ''
+
+    if ca_pem in existing:
+        return  # Already patched – nothing to do
+
+    log_buffer.log(
+        'Certificate',
+        '[ALERT] The currently running RobloxPlayerBeta.exe does not have a modified '
+        'cacert.pem! It has been injected into Roblox, you may need to relaunch it.',
+    )
+    try:
+        ssl_dir.mkdir(exist_ok=True)
+        ca_file.write_text(f'{existing}\n{ca_pem}', encoding='utf-8')
+        log_buffer.log('Certificate', f'CA injected into running Roblox instance: {roblox_dir.name}')
+    except (PermissionError, OSError) as exc:
+        log_buffer.log('Certificate', f'Failed to inject CA into running Roblox instance: {exc}')
+
+
 # ---------------------------------------------------------------------------
 # ProxyMaster
 # ---------------------------------------------------------------------------

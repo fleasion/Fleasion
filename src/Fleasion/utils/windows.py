@@ -5,6 +5,7 @@ import os
 import subprocess
 import time
 from pathlib import Path
+from typing import Optional
 
 from .paths import ROBLOX_PROCESS, ROBLOX_STUDIO_PROCESS, STORAGE_DB, STORAGE_DB_GDK
 
@@ -24,6 +25,17 @@ def run_cmd(args: list[str]) -> str:
 def is_roblox_running() -> bool:
     """Check if Roblox is currently running."""
     return ROBLOX_PROCESS in run_cmd(['tasklist', '/FI', f'IMAGENAME eq {ROBLOX_PROCESS}'])
+
+
+def get_roblox_player_exe_path() -> Optional[Path]:
+    """Return the full executable path of the running RobloxPlayerBeta.exe, or None."""
+    output = run_cmd([
+        'powershell', '-NoProfile', '-Command',
+        'Get-Process -Name RobloxPlayerBeta -ErrorAction SilentlyContinue | '
+        'Select-Object -First 1 -ExpandProperty Path',
+    ])
+    path_str = output.strip()
+    return Path(path_str) if path_str else None
 
 
 def is_studio_running() -> bool:
