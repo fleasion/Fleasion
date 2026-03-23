@@ -1,5 +1,6 @@
 """Application entrypoint."""
 
+import atexit
 import platform
 import sys
 
@@ -413,6 +414,15 @@ def main():
 
     # Initialize proxy master
     proxy_master = ProxyMaster(config_manager)
+
+    # ── Shutdown guards ───────────────────────────────────────────────────
+    # 1. Graceful Windows shutdown / log-off: Qt fires commitDataRequest before
+    #    the session ends, giving us a chance to clean up the hosts file.
+    app.commitDataRequest.connect(lambda _session: proxy_master.stop())
+
+    # 2. Normal Python exit (sys.exit, end of main): last-resort fallback so
+    #    the hosts file is cleaned up even if the tray Exit path was bypassed.
+    atexit.register(proxy_master.stop)
 
     # Start PreJsons download in background
     run_in_thread(download_prejsons)()

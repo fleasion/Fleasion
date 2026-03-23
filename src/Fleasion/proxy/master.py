@@ -21,12 +21,16 @@ VPN compatibility:
 """
 
 import asyncio
+import base64
 import ctypes
 import logging
 import os
+import subprocess
 import sys
 import threading
 import time
+import winreg
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Set
 
@@ -50,6 +54,127 @@ logger = logging.getLogger(__name__)
 
 HOSTS_FILE = Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32' / 'drivers' / 'etc' / 'hosts'
 _HOSTS_MARKER = '# Fleasion proxy entry'
+
+# Registry key used by Windows to replace files on next reboot
+_PENDING_RENAME_KEY   = r'SYSTEM\CurrentControlSet\Control\Session Manager'
+_PENDING_RENAME_VALUE = 'PendingFileRenameOperations'
+# Temp file that will replace the hosts file on next boot after a crash
+_TEMP_CLEAN_HOSTS = Path(os.environ.get('TEMP', r'C:\Windows\Temp')) / 'fleasion_hosts_restore.txt'
+# Tracks which elevated Fleasion PID currently owns the proxy/hosts/watchdog.
+# Other instances check this on startup to avoid disturbing a live proxy.
+_PROXY_OWNER_PID_FILE = Path(os.environ.get('TEMP', r'C:\Windows\Temp')) / 'fleasion_proxy_owner.pid'
+
+# ---------------------------------------------------------------------------
+# Task-Scheduler watchdog (force-kill guard)
+# ---------------------------------------------------------------------------
+# When the proxy is running, we maintain a Windows Task Scheduler task that
+# fires ~5 seconds into the future.  A background thread refreshes the task
+# every 3 seconds so it never actually fires during normal operation.  If the
+# process is force-killed (Task Manager, etc.) the task fires within 5 s and
+# restores the hosts file.
+#
+# StartWhenAvailable is set to FALSE in the task XML.  This means if the
+# scheduled time passes while the PC is OFF (power loss, BSOD), the task
+# will NEVER fire retroactively on the next boot — the PendingFileRename
+# guard handles that case instead.  On the next Fleasion launch we also
+# delete any stale watchdog task left from a previous crash.
+# ---------------------------------------------------------------------------
+
+_WATCHDOG_TASK_NAME = 'Fleasion-HostsWatchdog'
+_WATCHDOG_LOOKAHEAD = 5   # seconds ahead the task is scheduled
+_WATCHDOG_INTERVAL  = 3   # seconds between watchdog refreshes
+_WATCHDOG_TASK_XML  = Path(os.environ.get('TEMP', r'C:\Windows\Temp')) / 'fleasion_watchdog_task.xml'
+
+# PowerShell one-liner that strips Fleasion entries from the hosts file and
+# flushes DNS.  Encoded as UTF-16-LE base64 to avoid XML/shell-escaping pain.
+# Uses raw strings so backslashes are literal (no Python escape processing).
+# [System.IO.File]::WriteAllLines writes UTF-8 without BOM (safe for hosts).
+_WATCHDOG_PS_CMD = (
+    r'$f="$env:SystemRoot\System32\drivers\etc\hosts";'
+    r"[System.IO.File]::WriteAllLines($f,((Get-Content $f)|Where-Object{$_ -notmatch '# Fleasion proxy entry'}));"
+    r"Start-Process 'ipconfig.exe' '/flushdns' -NoNewWindow -Wait"
+)
+_WATCHDOG_PS_ENCODED: str = base64.b64encode(_WATCHDOG_PS_CMD.encode('utf-16-le')).decode('ascii')
+
+
+def _build_watchdog_xml(run_at: datetime) -> str:
+    """Build a Task Scheduler XML document for a once-off task at *run_at*."""
+    boundary = run_at.strftime('%Y-%m-%dT%H:%M:%S')
+    return f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Fleasion hosts watchdog: restores hosts file if Fleasion exits without cleanup</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <TimeTrigger>
+      <StartBoundary>{boundary}</StartBoundary>
+      <Enabled>true</Enabled>
+    </TimeTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>S-1-5-18</UserId>
+      <LogonType>ServiceAccount</LogonType>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <ExecutionTimeLimit>PT1M</ExecutionTimeLimit>
+    <StartWhenAvailable>false</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <Enabled>true</Enabled>
+    <Hidden>true</Hidden>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>powershell.exe</Command>
+      <Arguments>-NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand {_WATCHDOG_PS_ENCODED}</Arguments>
+    </Exec>
+  </Actions>
+</Task>"""
+
+
+def _upsert_watchdog_task() -> None:
+    """Create (or replace) the watchdog task to fire _WATCHDOG_LOOKAHEAD seconds from now."""
+    try:
+        run_at = datetime.now() + timedelta(seconds=_WATCHDOG_LOOKAHEAD)
+        xml = _build_watchdog_xml(run_at)
+        _WATCHDOG_TASK_XML.write_text(xml, encoding='utf-16')
+        subprocess.run(
+            ['schtasks', '/create', '/TN', _WATCHDOG_TASK_NAME,
+             '/XML', str(_WATCHDOG_TASK_XML), '/RU', 'SYSTEM', '/F'],
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            timeout=5,
+        )
+    except Exception as exc:
+        log_buffer.log('Watchdog', f'Could not upsert watchdog task (non-fatal): {exc}')
+
+
+def _delete_watchdog_task() -> None:
+    """Delete the watchdog task if it exists.  Safe to call even if absent."""
+    try:
+        subprocess.run(
+            ['schtasks', '/delete', '/TN', _WATCHDOG_TASK_NAME, '/F'],
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            timeout=5,
+        )
+    except Exception:
+        pass
+    try:
+        _WATCHDOG_TASK_XML.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _resolve_real_ips(hosts: set) -> dict:
@@ -78,7 +203,6 @@ def _resolve_real_ips(hosts: set) -> dict:
 
 def _flush_dns() -> None:
     """Flush Windows DNS client cache so the hosts file changes take effect immediately."""
-    import subprocess
     try:
         subprocess.run(
             ['ipconfig', '/flushdns'],
@@ -89,6 +213,153 @@ def _flush_dns() -> None:
         log_buffer.log('Hosts', 'DNS cache flushed')
     except Exception as exc:
         log_buffer.log('Hosts', f'DNS flush failed (non-fatal): {exc}')
+
+
+# ---------------------------------------------------------------------------
+# Reboot-time crash guard (PendingFileRenameOperations)
+# ---------------------------------------------------------------------------
+
+def _pid_is_alive(pid: int) -> bool:
+    """Return True if the process with *pid* is still running."""
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    STILL_ACTIVE = 259
+    handle = ctypes.windll.kernel32.OpenProcess(
+        PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+    )
+    if not handle:
+        return False
+    try:
+        code = ctypes.c_ulong(0)
+        ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+        return code.value == STILL_ACTIVE
+    finally:
+        ctypes.windll.kernel32.CloseHandle(handle)
+
+
+def _other_proxy_owner_alive() -> bool:
+    """Return True if another elevated Fleasion instance currently owns the proxy.
+
+    Checked at startup so we never delete another instance's watchdog or
+    hosts entries while it is still running.
+    """
+    try:
+        pid = int(_PROXY_OWNER_PID_FILE.read_text().strip())
+        return pid != os.getpid() and _pid_is_alive(pid)
+    except (OSError, ValueError):
+        return False
+
+def _nt_path(p: Path) -> str:
+    """Return the NT namespace path required by PendingFileRenameOperations."""
+    return f'\\??\\{p}'
+
+
+def _schedule_hosts_cleanup_on_reboot() -> None:
+    """Register a PendingFileRenameOperations entry that replaces the hosts file
+    with a clean (Fleasion-entry-free) copy on the next Windows boot.
+
+    This acts as a crash / sudden-power-loss guard: if the process is killed
+    before stop() can remove our hosts entries, they will be cleaned on the
+    next reboot automatically — even before any user process starts.
+    """
+    try:
+        # Build a clean copy of the current hosts file (strip Fleasion lines)
+        try:
+            original = HOSTS_FILE.read_text(encoding='utf-8', errors='replace')
+        except OSError:
+            original = ''
+        clean_content = ''.join(
+            line for line in original.splitlines(keepends=True)
+            if _HOSTS_MARKER not in line and not any(
+                f'127.0.0.1 {h}' in line for h in INTERCEPT_HOSTS
+            )
+        )
+        _TEMP_CLEAN_HOSTS.write_text(clean_content, encoding='utf-8')
+
+        src = _nt_path(_TEMP_CLEAN_HOSTS)
+        dst = _nt_path(HOSTS_FILE)
+
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE, _PENDING_RENAME_KEY,
+            access=winreg.KEY_ALL_ACCESS,
+        ) as key:
+            try:
+                existing, _ = winreg.QueryValueEx(key, _PENDING_RENAME_VALUE)
+                entries: list = list(existing)
+            except FileNotFoundError:
+                entries = []
+
+            # Remove any stale Fleasion entries to avoid duplicates
+            filtered: list = []
+            i = 0
+            while i < len(entries):
+                if i + 1 < len(entries):
+                    if entries[i].lower() == src.lower():
+                        i += 2
+                        continue
+                    filtered.append(entries[i])
+                    filtered.append(entries[i + 1])
+                    i += 2
+                else:
+                    filtered.append(entries[i])
+                    i += 1
+
+            filtered.extend([src, dst])
+            winreg.SetValueEx(key, _PENDING_RENAME_VALUE, 0, winreg.REG_MULTI_SZ, filtered)
+
+        log_buffer.log('Hosts', 'Crash guard: hosts cleanup scheduled for next reboot')
+    except Exception as exc:
+        log_buffer.log('Hosts', f'Could not schedule reboot cleanup (non-fatal): {exc}')
+
+
+def _cancel_hosts_cleanup_on_reboot() -> None:
+    """Remove the PendingFileRenameOperations entry added by
+    _schedule_hosts_cleanup_on_reboot.
+
+    Called after a successful stop() so the boot-time cleanup does not run
+    unnecessarily and cannot interfere with a subsequent Fleasion session.
+    """
+    try:
+        src = _nt_path(_TEMP_CLEAN_HOSTS)
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE, _PENDING_RENAME_KEY,
+            access=winreg.KEY_ALL_ACCESS,
+        ) as key:
+            try:
+                existing, _ = winreg.QueryValueEx(key, _PENDING_RENAME_VALUE)
+                entries: list = list(existing)
+            except FileNotFoundError:
+                return  # nothing to remove
+
+            filtered: list = []
+            i = 0
+            while i < len(entries):
+                if i + 1 < len(entries):
+                    if entries[i].lower() == src.lower():
+                        i += 2
+                        continue
+                    filtered.append(entries[i])
+                    filtered.append(entries[i + 1])
+                    i += 2
+                else:
+                    filtered.append(entries[i])
+                    i += 1
+
+            if filtered:
+                winreg.SetValueEx(key, _PENDING_RENAME_VALUE, 0, winreg.REG_MULTI_SZ, filtered)
+            else:
+                try:
+                    winreg.DeleteValue(key, _PENDING_RENAME_VALUE)
+                except FileNotFoundError:
+                    pass
+
+        try:
+            _TEMP_CLEAN_HOSTS.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+        log_buffer.log('Hosts', 'Crash guard: reboot cleanup cancelled (clean exit)')
+    except Exception as exc:
+        log_buffer.log('Hosts', f'Could not cancel reboot cleanup (non-fatal): {exc}')
 
 
 # ---------------------------------------------------------------------------
@@ -361,10 +632,34 @@ class ProxyMaster:
         self._running = False
         self._lock = threading.Lock()
         self._hosts_installed: bool = False
+        self._watchdog_stop: Optional[threading.Event] = None
+        self._watchdog_thread: Optional[threading.Thread] = None
 
     @property
     def is_running(self) -> bool:
         return self._running
+
+    def _start_watchdog(self) -> None:
+        """Start the background thread that keeps the watchdog task pushed ahead."""
+        self._watchdog_stop = threading.Event()
+        stop_event = self._watchdog_stop
+
+        def _loop() -> None:
+            while not stop_event.wait(_WATCHDOG_INTERVAL):
+                _upsert_watchdog_task()
+
+        self._watchdog_thread = threading.Thread(
+            target=_loop, daemon=True, name='fleasion-watchdog'
+        )
+        self._watchdog_thread.start()
+
+    def _stop_watchdog(self) -> None:
+        """Signal the watchdog thread to stop and delete the scheduled task."""
+        if self._watchdog_stop:
+            self._watchdog_stop.set()
+        if self._watchdog_thread and self._watchdog_thread.is_alive():
+            self._watchdog_thread.join(timeout=2.0)
+        _delete_watchdog_task()
 
     def start(self) -> None:
         with self._lock:
@@ -389,9 +684,15 @@ class ProxyMaster:
 
             # Clean up hosts file first so Roblox stops routing to us immediately
             if self._hosts_installed:
+                self._stop_watchdog()           # Cancel the force-kill guard task first
                 _remove_hosts_entries(set(INTERCEPT_HOSTS))
                 self._hosts_installed = False
                 _flush_dns()  # Clear stale 127.0.0.1 cache so new connections stop coming in
+                _cancel_hosts_cleanup_on_reboot()  # No longer needed after a clean stop
+                try:
+                    _PROXY_OWNER_PID_FILE.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
             # Stop the asyncio server
             if self._proxy and self._loop and self._loop.is_running():
@@ -474,13 +775,19 @@ class ProxyMaster:
         ca_pem = get_ca_pem(ca_cert_path)
         _install_ca_into_roblox(ca_pem)
 
-        # ── Clean up any stale hosts entries from a previous crash ─────
-        # If the previous session crashed without calling stop(), our hosts
-        # entries may still be present. If we resolve IPs while they're there,
-        # getaddrinfo() returns 127.0.0.1 instead of real CDN IPs, causing
-        # every upstream connection to loop back to ourselves.
-        _remove_hosts_entries(set(INTERCEPT_HOSTS))
-        _flush_dns()
+        # ── Clean up stale state from a previous crash ───────────────────
+        # Skip cleanup entirely if another elevated Fleasion instance already
+        # owns the proxy.  Deleting its watchdog task or hosts entries while it
+        # is running would break it silently.
+        if not _other_proxy_owner_alive():
+            _delete_watchdog_task()
+            # Remove stale hosts entries: if the previous session crashed without
+            # calling stop(), our entries may still be present.  getaddrinfo()
+            # would return 127.0.0.1 instead of real CDN IPs.
+            _remove_hosts_entries(set(INTERCEPT_HOSTS))
+            _flush_dns()
+        else:
+            log_buffer.log('Proxy', 'Another proxy owner is running — skipping startup cleanup')
 
         # ── Resolve real CDN IPs BEFORE writing new hosts file entries ────
         # CRITICAL: must happen after removing stale entries (above) and before
@@ -539,8 +846,13 @@ class ProxyMaster:
             return
         self._hosts_installed = True
         _flush_dns()  # Make the new entries take effect immediately
-
-
+        try:
+            _PROXY_OWNER_PID_FILE.write_text(str(os.getpid()))
+        except OSError:
+            pass
+        _schedule_hosts_cleanup_on_reboot()  # Boot guard: power-loss / BSOD
+        _upsert_watchdog_task()              # Initial task creation
+        self._start_watchdog()               # Keep task pushed 5 s ahead
 
         log_buffer.log('Info', '=' * 50)
         log_buffer.log('Info', 'Fleasion Proxy Active')
@@ -557,9 +869,15 @@ class ProxyMaster:
         finally:
             # Ensure hosts file is cleaned up even if stop() wasn't called
             if self._hosts_installed:
+                self._stop_watchdog()
                 _remove_hosts_entries(set(INTERCEPT_HOSTS))
                 self._hosts_installed = False
                 _flush_dns()
+                _cancel_hosts_cleanup_on_reboot()
+                try:
+                    _PROXY_OWNER_PID_FILE.unlink(missing_ok=True)
+                except OSError:
+                    pass
             try:
                 await self._proxy.stop()
             except Exception:
