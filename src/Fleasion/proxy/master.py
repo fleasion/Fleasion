@@ -111,13 +111,6 @@ def _build_watchdog_xml(run_at: datetime) -> str:
       <Enabled>true</Enabled>
     </TimeTrigger>
   </Triggers>
-  <Principals>
-    <Principal id="Author">
-      <UserId>S-1-5-18</UserId>
-      <LogonType>ServiceAccount</LogonType>
-      <RunLevel>HighestAvailable</RunLevel>
-    </Principal>
-  </Principals>
   <Settings>
     <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
     <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
@@ -149,13 +142,16 @@ def _upsert_watchdog_task() -> None:
         run_at = datetime.now() + timedelta(seconds=_WATCHDOG_LOOKAHEAD)
         xml = _build_watchdog_xml(run_at)
         _WATCHDOG_TASK_XML.write_text(xml, encoding='utf-16')
-        subprocess.run(
+        result = subprocess.run(
             ['schtasks', '/create', '/TN', _WATCHDOG_TASK_NAME,
              '/XML', str(_WATCHDOG_TASK_XML), '/RU', 'SYSTEM', '/F'],
             capture_output=True,
             creationflags=subprocess.CREATE_NO_WINDOW,
             timeout=5,
         )
+        if result.returncode != 0:
+            err = (result.stderr or result.stdout or b'').decode('utf-8', errors='replace').strip()
+            log_buffer.log('Watchdog', f'schtasks returned non-zero ({result.returncode}): {err}')
     except Exception as exc:
         log_buffer.log('Watchdog', f'Could not upsert watchdog task (non-fatal): {exc}')
 
@@ -163,12 +159,14 @@ def _upsert_watchdog_task() -> None:
 def _delete_watchdog_task() -> None:
     """Delete the watchdog task if it exists.  Safe to call even if absent."""
     try:
-        subprocess.run(
+        result = subprocess.run(
             ['schtasks', '/delete', '/TN', _WATCHDOG_TASK_NAME, '/F'],
             capture_output=True,
             creationflags=subprocess.CREATE_NO_WINDOW,
             timeout=5,
         )
+        if result.returncode == 0:
+            log_buffer.log('Watchdog', 'Task deleted (clean exit)')
     except Exception:
         pass
     try:
