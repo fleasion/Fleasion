@@ -63,14 +63,34 @@ class LogsWindow(QDialog):
         self._update_logs()
 
     def _update_logs(self):
-        """Update the logs display."""
+        """Update the logs display.
+
+        Appends only new entries using a background cursor so the viewport
+        position is never disturbed.  Auto-scrolling to the bottom only
+        happens when the user is already at (or within a few pixels of) the
+        bottom, so reading older entries is never interrupted.
+        """
+        from PyQt6.QtGui import QTextCursor
+
         logs = log_buffer.get_all()
-        if len(logs) != self._last_count:
-            self.text_edit.setPlainText(log_buffer.get_text())
-            # Scroll to bottom
+        count = len(logs)
+        if count != self._last_count:
             scrollbar = self.text_edit.verticalScrollBar()
-            scrollbar.setValue(scrollbar.maximum())
-            self._last_count = len(logs)
+            was_at_bottom = scrollbar.value() >= scrollbar.maximum() - 4
+
+            new_text = '\n'.join(logs[self._last_count:])
+            prefix = '\n' if self._last_count > 0 else ''
+
+            # Insert at the end via a cursor that is *not* the widget's
+            # visible cursor -- Qt will not auto-scroll as a result.
+            cursor = QTextCursor(self.text_edit.document())
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            cursor.insertText(prefix + new_text)
+
+            self._last_count = count
+
+            if was_at_bottom:
+                scrollbar.setValue(scrollbar.maximum())
 
     def closeEvent(self, event):
         """Handle window close event."""

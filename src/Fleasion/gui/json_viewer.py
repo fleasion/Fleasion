@@ -176,7 +176,7 @@ class AssetFetcherThread(QThread):
                 if data:
                     self.data_ready.emit(data)
                 else:
-                    self.error.emit('No data returned')
+                    self.error.emit('No data returned (Asset may be privated)')
 
             elif isinstance(val, str) and (val.startswith('http://') or val.startswith('https://')):
                 from urllib.parse import urlparse as _up
@@ -203,7 +203,7 @@ class AssetFetcherThread(QThread):
                 if data:
                     self.data_ready.emit(data)
                 else:
-                    self.error.emit('No data returned')
+                    self.error.emit('No data returned (Asset may be privated)')
             else:
                 self.error.emit(f'Cannot fetch: {val}')
         except Exception as e:

@@ -520,9 +520,16 @@ class CacheManager:
                         output_path = export_type_dir / f'{filename}.ogg'  # Default to ogg
 
                 elif export_format == 'converted_png':  # Image, Decal - export as PNG
-                    # Data should already be PNG (converted from KTX at scrape time)
+                    # Convert from KTX if needed (lazily-cached or pre-pipeline assets)
+                    _KTX_MAGIC = (b'\xabKTX 11\xbb\r\n\x1a\n', b'\xabKTX 20\xbb\r\n\x1a\n')
+                    export_data = data
+                    if data[:12] in _KTX_MAGIC:
+                        from .tools.ktx_to_png import convert as _ktx_convert
+                        converted = _ktx_convert(data)
+                        if converted:
+                            export_data = converted
                     output_path = export_type_dir / f'{filename}.png'
-                    output_path.write_bytes(data)
+                    output_path.write_bytes(export_data)
                     return output_path
 
                 elif export_format == 'converted' and asset_type == 63:  # TexturePack - export individual textures

@@ -3,6 +3,7 @@
 import atexit
 import platform
 import sys
+import time
 
 from PyQt6.QtCore import QTimer, QSharedMemory, QObject, pyqtSignal
 from PyQt6.QtWidgets import QApplication, QMessageBox, QPushButton, QDialog, QVBoxLayout, QHBoxLayout, QLabel
@@ -159,6 +160,13 @@ class RobloxExitMonitor(QObject):
         # --- Roblox Player: launch detection - check CA cert on new launch ---
         if not self._player_was_running and is_running:
             exe_path = get_roblox_player_exe_path()
+            if exe_path is None:
+                # Process may still be initializing — retry for up to 10 s
+                for _ in range(10):
+                    time.sleep(1.0)
+                    exe_path = get_roblox_player_exe_path()
+                    if exe_path is not None:
+                        break
             if exe_path is not None:
                 run_in_thread(check_and_patch_running_roblox_ca)(exe_path)
             else:
@@ -485,7 +493,7 @@ def main():
     roblox_monitor = RobloxExitMonitor(config_manager)
     roblox_check_timer = QTimer()
     roblox_check_timer.timeout.connect(roblox_monitor.check_roblox_status)
-    roblox_check_timer.start(1000)  # Check every 1 second
+    roblox_check_timer.start(500)  # Check every 0.5 seconds
 
     # Show first-time message if this is the first run
     if not _suppress_dashboard and not config_manager.first_time_setup_complete:

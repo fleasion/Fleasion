@@ -81,18 +81,33 @@ _PROXY_OWNER_PID_FILE = Path(os.environ.get('TEMP', r'C:\Windows\Temp')) / 'flea
 # ---------------------------------------------------------------------------
 
 _WATCHDOG_TASK_NAME = 'Fleasion-HostsWatchdog'
-_WATCHDOG_LOOKAHEAD = 5   # seconds ahead the task is scheduled
+_WATCHDOG_LOOKAHEAD = 15  # seconds ahead the task is scheduled
 _WATCHDOG_INTERVAL  = 3   # seconds between watchdog refreshes
 _WATCHDOG_TASK_XML  = Path(os.environ.get('TEMP', r'C:\Windows\Temp')) / 'fleasion_watchdog_task.xml'
 
-# PowerShell one-liner that strips Fleasion entries from the hosts file and
+# PowerShell command that strips Fleasion entries from the hosts file and
 # flushes DNS.  Encoded as UTF-16-LE base64 to avoid XML/shell-escaping pain.
-# Uses raw strings so backslashes are literal (no Python escape processing).
-# [System.IO.File]::WriteAllLines writes UTF-8 without BOM (safe for hosts).
+#
+# Guarded by a PID check: if a Fleasion process is still alive and owns the
+# proxy (PID file present + process running), the script exits without touching
+# the hosts file.  This prevents two failure modes:
+#   1. Kill-and-replace: old instance's task fires after new instance wrote hosts.
+#   2. Slow-machine false-fire: AV delays schtasks long enough that the task's
+#      trigger time passes before the next refresh updates it.
+#
+# The PID file path is embedded literally (not via $env:TEMP) because this
+# script runs as SYSTEM whose %TEMP% is C:\Windows\Temp, not the user's folder.
+_pid_path_ps = str(_PROXY_OWNER_PID_FILE).replace('\\', '/')
 _WATCHDOG_PS_CMD = (
-    r'$f="$env:SystemRoot\System32\drivers\etc\hosts";'
-    r"[System.IO.File]::WriteAllLines($f,((Get-Content $f)|Where-Object{$_ -notmatch '# Fleasion proxy entry'}));"
-    r"Start-Process 'ipconfig.exe' '/flushdns' -NoNewWindow -Wait"
+    f'$pp="{_pid_path_ps}";'
+    '$alive=$false;'
+    'if(Test-Path $pp){'
+    'try{$fpid=[int](Get-Content $pp -Raw);'
+    'if(Get-Process -Id $fpid -ErrorAction SilentlyContinue){$alive=$true}}catch{}};'
+    'if(-not $alive){'
+    '$f="$env:SystemRoot/System32/drivers/etc/hosts";'
+    "[System.IO.File]::WriteAllLines($f,((Get-Content $f)|Where-Object{$_ -notmatch '# Fleasion proxy entry'}));"
+    "Start-Process 'ipconfig.exe' '/flushdns' -NoNewWindow -Wait}"
 )
 _WATCHDOG_PS_ENCODED: str = base64.b64encode(_WATCHDOG_PS_CMD.encode('utf-16-le')).decode('ascii')
 
@@ -379,9 +394,41 @@ def _add_hosts_entries(hosts: Set[str]) -> bool:
     """Append redirect entries for *hosts* to the system hosts file.
 
     Returns True on success.  Skips entries already present.
+    Creates the hosts file from the Windows default if it is missing.
     """
     try:
         existing = HOSTS_FILE.read_text(encoding='utf-8', errors='replace')
+    except FileNotFoundError:
+        # hosts file is missing entirely — recreate it with the Windows default
+        existing = (
+            '# Copyright (c) 1993-2009 Microsoft Corp.\n'
+            '#\n'
+            '# This is a sample HOSTS file used by Microsoft TCP/IP for Windows.\n'
+            '#\n'
+            '# This file contains the mappings of IP addresses to host names. Each\n'
+            '# entry should be kept on an individual line. The IP address should\n'
+            '# be placed in the first column followed by the corresponding host name.\n'
+            '# The IP address and the host name should be separated by at least one\n'
+            '# space.\n'
+            '#\n'
+            '# Additionally, comments (such as these) may be inserted on individual\n'
+            '# lines or following the machine name denoted by a \'#\' symbol.\n'
+            '#\n'
+            '# For example:\n'
+            '#\n'
+            '#      102.54.94.97     rhino.acme.com          # source server\n'
+            '#       38.25.63.10     x.acme.com              # x client host\n'
+            '\n'
+            '# localhost name resolution is handled within DNS itself.\n'
+            '#\t127.0.0.1       localhost\n'
+            '#\t::1             localhost\n'
+        )
+        try:
+            HOSTS_FILE.write_text(existing, encoding='utf-8')
+            log_buffer.log('Hosts', 'hosts file was missing — created new default hosts file')
+        except OSError as exc:
+            log_buffer.log('Hosts', f'Failed to create hosts file: {exc}')
+            return False
     except OSError as exc:
         log_buffer.log('Hosts', f'Cannot read hosts file: {exc}')
         return False

@@ -148,7 +148,7 @@ class CacheScraper:
                 inner = body
 
         needs_conversion = (
-            (asset_type in (1, 13) and inner[:8] == b'\xabKTX 20\xbb') or
+            (asset_type in (1, 13) and inner[:8] in (b'\xabKTX 20\xbb', b'\xabKTX 11\xbb')) or
             asset_type == 63
         )
 
@@ -156,7 +156,7 @@ class CacheScraper:
             try:
                 self._executor.submit(
                     self._fetch_and_update_cache,
-                    asset_id, asset_type, full_url, metadata, body,
+                    asset_id, asset_type, full_url, metadata, body, inner,
                 )
             except RuntimeError as exc:
                 log_buffer.log('Cache', f'Failed to submit conversion task: {exc}')
@@ -313,8 +313,27 @@ class CacheScraper:
     def _fetch_and_update_cache(
         self, asset_id: str, asset_type: int, url: str,
         metadata: dict, original_content: bytes | None = None,
+        inner_content: bytes | None = None,
     ) -> None:
         try:
+            # Try local KTX conversion first (KTX1 ETC and KTX2 BasisU/UASTC).
+            # Falls through to API fetch if conversion returns None (unsupported format).
+            if asset_type in (1, 13) and inner_content:
+                try:
+                    from ...cache.tools.ktx_to_png import convert as _ktx_convert
+                    png_bytes = _ktx_convert(inner_content)
+                except Exception:
+                    png_bytes = None
+                if png_bytes and png_bytes[:4] == b'\x89PNG':
+                    metadata['content_length'] = len(png_bytes)
+                    success = self.cache_manager.store_asset(
+                        asset_id=str(asset_id), asset_type=asset_type,
+                        data=png_bytes, url=url, metadata=metadata,
+                    )
+                    if success:
+                        log_buffer.log('Cache', f'KTX\u2192PNG (local): {asset_id}')
+                    return
+
             api_content = self._fetch_from_api(asset_id)
             if api_content:
                 is_valid = False

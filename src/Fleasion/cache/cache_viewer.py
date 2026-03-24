@@ -188,7 +188,17 @@ class ImageLoaderThread(QThread):
         try:
             log_buffer.log('Preview', f'Loading image ({len(self.data)} bytes)')
 
-            image = Image.open(io.BytesIO(self.data))
+            data = self.data
+            if data[:12] in (b'\xabKTX 11\xbb\r\n\x1a\n', b'\xabKTX 20\xbb\r\n\x1a\n'):
+                log_buffer.log('Preview', 'KTX detected, converting to PNG...')
+                from .tools.ktx_to_png import convert as _ktx_convert
+                data = _ktx_convert(data)
+                if data is None:
+                    if not self._stop_requested:
+                        self.error.emit('KTX format not supported for local preview')
+                    return
+
+            image = Image.open(io.BytesIO(data))
 
             if self._stop_requested:
                 return
@@ -2873,9 +2883,16 @@ class CacheViewerTab(QWidget):
 
             elif asset_type in (1, 13):  # Image, Decal - save as PNG
                 try:
+                    _KTX_MAGIC = (b'\xabKTX 11\xbb\r\n\x1a\n', b'\xabKTX 20\xbb\r\n\x1a\n')
+                    export_data = data
+                    if data[:12] in _KTX_MAGIC:
+                        from .tools.ktx_to_png import convert as _ktx_convert
+                        converted = _ktx_convert(data)
+                        if converted:
+                            export_data = converted
                     filename = f'{safe_base}.png'
                     temp_file = temp_dir / filename
-                    temp_file.write_bytes(data)
+                    temp_file.write_bytes(export_data)
                 except Exception as e:
                     QMessageBox.warning(self, 'Error', f'Image save error: {e}')
                     return

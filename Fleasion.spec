@@ -5,7 +5,9 @@ datas = [
     ('src\\Fleasion\\fleasionlogoHR.ico', '.'),
     ('src\\Fleasion\\cache\\tools\\animpreview', 'tools/animpreview'),
 ]
-binaries = []
+binaries = [
+    ('src\\Fleasion\\cache\\tools\\ktx_to_png\\ktx.dll', '.'),
+]
 hiddenimports = []
 
 # cryptography has Rust/C binary extensions that must be collected explicitly
