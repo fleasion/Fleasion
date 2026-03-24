@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -285,6 +286,57 @@ class MeshLoaderThread(QThread):
                 self.error.emit(str(e))
 
 
+class SolidModelLoaderThread(QThread):
+    """Convert raw SolidModel (CSG) bytes to OBJ string in a background thread."""
+
+    mesh_ready = pyqtSignal(str)
+    error = pyqtSignal(str)
+
+    def __init__(self, data: bytes):
+        super().__init__()
+        self.data = data
+        self._stop_requested = False
+
+    def stop(self):
+        self._stop_requested = True
+
+    def run(self):
+        try:
+            import tempfile
+            from pathlib import Path
+            from ..cache.tools.solidmodel_converter.converter import deserialize_rbxm, _export_obj_from_doc
+
+            decompressed = self.data
+            if self.data.startswith(b'\x1f\x8b'):
+                decompressed = gzip_module.decompress(self.data)
+
+            if self._stop_requested:
+                return
+
+            doc = deserialize_rbxm(decompressed)
+
+            with tempfile.NamedTemporaryFile(suffix='.obj', delete=False) as f:
+                temp_obj_path = Path(f.name)
+
+            try:
+                _export_obj_from_doc(doc, temp_obj_path, decompose=False)
+                obj_content = temp_obj_path.read_text(encoding='utf-8')
+            finally:
+                if temp_obj_path.exists():
+                    temp_obj_path.unlink()
+
+            if self._stop_requested:
+                return
+
+            if obj_content:
+                self.mesh_ready.emit(obj_content)
+            else:
+                self.error.emit('Failed to convert SolidModel to OBJ format')
+        except Exception as e:
+            if not self._stop_requested:
+                self.error.emit(str(e))
+
+
 class JsonTreeViewer(QDialog):
     """JSON tree viewer dialog."""
 
@@ -322,9 +374,19 @@ class JsonTreeViewer(QDialog):
         self._image_loader: ImageLoaderThread | None = None
         self._mesh_loader: MeshLoaderThread | None = None
         self._animation_loader = None
+        self._solidmodel_loader: SolidModelLoaderThread | None = None
         self._current_pixmap: QPixmap | None = None
         self._previewing_value = None  # track what we started previewing (stale guard)
         self._audio_key_filter_installed = False  # Track if global audio key filter is installed
+        self._last_fetched_data: bytes | None = None  # raw bytes for solidmodel fallback
+
+        # Texturepack state
+        self.texturepack_widget = None
+        self._texturepack_data: dict = {}  # map_name -> {id, data}
+        self._texturepack_xml: str = ''
+        self._tp_image_labels: dict = {}
+        self._tp_pixmaps: dict = {}
+        self._tp_fetchers: list = []  # active AssetFetcherThread instances
 
         self._setup_ui()
         self._populate_tree()
@@ -596,6 +658,8 @@ class JsonTreeViewer(QDialog):
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image_label.setStyleSheet('QLabel { background-color: #2b2b2b; color: #888; }')
         self.image_label.setScaledContents(False)
+        self.image_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.image_label.customContextMenuRequested.connect(self._show_image_context_menu)
         self.preview_container_layout.addWidget(self.image_label)
 
         # Audio player container with centering wrapper
@@ -679,6 +743,7 @@ class JsonTreeViewer(QDialog):
 
     def _on_asset_fetched(self, data: bytes):
         """Dispatch fetched bytes to the appropriate preview handler."""
+        self._last_fetched_data = data
         content_type = self._detect_content_type(data)
 
         if content_type == 'image':
@@ -687,6 +752,8 @@ class JsonTreeViewer(QDialog):
             self._preview_mesh(data)
         elif content_type == 'audio':
             self._preview_audio(data)
+        elif content_type == 'texturepack':
+            self._preview_texturepack(data)
         elif content_type in ('rbxm', 'rbxmx'):
             self._preview_animation(data)
         elif content_type == 'json':
@@ -727,8 +794,17 @@ class JsonTreeViewer(QDialog):
         if working[:8] == b'<roblox!':
             return 'rbxm'
 
-        # XML (RBXMX / animation)
+        # XML (RBXMX / animation / texturepack)
         if working[:7] == b'<roblox' or working[:5] == b'<?xml':
+            # Check for texturepack XML (has color/normal/metalness/roughness/emissive elements)
+            try:
+                import xml.etree.ElementTree as ET
+                root = ET.fromstring(working)
+                tp_elems = ['color', 'normal', 'metalness', 'roughness', 'emissive']
+                if any(root.find(e) is not None for e in tp_elems):
+                    return 'texturepack'
+            except Exception:
+                pass
             return 'rbxmx'
 
         # JSON
@@ -837,6 +913,11 @@ class JsonTreeViewer(QDialog):
                 self.animation_viewer.show()
                 return
 
+            # Binary RBXM that isn't an animation — try SolidModel
+            if decompressed[:8] == b'<roblox!':
+                self._preview_solidmodel(data)
+                return
+
             # Fallback: pretty-print XML
             text = decompressed.decode('utf-8', errors='replace')
             if text.strip().startswith('<'):
@@ -879,6 +960,241 @@ class JsonTreeViewer(QDialog):
             lines.append(f'\n... ({len(data) - preview_size} more bytes)')
         self._show_text_preview('\n'.join(lines))
 
+    def _preview_solidmodel(self, data: bytes):
+        """Preview a SolidModel (CSG) asset in 3D using background thread."""
+        self._solidmodel_loader = SolidModelLoaderThread(data)
+        self._solidmodel_loader.mesh_ready.connect(self._on_mesh_ready)
+        self._solidmodel_loader.error.connect(
+            lambda e: self._show_text_preview(f'SolidModel error: {e}')
+        )
+        self._solidmodel_loader.start()
+
+    def _preview_texturepack(self, data: bytes):
+        """Preview a texture pack by showing all texture maps."""
+        import xml.etree.ElementTree as ET
+
+        try:
+            # Clean up previous texture pack if any
+            self._cleanup_texturepack()
+
+            # Parse XML to get texture map IDs
+            working = data
+            if data[:2] == b'\x1f\x8b':
+                working = gzip_module.decompress(data)
+
+            xml_text = working.decode('utf-8', errors='replace')
+            self._texturepack_xml = xml_text
+            root = ET.fromstring(xml_text)
+
+            # Extract texture map IDs in order
+            map_order = ['color', 'normal', 'metalness', 'roughness', 'emissive']
+            maps = {}
+            for elem in map_order:
+                node = root.find(elem)
+                if node is not None and node.text:
+                    maps[elem.capitalize()] = node.text
+
+            if not maps:
+                self._show_text_preview('No texture maps found in texture pack')
+                return
+
+            # Clear texture data storage
+            self._texturepack_data = {}
+
+            # Create container widget for texture pack preview
+            self.texturepack_widget = QWidget()
+            tp_layout = QVBoxLayout()
+            tp_layout.setContentsMargins(0, 0, 0, 0)
+            tp_layout.setSpacing(10)
+
+            # Store references for async loading
+            self._tp_image_labels = {}
+            self._tp_pixmaps = {}
+
+            # Create placeholder for each texture map
+            for map_name, map_id in maps.items():
+                header = QLabel(f'{map_name}  |  {map_id}')
+                header.setStyleSheet('font-weight: bold; color: #888; padding: 5px;')
+                header.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+                tp_layout.addWidget(header)
+
+                img_label = QLabel('Loading...')
+                img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                img_label.setStyleSheet('background-color: #333; padding: 10px; min-height: 100px;')
+                img_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+                img_label.setProperty('map_name', map_name)
+                img_label.setProperty('map_id', map_id)
+                img_label.customContextMenuRequested.connect(
+                    lambda pos, lbl=img_label: self._show_texturepack_context_menu(pos, lbl)
+                )
+                tp_layout.addWidget(img_label)
+                self._tp_image_labels[map_name] = img_label
+
+            tp_layout.addStretch()
+            self.texturepack_widget.setLayout(tp_layout)
+            self.preview_container_layout.addWidget(self.texturepack_widget)
+            self.texturepack_widget.show()
+
+            # Fetch each texture map via network
+            self._tp_fetchers = []
+            for map_name, map_id in maps.items():
+                fetcher = AssetFetcherThread(map_id)
+                fetcher.data_ready.connect(
+                    lambda d, mn=map_name, mid=map_id: self._on_texturepack_texture_fetched(mn, mid, d)
+                )
+                fetcher.error.connect(
+                    lambda e, mn=map_name: self._on_texturepack_texture_error(mn, e)
+                )
+                self._tp_fetchers.append(fetcher)
+                fetcher.start()
+
+            self._hide_loading()
+
+        except Exception as e:
+            self._show_text_preview(f'Texture pack preview error: {e}')
+
+    def _on_texturepack_texture_fetched(self, map_name: str, map_id: str, data: bytes):
+        """Handle fetched texture data for a texture pack map."""
+        from PIL import Image
+
+        try:
+            if map_name not in self._tp_image_labels:
+                return
+
+            img_label = self._tp_image_labels[map_name]
+            try:
+                _ = img_label.isVisible()
+            except RuntimeError:
+                return
+
+            # Store texture data for context menu
+            self._texturepack_data[map_name] = {'id': map_id, 'data': data}
+
+            working = data
+            if data[:2] == b'\x1f\x8b':
+                try:
+                    working = gzip_module.decompress(data)
+                except Exception:
+                    pass
+
+            image = Image.open(io.BytesIO(working))
+            if image.mode not in ('RGB', 'RGBA'):
+                image = image.convert('RGBA')
+            elif image.mode == 'RGB':
+                image = image.convert('RGBA')
+
+            # Scale up small images to 512x512 minimum
+            min_size = 512
+            if image.width < min_size or image.height < min_size:
+                scale_factor = max(min_size / image.width, min_size / image.height)
+                new_width = int(image.width * scale_factor)
+                new_height = int(image.height * scale_factor)
+                image = image.resize((new_width, new_height), Image.Resampling.NEAREST)
+
+            qimage = QImage(
+                image.tobytes(), image.width, image.height,
+                QImage.Format.Format_RGBA8888,
+            )
+            pixmap = QPixmap.fromImage(qimage)
+            self._tp_pixmaps[map_name] = pixmap
+
+            # Scale to fit container
+            container_width = self.preview_scroll.viewport().width() - 30
+            if container_width < 100:
+                container_width = 400
+
+            if pixmap.width() > container_width:
+                scaled = pixmap.scaledToWidth(container_width, Qt.TransformationMode.SmoothTransformation)
+            else:
+                scaled = pixmap
+
+            img_label.setPixmap(scaled)
+            img_label.setStyleSheet('')
+
+        except Exception as e:
+            self._on_texturepack_texture_error(map_name, str(e))
+
+    def _on_texturepack_texture_error(self, map_name: str, error: str):
+        """Handle texture load error for a texture pack map."""
+        try:
+            if map_name not in self._tp_image_labels:
+                return
+            img_label = self._tp_image_labels[map_name]
+            try:
+                _ = img_label.isVisible()
+            except RuntimeError:
+                return
+            img_label.setText(f'Error: {error}')
+            img_label.setStyleSheet('color: #ff6b6b; padding: 10px;')
+        except Exception:
+            pass
+
+    def _cleanup_texturepack(self):
+        """Clean up texture pack state."""
+        for fetcher in self._tp_fetchers:
+            try:
+                fetcher.stop()
+                fetcher.quit()
+                fetcher.wait()
+            except Exception:
+                pass
+        self._tp_fetchers = []
+
+        if self.texturepack_widget is not None:
+            self.texturepack_widget.deleteLater()
+            self.texturepack_widget = None
+        self._texturepack_data = {}
+        self._texturepack_xml = ''
+        self._tp_image_labels = {}
+        self._tp_pixmaps = {}
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Context menus
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _show_image_context_menu(self, pos):
+        """Show context menu for image preview."""
+        if self._current_pixmap is None or self._current_pixmap.isNull():
+            return
+
+        from PyQt6.QtWidgets import QApplication
+
+        menu = QMenu(self)
+        copy_action = menu.addAction('Copy Image')
+
+        action = menu.exec(self.image_label.mapToGlobal(pos))
+        if action == copy_action:
+            QApplication.clipboard().setPixmap(self._current_pixmap)
+
+    def _show_texturepack_context_menu(self, pos, label: QLabel):
+        """Show context menu for texturepack image."""
+        from PyQt6.QtWidgets import QApplication
+
+        map_name = label.property('map_name')
+        map_id = label.property('map_id')
+
+        menu = QMenu(self)
+
+        copy_image_action = menu.addAction('Copy Image')
+        menu.addSeparator()
+        copy_name_action = menu.addAction(f'Copy Name ({map_name})')
+        copy_id_action = menu.addAction(f'Copy ID ({map_id})')
+        menu.addSeparator()
+        copy_xml_action = menu.addAction('Copy TexturePack XML')
+
+        action = menu.exec(label.mapToGlobal(pos))
+
+        if action == copy_image_action:
+            pixmap = self._tp_pixmaps.get(map_name)
+            if pixmap and not pixmap.isNull():
+                QApplication.clipboard().setPixmap(pixmap)
+        elif action == copy_name_action:
+            QApplication.clipboard().setText(map_name)
+        elif action == copy_id_action:
+            QApplication.clipboard().setText(str(map_id))
+        elif action == copy_xml_action:
+            QApplication.clipboard().setText(self._texturepack_xml)
+
     # ──────────────────────────────────────────────────────────────────────
     # Preview utilities
     # ──────────────────────────────────────────────────────────────────────
@@ -904,6 +1220,9 @@ class JsonTreeViewer(QDialog):
         self.loading_label.hide()
         self._current_pixmap = None
 
+        # Clean up texture pack
+        self._cleanup_texturepack()
+
         # Remove audio key filter before cleaning up audio player
         self._remove_audio_key_filter()
 
@@ -924,7 +1243,8 @@ class JsonTreeViewer(QDialog):
             pass
 
     def _stop_all_loaders(self):
-        for loader in (self._asset_fetcher, self._image_loader, self._mesh_loader, self._animation_loader):
+        for loader in (self._asset_fetcher, self._image_loader, self._mesh_loader,
+                       self._animation_loader, self._solidmodel_loader):
             if loader is not None:
                 try:
                     loader.stop()
@@ -936,6 +1256,17 @@ class JsonTreeViewer(QDialog):
         self._image_loader = None
         self._mesh_loader = None
         self._animation_loader = None
+        self._solidmodel_loader = None
+
+        # Stop texturepack fetchers
+        for fetcher in self._tp_fetchers:
+            try:
+                fetcher.stop()
+                fetcher.quit()
+                fetcher.wait()
+            except Exception:
+                pass
+        self._tp_fetchers = []
 
     def _on_splitter_moved(self, pos: int, index: int):
         if self._current_pixmap is not None and self.image_label.isVisible():
