@@ -216,7 +216,23 @@ def _resolve_real_ips(hosts: set) -> dict:
 
 
 def _flush_dns() -> None:
-    """Flush Windows DNS client cache so the hosts file changes take effect immediately."""
+    """Flush Windows DNS client cache so the hosts file changes take effect immediately.
+
+    Calls ``DnsFlushResolverCache`` in *dnsapi.dll* directly via ctypes first.
+    This is an in-process call — no subprocess is spawned — so security software
+    that blocks child-process creation (e.g. Webroot SecureAnywhere / WRSVC)
+    cannot interfere with it.  Falls back to ``ipconfig /flushdns`` only if the
+    DLL call itself raises an exception (e.g. on a non-Windows build environment).
+    """
+    # Primary: in-process DLL call — fast, no subprocess, immune to AV process blocks.
+    try:
+        ctypes.windll.LoadLibrary('dnsapi.dll').DnsFlushResolverCache()
+        log_buffer.log('Hosts', 'DNS cache flushed')
+        return
+    except Exception as exc:
+        log_buffer.log('Hosts', f'DnsFlushResolverCache failed, falling back to ipconfig: {exc}')
+
+    # Fallback: subprocess (may be blocked or slow under security software).
     try:
         subprocess.run(
             ['ipconfig', '/flushdns'],
@@ -224,7 +240,7 @@ def _flush_dns() -> None:
             creationflags=subprocess.CREATE_NO_WINDOW,
             timeout=5,
         )
-        log_buffer.log('Hosts', 'DNS cache flushed')
+        log_buffer.log('Hosts', 'DNS cache flushed (via ipconfig fallback)')
     except Exception as exc:
         log_buffer.log('Hosts', f'DNS flush failed (non-fatal): {exc}')
 
