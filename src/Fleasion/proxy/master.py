@@ -877,6 +877,7 @@ class ProxyMaster:
 
         # ── Create addon instances ────────────────────────────────────────
         self._texture_stripper = TextureStripper(self.config_manager)
+        self._texture_stripper.set_cache_scraper(self.cache_scraper)
         # Give the scraper real IPs for ALL intercepted hosts so its API
         # calls bypass our hosts file redirect (including CDN redirects).
         scraper_ips = {
@@ -941,6 +942,17 @@ class ProxyMaster:
         log_buffer.log('Info', f'Port: {PROXY_PORT}')
         log_buffer.log('Info', 'Launch Roblox')
         log_buffer.log('Info', '=' * 50)
+
+        # ── Pre-download private replacement assets in background ─────────
+        # Runs eagerly at startup so pre-downloaded files are ready before
+        # Roblox sends its first batch request.
+        if self._texture_stripper is not None:
+            _precheck_thread = threading.Thread(
+                target=self._texture_stripper.precheck_replacements,
+                name='ReplacementPrecheck',
+                daemon=True,
+            )
+            _precheck_thread.start()
 
         # ── Run until the server is stopped ──────────────────────────────
         try:

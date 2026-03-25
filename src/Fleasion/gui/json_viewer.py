@@ -156,12 +156,11 @@ class AssetFetcherThread(QThread):
             if isinstance(val, int) or (isinstance(val, str) and str(val).strip().lstrip('-').isdigit()):
                 cookie = self._get_roblosecurity()
                 extra = {'Cookie': f'.ROBLOSECURITY={cookie};' } if cookie else None
+                status = None
 
                 if scraper is not None:
-                    data = scraper._https_get(
-                        'assetdelivery.roblox.com',
-                        f'/v1/asset/?id={val}',
-                        extra_headers=extra,
+                    data, status = scraper._fetch_asset_with_place_id_retry(
+                        str(val), extra_headers=extra,
                     )
                 else:
                     import requests as _req
@@ -170,14 +169,66 @@ class AssetFetcherThread(QThread):
                         headers.update(extra)
                     r = _req.get(f'https://assetdelivery.roblox.com/v1/asset/?id={val}',
                                  headers=headers, timeout=15)
+                    status = r.status_code
                     data = r.content if r.status_code == 200 else None
+                    # Attempt place-ID retry on 403 via inline logic
+                    if data is None and r.status_code == 403:
+                        try:
+                            info_r = _req.get(
+                                f'https://develop.roblox.com/v1/assets?assetIds={val}',
+                                headers={'Accept': 'application/json',
+                                         **(extra or {})},
+                                timeout=10,
+                            )
+                            if info_r.status_code == 200:
+                                items = info_r.json().get('data', [])
+                                if items:
+                                    cr = items[0].get('creator') or {}
+                                    cid = cr.get('targetId') or items[0].get('creatorTargetId')
+                                    ctype = cr.get('typeId') or items[0].get('creatorType')
+                                    if cid is not None and ctype is not None:
+                                        cid, ctype = int(cid), int(ctype)
+                                        g_paths = ([f'/v2/users/{cid}/games?sortOrder=Asc&limit=100']
+                                                    if ctype == 1 else
+                                                    [f'/v2/groups/{cid}/gamesV2?accessFilter=2&limit=100&sortOrder=Asc',
+                                                     f'/v2/groups/{cid}/gamesV2?accessFilter=1&limit=100&sortOrder=Asc'])
+                                        seen_pids = set()
+                                        for g_path in g_paths:
+                                            g_r = _req.get(f'https://games.roblox.com{g_path}',
+                                                           headers={'Accept': 'application/json'},
+                                                           timeout=10)
+                                            if g_r.status_code == 200:
+                                                games = g_r.json().get('data', [])
+                                                for game in games:
+                                                    rp = game.get('rootPlace')
+                                                    if rp and rp.get('id'):
+                                                        pid = int(rp['id'])
+                                                        if pid in seen_pids:
+                                                            continue
+                                                        seen_pids.add(pid)
+                                                        retry_h = {**headers, 'Roblox-Place-Id': str(pid)}
+                                                        r2 = _req.get(
+                                                            f'https://assetdelivery.roblox.com/v1/asset/?id={val}',
+                                                            headers=retry_h, timeout=15)
+                                                        status = r2.status_code
+                                                        if r2.status_code == 200 and r2.content:
+                                                            data = r2.content
+                                                            break  # Found working place ID
+                                            if data:
+                                                break  # Stop trying paths
+                        except Exception:
+                            pass
 
                 if self._stop_requested:
                     return
                 if data:
                     self.data_ready.emit(data)
+                elif status == 404:
+                    self.error.emit('Asset not found (deleted or invalid ID)')
+                elif status == 403:
+                    self.error.emit('Asset is privated (could not bypass)')
                 else:
-                    self.error.emit('No data returned (Asset may be privated)')
+                    self.error.emit('No data returned (Asset may be deleted or privated)')
 
             elif isinstance(val, str) and (val.startswith('http://') or val.startswith('https://')):
                 from urllib.parse import urlparse as _up
@@ -204,7 +255,7 @@ class AssetFetcherThread(QThread):
                 if data:
                     self.data_ready.emit(data)
                 else:
-                    self.error.emit('No data returned (Asset may be privated)')
+                    self.error.emit('No data returned (Asset may be deleted or privated)')
             else:
                 self.error.emit(f'Cannot fetch: {val}')
         except Exception as e:

@@ -181,7 +181,8 @@ class CacheScraper:
         log_buffer.log('Cache', f'API bypass configured for: {list(real_ips.keys())}')
 
     def _https_get(self, hostname: str, path: str, extra_headers: dict | None = None,
-                   timeout: float = 8.0, max_redirects: int = 6) -> bytes | None:
+                   timeout: float = 8.0, max_redirects: int = 6,
+                   return_status: bool = False) -> 'bytes | None | tuple[bytes | None, int | None]':
         """Make an HTTPS GET request, bypassing our hosts file by connecting to the
         real IP while passing the original hostname as SNI and Host header.
 
@@ -271,20 +272,204 @@ class CacheScraper:
                                 data, max_output_size=32 * 1024 * 1024)
                         except Exception:
                             pass
-                    return data if data else None
+                    result = data if data else None
+                    return (result, 200) if return_status else result
 
+                status = resp.status
                 resp.read()
                 ssl_sock.close()
-                return None
+                return (None, status) if return_status else None
             except Exception as exc:
                 try:
                     ssl_sock.close()
                 except Exception:
                     pass
                 log_buffer.log('Cache', f'HTTP error {cur_hostname}: {exc}')
-                return None
+                return (None, None) if return_status else None
 
-        return None  # too many redirects
+        return (None, None) if return_status else None  # too many redirects
+
+    # ------------------------------------------------------------------
+    # Creator place-ID cache (class-level, shared across threads)
+    # ------------------------------------------------------------------
+    _creator_place_cache: dict[int, list[int]] = {}
+    # Fast-path: creator_id -> last place_id that successfully downloaded an asset.
+    # Avoids re-iterating the full games list for the same creator.
+    _creator_last_success: dict[int, int] = {}
+
+    def _fetch_creator_info(self, asset_id: str) -> tuple[int | None, int | None]:
+        """Look up the creator ID and type for an asset via develop.roblox.com.
+
+        Returns (creator_id, creator_type) or (None, None).
+        creator_type: 1 = User, 2 = Group.
+        """
+        try:
+            cookie = self._get_roblosecurity()
+            extra = {'Accept': 'application/json'}
+            if cookie:
+                extra['Cookie'] = f'.ROBLOSECURITY={cookie};'
+            raw = self._https_get(
+                'develop.roblox.com',
+                f'/v1/assets?assetIds={asset_id}',
+                extra_headers=extra,
+            )
+            if not raw:
+                return None, None
+            import json as _json
+            data = _json.loads(raw).get('data', [])
+            if not data:
+                return None, None
+            item = data[0]
+            creator_obj = item.get('creator') or {}
+            creator_id = creator_obj.get('targetId') or item.get('creatorTargetId')
+            creator_type = creator_obj.get('typeId') or item.get('creatorType')
+            if creator_id is not None:
+                creator_id = int(creator_id)
+            if creator_type is not None:
+                creator_type = int(creator_type)
+            return creator_id, creator_type
+        except Exception as exc:
+            log_buffer.log('Cache', f'Creator info lookup failed for {asset_id}: {exc}')
+            return None, None
+
+    def _fetch_place_ids_for_creator(self, creator_id: int, creator_type: int) -> list[int]:
+        """Get place IDs owned by the given creator, trying multiple pages.
+
+        Uses games.roblox.com which is public and needs no auth.
+        Returns a list of rootPlace.id values (may be empty).
+        """
+        # Check cache first
+        if creator_id in self._creator_place_cache:
+            cached = self._creator_place_cache[creator_id]
+            return cached if isinstance(cached, list) else ([cached] if cached else [])
+
+        try:
+            if creator_type == 1:  # User
+                host = 'games.roblox.com'
+                base_paths = [f'/v2/users/{creator_id}/games?sortOrder=Asc&limit=100']
+            elif creator_type == 2:  # Group
+                # Scan public (non-hidden) games first — they're much more likely
+                # to contain the asset.  Only fall back to ALL games (including
+                # hidden/private) when the public set comes up empty or none of
+                # its place IDs succeed later.
+                host = 'games.roblox.com'
+                base_paths = [
+                    f'/v2/groups/{creator_id}/gamesV2?accessFilter=2&limit=100&sortOrder=Asc',  # public
+                    f'/v2/groups/{creator_id}/gamesV2?accessFilter=1&limit=100&sortOrder=Asc',  # all (hidden too)
+                ]
+            else:
+                self._creator_place_cache[creator_id] = []
+                return []
+
+            place_ids: list[int] = []
+            seen: set[int] = set()
+            cursor = ''
+            # Paginate through up to 3 pages per base path (300 games max with limit=100)
+            for base_path in base_paths:
+                cursor = ''
+                for _page in range(3):
+                    path = base_path + (f'&cursor={cursor}' if cursor else '')
+                    raw = self._https_get(host, path, extra_headers={'Accept': 'application/json'})
+                    if not raw:
+                        break
+
+                    import json as _json
+                    resp = _json.loads(raw)
+                    games = resp.get('data', [])
+                    for game in games:
+                        root_place = game.get('rootPlace')
+                        if root_place and root_place.get('id'):
+                            pid = int(root_place['id'])
+                            if pid not in seen:
+                                place_ids.append(pid)
+                                seen.add(pid)
+
+                    cursor = resp.get('nextPageCursor') or ''
+                    if not cursor:
+                        break
+
+            self._creator_place_cache[creator_id] = place_ids
+            if place_ids:
+                log_buffer.log('Cache', f'Found {len(place_ids)} place(s) for creator {creator_id}')
+            else:
+                log_buffer.log('Cache', f'No games found for creator {creator_id}')
+            return place_ids
+        except Exception as exc:
+            log_buffer.log('Cache', f'Place ID lookup failed for creator {creator_id}: {exc}')
+            self._creator_place_cache[creator_id] = []
+            return []
+
+    def _fetch_asset_with_place_id_retry(
+        self, asset_id: str, extra_headers: dict | None = None,
+    ) -> tuple[bytes | None, int | None]:
+        """Download an asset, retrying with Roblox-Place-Id on 403.
+
+        Tries ALL place IDs from the creator's games list until one works,
+        since only the specific game that uses the asset will grant access.
+
+        Returns (data, status_code). status_code is the final HTTP status
+        (200 on success, 403/404/etc on failure).
+        """
+        hdrs = dict(extra_headers) if extra_headers else {}
+        data, status = self._https_get(
+            'assetdelivery.roblox.com',
+            f'/v1/asset/?id={asset_id}',
+            extra_headers=hdrs or None,
+            return_status=True,
+        )
+        if data:
+            return data, status
+
+        if status != 403:
+            return None, status
+
+        # 403 — attempt place-ID bypass
+        log_buffer.log('Cache', f'Asset {asset_id} returned 403, looking up creator...')
+        creator_id, creator_type = self._fetch_creator_info(asset_id)
+        if creator_id is None:
+            log_buffer.log('Cache', f'Could not resolve creator for asset {asset_id}')
+            return None, 403
+
+        place_ids = self._fetch_place_ids_for_creator(creator_id, creator_type)
+        if not place_ids:
+            log_buffer.log('Cache', f'No places found for creator {creator_id} of asset {asset_id}')
+            return None, 403
+
+        # Fast-path: if we previously succeeded with a place ID for this creator,
+        # try it first before iterating the full list.
+        last_success = self._creator_last_success.get(creator_id)
+        if last_success is not None and last_success in place_ids:
+            log_buffer.log('Cache', f'Trying cached place {last_success} for asset {asset_id}')
+            retry_hdrs = {**hdrs, 'Roblox-Place-Id': str(last_success)}
+            data, status = self._https_get(
+                'assetdelivery.roblox.com',
+                f'/v1/asset/?id={asset_id}',
+                extra_headers=retry_hdrs,
+                return_status=True,
+            )
+            if data:
+                log_buffer.log('Cache', f'Successfully downloaded privated asset {asset_id} (cached place {last_success})')
+                return data, status
+
+        # Try each place ID until one works
+        for place_id in place_ids:
+            if place_id == last_success:
+                continue  # Already tried above
+            log_buffer.log('Cache', f'Trying asset {asset_id} with Roblox-Place-Id: {place_id}')
+            retry_hdrs = {**hdrs, 'Roblox-Place-Id': str(place_id)}
+            data, status = self._https_get(
+                'assetdelivery.roblox.com',
+                f'/v1/asset/?id={asset_id}',
+                extra_headers=retry_hdrs,
+                return_status=True,
+            )
+            if data:
+                log_buffer.log('Cache', f'Successfully downloaded privated asset {asset_id} (place {place_id})')
+                self._creator_last_success[creator_id] = place_id
+                return data, status
+
+        log_buffer.log('Cache', f'All {len(place_ids)} place IDs failed for asset {asset_id}')
+        return None, 403
 
     def _fetch_from_api(self, asset_id: str) -> bytes | None:
         """Fetch asset from Roblox delivery API for KTX->PNG / TexturePack conversion.
@@ -295,17 +480,15 @@ class CacheScraper:
 
         Uses _https_get() which connects by real IP with correct SNI so the
         CDN TLS handshake succeeds regardless of our hosts file entries.
+        Uses place-ID retry for privated assets.
         """
         try:
             cookie = self._get_roblosecurity()
             extra = {}
             if cookie:
                 extra['Cookie'] = f'.ROBLOSECURITY={cookie};'
-            return self._https_get(
-                'assetdelivery.roblox.com',
-                f'/v1/asset/?id={asset_id}',
-                extra_headers=extra or None,
-            )
+            data, _status = self._fetch_asset_with_place_id_retry(asset_id, extra_headers=extra or None)
+            return data
         except Exception as exc:
             log_buffer.log('Cache', f'API fetch error for {asset_id}: {exc}')
         return None

@@ -168,6 +168,119 @@ class TextureStripper:
 
     def __init__(self, config_manager) -> None:
         self.config_manager = config_manager
+        self._cache_scraper = None  # Set by ProxyMaster after construction
+
+    def set_cache_scraper(self, scraper) -> None:
+        """Wire in the CacheScraper for place-ID lookups on replacement assets."""
+        self._cache_scraper = scraper
+
+    # Pre-downloaded private replacement assets: replacement_id -> local file path.
+    # Populated eagerly at proxy startup by precheck_replacements().
+    _predownloaded: Dict[int, str] = {}
+    # IDs confirmed publicly accessible (no pre-download needed).
+    _checked_public: set = set()
+
+    _PREDOWNLOAD_DIR: Path = APP_CACHE_DIR / 'predownloaded'
+
+    def precheck_replacements(self) -> None:
+        """Eagerly check all replacement asset IDs and pre-download private ones.
+
+        Called in a background thread at proxy startup. For each ID-based
+        replacement target, tests accessibility:
+          - 200 → public, normal ID swap will work, skip.
+          - 403 → private, download via place-ID bypass, save to disk.
+          - 404 → deleted/invalid, log warning.
+
+        Pre-downloaded files are served as local file replacements so the
+        batch request body stays unmodified (no placeId injection needed).
+        """
+        scraper = self._cache_scraper
+        if scraper is None:
+            log_buffer.log('Replacer', 'No scraper wired — skipping replacement precheck')
+            return
+
+        replacements_tuple = self.config_manager.get_all_replacements()
+        replacements = replacements_tuple[0]  # dict[int, int]: original -> replacement
+        if not replacements:
+            return
+
+        # Deduplicate: multiple originals can map to the same replacement ID
+        unique_targets = set(replacements.values())
+        log_buffer.log('Replacer', f'Pre-checking {len(unique_targets)} replacement asset(s)...')
+
+        self._PREDOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+        cookie = scraper._get_roblosecurity()
+        extra: dict = {}
+        if cookie:
+            extra['Cookie'] = f'.ROBLOSECURITY={cookie};'
+
+        public_count = 0
+        private_count = 0
+        failed_count = 0
+
+        for target_id in unique_targets:
+            if int(target_id) in self._predownloaded:
+                continue  # Already handled (e.g. from a previous call)
+
+            local_path = self._PREDOWNLOAD_DIR / f'{target_id}.dat'
+            legacy_path = self._PREDOWNLOAD_DIR / f'{target_id}.bin'
+
+            # If file already exists on disk from a previous session, reuse it.
+            # Check both new (.dat) and legacy (.bin) extension.
+            if legacy_path.exists() and legacy_path.stat().st_size > 0:
+                legacy_path.rename(local_path)
+            if local_path.exists() and local_path.stat().st_size > 0:
+                self._predownloaded[int(target_id)] = str(local_path)
+                private_count += 1
+                log_buffer.log('Replacer', f'Reusing cached pre-download for {target_id}')
+                continue
+
+            # Quick accessibility check — needs auth cookie just to use the API.
+            # A 200 here means the asset is publicly downloadable (no place-ID
+            # needed); the cookie is required for API auth, not ownership.
+            _data, status = scraper._https_get(
+                'assetdelivery.roblox.com',
+                f'/v1/asset/?id={target_id}',
+                extra_headers=dict(extra) if extra else None,
+                return_status=True,
+            )
+            if _data:
+                # 200 — publicly accessible, normal ID swap will work
+                self._checked_public.add(int(target_id))
+                public_count += 1
+                continue
+
+            if status == 404:
+                log_buffer.log('Replacer', f'Replacement asset {target_id} not found (404) — skipping')
+                failed_count += 1
+                continue
+
+            if status != 403:
+                log_buffer.log('Replacer', f'Replacement asset {target_id} returned status {status} — skipping')
+                failed_count += 1
+                continue
+
+            # 403 — private asset, download via place-ID bypass
+            log_buffer.log('Replacer', f'Replacement asset {target_id} is private, pre-downloading...')
+            data, dl_status = scraper._fetch_asset_with_place_id_retry(
+                str(target_id), extra_headers=dict(extra) if extra else None,
+            )
+            if data:
+                try:
+                    local_path.write_bytes(data)
+                    self._predownloaded[int(target_id)] = str(local_path)
+                    private_count += 1
+                    log_buffer.log('Replacer', f'Pre-downloaded private asset {target_id} ({len(data)} bytes)')
+                except Exception as exc:
+                    log_buffer.log('Replacer', f'Failed to save pre-download for {target_id}: {exc}')
+                    failed_count += 1
+            else:
+                log_buffer.log('Replacer', f'Could not pre-download private asset {target_id} (status {dl_status})')
+                failed_count += 1
+
+        log_buffer.log('Replacer',
+                       f'Pre-check complete: {public_count} public, {private_count} private (pre-downloaded), {failed_count} failed')
 
     # ------------------------------------------------------------------
     # Batch request (called from server MITM thread)
@@ -185,6 +298,29 @@ class TextureStripper:
             return body
 
         replacements, removals, cdn_replacements, local_replacements = replacements_tuple
+
+        # Move pre-downloaded private replacements into local_replacements so
+        # they follow the exact same code path as user-configured local files
+        # (keeps batch body unmodified, CDN URL mapped at response time).
+        if self._predownloaded:
+            replacements = dict(replacements)
+            local_replacements = dict(local_replacements)
+            for orig_id, repl_id in list(replacements.items()):
+                predownloaded = self._predownloaded.get(int(repl_id))
+                if predownloaded is not None:
+                    del replacements[orig_id]
+                    local_replacements[orig_id] = predownloaded
+
+        # If any replacement targets are newly added (not yet checked),
+        # trigger a background precheck so the next batch can serve them locally.
+        if replacements and self._cache_scraper is not None:
+            unknown = {int(v) for v in replacements.values()
+                       if int(v) not in self._predownloaded and int(v) not in self._checked_public}
+            if unknown:
+                import threading as _thr
+                _thr.Thread(target=self.precheck_replacements,
+                            name='ReplacementPrecheck', daemon=True).start()
+
         modified = False
 
         orig_len = len(data)
@@ -210,8 +346,9 @@ class TextureStripper:
                         matched = tk
                         break
             if matched is not None:
-                e['assetId'] = replacements[matched]
-                log_buffer.log('Replacer', f'Replaced {aid} -> {replacements[matched]}')
+                replacement_id = replacements[matched]
+                e['assetId'] = replacement_id
+                log_buffer.log('Replacer', f'Replaced {aid} -> {replacement_id}')
                 modified = True
 
             # CDN / local routing
