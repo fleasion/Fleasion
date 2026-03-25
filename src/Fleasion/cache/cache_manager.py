@@ -563,7 +563,7 @@ class CacheManager:
         elif data.startswith(b'version '):
             return '.mesh'
         elif data.startswith(b'<roblox'):
-            return '.rbxmx'
+            return '.rbxl' if asset_type == 9 else '.rbxmx'
         elif data.startswith(b'\xABKTX'):
             return '.ktx'
         elif data.startswith(b'\x1f\x8b'):

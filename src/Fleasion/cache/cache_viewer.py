@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QMenu, QScrollArea, QGridLayout, QFrame, QDialog
 )
 from PyQt6.QtWidgets import QWidgetAction
-from PyQt6.QtGui import QPixmap, QImage, QAction, QCursor
+from PyQt6.QtGui import QPixmap, QImage, QAction, QCursor, QFont, QFontDatabase
 from PIL import Image
 import io
 import threading
@@ -1693,6 +1693,8 @@ class CacheViewerTab(QWidget):
         self.text_viewer.setReadOnly(True)
         self.text_viewer.setPlaceholderText('Select an asset to preview')
         self.preview_container_layout.addWidget(self.text_viewer)
+        self._text_viewer_default_font = self.text_viewer.font()
+        self._text_viewer_default_wrap = QTextEdit.LineWrapMode.WidgetWidth
 
         # JSON viewer for JSON files
         self.json_viewer = CacheJsonViewer()
@@ -4037,10 +4039,15 @@ class CacheViewerTab(QWidget):
             hex_lines.append(f'\n... ({len(data) - preview_size} more bytes)')
 
         self._show_text_preview('\n'.join(hex_lines))
+        mono_font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+        self.text_viewer.setFont(mono_font)
+        self.text_viewer.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
 
     def _show_text_preview(self, text: str):
         """Show text in the text viewer."""
         self._hide_loading()
+        self.text_viewer.setFont(self._text_viewer_default_font)
+        self.text_viewer.setLineWrapMode(self._text_viewer_default_wrap)
         self.text_viewer.setPlainText(text)
         self.text_viewer.show()
         self.stop_preview_btn.show()
