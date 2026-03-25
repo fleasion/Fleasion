@@ -27,6 +27,7 @@ import logging
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import winreg
@@ -390,6 +391,75 @@ def _is_admin() -> bool:
 # Hosts file management
 # ---------------------------------------------------------------------------
 
+_HOSTS_WRITE_RETRIES = 8
+_HOSTS_WRITE_DELAY   = 0.25  # seconds between direct-write retries
+
+
+def _write_hosts_file(content: str) -> None:
+    """Write *content* to the system hosts file, working around security
+    software (e.g. Webroot SecureAnywhere / WRSVC) that intermittently or
+    persistently locks the hosts file against direct writes.
+
+    Strategy (applied in order):
+      1. Retry direct write up to *_HOSTS_WRITE_RETRIES* times with a short
+         delay.  This handles brief/scan-time locks held by AV drivers.
+      2. Write to a temporary file in the same directory, then use
+         ``os.replace()`` (an atomic rename).  Rename is a directory-entry
+         operation that bypasses file-content write filters used by some
+         security products.
+
+    Raises ``OSError`` if both strategies are exhausted.
+    """
+    last_exc: OSError | None = None
+
+    # --- Strategy 1: direct write with retries ---
+    for attempt in range(_HOSTS_WRITE_RETRIES):
+        try:
+            HOSTS_FILE.write_text(content, encoding='utf-8')
+            return
+        except PermissionError as exc:
+            last_exc = exc
+            if attempt < _HOSTS_WRITE_RETRIES - 1:
+                log_buffer.log(
+                    'Hosts',
+                    f'Hosts write blocked (attempt {attempt + 1}/{_HOSTS_WRITE_RETRIES}), '
+                    f'retrying in {_HOSTS_WRITE_DELAY * 1000:.0f} ms '
+                    f'(security software may be holding a lock)…',
+                )
+                time.sleep(_HOSTS_WRITE_DELAY)
+        except OSError as exc:
+            raise  # non-permission errors are not retryable
+
+    # --- Strategy 2: temp-file + atomic rename ---
+    log_buffer.log(
+        'Hosts',
+        f'Direct write failed after {_HOSTS_WRITE_RETRIES} attempts — '
+        'attempting atomic rename workaround for security software lock…',
+    )
+    try:
+        hosts_dir = HOSTS_FILE.parent
+        fd, tmp_path = tempfile.mkstemp(dir=hosts_dir, prefix='.fleasion_hosts_')
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as fh:
+                fh.write(content)
+            os.replace(tmp_path, HOSTS_FILE)  # atomic on Windows (MoveFileExW)
+            log_buffer.log('Hosts', 'Hosts file updated via atomic rename (security software workaround)')
+            return
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+    except OSError as exc:
+        raise PermissionError(
+            f'Cannot write hosts file — all strategies exhausted. '
+            f'If Webroot or another security product is installed, try adding '
+            f'Fleasion to its exclusions list. Last direct-write error: {last_exc}; '
+            f'rename error: {exc}'
+        ) from exc
+
+
 def _add_hosts_entries(hosts: Set[str]) -> bool:
     """Append redirect entries for *hosts* to the system hosts file.
 
@@ -424,7 +494,7 @@ def _add_hosts_entries(hosts: Set[str]) -> bool:
             '#\t::1             localhost\n'
         )
         try:
-            HOSTS_FILE.write_text(existing, encoding='utf-8')
+            _write_hosts_file(existing)
             log_buffer.log('Hosts', 'hosts file was missing — created new default hosts file')
         except OSError as exc:
             log_buffer.log('Hosts', f'Failed to create hosts file: {exc}')
@@ -445,12 +515,12 @@ def _add_hosts_entries(hosts: Set[str]) -> bool:
 
     new_content = existing.rstrip('\n') + '\n' + '\n'.join(lines_to_add) + '\n'
     try:
-        HOSTS_FILE.write_text(new_content, encoding='utf-8')
+        _write_hosts_file(new_content)
         for host in sorted(hosts):
             log_buffer.log('Hosts', f'Added redirect: {host} -> 127.0.0.1')
         return True
-    except PermissionError:
-        log_buffer.log('Hosts', 'Permission denied writing hosts file - run as Administrator')
+    except PermissionError as exc:
+        log_buffer.log('Hosts', f'Permission denied writing hosts file: {exc}')
         return False
     except OSError as exc:
         log_buffer.log('Hosts', f'Failed to write hosts file: {exc}')
@@ -476,7 +546,7 @@ def _remove_hosts_entries(hosts: Set[str]) -> None:
         return  # nothing to remove
 
     try:
-        HOSTS_FILE.write_text(''.join(filtered), encoding='utf-8')
+        _write_hosts_file(''.join(filtered))
         log_buffer.log('Hosts', 'Removed proxy hosts entries')
     except OSError as exc:
         log_buffer.log('Hosts', f'Failed to clean hosts file: {exc}')
