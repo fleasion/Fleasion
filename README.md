@@ -36,13 +36,9 @@ uv run Fleasion
 
 ### Building a Standalone Executable
 
-To build a standalone executable, within the "Fleasion" folder:
+To build a standalone executable, within the "Fleasion" folder, run:
 
 ```bash
-# Install PyInstaller
-uv add pyinstaller --dev
-
-# Build
 uv run pyinstaller Fleasion.spec
 ```
 
