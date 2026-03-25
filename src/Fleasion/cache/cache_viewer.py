@@ -1785,6 +1785,21 @@ class CacheViewerTab(QWidget):
         # Get assets
         assets = self.cache_manager.list_assets(filter_types)
 
+        # Ensure all assets have _asset_info entries so the background name
+        # resolver can discover and resolve them even when a search filter
+        # hides them from the table.
+        for a in assets:
+            aid = a['id']
+            if aid not in self._asset_info:
+                self._asset_info[aid] = {
+                    'hash': a.get('hash', ''),
+                    'resolved_name': None,
+                    'creator_id': None,
+                    'creator_name': None,
+                    'creator_type': None,
+                    'row': None,
+                }
+
         # For empty search, show all immediately
         if not search_text:
             self._populate_table(assets)
@@ -2248,6 +2263,11 @@ class CacheViewerTab(QWidget):
             self.table.setUpdatesEnabled(True)
             self.table.viewport().update()
 
+        # If a search is active, re-run it so that assets whose names were
+        # just resolved (and now match the query) appear in the results.
+        if self.search_box.text().strip():
+            self._search_debounce.start(400)
+
     def _update_row_name(self, asset_id: str, name: str):
         """Update a single row's name cell (thread-safe via QTimer)."""
         info = self._asset_info.get(asset_id)
@@ -2512,17 +2532,21 @@ class CacheViewerTab(QWidget):
                 continue
 
             # Build pending list - assets without resolved names
-            # OPTIMIZATION: Only resolve assets currently in visible rows (not filtered/scrolled off)
-            # This reduces unnecessary API calls and focuses on assets the user can see.
-            # When rows are filtered/hidden, their row >= rowCount, so they're skipped temporarily.
-            # When filter is removed or user scrolls back, they'll be added to pending again.
-            pending = [
-                asset_id
-                for asset_id, info in self._asset_info.items()
-                if info.get('resolved_name') is None 
-                   and info.get('row') is not None
-                   and info.get('row') < self.table.rowCount()  # Only visible rows
-            ]
+            # Build pending list - assets without resolved names.
+            # Prioritise assets in visible rows, then resolve the rest so that
+            # search-by-name works even for assets not currently displayed.
+            _row_count = self.table.rowCount()
+            visible = []
+            hidden = []
+            for asset_id, info in self._asset_info.items():
+                if info.get('resolved_name') is not None:
+                    continue
+                row = info.get('row')
+                if row is not None and row < _row_count:
+                    visible.append(asset_id)
+                else:
+                    hidden.append(asset_id)
+            pending = visible + hidden
 
             
 

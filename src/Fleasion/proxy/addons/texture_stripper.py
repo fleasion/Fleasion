@@ -286,10 +286,15 @@ class TextureStripper:
     # Batch request (called from server MITM thread)
     # ------------------------------------------------------------------
 
-    def process_batch_request(self, body: bytes, req_headers: dict, replacements_tuple: tuple, batch_id: str = '') -> bytes:
-        """Modify batch JSON: removals, ID replacements, CDN/local routing."""
+    def process_batch_request(self, body: bytes, req_headers: dict, replacements_tuple: tuple, batch_id: str = '') -> tuple[bytes, bytes]:
+        """Modify batch JSON: removals, ID replacements, CDN/local routing.
+
+        Returns ``(modified_body, scraper_body)`` where *scraper_body* has
+        the original asset IDs restored (index-aligned with the upstream
+        response) so the cache scraper stores content under original IDs.
+        """
         if not body:
-            return body
+            return body, body
         try:
             data = _loads(body)
         except Exception:
@@ -322,6 +327,9 @@ class TextureStripper:
                             name='ReplacementPrecheck', daemon=True).start()
 
         modified = False
+        # Track original IDs for items that undergo ID replacement so the
+        # scraper body can be built with original IDs after the loop.
+        id_swapped: dict[int, int] = {}   # index → original_aid
 
         orig_len = len(data)
         data = [e for e in data if isinstance(e, dict) and not self._should_remove(e, removals)]
@@ -329,7 +337,7 @@ class TextureStripper:
             log_buffer.log('Remover', f'Removed {orig_len - len(data)} asset(s)')
             modified = True
 
-        for e in data:
+        for idx, e in enumerate(data):
             if not isinstance(e, dict):
                 continue
             aid = e.get('assetId')
@@ -348,6 +356,7 @@ class TextureStripper:
             if matched is not None:
                 replacement_id = replacements[matched]
                 e['assetId'] = replacement_id
+                id_swapped[idx] = aid
                 log_buffer.log('Replacer', f'Replaced {aid} -> {replacement_id}')
                 modified = True
 
@@ -365,8 +374,17 @@ class TextureStripper:
                     self._route_local(f'{batch_id}_{req_id}', aid, local_replacements[local_key], is_solidmodel)
 
         if modified:
-            return _dumps(data)
-        return body
+            result = _dumps(data)
+            # Build scraper body: same structure but with original IDs restored
+            # so the cache scraper stores content under the original asset IDs.
+            if id_swapped:
+                for i, orig_aid in id_swapped.items():
+                    data[i]['assetId'] = orig_aid
+                scraper_body = _dumps(data)
+            else:
+                scraper_body = result
+            return result, scraper_body
+        return body, body
 
     # ------------------------------------------------------------------
     # Batch response (called from server MITM thread)

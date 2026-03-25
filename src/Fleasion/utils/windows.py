@@ -136,11 +136,18 @@ def delete_cache() -> list[str]:
     else:
         messages.append('Storage folder not found')
 
-    # Delete Fleasion APP_CACHE_DIR
+    # Delete Fleasion APP_CACHE_DIR (preserve predownloaded/ used by proxy)
     from .paths import APP_CACHE_DIR
     if APP_CACHE_DIR.exists():
         try:
-            shutil.rmtree(APP_CACHE_DIR)
+            _preserve = APP_CACHE_DIR / 'predownloaded'
+            for child in APP_CACHE_DIR.iterdir():
+                if child == _preserve:
+                    continue
+                if child.is_dir():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
             messages.append('Fleasion obj cache deleted successfully')
         except PermissionError:
             messages.append('Failed to delete obj cache: Permission denied')

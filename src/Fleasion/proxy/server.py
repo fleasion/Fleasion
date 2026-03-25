@@ -449,7 +449,7 @@ class FleasionProxy:
                 # _pending, skipped the wait, and forwarded unreplaced assets. Running
                 # synchronously ensures _pending is populated before any CDN coroutine
                 # can check has_pending().
-                req_body_modified = self.texture_stripper.process_batch_request(
+                req_body_modified, scraper_body = self.texture_stripper.process_batch_request(
                     req_body_plain, req_headers, replacements_tuple, batch_id,
                 )
                 up_writer.write(_build_modified_request(req_first, req_headers, req_body_modified))
@@ -491,7 +491,7 @@ class FleasionProxy:
                 )
                 if self.cache_scraper.enabled:
                     self.cache_scraper.process_batch_response(
-                        req_body_modified,
+                        scraper_body,
                         resp_body_plain,
                     )
 

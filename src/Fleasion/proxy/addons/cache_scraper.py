@@ -45,8 +45,8 @@ class CacheScraper:
         self._lock = Lock()
         # asset_id -> {'location': str, 'assetTypeId': int, 'cached'?: True}
         self.cache_logs: dict = {}
-        # base CDN URL (no query) -> asset_id  (O(1) lookup)
-        self._url_to_asset: dict = {}
+        # base CDN URL (no query) -> list[asset_id]  (1:many – same replacement ID → same CDN URL)
+        self._url_to_asset: dict[str, list] = {}
 
         # Background thread pool for API conversion (KTX->PNG etc.)
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='cache_api')
@@ -76,6 +76,11 @@ class CacheScraper:
             return
 
         tracked = 0
+        # Late joiners: newly tracked assets whose CDN URL already has a
+        # cached sibling from a previous batch.  The Roblox client won't
+        # re-fetch the CDN URL, so we must copy the content ourselves.
+        to_copy: list[tuple] = []  # (source_id, dest_id, asset_type, url)
+
         with self._lock:
             for idx, item in enumerate(req_json):
                 if not isinstance(item, dict) or 'assetId' not in item:
@@ -93,8 +98,33 @@ class CacheScraper:
                 if location is not None and asset_type is not None:
                     self.cache_logs[asset_id] = {'location': location, 'assetTypeId': asset_type}
                     base_url = location.split('?')[0]
-                    self._url_to_asset[base_url] = asset_id
+                    url_list = self._url_to_asset.setdefault(base_url, [])
+
+                    # Check if a sibling for this CDN URL is already cached
+                    # (from a previous batch).  If so, mark this one cached and
+                    # schedule a content copy instead of waiting for a CDN
+                    # response that will never arrive.
+                    cached_sibling = None
+                    for sibling_id in url_list:
+                        sibling_info = self.cache_logs.get(sibling_id)
+                        if sibling_info and 'cached' in sibling_info:
+                            cached_sibling = sibling_id
+                            break
+                    if cached_sibling is not None:
+                        self.cache_logs[asset_id]['cached'] = True
+                        to_copy.append((cached_sibling, asset_id, asset_type, location))
+
+                    url_list.append(asset_id)
                     tracked += 1
+
+        # Submit copy tasks outside the lock
+        for source_id, dest_id, asset_type, url in to_copy:
+            try:
+                self._executor.submit(
+                    self._copy_cached_asset, source_id, dest_id, asset_type, url,
+                )
+            except RuntimeError as exc:
+                log_buffer.log('Cache', f'Failed to submit copy task: {exc}')
 
         if tracked > 0:
             log_buffer.log('Cache', f'Tracking {tracked} asset(s) for caching')
@@ -111,14 +141,18 @@ class CacheScraper:
         base_url = full_url.split('?')[0]
 
         with self._lock:
-            asset_id = self._url_to_asset.get(base_url)
-            if not asset_id:
+            asset_ids = self._url_to_asset.get(base_url)
+            if not asset_ids:
                 return
-            info = self.cache_logs.get(asset_id)
-            if not info or 'cached' in info:
+            # Collect all asset IDs that still need caching for this CDN URL
+            pending: list[tuple[int, int]] = []  # (asset_id, asset_type)
+            for aid in asset_ids:
+                info = self.cache_logs.get(aid)
+                if info and 'cached' not in info:
+                    info['cached'] = True
+                    pending.append((aid, info.get('assetTypeId', 0)))
+            if not pending:
                 return
-            info['cached'] = True
-            asset_type = info.get('assetTypeId', 0)
 
         cache_hash = path.rsplit('/', 1)[-1]
         metadata = {
@@ -147,27 +181,29 @@ class CacheScraper:
             except Exception:
                 inner = body
 
-        needs_conversion = (
-            (asset_type in (1, 13) and inner[:8] in (b'\xabKTX 20\xbb', b'\xabKTX 11\xbb')) or
-            asset_type == 63
-        )
+        # Store / convert for every original asset ID that shares this CDN URL
+        for asset_id, asset_type in pending:
+            needs_conversion = (
+                (asset_type in (1, 13) and inner[:8] in (b'\xabKTX 20\xbb', b'\xabKTX 11\xbb')) or
+                asset_type == 63
+            )
 
-        if needs_conversion:
-            try:
-                self._executor.submit(
-                    self._fetch_and_update_cache,
-                    asset_id, asset_type, full_url, metadata, body, inner,
-                )
-            except RuntimeError as exc:
-                log_buffer.log('Cache', f'Failed to submit conversion task: {exc}')
-        else:
-            try:
-                self._executor.submit(
-                    self._store_asset_async,
-                    asset_id, asset_type, inner, full_url, metadata,
-                )
-            except RuntimeError as exc:
-                log_buffer.log('Cache', f'Failed to submit cache store task: {exc}')
+            if needs_conversion:
+                try:
+                    self._executor.submit(
+                        self._fetch_and_update_cache,
+                        asset_id, asset_type, full_url, metadata, body, inner,
+                    )
+                except RuntimeError as exc:
+                    log_buffer.log('Cache', f'Failed to submit conversion task: {exc}')
+            else:
+                try:
+                    self._executor.submit(
+                        self._store_asset_async,
+                        asset_id, asset_type, inner, full_url, metadata,
+                    )
+                except RuntimeError as exc:
+                    log_buffer.log('Cache', f'Failed to submit cache store task: {exc}')
 
     # ------------------------------------------------------------------
     # Background workers
@@ -570,6 +606,23 @@ class CacheScraper:
                 log_buffer.log('Cache', f'Cached {type_name}: {asset_id} ({len(data)} bytes)')
         except Exception as exc:
             log_buffer.log('Cache', f'Cache store error for {asset_id}: {exc}')
+
+    def _copy_cached_asset(
+        self, source_id, dest_id, asset_type: int, url: str,
+    ) -> None:
+        """Copy an already-cached asset to a new asset ID (cross-batch replication)."""
+        try:
+            data = self.cache_manager.get_asset(str(source_id), asset_type)
+            if data:
+                success = self.cache_manager.store_asset(
+                    asset_id=str(dest_id), asset_type=asset_type,
+                    data=data, url=url, metadata={'replicated_from': str(source_id)},
+                )
+                if success:
+                    type_name = self.cache_manager.get_asset_type_name(asset_type)
+                    log_buffer.log('Cache', f'Replicated {type_name}: {dest_id} (from {source_id})')
+        except Exception as exc:
+            log_buffer.log('Cache', f'Replication error {source_id}->{dest_id}: {exc}')
 
     # ------------------------------------------------------------------
     # GUI-callable interface (same as before - no change needed in GUI code)
