@@ -7,6 +7,8 @@ import numpy as np
 import sounddevice as sd
 import soundfile as sf
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+
+from ..utils import log_buffer
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -87,7 +89,7 @@ class AudioPlayerWidget(QWidget):
             self.duration = len(self.audio_data) / self.sample_rate
 
         except Exception as e:
-            print(f'Error loading audio: {e}')
+            log_buffer.log('Audio', f'Error loading audio: {e}')
             self.duration = 0
 
     def _setup_ui(self):
@@ -213,7 +215,7 @@ class AudioPlayerWidget(QWidget):
         try:
             def callback(outdata, frames, time_info, status):
                 if status:
-                    print(f'Audio callback status: {status}')
+                    log_buffer.log('Audio', f'Audio callback status: {status}')
 
                 with self.position_lock:
                     start_pos = self.playback_position
@@ -253,7 +255,7 @@ class AudioPlayerWidget(QWidget):
                             self.should_stop = True
 
         except Exception as e:
-            print(f'Playback error: {e}')
+            log_buffer.log('Audio', f'Playback error: {e}')
         finally:
             self.is_playing = False
             # Schedule UI update on the main thread to avoid manipulating
