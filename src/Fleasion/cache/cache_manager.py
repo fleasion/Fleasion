@@ -554,6 +554,8 @@ class CacheManager:
         """Detect file extension based on data signature."""
         if asset_type == 39:
             return '.bin'
+        if asset_type in (73, 74) and data.startswith(b'\x00\x01\x00\x00'):
+            return '.ttf'
         if data.startswith(b'\x89PNG'):
             return '.png'
         elif data.startswith(b'OggS'):
