@@ -3016,11 +3016,12 @@ class CacheViewerTab(QWidget):
             'converted_rbxmx': 'Converted (.rbxmx)',
             'converted_png': 'Converted (.png)',
             'converted_audio': 'Converted (.ogg/.mp3)',
-            'converted': 'Converted',
+            'converted': 'Converted (.xml)',
+            'converted_images': 'Converted (Images)',
             'bin': 'Binary (decompressed)',
             'raw': 'Raw (original cache)',
         }
-        for fmt in ['converted_obj', 'converted_rbxmx', 'converted_png', 'converted_audio', 'converted', 'bin', 'raw']:
+        for fmt in ['converted_obj', 'converted_rbxmx', 'converted_png', 'converted_audio', 'converted', 'converted_images', 'bin', 'raw']:
             if fmt in available_formats:
                 action = export_menu.addAction(format_labels[fmt])
                 export_actions[action] = fmt
@@ -3368,8 +3369,14 @@ class CacheViewerTab(QWidget):
             ):
                 exported_count += 1
 
-        # Determine export location based on format
-        format_dir = self.cache_manager.export_dir / export_format
+        # Determine export location based on format (matching cache_manager logic)
+        if export_format == 'raw':
+            format_dir = self.cache_manager.export_dir / 'raw'
+        elif export_format == 'bin':
+            format_dir = self.cache_manager.export_dir / 'bin'
+        else:  # All 'converted*' formats go to 'converted' directory
+            format_dir = self.cache_manager.export_dir / 'converted'
+        
         log_buffer.log('Scraper', f'Exported {exported_count}/{len(assets_to_export)} assets as {export_format}')
         QMessageBox.information(
             self,

@@ -372,6 +372,7 @@ class CacheManager:
         elif asset_type in (1, 13):  # Image, Decal
             formats.insert(0, 'converted_png')
         elif asset_type == 63:  # TexturePack
+            formats.insert(0, 'converted_images')
             formats.insert(0, 'converted')
         elif asset_type == 24:  # Animation
             formats.insert(0, 'converted_rbxmx')
@@ -532,7 +533,17 @@ class CacheManager:
                     output_path.write_bytes(export_data)
                     return output_path
 
-                elif export_format == 'converted' and asset_type == 63:  # TexturePack - export individual textures
+                elif export_format == 'converted' and asset_type == 63:  # TexturePack - export as XML
+                    # Decompress if needed
+                    xml_data = data
+                    if data.startswith(b'\x1f\x8b'):
+                        import gzip as gzip_module
+                        xml_data = gzip_module.decompress(data)
+                    output_path = export_type_dir / f'{filename}.xml'
+                    output_path.write_bytes(xml_data)
+                    return output_path
+
+                elif export_format == 'converted_images' and asset_type == 63:  # TexturePack - extract individual textures
                     return self._export_texturepack(data, asset_id, export_type_dir, filename)
 
                 elif export_format == 'converted_rbxmx' and asset_type == 24:  # Animation - export as RBXMX
@@ -554,6 +565,8 @@ class CacheManager:
         """Detect file extension based on data signature."""
         if asset_type == 39:
             return '.bin'
+        if asset_type == 63:  # TexturePack
+            return '.xml'
         if asset_type in (73, 74) and data.startswith(b'\x00\x01\x00\x00'):
             return '.ttf'
         if data.startswith(b'\x89PNG'):
@@ -593,13 +606,27 @@ class CacheManager:
         """
         import xml.etree.ElementTree as ET
         import requests
+        import urllib3
 
         from ..utils import log_buffer
 
+        # Suppress SSL warnings when verify=False
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
         try:
+            log_buffer.log('Export', f'Starting TexturePack export for {asset_id}')
+            
+            # Decompress if gzip-compressed
+            xml_data = data
+            if data.startswith(b'\x1f\x8b'):
+                import gzip as gzip_module
+                xml_data = gzip_module.decompress(data)
+                log_buffer.log('Export', f'Decompressed gzip data, size: {len(xml_data)} bytes')
+            
             # Parse XML
-            xml_text = data.decode('utf-8', errors='replace')
+            xml_text = xml_data.decode('utf-8', errors='replace')
             root = ET.fromstring(xml_text)
+            log_buffer.log('Export', f'Parsed XML successfully')
 
             # Extract texture map IDs
             map_order = ['color', 'normal', 'metalness', 'roughness', 'emissive']
@@ -609,6 +636,8 @@ class CacheManager:
                 if node is not None and node.text:
                     maps[elem.capitalize()] = node.text
 
+            log_buffer.log('Export', f'Found {len(maps)} texture maps: {list(maps.keys())}')
+            
             if not maps:
                 log_buffer.log('Export', f'No texture maps found in texture pack {asset_id}')
                 return None
@@ -625,6 +654,7 @@ class CacheManager:
                 texture_hash = ''
 
                 if texture_data:
+                    log_buffer.log('Export', f'Found cached {map_name} texture {map_id}')
                     # Get hash from cache
                     texture_info = self.get_asset_info(str(map_id), 1)
                     texture_hash = texture_info.get('hash', '') if texture_info else ''
@@ -635,15 +665,18 @@ class CacheManager:
                         from urllib.parse import urlparse
                         api_url = f'https://assetdelivery.roblox.com/v1/asset/?id={map_id}'
                         headers = {'User-Agent': 'Roblox/WinInet'}
-                        response = requests.get(api_url, headers=headers, timeout=15, allow_redirects=True)
+                        response = requests.get(api_url, headers=headers, timeout=15, allow_redirects=True, verify=False)
                         if response.status_code == 200 and response.content:
                             texture_data = response.content
+                            log_buffer.log('Export', f'Successfully fetched {map_name} texture {map_id}, size: {len(texture_data)} bytes')
                             # Extract hash from final URL path
                             final_url = response.url
                             parsed = urlparse(final_url)
                             path_parts = parsed.path.rsplit('/', 1)
                             if len(path_parts) > 1 and path_parts[-1]:
                                 texture_hash = path_parts[-1]
+                        else:
+                            log_buffer.log('Export', f'API returned status {response.status_code} for {map_name} texture {map_id}')
                     except Exception as e:
                         log_buffer.log('Export', f'Failed to fetch texture {map_id}: {e}')
                         continue
@@ -660,9 +693,13 @@ class CacheManager:
 
                 # Write texture
                 texture_path = type_dir / f'{texture_filename}.png'
-                texture_path.write_bytes(texture_data)
-                exported_count += 1
-                log_buffer.log('Export', f'Exported {map_name} texture to {texture_path.name}')
+                try:
+                    texture_path.write_bytes(texture_data)
+                    exported_count += 1
+                    log_buffer.log('Export', f'Saved {map_name} texture to {texture_path}')
+                except Exception as e:
+                    log_buffer.log('Export', f'Failed to write {map_name} texture to {texture_path}: {e}')
+                    continue
 
             if exported_count > 0:
                 log_buffer.log('Export', f'Exported {exported_count} textures from pack {asset_id}')
