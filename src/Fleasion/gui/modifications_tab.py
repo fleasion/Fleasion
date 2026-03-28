@@ -570,7 +570,12 @@ class ModRowWidget(QWidget):
             if entry.get('target_path') == self._target_path:
                 src_type = entry.get('source_type')
                 src_val = entry.get('source_value') or ''
-                if src_type in ('local_file', 'asset_id', 'bundled'):
+                if src_type == 'bundled':
+                    # Reverse-map any remove-class bundled value back to 'remove'.
+                    if src_val == self._resolve_bundled_empty() or src_val == 'bundled:zero':
+                        return 'remove'
+                    return src_val
+                if src_type in ('local_file', 'asset_id', 'cdn_url'):
                     return src_val
                 return ''
         return ''
@@ -1349,12 +1354,14 @@ class ModificationsTab(QWidget):
         if dlg.exec() == QDialog.DialogCode.Accepted:
             name = dlg.display_name
             target = dlg.target_path
-            source_type = dlg.source_type
-            source_value = dlg.source_value
+            raw_source = dlg.raw_source
 
             row = self._add_custom_row(name, target)
-            if source_type and source_value:
-                row.apply_source_external(source_type, source_value)
+            if raw_source:
+                # Route through the row's own detection pipeline so that
+                # 'remove', CDN URLs, asset IDs etc. all work correctly.
+                row._set_source_text_silent(raw_source)
+                row._apply_from_text()
 
     def _add_custom_row(self, name: str, target_path: str) -> ModRowWidget:
         row = ModRowWidget(self._manager, name, target_path,
@@ -1402,8 +1409,7 @@ class _CustomModDialog(QDialog):
         self._manager = manager
         self.display_name = ''
         self.target_path = ''
-        self.source_type = ''
-        self.source_value = ''
+        self.raw_source = ''
 
         self.setWindowTitle('Add Custom Modification')
         self.resize(500, 200)
@@ -1433,7 +1439,7 @@ class _CustomModDialog(QDialog):
         row3 = QHBoxLayout()
         row3.addWidget(QLabel('Source:'))
         self._source_edit = QLineEdit()
-        self._source_edit.setPlaceholderText('Asset ID, rbxassetid://, or local file path (optional)')
+        self._source_edit.setPlaceholderText('ID, URL (http://...), path (C:\\...), or "remove" to remove')
         row3.addWidget(self._source_edit)
         browse_btn = QPushButton('Browse\u2026')
         browse_btn.setAutoDefault(False)
@@ -1491,14 +1497,5 @@ class _CustomModDialog(QDialog):
         self.display_name = name
         self.target_path = target
         raw = self._source_edit.text().strip().strip('"\'') 
-        if raw:
-            if raw.isdigit():
-                self.source_type = 'asset_id'
-                self.source_value = raw
-            elif raw.lower().startswith('rbxassetid://'):
-                self.source_type = 'asset_id'
-                self.source_value = raw[len('rbxassetid://'):]
-            else:
-                self.source_type = 'local_file'
-                self.source_value = raw
+        self.raw_source = raw
         self.accept()
