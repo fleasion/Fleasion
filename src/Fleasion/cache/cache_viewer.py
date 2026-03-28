@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QMenu, QScrollArea, QGridLayout, QFrame, QDialog
 )
 from PyQt6.QtWidgets import QWidgetAction
-from PyQt6.QtGui import QPixmap, QImage, QAction, QCursor, QFont, QFontDatabase
+from PyQt6.QtGui import QPixmap, QImage, QAction, QCursor, QFont, QFontDatabase, QPalette, QColor
 from PIL import Image
 import io
 import threading
@@ -766,9 +766,9 @@ class CategoryFilterPopup(QMenu):
     def __init__(self, parent=None, active_filters=None):
         super().__init__(parent)
         self.setStyleSheet("""
-            QMenu { background-color: #2b2b2b; border: 1px solid #555; border-radius: 4px; color: #fff; }
-            QWidget#FilterContainer { background-color: #2b2b2b; }
-            QCheckBox { padding: 1px; color: #ddd; font-size: 12px; }
+            QMenu { background-color: palette(window); border: 1px solid palette(mid); border-radius: 4px; color: palette(window-text); }
+            QWidget#FilterContainer { background-color: palette(window); }
+            QCheckBox { padding: 1px; color: palette(window-text); font-size: 12px; }
             QCheckBox::indicator { width: 14px; height: 14px; }
         """)
         
@@ -808,9 +808,9 @@ class CategoryFilterPopup(QMenu):
             cat_frame.setObjectName("CategoryCard")
             cat_frame.setStyleSheet("""
                 QFrame#CategoryCard {
-                    border: 1px solid #444;
+                    border: 1px solid palette(mid);
                     border-radius: 6px;
-                    background-color: #333;
+                    background-color: palette(base);
                 }
             """)
             vbox = QVBoxLayout(cat_frame)
@@ -826,7 +826,7 @@ class CategoryFilterPopup(QMenu):
             line = QFrame()
             line.setFrameShape(QFrame.Shape.HLine)
             line.setFrameShadow(QFrame.Shadow.Sunken)
-            line.setStyleSheet("background-color: #555; margin-bottom: 2px; margin-top: 2px;")
+            line.setStyleSheet("background-color: palette(mid); margin-bottom: 2px; margin-top: 2px;")
             vbox.addWidget(line)
             
             cat_types = []
@@ -870,7 +870,7 @@ class CategoryFilterPopup(QMenu):
         
         btn_layout = QHBoxLayout()
         clear_btn = QPushButton("Clear Filters")
-        clear_btn.setStyleSheet("padding: 5px 15px; background-color: #3b3b3b; border: 1px solid #666; border-radius: 3px;")
+        clear_btn.setStyleSheet("padding: 5px 15px; border: 1px solid palette(mid); border-radius: 3px;")
         clear_btn.clicked.connect(self._clear_all)
         btn_layout.addWidget(clear_btn)
         btn_layout.addStretch()
@@ -1398,6 +1398,22 @@ class CacheViewerTab(QWidget):
         if not self.preview_panel.isHidden():
             self._auto_snap_splitter()
 
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.PaletteChange:
+            self._update_table_alt_palette()
+
+    def _update_table_alt_palette(self):
+        """Apply a slightly darker alternate-row colour in dark mode, or reset in light/system mode."""
+        pal = self.palette()
+        is_dark = pal.color(QPalette.ColorRole.Window).lightness() < 128
+        if is_dark:
+            table_pal = self.table.palette()
+            table_pal.setColor(QPalette.ColorRole.AlternateBase, QColor(53, 53, 53))
+            self.table.setPalette(table_pal)
+        else:
+            self.table.setPalette(QPalette())  # inherit from application
+
     def _sanitize_filename(self, name: str) -> str:
         """Replace characters that are illegal in Windows filenames with Unicode look‑alikes."""
         char_map = {
@@ -1618,6 +1634,9 @@ class CacheViewerTab(QWidget):
         self.table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
+        # Apply a slightly darker alternating-row colour in dark mode; this is
+        # managed by _update_table_alt_palette() and kept in sync via changeEvent.
+        self._update_table_alt_palette()
         self.table.currentItemChanged.connect(self._on_selection_changed)
         # Prevent column 0 (counter) from ever becoming the current item.
         # If Qt lands on column 0 (e.g. during keyboard nav), silently redirect
@@ -1656,14 +1675,14 @@ class CacheViewerTab(QWidget):
         # Loading indicator
         self.loading_label = QLabel('Loading...')
         self.loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.loading_label.setStyleSheet('QLabel { background-color: #2b2b2b; color: #aaa; font-size: 14px; padding: 20px; }')
+        self.loading_label.setStyleSheet('QLabel { background-color: palette(base); color: #888; font-size: 14px; padding: 20px; }')
         self.preview_container_layout.addWidget(self.loading_label)
         self.loading_label.hide()
 
         # Image viewer (will show/hide as needed)
         self.image_label = QLabel('Select an asset to preview')
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image_label.setStyleSheet('QLabel { background-color: #2b2b2b; color: #888; }')
+        self.image_label.setStyleSheet('QLabel { background-color: palette(base); color: #888; }')
         self.image_label.setScaledContents(False)
         self.image_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.image_label.customContextMenuRequested.connect(self._show_image_context_menu)
@@ -3676,7 +3695,7 @@ class CacheViewerTab(QWidget):
                 # Image placeholder with context menu
                 img_label = QLabel('Loading...')
                 img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                img_label.setStyleSheet('background-color: #333; padding: 10px; min-height: 100px;')
+                img_label.setStyleSheet('background-color: palette(base); padding: 10px; min-height: 100px;')
                 img_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
                 img_label.setProperty('map_name', map_name)
                 img_label.setProperty('map_id', map_id)
@@ -4083,7 +4102,7 @@ class CacheViewerTab(QWidget):
         layout.addWidget(text_edit)
 
         status_label = QLabel('')
-        status_label.setStyleSheet('color: #aaa; font-size: 9pt;')
+        status_label.setStyleSheet('color: #888; font-size: 9pt;')
         layout.addWidget(status_label)
 
         btn_layout = QHBoxLayout()
@@ -4128,7 +4147,7 @@ class CacheViewerTab(QWidget):
             load_btn.setEnabled(False)
             text_edit.setReadOnly(True)
             status_label.setText(f'Loading {len(asset_ids)} asset(s)...')
-            status_label.setStyleSheet('color: #aaa; font-size: 9pt;')
+            status_label.setStyleSheet('color: #888; font-size: 9pt;')
 
             log_buffer.log('Scraper', f'[Load Asset] Starting load of {len(asset_ids)} asset ID(s)')
 

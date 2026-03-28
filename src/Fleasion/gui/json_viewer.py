@@ -699,7 +699,7 @@ class JsonTreeViewer(QDialog):
         self.loading_label = QLabel('Loading...')
         self.loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.loading_label.setStyleSheet(
-            'QLabel { background-color: #2b2b2b; color: #aaa; font-size: 14px; padding: 20px; }'
+            'QLabel { background-color: palette(base); color: #888; font-size: 14px; padding: 20px; }'
         )
         self.preview_container_layout.addWidget(self.loading_label)
         self.loading_label.hide()
@@ -707,7 +707,7 @@ class JsonTreeViewer(QDialog):
         # Image viewer
         self.image_label = QLabel('Select a single asset ID or URL to preview')
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image_label.setStyleSheet('QLabel { background-color: #2b2b2b; color: #888; }')
+        self.image_label.setStyleSheet('QLabel { background-color: palette(base); color: #888; }')
         self.image_label.setScaledContents(False)
         self.image_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.image_label.customContextMenuRequested.connect(self._show_image_context_menu)
@@ -1071,7 +1071,7 @@ class JsonTreeViewer(QDialog):
 
                 img_label = QLabel('Loading...')
                 img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                img_label.setStyleSheet('background-color: #333; padding: 10px; min-height: 100px;')
+                img_label.setStyleSheet('background-color: palette(base); padding: 10px; min-height: 100px;')
                 img_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
                 img_label.setProperty('map_name', map_name)
                 img_label.setProperty('map_id', map_id)

@@ -40,6 +40,11 @@ PREJSONS_DIR = CONFIG_DIR / 'PreJsons'
 ORIGINALS_DIR = PREJSONS_DIR / 'originals'
 REPLACEMENTS_DIR = PREJSONS_DIR / 'replacements'
 
+# Modifications
+MODIFICATIONS_JSON = CONFIG_DIR / 'modifications.json'
+MOD_ORIGINALS_DIR = CONFIG_DIR / 'ModOriginals'
+MOD_CACHE_DIR = CONFIG_DIR / 'ModCache'
+
 # Default settings
 DEFAULT_SETTINGS = {
     'strip_textures': False,

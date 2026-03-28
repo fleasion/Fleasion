@@ -5,14 +5,15 @@ import platform
 import sys
 import time
 
-from PyQt6.QtCore import QTimer, QSharedMemory, QObject, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QSharedMemory, QObject, pyqtSignal
 from PyQt6.QtWidgets import QApplication, QMessageBox, QPushButton, QDialog, QVBoxLayout, QHBoxLayout, QLabel
 
 from .config import ConfigManager
+from .modifications import ModificationManager
 from .prejsons import download_prejsons
 from .proxy import ProxyMaster, check_and_patch_running_roblox_ca
 from .tray import SystemTray
-from .utils import delete_cache, get_icon_path, get_roblox_player_exe_path, is_roblox_running, is_studio_running, log_buffer, run_in_thread, start_update_check
+from .utils import delete_cache, get_icon_path, get_roblox_player_exe_path, is_roblox_running, is_studio_running, log_buffer, run_in_thread, start_update_check, CONFIG_DIR
 
 
 
@@ -199,7 +200,12 @@ class RobloxExitMonitor(QObject):
 
     def _on_studio_detected(self):
         """Show the Roblox Studio warning dialog (called on the main thread via signal)."""
-        dialog = QDialog()
+        _top = QApplication.topLevelWidgets()
+        _parent = next((w for w in _top if w.isVisible()), None)
+        _on_top = any(w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in _top)
+        dialog = QDialog(_parent)
+        if _on_top:
+            dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
         dialog.setWindowTitle('Fleasion — Roblox Studio Detected')
 
         layout = QVBoxLayout(dialog)
@@ -434,14 +440,27 @@ def main():
     # Initialize proxy master
     proxy_master = ProxyMaster(config_manager)
 
+    # Initialize modification manager (pass cache_scraper for asset-id resolution)
+    mod_manager = ModificationManager(
+        cache_scraper=getattr(proxy_master, 'cache_scraper', None)
+    )
+
+    # Crash recovery: if a previous session left a stash, re-apply
+    if (CONFIG_DIR / 'ModOriginals').exists() and any((CONFIG_DIR / 'ModOriginals').iterdir()):
+        run_in_thread(mod_manager.reapply_all)()
+
     # ── Shutdown guards ───────────────────────────────────────────────────
     # 1. Graceful Windows shutdown / log-off: Qt fires commitDataRequest before
     #    the session ends, giving us a chance to clean up the hosts file.
-    app.commitDataRequest.connect(lambda _session: proxy_master.stop())
+    def _on_commit_data(_session):
+        proxy_master.stop()
+        mod_manager.restore_all()
+    app.commitDataRequest.connect(_on_commit_data)
 
     # 2. Normal Python exit (sys.exit, end of main): last-resort fallback so
     #    the hosts file is cleaned up even if the tray Exit path was bypassed.
     atexit.register(proxy_master.stop)
+    atexit.register(mod_manager.restore_all)
 
     # Start PreJsons download in background
     run_in_thread(download_prejsons)()
@@ -453,7 +472,6 @@ def main():
     if config_manager.run_on_boot:
         try:
             from .utils.autostart import sync_autostart
-            from .utils import CONFIG_DIR
             sync_autostart(True, CONFIG_DIR)
         except Exception:
             pass
@@ -465,12 +483,17 @@ def main():
         log_buffer.log('Proxy', 'Read-only mode: proxy not started (no admin rights)')
 
     # Create system tray
-    tray = SystemTray(app, config_manager, proxy_master)
+    tray = SystemTray(app, config_manager, proxy_master, mod_manager)
     if _show_readonly_notice:
         def _show_readonly_dialog():
-            from PyQt6.QtWidgets import QMessageBox
+            from PyQt6.QtWidgets import QMessageBox, QApplication
             from PyQt6.QtGui import QIcon
-            msg = QMessageBox()
+            _top = QApplication.topLevelWidgets()
+            _parent = next((w for w in _top if w.isVisible()), None)
+            _on_top = any(w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in _top)
+            msg = QMessageBox(_parent)
+            if _on_top:
+                msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
             msg.setWindowTitle('Fleasion — Read-Only Mode')
             msg.setIcon(QMessageBox.Icon.Warning)
             msg.setText('Administrator rights were not granted.')
@@ -497,7 +520,12 @@ def main():
 
     # Show first-time message if this is the first run
     if not _suppress_dashboard and not config_manager.first_time_setup_complete:
-        welcome_box = QMessageBox()
+        _top = QApplication.topLevelWidgets()
+        _parent = next((w for w in _top if w.isVisible()), None)
+        _on_top = any(w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in _top)
+        welcome_box = QMessageBox(_parent)
+        if _on_top:
+            welcome_box.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
         welcome_box.setWindowTitle('Welcome to Fleasion')
         welcome_box.setText(
             'Welcome to Fleasion!\n\n'

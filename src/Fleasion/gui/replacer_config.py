@@ -66,10 +66,11 @@ class UndoManager:
 class ReplacerConfigWindow(QDialog):
     """Replacer configuration window with tabs."""
 
-    def __init__(self, config_manager, proxy_master=None):
+    def __init__(self, config_manager, proxy_master=None, mod_manager=None):
         super().__init__()
         self.config_manager = config_manager
         self.proxy_master = proxy_master
+        self._mod_manager = mod_manager
         self.undo_manager = UndoManager()
         self.undo_manager.save_state(self.config_manager.replacement_rules)
         self.config_enabled_vars = {}
@@ -127,6 +128,12 @@ class ReplacerConfigWindow(QDialog):
         if self.proxy_master and hasattr(self.proxy_master, 'cache_manager'):
             cache_tab = self._create_cache_tab()
             self.tab_widget.addTab(cache_tab, 'Scraper')
+
+        # Create Modifications tab
+        if self._mod_manager is not None:
+            from .modifications_tab import ModificationsTab
+            modifications_tab = ModificationsTab(self._mod_manager)
+            self.tab_widget.addTab(modifications_tab, 'Modifications')
 
         main_layout.addWidget(self.tab_widget)
 

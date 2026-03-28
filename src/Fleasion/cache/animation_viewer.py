@@ -1326,7 +1326,7 @@ class AnimationViewerPanel(QWidget):
         ts_layout.setSpacing(0) # Tighten gap
 
         self.ts_label = QLabel("Timescale: 1.0x")
-        self.ts_label.setStyleSheet("color: white; font-weight: normal;")
+        self.ts_label.setStyleSheet("color: palette(window-text); font-weight: normal;")
         ts_layout.addWidget(self.ts_label)
 
         ts_slider = QSlider(Qt.Orientation.Horizontal)
