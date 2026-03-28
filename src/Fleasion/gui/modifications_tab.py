@@ -1144,6 +1144,21 @@ class ModificationsTab(QWidget):
         self._container_layout.setSpacing(10)
         self._container_layout.setContentsMargins(10, 10, 10, 10)
 
+        # ── Fast Flags ───────────────────────────────────────────
+        self._fflag_toggle = QCheckBox('Enable Fast Flags')
+        self._fflag_toggle.setChecked(self._manager.fast_flags_enabled)
+        self._fflag_toggle.toggled.connect(self._on_fflag_toggle)
+
+        fflag_section = CollapsibleSection(
+            'Fast Flags \u26A0', expanded=False,
+            header_widgets=[self._fflag_toggle],
+        )
+        self._fflag_widget = FFlagSection(self._manager)
+        self._fflag_widget.setEnabled(self._manager.fast_flags_enabled)
+        fflag_section.add_widget(self._fflag_widget)
+
+        self._container_layout.addWidget(fflag_section)
+
         # ── R6 Default Avatar Meshes ─────────────────────────────
         self._mesh_section = CollapsibleSection('R6 Default Avatar Meshes', expanded=True)
         for name, path in AVATAR_MESHES:
@@ -1161,8 +1176,8 @@ class ModificationsTab(QWidget):
 
         self._container_layout.addWidget(self._mesh_section)
 
-        # ── Skybox ───────────────────────────────────────────────
-        sky_section = CollapsibleSection('Skybox', expanded=True)
+        # ── Default Skyboxes ─────────────────────────────────────
+        sky_section = CollapsibleSection('Default Skyboxes', expanded=True)
 
         # "Apply to All Sky Faces" button
         apply_all_btn = QPushButton('Apply to All Sky Faces\u2026')
@@ -1255,21 +1270,6 @@ class ModificationsTab(QWidget):
                                 )
 
         self._container_layout.addWidget(self._custom_section)
-
-        # ── Fast Flags ───────────────────────────────────────────
-        self._fflag_toggle = QCheckBox('Enable Fast Flags')
-        self._fflag_toggle.setChecked(self._manager.fast_flags_enabled)
-        self._fflag_toggle.toggled.connect(self._on_fflag_toggle)
-
-        fflag_section = CollapsibleSection(
-            'Fast Flags \u26A0', expanded=False,
-            header_widgets=[self._fflag_toggle],
-        )
-        self._fflag_widget = FFlagSection(self._manager)
-        self._fflag_widget.setEnabled(self._manager.fast_flags_enabled)
-        fflag_section.add_widget(self._fflag_widget)
-
-        self._container_layout.addWidget(fflag_section)
 
         # Stretch at bottom
         self._container_layout.addStretch()
