@@ -747,14 +747,22 @@ class ModPreviewDialog(QDialog):
             label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             display_bytes = data
             if lower.endswith('.tex'):
-                from ..modifications.dds_to_png import tex_to_png_bytes
-                converted = tex_to_png_bytes(data)
-                if converted:
-                    display_bytes = converted
-                else:
-                    layout.addWidget(QLabel('Could not decode .tex file'))
-                    container.setLayout(layout)
-                    return container
+                # The replacement may be a plain image (PNG/JPEG) even though
+                # the target path ends in .tex — detect by magic bytes first.
+                _is_raw_image = (
+                    data[:8] == b'\x89PNG\r\n\x1a\n'   # PNG
+                    or data[:2] == b'\xff\xd8'          # JPEG
+                    or data[:6] in (b'GIF87a', b'GIF89a')
+                )
+                if not _is_raw_image:
+                    from ..modifications.dds_to_png import tex_to_png_bytes
+                    converted = tex_to_png_bytes(data)
+                    if converted:
+                        display_bytes = converted
+                    else:
+                        layout.addWidget(QLabel('Could not decode .tex file'))
+                        container.setLayout(layout)
+                        return container
 
             from PyQt6.QtGui import QPixmap
             pixmap = QPixmap()
