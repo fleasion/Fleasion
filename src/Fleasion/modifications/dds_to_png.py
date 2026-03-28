@@ -1,7 +1,9 @@
 """DDS / Roblox .tex preview converter.
 
-Converts DDS DXT1 `.tex` files (as used by Roblox skyboxes) to PNG bytes
-for display in the Modifications preview panel.
+Converts DDS `.tex` and `.dds` files to PNG bytes for display in the
+Modifications preview panel.  Pillow's built-in DDS loader is used, which
+supports all common compression formats: DXT1, DXT3, DXT5, BC4, BC5, BC6H,
+BC7, and uncompressed — so any valid DDS texture should decode correctly.
 """
 
 from __future__ import annotations
@@ -10,7 +12,7 @@ import io
 
 
 def tex_to_png_bytes(data: bytes) -> bytes | None:
-    """Convert a Roblox .tex (DDS DXT1) file to PNG bytes for preview.
+    """Convert a Roblox .tex / .dds file to PNG bytes for preview.
 
     Strips any non-standard header prefix before the DDS magic if present,
     then hands off to Pillow's built-in DDS loader.

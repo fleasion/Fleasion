@@ -82,10 +82,28 @@ SOUNDS = [
 ]
 
 # File-type filter strings for QFileDialog
-MESH_FILTER = 'Mesh Files (*.mesh *.obj);;All Files (*)'
+MESH_FILTER  = 'Mesh Files (*.mesh *.obj);;All Files (*)'
 IMAGE_FILTER = 'Image Files (*.png *.jpg *.jpeg *.tex);;All Files (*)'
+# DDS textures — Roblox accepts a .png renamed to .dds as a drop-in replacement
+DDS_FILTER   = 'Image Files (*.dds *.png);;All Files (*)'
+# JPG textures (moon/sun) — Roblox also accepts a .png renamed to .jpg
+JPG_FILTER   = 'Image Files (*.jpg *.jpeg *.png);;All Files (*)'
 SOUND_FILTER = 'Audio Files (*.mp3 *.ogg *.wav);;All Files (*)'
-FONT_FILTER = 'Font Files (*.ttf *.otf *.ttc);;All Files (*)'
+FONT_FILTER  = 'Font Files (*.ttf *.otf *.ttc);;All Files (*)'
+
+TEXTURES = [
+    # (display_name, target_path, file_filter)
+    ('High Quality Studs — Diffuse',       r'PlatformContent\pc\textures\plastic\diffuse.dds',      DDS_FILTER),
+    ('High Quality Studs — Normal',        r'PlatformContent\pc\textures\plastic\normal.dds',       DDS_FILTER),
+    ('High Quality Studs — Normal Detail', r'PlatformContent\pc\textures\plastic\normaldetail.dds', DDS_FILTER),
+    ('Low Quality Studs',                   r'PlatformContent\pc\textures\studs.dds',                DDS_FILTER),
+    ('Shiftlock Cursor',                    r'content\textures\MouseLockedCursor.png',               IMAGE_FILTER),
+    ('Cursor — Pointing',                  r'content\textures\Cursors\KeyboardMouse\ArrowCursor.png',    IMAGE_FILTER),
+    ('Cursor — Arrow',                     r'content\textures\Cursors\KeyboardMouse\ArrowFarCursor.png', IMAGE_FILTER),
+    ('Cursor — IBeam',                     r'content\textures\Cursors\KeyboardMouse\IBeamCursor.png',    IMAGE_FILTER),
+    ('Moon',                                r'content\sky\moon.jpg',                                JPG_FILTER),
+    ('Sun',                                 r'content\sky\sun.jpg',                                 JPG_FILTER),
+]
 
 # Status badge styling
 _STATUS_STYLES = {
@@ -701,13 +719,15 @@ class ModPreviewDialog(QDialog):
         super().__init__(parent)
         self._manager = manager
         self._target_path = target_path
+        self._mod_converted_bytes: bytes | None = None
+        self._mod_converted_ext: str = ''
         self.setWindowTitle(f'Preview \u2014 {display_name}')
         self.resize(500, 400)
 
         layout = QVBoxLayout()
         tabs = QTabWidget()
 
-        # Modification tab
+        # Modification tab — build first so _mod_converted_bytes is populated
         mod_widget = self._build_preview_widget('mod')
         tabs.addTab(mod_widget, 'Modification')
 
@@ -717,11 +737,15 @@ class ModPreviewDialog(QDialog):
 
         layout.addWidget(tabs)
 
-        # Export button
-        export_btn = QPushButton('Export\u2026')
-        export_btn.clicked.connect(self._on_export)
+        # Buttons row
         btn_row = QHBoxLayout()
         btn_row.addStretch()
+        export_conv_btn = QPushButton('Export Converted\u2026')
+        export_conv_btn.setEnabled(self._mod_converted_bytes is not None)
+        export_conv_btn.clicked.connect(self._on_export_converted)
+        btn_row.addWidget(export_conv_btn)
+        export_btn = QPushButton('Export Original\u2026')
+        export_btn.clicked.connect(self._on_export)
         btn_row.addWidget(export_btn)
         layout.addLayout(btn_row)
 
@@ -741,14 +765,14 @@ class ModPreviewDialog(QDialog):
 
         lower = self._target_path.lower()
 
-        # Image / Texture
-        if lower.endswith(('.tex', '.png', '.jpg', '.jpeg')):
+        # Image / Texture (including .dds)
+        if lower.endswith(('.tex', '.dds', '.png', '.jpg', '.jpeg')):
             label = QLabel()
             label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             display_bytes = data
-            if lower.endswith('.tex'):
+            if lower.endswith(('.tex', '.dds')):
                 # The replacement may be a plain image (PNG/JPEG) even though
-                # the target path ends in .tex — detect by magic bytes first.
+                # the target path ends in .tex/.dds — detect by magic bytes first.
                 _is_raw_image = (
                     data[:8] == b'\x89PNG\r\n\x1a\n'   # PNG
                     or data[:2] == b'\xff\xd8'          # JPEG
@@ -759,8 +783,11 @@ class ModPreviewDialog(QDialog):
                     converted = tex_to_png_bytes(data)
                     if converted:
                         display_bytes = converted
+                        if mode == 'mod':
+                            self._mod_converted_bytes = converted
+                            self._mod_converted_ext = '.png'
                     else:
-                        layout.addWidget(QLabel('Could not decode .tex file'))
+                        layout.addWidget(QLabel('Could not decode .tex/.dds file'))
                         container.setLayout(layout)
                         return container
 
@@ -782,6 +809,9 @@ class ModPreviewDialog(QDialog):
                 from ..cache import mesh_processing
                 obj_text = mesh_processing.convert(data)
                 if obj_text:
+                    if mode == 'mod':
+                        self._mod_converted_bytes = obj_text.encode()
+                        self._mod_converted_ext = '.obj'
                     from ..cache.obj_viewer import ObjViewerPanel
                     viewer = ObjViewerPanel()
                     viewer.load_obj(obj_text)
@@ -834,13 +864,24 @@ class ModPreviewDialog(QDialog):
 
     def _on_export(self):
         path, _ = QFileDialog.getSaveFileName(
-            self, 'Export File',
+            self, 'Export Original File',
             Path(self._target_path).name,
         )
         if path:
             data = self._load_data('mod')
             if data:
                 Path(path).write_bytes(data)
+
+    def _on_export_converted(self):
+        if not self._mod_converted_bytes:
+            return
+        stem = Path(self._target_path).stem
+        default_name = stem + self._mod_converted_ext
+        path, _ = QFileDialog.getSaveFileName(
+            self, 'Export Converted File', default_name,
+        )
+        if path:
+            Path(path).write_bytes(self._mod_converted_bytes)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1186,6 +1227,15 @@ class ModificationsTab(QWidget):
             self._row_widgets[path] = row
 
         self._container_layout.addWidget(sky_section)
+
+        # ── Textures ─────────────────────────────────────────────
+        tex_section = CollapsibleSection('Textures', expanded=True)
+        for name, path, filt in TEXTURES:
+            row = ModRowWidget(self._manager, name, path,
+                               file_filter=filt)
+            tex_section.add_widget(row)
+            self._row_widgets[path] = row
+        self._container_layout.addWidget(tex_section)
 
         # ── R6 Default Avatar Meshes ─────────────────────────────
         self._mesh_section = CollapsibleSection('R6 Default Avatar Meshes', expanded=True)
