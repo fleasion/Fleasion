@@ -1159,23 +1159,6 @@ class ModificationsTab(QWidget):
 
         self._container_layout.addWidget(fflag_section)
 
-        # ── R6 Default Avatar Meshes ─────────────────────────────
-        self._mesh_section = CollapsibleSection('R6 Default Avatar Meshes', expanded=True)
-        for name, path in AVATAR_MESHES:
-            row = ModRowWidget(self._manager, name, path,
-                               file_filter=MESH_FILTER)
-            self._mesh_section.add_widget(row)
-            self._row_widgets[path] = row
-
-        # Add Head Variant button
-        add_head_btn = QPushButton('+ Add Head Variant')
-        add_head_btn.setFixedWidth(150)
-        add_head_btn.clicked.connect(self._on_add_head_variant)
-        self._head_variant_layout = self._mesh_section.content_layout
-        self._mesh_section.add_widget(add_head_btn)
-
-        self._container_layout.addWidget(self._mesh_section)
-
         # ── Default Skyboxes ─────────────────────────────────────
         sky_section = CollapsibleSection('Default Skyboxes', expanded=True)
 
@@ -1203,6 +1186,23 @@ class ModificationsTab(QWidget):
             self._row_widgets[path] = row
 
         self._container_layout.addWidget(sky_section)
+
+        # ── R6 Default Avatar Meshes ─────────────────────────────
+        self._mesh_section = CollapsibleSection('R6 Default Avatar Meshes', expanded=True)
+        for name, path in AVATAR_MESHES:
+            row = ModRowWidget(self._manager, name, path,
+                               file_filter=MESH_FILTER)
+            self._mesh_section.add_widget(row)
+            self._row_widgets[path] = row
+
+        # Add Head Variant button
+        add_head_btn = QPushButton('+ Add Head Variant')
+        add_head_btn.setFixedWidth(150)
+        add_head_btn.clicked.connect(self._on_add_head_variant)
+        self._head_variant_layout = self._mesh_section.content_layout
+        self._mesh_section.add_widget(add_head_btn)
+
+        self._container_layout.addWidget(self._mesh_section)
 
         # ── Sounds ───────────────────────────────────────────────
         sounds_section = CollapsibleSection('Sounds', expanded=True)
