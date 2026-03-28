@@ -98,6 +98,48 @@ def _try_mesh_to_obj(path: Path, ctx: str) -> Optional[Path]:
         return None
 
 
+def _is_csgmdl_bin(path: Path) -> bool:
+    """Check if a .bin file is actually a CSGMDL by looking for RBXM header and MeshData.
+    
+    Returns True only if:
+    1. The file is a valid binary RBXM
+    2. It contains an injectable root (PartOperationAsset, etc.)
+    3. That root has MeshData containing a CSGMDL blob
+    """
+    try:
+        raw = path.read_bytes()
+        # Decompress if needed
+        data = raw
+        if raw[:4] == b'\x28\xb5\x2f\xfd':  # zstd
+            import zstandard
+            data = zstandard.ZstdDecompressor().decompress(raw, max_output_size=64 * 1024 * 1024)
+        elif raw[:2] == b'\x1f\x8b':  # gzip
+            data = gzip.decompress(raw)
+        
+        # Check if it's a valid binary RBXM
+        from ...cache.tools.solidmodel_converter.mesh_intermediary import is_binary_rbxm
+        if not is_binary_rbxm(data):
+            return False
+        
+        # Try to deserialize and find injectable roots with MeshData
+        from ...cache.tools.solidmodel_converter.converter import deserialize_rbxm
+        doc = deserialize_rbxm(data)
+        _INJECTABLE = frozenset({'PartOperationAsset', 'UnionOperation', 'NegateOperation', 'PartOperation'})
+        
+        for inst in doc.roots:
+            if inst.class_name in _INJECTABLE:
+                prop = inst.properties.get('MeshData')
+                if prop is not None and prop.value:
+                    # Check if MeshData looks like CSGMDL
+                    from ...cache.tools.solidmodel_converter.csg_mesh import _detect_csgmdl_version
+                    mesh_bytes = prop.value if isinstance(prop.value, bytes) else bytes(prop.value, 'latin-1')
+                    if _detect_csgmdl_version(mesh_bytes) is not None:
+                        return True
+        return False
+    except Exception:
+        return False
+
+
 def _try_bin_to_obj(path: Path, ctx: str) -> Optional[Path]:
     try:
         from ...cache.tools.solidmodel_converter.mesh_intermediary import bin_file_to_cached_obj
@@ -513,11 +555,21 @@ class TextureStripper:
         if ext == '.bin':
             local_cache = APP_CACHE_DIR / f'{url_hash}.bin'
             if _download_remote_file(cdn_url, local_cache, '.bin'):
-                obj = _try_bin_to_obj(local_cache, f'CDN {aid}')
-                if obj:
+                # Only attempt conversion if it's actually a CSGMDL
+                if _is_csgmdl_bin(local_cache):
+                    obj = _try_bin_to_obj(local_cache, f'CDN {aid}')
+                    if obj:
+                        kind = 'solid' if is_solidmodel else 'local'
+                        with self._lock:
+                            self._pending[req_id] = (kind, str(obj))
+                        return
+                    # Conversion failed, fall back to CDN redirect
+                    log_buffer.log('CDN', f'{aid}: CSGMDL conversion failed, redirecting to CDN')
+                else:
+                    # Not a CSGMDL, serve the .bin directly
                     kind = 'solid' if is_solidmodel else 'local'
                     with self._lock:
-                        self._pending[req_id] = (kind, str(obj))
+                        self._pending[req_id] = (kind, str(local_cache))
                     return
             with self._lock:
                 self._pending[req_id] = ('cdn', cdn_url)
@@ -542,8 +594,13 @@ class TextureStripper:
                 with self._lock:
                     self._pending[req_id] = val
             elif ext == '.bin':
-                obj = _try_bin_to_obj(path, f'SolidModel {aid}')
-                val = ('solid', str(obj)) if obj else ('local', local_path)
+                # Only try conversion if it's actually a CSGMDL
+                if _is_csgmdl_bin(path):
+                    obj = _try_bin_to_obj(path, f'SolidModel {aid}')
+                    val = ('solid', str(obj)) if obj else ('local', local_path)
+                else:
+                    # Not a CSGMDL, serve as-is
+                    val = ('local', local_path)
                 with self._lock:
                     self._pending[req_id] = val
             else:
@@ -551,12 +608,21 @@ class TextureStripper:
                     self._pending[req_id] = ('local', local_path)
         else:
             if ext == '.bin':
-                obj = _try_bin_to_obj(path, f'Mesh {aid}')
-                if obj:
-                    with self._lock:
-                        self._pending[req_id] = ('local', str(obj))
+                # Only try conversion if it's actually a CSGMDL
+                if _is_csgmdl_bin(path):
+                    obj = _try_bin_to_obj(path, f'Mesh {aid}')
+                    if obj:
+                        with self._lock:
+                            self._pending[req_id] = ('local', str(obj))
+                    else:
+                        log_buffer.log('Local', f'Failed to convert CSGMDL for {aid}, serving .bin as-is')
+                        with self._lock:
+                            self._pending[req_id] = ('local', local_path)
                 else:
-                    log_buffer.log('Local', f'Skipping {aid}: .bin->OBJ failed')
+                    # Not a CSGMDL, serve as-is
+                    log_buffer.log('Local', f'Queued local .bin for {aid} (not CSGMDL)')
+                    with self._lock:
+                        self._pending[req_id] = ('local', local_path)
             else:
                 with self._lock:
                     self._pending[req_id] = ('local', local_path)

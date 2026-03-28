@@ -1943,7 +1943,8 @@ class CacheViewerTab(QWidget):
                 self.table.setItem(row, 4, type_item)
 
                 # Column 5: Size
-                size = asset.get('size', 0)
+                # For TexturePack we show the raw KTX2 size when available
+                size = asset.get('raw_size', asset.get('size', 0))
                 size_str = self._format_size(size)
                 size_item = NumericSortItem(size, size_str)
                 self.table.setItem(row, 5, size_item)
@@ -2729,7 +2730,7 @@ class CacheViewerTab(QWidget):
                 type_name = a['type_name'].lower()
                 url = a.get('url', '').lower()
                 hash_val = a.get('hash', '').lower()
-                size_str = self._format_size(a.get('size', 0)).lower()
+                size_str = self._format_size(a.get('raw_size', a.get('size', 0))).lower()
                 cached_at = a.get('cached_at', '').lower()
 
                 resolved_name = ''

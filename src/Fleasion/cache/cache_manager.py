@@ -134,6 +134,41 @@ class CacheManager:
         type_dir.mkdir(exist_ok=True)
         return type_dir / f'{asset_id}.bin'
 
+    def get_raw_asset_path(self, asset_id: str, asset_type: int) -> Path:
+        """Get storage path for the raw (pre-conversion) sidecar file."""
+        type_name = self.get_asset_type_name(asset_type)
+        type_dir = self.cache_dir / type_name
+        type_dir.mkdir(exist_ok=True)
+        return type_dir / f'{asset_id}.raw'
+
+    def store_raw_asset(self, asset_id: str, asset_type: int, data: bytes) -> bool:
+        """
+        Store the raw pre-conversion asset bytes as a sidecar file and record
+        its size in the index under 'raw_size'.  Used for TexturePack KTX2 files.
+        """
+        try:
+            raw_path = self.get_raw_asset_path(asset_id, asset_type)
+            raw_path.write_bytes(data)
+            with self._lock:
+                asset_key = f'{asset_type}_{asset_id}'
+                if asset_key in self.index['assets']:
+                    self.index['assets'][asset_key]['raw_size'] = len(data)
+                    self._schedule_index_commit()
+            return True
+        except Exception as e:
+            log_buffer.log('Scraper', f'Failed to store raw asset {asset_id}: {e}')
+            return False
+
+    def get_raw_asset(self, asset_id: str, asset_type: int) -> Optional[bytes]:
+        """Return the raw pre-conversion sidecar bytes, or None if not present."""
+        try:
+            raw_path = self.get_raw_asset_path(asset_id, asset_type)
+            if raw_path.exists():
+                return raw_path.read_bytes()
+        except Exception as e:
+            log_buffer.log('Scraper', f'Failed to retrieve raw asset {asset_id}: {e}')
+        return None
+
     def _is_json_data(self, data: bytes) -> bool:
         """
         Quick check if binary data is valid JSON.
@@ -446,7 +481,13 @@ class CacheManager:
                     return output_path
 
                 elif export_format == 'bin':
-                    # Binary export - decompressed if needed, with detected extension
+                    # Binary export - for TexturePack use raw KTX2 sidecar if available
+                    if asset_type == 63:
+                        raw_data = self.get_raw_asset(asset_id, asset_type)
+                        if raw_data is not None:
+                            output_path = export_type_dir / f'{filename}.ktx2'
+                            output_path.write_bytes(raw_data)
+                            return output_path
                     ext = self._detect_extension(data, asset_type)
                     output_path = export_type_dir / f'{filename}{ext}'
                     output_path.write_bytes(data)
@@ -565,8 +606,6 @@ class CacheManager:
         """Detect file extension based on data signature."""
         if asset_type == 39:
             return '.bin'
-        if asset_type == 63:  # TexturePack
-            return '.xml'
         if asset_type in (73, 74) and data.startswith(b'\x00\x01\x00\x00'):
             return '.ttf'
         if data.startswith(b'\x89PNG'):
@@ -581,6 +620,8 @@ class CacheManager:
             is_binary = data.startswith(b'<roblox!')
             if asset_type == 9:
                 return '.rbxl' if is_binary else '.rbxlx'
+            elif asset_type == 63:  # TexturePack XML
+                return '.xml'
             else:
                 return '.rbxm' if is_binary else '.rbxmx'
         elif data.startswith(b'\xABKTX'):

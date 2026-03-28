@@ -571,6 +571,9 @@ class CacheScraper:
                     if success:
                         type_name = self.cache_manager.get_asset_type_name(asset_type)
                         log_buffer.log('Cache', f'Converted {type_name} to {content_desc}: {asset_id}')
+                        # For TexturePack: also preserve the raw KTX2 CDN bytes as sidecar
+                        if asset_type == 63 and inner_content:
+                            self.cache_manager.store_raw_asset(str(asset_id), asset_type, inner_content)
                     return
 
             if original_content is not None:
