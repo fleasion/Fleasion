@@ -2568,11 +2568,16 @@ class CacheViewerTab(QWidget):
                 time.sleep(5)
                 continue
 
-            # Build pending list - assets without resolved names
-            # Build pending list - assets without resolved names.
-            # Prioritise assets in visible rows, then resolve the rest so that
-            # search-by-name works even for assets not currently displayed.
-            _row_count = self.table.rowCount()
+            try:
+                # Build pending list - assets without resolved names
+                # Build pending list - assets without resolved names.
+                # Prioritise assets in visible rows, then resolve the rest so that
+                # search-by-name works even for assets not currently displayed.
+                _row_count = self.table.rowCount()
+            except RuntimeError:
+                # Widget has been deleted (app shutting down)
+                break
+                
             visible = []
             hidden = []
             for asset_id, info in self._asset_info.items():

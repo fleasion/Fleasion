@@ -21,6 +21,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 from ..utils import CONFIG_DIR, ROBLOX_PROCESS, log_buffer
 from ..utils.threading import run_in_thread
 from .fflag_manager import FastFlagManager
+from .global_settings_manager import GlobalSettingsManager
 from .font_utils import apply_custom_font, restore_font_families, validate_font_bytes
 
 # ---------------------------------------------------------------------------
@@ -195,6 +196,9 @@ class ModificationManager(QObject):
 
         # FastFlagManager
         self.fflag_manager = FastFlagManager(self._roblox_dirs, self._stash_dir)
+        
+        # GlobalSettingsManager (for Roblox GlobalBasicSettings_13.xml)
+        self.global_settings_manager = GlobalSettingsManager(self._stash_dir)
 
     @property
     def roblox_dirs(self) -> list[Path]:
@@ -614,6 +618,12 @@ class ModificationManager(QObject):
                 self.fflag_manager.restore()
             except Exception as exc:
                 log_buffer.log('FastFlags', f'Restore failed: {exc}')
+        
+        # Restore global settings
+        try:
+            self.global_settings_manager.restore()
+        except Exception as exc:
+            log_buffer.log('GlobalSettings', f'Restore failed: {exc}')
 
         self.restore_finished.emit()
         log_buffer.log('Modifications', 'All modifications restored')

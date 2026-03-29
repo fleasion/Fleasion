@@ -854,7 +854,7 @@ class ModPreviewDialog(QDialog):
                     pretty_json = json_module.dumps(parsed, indent=2)
                     viewer.setPlainText(pretty_json)
                     layout.addWidget(viewer)
-                except (json.JSONDecodeError, ValueError, UnicodeDecodeError):
+                except (ValueError, UnicodeDecodeError):
                     # Not JSON, treat as font file
                     from ..cache.font_viewer import FontViewerWidget
                     font_viewer = FontViewerWidget(data)
@@ -920,10 +920,16 @@ class FFlagSection(QWidget):
     def __init__(self, manager: ModificationManager, parent=None):
         super().__init__(parent)
         self._manager = manager
+        
         self._debounce_timer = QTimer()
         self._debounce_timer.setSingleShot(True)
         self._debounce_timer.setInterval(500)
         self._debounce_timer.timeout.connect(self._write_flags)
+        
+        self._framerate_debounce_timer = QTimer()
+        self._framerate_debounce_timer.setSingleShot(True)
+        self._framerate_debounce_timer.setInterval(500)
+        self._framerate_debounce_timer.timeout.connect(self._write_framerate_cap)
 
         self._setup_ui()
         self._load_from_manager()
@@ -1052,6 +1058,17 @@ class FFlagSection(QWidget):
             grid.addWidget(spin, row, 1)
             row += 1
 
+        # Roblox Framerate Cap (Global Settings) - NOT disabled when FFlagsare off
+        framerate_label = QLabel('Framerate Cap (FPS)')
+        self._framerate_cap_label = framerate_label  # Store for enable/disable
+        grid.addWidget(framerate_label, row, 0)
+        self._framerate_cap = QSpinBox()
+        self._framerate_cap.setRange(0, 999999999)
+        self._framerate_cap.setSpecialValueText('Default')
+        self._framerate_cap.valueChanged.connect(self._on_framerate_changed)
+        grid.addWidget(self._framerate_cap, row, 1)
+        row += 1
+
         layout.addLayout(grid)
 
         # Reset button
@@ -1072,6 +1089,22 @@ class FFlagSection(QWidget):
         self._frm_spin.setEnabled(checked)
         self._schedule_write()
 
+    def _on_framerate_changed(self, *_args):
+        """Schedule a write of the framerate cap setting."""
+        self._framerate_debounce_timer.start()
+
+    def _write_framerate_cap(self):
+        """Write the framerate cap to GlobalBasicSettings_13.xml only if FFlagsare enabled."""
+        # Only write if FFlagsare enabled
+        if not self._manager.fast_flags_enabled:
+            return
+            
+        value = self._framerate_cap.value()
+        if value == 0:  # Default (unset)
+            run_in_thread(self._manager.global_settings_manager.restore)()
+        else:
+            run_in_thread(self._manager.global_settings_manager.write)(value)
+
     def _schedule_write(self, *_args):
         self._debounce_timer.start()
 
@@ -1091,6 +1124,7 @@ class FFlagSection(QWidget):
             'grass_max': self._grass_max.value() or None,
             'grass_min': self._grass_min.value() or None,
             'grass_motion': self._grass_motion.value() or None,
+            'framerate_cap': self._framerate_cap.value() or None,
         }
 
     def _write_flags(self):
@@ -1109,7 +1143,7 @@ class FFlagSection(QWidget):
             self._alt_enter, self._texture_quality, self._mesh_lod_enabled,
             self._mesh_lod_slider, self._frm_enabled, self._frm_spin,
             self._grey_sky, self._pause_vox, self._grass_max,
-            self._grass_min, self._grass_motion,
+            self._grass_min, self._grass_motion, self._framerate_cap,
         ]
         for w in widgets:
             w.blockSignals(True)
@@ -1143,6 +1177,8 @@ class FFlagSection(QWidget):
         self._grass_max.setValue(s.get('grass_max') or 0)
         self._grass_min.setValue(s.get('grass_min') or 0)
         self._grass_motion.setValue(s.get('grass_motion') or 0)
+        
+        self._framerate_cap.setValue(s.get('framerate_cap') or 0)
 
         for w in widgets:
             w.blockSignals(False)
@@ -1163,10 +1199,17 @@ class FFlagSection(QWidget):
         self._grass_max.setValue(0)
         self._grass_min.setValue(0)
         self._grass_motion.setValue(0)
+        self._framerate_cap.setValue(0)
 
         self._manager.fast_flags_enabled = False
         try:
             self._manager.fflag_manager.restore()
+        except Exception:
+            pass
+        
+        # Restore global settings as well
+        try:
+            self._manager.global_settings_manager.restore()
         except Exception:
             pass
 
