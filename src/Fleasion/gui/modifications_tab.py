@@ -1221,9 +1221,10 @@ class FFlagSection(QWidget):
 class ModificationsTab(QWidget):
     """The entire Modifications tab, added to the dashboard's QTabWidget."""
 
-    def __init__(self, mod_manager: ModificationManager, parent=None):
+    def __init__(self, mod_manager: ModificationManager, roblox_monitor=None, parent=None):
         super().__init__(parent)
         self._manager = mod_manager
+        self._roblox_monitor = roblox_monitor
         self._row_widgets: dict[str, ModRowWidget] = {}  # target_path -> widget
         self._custom_rows: list[ModRowWidget] = []
 
@@ -1233,6 +1234,10 @@ class ModificationsTab(QWidget):
         # Connect for live status bar updates
         mod_manager.apply_finished.connect(lambda _: self._update_status_bar())
         mod_manager.restore_finished.connect(self._update_status_bar)
+        
+        # Connect for Roblox player status changes
+        if self._roblox_monitor:
+            self._roblox_monitor.player_status_changed.connect(self._on_roblox_player_status_changed)
 
     def _setup_ui(self):
         outer = QVBoxLayout()
@@ -1522,6 +1527,18 @@ class ModificationsTab(QWidget):
         if checked:
             # Immediately write current settings
             self._fflag_widget._schedule_write()
+
+    def _on_roblox_player_status_changed(self, is_running: bool):
+        """Disable/enable the Fast Flags section when Roblox Player is running/stopped."""
+        # Only disable the content widget, not the toggle itself
+        # When Roblox is running, disable the fflag_widget
+        # When Roblox is stopped, re-enable it (but respect the toggle state)
+        if is_running:
+            # Roblox is running - disable the section
+            self._fflag_widget.setEnabled(False)
+        else:
+            # Roblox is not running - re-enable if the toggle is checked
+            self._fflag_widget.setEnabled(self._fflag_toggle.isChecked())
 
 
 # ═══════════════════════════════════════════════════════════════════

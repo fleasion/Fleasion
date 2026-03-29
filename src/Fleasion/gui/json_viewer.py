@@ -1406,6 +1406,12 @@ class JsonTreeViewer(QDialog):
         if self._current_pixmap is not None and self.image_label.isVisible():
             self._scale_and_show_image(self._current_pixmap)
 
+    def closeEvent(self, event):
+        """Handle dialog close - cleanup all resources including audio."""
+        self._clear_preview()
+        self._stop_all_loaders()
+        super().closeEvent(event)
+
     def _on_search_text_changed(self):
         """Handle search text change with debounce."""
         # Stop any existing search
