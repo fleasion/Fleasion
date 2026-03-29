@@ -836,6 +836,32 @@ class ModPreviewDialog(QDialog):
             except Exception as exc:
                 layout.addWidget(QLabel(f'Audio preview error: {exc}'))
 
+        # Fonts
+        elif lower.endswith(('.ttf', '.otf', '.ttc')):
+            try:
+                # Check if it's actually JSON (FontFamily) instead of a font file
+                try:
+                    import json as json_module
+                    decoded = data.decode('utf-8', errors='replace')
+                    json_module.loads(decoded)
+                    # It's valid JSON, show as JSON instead
+                    from PyQt6.QtWidgets import QTextEdit
+                    viewer = QTextEdit()
+                    viewer.setReadOnly(True)
+                    # Pretty print the JSON
+                    import json as json_module
+                    parsed = json_module.loads(decoded)
+                    pretty_json = json_module.dumps(parsed, indent=2)
+                    viewer.setPlainText(pretty_json)
+                    layout.addWidget(viewer)
+                except (json.JSONDecodeError, ValueError, UnicodeDecodeError):
+                    # Not JSON, treat as font file
+                    from ..cache.font_viewer import FontViewerWidget
+                    font_viewer = FontViewerWidget(data)
+                    layout.addWidget(font_viewer)
+            except Exception as exc:
+                layout.addWidget(QLabel(f'Font/JSON preview error: {exc}'))
+
         else:
             layout.addWidget(QLabel(f'No preview available for this file type'))
 

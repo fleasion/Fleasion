@@ -673,6 +673,7 @@ class JsonTreeViewer(QDialog):
         from ..cache.audio_player import AudioPlayerWidget  # noqa: F401 - used dynamically
         from ..cache.cache_json_viewer import CacheJsonViewer
         from ..cache.obj_viewer import ObjViewerPanel
+        from ..cache.font_viewer import FontViewerWidget  # noqa: F401 - used dynamically
 
         preview_widget = QWidget()
         preview_layout = QVBoxLayout()
@@ -742,12 +743,27 @@ class JsonTreeViewer(QDialog):
         self.json_viewer = CacheJsonViewer()
         self.preview_container_layout.addWidget(self.json_viewer)
 
+        # Font viewer container with centering wrapper
+        self.font_wrapper = QWidget()
+        font_wrapper_layout = QVBoxLayout()
+        font_wrapper_layout.setContentsMargins(0, 0, 0, 0)
+        font_wrapper_layout.addStretch(1)
+        self.font_container = QWidget()
+        self.font_container_layout = QVBoxLayout()
+        self.font_container_layout.setContentsMargins(0, 0, 0, 0)
+        self.font_container.setLayout(self.font_container_layout)
+        font_wrapper_layout.addWidget(self.font_container)
+        font_wrapper_layout.addStretch(1)
+        self.font_wrapper.setLayout(font_wrapper_layout)
+        self.preview_container_layout.addWidget(self.font_wrapper)
+
         # Hide all initially
         self.obj_viewer.hide()
         self.audio_wrapper.hide()
         self.animation_viewer.hide()
         self.text_viewer.hide()
         self.json_viewer.hide()
+        self.font_wrapper.hide()
 
         self.preview_container.setLayout(self.preview_container_layout)
         self.preview_scroll.setWidget(self.preview_container)
@@ -803,6 +819,8 @@ class JsonTreeViewer(QDialog):
             self._preview_mesh(data)
         elif content_type == 'audio':
             self._preview_audio(data)
+        elif content_type == 'font':
+            self._preview_font(data)
         elif content_type == 'texturepack':
             self._preview_texturepack(data)
         elif content_type in ('rbxm', 'rbxmx'):
@@ -836,6 +854,16 @@ class JsonTreeViewer(QDialog):
             return 'audio'
         if working[:3] == b'ID3' or working[:2] in (b'\xff\xfb', b'\xff\xf3', b'\xff\xf2'):
             return 'audio'
+
+        # Fonts (TrueType/OpenType)
+        if working[:4] == b'\x00\x01\x00\x00':  # TrueType
+            return 'font'
+        if working[:4] == b'OTTO':  # OpenType (CFF-based)
+            return 'font'
+        if working[:4] == b'ttcf':  # TrueType Collection
+            return 'font'
+        if working[:2] == b'\x01\x00':  # Alternative TrueType magic
+            return 'font'
 
         # Roblox mesh (starts with "version")
         if working[:7] == b'version':
@@ -951,6 +979,27 @@ class JsonTreeViewer(QDialog):
 
         except Exception as e:
             self._show_text_preview(f'Audio error: {e}')
+
+    def _preview_font(self, data: bytes):
+        """Preview a font asset (TTF, OTF, TTC)."""
+        from ..cache.font_viewer import FontViewerWidget
+
+        try:
+            font_viewer = FontViewerWidget(data, self)
+            
+            # Clear previous font widgets
+            while self.font_container_layout.count():
+                child = self.font_container_layout.takeAt(0)
+                if child.widget():
+                    child.widget().deleteLater()
+            
+            # Add new font viewer
+            self.font_container_layout.addWidget(font_viewer)
+            self._hide_loading()
+            self.font_wrapper.show()
+            
+        except Exception as e:
+            self._show_text_preview(f'Font error: {e}')
 
     def _preview_animation(self, data: bytes):
         """Preview RBXM/RBXMX animation data."""
@@ -1268,6 +1317,7 @@ class JsonTreeViewer(QDialog):
         self.animation_viewer.hide()
         self.text_viewer.hide()
         self.json_viewer.hide()
+        self.font_wrapper.hide()
         self.loading_label.hide()
         self._current_pixmap = None
 

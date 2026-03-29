@@ -414,6 +414,10 @@ class CacheManager:
         elif asset_type == 39:  # SolidModel
             formats.insert(0, 'converted_rbxmx')
             formats.insert(0, 'converted_obj')
+        elif asset_type == 73:  # FontFamily - JSON metadata
+            formats.insert(0, 'converted_json')
+        elif asset_type == 74:  # FontFace - actual font file
+            formats.insert(0, 'converted_font')
 
         return formats
 
@@ -590,6 +594,16 @@ class CacheManager:
                 elif export_format == 'converted_rbxmx' and asset_type == 24:  # Animation - export as RBXMX
                     output_path = export_type_dir / f'{filename}.rbxmx'
 
+                elif export_format == 'converted_json' and asset_type == 73:  # FontFamily - JSON metadata
+                    # FontFamily assets are JSON files
+                    output_path = export_type_dir / f'{filename}.json'
+                    output_path.write_bytes(data)
+                    return output_path
+
+                elif export_format == 'converted_font' and asset_type == 74:  # FontFace - actual font file
+                    ext = self._detect_font_extension(data)
+                    output_path = export_type_dir / f'{filename}{ext}'
+
                 else:
                     # Default binary export
                     output_path = export_type_dir / f'{filename}.bin'
@@ -606,8 +620,10 @@ class CacheManager:
         """Detect file extension based on data signature."""
         if asset_type == 39:
             return '.bin'
-        if asset_type in (73, 74) and data.startswith(b'\x00\x01\x00\x00'):
-            return '.ttf'
+        if asset_type == 73:  # FontFamily - JSON metadata
+            return '.json'
+        if asset_type == 74:  # FontFace - actual font file
+            return self._detect_font_extension(data)
         if data.startswith(b'\x89PNG'):
             return '.png'
         elif data.startswith(b'OggS'):
@@ -630,6 +646,26 @@ class CacheManager:
             return '.gz'
         else:
             return '.bin'
+
+    def _detect_font_extension(self, data: bytes) -> str:
+        """Detect font file extension from magic bytes."""
+        if not data:
+            return '.ttf'
+        
+        # TrueType
+        if data[:4] == b'\x00\x01\x00\x00':
+            return '.ttf'
+        # OpenType (CFF-based)
+        if data[:4] == b'OTTO':
+            return '.otf'
+        # TrueType Collection
+        if data[:4] == b'ttcf':
+            return '.ttc'
+        # Alternative TrueType magic
+        if data[:2] == b'\x01\x00':
+            return '.ttf'
+        
+        return '.ttf'  # Default to TTF for font types
 
     def _export_texturepack(self, data: bytes, asset_id: str,
                            export_type_dir: Path, base_filename: str) -> Optional[Path]:

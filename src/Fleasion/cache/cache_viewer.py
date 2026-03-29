@@ -20,6 +20,7 @@ from .obj_viewer import ObjViewerPanel
 from .audio_player import AudioPlayerWidget
 from .animation_viewer import AnimationViewerPanel
 from .cache_json_viewer import CacheJsonViewer
+from .font_viewer import FontViewerWidget
 from . import mesh_processing
 from ..utils import log_buffer, open_folder
 import json
@@ -1719,6 +1720,20 @@ class CacheViewerTab(QWidget):
         self.json_viewer = CacheJsonViewer()
         self.preview_container_layout.addWidget(self.json_viewer)
 
+        # Font viewer for font files
+        self.font_wrapper = QWidget()
+        font_wrapper_layout = QVBoxLayout()
+        font_wrapper_layout.setContentsMargins(0, 0, 0, 0)
+        font_wrapper_layout.addStretch(1)
+        self.font_container = QWidget()
+        self.font_container_layout = QVBoxLayout()
+        self.font_container_layout.setContentsMargins(0, 0, 0, 0)
+        self.font_container.setLayout(self.font_container_layout)
+        font_wrapper_layout.addWidget(self.font_container)
+        font_wrapper_layout.addStretch(1)
+        self.font_wrapper.setLayout(font_wrapper_layout)
+        self.preview_container_layout.addWidget(self.font_wrapper)
+
         # Texture pack container (dynamically created)
         self.texturepack_widget = None
 
@@ -2896,6 +2911,7 @@ class CacheViewerTab(QWidget):
         self.animation_viewer.hide()
         self.text_viewer.hide()
         self.json_viewer.hide()
+        self.font_wrapper.hide()
 
         # Clean up texture pack widget
         if self.texturepack_widget is not None:
@@ -2959,6 +2975,14 @@ class CacheViewerTab(QWidget):
                 self._preview_audio(data, asset_id)
             elif asset_type == 24:  # Animation
                 self._preview_animation(data, asset_id)
+            elif asset_type == 74:  # FontFace - actual font file
+                self._preview_font(data)
+            elif asset_type == 73:  # FontFamily - JSON metadata
+                is_json, _ = self._is_json_data(data)
+                if is_json:
+                    self._preview_json(data, asset)
+                else:
+                    self._show_text_preview('FontFamily data could not be parsed as JSON')
             elif asset_type == 63:  # TexturePack
                 self._preview_texturepack(data, asset_id)
             else:
@@ -4003,6 +4027,29 @@ class CacheViewerTab(QWidget):
 
         except Exception as e:
             self._show_text_preview(f'Animation preview error: {e}')
+
+    def _preview_font(self, data: bytes):
+        """Preview a font asset (TTF, OTF, TTC)."""
+        try:
+            log_buffer.log('Preview', f'Loading font ({len(data)} bytes)')
+            
+            # Create font viewer widget
+            font_viewer = FontViewerWidget(data, self)
+            
+            # Clear previous font widgets
+            while self.font_container_layout.count():
+                child = self.font_container_layout.takeAt(0)
+                if child.widget():
+                    child.widget().deleteLater()
+            
+            # Add new font viewer
+            self.font_container_layout.addWidget(font_viewer)
+            self.font_wrapper.show()
+            self.stop_preview_btn.show()
+            
+        except Exception as e:
+            self._show_text_preview(f'Font preview error: {e}')
+            log_buffer.log('Preview', f'Font preview error: {e}')
 
     def _is_json_data(self, data: bytes) -> tuple[bool, dict | list | None]:
         """
