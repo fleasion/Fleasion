@@ -47,6 +47,12 @@ class CacheScraper:
         self.cache_logs: dict = {}
         # base CDN URL (no query) -> list[asset_id]  (1:many – same replacement ID → same CDN URL)
         self._url_to_asset: dict[str, list] = {}
+        # TexturePack sub-asset lookup: sub_asset_id -> (parent_pack_id, map_index)
+        # map_index 0=Color/Albedo, 1=Normal, 2=Roughness/Metalness
+        # Populated when a TexturePack XML is successfully fetched and cached.
+        # Lets the replacer resolve a sub-asset ID directly to the correct
+        # texture slot without the user needing to know the parent pack ID.
+        self._texpack_subasset_lookup: dict[int, tuple[int, int]] = {}
 
         # Background thread pool for API conversion (KTX->PNG etc.)
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='cache_api')
@@ -86,8 +92,6 @@ class CacheScraper:
                 if not isinstance(item, dict) or 'assetId' not in item:
                     continue
                 asset_id = item['assetId']
-                if asset_id in self.cache_logs:
-                    continue
                 if idx >= len(res_json):
                     continue
                 res_item = res_json[idx]
@@ -95,27 +99,37 @@ class CacheScraper:
                     continue
                 location = res_item.get('location')
                 asset_type = res_item.get('assetTypeId')
-                if location is not None and asset_type is not None:
+                if location is None or asset_type is None:
+                    continue
+                base_url = location.split('?')[0]
+                # Skip if this exact CDN URL is already registered.
+                # Previously this was keyed by asset_id alone, which meant only
+                # the FIRST batch entry for a given assetId was tracked — silently
+                # dropping all subsequent texture slots (normal, metalness,
+                # roughness…) that Roblox requests by sending the same assetId
+                # multiple times with different requestedBuildType values.
+                if base_url in self._url_to_asset:
+                    continue
+                if asset_id not in self.cache_logs:
                     self.cache_logs[asset_id] = {'location': location, 'assetTypeId': asset_type}
-                    base_url = location.split('?')[0]
-                    url_list = self._url_to_asset.setdefault(base_url, [])
+                url_list = self._url_to_asset.setdefault(base_url, [])
 
-                    # Check if a sibling for this CDN URL is already cached
-                    # (from a previous batch).  If so, mark this one cached and
-                    # schedule a content copy instead of waiting for a CDN
-                    # response that will never arrive.
-                    cached_sibling = None
-                    for sibling_id in url_list:
-                        sibling_info = self.cache_logs.get(sibling_id)
-                        if sibling_info and 'cached' in sibling_info:
-                            cached_sibling = sibling_id
-                            break
-                    if cached_sibling is not None:
-                        self.cache_logs[asset_id]['cached'] = True
-                        to_copy.append((cached_sibling, asset_id, asset_type, location))
+                # Check if a sibling for this CDN URL is already cached
+                # (from a previous batch).  If so, mark this one cached and
+                # schedule a content copy instead of waiting for a CDN
+                # response that will never arrive.
+                cached_sibling = None
+                for sibling_id in url_list:
+                    sibling_info = self.cache_logs.get(sibling_id)
+                    if sibling_info and 'cached' in sibling_info:
+                        cached_sibling = sibling_id
+                        break
+                if cached_sibling is not None:
+                    self.cache_logs[asset_id]['cached'] = True
+                    to_copy.append((cached_sibling, asset_id, asset_type, location))
 
-                    url_list.append(asset_id)
-                    tracked += 1
+                url_list.append(asset_id)
+                tracked += 1
 
         # Submit copy tasks outside the lock
         for source_id, dest_id, asset_type, url in to_copy:
@@ -140,6 +154,18 @@ class CacheScraper:
 
         base_url = full_url.split('?')[0]
 
+        # Warn if a CDN URL arrives that was never registered via a batch
+        # response — this was the original TexturePack sub-asset blind spot.
+        # Should no longer fire after the dedup fix; kept as a canary.
+        with self._lock:
+            _known = base_url in self._url_to_asset
+        if not _known:
+            _cdn_id = base_url.rsplit('/', 1)[-1]
+            log_buffer.log(
+                'DEBUG_CDN',
+                f'[CDN UNKNOWN] URL not seen in any batch (cdn_id={_cdn_id})'
+            )
+
         with self._lock:
             asset_ids = self._url_to_asset.get(base_url)
             if not asset_ids:
@@ -156,7 +182,8 @@ class CacheScraper:
 
         cache_hash = path.rsplit('/', 1)[-1]
         metadata = {
-            'url': full_url,
+            # Persist query-stripped URL to avoid storing signed/query params.
+            'url': base_url,
             'content_type': content_type,
             'content_length': len(body),
             'hash': cache_hash,
@@ -571,9 +598,12 @@ class CacheScraper:
                     if success:
                         type_name = self.cache_manager.get_asset_type_name(asset_type)
                         log_buffer.log('Cache', f'Converted {type_name} to {content_desc}: {asset_id}')
-                        # For TexturePack: also preserve the raw KTX2 CDN bytes as sidecar
-                        if asset_type == 63 and inner_content:
-                            self.cache_manager.store_raw_asset(str(asset_id), asset_type, inner_content)
+                        # For TexturePack: preserve raw KTX2 sidecar AND populate
+                        # the sub-asset lookup so replacements can target sub-asset IDs.
+                        if asset_type == 63:
+                            if inner_content:
+                                self.cache_manager.store_raw_asset(str(asset_id), asset_type, inner_content)
+                            self._populate_texpack_subasset_lookup(int(asset_id), api_content)
                     return
 
             if original_content is not None:
@@ -595,6 +625,48 @@ class CacheScraper:
                     )
                 except Exception:
                     pass
+
+    def _populate_texpack_subasset_lookup(self, parent_id: int, xml_content: bytes) -> None:
+        """Parse TexturePack XML and record sub-asset → (parent, map_index) mappings.
+
+        map_index is the POSITIONAL index of each map tag among all known map tags
+        present in this specific XML.  This matches the ``fidelity`` slot encoding
+        that Roblox uses in the batch request API.
+
+        Example — pack with <color>, <normal>, <metalness>, <roughness>:
+          color → 0, normal → 1, metalness → 2, roughness → 3
+
+        Example — pack with <color>, <normal>, <roughness>, <emissive>, <height>:
+          color → 0, normal → 1, roughness → 2, emissive → 3, height → 4
+        """
+        # All tag names that represent texture map slots (lowercase).
+        # The position of a tag in this set does NOT matter — only document order does.
+        _KNOWN_MAP_TAGS = {
+            'color', 'albedo', 'diffuse', 'basecolor',
+            'normal', 'normalmap', 'bumpmap',
+            'roughness', 'metalness', 'orm',
+            'emissive', 'emissivemap',
+            'height', 'heightmap', 'displacement',
+        }
+        try:
+            import xml.etree.ElementTree as _ET
+            root = _ET.fromstring(xml_content)
+            added = 0
+            slot_idx = 0
+            for elem in root:  # direct children only — no recursion into sub-trees
+                tag_lower = elem.tag.lower().lstrip('{').split('}')[-1]  # strip namespace
+                if tag_lower not in _KNOWN_MAP_TAGS:
+                    continue
+                text = (elem.text or '').strip()
+                if text.isdigit() and int(text) != 0:
+                    sub_id = int(text)
+                    self._texpack_subasset_lookup[sub_id] = (parent_id, slot_idx)
+                    added += 1
+                slot_idx += 1  # every map slot increments the index even if empty/zero
+            if added:
+                log_buffer.log('Cache', f'TexturePack {parent_id}: mapped {added} sub-asset(s)')
+        except Exception as exc:
+            log_buffer.log('Cache', f'TexturePack {parent_id} sub-asset parse error: {exc}')
 
     def _store_asset_async(
         self, asset_id: str, asset_type: int, data: bytes, url: str, metadata: dict,
@@ -626,6 +698,70 @@ class CacheScraper:
                     log_buffer.log('Cache', f'Replicated {type_name}: {dest_id} (from {source_id})')
         except Exception as exc:
             log_buffer.log('Cache', f'Replication error {source_id}->{dest_id}: {exc}')
+
+    # ------------------------------------------------------------------
+    # DEBUG: Direct /v1/asset/ response hook (non-batch blind spot)
+    # ------------------------------------------------------------------
+
+    def process_direct_asset_response(
+        self,
+        path: str,
+        status: int,
+        location: str,
+        body: bytes,
+        content_type: str,
+    ) -> None:
+        """Called by the proxy for every non-batch assetdelivery.roblox.com response.
+
+        This is the blind spot where TexturePack sub-asset IDs (e.g. the normal
+        map referenced inside the TexturePack XML) flow through without being
+        tracked by the scraper.
+
+        In DEBUG mode we just log every observation so we can confirm the theory.
+        We extract the asset ID from the path query string (``?id=<id>``) and log
+        the full context so it's easy to correlate with the batch log.
+        """
+        if not self.enabled:
+            return
+
+        # Parse asset ID out of path like /v1/asset/?id=7547298681
+        import re as _re
+        _m = _re.search(r'[?&]id=(\d+)', path)
+        asset_id = _m.group(1) if _m else None
+
+        # Identify the body magic so we know what kind of asset this is
+        magic = body[:8].hex() if body else 'empty'
+        body_snippet = body[:64].hex() if body else 'empty'
+
+        # Is this a 302 redirect to the CDN, or direct bytes?
+        is_redirect = (status in (301, 302, 303, 307, 308)) and bool(location)
+
+        log_buffer.log(
+            'DEBUG_DIRECT',
+            f'[DIRECT ASSET] asset_id={asset_id!r} '
+            f'status={status} is_redirect={is_redirect} '
+            f'body_len={len(body)} magic={magic} '
+            f'content_type={content_type!r}'
+        )
+
+        if is_redirect:
+            # The CDN URL in Location: will be fetched next as an fts.rbxcdn.com
+            # request, but it WON'T be in _url_to_asset so process_cdn_response
+            # will silently drop it. Log only a non-sensitive CDN id.
+            _cdn_id = str(location).split('?', 1)[0].rsplit('/', 1)[-1]
+            log_buffer.log(
+                'DEBUG_DIRECT',
+                f'[DIRECT ASSET REDIRECT] asset_id={asset_id!r} cdn_id={_cdn_id!r}  '
+                f'<-- this CDN URL will NOT be caught by process_cdn_response '
+                f'because it was never registered via a batch response'
+            )
+        else:
+            # Direct bytes (rare for images but possible). Log what we got.
+            log_buffer.log(
+                'DEBUG_DIRECT',
+                f'[DIRECT ASSET BYTES] asset_id={asset_id!r} '
+                f'body_head={body_snippet}'
+            )
 
     # ------------------------------------------------------------------
     # GUI-callable interface (same as before - no change needed in GUI code)

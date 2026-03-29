@@ -358,6 +358,35 @@ class TextureStripper:
                     del replacements[orig_id]
                     local_replacements[orig_id] = predownloaded
 
+        # Pre-resolve TexturePack sub-asset IDs to slot keys.
+        # If the user targets a sub-asset ID (e.g. 7547298681, the normal map),
+        # we convert it to "parentId:mapIndex" (e.g. "7547298786:1") so the slot
+        # replacement below can match the correct batch entry.
+        # This lookup is populated by cache_scraper whenever a TexturePack is cached.
+        if self._cache_scraper is not None:
+            lookup = getattr(self._cache_scraper, '_texpack_subasset_lookup', {})
+            if lookup:
+                all_src_ids = (set(replacements.keys()) | set(cdn_replacements.keys()) |
+                               set(local_replacements.keys()) | removals)
+                needs_resolve = all_src_ids & set(lookup.keys())
+                if needs_resolve:
+                    replacements     = dict(replacements)
+                    cdn_replacements = dict(cdn_replacements)
+                    local_replacements = dict(local_replacements)
+                    removals = set(removals)
+                    for sub_id in needs_resolve:
+                        parent_id, map_idx = lookup[sub_id]
+                        slot_key = f'{parent_id}:{map_idx}'
+                        if sub_id in replacements:
+                            replacements[slot_key] = replacements.pop(sub_id)
+                        if sub_id in cdn_replacements:
+                            cdn_replacements[slot_key] = cdn_replacements.pop(sub_id)
+                        if sub_id in local_replacements:
+                            local_replacements[slot_key] = local_replacements.pop(sub_id)
+                        if sub_id in removals:
+                            removals.discard(sub_id)
+                            removals.add(slot_key)
+
         # If any replacement targets are newly added (not yet checked),
         # trigger a background precheck so the next batch can serve them locally.
         if replacements and self._cache_scraper is not None:
@@ -386,9 +415,18 @@ class TextureStripper:
             req_id = e.get('requestId')
             type_keys = self._get_type_keys(e)
 
-            # ID/type replacement
+            # Build slot key from the fidelity field in contentRepresentationPriorityList.
+            # slot_key = "assetId:mapIndex" (e.g. "7547298786:1" for the normal-map slot).
+            # This allows per-slot replacement: the user can target a specific texture map
+            # of a TexturePack by its sub-asset ID (auto-resolved below) or directly.
+            map_index = self._get_texpack_map_index(e)
+            slot_key = f'{aid}:{map_index}' if (aid is not None and map_index is not None) else None
+
+            # ID/type replacement — slot-specific match takes priority over whole-asset
             matched = None
-            if aid in replacements:
+            if slot_key and slot_key in replacements:
+                matched = slot_key
+            elif aid in replacements:
                 matched = aid
             else:
                 for tk in type_keys:
@@ -399,15 +437,16 @@ class TextureStripper:
                 replacement_id = replacements[matched]
                 e['assetId'] = replacement_id
                 id_swapped[idx] = aid
-                log_buffer.log('Replacer', f'Replaced {aid} -> {replacement_id}')
+                slot_info = f' (slot {map_index})' if (slot_key and slot_key == matched) else ''
+                log_buffer.log('Replacer', f'Replaced {aid} -> {replacement_id}{slot_info}')
                 modified = True
 
-            # CDN / local routing
+            # CDN / local routing — slot key takes priority
             if req_id and aid:
                 is_solidmodel = (e.get('assetTypeId') == 39) or (
                     self._REVERSE.get(str(e.get('assetType', '')).lower()) == 39
                 )
-                all_keys = [aid] + type_keys
+                all_keys = ([slot_key] if slot_key else []) + [aid] + type_keys
                 cdn_key = next((k for k in all_keys if k in cdn_replacements), None)
                 local_key = next((k for k in all_keys if k in local_replacements), None)
                 if cdn_key is not None:
@@ -629,7 +668,13 @@ class TextureStripper:
                 log_buffer.log('Local', f'Queued local for {aid}')
 
     def _should_remove(self, e: dict, removals: set) -> bool:
-        if e.get('assetId') in removals:
+        aid = e.get('assetId')
+        # Slot-specific check using fidelity-based map_index
+        map_index = self._get_texpack_map_index(e)
+        if aid is not None and map_index is not None:
+            if f'{aid}:{map_index}' in removals:
+                return True
+        if aid in removals:
             return True
         at_id = e.get('assetTypeId')
         if at_id is not None and at_id in removals:
@@ -654,3 +699,32 @@ class TextureStripper:
             if mapped is not None:
                 keys.append(mapped)
         return keys
+
+    @staticmethod
+    def _get_texpack_map_index(e: dict) -> int | None:
+        """Return texture map slot index from the batch item's fidelity field.
+
+        Roblox encodes the slot as a base64 fidelity value inside
+        ``contentRepresentationPriorityList``.  The slot index lives in the
+        low 6 bits of the first decoded byte:
+          0 = Color / Albedo
+          1 = Normal
+          2 = Roughness / Metalness
+        Higher bits encode the quality/LOD level (1, 2, 3).
+        """
+        crpl = e.get('contentRepresentationPriorityList')
+        if not crpl:
+            return None
+        try:
+            import base64 as _b64
+            import json as _json
+            decoded = _json.loads(_b64.b64decode(crpl))
+            if not isinstance(decoded, list) or not decoded:
+                return None
+            fidelity_b64 = decoded[0].get('fidelity')
+            if not fidelity_b64:
+                return None
+            fb = _b64.b64decode(fidelity_b64)
+            return fb[0] & 0x3F
+        except Exception:
+            return None

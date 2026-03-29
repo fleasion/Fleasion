@@ -379,6 +379,7 @@ class FleasionProxy:
             path = parts[1].decode('ascii', errors='replace') if len(parts) > 1 else '/'
             is_batch = (host == 'assetdelivery.roblox.com' and b'/v1/assets/batch' in req_first)
 
+
             # ── TextureStripper: CDN short-circuit (replace before upstream) ──
             # Race condition fix: the batch-request coroutine (on the assetdelivery
             # connection) and this CDN coroutine (on fts.rbxcdn.com) run concurrently.
@@ -494,6 +495,20 @@ class FleasionProxy:
                         scraper_body,
                         resp_body_plain,
                     )
+
+            elif host == 'assetdelivery.roblox.com' and not is_batch:
+                # Non-batch assetdelivery response (confirmed rare/non-existent
+                # in practice for TexturePack sub-assets after dedup fix).
+                # Still wire up the scraper hook as a fallback.
+                if self.cache_scraper.enabled:
+                    resp_body_plain_nb = _decompress_body(resp_body_raw, resp_headers)
+                    resp_status_code = int(resp_first.split(b' ', 2)[1]) if resp_first else 0
+                    resp_location = resp_headers.get(b'location', b'').decode('ascii', errors='replace')
+                    if resp_body_plain_nb:
+                        self.cache_scraper.process_direct_asset_response(
+                            path, resp_status_code, resp_location, resp_body_plain_nb,
+                            resp_headers.get(b'content-type', b'').decode('ascii', errors='replace'),
+                        )
 
             elif host == 'fts.rbxcdn.com':
                 full_url = f'https://{host}{path}'

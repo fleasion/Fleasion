@@ -3667,13 +3667,25 @@ class CacheViewerTab(QWidget):
             self._texturepack_xml = xml_text  # Store for context menu
             root = ET.fromstring(xml_text)
 
-            # Extract texture map IDs in order
-            map_order = ['color', 'normal', 'metalness', 'roughness', 'emissive']
-            maps = {}
-            for elem in map_order:
-                node = root.find(elem)
-                if node is not None and node.text:
-                    maps[elem.capitalize()] = node.text
+            # Extract texture map IDs in document order.
+            # map_index is POSITIONAL — the Nth map tag present in this XML.
+            # This matches the fidelity slot encoding Roblox uses in batch requests.
+            _KNOWN_MAP_TAGS = {'color', 'albedo', 'normal', 'metalness', 'roughness',
+                               'emissive', 'height', 'orm', 'diffuse', 'normalmap',
+                               'bumpmap', 'heightmap', 'displacement'}
+            maps = {}          # display_name -> map_id_str
+            maps_indices = {}  # display_name -> positional slot_idx
+            slot_idx = 0
+            for child in root:
+                tag_lower = child.tag.lower().lstrip('{').split('}')[-1]
+                if tag_lower not in _KNOWN_MAP_TAGS:
+                    continue
+                text = (child.text or '').strip()
+                if text.isdigit() and text != '0':
+                    display_name = tag_lower.capitalize()
+                    maps[display_name] = text
+                    maps_indices[display_name] = slot_idx
+                slot_idx += 1  # every known slot tag advances the index
 
             if not maps:
                 self._show_text_preview(f'No texture maps found in texture pack {asset_id}')
@@ -3694,8 +3706,10 @@ class CacheViewerTab(QWidget):
 
             # Create placeholder for each texture map
             for map_name, map_id in maps.items():
-                # Header with name and id
-                header = QLabel(f'{map_name}  |  {map_id}')
+                map_index = maps_indices.get(map_name, '?')
+                slot_key = f'{asset_id}:{map_index}'
+                # Header: Name  |  sub-asset ID  |  slot X  (slot X is what goes in replace_ids)
+                header = QLabel(f'{map_name}  |  {map_id}  |  slot {map_index}')
                 header.setStyleSheet('font-weight: bold; color: #888; padding: 5px;')
                 header.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
                 tp_layout.addWidget(header)
@@ -3707,6 +3721,8 @@ class CacheViewerTab(QWidget):
                 img_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
                 img_label.setProperty('map_name', map_name)
                 img_label.setProperty('map_id', map_id)
+                img_label.setProperty('map_index', map_index)
+                img_label.setProperty('slot_key', slot_key)
                 img_label.customContextMenuRequested.connect(
                     lambda pos, lbl=img_label: self._show_texturepack_context_menu(pos, lbl)
                 )
@@ -3822,6 +3838,7 @@ class CacheViewerTab(QWidget):
         map_name = label.property('map_name')
         map_id = label.property('map_id')
         map_hash = label.property('map_hash') or ''
+        slot_key = label.property('slot_key') or ''
 
         menu = QMenu(self)
 
@@ -3830,9 +3847,12 @@ class CacheViewerTab(QWidget):
 
         menu.addSeparator()
 
-        # Copy name/id/hash
+        # Copy name/slot-key/sub-asset-id/hash
         copy_name_action = menu.addAction(f'Copy Name ({map_name})')
-        copy_id_action = menu.addAction(f'Copy ID ({map_id})')
+        # "Copy ID" intentionally copies slot key, because this is the exact
+        # value users should paste into replace_ids for per-slot replacement.
+        copy_id_action = menu.addAction(f'Copy ID ({slot_key})')
+        copy_subasset_action = menu.addAction(f'Copy Sub-Asset ID ({map_id})')
         copy_hash_action = None
         if map_hash:
             copy_hash_action = menu.addAction(f'Copy Hash ({map_hash[:16]}...)')
@@ -3851,6 +3871,8 @@ class CacheViewerTab(QWidget):
         elif action == copy_name_action:
             QApplication.clipboard().setText(map_name)
         elif action == copy_id_action:
+            QApplication.clipboard().setText(slot_key)
+        elif action == copy_subasset_action:
             QApplication.clipboard().setText(str(map_id))
         elif action == copy_hash_action and map_hash:
             QApplication.clipboard().setText(map_hash)
