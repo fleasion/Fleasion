@@ -777,7 +777,7 @@ class CacheManager:
                                         if cookies_data:
                                             enc = base64.b64decode(cookies_data)
                                             dec = win32crypt.CryptUnprotectData(enc, None, None, None, 0)[1]
-                                            s = dec.decode(errors='ignore')
+                                            s = dec.decode('utf-8', errors='ignore')
                                             m = re.search(r'\.ROBLOSECURITY\s+([^\s;]+)', s)
                                             if m:
                                                 headers['Cookie'] = f'.ROBLOSECURITY={m.group(1)};'
