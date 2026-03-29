@@ -3733,7 +3733,7 @@ class CacheViewerTab(QWidget):
                 map_index = maps_indices.get(map_name, '?')
                 slot_key = f'{asset_id}:{map_index}'
                 # Header: Name  |  sub-asset ID  |  slot X  (slot X is what goes in replace_ids)
-                header = QLabel(f'{map_name}  |  {map_id}  |  slot {map_index}')
+                header = QLabel(f'{map_name}  |  {asset_id}:{map_index}')
                 header.setStyleSheet('font-weight: bold; color: #888; padding: 5px;')
                 header.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
                 tp_layout.addWidget(header)
@@ -3876,7 +3876,7 @@ class CacheViewerTab(QWidget):
         # "Copy ID" intentionally copies slot key, because this is the exact
         # value users should paste into replace_ids for per-slot replacement.
         copy_id_action = menu.addAction(f'Copy ID ({slot_key})')
-        copy_subasset_action = menu.addAction(f'Copy Sub-Asset ID ({map_id})')
+        copy_subasset_action = menu.addAction(f'Copy Sub-Asset ID ({map_id}) (Useless for Replacements)')
         copy_hash_action = None
         if map_hash:
             copy_hash_action = menu.addAction(f'Copy Hash ({map_hash[:16]}...)')

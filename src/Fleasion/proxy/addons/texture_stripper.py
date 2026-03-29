@@ -452,7 +452,11 @@ class TextureStripper:
                 if cdn_key is not None:
                     self._route_cdn(f'{batch_id}_{req_id}', aid, cdn_replacements[cdn_key], is_solidmodel)
                 elif local_key is not None:
-                    self._route_local(f'{batch_id}_{req_id}', aid, local_replacements[local_key], is_solidmodel)
+                    # Check if this replacement specifically targets a TexturePack slot or type
+                    is_texpack = (':' in str(local_key)) or (e.get('assetTypeId') == 63) or (
+                        self._REVERSE.get(str(e.get('assetType', '')).lower()) == 63
+                    )
+                    self._route_local(f'{batch_id}_{req_id}', aid, local_replacements[local_key], is_solidmodel, is_texpack)
 
         if modified:
             result = _dumps(data)
@@ -619,9 +623,21 @@ class TextureStripper:
             self._pending[req_id] = ('cdn', cdn_url)
         log_buffer.log('CDN', f'Queued CDN redirect for {aid}')
 
-    def _route_local(self, req_id: str, aid, local_path: str, is_solidmodel: bool) -> None:
+    def _route_local(self, req_id: str, aid, local_path: str, is_solidmodel: bool, is_texpack: bool = False) -> None:
         path = Path(local_path)
         ext = path.suffix.lower()
+        
+        # Isolate KTX2 explicit conversion only to TexturePack image replacements
+        if is_texpack and ext in ('.png', '.jpg', '.jpeg', '.webp'):
+            try:
+                from ...cache.tools.image_to_ktx2.converter import get_or_create_ktx2_from_image
+                converted_path = get_or_create_ktx2_from_image(path)
+                if converted_path:
+                    local_path = str(converted_path)
+                    path = converted_path
+                    ext = path.suffix.lower()
+            except Exception as e:
+                log_buffer.log('Local', f'Failed to convert {path.name} to KTX2: {e}')
 
         if is_solidmodel:
             if ext == '.obj':

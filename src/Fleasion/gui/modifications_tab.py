@@ -95,7 +95,7 @@ TEXTURES = [
     # (display_name, target_path, file_filter)
     ('High Quality Studs — Diffuse',       r'PlatformContent\pc\textures\plastic\diffuse.dds',      DDS_FILTER),
     ('High Quality Studs — Normal',        r'PlatformContent\pc\textures\plastic\normal.dds',       DDS_FILTER),
-    ('High Quality Studs — Normal Detail', r'PlatformContent\pc\textures\plastic\normaldetail.dds', DDS_FILTER),
+    ('High Quality Studs — Detail',        r'PlatformContent\pc\textures\plastic\normaldetail.dds', DDS_FILTER),
     ('Low Quality Studs',                   r'PlatformContent\pc\textures\studs.dds',                DDS_FILTER),
     ('Shiftlock Cursor',                    r'content\textures\MouseLockedCursor.png',               IMAGE_FILTER),
     ('Cursor — Pointing',                  r'content\textures\Cursors\KeyboardMouse\ArrowCursor.png',    IMAGE_FILTER),
