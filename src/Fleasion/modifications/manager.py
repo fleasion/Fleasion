@@ -473,7 +473,11 @@ class ModificationManager(QObject):
                 'No cache scraper available. Asset ID download requires the proxy to be running.'
             )
 
-        data, status = self._cache_scraper._fetch_asset_with_place_id_retry(str(asset_id))
+        extra_hdrs = {}
+        cookie = self._cache_scraper._get_roblosecurity()
+        if cookie:
+            extra_hdrs['Cookie'] = f'.ROBLOSECURITY={cookie};'
+        data, status = self._cache_scraper._fetch_asset_with_place_id_retry(str(asset_id), extra_headers=extra_hdrs or None)
         if data is None:
             if status == 403:
                 raise PermissionError(

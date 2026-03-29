@@ -435,6 +435,38 @@ class TextureStripper:
                         break
             if matched is not None:
                 replacement_id = replacements[matched]
+                
+                is_texpack_match = (':' in str(matched)) or (e.get('assetTypeId') == 63) or (
+                    self._REVERSE.get(str(e.get('assetType', '')).lower()) == 63
+                )
+                
+                if is_texpack_match and req_id and aid and str(replacement_id).isdigit():
+                    scraper = self._cache_scraper
+                    if scraper:
+                        local_tgt = None
+                        if int(replacement_id) in self._predownloaded:
+                            local_tgt = self._predownloaded[int(replacement_id)]
+                        else:
+                            dl_path = APP_CACHE_DIR / f'predownloaded/{replacement_id}.dat'
+                            dl_path.parent.mkdir(parents=True, exist_ok=True)
+                            if not dl_path.exists():
+                                log_buffer.log('Replacer', f'Downloading asset {replacement_id} for KTX2 conversion...')
+                                extra_hdrs = {}
+                                cookie = scraper._get_roblosecurity()
+                                if cookie:
+                                    extra_hdrs['Cookie'] = f'.ROBLOSECURITY={cookie};'
+                                scraped_data, dl_status = scraper._fetch_asset_with_place_id_retry(str(replacement_id), extra_headers=extra_hdrs or None)
+                                if scraped_data:
+                                    dl_path.write_bytes(scraped_data)
+                            if dl_path.exists():
+                                local_tgt = str(dl_path)
+                        
+                        if local_tgt is not None:
+                            # Instead of pushing the ID to Roblox, we route it as a local file, prompting conversion
+                            self._route_local(f'{batch_id}_{req_id}', aid, local_tgt, is_solidmodel, is_texpack=True)
+                            modified = True
+                            continue # Skip the usual e['assetId'] = replacement_id logic
+
                 e['assetId'] = replacement_id
                 id_swapped[idx] = aid
                 slot_info = f' (slot {map_index})' if (slot_key and slot_key == matched) else ''
@@ -450,7 +482,10 @@ class TextureStripper:
                 cdn_key = next((k for k in all_keys if k in cdn_replacements), None)
                 local_key = next((k for k in all_keys if k in local_replacements), None)
                 if cdn_key is not None:
-                    self._route_cdn(f'{batch_id}_{req_id}', aid, cdn_replacements[cdn_key], is_solidmodel)
+                    is_texpack_cdn = (':' in str(cdn_key)) or (e.get('assetTypeId') == 63) or (
+                        self._REVERSE.get(str(e.get('assetType', '')).lower()) == 63
+                    )
+                    self._route_cdn(f'{batch_id}_{req_id}', aid, cdn_replacements[cdn_key], is_solidmodel, is_texpack_cdn)
                 elif local_key is not None:
                     # Check if this replacement specifically targets a TexturePack slot or type
                     is_texpack = (':' in str(local_key)) or (e.get('assetTypeId') == 63) or (
@@ -562,7 +597,7 @@ class TextureStripper:
     # Internal routing helpers
     # ------------------------------------------------------------------
 
-    def _route_cdn(self, req_id: str, aid, cdn_url: str, is_solidmodel: bool) -> None:
+    def _route_cdn(self, req_id: str, aid, cdn_url: str, is_solidmodel: bool, is_texpack: bool = False) -> None:
         parsed = urlparse(str(cdn_url))
         ext = Path(parsed.path).suffix.lower()
         url_hash = hashlib.md5(str(cdn_url).encode()).hexdigest()
@@ -619,6 +654,13 @@ class TextureStripper:
             return
 
         # Any other extension
+        if is_texpack and ext != '.ktx2':
+            local_cache = APP_CACHE_DIR / f'{url_hash}{ext}'
+            if _download_remote_file(cdn_url, local_cache, 'CDN TexPack Map'):
+                # Divert back to local routing so it triggers KTX2 conversion!
+                self._route_local(req_id, aid, str(local_cache), is_solidmodel, is_texpack=True)
+                return
+
         with self._lock:
             self._pending[req_id] = ('cdn', cdn_url)
         log_buffer.log('CDN', f'Queued CDN redirect for {aid}')
@@ -628,7 +670,7 @@ class TextureStripper:
         ext = path.suffix.lower()
         
         # Isolate KTX2 explicit conversion only to TexturePack image replacements
-        if is_texpack and ext in ('.png', '.jpg', '.jpeg', '.webp'):
+        if is_texpack and ext != '.ktx2' and ext != '.ktx':
             try:
                 from ...cache.tools.image_to_ktx2.converter import get_or_create_ktx2_from_image
                 converted_path = get_or_create_ktx2_from_image(path)

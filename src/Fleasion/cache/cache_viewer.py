@@ -3875,8 +3875,8 @@ class CacheViewerTab(QWidget):
         copy_name_action = menu.addAction(f'Copy Name ({map_name})')
         # "Copy ID" intentionally copies slot key, because this is the exact
         # value users should paste into replace_ids for per-slot replacement.
-        copy_id_action = menu.addAction(f'Copy ID ({slot_key})')
-        copy_subasset_action = menu.addAction(f'Copy Sub-Asset ID ({map_id}) (Useless for Replacements)')
+        copy_id_action = menu.addAction(f'Copy ID ({slot_key}) (Use this for Replacer)')
+        copy_subasset_action = menu.addAction(f'Copy Sub-Asset ID ({map_id}) (Cannot be Replaced)')
         copy_hash_action = None
         if map_hash:
             copy_hash_action = menu.addAction(f'Copy Hash ({map_hash[:16]}...)')

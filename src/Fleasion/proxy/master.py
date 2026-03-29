@@ -44,7 +44,9 @@ from ..utils import (
     STORAGE_DB_GDK,
     log_buffer,
     terminate_roblox,
-    wait_for_roblox_exit,
+        wait_for_roblox_exit,
+        delete_cache,
+        run_in_thread,
 )
 from .addons import CacheScraper, TextureStripper
 from .server import FleasionProxy, INTERCEPT_HOSTS
@@ -803,6 +805,10 @@ class ProxyMaster:
         # Singleton addon instances - GUI holds references to these directly
         self.cache_scraper = CacheScraper(self.cache_manager)
         self.cache_scraper.set_enabled(False)
+        
+        # Wire scraper into cache_manager for private asset downloads
+        self.cache_manager.set_scraper(self.cache_scraper)
+        
         self._texture_stripper: Optional[TextureStripper] = None
 
         self._proxy: Optional[FleasionProxy] = None
@@ -900,28 +906,16 @@ class ProxyMaster:
             return
 
         # ── Optional cache clear on launch ───────────────────────────────
+        # ── Optional cache clear on launch ───────────────────────────────
         if self.config_manager.clear_cache_on_launch:
-            if terminate_roblox():
-                log_buffer.log('Cleanup', 'Roblox found, terminating...')
-                if not wait_for_roblox_exit():
-                    log_buffer.log('Cleanup', 'Termination timed out')
-                else:
-                    log_buffer.log('Cleanup', 'Roblox terminated')
-                    try:
-                        STORAGE_DB.unlink()
-                        log_buffer.log('Cleanup', 'Storage deleted')
-                    except (FileNotFoundError, PermissionError, OSError) as exc:
-                        log_buffer.log('Cleanup', f'Storage deletion: {exc}')
-                    if STORAGE_DB_GDK.parent.exists():
-                        try:
-                            STORAGE_DB_GDK.unlink()
-                            log_buffer.log('Cleanup', 'Storage (GDK) deleted')
-                        except FileNotFoundError:
-                            pass
-                        except (PermissionError, OSError) as exc:
-                            log_buffer.log('Cleanup', f'Storage (GDK) deletion: {exc}')
-            else:
-                log_buffer.log('Cleanup', 'Roblox not running')
+            log_buffer.log('Cleanup', 'Clear cache on launch enabled - deleting cache')
+
+            def _delete_and_log():
+                messages = delete_cache()
+                for msg in messages:
+                    log_buffer.log('Cache', msg)
+
+            run_in_thread(_delete_and_log)()
         else:
             log_buffer.log('Cleanup', 'Cache clear on launch disabled - skipping')
 

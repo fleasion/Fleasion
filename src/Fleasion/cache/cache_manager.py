@@ -64,6 +64,9 @@ class CacheManager:
         self.config_manager = config_manager
         self._lock = threading.Lock()
         
+        # Cache scraper for asset downloads (optional, set by ProxyMaster)
+        self._cache_scraper = None
+        
         # Debounced index writes: reduce disk I/O by batching writes
         # Instead of writing on every store_asset(), we schedule a write 500ms in the future
         # If another write comes in before 500ms, we cancel the pending one and reschedule
@@ -82,6 +85,10 @@ class CacheManager:
 
         # Load or create index
         self.index = self._load_index()
+
+    def set_scraper(self, scraper) -> None:
+        """Set the cache scraper for private asset downloads."""
+        self._cache_scraper = scraper
 
     def _load_index(self) -> dict:
         """Load cache index from disk."""
@@ -739,21 +746,56 @@ class CacheManager:
                     # Not in cache - fetch from API
                     log_buffer.log('Export', f'Fetching {map_name} texture {map_id} from API')
                     try:
-                        from urllib.parse import urlparse
-                        api_url = f'https://assetdelivery.roblox.com/v1/asset/?id={map_id}'
-                        headers = {'User-Agent': 'Roblox/WinInet'}
-                        response = requests.get(api_url, headers=headers, timeout=15, allow_redirects=True, verify=False)
-                        if response.status_code == 200 and response.content:
-                            texture_data = response.content
-                            log_buffer.log('Export', f'Successfully fetched {map_name} texture {map_id}, size: {len(texture_data)} bytes')
-                            # Extract hash from final URL path
-                            final_url = response.url
-                            parsed = urlparse(final_url)
-                            path_parts = parsed.path.rsplit('/', 1)
-                            if len(path_parts) > 1 and path_parts[-1]:
-                                texture_hash = path_parts[-1]
+                        texture_data = None
+                        # Use scraper if available (supports both public and private assets)
+                        if self._cache_scraper is not None:
+                            extra = {}
+                            cookie = self._cache_scraper._get_roblosecurity()
+                            if cookie:
+                                extra['Cookie'] = f'.ROBLOSECURITY={cookie};'
+                            texture_data, _status = self._cache_scraper._fetch_asset_with_place_id_retry(
+                                str(map_id), extra_headers=extra or None,
+                            )
                         else:
-                            log_buffer.log('Export', f'API returned status {response.status_code} for {map_name} texture {map_id}')
+                            # Fallback: direct requests with cookie extraction
+                            from urllib.parse import urlparse
+                            api_url = f'https://assetdelivery.roblox.com/v1/asset/?id={map_id}'
+                            headers = {'User-Agent': 'Roblox/WinInet'}
+                            # Get cookie if available for private assets
+                            try:
+                                import os
+                                import json as _json
+                                import base64
+                                import re
+                                try:
+                                    import win32crypt
+                                    path = os.path.expandvars(r'%LocalAppData%/Roblox/LocalStorage/RobloxCookies.dat')
+                                    if os.path.exists(path):
+                                        with open(path) as f:
+                                            data = _json.load(f)
+                                        cookies_data = data.get('CookiesData')
+                                        if cookies_data:
+                                            enc = base64.b64decode(cookies_data)
+                                            dec = win32crypt.CryptUnprotectData(enc, None, None, None, 0)[1]
+                                            s = dec.decode(errors='ignore')
+                                            m = re.search(r'\.ROBLOSECURITY\s+([^\s;]+)', s)
+                                            if m:
+                                                headers['Cookie'] = f'.ROBLOSECURITY={m.group(1)};'
+                                except Exception:
+                                    pass
+                            except Exception:
+                                pass
+                            response = requests.get(api_url, headers=headers, timeout=15, allow_redirects=True, verify=False)
+                            if response.status_code == 200 and response.content:
+                                texture_data = response.content
+                                log_buffer.log('Export', f'Successfully fetched {map_name} texture {map_id}, size: {len(texture_data)} bytes')
+                            else:
+                                log_buffer.log('Export', f'API returned status {response.status_code} for {map_name} texture {map_id}')
+                        
+                        if texture_data:
+                            # Extract hash from CDN URL if available
+                            # This is a fallback since we're fetching from API, not CDN
+                            texture_hash = ''
                     except Exception as e:
                         log_buffer.log('Export', f'Failed to fetch texture {map_id}: {e}')
                         continue
