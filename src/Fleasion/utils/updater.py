@@ -5,7 +5,7 @@ import threading
 import webbrowser
 
 import requests
-from PyQt6.QtCore import QObject, pyqtSignal
+from PyQt6.QtCore import QObject, Qt, pyqtSignal
 from PyQt6.QtWidgets import QDialog, QLabel, QHBoxLayout, QVBoxLayout, QPushButton
 from PyQt6.QtGui import QIcon
 
@@ -36,10 +36,17 @@ def _show_update_dialog(tag: str, html_url: str) -> None:
 
     Uses a small `QDialog` so button placement is deterministic (Cancel left, Open right).
     """
+    from PyQt6.QtWidgets import QApplication
+
     latest_display = _display_version(tag)
     current = APP_VERSION.strip()
 
-    dialog = QDialog()
+    _top = QApplication.topLevelWidgets()
+    parent = next((w for w in _top if w.isVisible()), None)
+    _on_top = any(w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in _top)
+    dialog = QDialog(parent)
+    if _on_top:
+        dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
     dialog.setWindowTitle('Update Available')
 
     # Try to set the window icon to match the rest of the app
@@ -94,7 +101,7 @@ def _worker(signal: _UpdateSignal) -> None:
 
     tag: str = (data.get('tag_name') or '').strip()
     # TEST_ONLY: force tag for equality testing
-    # tag = '1.6.2'
+    # tag = '1.7.0'
     if not tag:
         return
 

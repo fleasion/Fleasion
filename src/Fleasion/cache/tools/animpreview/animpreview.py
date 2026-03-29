@@ -12,6 +12,11 @@ import pyvista as pv
 from pyvistaqt import QtInteractor
 import vtk
 
+try:
+    from ....utils import log_buffer
+except ImportError:
+    log_buffer = None
+
 
 # XML helpers
 
@@ -380,7 +385,8 @@ def load_obj_mesh(mesh_dir: str, prefix: str, part_name: str,
                 )
                 return mesh
             except Exception as e:
-                print(f"[WARN] Failed to read {path}: {e}")
+                if log_buffer is not None:
+                    log_buffer.log('AnimPreview', f'Failed to read {path}: {e}')
 
     # Fallback cube if missing
     return pv.Cube(

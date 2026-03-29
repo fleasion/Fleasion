@@ -27,6 +27,7 @@ import logging
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import winreg
@@ -43,7 +44,9 @@ from ..utils import (
     STORAGE_DB_GDK,
     log_buffer,
     terminate_roblox,
-    wait_for_roblox_exit,
+        wait_for_roblox_exit,
+        delete_cache,
+        run_in_thread,
 )
 from .addons import CacheScraper, TextureStripper
 from .server import FleasionProxy, INTERCEPT_HOSTS
@@ -81,18 +84,33 @@ _PROXY_OWNER_PID_FILE = Path(os.environ.get('TEMP', r'C:\Windows\Temp')) / 'flea
 # ---------------------------------------------------------------------------
 
 _WATCHDOG_TASK_NAME = 'Fleasion-HostsWatchdog'
-_WATCHDOG_LOOKAHEAD = 5   # seconds ahead the task is scheduled
+_WATCHDOG_LOOKAHEAD = 15  # seconds ahead the task is scheduled
 _WATCHDOG_INTERVAL  = 3   # seconds between watchdog refreshes
 _WATCHDOG_TASK_XML  = Path(os.environ.get('TEMP', r'C:\Windows\Temp')) / 'fleasion_watchdog_task.xml'
 
-# PowerShell one-liner that strips Fleasion entries from the hosts file and
+# PowerShell command that strips Fleasion entries from the hosts file and
 # flushes DNS.  Encoded as UTF-16-LE base64 to avoid XML/shell-escaping pain.
-# Uses raw strings so backslashes are literal (no Python escape processing).
-# [System.IO.File]::WriteAllLines writes UTF-8 without BOM (safe for hosts).
+#
+# Guarded by a PID check: if a Fleasion process is still alive and owns the
+# proxy (PID file present + process running), the script exits without touching
+# the hosts file.  This prevents two failure modes:
+#   1. Kill-and-replace: old instance's task fires after new instance wrote hosts.
+#   2. Slow-machine false-fire: AV delays schtasks long enough that the task's
+#      trigger time passes before the next refresh updates it.
+#
+# The PID file path is embedded literally (not via $env:TEMP) because this
+# script runs as SYSTEM whose %TEMP% is C:\Windows\Temp, not the user's folder.
+_pid_path_ps = str(_PROXY_OWNER_PID_FILE).replace('\\', '/')
 _WATCHDOG_PS_CMD = (
-    r'$f="$env:SystemRoot\System32\drivers\etc\hosts";'
-    r"[System.IO.File]::WriteAllLines($f,((Get-Content $f)|Where-Object{$_ -notmatch '# Fleasion proxy entry'}));"
-    r"Start-Process 'ipconfig.exe' '/flushdns' -NoNewWindow -Wait"
+    f'$pp="{_pid_path_ps}";'
+    '$alive=$false;'
+    'if(Test-Path $pp){'
+    'try{$fpid=[int](Get-Content $pp -Raw);'
+    'if(Get-Process -Id $fpid -ErrorAction SilentlyContinue){$alive=$true}}catch{}};'
+    'if(-not $alive){'
+    '$f="$env:SystemRoot/System32/drivers/etc/hosts";'
+    "[System.IO.File]::WriteAllLines($f,((Get-Content $f)|Where-Object{$_ -notmatch '# Fleasion proxy entry'}));"
+    "Start-Process 'ipconfig.exe' '/flushdns' -NoNewWindow -Wait}"
 )
 _WATCHDOG_PS_ENCODED: str = base64.b64encode(_WATCHDOG_PS_CMD.encode('utf-16-le')).decode('ascii')
 
@@ -200,7 +218,23 @@ def _resolve_real_ips(hosts: set) -> dict:
 
 
 def _flush_dns() -> None:
-    """Flush Windows DNS client cache so the hosts file changes take effect immediately."""
+    """Flush Windows DNS client cache so the hosts file changes take effect immediately.
+
+    Calls ``DnsFlushResolverCache`` in *dnsapi.dll* directly via ctypes first.
+    This is an in-process call — no subprocess is spawned — so security software
+    that blocks child-process creation (e.g. Webroot SecureAnywhere / WRSVC)
+    cannot interfere with it.  Falls back to ``ipconfig /flushdns`` only if the
+    DLL call itself raises an exception (e.g. on a non-Windows build environment).
+    """
+    # Primary: in-process DLL call — fast, no subprocess, immune to AV process blocks.
+    try:
+        ctypes.windll.LoadLibrary('dnsapi.dll').DnsFlushResolverCache()
+        log_buffer.log('Hosts', 'DNS cache flushed')
+        return
+    except Exception as exc:
+        log_buffer.log('Hosts', f'DnsFlushResolverCache failed, falling back to ipconfig: {exc}')
+
+    # Fallback: subprocess (may be blocked or slow under security software).
     try:
         subprocess.run(
             ['ipconfig', '/flushdns'],
@@ -208,7 +242,7 @@ def _flush_dns() -> None:
             creationflags=subprocess.CREATE_NO_WINDOW,
             timeout=5,
         )
-        log_buffer.log('Hosts', 'DNS cache flushed')
+        log_buffer.log('Hosts', 'DNS cache flushed (via ipconfig fallback)')
     except Exception as exc:
         log_buffer.log('Hosts', f'DNS flush failed (non-fatal): {exc}')
 
@@ -375,13 +409,126 @@ def _is_admin() -> bool:
 # Hosts file management
 # ---------------------------------------------------------------------------
 
+_HOSTS_WRITE_RETRIES = 8
+_HOSTS_WRITE_DELAY   = 0.25  # seconds between direct-write retries
+
+
+def _write_hosts_file(content: str) -> None:
+    """Write *content* to the system hosts file, working around security
+    software (e.g. Webroot SecureAnywhere / WRSVC) that intermittently or
+    persistently locks the hosts file against direct writes.
+
+    Strategy (applied in order):
+      0. If the hosts file has the read-only attribute set, clear it first.
+      1. Retry direct write up to *_HOSTS_WRITE_RETRIES* times with a short
+         delay.  This handles brief/scan-time locks held by AV drivers.
+      2. Write to a temporary file in the same directory, then use
+         ``os.replace()`` (an atomic rename).  Rename is a directory-entry
+         operation that bypasses file-content write filters used by some
+         security products.
+
+    Raises ``OSError`` if both strategies are exhausted.
+    """
+    # --- Strategy 0: clear read-only attribute if present ---
+    if HOSTS_FILE.exists():
+        import stat
+        current_mode = HOSTS_FILE.stat().st_mode
+        if not (current_mode & stat.S_IWRITE):
+            try:
+                HOSTS_FILE.chmod(current_mode | stat.S_IWRITE)
+                log_buffer.log('Hosts', 'Hosts file was read-only — cleared read-only attribute')
+            except OSError as exc:
+                log_buffer.log('Hosts', f'Failed to clear read-only attribute on hosts file: {exc}')
+
+    last_exc: OSError | None = None
+
+    # --- Strategy 1: direct write with retries ---
+    for attempt in range(_HOSTS_WRITE_RETRIES):
+        try:
+            HOSTS_FILE.write_text(content, encoding='utf-8')
+            return
+        except PermissionError as exc:
+            last_exc = exc
+            if attempt < _HOSTS_WRITE_RETRIES - 1:
+                log_buffer.log(
+                    'Hosts',
+                    f'Hosts write blocked (attempt {attempt + 1}/{_HOSTS_WRITE_RETRIES}), '
+                    f'retrying in {_HOSTS_WRITE_DELAY * 1000:.0f} ms '
+                    f'(security software may be holding a lock)…',
+                )
+                time.sleep(_HOSTS_WRITE_DELAY)
+        except OSError as exc:
+            raise  # non-permission errors are not retryable
+
+    # --- Strategy 2: temp-file + atomic rename ---
+    log_buffer.log(
+        'Hosts',
+        f'Direct write failed after {_HOSTS_WRITE_RETRIES} attempts — '
+        'attempting atomic rename workaround for security software lock…',
+    )
+    try:
+        hosts_dir = HOSTS_FILE.parent
+        fd, tmp_path = tempfile.mkstemp(dir=hosts_dir, prefix='.fleasion_hosts_')
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as fh:
+                fh.write(content)
+            os.replace(tmp_path, HOSTS_FILE)  # atomic on Windows (MoveFileExW)
+            log_buffer.log('Hosts', 'Hosts file updated via atomic rename (security software workaround)')
+            return
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+    except OSError as exc:
+        raise PermissionError(
+            f'Cannot write hosts file — all strategies exhausted. '
+            f'If Webroot or another security product is installed, try adding '
+            f'Fleasion to its exclusions list. Last direct-write error: {last_exc}; '
+            f'rename error: {exc}'
+        ) from exc
+
+
 def _add_hosts_entries(hosts: Set[str]) -> bool:
     """Append redirect entries for *hosts* to the system hosts file.
 
     Returns True on success.  Skips entries already present.
+    Creates the hosts file from the Windows default if it is missing.
     """
     try:
         existing = HOSTS_FILE.read_text(encoding='utf-8', errors='replace')
+    except FileNotFoundError:
+        # hosts file is missing entirely — recreate it with the Windows default
+        existing = (
+            '# Copyright (c) 1993-2009 Microsoft Corp.\n'
+            '#\n'
+            '# This is a sample HOSTS file used by Microsoft TCP/IP for Windows.\n'
+            '#\n'
+            '# This file contains the mappings of IP addresses to host names. Each\n'
+            '# entry should be kept on an individual line. The IP address should\n'
+            '# be placed in the first column followed by the corresponding host name.\n'
+            '# The IP address and the host name should be separated by at least one\n'
+            '# space.\n'
+            '#\n'
+            '# Additionally, comments (such as these) may be inserted on individual\n'
+            '# lines or following the machine name denoted by a \'#\' symbol.\n'
+            '#\n'
+            '# For example:\n'
+            '#\n'
+            '#      102.54.94.97     rhino.acme.com          # source server\n'
+            '#       38.25.63.10     x.acme.com              # x client host\n'
+            '\n'
+            '# localhost name resolution is handled within DNS itself.\n'
+            '#\t127.0.0.1       localhost\n'
+            '#\t::1             localhost\n'
+        )
+        try:
+            _write_hosts_file(existing)
+            log_buffer.log('Hosts', 'hosts file was missing — created new default hosts file')
+        except OSError as exc:
+            log_buffer.log('Hosts', f'Failed to create hosts file: {exc}')
+            return False
     except OSError as exc:
         log_buffer.log('Hosts', f'Cannot read hosts file: {exc}')
         return False
@@ -398,12 +545,12 @@ def _add_hosts_entries(hosts: Set[str]) -> bool:
 
     new_content = existing.rstrip('\n') + '\n' + '\n'.join(lines_to_add) + '\n'
     try:
-        HOSTS_FILE.write_text(new_content, encoding='utf-8')
+        _write_hosts_file(new_content)
         for host in sorted(hosts):
             log_buffer.log('Hosts', f'Added redirect: {host} -> 127.0.0.1')
         return True
-    except PermissionError:
-        log_buffer.log('Hosts', 'Permission denied writing hosts file - run as Administrator')
+    except PermissionError as exc:
+        log_buffer.log('Hosts', f'Permission denied writing hosts file: {exc}')
         return False
     except OSError as exc:
         log_buffer.log('Hosts', f'Failed to write hosts file: {exc}')
@@ -429,7 +576,7 @@ def _remove_hosts_entries(hosts: Set[str]) -> None:
         return  # nothing to remove
 
     try:
-        HOSTS_FILE.write_text(''.join(filtered), encoding='utf-8')
+        _write_hosts_file(''.join(filtered))
         log_buffer.log('Hosts', 'Removed proxy hosts entries')
     except OSError as exc:
         log_buffer.log('Hosts', f'Failed to clean hosts file: {exc}')
@@ -658,6 +805,10 @@ class ProxyMaster:
         # Singleton addon instances - GUI holds references to these directly
         self.cache_scraper = CacheScraper(self.cache_manager)
         self.cache_scraper.set_enabled(False)
+        
+        # Wire scraper into cache_manager for private asset downloads
+        self.cache_manager.set_scraper(self.cache_scraper)
+        
         self._texture_stripper: Optional[TextureStripper] = None
 
         self._proxy: Optional[FleasionProxy] = None
@@ -755,28 +906,16 @@ class ProxyMaster:
             return
 
         # ── Optional cache clear on launch ───────────────────────────────
+        # ── Optional cache clear on launch ───────────────────────────────
         if self.config_manager.clear_cache_on_launch:
-            if terminate_roblox():
-                log_buffer.log('Cleanup', 'Roblox found, terminating...')
-                if not wait_for_roblox_exit():
-                    log_buffer.log('Cleanup', 'Termination timed out')
-                else:
-                    log_buffer.log('Cleanup', 'Roblox terminated')
-                    try:
-                        STORAGE_DB.unlink()
-                        log_buffer.log('Cleanup', 'Storage deleted')
-                    except (FileNotFoundError, PermissionError, OSError) as exc:
-                        log_buffer.log('Cleanup', f'Storage deletion: {exc}')
-                    if STORAGE_DB_GDK.parent.exists():
-                        try:
-                            STORAGE_DB_GDK.unlink()
-                            log_buffer.log('Cleanup', 'Storage (GDK) deleted')
-                        except FileNotFoundError:
-                            pass
-                        except (PermissionError, OSError) as exc:
-                            log_buffer.log('Cleanup', f'Storage (GDK) deletion: {exc}')
-            else:
-                log_buffer.log('Cleanup', 'Roblox not running')
+            log_buffer.log('Cleanup', 'Clear cache on launch enabled - deleting cache')
+
+            def _delete_and_log():
+                messages = delete_cache()
+                for msg in messages:
+                    log_buffer.log('Cache', msg)
+
+            run_in_thread(_delete_and_log)()
         else:
             log_buffer.log('Cleanup', 'Cache clear on launch disabled - skipping')
 
@@ -830,6 +969,7 @@ class ProxyMaster:
 
         # ── Create addon instances ────────────────────────────────────────
         self._texture_stripper = TextureStripper(self.config_manager)
+        self._texture_stripper.set_cache_scraper(self.cache_scraper)
         # Give the scraper real IPs for ALL intercepted hosts so its API
         # calls bypass our hosts file redirect (including CDN redirects).
         scraper_ips = {
@@ -894,6 +1034,17 @@ class ProxyMaster:
         log_buffer.log('Info', f'Port: {PROXY_PORT}')
         log_buffer.log('Info', 'Launch Roblox')
         log_buffer.log('Info', '=' * 50)
+
+        # ── Pre-download private replacement assets in background ─────────
+        # Runs eagerly at startup so pre-downloaded files are ready before
+        # Roblox sends its first batch request.
+        if self._texture_stripper is not None:
+            _precheck_thread = threading.Thread(
+                target=self._texture_stripper.precheck_replacements,
+                name='ReplacementPrecheck',
+                daemon=True,
+            )
+            _precheck_thread.start()
 
         # ── Run until the server is stopped ──────────────────────────────
         try:

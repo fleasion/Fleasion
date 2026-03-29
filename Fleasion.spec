@@ -4,8 +4,14 @@ from PyInstaller.utils.hooks import collect_all, collect_submodules
 datas = [
     ('src\\Fleasion\\fleasionlogoHR.ico', '.'),
     ('src\\Fleasion\\cache\\tools\\animpreview', 'tools/animpreview'),
+    ('src\\Fleasion\\modifications\\bundled\\empty.mp3', 'Fleasion/modifications/bundled'),
+    ('src\\Fleasion\\modifications\\bundled\\empty.ogg', 'Fleasion/modifications/bundled'),
+    ('src\\Fleasion\\modifications\\bundled\\empty.mesh', 'Fleasion/modifications/bundled'),
+    ('src\\Fleasion\\modifications\\bundled\\empty.tex', 'Fleasion/modifications/bundled'),
 ]
-binaries = []
+binaries = [
+    ('src\\Fleasion\\cache\\tools\\ktx_to_png\\ktx.dll', '.'),
+]
 hiddenimports = []
 
 # cryptography has Rust/C binary extensions that must be collected explicitly

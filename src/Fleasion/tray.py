@@ -12,10 +12,11 @@ APP_KOFI = 'ko-fi.com/fleasion'
 class SystemTray:
     """System tray icon with menu."""
 
-    def __init__(self, app: QApplication, config_manager, proxy_master):
+    def __init__(self, app: QApplication, config_manager, proxy_master, mod_manager=None):
         self.app = app
         self.config_manager = config_manager
         self.proxy_master = proxy_master
+        self.mod_manager = mod_manager
 
         # Keep references to open windows to prevent garbage collection
         self.open_windows = []
@@ -240,13 +241,22 @@ class SystemTray:
         else:
             # Revert UI state and show error dialog with detail
             self.run_on_boot_action.setChecked(not checked)
-            from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.warning(
-                None, 'Run on Boot Failed',
+            from PyQt6.QtCore import Qt
+            from PyQt6.QtWidgets import QMessageBox, QApplication
+            _top = QApplication.topLevelWidgets()
+            _parent = next((w for w in _top if w.isVisible()), None)
+            _on_top = any(w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in _top)
+            _warn = QMessageBox(_parent)
+            _warn.setWindowTitle('Run on Boot Failed')
+            _warn.setIcon(QMessageBox.Icon.Warning)
+            _warn.setText(
                 'Failed to register the autostart task.\n'
                 'Check the application log for details (autostart errors are logged at ERROR level).\n\n'
-                'Ensure Fleasion is running as Administrator.',
+                'Ensure Fleasion is running as Administrator.'
             )
+            if _on_top:
+                _warn.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
+            _warn.exec()
 
     def _toggle_clear_cache_on_launch(self):
         """Toggle clear cache on launch setting."""
@@ -286,7 +296,7 @@ class SystemTray:
             self.dashboard_window.activateWindow()
             return
 
-        window = ReplacerConfigWindow(self.config_manager, self.proxy_master)
+        window = ReplacerConfigWindow(self.config_manager, self.proxy_master, self.mod_manager)
         window.destroyed.connect(self._on_dashboard_destroyed)
         self.dashboard_window = window
         self.open_windows.append(window)
@@ -326,11 +336,17 @@ class SystemTray:
 
     def _copy_discord(self):
         """Copy Discord invite to clipboard."""
-        from PyQt6.QtWidgets import QMessageBox
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtWidgets import QMessageBox, QApplication
 
         QApplication.clipboard().setText(f'https://{APP_DISCORD}')
 
-        msg_box = QMessageBox()
+        _top = QApplication.topLevelWidgets()
+        _parent = next((w for w in _top if w.isVisible()), None)
+        _on_top = any(w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in _top)
+        msg_box = QMessageBox(_parent)
+        if _on_top:
+            msg_box.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
         msg_box.setWindowTitle(APP_NAME)
         msg_box.setText('Discord invite copied!')
         msg_box.setInformativeText(f'https://{APP_DISCORD}')

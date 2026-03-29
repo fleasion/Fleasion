@@ -33,7 +33,7 @@ class ConfigManager:
         CONFIGS_FOLDER.mkdir(parents=True, exist_ok=True)
         if CONFIG_FILE.exists():
             try:
-                with Path(CONFIG_FILE).open() as f:
+                with Path(CONFIG_FILE).open(encoding='utf-8') as f:
                     loaded = json.load(f)
                 if 'configs' in loaded:
                     self._migrate_old_format(loaded)
@@ -60,7 +60,7 @@ class ConfigManager:
             config_path = CONFIGS_FOLDER / f'{name}.json'
             if not config_path.exists():
                 try:
-                    with Path(config_path).open('w') as f:
+                    with Path(config_path).open('w', encoding='utf-8') as f:
                         json.dump(data, f, indent=2)
                 except OSError:
                     pass
@@ -69,14 +69,14 @@ class ConfigManager:
         """Ensure at least one default config exists."""
         if not self.config_names:
             default_path = CONFIGS_FOLDER / 'Default.json'
-            with Path(default_path).open('w') as f:
+            with Path(default_path).open('w', encoding='utf-8') as f:
                 json.dump({'replacement_rules': []}, f, indent=2)
 
     def _save_settings(self):
         """Save settings to disk."""
         with self._lock:
             CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-            with Path(CONFIG_FILE).open('w') as f:
+            with Path(CONFIG_FILE).open('w', encoding='utf-8') as f:
                 json.dump(self.settings, f, indent=2)
 
     def _get_config_path(self, name: str) -> Path:
@@ -88,7 +88,7 @@ class ConfigManager:
         path = self._get_config_path(name)
         if path.exists():
             try:
-                with Path(path).open() as f:
+                with Path(path).open(encoding='utf-8') as f:
                     return json.load(f)
             except (json.JSONDecodeError, OSError):
                 pass
@@ -98,7 +98,7 @@ class ConfigManager:
         """Save a config to disk."""
         with self._lock:
             CONFIGS_FOLDER.mkdir(parents=True, exist_ok=True)
-            with Path(self._get_config_path(name)).open('w') as f:
+            with Path(self._get_config_path(name)).open('w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2)
 
     @property
@@ -416,27 +416,40 @@ class ConfigManager:
                 if 'remove' in rule and 'mode' not in rule:
                     mode = 'remove' if rule.get('remove') else 'id'
 
+                parsed_ids: list = []
+                for v in ids:
+                    # "parentId:mapIndex" slot key (e.g. "7547298786:1") — keep as str
+                    if isinstance(v, str) and ':' in v:
+                        parts = v.split(':', 1)
+                        if parts[0].isdigit() and parts[1].isdigit():
+                            parsed_ids.append(v)
+                        continue
+                    try:
+                        parsed_ids.append(int(v))
+                    except (TypeError, ValueError):
+                        pass
+
                 if mode == 'remove':
-                    removals.update(ids)
+                    removals.update(parsed_ids)
                 elif mode == 'cdn':
                     cdn_url = rule.get('cdn_url')
                     if cdn_url:
-                        cdn_replacements.update(dict.fromkeys(ids, cdn_url))
+                        cdn_replacements.update(dict.fromkeys(parsed_ids, cdn_url))
                     else:
                         # Empty CDN URL means remove
-                        removals.update(ids)
+                        removals.update(parsed_ids)
                 elif mode == 'local':
                     local_path = rule.get('local_path')
                     if local_path:
-                        local_replacements.update(dict.fromkeys(ids, local_path))
+                        local_replacements.update(dict.fromkeys(parsed_ids, local_path))
                     else:
                         # Empty local path means remove
-                        removals.update(ids)
+                        removals.update(parsed_ids)
                 elif mode == 'id':
                     # Empty with_id means remove
                     if (target := rule.get('with_id')) is not None:
-                        replacements.update(dict.fromkeys(ids, target))
+                        replacements.update(dict.fromkeys(parsed_ids, target))
                     else:
-                        removals.update(ids)
+                        removals.update(parsed_ids)
 
         return replacements, removals, cdn_replacements, local_replacements

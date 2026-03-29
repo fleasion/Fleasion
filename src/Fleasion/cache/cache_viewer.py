@@ -6,10 +6,10 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTableWidget,
     QTableWidgetItem, QLabel, QComboBox, QLineEdit, QMessageBox,
     QHeaderView, QFileDialog, QGroupBox, QSplitter, QTextEdit, QCheckBox,
-    QMenu, QScrollArea, QGridLayout, QFrame
+    QMenu, QScrollArea, QGridLayout, QFrame, QDialog
 )
 from PyQt6.QtWidgets import QWidgetAction
-from PyQt6.QtGui import QPixmap, QImage, QAction, QCursor
+from PyQt6.QtGui import QPixmap, QImage, QAction, QCursor, QFont, QFontDatabase, QPalette, QColor
 from PIL import Image
 import io
 import threading
@@ -20,6 +20,7 @@ from .obj_viewer import ObjViewerPanel
 from .audio_player import AudioPlayerWidget
 from .animation_viewer import AnimationViewerPanel
 from .cache_json_viewer import CacheJsonViewer
+from .font_viewer import FontViewerWidget
 from . import mesh_processing
 from ..utils import log_buffer, open_folder
 import json
@@ -188,7 +189,17 @@ class ImageLoaderThread(QThread):
         try:
             log_buffer.log('Preview', f'Loading image ({len(self.data)} bytes)')
 
-            image = Image.open(io.BytesIO(self.data))
+            data = self.data
+            if data[:12] in (b'\xabKTX 11\xbb\r\n\x1a\n', b'\xabKTX 20\xbb\r\n\x1a\n'):
+                log_buffer.log('Preview', 'KTX detected, converting to PNG...')
+                from .tools.ktx_to_png import convert as _ktx_convert
+                data = _ktx_convert(data)
+                if data is None:
+                    if not self._stop_requested:
+                        self.error.emit('KTX format not supported for local preview')
+                    return
+
+            image = Image.open(io.BytesIO(data))
 
             if self._stop_requested:
                 return
@@ -447,15 +458,318 @@ class TexturePackLoaderThread(QThread):
             self.finished_loading.emit()
 
 
+class AssetLoaderThread(QThread):
+    """Worker thread for downloading assets from Roblox API and storing them in the cache."""
+
+    progress = pyqtSignal(int, int)  # (current, total)
+    asset_loaded = pyqtSignal(str, str, int)  # (asset_id, name, asset_type)
+    finished_loading = pyqtSignal(int, int)  # (loaded_count, failed_count)
+    status_message = pyqtSignal(str)  # status text for the dialog
+
+    def __init__(self, asset_ids: list[int], cache_manager: 'CacheManager',
+                 cache_scraper=None):
+        super().__init__()
+        self.asset_ids = asset_ids
+        self.cache_manager = cache_manager
+        self._cache_scraper = cache_scraper
+        self._stop_requested = False
+
+    def stop(self):
+        self._stop_requested = True
+
+    def run(self):
+        import requests
+        import time
+
+        total = len(self.asset_ids)
+        loaded_count = 0
+        failed_count = 0
+
+        if not self.asset_ids or self._stop_requested:
+            self.finished_loading.emit(0, 0)
+            return
+
+        # Get authentication cookie
+        cookie = _get_roblosecurity()
+
+        # Build session
+        sess = requests.Session()
+        sess.trust_env = False
+        sess.proxies = {}
+        sess.headers.update({
+            'User-Agent': 'Roblox/WinInet',
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'Referer': 'https://www.roblox.com/',
+            'Origin': 'https://www.roblox.com',
+        })
+        if cookie:
+            try:
+                sess.cookies.set('.ROBLOSECURITY', cookie)
+            except Exception:
+                sess.headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
+
+        # Phase 1: Batch-fetch asset metadata (name, type, creator) in groups of 50
+        self.status_message.emit('Fetching asset info...')
+        log_buffer.log('Scraper', f'[Load Asset] Fetching info for {total} asset(s)')
+
+        asset_metadata = {}  # asset_id_str -> {name, type, creator_id, creator_type}
+        batch_size = 50
+        str_ids = [str(aid) for aid in self.asset_ids]
+
+        for i in range(0, len(str_ids), batch_size):
+            if self._stop_requested:
+                self.finished_loading.emit(loaded_count, failed_count)
+                return
+
+            batch = str_ids[i:i + batch_size]
+            query = ','.join(batch)
+            url = f'https://develop.roblox.com/v1/assets?assetIds={query}'
+
+            try:
+                response = sess.get(url, timeout=10)
+                response.raise_for_status()
+                data = response.json().get('data', [])
+                for item in data:
+                    aid = item.get('id')
+                    if aid is None:
+                        continue
+                    creator_obj = item.get('creator') or {}
+                    creator_id = None
+                    creator_type = None
+                    if isinstance(creator_obj, dict) and creator_obj:
+                        creator_id = creator_obj.get('targetId')
+                        creator_type = creator_obj.get('typeId')
+                    if creator_id is None:
+                        creator_id = item.get('creatorTargetId')
+                    if creator_type is None:
+                        creator_type = item.get('creatorType')
+                    try:
+                        if creator_type is not None:
+                            creator_type = int(creator_type)
+                    except Exception:
+                        creator_type = None
+                    try:
+                        if creator_id is not None:
+                            creator_id = int(creator_id)
+                    except Exception:
+                        creator_id = None
+
+                    asset_metadata[str(aid)] = {
+                        'name': item.get('name', 'Unknown'),
+                        'type': item.get('typeId') or item.get('assetTypeId') or 1,
+                        'creator_id': creator_id,
+                        'creator_type': creator_type,
+                    }
+                log_buffer.log('Scraper', f'[Load Asset] Fetched metadata for batch {i // batch_size + 1}')
+            except Exception as e:
+                log_buffer.log('Scraper', f'[Load Asset] Failed to fetch metadata batch: {e}')
+
+        # Phase 2: Resolve creator names
+        creators_to_resolve = {}
+        for meta in asset_metadata.values():
+            cid = meta.get('creator_id')
+            ctype = meta.get('creator_type')
+            if cid is not None and ctype is not None and cid not in creators_to_resolve:
+                creators_to_resolve[cid] = ctype
+
+        creator_names = {}
+        if creators_to_resolve:
+            self.status_message.emit('Resolving creator names...')
+            log_buffer.log('Scraper', f'[Load Asset] Resolving {len(creators_to_resolve)} creator name(s)')
+
+            # Batch-resolve users
+            user_ids = [cid for cid, ctype in creators_to_resolve.items() if ctype == 1]
+            group_ids = [cid for cid, ctype in creators_to_resolve.items() if ctype == 2]
+
+            if user_ids:
+                try:
+                    resp = sess.post(
+                        'https://users.roblox.com/v1/users',
+                        json={'userIds': user_ids, 'excludeBannedUsers': False},
+                        timeout=10,
+                    )
+                    resp.raise_for_status()
+                    for entry in resp.json().get('data', []):
+                        uid = entry.get('id')
+                        name = entry.get('name') or entry.get('displayName') or 'Unknown'
+                        if uid is not None:
+                            creator_names[uid] = name
+                except Exception as e:
+                    log_buffer.log('Scraper', f'[Load Asset] Failed to fetch user names: {e}')
+
+            for gid in group_ids:
+                if self._stop_requested:
+                    break
+                try:
+                    resp = sess.get(
+                        f'https://groups.roblox.com/v1/groups/{gid}',
+                        timeout=10,
+                    )
+                    resp.raise_for_status()
+                    name = resp.json().get('name', 'Unknown')
+                    creator_names[gid] = name
+                except Exception as e:
+                    log_buffer.log('Scraper', f'[Load Asset] Failed to fetch group {gid}: {e}')
+
+        # Store creator names back into asset_metadata
+        for meta in asset_metadata.values():
+            cid = meta.get('creator_id')
+            if cid is not None and cid in creator_names:
+                meta['creator_name'] = creator_names[cid]
+
+        # Phase 3: Download each asset's data and store in cache IN PARALLEL
+        # Use ThreadPoolExecutor for concurrent downloads to dramatically improve speed.
+        # The V1 assetdelivery endpoint doesn't support batch data download, so we
+        # parallelize individual requests. 6 workers gives good throughput without
+        # hitting rate limits too aggressively.
+        self.status_message.emit('Downloading assets...')
+        log_buffer.log('Scraper', f'[Load Asset] Starting parallel download of {total} asset(s)')
+
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import threading as _threading
+
+        _progress_lock = _threading.Lock()
+        _progress_count = [0]  # mutable counter for closure
+
+        def _download_one(aid_str: str) -> tuple[str, bool]:
+            """Download a single asset. Returns (aid_str, success)."""
+            if self._stop_requested:
+                return aid_str, False
+
+            meta = asset_metadata.get(aid_str)
+            asset_type = meta['type'] if meta else 1
+            asset_name = meta['name'] if meta else 'Unknown'
+
+            try:
+                if self._cache_scraper is not None:
+                    extra = {}
+                    if cookie:
+                        extra['Cookie'] = f'.ROBLOSECURITY={cookie};'
+                    data, _status = self._cache_scraper._fetch_asset_with_place_id_retry(
+                        aid_str, extra_headers=extra or None,
+                    )
+                else:
+                    api_url = f'https://assetdelivery.roblox.com/v1/asset/?id={aid_str}'
+                    dl_headers = {'User-Agent': 'Roblox/WinInet'}
+                    if cookie:
+                        dl_headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
+                    resp = sess.get(api_url, headers=dl_headers, timeout=15,
+                                    allow_redirects=True)
+                    data = resp.content if resp.status_code == 200 else None
+
+                    # Attempt place-ID retry on 403 using pre-fetched creator metadata
+                    if data is None and resp.status_code == 403 and meta:
+                        cid = meta.get('creator_id')
+                        ctype = meta.get('creator_type')
+                        if cid is not None and ctype is not None:
+                            g_paths = ([f'/v2/users/{cid}/games?sortOrder=Asc&limit=100']
+                                        if ctype == 1 else
+                                        [f'/v2/groups/{cid}/gamesV2?accessFilter=2&limit=100&sortOrder=Asc',
+                                         f'/v2/groups/{cid}/gamesV2?accessFilter=1&limit=100&sortOrder=Asc'])
+                            try:
+                                seen_pids = set()
+                                for g_path in g_paths:
+                                    g_r = sess.get(f'https://games.roblox.com{g_path}',
+                                                   headers={'Accept': 'application/json'},
+                                                   timeout=10)
+                                    if g_r.status_code == 200:
+                                        games = g_r.json().get('data', [])
+                                        for game in games:
+                                            rp = game.get('rootPlace')
+                                            if rp and rp.get('id'):
+                                                pid = int(rp['id'])
+                                                if pid in seen_pids:
+                                                    continue
+                                                seen_pids.add(pid)
+                                                retry_h = {**dl_headers, 'Roblox-Place-Id': str(pid)}
+                                                r2 = sess.get(api_url, headers=retry_h,
+                                                              timeout=15, allow_redirects=True)
+                                                if r2.status_code == 200 and r2.content:
+                                                    data = r2.content
+                                                    log_buffer.log('Scraper', f'[Load Asset] Place-ID bypass succeeded for {aid_str}')
+                                                    break  # Found working place ID
+                                    if data:
+                                        break  # Stop trying paths
+                            except Exception:
+                                pass
+
+                if data:
+                    self.cache_manager.store_asset(
+                        aid_str, asset_type, data,
+                        url=f'https://assetdelivery.roblox.com/v1/asset/?id={aid_str}',
+                    )
+                    log_buffer.log('Scraper', f'[Load Asset] Stored asset {aid_str} ({asset_name})')
+                    return aid_str, True
+                else:
+                    log_buffer.log('Scraper', f'[Load Asset] No data returned for asset {aid_str}')
+                    return aid_str, False
+
+            except Exception as e:
+                log_buffer.log('Scraper', f'[Load Asset] Failed to download asset {aid_str}: {e}')
+                return aid_str, False
+
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            futures = {pool.submit(_download_one, aid_str): aid_str
+                       for aid_str in str_ids}
+
+            for future in as_completed(futures):
+                if self._stop_requested:
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    break
+
+                aid_str, success = future.result()
+                if success:
+                    loaded_count += 1
+                    meta = asset_metadata.get(aid_str)
+                    asset_name = meta['name'] if meta else 'Unknown'
+                    self.asset_loaded.emit(aid_str, asset_name,
+                                           meta['type'] if meta else 1)
+                else:
+                    failed_count += 1
+
+                with _progress_lock:
+                    _progress_count[0] += 1
+                    done = _progress_count[0]
+                self.progress.emit(done, total)
+                self.status_message.emit(f'Downloaded {done}/{total} assets')
+
+        # Re-stamp cached_at timestamps to preserve the user's original input order.
+        # Parallel downloads finish in arbitrary order, so the auto-generated timestamps
+        # from store_asset() don't reflect the intended sequence.
+        # We assign monotonically increasing timestamps (1ms apart) so that:
+        #   first ID in list  → earliest timestamp → bottom of descending sort
+        #   last ID in list   → latest timestamp   → top of descending sort
+        from datetime import datetime, timedelta
+        base_time = datetime.now()
+        with self.cache_manager._lock:
+            for order_idx, aid_str in enumerate(str_ids):
+                meta = asset_metadata.get(aid_str)
+                asset_type = meta['type'] if meta else 1
+                asset_key = f'{asset_type}_{aid_str}'
+                entry = self.cache_manager.index['assets'].get(asset_key)
+                if entry is not None:
+                    # Offset: first ID gets base_time, last ID gets base_time + N ms
+                    entry['cached_at'] = (base_time + timedelta(milliseconds=order_idx)).isoformat()
+            self.cache_manager._schedule_index_commit()
+
+        # Store resolved metadata so the name resolver picks it up
+        self._resolved_metadata = asset_metadata
+        self._resolved_creator_names = creator_names
+
+        log_buffer.log('Scraper', f'[Load Asset] Complete: {loaded_count} loaded, {failed_count} failed')
+        self.finished_loading.emit(loaded_count, failed_count)
+
+
 class CategoryFilterPopup(QMenu):
     filters_changed = pyqtSignal(set)
 
     def __init__(self, parent=None, active_filters=None):
         super().__init__(parent)
         self.setStyleSheet("""
-            QMenu { background-color: #2b2b2b; border: 1px solid #555; border-radius: 4px; color: #fff; }
-            QWidget#FilterContainer { background-color: #2b2b2b; }
-            QCheckBox { padding: 1px; color: #ddd; font-size: 12px; }
+            QMenu { background-color: palette(window); border: 1px solid palette(mid); border-radius: 4px; color: palette(window-text); }
+            QWidget#FilterContainer { background-color: palette(window); }
+            QCheckBox { padding: 1px; color: palette(window-text); font-size: 12px; }
             QCheckBox::indicator { width: 14px; height: 14px; }
         """)
         
@@ -495,9 +809,9 @@ class CategoryFilterPopup(QMenu):
             cat_frame.setObjectName("CategoryCard")
             cat_frame.setStyleSheet("""
                 QFrame#CategoryCard {
-                    border: 1px solid #444;
+                    border: 1px solid palette(mid);
                     border-radius: 6px;
-                    background-color: #333;
+                    background-color: palette(base);
                 }
             """)
             vbox = QVBoxLayout(cat_frame)
@@ -513,7 +827,7 @@ class CategoryFilterPopup(QMenu):
             line = QFrame()
             line.setFrameShape(QFrame.Shape.HLine)
             line.setFrameShadow(QFrame.Shadow.Sunken)
-            line.setStyleSheet("background-color: #555; margin-bottom: 2px; margin-top: 2px;")
+            line.setStyleSheet("background-color: palette(mid); margin-bottom: 2px; margin-top: 2px;")
             vbox.addWidget(line)
             
             cat_types = []
@@ -557,7 +871,7 @@ class CategoryFilterPopup(QMenu):
         
         btn_layout = QHBoxLayout()
         clear_btn = QPushButton("Clear Filters")
-        clear_btn.setStyleSheet("padding: 5px 15px; background-color: #3b3b3b; border: 1px solid #666; border-radius: 3px;")
+        clear_btn.setStyleSheet("padding: 5px 15px; border: 1px solid palette(mid); border-radius: 3px;")
         clear_btn.clicked.connect(self._clear_all)
         btn_layout.addWidget(clear_btn)
         btn_layout.addStretch()
@@ -759,6 +1073,9 @@ class CacheViewerTab(QWidget):
         
         # Delete worker thread
         self._delete_worker: DeleteWorkerThread | None = None
+
+        # Asset loader worker thread
+        self._asset_loader: AssetLoaderThread | None = None
         self._is_deleting: bool = False
 
         # Texturepack data for context menu
@@ -1082,6 +1399,22 @@ class CacheViewerTab(QWidget):
         if not self.preview_panel.isHidden():
             self._auto_snap_splitter()
 
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.PaletteChange:
+            self._update_table_alt_palette()
+
+    def _update_table_alt_palette(self):
+        """Apply a slightly darker alternate-row colour in dark mode, or reset in light/system mode."""
+        pal = self.palette()
+        is_dark = pal.color(QPalette.ColorRole.Window).lightness() < 128
+        if is_dark:
+            table_pal = self.table.palette()
+            table_pal.setColor(QPalette.ColorRole.AlternateBase, QColor(53, 53, 53))
+            self.table.setPalette(table_pal)
+        else:
+            self.table.setPalette(QPalette())  # inherit from application
+
     def _sanitize_filename(self, name: str) -> str:
         """Replace characters that are illegal in Windows filenames with Unicode look‑alikes."""
         char_map = {
@@ -1302,6 +1635,9 @@ class CacheViewerTab(QWidget):
         self.table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
+        # Apply a slightly darker alternating-row colour in dark mode; this is
+        # managed by _update_table_alt_palette() and kept in sync via changeEvent.
+        self._update_table_alt_palette()
         self.table.currentItemChanged.connect(self._on_selection_changed)
         # Prevent column 0 (counter) from ever becoming the current item.
         # If Qt lands on column 0 (e.g. during keyboard nav), silently redirect
@@ -1340,14 +1676,14 @@ class CacheViewerTab(QWidget):
         # Loading indicator
         self.loading_label = QLabel('Loading...')
         self.loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.loading_label.setStyleSheet('QLabel { background-color: #2b2b2b; color: #aaa; font-size: 14px; padding: 20px; }')
+        self.loading_label.setStyleSheet('QLabel { background-color: palette(base); color: #888; font-size: 14px; padding: 20px; }')
         self.preview_container_layout.addWidget(self.loading_label)
         self.loading_label.hide()
 
         # Image viewer (will show/hide as needed)
         self.image_label = QLabel('Select an asset to preview')
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image_label.setStyleSheet('QLabel { background-color: #2b2b2b; color: #888; }')
+        self.image_label.setStyleSheet('QLabel { background-color: palette(base); color: #888; }')
         self.image_label.setScaledContents(False)
         self.image_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.image_label.customContextMenuRequested.connect(self._show_image_context_menu)
@@ -1377,10 +1713,26 @@ class CacheViewerTab(QWidget):
         self.text_viewer.setReadOnly(True)
         self.text_viewer.setPlaceholderText('Select an asset to preview')
         self.preview_container_layout.addWidget(self.text_viewer)
+        self._text_viewer_default_font = self.text_viewer.font()
+        self._text_viewer_default_wrap = QTextEdit.LineWrapMode.WidgetWidth
 
         # JSON viewer for JSON files
         self.json_viewer = CacheJsonViewer()
         self.preview_container_layout.addWidget(self.json_viewer)
+
+        # Font viewer for font files
+        self.font_wrapper = QWidget()
+        font_wrapper_layout = QVBoxLayout()
+        font_wrapper_layout.setContentsMargins(0, 0, 0, 0)
+        font_wrapper_layout.addStretch(1)
+        self.font_container = QWidget()
+        self.font_container_layout = QVBoxLayout()
+        self.font_container_layout.setContentsMargins(0, 0, 0, 0)
+        self.font_container.setLayout(self.font_container_layout)
+        font_wrapper_layout.addWidget(self.font_container)
+        font_wrapper_layout.addStretch(1)
+        self.font_wrapper.setLayout(font_wrapper_layout)
+        self.preview_container_layout.addWidget(self.font_wrapper)
 
         # Texture pack container (dynamically created)
         self.texturepack_widget = None
@@ -1421,6 +1773,10 @@ class CacheViewerTab(QWidget):
         actions_layout.addWidget(self.stop_preview_btn)
 
         actions_layout.addStretch()
+
+        load_asset_btn = QPushButton('Load Asset...')
+        load_asset_btn.clicked.connect(self._show_load_asset_dialog)
+        actions_layout.addWidget(load_asset_btn)
 
         open_cache_btn = QPushButton('Open Cache Folder')
         open_cache_btn.clicked.connect(lambda: open_folder(self.cache_manager.cache_dir))
@@ -1464,6 +1820,21 @@ class CacheViewerTab(QWidget):
 
         # Get assets
         assets = self.cache_manager.list_assets(filter_types)
+
+        # Ensure all assets have _asset_info entries so the background name
+        # resolver can discover and resolve them even when a search filter
+        # hides them from the table.
+        for a in assets:
+            aid = a['id']
+            if aid not in self._asset_info:
+                self._asset_info[aid] = {
+                    'hash': a.get('hash', ''),
+                    'resolved_name': None,
+                    'creator_id': None,
+                    'creator_name': None,
+                    'creator_type': None,
+                    'row': None,
+                }
 
         # For empty search, show all immediately
         if not search_text:
@@ -1587,7 +1958,8 @@ class CacheViewerTab(QWidget):
                 self.table.setItem(row, 4, type_item)
 
                 # Column 5: Size
-                size = asset.get('size', 0)
+                # For TexturePack we show the raw KTX2 size when available
+                size = asset.get('raw_size', asset.get('size', 0))
                 size_str = self._format_size(size)
                 size_item = NumericSortItem(size, size_str)
                 self.table.setItem(row, 5, size_item)
@@ -1928,6 +2300,11 @@ class CacheViewerTab(QWidget):
             self.table.setUpdatesEnabled(True)
             self.table.viewport().update()
 
+        # If a search is active, re-run it so that assets whose names were
+        # just resolved (and now match the query) appear in the results.
+        if self.search_box.text().strip():
+            self._search_debounce.start(400)
+
     def _update_row_name(self, asset_id: str, name: str):
         """Update a single row's name cell (thread-safe via QTimer)."""
         info = self._asset_info.get(asset_id)
@@ -2016,7 +2393,7 @@ class CacheViewerTab(QWidget):
                 return None
             enc = base64.b64decode(cookies_data)
             dec = win32crypt.CryptUnprotectData(enc, None, None, None, 0)[1]
-            s = dec.decode(errors='ignore')
+            s = dec.decode('utf-8', errors='ignore')
             m = re.search(r'\.ROBLOSECURITY\s+([^\s;]+)', s)
             return m.group(1) if m else None
         except Exception:
@@ -2191,18 +2568,27 @@ class CacheViewerTab(QWidget):
                 time.sleep(5)
                 continue
 
-            # Build pending list - assets without resolved names
-            # OPTIMIZATION: Only resolve assets currently in visible rows (not filtered/scrolled off)
-            # This reduces unnecessary API calls and focuses on assets the user can see.
-            # When rows are filtered/hidden, their row >= rowCount, so they're skipped temporarily.
-            # When filter is removed or user scrolls back, they'll be added to pending again.
-            pending = [
-                asset_id
-                for asset_id, info in self._asset_info.items()
-                if info.get('resolved_name') is None 
-                   and info.get('row') is not None
-                   and info.get('row') < self.table.rowCount()  # Only visible rows
-            ]
+            try:
+                # Build pending list - assets without resolved names
+                # Build pending list - assets without resolved names.
+                # Prioritise assets in visible rows, then resolve the rest so that
+                # search-by-name works even for assets not currently displayed.
+                _row_count = self.table.rowCount()
+            except RuntimeError:
+                # Widget has been deleted (app shutting down)
+                break
+                
+            visible = []
+            hidden = []
+            for asset_id, info in self._asset_info.items():
+                if info.get('resolved_name') is not None:
+                    continue
+                row = info.get('row')
+                if row is not None and row < _row_count:
+                    visible.append(asset_id)
+                else:
+                    hidden.append(asset_id)
+            pending = visible + hidden
 
             
 
@@ -2364,7 +2750,7 @@ class CacheViewerTab(QWidget):
                 type_name = a['type_name'].lower()
                 url = a.get('url', '').lower()
                 hash_val = a.get('hash', '').lower()
-                size_str = self._format_size(a.get('size', 0)).lower()
+                size_str = self._format_size(a.get('raw_size', a.get('size', 0))).lower()
                 cached_at = a.get('cached_at', '').lower()
 
                 resolved_name = ''
@@ -2530,6 +2916,7 @@ class CacheViewerTab(QWidget):
         self.animation_viewer.hide()
         self.text_viewer.hide()
         self.json_viewer.hide()
+        self.font_wrapper.hide()
 
         # Clean up texture pack widget
         if self.texturepack_widget is not None:
@@ -2593,6 +2980,14 @@ class CacheViewerTab(QWidget):
                 self._preview_audio(data, asset_id)
             elif asset_type == 24:  # Animation
                 self._preview_animation(data, asset_id)
+            elif asset_type == 74:  # FontFace - actual font file
+                self._preview_font(data)
+            elif asset_type == 73:  # FontFamily - JSON metadata
+                is_json, _ = self._is_json_data(data)
+                if is_json:
+                    self._preview_json(data, asset)
+                else:
+                    self._show_text_preview('FontFamily data could not be parsed as JSON')
             elif asset_type == 63:  # TexturePack
                 self._preview_texturepack(data, asset_id)
             else:
@@ -2651,11 +3046,12 @@ class CacheViewerTab(QWidget):
             'converted_rbxmx': 'Converted (.rbxmx)',
             'converted_png': 'Converted (.png)',
             'converted_audio': 'Converted (.ogg/.mp3)',
-            'converted': 'Converted',
+            'converted': 'Converted (.xml)',
+            'converted_images': 'Converted (Images)',
             'bin': 'Binary (decompressed)',
             'raw': 'Raw (original cache)',
         }
-        for fmt in ['converted_obj', 'converted_rbxmx', 'converted_png', 'converted_audio', 'converted', 'bin', 'raw']:
+        for fmt in ['converted_obj', 'converted_rbxmx', 'converted_png', 'converted_audio', 'converted', 'converted_images', 'bin', 'raw']:
             if fmt in available_formats:
                 action = export_menu.addAction(format_labels[fmt])
                 export_actions[action] = fmt
@@ -2873,9 +3269,16 @@ class CacheViewerTab(QWidget):
 
             elif asset_type in (1, 13):  # Image, Decal - save as PNG
                 try:
+                    _KTX_MAGIC = (b'\xabKTX 11\xbb\r\n\x1a\n', b'\xabKTX 20\xbb\r\n\x1a\n')
+                    export_data = data
+                    if data[:12] in _KTX_MAGIC:
+                        from .tools.ktx_to_png import convert as _ktx_convert
+                        converted = _ktx_convert(data)
+                        if converted:
+                            export_data = converted
                     filename = f'{safe_base}.png'
                     temp_file = temp_dir / filename
-                    temp_file.write_bytes(data)
+                    temp_file.write_bytes(export_data)
                 except Exception as e:
                     QMessageBox.warning(self, 'Error', f'Image save error: {e}')
                     return
@@ -2996,8 +3399,14 @@ class CacheViewerTab(QWidget):
             ):
                 exported_count += 1
 
-        # Determine export location based on format
-        format_dir = self.cache_manager.export_dir / export_format
+        # Determine export location based on format (matching cache_manager logic)
+        if export_format == 'raw':
+            format_dir = self.cache_manager.export_dir / 'raw'
+        elif export_format == 'bin':
+            format_dir = self.cache_manager.export_dir / 'bin'
+        else:  # All 'converted*' formats go to 'converted' directory
+            format_dir = self.cache_manager.export_dir / 'converted'
+        
         log_buffer.log('Scraper', f'Exported {exported_count}/{len(assets_to_export)} assets as {export_format}')
         QMessageBox.information(
             self,
@@ -3287,13 +3696,25 @@ class CacheViewerTab(QWidget):
             self._texturepack_xml = xml_text  # Store for context menu
             root = ET.fromstring(xml_text)
 
-            # Extract texture map IDs in order
-            map_order = ['color', 'normal', 'metalness', 'roughness', 'emissive']
-            maps = {}
-            for elem in map_order:
-                node = root.find(elem)
-                if node is not None and node.text:
-                    maps[elem.capitalize()] = node.text
+            # Extract texture map IDs in document order.
+            # map_index is POSITIONAL — the Nth map tag present in this XML.
+            # This matches the fidelity slot encoding Roblox uses in batch requests.
+            _KNOWN_MAP_TAGS = {'color', 'albedo', 'normal', 'metalness', 'roughness',
+                               'emissive', 'height', 'orm', 'diffuse', 'normalmap',
+                               'bumpmap', 'heightmap', 'displacement'}
+            maps = {}          # display_name -> map_id_str
+            maps_indices = {}  # display_name -> positional slot_idx
+            slot_idx = 0
+            for child in root:
+                tag_lower = child.tag.lower().lstrip('{').split('}')[-1]
+                if tag_lower not in _KNOWN_MAP_TAGS:
+                    continue
+                text = (child.text or '').strip()
+                if text.isdigit() and text != '0':
+                    display_name = tag_lower.capitalize()
+                    maps[display_name] = text
+                    maps_indices[display_name] = slot_idx
+                slot_idx += 1  # every known slot tag advances the index
 
             if not maps:
                 self._show_text_preview(f'No texture maps found in texture pack {asset_id}')
@@ -3314,8 +3735,10 @@ class CacheViewerTab(QWidget):
 
             # Create placeholder for each texture map
             for map_name, map_id in maps.items():
-                # Header with name and id
-                header = QLabel(f'{map_name}  |  {map_id}')
+                map_index = maps_indices.get(map_name, '?')
+                slot_key = f'{asset_id}:{map_index}'
+                # Header: Name  |  sub-asset ID  |  slot X  (slot X is what goes in replace_ids)
+                header = QLabel(f'{map_name}  |  {asset_id}:{map_index}')
                 header.setStyleSheet('font-weight: bold; color: #888; padding: 5px;')
                 header.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
                 tp_layout.addWidget(header)
@@ -3323,10 +3746,12 @@ class CacheViewerTab(QWidget):
                 # Image placeholder with context menu
                 img_label = QLabel('Loading...')
                 img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                img_label.setStyleSheet('background-color: #333; padding: 10px; min-height: 100px;')
+                img_label.setStyleSheet('background-color: palette(base); padding: 10px; min-height: 100px;')
                 img_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
                 img_label.setProperty('map_name', map_name)
                 img_label.setProperty('map_id', map_id)
+                img_label.setProperty('map_index', map_index)
+                img_label.setProperty('slot_key', slot_key)
                 img_label.customContextMenuRequested.connect(
                     lambda pos, lbl=img_label: self._show_texturepack_context_menu(pos, lbl)
                 )
@@ -3442,6 +3867,7 @@ class CacheViewerTab(QWidget):
         map_name = label.property('map_name')
         map_id = label.property('map_id')
         map_hash = label.property('map_hash') or ''
+        slot_key = label.property('slot_key') or ''
 
         menu = QMenu(self)
 
@@ -3450,9 +3876,12 @@ class CacheViewerTab(QWidget):
 
         menu.addSeparator()
 
-        # Copy name/id/hash
+        # Copy name/slot-key/sub-asset-id/hash
         copy_name_action = menu.addAction(f'Copy Name ({map_name})')
-        copy_id_action = menu.addAction(f'Copy ID ({map_id})')
+        # "Copy ID" intentionally copies slot key, because this is the exact
+        # value users should paste into replace_ids for per-slot replacement.
+        copy_id_action = menu.addAction(f'Copy ID ({slot_key}) (Use this for Replacer)')
+        copy_subasset_action = menu.addAction(f'Copy Sub-Asset ID ({map_id}) (Cannot be Replaced)')
         copy_hash_action = None
         if map_hash:
             copy_hash_action = menu.addAction(f'Copy Hash ({map_hash[:16]}...)')
@@ -3471,6 +3900,8 @@ class CacheViewerTab(QWidget):
         elif action == copy_name_action:
             QApplication.clipboard().setText(map_name)
         elif action == copy_id_action:
+            QApplication.clipboard().setText(slot_key)
+        elif action == copy_subasset_action:
             QApplication.clipboard().setText(str(map_id))
         elif action == copy_hash_action and map_hash:
             QApplication.clipboard().setText(map_hash)
@@ -3602,6 +4033,29 @@ class CacheViewerTab(QWidget):
         except Exception as e:
             self._show_text_preview(f'Animation preview error: {e}')
 
+    def _preview_font(self, data: bytes):
+        """Preview a font asset (TTF, OTF, TTC)."""
+        try:
+            log_buffer.log('Preview', f'Loading font ({len(data)} bytes)')
+            
+            # Create font viewer widget
+            font_viewer = FontViewerWidget(data, self)
+            
+            # Clear previous font widgets
+            while self.font_container_layout.count():
+                child = self.font_container_layout.takeAt(0)
+                if child.widget():
+                    child.widget().deleteLater()
+            
+            # Add new font viewer
+            self.font_container_layout.addWidget(font_viewer)
+            self.font_wrapper.show()
+            self.stop_preview_btn.show()
+            
+        except Exception as e:
+            self._show_text_preview(f'Font preview error: {e}')
+            log_buffer.log('Preview', f'Font preview error: {e}')
+
     def _is_json_data(self, data: bytes) -> tuple[bool, dict | list | None]:
         """
         Detect if binary data is valid JSON.
@@ -3686,10 +4140,192 @@ class CacheViewerTab(QWidget):
             hex_lines.append(f'\n... ({len(data) - preview_size} more bytes)')
 
         self._show_text_preview('\n'.join(hex_lines))
+        mono_font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+        self.text_viewer.setFont(mono_font)
+        self.text_viewer.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
 
     def _show_text_preview(self, text: str):
         """Show text in the text viewer."""
         self._hide_loading()
+        self.text_viewer.setFont(self._text_viewer_default_font)
+        self.text_viewer.setLineWrapMode(self._text_viewer_default_wrap)
         self.text_viewer.setPlainText(text)
         self.text_viewer.show()
         self.stop_preview_btn.show()
+
+    # ------------------------------------------------------------------
+    # Load Asset dialog
+    # ------------------------------------------------------------------
+
+    def _show_load_asset_dialog(self):
+        """Show a dialog for manually entering asset IDs to download from Roblox."""
+        from ..utils import get_icon_path
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Load Assets')
+        dialog.resize(400, 350)
+        if icon_path := get_icon_path():
+            from PyQt6.QtGui import QIcon
+            dialog.setWindowIcon(QIcon(str(icon_path)))
+
+        layout = QVBoxLayout()
+
+        title = QLabel('Load Assets from Roblox')
+        title.setStyleSheet('font-weight: bold;')
+        layout.addWidget(title)
+
+        hint = QLabel('Enter asset IDs separated by commas, spaces, newlines, or semicolons.')
+        hint.setStyleSheet('color: gray; font-size: 9pt;')
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        text_edit = QTextEdit()
+        text_edit.setPlaceholderText('e.g. 1818, 1234567890, 9876543210')
+        layout.addWidget(text_edit)
+
+        status_label = QLabel('')
+        status_label.setStyleSheet('color: #888; font-size: 9pt;')
+        layout.addWidget(status_label)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+
+        load_btn = QPushButton('Load Asset IDs')
+        btn_layout.addWidget(load_btn)
+        layout.addLayout(btn_layout)
+
+        dialog.setLayout(layout)
+
+        def on_load_clicked():
+            content = text_edit.toPlainText().strip()
+            if not content:
+                return
+
+            # Parse IDs: support commas, spaces, newlines, semicolons as separators
+            content = content.replace('\n', ',').replace(';', ',').replace(' ', ',')
+            raw_ids = []
+            for part in content.split(','):
+                part = part.strip()
+                if part:
+                    try:
+                        raw_ids.append(int(part))
+                    except ValueError:
+                        pass  # Skip non-numeric entries
+
+            if not raw_ids:
+                status_label.setText('No valid asset IDs found.')
+                status_label.setStyleSheet('color: #cc5555; font-size: 9pt;')
+                return
+
+            # Deduplicate while preserving order
+            seen = set()
+            asset_ids = []
+            for aid in raw_ids:
+                if aid not in seen:
+                    seen.add(aid)
+                    asset_ids.append(aid)
+
+            # Disable button while loading
+            load_btn.setEnabled(False)
+            text_edit.setReadOnly(True)
+            status_label.setText(f'Loading {len(asset_ids)} asset(s)...')
+            status_label.setStyleSheet('color: #888; font-size: 9pt;')
+
+            log_buffer.log('Scraper', f'[Load Asset] Starting load of {len(asset_ids)} asset ID(s)')
+
+            # Stop any existing loader
+            if self._asset_loader is not None:
+                self._asset_loader.stop()
+                self._asset_loader.quit()
+                self._asset_loader.wait()
+                self._asset_loader = None
+
+            self._asset_loader = AssetLoaderThread(
+                asset_ids, self.cache_manager, self.cache_scraper
+            )
+
+            def on_status(msg):
+                status_label.setText(msg)
+
+            def on_finished(loaded, failed):
+                self._on_load_assets_complete(loaded, failed, dialog,
+                                              load_btn, text_edit, status_label)
+
+            self._asset_loader.status_message.connect(on_status)
+            self._asset_loader.finished_loading.connect(on_finished)
+            self._asset_loader.start()
+
+        load_btn.clicked.connect(on_load_clicked)
+
+        # Handle cleanup when dialog is closed (by user or programmatically)
+        def on_dialog_finished():
+            if self._asset_loader is not None:
+                self._asset_loader.stop()
+                self._asset_loader.quit()
+                self._asset_loader.wait()
+                self._asset_loader = None
+
+        dialog.finished.connect(on_dialog_finished)
+
+        # Non-modal: use show() so the rest of the app remains interactive
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog.show()
+
+    def _on_load_assets_complete(self, loaded: int, failed: int,
+                                  dialog: QDialog, load_btn: QPushButton,
+                                  text_edit: QTextEdit, status_label: QLabel):
+        """Handle completion of the asset loading thread."""
+        # Merge resolved metadata into _asset_info so names/creators show immediately
+        if self._asset_loader is not None:
+            resolved = getattr(self._asset_loader, '_resolved_metadata', {})
+            creator_names = getattr(self._asset_loader, '_resolved_creator_names', {})
+            for asset_id, meta in resolved.items():
+                if asset_id not in self._asset_info:
+                    self._asset_info[asset_id] = {
+                        'hash': '',
+                        'resolved_name': None,
+                        'creator_id': None,
+                        'creator_name': None,
+                        'creator_type': None,
+                        'row': None,
+                    }
+                info = self._asset_info[asset_id]
+                info['resolved_name'] = meta.get('name')
+                info['creator_id'] = meta.get('creator_id')
+                info['creator_type'] = meta.get('creator_type')
+                cid = meta.get('creator_id')
+                if cid is not None and cid in creator_names:
+                    info['creator_name'] = creator_names[cid]
+                elif meta.get('creator_name'):
+                    info['creator_name'] = meta['creator_name']
+
+                # Persist to index
+                self._save_resolved_name_to_index(asset_id, meta.get('name', ''))
+                self._save_resolved_creator_to_index(
+                    asset_id,
+                    meta.get('creator_id'),
+                    info.get('creator_name'),
+                    meta.get('creator_type'),
+                )
+
+            # Save index once
+            try:
+                self.cache_manager._save_index()
+            except Exception:
+                pass
+
+        # Re-enable UI
+        load_btn.setEnabled(True)
+        text_edit.setReadOnly(False)
+
+        if failed == 0:
+            status_label.setText(f'Done! Loaded {loaded} asset(s).')
+            status_label.setStyleSheet('color: #55cc66; font-size: 9pt;')
+        else:
+            status_label.setText(f'Done! Loaded {loaded}, failed {failed}.')
+            status_label.setStyleSheet('color: #ccaa55; font-size: 9pt;')
+
+        log_buffer.log('Scraper', f'[Load Asset] Finished: {loaded} loaded, {failed} failed')
+
+        # Refresh the table to show newly loaded assets
+        self._refresh_assets()

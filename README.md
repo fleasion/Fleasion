@@ -36,13 +36,9 @@ uv run Fleasion
 
 ### Building a Standalone Executable
 
-To build a standalone executable, within the "Fleasion" folder:
+To build a standalone executable, within the "Fleasion" folder, run:
 
 ```bash
-# Install PyInstaller
-uv add pyinstaller --dev
-
-# Build
 uv run pyinstaller Fleasion.spec
 ```
 
@@ -107,8 +103,9 @@ The cache scraper is a live interception system that captures every asset Roblox
 
 **Automatic format conversion:**
 
-- **KTX textures** (Images, Decals) &mdash; automatically fetches the converted PNG version from the asset delivery API so you get usable image files instead of raw KTX data
+- **KTX textures** (Images, Decals) &mdash; converts KTX textures locally on device into usable PNGs
 - **TexturePacks** &mdash; fetches the XML manifest that maps Color, Normal, Metalness, and Roughness texture IDs, then resolves each individual texture
+- **3D Models** (SolidMdodels and Meshes) &mdash; Converts every single Mesh and SolidModel type into .obj files in both directions
 
 **Performance:**
 

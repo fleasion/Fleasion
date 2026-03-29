@@ -12,7 +12,7 @@ class ThemeManager:
     def apply_theme(theme: str):
         """Apply a theme to the application."""
         app = QApplication.instance()
-        if not app:
+        if not isinstance(app, QApplication):
             return
 
         if theme == 'Light':
@@ -23,6 +23,16 @@ class ThemeManager:
             # Reset to system default
             app.setStyle('Fusion')
             app.setPalette(app.style().standardPalette())
+
+        # Force every widget to re-polish so that palette() references inside
+        # inline stylesheets are re-evaluated against the new palette, and
+        # widgets inside styled containers repaint their text/button colours.
+        for widget in app.allWidgets():
+            style = widget.style()
+            if style:
+                style.unpolish(widget)
+                style.polish(widget)
+            widget.update()
 
     @staticmethod
     def _apply_light_theme(app: QApplication):
@@ -42,6 +52,7 @@ class ThemeManager:
         palette.setColor(QPalette.ColorRole.Link, QColor(0, 0, 255))
         palette.setColor(QPalette.ColorRole.Highlight, QColor(0, 120, 215))
         palette.setColor(QPalette.ColorRole.HighlightedText, QColor(255, 255, 255))
+        palette.setColor(QPalette.ColorRole.PlaceholderText, QColor(128, 128, 128))
         app.setPalette(palette)
 
     @staticmethod
@@ -54,7 +65,7 @@ class ThemeManager:
         palette.setColor(QPalette.ColorRole.Window, QColor(32, 32, 32))
         palette.setColor(QPalette.ColorRole.WindowText, QColor(255, 255, 255))
         palette.setColor(QPalette.ColorRole.Base, QColor(45, 45, 45))
-        palette.setColor(QPalette.ColorRole.AlternateBase, QColor(53, 53, 53))
+        palette.setColor(QPalette.ColorRole.AlternateBase,   QColor(64, 64, 64))
         palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(50, 50, 50))
         palette.setColor(QPalette.ColorRole.ToolTipText, QColor(255, 255, 255))
         palette.setColor(QPalette.ColorRole.Text, QColor(255, 255, 255))

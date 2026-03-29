@@ -64,6 +64,9 @@ class CacheManager:
         self.config_manager = config_manager
         self._lock = threading.Lock()
         
+        # Cache scraper for asset downloads (optional, set by ProxyMaster)
+        self._cache_scraper = None
+        
         # Debounced index writes: reduce disk I/O by batching writes
         # Instead of writing on every store_asset(), we schedule a write 500ms in the future
         # If another write comes in before 500ms, we cancel the pending one and reschedule
@@ -82,6 +85,10 @@ class CacheManager:
 
         # Load or create index
         self.index = self._load_index()
+
+    def set_scraper(self, scraper) -> None:
+        """Set the cache scraper for private asset downloads."""
+        self._cache_scraper = scraper
 
     def _load_index(self) -> dict:
         """Load cache index from disk."""
@@ -133,6 +140,41 @@ class CacheManager:
         type_dir = self.cache_dir / type_name
         type_dir.mkdir(exist_ok=True)
         return type_dir / f'{asset_id}.bin'
+
+    def get_raw_asset_path(self, asset_id: str, asset_type: int) -> Path:
+        """Get storage path for the raw (pre-conversion) sidecar file."""
+        type_name = self.get_asset_type_name(asset_type)
+        type_dir = self.cache_dir / type_name
+        type_dir.mkdir(exist_ok=True)
+        return type_dir / f'{asset_id}.raw'
+
+    def store_raw_asset(self, asset_id: str, asset_type: int, data: bytes) -> bool:
+        """
+        Store the raw pre-conversion asset bytes as a sidecar file and record
+        its size in the index under 'raw_size'.  Used for TexturePack KTX2 files.
+        """
+        try:
+            raw_path = self.get_raw_asset_path(asset_id, asset_type)
+            raw_path.write_bytes(data)
+            with self._lock:
+                asset_key = f'{asset_type}_{asset_id}'
+                if asset_key in self.index['assets']:
+                    self.index['assets'][asset_key]['raw_size'] = len(data)
+                    self._schedule_index_commit()
+            return True
+        except Exception as e:
+            log_buffer.log('Scraper', f'Failed to store raw asset {asset_id}: {e}')
+            return False
+
+    def get_raw_asset(self, asset_id: str, asset_type: int) -> Optional[bytes]:
+        """Return the raw pre-conversion sidecar bytes, or None if not present."""
+        try:
+            raw_path = self.get_raw_asset_path(asset_id, asset_type)
+            if raw_path.exists():
+                return raw_path.read_bytes()
+        except Exception as e:
+            log_buffer.log('Scraper', f'Failed to retrieve raw asset {asset_id}: {e}')
+        return None
 
     def _is_json_data(self, data: bytes) -> bool:
         """
@@ -372,12 +414,17 @@ class CacheManager:
         elif asset_type in (1, 13):  # Image, Decal
             formats.insert(0, 'converted_png')
         elif asset_type == 63:  # TexturePack
+            formats.insert(0, 'converted_images')
             formats.insert(0, 'converted')
         elif asset_type == 24:  # Animation
             formats.insert(0, 'converted_rbxmx')
         elif asset_type == 39:  # SolidModel
             formats.insert(0, 'converted_rbxmx')
             formats.insert(0, 'converted_obj')
+        elif asset_type == 73:  # FontFamily - JSON metadata
+            formats.insert(0, 'converted_json')
+        elif asset_type == 74:  # FontFace - actual font file
+            formats.insert(0, 'converted_font')
 
         return formats
 
@@ -445,7 +492,13 @@ class CacheManager:
                     return output_path
 
                 elif export_format == 'bin':
-                    # Binary export - decompressed if needed, with detected extension
+                    # Binary export - for TexturePack use raw KTX2 sidecar if available
+                    if asset_type == 63:
+                        raw_data = self.get_raw_asset(asset_id, asset_type)
+                        if raw_data is not None:
+                            output_path = export_type_dir / f'{filename}.ktx2'
+                            output_path.write_bytes(raw_data)
+                            return output_path
                     ext = self._detect_extension(data, asset_type)
                     output_path = export_type_dir / f'{filename}{ext}'
                     output_path.write_bytes(data)
@@ -520,16 +573,43 @@ class CacheManager:
                         output_path = export_type_dir / f'{filename}.ogg'  # Default to ogg
 
                 elif export_format == 'converted_png':  # Image, Decal - export as PNG
-                    # Data should already be PNG (converted from KTX at scrape time)
+                    # Convert from KTX if needed (lazily-cached or pre-pipeline assets)
+                    _KTX_MAGIC = (b'\xabKTX 11\xbb\r\n\x1a\n', b'\xabKTX 20\xbb\r\n\x1a\n')
+                    export_data = data
+                    if data[:12] in _KTX_MAGIC:
+                        from .tools.ktx_to_png import convert as _ktx_convert
+                        converted = _ktx_convert(data)
+                        if converted:
+                            export_data = converted
                     output_path = export_type_dir / f'{filename}.png'
-                    output_path.write_bytes(data)
+                    output_path.write_bytes(export_data)
                     return output_path
 
-                elif export_format == 'converted' and asset_type == 63:  # TexturePack - export individual textures
+                elif export_format == 'converted' and asset_type == 63:  # TexturePack - export as XML
+                    # Decompress if needed
+                    xml_data = data
+                    if data.startswith(b'\x1f\x8b'):
+                        import gzip as gzip_module
+                        xml_data = gzip_module.decompress(data)
+                    output_path = export_type_dir / f'{filename}.xml'
+                    output_path.write_bytes(xml_data)
+                    return output_path
+
+                elif export_format == 'converted_images' and asset_type == 63:  # TexturePack - extract individual textures
                     return self._export_texturepack(data, asset_id, export_type_dir, filename)
 
                 elif export_format == 'converted_rbxmx' and asset_type == 24:  # Animation - export as RBXMX
                     output_path = export_type_dir / f'{filename}.rbxmx'
+
+                elif export_format == 'converted_json' and asset_type == 73:  # FontFamily - JSON metadata
+                    # FontFamily assets are JSON files
+                    output_path = export_type_dir / f'{filename}.json'
+                    output_path.write_bytes(data)
+                    return output_path
+
+                elif export_format == 'converted_font' and asset_type == 74:  # FontFace - actual font file
+                    ext = self._detect_font_extension(data)
+                    output_path = export_type_dir / f'{filename}{ext}'
 
                 else:
                     # Default binary export
@@ -547,6 +627,10 @@ class CacheManager:
         """Detect file extension based on data signature."""
         if asset_type == 39:
             return '.bin'
+        if asset_type == 73:  # FontFamily - JSON metadata
+            return '.json'
+        if asset_type == 74:  # FontFace - actual font file
+            return self._detect_font_extension(data)
         if data.startswith(b'\x89PNG'):
             return '.png'
         elif data.startswith(b'OggS'):
@@ -556,13 +640,39 @@ class CacheManager:
         elif data.startswith(b'version '):
             return '.mesh'
         elif data.startswith(b'<roblox'):
-            return '.rbxmx'
+            is_binary = data.startswith(b'<roblox!')
+            if asset_type == 9:
+                return '.rbxl' if is_binary else '.rbxlx'
+            elif asset_type == 63:  # TexturePack XML
+                return '.xml'
+            else:
+                return '.rbxm' if is_binary else '.rbxmx'
         elif data.startswith(b'\xABKTX'):
             return '.ktx'
         elif data.startswith(b'\x1f\x8b'):
             return '.gz'
         else:
             return '.bin'
+
+    def _detect_font_extension(self, data: bytes) -> str:
+        """Detect font file extension from magic bytes."""
+        if not data:
+            return '.ttf'
+        
+        # TrueType
+        if data[:4] == b'\x00\x01\x00\x00':
+            return '.ttf'
+        # OpenType (CFF-based)
+        if data[:4] == b'OTTO':
+            return '.otf'
+        # TrueType Collection
+        if data[:4] == b'ttcf':
+            return '.ttc'
+        # Alternative TrueType magic
+        if data[:2] == b'\x01\x00':
+            return '.ttf'
+        
+        return '.ttf'  # Default to TTF for font types
 
     def _export_texturepack(self, data: bytes, asset_id: str,
                            export_type_dir: Path, base_filename: str) -> Optional[Path]:
@@ -580,13 +690,27 @@ class CacheManager:
         """
         import xml.etree.ElementTree as ET
         import requests
+        import urllib3
 
         from ..utils import log_buffer
 
+        # Suppress SSL warnings when verify=False
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
         try:
+            log_buffer.log('Export', f'Starting TexturePack export for {asset_id}')
+            
+            # Decompress if gzip-compressed
+            xml_data = data
+            if data.startswith(b'\x1f\x8b'):
+                import gzip as gzip_module
+                xml_data = gzip_module.decompress(data)
+                log_buffer.log('Export', f'Decompressed gzip data, size: {len(xml_data)} bytes')
+            
             # Parse XML
-            xml_text = data.decode('utf-8', errors='replace')
+            xml_text = xml_data.decode('utf-8', errors='replace')
             root = ET.fromstring(xml_text)
+            log_buffer.log('Export', f'Parsed XML successfully')
 
             # Extract texture map IDs
             map_order = ['color', 'normal', 'metalness', 'roughness', 'emissive']
@@ -596,6 +720,8 @@ class CacheManager:
                 if node is not None and node.text:
                     maps[elem.capitalize()] = node.text
 
+            log_buffer.log('Export', f'Found {len(maps)} texture maps: {list(maps.keys())}')
+            
             if not maps:
                 log_buffer.log('Export', f'No texture maps found in texture pack {asset_id}')
                 return None
@@ -612,6 +738,7 @@ class CacheManager:
                 texture_hash = ''
 
                 if texture_data:
+                    log_buffer.log('Export', f'Found cached {map_name} texture {map_id}')
                     # Get hash from cache
                     texture_info = self.get_asset_info(str(map_id), 1)
                     texture_hash = texture_info.get('hash', '') if texture_info else ''
@@ -619,18 +746,56 @@ class CacheManager:
                     # Not in cache - fetch from API
                     log_buffer.log('Export', f'Fetching {map_name} texture {map_id} from API')
                     try:
-                        from urllib.parse import urlparse
-                        api_url = f'https://assetdelivery.roblox.com/v1/asset/?id={map_id}'
-                        headers = {'User-Agent': 'Roblox/WinInet'}
-                        response = requests.get(api_url, headers=headers, timeout=15, allow_redirects=True)
-                        if response.status_code == 200 and response.content:
-                            texture_data = response.content
-                            # Extract hash from final URL path
-                            final_url = response.url
-                            parsed = urlparse(final_url)
-                            path_parts = parsed.path.rsplit('/', 1)
-                            if len(path_parts) > 1 and path_parts[-1]:
-                                texture_hash = path_parts[-1]
+                        texture_data = None
+                        # Use scraper if available (supports both public and private assets)
+                        if self._cache_scraper is not None:
+                            extra = {}
+                            cookie = self._cache_scraper._get_roblosecurity()
+                            if cookie:
+                                extra['Cookie'] = f'.ROBLOSECURITY={cookie};'
+                            texture_data, _status = self._cache_scraper._fetch_asset_with_place_id_retry(
+                                str(map_id), extra_headers=extra or None,
+                            )
+                        else:
+                            # Fallback: direct requests with cookie extraction
+                            from urllib.parse import urlparse
+                            api_url = f'https://assetdelivery.roblox.com/v1/asset/?id={map_id}'
+                            headers = {'User-Agent': 'Roblox/WinInet'}
+                            # Get cookie if available for private assets
+                            try:
+                                import os
+                                import json as _json
+                                import base64
+                                import re
+                                try:
+                                    import win32crypt
+                                    path = os.path.expandvars(r'%LocalAppData%/Roblox/LocalStorage/RobloxCookies.dat')
+                                    if os.path.exists(path):
+                                        with open(path) as f:
+                                            data = _json.load(f)
+                                        cookies_data = data.get('CookiesData')
+                                        if cookies_data:
+                                            enc = base64.b64decode(cookies_data)
+                                            dec = win32crypt.CryptUnprotectData(enc, None, None, None, 0)[1]
+                                            s = dec.decode('utf-8', errors='ignore')
+                                            m = re.search(r'\.ROBLOSECURITY\s+([^\s;]+)', s)
+                                            if m:
+                                                headers['Cookie'] = f'.ROBLOSECURITY={m.group(1)};'
+                                except Exception:
+                                    pass
+                            except Exception:
+                                pass
+                            response = requests.get(api_url, headers=headers, timeout=15, allow_redirects=True, verify=False)
+                            if response.status_code == 200 and response.content:
+                                texture_data = response.content
+                                log_buffer.log('Export', f'Successfully fetched {map_name} texture {map_id}, size: {len(texture_data)} bytes')
+                            else:
+                                log_buffer.log('Export', f'API returned status {response.status_code} for {map_name} texture {map_id}')
+                        
+                        if texture_data:
+                            # Extract hash from CDN URL if available
+                            # This is a fallback since we're fetching from API, not CDN
+                            texture_hash = ''
                     except Exception as e:
                         log_buffer.log('Export', f'Failed to fetch texture {map_id}: {e}')
                         continue
@@ -647,9 +812,13 @@ class CacheManager:
 
                 # Write texture
                 texture_path = type_dir / f'{texture_filename}.png'
-                texture_path.write_bytes(texture_data)
-                exported_count += 1
-                log_buffer.log('Export', f'Exported {map_name} texture to {texture_path.name}')
+                try:
+                    texture_path.write_bytes(texture_data)
+                    exported_count += 1
+                    log_buffer.log('Export', f'Saved {map_name} texture to {texture_path}')
+                except Exception as e:
+                    log_buffer.log('Export', f'Failed to write {map_name} texture to {texture_path}: {e}')
+                    continue
 
             if exported_count > 0:
                 log_buffer.log('Export', f'Exported {exported_count} textures from pack {asset_id}')
