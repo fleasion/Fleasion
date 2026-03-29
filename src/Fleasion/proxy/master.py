@@ -417,6 +417,7 @@ def _write_hosts_file(content: str) -> None:
     persistently locks the hosts file against direct writes.
 
     Strategy (applied in order):
+      0. If the hosts file has the read-only attribute set, clear it first.
       1. Retry direct write up to *_HOSTS_WRITE_RETRIES* times with a short
          delay.  This handles brief/scan-time locks held by AV drivers.
       2. Write to a temporary file in the same directory, then use
@@ -426,6 +427,17 @@ def _write_hosts_file(content: str) -> None:
 
     Raises ``OSError`` if both strategies are exhausted.
     """
+    # --- Strategy 0: clear read-only attribute if present ---
+    if HOSTS_FILE.exists():
+        import stat
+        current_mode = HOSTS_FILE.stat().st_mode
+        if not (current_mode & stat.S_IWRITE):
+            try:
+                HOSTS_FILE.chmod(current_mode | stat.S_IWRITE)
+                log_buffer.log('Hosts', 'Hosts file was read-only — cleared read-only attribute')
+            except OSError as exc:
+                log_buffer.log('Hosts', f'Failed to clear read-only attribute on hosts file: {exc}')
+
     last_exc: OSError | None = None
 
     # --- Strategy 1: direct write with retries ---
