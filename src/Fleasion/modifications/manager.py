@@ -163,6 +163,53 @@ def _bundled_path(name: str) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# PendingModificationsQueue
+# ---------------------------------------------------------------------------
+
+class PendingModificationsQueue:
+    """Stores pending FFlag and framerate modifications to apply later.
+    
+    When Roblox Player is running, changes are queued instead of applied immediately.
+    When Roblox exits, all queued changes are applied at once.
+    """
+
+    def __init__(self):
+        self._pending_fast_flags: dict | None = None
+        self._pending_framerate_cap: int | None = None
+        self._lock = threading.Lock()
+
+    def enqueue_fast_flags(self, settings: dict) -> None:
+        """Queue a fast-flags update to be applied later."""
+        with self._lock:
+            self._pending_fast_flags = settings
+
+    def enqueue_framerate_cap(self, value: int) -> None:
+        """Queue a framerate cap update to be applied later."""
+        with self._lock:
+            self._pending_framerate_cap = value
+
+    def has_pending(self) -> bool:
+        """Check if there are any pending modifications."""
+        with self._lock:
+            return self._pending_fast_flags is not None or self._pending_framerate_cap is not None
+
+    def get_pending(self) -> tuple[dict | None, int | None]:
+        """Get and clear all pending modifications."""
+        with self._lock:
+            flags = self._pending_fast_flags
+            framerate = self._pending_framerate_cap
+            self._pending_fast_flags = None
+            self._pending_framerate_cap = None
+            return flags, framerate
+
+    def clear(self) -> None:
+        """Clear all pending modifications."""
+        with self._lock:
+            self._pending_fast_flags = None
+            self._pending_framerate_cap = None
+
+
+# ---------------------------------------------------------------------------
 # ModificationManager
 # ---------------------------------------------------------------------------
 
@@ -199,6 +246,9 @@ class ModificationManager(QObject):
         
         # GlobalSettingsManager (for Roblox GlobalBasicSettings_13.xml)
         self.global_settings_manager = GlobalSettingsManager(self._stash_dir)
+        
+        # Queue for pending modifications when Roblox is running
+        self.pending_modifications_queue = PendingModificationsQueue()
 
     @property
     def roblox_dirs(self) -> list[Path]:
@@ -678,3 +728,24 @@ class ModificationManager(QObject):
         self._roblox_dirs = _find_roblox_dirs()
         self.fflag_manager._roblox_dirs = self._roblox_dirs
         log_buffer.log('Modifications', f'Refreshed: {len(self._roblox_dirs)} Roblox dir(s)')
+
+    def apply_pending_modifications(self) -> None:
+        """Apply all pending modifications that were queued while Roblox was running."""
+        flags, framerate = self.pending_modifications_queue.get_pending()
+        
+        if flags is not None:
+            try:
+                self.write_fast_flags(flags)
+                log_buffer.log('Modifications', 'Applied queued Fast Flags after Roblox exit')
+            except Exception as exc:
+                log_buffer.log('Modifications', f'Error applying queued Fast Flags: {exc}')
+        
+        if framerate is not None:
+            try:
+                if framerate == 0:
+                    self.global_settings_manager.restore()
+                else:
+                    run_in_thread(self.global_settings_manager.write)(framerate)
+                log_buffer.log('Modifications', 'Applied queued framerate cap after Roblox exit')
+            except Exception as exc:
+                log_buffer.log('Modifications', f'Error applying queued framerate cap: {exc}')

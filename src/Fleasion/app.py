@@ -154,6 +154,10 @@ class RobloxExitMonitor(QObject):
         self._studio_suppress_session = False
         self._studio_detected.connect(self._on_studio_detected)
 
+    def is_player_running(self) -> bool:
+        """Return whether Roblox Player is currently running."""
+        return is_roblox_running()
+
     @run_in_thread
     def check_roblox_status(self):
         """Check if Roblox has exited and trigger cache deletion if needed."""
