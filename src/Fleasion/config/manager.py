@@ -384,22 +384,48 @@ class ConfigManager:
         self._save_config(new_name, deepcopy(config))
         return True
 
-    def get_all_replacements(self) -> tuple[dict[int, int], set[int], dict[int, str], dict[int, str]]:
+    def get_all_replacements(self) -> tuple[dict[int | str, int], set[int | str], dict[int | str, str], dict[int | str, str]]:
         """Get replacements from all enabled configs.
 
         Returns
         -------
         tuple
-            - replacements: dict mapping asset IDs to replacement IDs
-            - removals: set of asset IDs to remove entirely
-            - cdn_replacements: dict mapping asset IDs to CDN URLs
-            - local_replacements: dict mapping asset IDs to local file paths
+            - replacements: dict mapping asset IDs/types to replacement IDs
+            - removals: set of asset IDs/types to remove entirely
+            - cdn_replacements: dict mapping asset IDs/types to CDN URLs
+            - local_replacements: dict mapping asset IDs/types to local file paths
 
         """
-        replacements: dict[int, int] = {}
-        removals: set[int] = set()
-        cdn_replacements: dict[int, str] = {}
-        local_replacements: dict[int, str] = {}
+        replacements: dict[int | str, int] = {}
+        removals: set[int | str] = set()
+        cdn_replacements: dict[int | str, str] = {}
+        local_replacements: dict[int | str, str] = {}
+
+        # Map of known asset type names to their IDs (for validation)
+        ASSET_TYPES = {
+            'image': 1, 'tshirt': 2, 'audio': 3, 'mesh': 4, 'lua': 5,
+            'html': 6, 'text': 7, 'hat': 8, 'place': 9, 'model': 10,
+            'shirt': 11, 'pants': 12, 'decal': 13, 'avatar': 16, 'head': 17,
+            'face': 18, 'gear': 19, 'badge': 21, 'groupemblem': 22,
+            'animation': 24, 'arms': 25, 'legs': 26, 'torso': 27,
+            'rightarm': 28, 'leftarm': 29, 'leftleg': 30, 'rightleg': 31,
+            'package': 32, 'youtubevideo': 33, 'gamepass': 34, 'app': 35,
+            'code': 37, 'plugin': 38, 'solidmodel': 39, 'meshpart': 40,
+            'hairaccessory': 41, 'faceaccessory': 42, 'neckaccessory': 43,
+            'shoulderaccessory': 44, 'frontaccessory': 45, 'backaccessory': 46,
+            'waistaccessory': 47, 'climbanimation': 48, 'deathanimation': 49,
+            'fallanimation': 50, 'idleanimation': 51, 'jumpanimation': 52,
+            'runanimation': 53, 'swimanimation': 54, 'walkanimation': 55,
+            'poseanimation': 56, 'earaccessory': 57, 'eyeaccessory': 58,
+            'localizationtablemanifest': 59, 'emoteanimation': 61, 'video': 62,
+            'texturepack': 63, 'tshirtaccessory': 64, 'shirtaccessory': 65,
+            'pantsaccessory': 66, 'jacketaccessory': 67, 'sweateraccessory': 68,
+            'shortsaccessory': 69, 'leftshoeaccessory': 70, 'rightshoeaccessory': 71,
+            'dressskirtaccessory': 72, 'fontfamily': 73, 'fontface': 74,
+            'meshhiddensurfaceremoval': 75, 'eyebrowaccessory': 76,
+            'eyelashaccessory': 77, 'moodanimation': 78, 'dynamichead': 79,
+            'codesnippet': 80,
+        }
 
         for config_name in self.enabled_configs:
             if config_name not in self.config_names:
@@ -416,7 +442,7 @@ class ConfigManager:
                 if 'remove' in rule and 'mode' not in rule:
                     mode = 'remove' if rule.get('remove') else 'id'
 
-                parsed_ids: list = []
+                parsed_ids: list[int | str] = []
                 for v in ids:
                     # "parentId:mapIndex" slot key (e.g. "7547298786:1") — keep as str
                     if isinstance(v, str) and ':' in v:
@@ -424,10 +450,24 @@ class ConfigManager:
                         if parts[0].isdigit() and parts[1].isdigit():
                             parsed_ids.append(v)
                         continue
+                    
+                    # Try to parse as integer ID first
                     try:
                         parsed_ids.append(int(v))
+                        continue
                     except (TypeError, ValueError):
                         pass
+                    
+                    # Check if it's a known asset type name (case-insensitive)
+                    # Convert to numeric ID for proper texture_stripper matching
+                    if isinstance(v, str):
+                        v_lower = v.lower()
+                        # Check exact match with known asset type names
+                        if v_lower in ASSET_TYPES:
+                            # Store both the lowercase name and its numeric ID
+                            # for texture_stripper compatibility
+                            numeric_id = ASSET_TYPES[v_lower]
+                            parsed_ids.append(numeric_id)
 
                 if mode == 'remove':
                     removals.update(parsed_ids)

@@ -12,11 +12,12 @@ APP_KOFI = 'ko-fi.com/fleasion'
 class SystemTray:
     """System tray icon with menu."""
 
-    def __init__(self, app: QApplication, config_manager, proxy_master, mod_manager=None):
+    def __init__(self, app: QApplication, config_manager, proxy_master, mod_manager=None, roblox_monitor=None):
         self.app = app
         self.config_manager = config_manager
         self.proxy_master = proxy_master
         self.mod_manager = mod_manager
+        self.roblox_monitor = roblox_monitor
 
         # Keep references to open windows to prevent garbage collection
         self.open_windows = []
@@ -296,7 +297,7 @@ class SystemTray:
             self.dashboard_window.activateWindow()
             return
 
-        window = ReplacerConfigWindow(self.config_manager, self.proxy_master, self.mod_manager)
+        window = ReplacerConfigWindow(self.config_manager, self.proxy_master, self.mod_manager, self.roblox_monitor)
         window.destroyed.connect(self._on_dashboard_destroyed)
         self.dashboard_window = window
         self.open_windows.append(window)

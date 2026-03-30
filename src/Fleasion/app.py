@@ -142,6 +142,7 @@ class RobloxExitMonitor(QObject):
     """Monitors Roblox process and triggers cache deletion on exit."""
 
     _studio_detected = pyqtSignal()
+    player_status_changed = pyqtSignal(bool)  # Emitted when RobloxPlayerBeta opens/closes (True = running)
 
     def __init__(self, config_manager):
         super().__init__()
@@ -153,10 +154,18 @@ class RobloxExitMonitor(QObject):
         self._studio_suppress_session = False
         self._studio_detected.connect(self._on_studio_detected)
 
+    def is_player_running(self) -> bool:
+        """Return whether Roblox Player is currently running."""
+        return is_roblox_running()
+
     @run_in_thread
     def check_roblox_status(self):
         """Check if Roblox has exited and trigger cache deletion if needed."""
         is_running = is_roblox_running()
+
+        # --- Roblox Player: player status changed signal ---
+        if self._player_was_running != is_running:
+            self.player_status_changed.emit(is_running)
 
         # --- Roblox Player: launch detection - check CA cert on new launch ---
         if not self._player_was_running and is_running:
@@ -482,8 +491,11 @@ def main():
     else:
         log_buffer.log('Proxy', 'Read-only mode: proxy not started (no admin rights)')
 
+    # Setup Roblox exit monitor for auto cache deletion (before tray to pass to it)
+    roblox_monitor = RobloxExitMonitor(config_manager)
+
     # Create system tray
-    tray = SystemTray(app, config_manager, proxy_master, mod_manager)
+    tray = SystemTray(app, config_manager, proxy_master, mod_manager, roblox_monitor)
     if _show_readonly_notice:
         def _show_readonly_dialog():
             from PyQt6.QtWidgets import QMessageBox, QApplication
@@ -512,8 +524,7 @@ def main():
     status_timer.timeout.connect(tray.update_status)
     status_timer.start(1000)  # Update every second
 
-    # Setup Roblox exit monitor for auto cache deletion
-    roblox_monitor = RobloxExitMonitor(config_manager)
+    # Setup Roblox check timer
     roblox_check_timer = QTimer()
     roblox_check_timer.timeout.connect(roblox_monitor.check_roblox_status)
     roblox_check_timer.start(500)  # Check every 0.5 seconds

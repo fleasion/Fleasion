@@ -917,9 +917,10 @@ class ModPreviewDialog(QDialog):
 class FFlagSection(QWidget):
     """The complete Fast Flags section content with all controls."""
 
-    def __init__(self, manager: ModificationManager, parent=None):
+    def __init__(self, manager: ModificationManager, roblox_monitor=None, parent=None):
         super().__init__(parent)
         self._manager = manager
+        self._roblox_monitor = roblox_monitor
         
         self._debounce_timer = QTimer()
         self._debounce_timer.setSingleShot(True)
@@ -1100,10 +1101,21 @@ class FFlagSection(QWidget):
             return
             
         value = self._framerate_cap.value()
-        if value == 0:  # Default (unset)
-            run_in_thread(self._manager.global_settings_manager.restore)()
+        
+        # Check if Roblox Player is running
+        is_roblox_running = False
+        if self._roblox_monitor:
+            is_roblox_running = self._roblox_monitor.is_player_running()
+        
+        if is_roblox_running:
+            # Queue the modification instead of writing immediately
+            self._manager.pending_modifications_queue.enqueue_framerate_cap(value)
         else:
-            run_in_thread(self._manager.global_settings_manager.write)(value)
+            # Write immediately
+            if value == 0:  # Default (unset)
+                run_in_thread(self._manager.global_settings_manager.restore)()
+            else:
+                run_in_thread(self._manager.global_settings_manager.write)(value)
 
     def _schedule_write(self, *_args):
         self._debounce_timer.start()
@@ -1129,7 +1141,18 @@ class FFlagSection(QWidget):
 
     def _write_flags(self):
         settings = self._gather_settings()
-        run_in_thread(self._manager.write_fast_flags)(settings)
+        
+        # Check if Roblox Player is running
+        is_roblox_running = False
+        if self._roblox_monitor:
+            is_roblox_running = self._roblox_monitor.is_player_running()
+        
+        if is_roblox_running:
+            # Queue the modification instead of writing immediately
+            self._manager.pending_modifications_queue.enqueue_fast_flags(settings)
+        else:
+            # Write immediately
+            run_in_thread(self._manager.write_fast_flags)(settings)
 
     def _load_from_manager(self):
         """Populate controls from the persisted fast-flag settings."""
@@ -1221,9 +1244,10 @@ class FFlagSection(QWidget):
 class ModificationsTab(QWidget):
     """The entire Modifications tab, added to the dashboard's QTabWidget."""
 
-    def __init__(self, mod_manager: ModificationManager, parent=None):
+    def __init__(self, mod_manager: ModificationManager, roblox_monitor=None, parent=None):
         super().__init__(parent)
         self._manager = mod_manager
+        self._roblox_monitor = roblox_monitor
         self._row_widgets: dict[str, ModRowWidget] = {}  # target_path -> widget
         self._custom_rows: list[ModRowWidget] = []
 
@@ -1233,6 +1257,10 @@ class ModificationsTab(QWidget):
         # Connect for live status bar updates
         mod_manager.apply_finished.connect(lambda _: self._update_status_bar())
         mod_manager.restore_finished.connect(self._update_status_bar)
+        
+        # Connect for Roblox player status changes
+        if self._roblox_monitor:
+            self._roblox_monitor.player_status_changed.connect(self._on_roblox_player_status_changed)
 
     def _setup_ui(self):
         outer = QVBoxLayout()
@@ -1263,7 +1291,7 @@ class ModificationsTab(QWidget):
             'Fast Flags \u26A0', expanded=False,
             header_widgets=[self._fflag_toggle],
         )
-        self._fflag_widget = FFlagSection(self._manager)
+        self._fflag_widget = FFlagSection(self._manager, self._roblox_monitor)
         self._fflag_widget.setEnabled(self._manager.fast_flags_enabled)
         fflag_section.add_widget(self._fflag_widget)
 
@@ -1522,6 +1550,12 @@ class ModificationsTab(QWidget):
         if checked:
             # Immediately write current settings
             self._fflag_widget._schedule_write()
+
+    def _on_roblox_player_status_changed(self, is_running: bool):
+        """Apply all queued modifications when Roblox Player exits."""
+        if not is_running:
+            # Roblox has exited, apply any pending modifications
+            self._manager.apply_pending_modifications()
 
 
 # ═══════════════════════════════════════════════════════════════════
