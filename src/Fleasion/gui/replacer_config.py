@@ -822,6 +822,7 @@ class ReplacerConfigWindow(QDialog):
         layout.addWidget(count_label)
 
         text_edit = QTextEdit()
+        text_edit.setAcceptRichText(False)
         text_edit.setPlainText('\n'.join(str(i) for i in ids))
         layout.addWidget(text_edit)
 
@@ -1012,11 +1013,18 @@ class ReplacerConfigWindow(QDialog):
         text = text.replace(';', ',').replace(' ', ',')
         for part in text.split(','):
             part = part.strip()
-            if part:
-                try:
-                    ids.append(int(part))
-                except ValueError:
+            if not part:
+                continue
+            # "parentId:mapIndex" or "TexturePack:N" — keep as-is
+            if ':' in part:
+                left, right = part.split(':', 1)
+                if right.isdigit() and (left.isdigit() or left == 'TexturePack'):
                     ids.append(part)
+                    continue
+            try:
+                ids.append(int(part))
+            except ValueError:
+                ids.append(part)
         return ids
         
     def _show_asset_types_popup(self):

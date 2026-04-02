@@ -457,11 +457,16 @@ class ConfigManager:
 
                 parsed_ids: list[int | str] = []
                 for v in ids:
-                    # "parentId:mapIndex" slot key (e.g. "7547298786:1") — keep as str
                     if isinstance(v, str) and ':' in v:
                         parts = v.split(':', 1)
+                        # "parentId:mapIndex" slot key (e.g. "7547298786:1") — keep as str
                         if parts[0].isdigit() and parts[1].isdigit():
                             parsed_ids.append(v)
+                            continue
+                        # "TexturePack:N" wildcard — replace N-th slot of every TexturePack
+                        if parts[0] == 'TexturePack' and parts[1].isdigit():
+                            parsed_ids.append(v)
+                            continue
                         continue
                     
                     # Try to parse as integer ID first

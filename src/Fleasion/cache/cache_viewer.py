@@ -1958,8 +1958,21 @@ class CacheViewerTab(QWidget):
                 self.table.setItem(row, 4, type_item)
 
                 # Column 5: Size
-                # For TexturePack we show the raw KTX2 size when available
+                # For TexturePack show the combined on-disk slot KTX2 sizes so the
+                # user sees the real texture data footprint, not the tiny XML size.
                 size = asset.get('raw_size', asset.get('size', 0))
+                if asset['type'] == 63:
+                    try:
+                        from ..utils.paths import APP_CACHE_DIR
+                        _slot_dir = APP_CACHE_DIR / 'texpack_slots'
+                        _tp_slot_size = sum(
+                            f.stat().st_size
+                            for f in _slot_dir.glob(f'{asset_id}_slot*.ktx2')
+                        )
+                        if _tp_slot_size > 0:
+                            size = _tp_slot_size
+                    except Exception:
+                        pass
                 size_str = self._format_size(size)
                 size_item = NumericSortItem(size, size_str)
                 self.table.setItem(row, 5, size_item)
@@ -3048,10 +3061,11 @@ class CacheViewerTab(QWidget):
             'converted_audio': 'Converted (.ogg/.mp3)',
             'converted': 'Converted (.xml)',
             'converted_images': 'Converted (Images)',
+            'slot_ktx2': 'Slot KTX2 Files',
             'bin': 'Binary (decompressed)',
             'raw': 'Raw (original cache)',
         }
-        for fmt in ['converted_obj', 'converted_rbxmx', 'converted_png', 'converted_audio', 'converted', 'converted_images', 'bin', 'raw']:
+        for fmt in ['slot_ktx2', 'converted_obj', 'converted_rbxmx', 'converted_png', 'converted_audio', 'converted', 'converted_images', 'bin', 'raw']:
             if fmt in available_formats:
                 action = export_menu.addAction(format_labels[fmt])
                 export_actions[action] = fmt
@@ -3085,7 +3099,18 @@ class CacheViewerTab(QWidget):
         if action == add_to_replacer_action:
             self._add_selected_to_replacer()
         elif action in export_actions:
-            self._export_selected_multiple(export_format=export_actions[action])
+            _fmt = export_actions[action]
+            if _fmt == 'slot_ktx2':
+                # Export slot KTX2 files for all selected TexturePack rows
+                for row_index in selected_rows:
+                    _row = row_index.row()
+                    _item = self.table.item(_row, 1)
+                    if _item:
+                        _asset = _item.data(Qt.ItemDataRole.UserRole)
+                        if _asset and _asset.get('type') == 63:
+                            self._export_texpack_slot_ktx2(str(_asset['id']))
+            else:
+                self._export_selected_multiple(export_format=_fmt)
         elif action == delete_action:
             self._delete_selected()
         elif action == copy_hash_action:
@@ -3696,15 +3721,21 @@ class CacheViewerTab(QWidget):
             self._texturepack_xml = xml_text  # Store for context menu
             root = ET.fromstring(xml_text)
 
-            # Extract texture map IDs in document order.
-            # map_index is POSITIONAL — the Nth map tag present in this XML.
-            # This matches the fidelity slot encoding Roblox uses in batch requests.
-            _KNOWN_MAP_TAGS = {'color', 'albedo', 'normal', 'metalness', 'roughness',
-                               'emissive', 'height', 'orm', 'diffuse', 'normalmap',
-                               'bumpmap', 'heightmap', 'displacement'}
+            # Extract texture map IDs using XML child position as the virtual slot index.
+            # VS0 = first recognised sub-asset, VS1 = second, etc.
+            # These virtual slot indices are what the user puts in replace_ids
+            # (e.g. "108049038086346:2" for metalness on a pack whose 3rd XML child is metalness).
+            # VSN ≥ 2 are routed through the ORM compositor on the backend.
+            _KNOWN_MAP_TAGS = {
+                'color', 'albedo', 'diffuse', 'basecolor',
+                'normal', 'normalmap', 'bumpmap',
+                'metalness', 'roughness', 'orm',
+                'emissive', 'emissivemap',
+                'height', 'heightmap', 'displacement',
+            }
             maps = {}          # display_name -> map_id_str
-            maps_indices = {}  # display_name -> positional slot_idx
-            slot_idx = 0
+            maps_indices = {}  # display_name -> virtual_slot_index  (= XML position among known tags)
+            virtual_slot = 0
             for child in root:
                 tag_lower = child.tag.lower().lstrip('{').split('}')[-1]
                 if tag_lower not in _KNOWN_MAP_TAGS:
@@ -3713,8 +3744,8 @@ class CacheViewerTab(QWidget):
                 if text.isdigit() and text != '0':
                     display_name = tag_lower.capitalize()
                     maps[display_name] = text
-                    maps_indices[display_name] = slot_idx
-                slot_idx += 1  # every known slot tag advances the index
+                    maps_indices[display_name] = virtual_slot
+                virtual_slot += 1
 
             if not maps:
                 self._show_text_preview(f'No texture maps found in texture pack {asset_id}')
@@ -3891,6 +3922,11 @@ class CacheViewerTab(QWidget):
         # Copy XML
         copy_xml_action = menu.addAction('Copy TexturePack XML')
 
+        menu.addSeparator()
+
+        # Export raw per-slot KTX2 files captured during game session.
+        export_slot_ktx2_action = menu.addAction('Export Slot KTX2 Files')
+
         action = menu.exec(label.mapToGlobal(pos))
 
         if action == copy_image_action:
@@ -3907,6 +3943,56 @@ class CacheViewerTab(QWidget):
             QApplication.clipboard().setText(map_hash)
         elif action == copy_xml_action:
             QApplication.clipboard().setText(self._texturepack_xml)
+        elif action == export_slot_ktx2_action:
+            self._export_texpack_slot_ktx2(slot_key.split(':')[0] if ':' in slot_key else '')
+
+    def _export_texpack_slot_ktx2(self, asset_id: str) -> None:
+        """Export high-quality per-slot KTX2 files for a TexturePack.
+
+        Exports whichever quality level has been captured so far from
+        APP_CACHE_DIR/texpack_slots/<asset_id>_slot{N}.ktx2.
+        """
+        if not asset_id:
+            return
+        from PyQt6.QtWidgets import QFileDialog
+        from ..utils import APP_CACHE_DIR
+
+        slot_dir = APP_CACHE_DIR / 'texpack_slots'
+        _SLOT_NAMES = {0: 'Color', 1: 'Normal', 2: 'ORM'}
+        found = []
+        for slot, name in _SLOT_NAMES.items():
+            src = slot_dir / f'{asset_id}_slot{slot}.ktx2'
+            if src.exists():
+                found.append((src, f'{asset_id}_slot{slot}_{name}.ktx2'))
+
+        if not found:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.information(
+                self, 'No Slot KTX2 Files',
+                f'No slot KTX2 files found for pack {asset_id}.\n\n'
+                'Load the asset in-game while Fleasion is running to capture them.'
+            )
+            return
+
+        dest_dir_str = QFileDialog.getExistingDirectory(
+            self, f'Export Slot KTX2 for {asset_id}', str(APP_CACHE_DIR),
+        )
+        if not dest_dir_str:
+            return
+        from pathlib import Path as _Path
+        dest_dir = _Path(dest_dir_str)
+        exported = []
+        for src, dest_name in found:
+            dst = dest_dir / dest_name
+            import shutil
+            shutil.copy2(str(src), str(dst))
+            exported.append(dest_name)
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.information(
+            self, 'Export Complete',
+            f'Exported {len(exported)} slot KTX2 file(s) to:\n{dest_dir}\n\n' +
+            '\n'.join(exported),
+        )
 
     def _preview_audio(self, data: bytes, asset_id: str):
         """Preview an audio asset."""
