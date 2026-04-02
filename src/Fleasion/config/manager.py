@@ -7,6 +7,9 @@ from pathlib import Path
 
 from ..utils import CONFIG_DIR, CONFIG_FILE, CONFIGS_FOLDER, DEFAULT_SETTINGS
 
+# Windows forbids these characters in file and folder names.
+_INVALID_FILENAME_CHARS = frozenset('\\/:*?"<>|')
+
 
 class ConfigManager:
     """Manages application settings and replacement configurations."""
@@ -322,9 +325,17 @@ class ConfigManager:
         """Save settings."""
         self._save_settings()
 
+    @staticmethod
+    def is_valid_config_name(name: str) -> bool:
+        """Return True if *name* is safe to use as a Windows filename."""
+        if not name or not name.strip():
+            return False
+        # Characters Windows forbids in file/folder names
+        return not any(c in name for c in _INVALID_FILENAME_CHARS)
+
     def create_config(self, name: str) -> bool:
         """Create a new config. Returns True if successful."""
-        if not name or name in self.config_names:
+        if not name or name in self.config_names or not self.is_valid_config_name(name):
             return False
         self._save_config(name, {'replacement_rules': []})
         return True
@@ -354,6 +365,7 @@ class ConfigManager:
             not new_name
             or old_name not in self.config_names
             or new_name in self.config_names
+            or not self.is_valid_config_name(new_name)
         ):
             return False
         try:
@@ -378,6 +390,7 @@ class ConfigManager:
             not new_name
             or name not in self.config_names
             or new_name in self.config_names
+            or not self.is_valid_config_name(new_name)
         ):
             return False
         config = self._load_config(name)

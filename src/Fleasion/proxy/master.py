@@ -145,7 +145,7 @@ def _build_watchdog_xml(run_at: datetime) -> str:
     <Enabled>true</Enabled>
     <Hidden>true</Hidden>
   </Settings>
-  <Actions Context="Author">
+  <Actions>
     <Exec>
       <Command>powershell.exe</Command>
       <Arguments>-NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand {_WATCHDOG_PS_ENCODED}</Arguments>
@@ -557,12 +557,17 @@ def _add_hosts_entries(hosts: Set[str]) -> bool:
         return False
 
 
-def _remove_hosts_entries(hosts: Set[str]) -> None:
-    """Remove any hosts file entries we previously added."""
+def _remove_hosts_entries(hosts: Set[str]) -> bool:
+    """Remove any hosts file entries we previously added.
+
+    Returns True if the hosts file is clean (entries removed or were already
+    absent).  Returns False if the write failed — callers must NOT cancel the
+    reboot guard in that case, so the next boot still cleans up automatically.
+    """
     try:
         existing = HOSTS_FILE.read_text(encoding='utf-8', errors='replace')
     except OSError:
-        return
+        return True  # Can't read — assume nothing to clean, not a write failure
 
     lines = existing.splitlines(keepends=True)
     filtered = [
@@ -573,13 +578,15 @@ def _remove_hosts_entries(hosts: Set[str]) -> None:
     ]
 
     if len(filtered) == len(lines):
-        return  # nothing to remove
+        return True  # Nothing to remove — already clean
 
     try:
         _write_hosts_file(''.join(filtered))
         log_buffer.log('Hosts', 'Removed proxy hosts entries')
+        return True
     except OSError as exc:
         log_buffer.log('Hosts', f'Failed to clean hosts file: {exc}')
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -745,13 +752,13 @@ def _install_ca_into_roblox(ca_pem: str) -> None:
         ssl_dir.mkdir(exist_ok=True)
         ca_file = ssl_dir / 'cacert.pem'
         try:
-            existing = ca_file.read_text() if ca_file.exists() else ''
+            existing = ca_file.read_text(encoding='utf-8', errors='replace') if ca_file.exists() else ''
             if ca_pem not in existing:
-                ca_file.write_text(f'{existing}\n{ca_pem}')
+                ca_file.write_text(f'{existing}\n{ca_pem}', encoding='utf-8')
                 log_buffer.log('Certificate', f'Installed CA into {d.name}')
             else:
                 log_buffer.log('Certificate', f'CA already installed in {d.name}')
-        except (PermissionError, OSError) as exc:
+        except (PermissionError, OSError, UnicodeDecodeError) as exc:
             log_buffer.log('Certificate', f'Failed to write CA for {d.name}: {exc}')
 
 
@@ -870,10 +877,14 @@ class ProxyMaster:
             # Clean up hosts file first so Roblox stops routing to us immediately
             if self._hosts_installed:
                 self._stop_watchdog()           # Cancel the force-kill guard task first
-                _remove_hosts_entries(set(INTERCEPT_HOSTS))
+                hosts_cleaned = _remove_hosts_entries(set(INTERCEPT_HOSTS))
                 self._hosts_installed = False
                 _flush_dns()  # Clear stale 127.0.0.1 cache so new connections stop coming in
-                _cancel_hosts_cleanup_on_reboot()  # No longer needed after a clean stop
+                # Only cancel the reboot guard if the hosts file was actually cleaned.
+                # If cleanup failed, the PendingFileRenameOperations entry must remain
+                # so the next reboot still removes our entries automatically.
+                if hosts_cleaned:
+                    _cancel_hosts_cleanup_on_reboot()
                 try:
                     _PROXY_OWNER_PID_FILE.unlink(missing_ok=True)
                 except OSError:
@@ -956,8 +967,16 @@ class ProxyMaster:
             _delete_watchdog_task()
             # Remove stale hosts entries: if the previous session crashed without
             # calling stop(), our entries may still be present.  getaddrinfo()
-            # would return 127.0.0.1 instead of real CDN IPs.
-            _remove_hosts_entries(set(INTERCEPT_HOSTS))
+            # would return 127.0.0.1 instead of real CDN IPs, and upstream
+            # connections would fail with WinError 1225.
+            if not _remove_hosts_entries(set(INTERCEPT_HOSTS)):
+                log_buffer.log('Error',
+                    'Failed to remove stale proxy hosts entries — real CDN IPs '
+                    'cannot be resolved safely.  Aborting proxy start. '
+                    'If the problem persists, manually remove "# Fleasion proxy entry" '
+                    'lines from %SystemRoot%\\System32\\drivers\\etc\\hosts and restart.')
+                self._running = False
+                return
             _flush_dns()
         else:
             log_buffer.log('Proxy', 'Another proxy owner is running — skipping startup cleanup')
@@ -1055,10 +1074,11 @@ class ProxyMaster:
             # Ensure hosts file is cleaned up even if stop() wasn't called
             if self._hosts_installed:
                 self._stop_watchdog()
-                _remove_hosts_entries(set(INTERCEPT_HOSTS))
+                hosts_cleaned = _remove_hosts_entries(set(INTERCEPT_HOSTS))
                 self._hosts_installed = False
                 _flush_dns()
-                _cancel_hosts_cleanup_on_reboot()
+                if hosts_cleaned:
+                    _cancel_hosts_cleanup_on_reboot()
                 try:
                     _PROXY_OWNER_PID_FILE.unlink(missing_ok=True)
                 except OSError:
