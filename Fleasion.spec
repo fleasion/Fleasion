@@ -18,6 +18,10 @@ hiddenimports = []
 tmp_ret = collect_all('cryptography')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
+# numpy has C-extensions (.pyd files) that must be bundled - without this, the .exe fails with C-extension import errors
+tmp_ret = collect_all('numpy')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+
 # PyQt6 has many optional sub-packages; collect_all ensures nothing is missed
 tmp_ret = collect_all('PyQt6')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
