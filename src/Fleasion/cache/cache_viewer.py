@@ -4266,6 +4266,7 @@ class CacheViewerTab(QWidget):
         layout.addWidget(hint)
 
         text_edit = QTextEdit()
+        text_edit.setAcceptRichText(False)
         text_edit.setPlaceholderText('e.g. 1818, 1234567890, 9876543210')
         layout.addWidget(text_edit)
 
