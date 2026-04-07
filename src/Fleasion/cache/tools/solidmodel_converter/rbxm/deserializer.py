@@ -487,8 +487,9 @@ class RbxmDeserializer:
         for _ in range(count):
             orient_id, offset = read_u8(data, offset)
             if orient_id != 0:
-                # Axis-aligned rotation from lookup table
-                mat_idx = orient_id - 1
+                # Axis-aligned rotation from lookup table.
+                # Special matrices start at type byte 0x02 (identity), matching rbxm_parser.py.
+                mat_idx = orient_id - 2
                 mat = _ORIENTATION_MATRICES.get(mat_idx, (1, 0, 0, 0, 1, 0, 0, 0, 1))
                 rotations.append(mat)
             elif fmt == PropertyFormat.CFRAME_QUAT:

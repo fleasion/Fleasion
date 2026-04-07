@@ -10,7 +10,6 @@ from urllib.error import URLError
 from PyQt6.QtCore import Qt, QByteArray
 from PyQt6.QtGui import QPixmap, QPainter, QColor, QIcon
 from PyQt6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDialog,
     QFileDialog,
@@ -136,6 +135,20 @@ class ReplacerConfigWindow(QDialog):
             modifications_tab = ModificationsTab(self._mod_manager, self.roblox_monitor)
             self.tab_widget.addTab(modifications_tab, 'Modifications')
 
+        # Create Rando Stuff tab
+        from .rando_stuff_tab import RandoStuffTab
+        self._rando_stuff_tab = RandoStuffTab()
+        self.tab_widget.addTab(self._rando_stuff_tab, 'Miscellaneous')
+        if self.proxy_master is not None:
+            self.proxy_master.register_module_interceptor(self._rando_stuff_tab)
+
+        # Create Subplace Joiner tab
+        from .subplace_joiner_tab import SubplaceJoinerTab
+        self._subplace_tab = SubplaceJoinerTab(rando_tab=self._rando_stuff_tab)
+        self.tab_widget.addTab(self._subplace_tab, 'Subplace Joiner')
+        if self.proxy_master is not None:
+            self.proxy_master.register_module_interceptor(self._subplace_tab)
+
         main_layout.addWidget(self.tab_widget)
 
         self.setLayout(main_layout)
@@ -175,12 +188,16 @@ class ReplacerConfigWindow(QDialog):
         from ..cache import CacheViewerTab
 
         cache_scraper = getattr(self.proxy_master, 'cache_scraper', None)
-        return CacheViewerTab(
+        tab = CacheViewerTab(
             self.proxy_master.cache_manager,
             cache_scraper,
             self,
             config_manager=self.config_manager
         )
+        # Store direct reference so Send-to-Replacer can find the entry fields
+        # regardless of how Qt re-parents the widget when added to QTabWidget.
+        tab._replacer_window_ref = self
+        return tab
 
     def _create_config_section(self, parent_layout):
         """Create the configuration selector section."""
@@ -261,6 +278,8 @@ class ReplacerConfigWindow(QDialog):
         self.tree.setSelectionMode(QTreeWidget.SelectionMode.ExtendedSelection)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._show_context_menu)
+
+        self.tree.setSortingEnabled(True)
 
         header = self.tree.header()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
@@ -353,6 +372,8 @@ class ReplacerConfigWindow(QDialog):
             footer_layout = QHBoxLayout()
             footer_layout.setContentsMargins(0, 5, 0, 5)
 
+            footer_layout.addSpacing(12)
+
             path_label = QLabel(f'Configs: {CONFIGS_FOLDER}')
             path_label.setStyleSheet('color: gray; font-size: 8pt; padding-left: 5px;')
             footer_layout.addWidget(path_label)
@@ -363,8 +384,8 @@ class ReplacerConfigWindow(QDialog):
             configs_btn.clicked.connect(lambda: open_folder(CONFIGS_FOLDER))
             footer_layout.addWidget(configs_btn)
 
-            prejsons_btn = QPushButton('Open PreJsons')
-            prejsons_btn.clicked.connect(lambda: open_folder(PREJSONS_DIR))
+            prejsons_btn = QPushButton('PreJsons Browser')
+            prejsons_btn.clicked.connect(self._open_prejsons_browser)
             footer_layout.addWidget(prejsons_btn)
 
             undo_btn = QPushButton('Undo (Ctrl+Z)')
@@ -374,6 +395,12 @@ class ReplacerConfigWindow(QDialog):
 
             footer_widget.setLayout(footer_layout)
             parent_layout.addWidget(footer_widget)
+
+    def _open_prejsons_browser(self):
+        """Open the PreJsons browser dialog."""
+        from .prejsons_dialog import PreJsonsDialog
+        dialog = PreJsonsDialog(self)
+        dialog.show()
 
     def eventFilter(self, obj, event):
         """Event filter to keep enabled menu open after clicking checkboxes."""
@@ -839,20 +866,25 @@ class ReplacerConfigWindow(QDialog):
         def show_dialog_types_popup():
             from ..cache.cache_viewer import CategoryFilterPopup
             from ..cache.cache_manager import CacheManager
-            
+
+            _VIRTUAL_ANIM_TYPES = {'R6Animation', 'R15Animation', 'NonPlayerAnimation'}
+
             content = text_edit.toPlainText().strip()
             current_ids = self._parse_ids(content.replace('\n', ','))
-            
+
             active_filters = set()
             for item in current_ids:
                 if isinstance(item, str):
+                    if item in _VIRTUAL_ANIM_TYPES:
+                        active_filters.add(item)
+                        continue
                     for tid, name in CacheManager.ASSET_TYPES.items():
                         if name.lower() == item.lower():
                             active_filters.add(tid)
                             break
-            
+
             popup = CategoryFilterPopup(parent=dialog, active_filters=active_filters)
-            
+
             def on_filters_changed(filters):
                 curr_content = text_edit.toPlainText().strip()
                 curr_ids = self._parse_ids(curr_content.replace('\n', ','))
@@ -862,21 +894,26 @@ class ReplacerConfigWindow(QDialog):
                         new_ids.append(item)
                     elif isinstance(item, str):
                         is_mapped = False
-                        for tid, name in CacheManager.ASSET_TYPES.items():
-                            if name.lower() == item.lower():
-                                is_mapped = True
-                                break
+                        if item in _VIRTUAL_ANIM_TYPES:
+                            is_mapped = True
+                        else:
+                            for tid, name in CacheManager.ASSET_TYPES.items():
+                                if name.lower() == item.lower():
+                                    is_mapped = True
+                                    break
                         if not is_mapped:
                             new_ids.append(item)
                 for tid in filters:
-                    if tid in CacheManager.ASSET_TYPES:
+                    if tid in _VIRTUAL_ANIM_TYPES:
+                        new_ids.append(tid)
+                    elif tid in CacheManager.ASSET_TYPES:
                         new_ids.append(CacheManager.ASSET_TYPES[tid])
-                
+
                 if new_ids:
                     text_edit.setPlainText('\n'.join(str(i) for i in new_ids))
                 else:
                     text_edit.setPlainText('')
-                    
+
             popup.filters_changed.connect(on_filters_changed)
             
             # Line up TOP LEFT of our popup menu with TOP LEFT of the Asset Types button
@@ -1006,14 +1043,19 @@ class ReplacerConfigWindow(QDialog):
     def _show_asset_types_popup(self):
         """Show the asset types popup menu."""
         from ..cache.cache_manager import CacheManager
-        
+
+        _VIRTUAL_ANIM_TYPES = {'R6Animation', 'R15Animation', 'NonPlayerAnimation'}
+
         # Parse current text to update active filters
         current_text = self.replace_entry.text()
         current_ids = self._parse_ids(current_text)
-        
+
         active_filters = set()
         for item in current_ids:
             if isinstance(item, str):
+                if item in _VIRTUAL_ANIM_TYPES:
+                    active_filters.add(item)
+                    continue
                 # Reverse lookup the asset type integer from name
                 for tid, name in CacheManager.ASSET_TYPES.items():
                     if name.lower() == item.lower():
@@ -1046,13 +1088,12 @@ class ReplacerConfigWindow(QDialog):
     def _on_asset_types_changed(self, filters):
         """Handle asset types selection change."""
         from ..cache.cache_manager import CacheManager
-        
+
+        _VIRTUAL_ANIM_TYPES = {'R6Animation', 'R15Animation', 'NonPlayerAnimation'}
+
         current_text = self.replace_entry.text().strip()
         current_ids = self._parse_ids(current_text)
-        
-        # We need to maintain non-string IDs from the user's current box, and add/remove string types.
-        # So we keep everything not representing a mapped type.
-        
+
         new_ids = []
         for item in current_ids:
             if isinstance(item, int):
@@ -1063,17 +1104,20 @@ class ReplacerConfigWindow(QDialog):
                     if name.lower() == item.lower():
                         is_mapped = True
                         break
+                # Also treat virtual anim type strings as mapped (so they get removed/re-added cleanly)
+                if item in _VIRTUAL_ANIM_TYPES:
+                    is_mapped = True
                 if not is_mapped:
                     new_ids.append(item)
-                    
+
         # Add the string representations of the selected filters
         for tid in filters:
-            if tid in CacheManager.ASSET_TYPES:
+            if tid in _VIRTUAL_ANIM_TYPES:
+                new_ids.append(tid)
+            elif tid in CacheManager.ASSET_TYPES:
                 new_ids.append(CacheManager.ASSET_TYPES[tid])
-                
-        # Format the rest back cleanly
+
         if new_ids:
-            # We want commas naturally, but without a weird leading comma if spacing is weird
             self.replace_entry.setText(', '.join(str(i) for i in new_ids).strip(', '))
         else:
             self.replace_entry.setText('')

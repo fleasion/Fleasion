@@ -40,6 +40,7 @@ from ..utils import (
     PROXY_CA_DIR,
     PROXY_PORT,
     ROBLOX_PROCESS,
+    ROBLOX_STUDIO_PROCESS,
     STORAGE_DB,
     STORAGE_DB_GDK,
     log_buffer,
@@ -587,13 +588,14 @@ def _remove_hosts_entries(hosts: Set[str]) -> None:
 # ---------------------------------------------------------------------------
 
 def _find_roblox_dirs() -> list:
-    """Locate every RobloxPlayerBeta.exe installation via registry and known paths.
+    """Locate every RobloxPlayerBeta.exe and RobloxStudioBeta.exe installation.
 
     Methods used (combined):
-      1. Main Registry   — HKCU\\Software (two levels) for REG_SZ "PlayerPath"
+      1. Main Registry   — HKCU\\Software (two levels) for REG_SZ "PlayerPath"/"StudioPath"
       2. MS Store        — C:\\XboxGames\\Roblox up to two layers deep
-      3. Active Roblox   — HKCU\\...\\roblox-player\\open\\command (Default)
+      3. Active Player   — HKCU\\...\\roblox-player\\open\\command (Default)
       4. Regular Roblox  — %LocalAppData%\\Roblox\\Versions one layer deep
+      5. Active Studio   — HKCU\\...\\roblox-studio\\open\\command (Default)
     """
     import winreg
 
@@ -609,7 +611,7 @@ def _find_roblox_dirs() -> list:
         return False
 
     def _scan_for_exe(root: Path, max_depth: int) -> list:
-        """Return all subdirs up to max_depth layers under root that contain RobloxPlayerBeta.exe."""
+        """Return all subdirs up to max_depth layers under root that contain RobloxPlayerBeta.exe or RobloxStudioBeta.exe."""
         results: list = []
 
         def _recurse(path: Path, depth: int) -> None:
@@ -617,7 +619,8 @@ def _find_roblox_dirs() -> list:
                 for entry in os.scandir(path):
                     if not entry.is_dir():
                         continue
-                    if os.path.isfile(os.path.join(entry.path, ROBLOX_PROCESS)):
+                    if (os.path.isfile(os.path.join(entry.path, ROBLOX_PROCESS)) or
+                            os.path.isfile(os.path.join(entry.path, ROBLOX_STUDIO_PROCESS))):
                         results.append(Path(entry.path))
                     if depth < max_depth:
                         _recurse(Path(entry.path), depth + 1)
@@ -635,23 +638,24 @@ def _find_roblox_dirs() -> list:
 
     def _check_player_path_key(key) -> None:
         nonlocal reg_found
-        try:
-            val, rtype = winreg.QueryValueEx(key, 'PlayerPath')
-        except OSError:
-            return
-        if rtype != winreg.REG_SZ or not val:
-            return
-        p = Path(val)
-        # PlayerPath may occasionally point at the exe itself rather than the dir
-        if p.name.lower() == ROBLOX_PROCESS.lower():
-            p = p.parent
-        if os.path.isfile(os.path.join(str(p), ROBLOX_PROCESS)):
-            reg_found += 1
-            _add(p)
-        else:
-            for d in _scan_for_exe(p, 1):
+        for value_name, process_name in (('PlayerPath', ROBLOX_PROCESS), ('StudioPath', ROBLOX_STUDIO_PROCESS)):
+            try:
+                val, rtype = winreg.QueryValueEx(key, value_name)
+            except OSError:
+                continue
+            if rtype != winreg.REG_SZ or not val:
+                continue
+            p = Path(val)
+            # Path may occasionally point at the exe itself rather than the dir
+            if p.name.lower() == process_name.lower():
+                p = p.parent
+            if os.path.isfile(os.path.join(str(p), process_name)):
                 reg_found += 1
-                _add(d)
+                _add(p)
+            else:
+                for d in _scan_for_exe(p, 1):
+                    reg_found += 1
+                    _add(d)
 
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r'Software') as hkey:
@@ -727,11 +731,39 @@ def _find_roblox_dirs() -> list:
         _add(d)
     log_buffer.log('Certificate', f'  AppData Roblox\\Versions: {int((time.perf_counter() - t) * 1000)} ms ({roblox_found} found)')
 
+    # ── 5. Active Studio ─────────────────────────────────────────────────
+    # Read HKCU\...\roblox-studio\shell\open\command (Default); parse the exe
+    # path and search up to two layers under its parent directory.
+    t = time.perf_counter()
+    studio_found = 0
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r'SOFTWARE\Classes\roblox-studio\shell\open\command',
+        ) as key:
+            try:
+                cmd, rtype = winreg.QueryValueEx(key, '')
+                if rtype == winreg.REG_SZ and cmd:
+                    cmd = cmd.strip()
+                    if cmd.startswith('"'):
+                        exe_path = cmd[1 : cmd.index('"', 1)]
+                    else:
+                        exe_path = cmd.split()[0]
+                    exe_dir = Path(exe_path).parent
+                    for d in _scan_for_exe(exe_dir, 2):
+                        studio_found += 1
+                        _add(d)
+            except (OSError, ValueError):
+                pass
+    except OSError:
+        pass
+    log_buffer.log('Certificate', f'  Active Studio (registry): {int((time.perf_counter() - t) * 1000)} ms ({studio_found} found)')
+
     return found
 
 
 def _install_ca_into_roblox(ca_pem: str) -> None:
-    """Append our CA cert to ssl/cacert.pem next to every found RobloxPlayerBeta.exe."""
+    """Append our CA cert to ssl/cacert.pem next to every found Roblox Player/Studio install."""
     t0 = time.perf_counter()
     dirs = _find_roblox_dirs()
     elapsed_ms = int((time.perf_counter() - t0) * 1000)
@@ -780,8 +812,8 @@ def check_and_patch_running_roblox_ca(exe_path: 'Path') -> None:
 
     log_buffer.log(
         'Certificate',
-        '[ALERT] The currently running RobloxPlayerBeta.exe does not have a modified '
-        'cacert.pem! It has been injected into Roblox, you may need to relaunch it.',
+        f'[ALERT] {exe_path.name} does not have a modified '
+        'cacert.pem! It has been injected, you may need to relaunch it.',
     )
     try:
         ssl_dir.mkdir(exist_ok=True)
@@ -819,10 +851,18 @@ class ProxyMaster:
         self._hosts_installed: bool = False
         self._watchdog_stop: Optional[threading.Event] = None
         self._watchdog_thread: Optional[threading.Thread] = None
+        self._module_interceptors: list = []
 
     @property
     def is_running(self) -> bool:
         return self._running
+
+    def register_module_interceptor(self, module) -> None:
+        """Register a module whose request()/response() methods are called for gamejoin traffic."""
+        if module not in self._module_interceptors:
+            self._module_interceptors.append(module)
+        if self._proxy is not None:
+            self._proxy.set_module_interceptors(self._module_interceptors)
 
     def _start_watchdog(self) -> None:
         """Start the background thread that keeps the watchdog task pushed ahead."""
@@ -995,6 +1035,7 @@ class ProxyMaster:
             upstream_ips=real_ips,
             port=PROXY_PORT,
         )
+        self._proxy.set_module_interceptors(self._module_interceptors)
         try:
             await self._proxy.start()
         except OSError as exc:
@@ -1045,6 +1086,12 @@ class ProxyMaster:
                 daemon=True,
             )
             _precheck_thread.start()
+            # Always pre-create rig-converted copies (auto-convert is always enabled)
+            threading.Thread(
+                target=self._texture_stripper.precheck_anim_rigs,
+                name='AnimRigPrecheck',
+                daemon=True,
+            ).start()
 
         # ── Run until the server is stopped ──────────────────────────────
         try:

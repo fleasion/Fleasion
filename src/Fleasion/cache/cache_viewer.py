@@ -43,11 +43,12 @@ class SearchWorkerThread(QThread):
 
     results_ready = pyqtSignal(list)
 
-    def __init__(self, assets: list, search_text: str, asset_info: dict):
+    def __init__(self, assets: list, search_text: str, asset_info: dict, search_columns=None):
         super().__init__()
         self.assets = assets
         self.search_text = search_text.strip().lower()
         self.asset_info = asset_info
+        self.search_columns = search_columns if search_columns is not None else _ALL_SEARCH_COL_KEYS
         self._stop_requested = False
 
     def stop(self):
@@ -73,37 +74,36 @@ class SearchWorkerThread(QThread):
                     return
 
                 asset_id = a['id']
+                cols = self.search_columns
+                matched = False
 
-                # Fast path: check ID first
-                if self.search_text in asset_id.lower():
-                    filtered.append(a)
-                    continue
+                if not matched and 'id' in cols and self.search_text in asset_id.lower():
+                    matched = True
 
-                # Check type name
-                if self.search_text in a['type_name'].lower():
-                    filtered.append(a)
-                    continue
+                if not matched and 'type' in cols and self.search_text in a['type_name'].lower():
+                    matched = True
 
-                # Check resolved name if available
-                if asset_id in self.asset_info:
+                if not matched and ('name' in cols or 'creator' in cols) and asset_id in self.asset_info:
                     info = self.asset_info[asset_id]
-                    name = info.get('resolved_name')
-                    if name and self.search_text in name.lower():
-                        filtered.append(a)
-                        continue
-                    creator_name = info.get('creator_name')
-                    if creator_name and self.search_text in creator_name.lower():
-                        filtered.append(a)
-                        continue
+                    if 'name' in cols:
+                        name = info.get('resolved_name')
+                        if name and self.search_text in name.lower():
+                            matched = True
+                    if not matched and 'creator' in cols:
+                        creator_name = info.get('creator_name')
+                        if creator_name and self.search_text in creator_name.lower():
+                            matched = True
 
-                # Check other fields
-                url = a.get('url', '').lower()
-                hash_val = a.get('hash', '').lower()
-                cached_at = a.get('cached_at', '').lower()
+                if not matched and 'url' in cols and self.search_text in a.get('url', '').lower():
+                    matched = True
 
-                if (self.search_text in url or
-                    self.search_text in hash_val or
-                    self.search_text in cached_at):
+                if not matched and 'hash' in cols and self.search_text in a.get('hash', '').lower():
+                    matched = True
+
+                if not matched and 'cached_at' in cols and self.search_text in a.get('cached_at', '').lower():
+                    matched = True
+
+                if matched:
                     filtered.append(a)
 
         if not self._stop_requested:
@@ -789,7 +789,7 @@ class CategoryFilterPopup(QMenu):
             '3D Models': [4, 10, 39, 40, 32, 17, 79, 75], 
             'Images/Textures': [1, 13, 63, 21, 22, 18], 
             'Audio/Video': [3, 62, 33], 
-            'Animations': [24, 48, 49, 50, 51, 52, 53, 54, 55, 56, 61, 78], 
+            'Animations': [24, ('R6Animation', 'R6 Animation'), ('R15Animation', 'R15 Animation'), ('NonPlayerAnimation', 'Non-player Animation'), 48, 49, 50, 51, 52, 53, 54, 55, 56, 61, 78],
             'Avatar Parts': [16, 25, 26, 27, 28, 29, 30, 31], 
             'Clothing': [2, 11, 12, 8, 19], 
             'Accessories': [41, 42, 43, 44, 45, 46, 47, 57, 58, 64, 65, 66, 67, 68, 69, 70, 71, 72, 76, 77],
@@ -832,7 +832,10 @@ class CategoryFilterPopup(QMenu):
             
             cat_types = []
             for tid in type_ids:
-                if isinstance(tid, str):
+                if isinstance(tid, tuple):
+                    # (key, display_name) pair - key is stored in filters, name is shown in UI
+                    tid, name = tid
+                elif isinstance(tid, str):
                     # String detected-type entry (e.g. 'Json')
                     name = tid
                 elif tid in CacheManager.ASSET_TYPES:
@@ -973,6 +976,86 @@ _COL_IDX_TO_KEY = ['_toggle'] + [c[0] for c in SCRAPER_COLUMNS]
 # Column key → logical index
 _COL_KEY_TO_IDX = {'_toggle': 0, **{c[0]: i + 1 for i, c in enumerate(SCRAPER_COLUMNS)}}
 
+# Search column definitions for the column-picker button
+_SEARCH_COLS = [
+    ('id',        'Asset ID'),
+    ('type',      'Type'),
+    ('name',      'Name'),
+    ('creator',   'Creator'),
+    ('url',       'URL'),
+    ('hash',      'Hash'),
+    ('cached_at', 'Cached At'),
+]
+_ALL_SEARCH_COL_KEYS = frozenset(k for k, _ in _SEARCH_COLS)
+
+
+class ColumnFilterPopup(QMenu):
+    """Simple popup to pick which fields are included in the text search."""
+    cols_changed = pyqtSignal(set)
+
+    def __init__(self, parent=None, active_cols=None):
+        super().__init__(parent)
+        self.setStyleSheet("""
+            QMenu { background-color: palette(window); border: 1px solid palette(mid);
+                    border-radius: 4px; color: palette(window-text); }
+            QWidget#ColContainer { background-color: palette(window); }
+            QCheckBox { padding: 2px 4px; color: palette(window-text); font-size: 12px; }
+            QCheckBox::indicator { width: 14px; height: 14px; }
+        """)
+        self.active_cols = set(active_cols) if active_cols else set(_ALL_SEARCH_COL_KEYS)
+
+        container = QWidget()
+        container.setObjectName('ColContainer')
+        vbox = QVBoxLayout(container)
+        vbox.setContentsMargins(10, 10, 10, 10)
+        vbox.setSpacing(4)
+
+        self.checkboxes: dict = {}
+        for key, label in _SEARCH_COLS:
+            cb = QCheckBox(label)
+            cb.setChecked(key in self.active_cols)
+            cb.stateChanged.connect(lambda state, k=key: self._on_toggle(k, bool(state)))
+            self.checkboxes[key] = cb
+            vbox.addWidget(cb)
+
+        btn_row = QHBoxLayout()
+        all_btn = QPushButton('All')
+        all_btn.setFixedHeight(22)
+        all_btn.clicked.connect(self._select_all)
+        none_btn = QPushButton('None')
+        none_btn.setFixedHeight(22)
+        none_btn.clicked.connect(self._select_none)
+        btn_row.addWidget(all_btn)
+        btn_row.addWidget(none_btn)
+        vbox.addLayout(btn_row)
+
+        wa = QWidgetAction(self)
+        wa.setDefaultWidget(container)
+        self.addAction(wa)
+
+    def _on_toggle(self, key: str, checked: bool):
+        if checked:
+            self.active_cols.add(key)
+        else:
+            self.active_cols.discard(key)
+        self.cols_changed.emit(set(self.active_cols))
+
+    def _select_all(self):
+        self.active_cols = set(_ALL_SEARCH_COL_KEYS)
+        for cb in self.checkboxes.values():
+            cb.blockSignals(True)
+            cb.setChecked(True)
+            cb.blockSignals(False)
+        self.cols_changed.emit(set(self.active_cols))
+
+    def _select_none(self):
+        self.active_cols.clear()
+        for cb in self.checkboxes.values():
+            cb.blockSignals(True)
+            cb.setChecked(False)
+            cb.blockSignals(False)
+        self.cols_changed.emit(set(self.active_cols))
+
 
 class ColumnVisibilityMenu(QMenu):
     """
@@ -1050,9 +1133,11 @@ class CacheViewerTab(QWidget):
         self.cache_scraper = cache_scraper
         self.config_manager = config_manager
         self._active_filters = set()
+        self._active_search_cols: set = self._load_search_cols()
         self._last_asset_count = 0  # Track for change detection
         self._selected_asset_id: str | None = None  # Track selected asset by ID
         self._show_names = True  # Show names instead of hashes (on by default)
+        self._show_creator_id = False  # Show creator userId instead of username
         self._asset_info: dict[str, dict] = {}  # asset_id -> {resolved_name, creator_id, creator_name, creator_type, hash, row}
         self._current_pixmap = None  # Store current image for resize
         
@@ -1479,7 +1564,7 @@ class CacheViewerTab(QWidget):
         # Search box first
         filter_layout.addWidget(QLabel('Search:'))
         self.search_box = QLineEdit()
-        self.search_box.setPlaceholderText('Search all columns...')
+        self.search_box.setPlaceholderText('Search columns')
         self.search_box.textChanged.connect(self._on_search_text_changed)
         filter_layout.addWidget(self.search_box)
 
@@ -1488,6 +1573,12 @@ class CacheViewerTab(QWidget):
         self.filter_btn.clicked.connect(self._show_filter_popup)
         filter_layout.addWidget(self.filter_btn)
 
+        # Search columns picker
+        self.search_col_btn = QPushButton('Search columns: All')
+        self.search_col_btn.clicked.connect(self._show_search_col_popup)
+        self._update_search_col_btn()
+        filter_layout.addWidget(self.search_col_btn)
+
         filter_layout.addStretch()
 
         # Show names toggle (on by default)
@@ -1495,6 +1586,12 @@ class CacheViewerTab(QWidget):
         self.show_names_toggle.setChecked(True)
         self.show_names_toggle.toggled.connect(self._on_show_names_toggled)
         filter_layout.addWidget(self.show_names_toggle)
+
+        # Show userId toggle (off by default)
+        self.show_creator_id_toggle = QCheckBox('Show User ID')
+        self.show_creator_id_toggle.setChecked(False)
+        self.show_creator_id_toggle.toggled.connect(self._on_show_creator_id_toggled)
+        filter_layout.addWidget(self.show_creator_id_toggle)
 
         filter_layout.addWidget(QLabel('|'))
 
@@ -1586,6 +1683,77 @@ class CacheViewerTab(QWidget):
             self.filter_btn.setText(f'{count} Filters...')
             
         self._filter_debounce.start(300)
+
+    # Search columns picker
+
+    def _load_search_cols(self) -> set:
+        if self.config_manager is None:
+            return set(_ALL_SEARCH_COL_KEYS)
+        saved = self.config_manager.settings.get('scraper_search_columns', None)
+        if saved is None:
+            return set(_ALL_SEARCH_COL_KEYS)
+        valid = {k for k in saved if k in _ALL_SEARCH_COL_KEYS}
+        return valid if valid else set(_ALL_SEARCH_COL_KEYS)
+
+    def _save_search_cols(self):
+        if self.config_manager is None:
+            return
+        self.config_manager.settings['scraper_search_columns'] = sorted(self._active_search_cols)
+        self.config_manager.save()
+
+    def _update_search_col_btn(self):
+        cols = self._active_search_cols
+        if cols >= _ALL_SEARCH_COL_KEYS:
+            self.search_col_btn.setText('Search columns: All')
+        elif not cols:
+            self.search_col_btn.setText('Search columns: None')
+        elif len(cols) == 1:
+            key = next(iter(cols))
+            label = next((l for k, l in _SEARCH_COLS if k == key), key)
+            self.search_col_btn.setText(f'Search columns: {label}')
+        else:
+            self.search_col_btn.setText(f'Search columns: {len(cols)} selected')
+
+    def _show_search_col_popup(self):
+        from PyQt6.QtCore import QPoint
+        from PyQt6.QtGui import QScreen
+        self._col_popup = ColumnFilterPopup(self, self._active_search_cols)
+        self._col_popup.cols_changed.connect(self._on_search_cols_changed)
+
+        self._col_popup.adjustSize()
+        btn = self.search_col_btn
+        btn_rect = btn.rect()
+        btn_bottom = btn.mapToGlobal(btn_rect.bottomLeft())
+        btn_top = btn.mapToGlobal(btn_rect.topLeft())
+
+        screen: QScreen | None = btn.screen()
+        if screen is None:
+            self._col_popup.exec(btn_bottom)
+            return
+
+        sg = screen.availableGeometry()
+        ph = self._col_popup.sizeHint().height()
+        pw = self._col_popup.sizeHint().width()
+
+        x = btn_bottom.x()
+        if x + pw > sg.right():
+            x = sg.right() - pw
+        x = max(x, sg.left())
+
+        if btn_bottom.y() + ph <= sg.bottom():
+            y = btn_bottom.y()
+        elif btn_top.y() - ph >= sg.top():
+            y = btn_top.y() - ph
+        else:
+            y = max(sg.bottom() - ph, sg.top())
+
+        self._col_popup.exec(QPoint(x, y))
+
+    def _on_search_cols_changed(self, cols: set):
+        self._active_search_cols = cols
+        self._update_search_col_btn()
+        self._save_search_cols()
+        self._search_debounce.start(300)
 
     def _create_table(self, parent_layout):
         """Create asset table."""
@@ -1843,7 +2011,7 @@ class CacheViewerTab(QWidget):
 
         # Always use worker thread for searches to prevent UI freezing
         self._is_searching = True
-        self._search_worker = SearchWorkerThread(assets, search_text, self._asset_info)
+        self._search_worker = SearchWorkerThread(assets, search_text, self._asset_info, self._active_search_cols)
         self._search_worker.results_ready.connect(self._on_search_complete)
         self._search_worker.finished.connect(self._on_search_finished)
         self._search_worker.start()
@@ -1930,16 +2098,7 @@ class CacheViewerTab(QWidget):
                 self.table.setItem(row, 1, name_item)
 
                 # Column 2: Creator
-                creator_name = info.get('creator_name')
-                creator_id = info.get('creator_id')
-                if creator_name is not None:
-                    creator_display = creator_name
-                elif creator_id is not None:
-                    # Fallback to creator_id if name not yet resolved
-                    creator_display = str(creator_id)
-                else:
-                    creator_display = ''
-                creator_item = QTableWidgetItem(creator_display)
+                creator_item = QTableWidgetItem(self._creator_display(info))
                 self.table.setItem(row, 2, creator_item)
 
                 # Column 3: Asset ID
@@ -1995,15 +2154,10 @@ class CacheViewerTab(QWidget):
                         name_item.setText(info['resolved_name'])
                 
                 # Update creator if resolved - be explicit with None checks
-                creator_name = info.get('creator_name')
-                creator_id = info.get('creator_id')
-                if creator_name is not None or creator_id is not None:
+                if info.get('creator_name') is not None or info.get('creator_id') is not None:
                     creator_item = self.table.item(row, 2)
                     if creator_item:
-                        if creator_name is not None:
-                            creator_item.setText(creator_name)
-                        else:
-                            creator_item.setText(str(creator_id))
+                        creator_item.setText(self._creator_display(info))
         finally:
             # Re-enable updates
             self.table.blockSignals(False)
@@ -2104,7 +2258,7 @@ class CacheViewerTab(QWidget):
 
         # Always use worker thread to prevent UI freezing
         self._is_searching = True
-        self._search_worker = SearchWorkerThread(assets, search_text, self._asset_info)
+        self._search_worker = SearchWorkerThread(assets, search_text, self._asset_info, self._active_search_cols)
         self._search_worker.results_ready.connect(self._on_search_complete)
         self._search_worker.finished.connect(self._on_search_finished)
         self._search_worker.start()
@@ -2165,6 +2319,35 @@ class CacheViewerTab(QWidget):
                         self._asset_info[asset_id]['creator_name'] = creator_name
                         self._asset_info[asset_id]['creator_type'] = creator_type
         log_buffer.log('Scraper', f'[Cache Viewer] Loaded {loaded_count} persisted asset names from index')
+
+    def _creator_display(self, info: dict) -> str:
+        """Return the display text for the creator column based on current toggle state."""
+        creator_name = info.get('creator_name')
+        creator_id = info.get('creator_id')
+        if self._show_creator_id:
+            if creator_id is not None:
+                return str(creator_id)
+            return creator_name or ''
+        if creator_name is not None:
+            return creator_name
+        if creator_id is not None:
+            return str(creator_id)
+        return ''
+
+    def _on_show_creator_id_toggled(self, checked: bool):
+        """Handle Show User ID toggle — refresh the creator column for all rows."""
+        self._show_creator_id = checked
+        self.table.setUpdatesEnabled(False)
+        try:
+            for asset_id, info in self._asset_info.items():
+                row = info.get('row')
+                if row is None or row >= self.table.rowCount():
+                    continue
+                creator_item = self.table.item(row, 2)
+                if creator_item:
+                    creator_item.setText(self._creator_display(info))
+        finally:
+            self.table.setUpdatesEnabled(True)
 
     def _on_show_names_toggled(self, checked: bool):
         """Handle Show Names toggle."""
@@ -2288,12 +2471,10 @@ class CacheViewerTab(QWidget):
                         item.setText(info['resolved_name'])
 
                 # Update creator column if resolved
-                creator_name = info.get('creator_name')
-                creator_id   = info.get('creator_id')
-                if creator_name is not None or creator_id is not None:
+                if info.get('creator_name') is not None or info.get('creator_id') is not None:
                     creator_item = self.table.item(row, 2)
                     if creator_item:
-                        desired = creator_name if creator_name is not None else str(creator_id)
+                        desired = self._creator_display(info)
                         if creator_item.text() != desired:
                             creator_item.setText(desired)
         finally:
@@ -2337,11 +2518,7 @@ class CacheViewerTab(QWidget):
             return
         item = self.table.item(row, 2)  # Creator is col 2
         if item:
-            # Prefer name, fallback to ID
-            if creator_name is not None:
-                item.setText(creator_name)
-            elif creator_id is not None:
-                item.setText(str(creator_id))
+            item.setText(self._creator_display(info))
             # Force immediate repaint of this row
             self.table.viewport().update()
 
@@ -3011,8 +3188,8 @@ class CacheViewerTab(QWidget):
         if not selected_rows:
             return
 
-        # Add actions
-        add_to_replacer_action = menu.addAction('Add IDs to Replacer')
+        send_replace_action = menu.addAction('Replace')
+        send_replace_with_action = menu.addAction('Replace with')
 
         # Export submenu with format options
         export_menu = menu.addMenu('Export Selected')
@@ -3043,7 +3220,8 @@ class CacheViewerTab(QWidget):
         export_actions = {}
         format_labels = {
             'converted_obj': 'Converted (.obj)',
-            'converted_rbxmx': 'Converted (.rbxmx)',
+            'converted_rbxmx': 'Converted - KeyframeSequence (.rbxmx)',
+            'converted_rbxmx_curve': 'Converted - CurveAnimation (.rbxmx)',
             'converted_png': 'Converted (.png)',
             'converted_audio': 'Converted (.ogg/.mp3)',
             'converted': 'Converted (.xml)',
@@ -3051,7 +3229,7 @@ class CacheViewerTab(QWidget):
             'bin': 'Binary (decompressed)',
             'raw': 'Raw (original cache)',
         }
-        for fmt in ['converted_obj', 'converted_rbxmx', 'converted_png', 'converted_audio', 'converted', 'converted_images', 'bin', 'raw']:
+        for fmt in ['converted_obj', 'converted_rbxmx', 'converted_rbxmx_curve', 'converted_png', 'converted_audio', 'converted', 'converted_images', 'bin', 'raw']:
             if fmt in available_formats:
                 action = export_menu.addAction(format_labels[fmt])
                 export_actions[action] = fmt
@@ -3076,14 +3254,40 @@ class CacheViewerTab(QWidget):
         # Add Open Creator action below the Copy menu
         open_creator_action = menu.addAction('Open Creator')
 
+        # Export as game dump
+        copy_dump_action = menu.addAction('Export as Game Dump')
+
+        # Convert animation rig - only when exactly one Animation is selected
+        convert_anim_action = None
+        _convert_anim_asset = None
+        if len(selected_rows) == 1 and asset_types == {24}:
+            row = selected_rows[0].row()
+            item = self.table.item(row, 1)
+            if item:
+                _convert_anim_asset = item.data(Qt.ItemDataRole.UserRole)
+                if _convert_anim_asset:
+                    try:
+                        from ..utils.anim_converter import detect_rig, rbxm_to_rbxmx
+                        _anim_data = self.cache_manager.get_asset(
+                            _convert_anim_asset['id'], _convert_anim_asset['type']
+                        )
+                        if _anim_data:
+                            _rig = detect_rig(_anim_data)
+                            _target_rig = 'R6' if _rig == 'R15' else 'R15'
+                            convert_anim_action = menu.addAction(f'Convert to {_target_rig}')
+                    except Exception:
+                        pass
+
         menu.addSeparator()
         delete_action = menu.addAction('Delete Selected')
 
         # Execute menu
         action = menu.exec(self.table.viewport().mapToGlobal(position))
 
-        if action == add_to_replacer_action:
+        if action == send_replace_action:
             self._add_selected_to_replacer()
+        elif action == send_replace_with_action:
+            self._add_latest_as_replace_with()
         elif action in export_actions:
             self._export_selected_multiple(export_format=export_actions[action])
         elif action == delete_action:
@@ -3102,6 +3306,131 @@ class CacheViewerTab(QWidget):
             self._open_creator_in_browser()
         elif action == copy_converted_action:
             self._copy_converted()
+        elif action == copy_dump_action:
+            self._export_as_game_dump()
+        elif action is not None and action == convert_anim_action and _convert_anim_asset:
+            self._convert_animation_rig(_convert_anim_asset, _target_rig)
+
+    def _convert_animation_rig(self, asset: dict, target: str):
+        """Convert an animation between R6 and R15 and save to a user-chosen path."""
+        import threading
+        from pathlib import Path
+        from PyQt6.QtWidgets import QFileDialog
+
+        asset_id = asset.get('id', 'animation')
+        default_name = f'{asset_id}_{target.lower()}.rbxmx'
+        out_str, _ = QFileDialog.getSaveFileName(
+            self, 'Save Converted Animation', default_name,
+            'Roblox Animation (*.rbxmx);;All files (*.*)',
+        )
+        if not out_str:
+            return
+
+        def _do_convert():
+            import re
+            import sys
+            import xml.etree.ElementTree as _ET
+            try:
+                from ..utils.anim_converter import rbxm_to_rbxmx
+                from ..utils.rig_data import R6_PARTS, R6_JOINTS, R15_PARTS, R15_JOINTS
+            except Exception as e:
+                QMessageBox.warning(self, 'Convert Error', f'Failed to load converter: {e}')
+                return
+
+            anim_data = self.cache_manager.get_asset(asset['id'], asset['type'])
+            if not anim_data:
+                QMessageBox.warning(self, 'Convert Error', 'Could not load asset data.')
+                return
+
+            if anim_data.startswith(b'<roblox!'):
+                try:
+                    anim_data = rbxm_to_rbxmx(anim_data)
+                except Exception as e:
+                    QMessageBox.warning(self, 'Convert Error', f'.rbxm conversion failed: {e}')
+                    return
+
+            try:
+                from ..utils.r15_to_r6 import (convert_keyframe_r15_to_r6,
+                                                convert_keyframe_r6_to_r15, sanitize_xml)
+
+                root = _ET.fromstring(sanitize_xml(anim_data))
+                etree = _ET.ElementTree(root)
+
+                ks = root.find("Item[@class='KeyframeSequence']")
+                if ks is None:
+                    QMessageBox.warning(self, 'Convert Error', 'No KeyframeSequence found.')
+                    return
+                keyframes = ks.findall("Item[@class='Keyframe']")
+                if not keyframes:
+                    QMessageBox.warning(self, 'Convert Error', 'No Keyframes found.')
+                    return
+
+                if target == 'R6':
+                    for kf in keyframes:
+                        convert_keyframe_r15_to_r6(kf, R6_PARTS, R6_JOINTS, R15_PARTS, R15_JOINTS)
+                else:
+                    for kf in keyframes:
+                        convert_keyframe_r6_to_r15(kf, R6_PARTS, R6_JOINTS, R15_PARTS, R15_JOINTS)
+
+                etree.write(out_str, encoding='utf-8', xml_declaration=True)
+            except Exception as e:
+                QMessageBox.warning(self, 'Convert Error', f'Conversion failed: {e}')
+
+        threading.Thread(target=_do_convert, daemon=True).start()
+
+    def _export_as_game_dump(self):
+        """Export selected assets as a game dump JSON grouped by type.
+
+        Produces {TypeName: {AssetName: assetId, ...}, ...} — the same format
+        that the PreJsons Browser accepts when importing a custom dump.
+        """
+        selected_rows = self.table.selectionModel().selectedRows()
+        if not selected_rows:
+            return
+
+        by_type: dict[str, dict] = {}
+        name_counts: dict[tuple, int] = {}
+
+        for idx in sorted(selected_rows, key=lambda x: x.row()):
+            row = idx.row()
+            item = self.table.item(row, 1)   # col 1 carries the asset dict in UserRole
+            if not item:
+                continue
+            asset = item.data(Qt.ItemDataRole.UserRole)
+            if not isinstance(asset, dict):
+                continue
+
+            asset_id = asset.get('id') or asset.get('asset_id')
+            try:
+                asset_id = int(asset_id)
+            except (TypeError, ValueError):
+                continue
+
+            name = item.text() or 'Unknown'
+            type_name = self.cache_manager.get_type_name_for_asset(asset_id, asset.get('type', ''))
+
+            bucket = by_type.setdefault(type_name, {})
+            key = name
+            count_key = (type_name, name)
+            if key in bucket:
+                name_counts[count_key] = name_counts.get(count_key, 1) + 1
+                key = f'{name} ({name_counts[count_key]})'
+            bucket[key] = asset_id
+
+        if not by_type:
+            return
+
+        result = {t: by_type[t] for t in sorted(by_type)}
+        from PyQt6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getSaveFileName(
+            self, 'Export Game Dump', 'game_dump.json', 'JSON Files (*.json);;All Files (*)'
+        )
+        if not path:
+            return
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(json.dumps(result, indent=2))
+        total = sum(len(v) for v in result.values())
+        log_buffer.log('Scraper', f'Exported game dump ({total} assets) to {path}')
 
     def _copy_column(self, column: int):
         """Copy column contents for selected rows."""
@@ -3431,15 +3760,7 @@ class CacheViewerTab(QWidget):
         if not asset_ids:
             return
 
-        # Try to find the replacer entry field (walk up parent chain)
-        replacer_window = None
-        widget = self
-        while widget is not None:
-            if hasattr(widget, 'replace_entry'):
-                replacer_window = widget
-                break
-            widget = widget.parent() if hasattr(widget, 'parent') else None
-
+        replacer_window = getattr(self, '_replacer_window_ref', None)
         if replacer_window:
             # Add to existing IDs if there are any
             current_text = replacer_window.replace_entry.text().strip()
@@ -3466,6 +3787,36 @@ class CacheViewerTab(QWidget):
                 self,
                 'Copied to Clipboard',
                 f'Copied {len(asset_ids)} asset ID(s) to clipboard:\n{", ".join(asset_ids[:5])}{"..." if len(asset_ids) > 5 else ""}'
+            )
+
+    def _add_latest_as_replace_with(self):
+        """Send the latest selected asset ID to the Replace With field."""
+        row = self.table.currentIndex().row()
+        if row < 0:
+            return
+
+        id_item = self.table.item(row, 3)
+        if not id_item:
+            return
+        asset_id = id_item.text()
+
+        replacer_window = getattr(self, '_replacer_window_ref', None)
+        if replacer_window:
+            replacer_window.replacement_entry.setText(asset_id)
+            log_buffer.log('Scraper', f'Set Replace With to asset ID {asset_id}')
+            QMessageBox.information(
+                self,
+                'Replace With Set',
+                f'Replace With set to asset ID {asset_id}',
+            )
+        else:
+            from PyQt6.QtWidgets import QApplication
+            QApplication.clipboard().setText(asset_id)
+            log_buffer.log('Scraper', f'Copied asset ID {asset_id} to clipboard (no replacer window found)')
+            QMessageBox.information(
+                self,
+                'Copied to Clipboard',
+                f'Copied asset ID {asset_id} to clipboard',
             )
 
     def _stop_preview(self):

@@ -22,6 +22,7 @@ class SystemTray:
         # Keep references to open windows to prevent garbage collection
         self.open_windows = []
         self.dashboard_window = None
+        self._exiting = False
 
         # Create tray icon
         self.tray = QSystemTrayIcon()
@@ -181,6 +182,13 @@ class SystemTray:
         self.run_on_boot_action.triggered.connect(self._toggle_run_on_boot)
         settings_menu.addAction(self.run_on_boot_action)
 
+        # Close to Tray
+        self.close_to_tray_action = QAction('Close to Tray', settings_menu)
+        self.close_to_tray_action.setCheckable(True)
+        self.close_to_tray_action.setChecked(self.config_manager.close_to_tray)
+        self.close_to_tray_action.triggered.connect(self._toggle_close_to_tray)
+        settings_menu.addAction(self.close_to_tray_action)
+
         self.menu.addMenu(settings_menu)
 
 
@@ -265,6 +273,12 @@ class SystemTray:
         self.config_manager.clear_cache_on_launch = new_state
         self.clear_cache_action.setChecked(new_state)
 
+    def _toggle_close_to_tray(self):
+        """Toggle close to tray setting."""
+        new_state = not self.config_manager.close_to_tray
+        self.config_manager.close_to_tray = new_state
+        self.close_to_tray_action.setChecked(new_state)
+
     def _apply_always_on_top_to_window(self, window):
         """Apply always on top setting to a window."""
         if self.config_manager.always_on_top:
@@ -297,7 +311,9 @@ class SystemTray:
             self.dashboard_window.activateWindow()
             return
 
+        from PyQt6.QtCore import Qt
         window = ReplacerConfigWindow(self.config_manager, self.proxy_master, self.mod_manager, self.roblox_monitor)
+        window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         window.destroyed.connect(self._on_dashboard_destroyed)
         self.dashboard_window = window
         self.open_windows.append(window)
@@ -309,6 +325,8 @@ class SystemTray:
         if self.dashboard_window in self.open_windows:
             self.open_windows.remove(self.dashboard_window)
         self.dashboard_window = None
+        if not self._exiting and not self.config_manager.close_to_tray:
+            self._exit_app()
 
     def _toggle_dashboard(self):
         """Toggle dashboard visibility."""
@@ -364,6 +382,7 @@ class SystemTray:
 
     def _exit_app(self):
         """Exit the application."""
+        self._exiting = True
         # Stop proxy: always attempt to stop so startup failures (e.g., UAC rejected)
         # that leave background threads or waiters won't be skipped.
         try:

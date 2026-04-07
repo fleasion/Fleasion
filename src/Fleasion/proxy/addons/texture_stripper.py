@@ -5,6 +5,7 @@ threading.Lock so it is safely shared across all MITM thread-pool workers.
 """
 
 import gzip
+import io
 import json
 import urllib.request
 import hashlib
@@ -224,6 +225,31 @@ class TextureStripper:
 
     _PREDOWNLOAD_DIR: Path = APP_CACHE_DIR / 'predownloaded'
 
+    # Animation type IDs (main + all subtypes)
+    _ANIM_TYPE_IDS: frozenset = frozenset({24, 48, 49, 50, 51, 52, 53, 54, 55, 56, 61, 78})
+    _CONV_CACHE_DIR: Path = APP_CACHE_DIR / 'rig_converted'
+
+    # Virtual rig-filter type keys -> required original rig ('R6', 'R15', 'unknown')
+    _VIRTUAL_ANIM_RIG: Dict[str, str] = {
+        'R6Animation':        'R6',
+        'R15Animation':       'R15',
+        'NonPlayerAnimation': 'unknown',
+    }
+
+    # rig of replacement local file, keyed by normalised path string
+    _anim_repl_rig: Dict[str, str] = {}
+    # converted file path, keyed by f'{content_hash16}_{target_rig}'
+    _anim_conv_paths: Dict[str, str] = {}
+    # CDN URLs for animation replacements that need upstream rig detection before serving.
+    # Populated by process_batch_response; checked by check_cdn_request.
+    # These do NOT short-circuit - upstream response is read to detect original rig.
+    # Value: (local_path, required_rig) where required_rig is 'R6'|'R15'|'unknown'|'any'
+    _anim_rig_local: Dict[str, Tuple[str, str]] = {}   # base_cdn_url -> (local_path, required_rig)
+    # pending_key -> (local_path, required_rig)
+    _anim_local_pending: Dict[str, Tuple[str, str]] = {}
+    # separate lock for rig-conversion state (avoids holding _lock during file I/O)
+    _anim_lock: Lock = Lock()
+
     def precheck_replacements(self) -> None:
         """Eagerly check all replacement asset IDs and pre-download private ones.
 
@@ -288,8 +314,15 @@ class TextureStripper:
                 return_status=True,
             )
             if _data:
-                # 200 — publicly accessible, normal ID swap will work
-                self._checked_public.add(int(target_id))
+                # 200 — publicly accessible.
+                # Always save to disk so the rig-conversion path can intercept
+                # the CDN response instead of a raw ID swap.
+                try:
+                    local_path.write_bytes(_data)
+                    self._predownloaded[int(target_id)] = str(local_path)
+                    log_buffer.log('Replacer', f'Cached public asset {target_id} for rig conversion ({len(_data)} bytes)')
+                except Exception:
+                    self._checked_public.add(int(target_id))
                 public_count += 1
                 continue
 
@@ -323,6 +356,246 @@ class TextureStripper:
 
         log_buffer.log('Replacer',
                        f'Pre-check complete: {public_count} public, {private_count} private (pre-downloaded), {failed_count} failed')
+
+    # Rig auto-conversion helpers
+
+    def precheck_anim_rigs(self) -> None:
+        from ...utils.anim_converter import detect_rig
+
+        try:
+            self._CONV_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
+        replacements_tuple = self.config_manager.get_all_replacements()
+        _, _, _, local_replacements = replacements_tuple
+
+        # Collect all local paths to pre-convert (includes predownloaded privates)
+        paths_to_process: list[str] = []
+
+        # User-configured local files
+        for local_path in local_replacements.values():
+            if local_path not in paths_to_process:
+                paths_to_process.append(str(local_path))
+
+        # Already predownloaded private replacements
+        for local_path in self._predownloaded.values():
+            if local_path not in paths_to_process:
+                paths_to_process.append(str(local_path))
+
+        converted = 0
+        for local_path in paths_to_process:
+            p = Path(local_path)
+            if not p.exists():
+                continue
+            try:
+                data = p.read_bytes()
+            except Exception:
+                continue
+
+            # Only process animation files
+            rig = detect_rig(data)
+            if rig == 'unknown':
+                continue
+
+            with self._anim_lock:
+                self._anim_repl_rig[local_path] = rig
+
+            # Pre-create the opposite rig KeyframeSequence version
+            for target_rig in ('R6', 'R15'):
+                if target_rig == rig:
+                    continue
+                self._get_or_create_converted(local_path, target_rig, data=data)
+
+            # Pre-create CurveAnimation versions for both rigs (needed when the CDN
+            # asset is a CurveAnimation — we must serve back a CurveAnimation)
+            for target_rig in ('R6', 'R15'):
+                self._get_or_create_converted_curve(local_path, target_rig, data=data)
+            converted += 1
+
+        log_buffer.log('AnimConv', f'Pre-conversion complete: {converted} animation(s) processed')
+
+    def _get_or_create_converted(self, local_path: str, target_rig: str,
+                                  data: bytes | None = None) -> Optional[str]:
+        """Return path to a rig-converted copy of local_path, creating it if needed."""
+        import xml.etree.ElementTree as ET
+
+        p = Path(local_path)
+        if not p.exists():
+            return None
+
+        try:
+            if data is None:
+                data = p.read_bytes()
+            content_key = hashlib.sha256(data).hexdigest()[:16]
+        except Exception:
+            return None
+
+        cache_key = f'{content_key}_{target_rig}'
+
+        with self._anim_lock:
+            if cache_key in self._anim_conv_paths:
+                cp = Path(self._anim_conv_paths[cache_key])
+                if cp.exists():
+                    return str(cp)
+
+        # Build converted file path
+        out_path = self._CONV_CACHE_DIR / f'{cache_key}.rbxmx'
+        if out_path.exists():
+            with self._anim_lock:
+                self._anim_conv_paths[cache_key] = str(out_path)
+            return str(out_path)
+
+        try:
+            self._CONV_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+            # Convert binary .rbxm to XML if needed
+            from ...utils.anim_converter import rbxm_to_rbxmx
+            if data[:8] == b'<roblox!':
+                xml_data = rbxm_to_rbxmx(data)
+            else:
+                xml_data = data
+
+            # If it's a CurveAnimation, convert to KeyframeSequence first
+            if b'CurveAnimation' in xml_data:
+                from ...utils.r15_to_r6 import curve_anim_to_keyframe_xml
+                xml_data = curve_anim_to_keyframe_xml(xml_data)
+
+            # Use the same conversion logic as the misc tab
+            from ...utils.r15_to_r6 import (convert_keyframe_r15_to_r6,
+                                             convert_keyframe_r6_to_r15, sanitize_xml)
+            from ...utils.rig_data import R6_PARTS, R6_JOINTS, R15_PARTS, R15_JOINTS
+
+            root = ET.fromstring(sanitize_xml(xml_data))
+            etree = ET.ElementTree(root)
+
+            ks = root.find("Item[@class='KeyframeSequence']")
+            if ks is None:
+                raise ValueError('No KeyframeSequence found')
+            keyframes = ks.findall("Item[@class='Keyframe']")
+            if not keyframes:
+                raise ValueError('No Keyframes found')
+
+            if target_rig == 'R6':
+                for kf in keyframes:
+                    convert_keyframe_r15_to_r6(kf, R6_PARTS, R6_JOINTS, R15_PARTS, R15_JOINTS)
+            else:
+                for kf in keyframes:
+                    convert_keyframe_r6_to_r15(kf, R6_PARTS, R6_JOINTS, R15_PARTS, R15_JOINTS)
+
+            etree.write(str(out_path), encoding='utf-8', xml_declaration=True)
+            with self._anim_lock:
+                self._anim_conv_paths[cache_key] = str(out_path)
+            log_buffer.log('AnimConv', f'Created {target_rig} version: {out_path.name}')
+            return str(out_path)
+        except Exception as exc:
+            log_buffer.log('AnimConv', f'Conversion failed for {p.name} -> {target_rig}: {exc}')
+            return None
+
+    def _get_or_create_converted_curve(self, local_path: str, target_rig: str,
+                                        data: bytes | None = None) -> Optional[str]:
+        """Return path to a rig-converted CurveAnimation copy of local_path, creating it if needed.
+
+        Pipeline: source -> XML (if binary) -> KeyframeSequence (if CurveAnimation)
+                  -> rig-convert if needed -> CurveAnimation
+        """
+        p = Path(local_path)
+        if not p.exists():
+            return None
+
+        try:
+            if data is None:
+                data = p.read_bytes()
+            content_key = hashlib.sha256(data).hexdigest()[:16]
+        except Exception:
+            return None
+
+        cache_key = f'{content_key}_{target_rig}_curve'
+
+        with self._anim_lock:
+            if cache_key in self._anim_conv_paths:
+                cp = Path(self._anim_conv_paths[cache_key])
+                if cp.exists():
+                    return str(cp)
+
+        out_path = self._CONV_CACHE_DIR / f'{cache_key}.rbxmx'
+        if out_path.exists():
+            with self._anim_lock:
+                self._anim_conv_paths[cache_key] = str(out_path)
+            return str(out_path)
+
+        try:
+            self._CONV_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+            # Step 1: Convert binary .rbxm -> XML if needed
+            from ...utils.anim_converter import rbxm_to_rbxmx, detect_rig
+            xml_data = rbxm_to_rbxmx(data) if data[:10].startswith(b'<roblox!\x89\xff') else data
+
+            # Step 2: Convert CurveAnimation -> KeyframeSequence if needed
+            if b'CurveAnimation' in xml_data:
+                from ...utils.r15_to_r6 import curve_anim_to_keyframe_xml
+                xml_data = curve_anim_to_keyframe_xml(xml_data)
+
+            # Step 3: Rig-convert if source rig differs from target rig
+            import xml.etree.ElementTree as ET
+            from ...utils.r15_to_r6 import (convert_keyframe_r15_to_r6,
+                                             convert_keyframe_r6_to_r15, sanitize_xml)
+            from ...utils.rig_data import R6_PARTS, R6_JOINTS, R15_PARTS, R15_JOINTS
+
+            src_rig = detect_rig(xml_data)
+            if src_rig != 'unknown' and src_rig != target_rig:
+                root = ET.fromstring(sanitize_xml(xml_data))
+                ks = root.find("Item[@class='KeyframeSequence']")
+                if ks is None:
+                    raise ValueError('No KeyframeSequence found after curve conversion')
+                keyframes = ks.findall("Item[@class='Keyframe']")
+                if not keyframes:
+                    raise ValueError('No Keyframes found after curve conversion')
+                if target_rig == 'R6':
+                    for kf in keyframes:
+                        convert_keyframe_r15_to_r6(kf, R6_PARTS, R6_JOINTS, R15_PARTS, R15_JOINTS)
+                else:
+                    for kf in keyframes:
+                        convert_keyframe_r6_to_r15(kf, R6_PARTS, R6_JOINTS, R15_PARTS, R15_JOINTS)
+                buf = io.BytesIO()
+                ET.ElementTree(root).write(buf, encoding='utf-8', xml_declaration=True)
+                xml_data = buf.getvalue()
+
+            # Step 4: Convert KeyframeSequence -> CurveAnimation
+            from ...utils.r15_to_r6 import keyframe_to_curve_anim
+            curve_data = keyframe_to_curve_anim(xml_data)
+
+            out_path.write_bytes(curve_data)
+            with self._anim_lock:
+                self._anim_conv_paths[cache_key] = str(out_path)
+            log_buffer.log('AnimConv', f'Created {target_rig} CurveAnimation version: {out_path.name}')
+            return str(out_path)
+        except Exception as exc:
+            log_buffer.log('AnimConv', f'CurveAnim conversion failed for {p.name} -> {target_rig}: {exc}')
+            return None
+
+    def _detect_repl_rig(self, local_path: str) -> str:
+        """Detect and cache the rig type of a local replacement animation file."""
+        with self._anim_lock:
+            if local_path in self._anim_repl_rig:
+                return self._anim_repl_rig[local_path]
+        try:
+            from ...utils.anim_converter import detect_rig
+            rig = detect_rig(Path(local_path).read_bytes())
+        except Exception:
+            rig = 'unknown'
+        with self._anim_lock:
+            self._anim_repl_rig[local_path] = rig
+        return rig
+
+    def _is_anim_entry(self, e: dict) -> bool:
+        """Return True if batch entry is an animation asset type."""
+        tid = e.get('assetTypeId')
+        if tid in self._ANIM_TYPE_IDS:
+            return True
+        at_name = str(e.get('assetType', '')).lower()
+        mapped = self._REVERSE.get(at_name)
+        return mapped in self._ANIM_TYPE_IDS
 
     # ------------------------------------------------------------------
     # Batch request (called from server MITM thread)
@@ -479,6 +752,9 @@ class TextureStripper:
                     self._REVERSE.get(str(e.get('assetType', '')).lower()) == 39
                 )
                 all_keys = ([slot_key] if slot_key else []) + [aid] + type_keys
+                # For animation entries, also check virtual rig-filter keys as fallback
+                if self._is_anim_entry(e):
+                    all_keys = all_keys + [k for k in self._VIRTUAL_ANIM_RIG]
                 cdn_key = next((k for k in all_keys if k in cdn_replacements), None)
                 local_key = next((k for k in all_keys if k in local_replacements), None)
                 if cdn_key is not None:
@@ -491,7 +767,24 @@ class TextureStripper:
                     is_texpack = (':' in str(local_key)) or (e.get('assetTypeId') == 63) or (
                         self._REVERSE.get(str(e.get('assetType', '')).lower()) == 63
                     )
-                    self._route_local(f'{batch_id}_{req_id}', aid, local_replacements[local_key], is_solidmodel, is_texpack)
+                    _repl_local_path = local_replacements[local_key]
+                    self._route_local(f'{batch_id}_{req_id}', aid, _repl_local_path, is_solidmodel, is_texpack)
+                    # Tag animation replacements for upstream rig detection.
+                    # Determine required_rig from virtual type key(s), or 'any' for normal types.
+                    if aid is not None and self._is_anim_entry(e):
+                        if str(local_key) in self._VIRTUAL_ANIM_RIG:
+                            # Collect all virtual keys in local_replacements pointing to the
+                            # same file — user may have "R6Animation, R15Animation" in one rule.
+                            _covered = frozenset(
+                                self._VIRTUAL_ANIM_RIG[vk]
+                                for vk in self._VIRTUAL_ANIM_RIG
+                                if local_replacements.get(vk) == _repl_local_path
+                            )
+                            _required_rig = 'any' if _covered >= {'R6', 'R15', 'unknown'} else _covered
+                        else:
+                            _required_rig = 'any'
+                        with self._anim_lock:
+                            self._anim_local_pending[f'{batch_id}_{req_id}'] = (str(_repl_local_path), _required_rig)
 
         if modified:
             result = _dumps(data)
@@ -536,8 +829,18 @@ class TextureStripper:
                     self._cdn_redirects[base_loc] = url_value
                     log_buffer.log('CDN', f'Will redirect {base_loc[:60]}...')
                 elif url_type == 'local':
-                    self._local_redirects[base_loc] = url_value
-                    log_buffer.log('Local', f'Will serve local for {base_loc[:60]}...')
+                    # Check if this is a tagged animation replacement — if so, put it in
+                    # _anim_rig_local so server.py reads the upstream CDN response first
+                    # to detect the original rig, rather than short-circuiting immediately.
+                    with self._anim_lock:
+                        _anim_pending = self._anim_local_pending.pop(pending_key, None)
+                    if _anim_pending is not None:
+                        _anim_path, _required_rig = _anim_pending
+                        self._anim_rig_local[base_loc] = (_anim_path, _required_rig)
+                        log_buffer.log('AnimConv', f'Queued rig-detect for {base_loc[:60]}...')
+                    else:
+                        self._local_redirects[base_loc] = url_value
+                        log_buffer.log('Local', f'Will serve local for {base_loc[:60]}...')
                 elif url_type == 'solid':
                     self._solidmodel_injections[base_loc] = url_value
                     log_buffer.log('SolidModel', f'Will inject OBJ for {base_loc[:60]}...')
@@ -547,8 +850,21 @@ class TextureStripper:
     # ------------------------------------------------------------------
 
     def check_cdn_request(self, host: str, path: str) -> Optional[Tuple[str, str]]:
-        """Returns ('local'|'cdn'|'solid', value) or None."""
+        """Returns ('local'|'cdn'|'solid'|'anim_rig', value) or None.
+
+        'anim_rig' means: let the upstream CDN request proceed normally so server.py
+        can read the original response bytes, detect the rig, then serve the
+        rig-matched local replacement file instead.
+        """
         base_url = f'https://{host}{path}'.split('?')[0]
+        # Check animation rig-detect entries first (separate dict, no _lock needed here
+        # since _anim_lock guards it; checked before _local_redirects so these never
+        # accidentally land in the normal short-circuit path).
+        with self._anim_lock:
+            anim_entry = self._anim_rig_local.pop(base_url, None)
+        if anim_entry is not None:
+            return ('anim_rig', anim_entry)
+
         with self._lock:
             if base_url in self._local_redirects:
                 return ('local', self._local_redirects.pop(base_url))

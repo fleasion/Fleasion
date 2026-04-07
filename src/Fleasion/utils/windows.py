@@ -38,6 +38,17 @@ def get_roblox_player_exe_path() -> Optional[Path]:
     return Path(path_str) if path_str else None
 
 
+def get_roblox_studio_exe_path() -> Optional[Path]:
+    """Return the full executable path of the running RobloxStudioBeta.exe, or None."""
+    output = run_cmd([
+        'powershell', '-NoProfile', '-Command',
+        'Get-Process -Name RobloxStudioBeta -ErrorAction SilentlyContinue | '
+        'Select-Object -First 1 -ExpandProperty Path',
+    ])
+    path_str = output.strip()
+    return Path(path_str) if path_str else None
+
+
 def is_studio_running() -> bool:
     """Check if Roblox Studio is currently running."""
     return ROBLOX_STUDIO_PROCESS in run_cmd(['tasklist', '/FI', f'IMAGENAME eq {ROBLOX_STUDIO_PROCESS}'])

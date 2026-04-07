@@ -5,6 +5,7 @@ interpolation, matching the Reference pyvista/vtk implementation.
 """
 
 import math
+import re
 import time
 import os
 import sys
@@ -311,8 +312,10 @@ def load_rig(rig_path: str) -> Tuple[Dict[str, Part], List[Motor6D]]:
 def load_animation_from_xml(anim_data: bytes) -> List[Keyframe]:
     """Load animation from XML bytes (RBXMX format)."""
     try:
-        root = ET.fromstring(anim_data)
-    except ET.ParseError:
+        text = anim_data.decode('utf-8', errors='replace')
+        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
+        root = ET.fromstring(text)
+    except Exception:
         return []
 
     keys: List[Keyframe] = []
@@ -412,8 +415,233 @@ def _collect_poses(instance, poses: Dict[str, np.ndarray]):
             _collect_poses(child, poses)
 
 
+def load_curve_animation_data(anim_data: bytes) -> List[Keyframe]:
+    """Load animation keyframes from a CurveAnimation (binary RBXM or XML)."""
+    import struct, base64 as _b64
+
+    TICKS = 14400.0
+
+    def _vat(raw_b: bytes):
+        """Decode ValuesAndTimes blob → [(time_sec, value), ...]"""
+        if len(raw_b) < 8:
+            return []
+        _, n = struct.unpack_from('<II', raw_b)
+        if not n:
+            return []
+        off_t = 8 + n * 14
+        if off_t + 8 + n * 4 > len(raw_b):
+            return []
+        _, sn = struct.unpack_from('<II', raw_b, off_t)
+        out = []
+        for i in range(min(n, sn)):
+            v = struct.unpack_from('<f', raw_b, 8 + i * 14 + 2)[0]
+            tk = struct.unpack_from('<I', raw_b, off_t + 8 + i * 4)[0]
+            out.append((tk / TICKS, v))
+        return out
+
+    def _lerp(tv, t):
+        if not tv:
+            return 0.0
+        if t <= tv[0][0]:
+            return tv[0][1]
+        if t >= tv[-1][0]:
+            return tv[-1][1]
+        for i in range(len(tv) - 1):
+            t0, v0 = tv[i]
+            t1, v1 = tv[i + 1]
+            if t0 <= t <= t1:
+                f = (t - t0) / (t1 - t0) if t1 > t0 else 0.0
+                return v0 + f * (v1 - v0)
+        return tv[-1][1]
+
+    def _rot(rx, ry, rz):
+        cx, sx = math.cos(rx), math.sin(rx)
+        cy, sy = math.cos(ry), math.sin(ry)
+        cz, sz = math.cos(rz), math.sin(rz)
+        return [cy*cz, -cy*sz, sy,
+                cx*sz+sx*sy*cz, cx*cz-sx*sy*sz, -sx*cy,
+                sx*sz-cx*sy*cz, sx*cz+cx*sy*sz,  cx*cy]
+
+    bone_curves: Dict[str, dict] = {}
+
+    def _empty_bc():
+        return {'px': [], 'py': [], 'pz': [], 'rx': [], 'ry': [], 'rz': []}
+
+    # ── Binary RBXM path ──────────────────────────────────────────────────────
+    if anim_data.startswith(b'<roblox!'):
+        try:
+            from .tools.solidmodel_converter.rbxm.deserializer import RbxmDeserializer
+            tree = RbxmDeserializer().deserialize(anim_data)
+        except Exception as e:
+            log_buffer.log('AnimationViewer', f'CurveAnimation RBXM deserialize error: {e}')
+            return []
+
+        def _prop(inst, key: str):
+            for k, v in inst.properties.items():
+                pk = k.name if hasattr(k, 'name') else str(k)
+                if pk == key:
+                    return v.value if hasattr(v, 'value') else v
+            return None
+
+        def _vat_rbxm(inst):
+            for k, v in inst.properties.items():
+                pk = k.name if hasattr(k, 'name') else str(k)
+                if pk == 'ValuesAndTimes':
+                    raw = v.value if hasattr(v, 'value') else v
+                    if raw:
+                        rb = raw.encode('latin-1') if isinstance(raw, str) else bytes(raw)
+                        return _vat(rb)
+            return []
+
+        def _walk_rbxm(inst):
+            cls = inst.class_name
+            if cls == 'Folder':
+                name = _prop(inst, 'Name') or ''
+                if name:
+                    bc = _empty_bc()
+                    for child in inst.children:
+                        ccls = child.class_name
+                        if ccls == 'Vector3Curve':
+                            for fc in child.children:
+                                if fc.class_name != 'FloatCurve':
+                                    continue
+                                axis = (_prop(fc, 'Name') or '').upper()
+                                tv = _vat_rbxm(fc)
+                                if axis == 'X': bc['px'] = tv
+                                elif axis == 'Y': bc['py'] = tv
+                                elif axis == 'Z': bc['pz'] = tv
+                        elif ccls == 'EulerRotationCurve':
+                            for fc in child.children:
+                                if fc.class_name != 'FloatCurve':
+                                    continue
+                                axis = (_prop(fc, 'Name') or '').upper()
+                                tv = _vat_rbxm(fc)
+                                if axis == 'X': bc['rx'] = tv
+                                elif axis == 'Y': bc['ry'] = tv
+                                elif axis == 'Z': bc['rz'] = tv
+                        elif ccls == 'Folder':
+                            _walk_rbxm(child)
+                    if any(bc[k] for k in bc):
+                        bone_curves[name] = bc
+            elif cls == 'CurveAnimation':
+                for child in inst.children:
+                    _walk_rbxm(child)
+
+        for root_inst in tree.roots:
+            _walk_rbxm(root_inst)
+
+    # XML path
+    else:
+        try:
+            text = anim_data.decode('utf-8', errors='replace')
+            text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
+            root = ET.fromstring(text)
+        except Exception:
+            return []
+
+        def _vat_xml(fc_item):
+            for bs in fc_item.iter('BinaryString'):
+                if bs.get('name') == 'ValuesAndTimes' and bs.text:
+                    try:
+                        return _vat(_b64.b64decode(bs.text.strip()))
+                    except Exception:
+                        pass
+            for s in fc_item.iter('string'):
+                if s.get('name') == 'ValuesAndTimes' and s.text:
+                    try:
+                        return _vat(s.text.encode('latin-1'))
+                    except Exception:
+                        pass
+            return []
+
+        def _walk_xml(item):
+            cls = item.get('class', '')
+            if cls == 'Folder':
+                props = item.find('Properties')
+                name = ''
+                if props is not None:
+                    ne = props.find("string[@name='Name']")
+                    if ne is not None:
+                        name = ne.text or ''
+                if name:
+                    bc = _empty_bc()
+                    for child in item:
+                        ccls = child.get('class', '')
+                        if ccls == 'Vector3Curve':
+                            for fc in child:
+                                if fc.get('class') != 'FloatCurve':
+                                    continue
+                                fcp = fc.find('Properties')
+                                if fcp is None:
+                                    continue
+                                ae = fcp.find("string[@name='Name']")
+                                axis = (ae.text or '').upper() if ae is not None else ''
+                                tv = _vat_xml(fc)
+                                if axis == 'X': bc['px'] = tv
+                                elif axis == 'Y': bc['py'] = tv
+                                elif axis == 'Z': bc['pz'] = tv
+                        elif ccls == 'EulerRotationCurve':
+                            for fc in child:
+                                if fc.get('class') != 'FloatCurve':
+                                    continue
+                                fcp = fc.find('Properties')
+                                if fcp is None:
+                                    continue
+                                ae = fcp.find("string[@name='Name']")
+                                axis = (ae.text or '').upper() if ae is not None else ''
+                                tv = _vat_xml(fc)
+                                if axis == 'X': bc['rx'] = tv
+                                elif axis == 'Y': bc['ry'] = tv
+                                elif axis == 'Z': bc['rz'] = tv
+                        elif ccls == 'Folder':
+                            _walk_xml(child)
+                    if any(bc[k] for k in bc):
+                        bone_curves[name] = bc
+            elif cls == 'CurveAnimation':
+                for child in item:
+                    _walk_xml(child)
+
+        for item in root.iter('Item'):
+            if item.get('class') == 'CurveAnimation':
+                _walk_xml(item)
+                break
+
+    if not bone_curves:
+        log_buffer.log('AnimationViewer', 'CurveAnimation: no bone curves found')
+        return []
+
+    # Gather all unique time points across all bones/axes
+    times_set: set = set()
+    for bc in bone_curves.values():
+        for tv in bc.values():
+            for t, _ in tv:
+                times_set.add(round(t, 6))
+
+    if not times_set:
+        return []
+
+    all_times = sorted(times_set)
+    keyframes: List[Keyframe] = []
+    for t in all_times:
+        poses: Dict[str, np.ndarray] = {}
+        for name, bc in bone_curves.items():
+            px = _lerp(bc['px'], t); py = _lerp(bc['py'], t); pz = _lerp(bc['pz'], t)
+            rx = _lerp(bc['rx'], t); ry = _lerp(bc['ry'], t); rz = _lerp(bc['rz'], t)
+            poses[name] = mat_from_cframe((px, py, pz), _rot(rx, ry, rz))
+        keyframes.append(Keyframe(t, poses))
+
+    log_buffer.log('AnimationViewer', f'CurveAnimation: {len(bone_curves)} bones, {len(keyframes)} keyframes')
+    return keyframes
+
+
 def load_animation_data(anim_data: bytes) -> List[Keyframe]:
     """Load animation from either XML or binary RBXM format."""
+    # CurveAnimation has a distinct structure - try it first
+    if b'CurveAnimation' in anim_data:
+        keys = load_curve_animation_data(anim_data)
+        if keys:
+            return keys
+
     # Try to detect format
     if anim_data.startswith(b'<roblox!'):
         # Binary RBXM format
