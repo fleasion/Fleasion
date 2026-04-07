@@ -3226,10 +3226,11 @@ class CacheViewerTab(QWidget):
             'converted_audio': 'Converted (.ogg/.mp3)',
             'converted': 'Converted (.xml)',
             'converted_images': 'Converted (Images)',
+            'slot_ktx2': 'Slot KTX2 Files',
             'bin': 'Binary (decompressed)',
             'raw': 'Raw (original cache)',
         }
-        for fmt in ['converted_obj', 'converted_rbxmx', 'converted_rbxmx_curve', 'converted_png', 'converted_audio', 'converted', 'converted_images', 'bin', 'raw']:
+        for fmt in ['slot_ktx2', 'converted_obj', 'converted_rbxmx', 'converted_rbxmx_curve', 'converted_png', 'converted_audio', 'converted', 'converted_images', 'bin', 'raw']:
             if fmt in available_formats:
                 action = export_menu.addAction(format_labels[fmt])
                 export_actions[action] = fmt

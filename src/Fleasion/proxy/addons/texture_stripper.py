@@ -751,7 +751,7 @@ class TextureStripper:
                 is_solidmodel = (e.get('assetTypeId') == 39) or (
                     self._REVERSE.get(str(e.get('assetType', '')).lower()) == 39
                 )
-                all_keys = ([slot_key] if slot_key else []) + [aid] + type_keys
+                all_keys = ([slot_key] if slot_key else []) + ([wildcard_key] if wildcard_key else []) + [aid] + type_keys
                 # For animation entries, also check virtual rig-filter keys as fallback
                 if self._is_anim_entry(e):
                     all_keys = all_keys + [k for k in self._VIRTUAL_ANIM_RIG]
