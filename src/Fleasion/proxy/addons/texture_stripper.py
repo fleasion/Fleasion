@@ -269,6 +269,15 @@ class TextureStripper:
 
         replacements_tuple = self.config_manager.get_all_replacements()
         replacements = replacements_tuple[0]  # dict[int, int]: original -> replacement
+
+        # Pre-fetch TexturePack XML for VS≥2 pack-specific local overrides so that
+        # _texpack_vslot_channel is populated before the first batch arrives.
+        for _pk_key in replacements_tuple[3]:
+            if isinstance(_pk_key, str) and ':' in _pk_key:
+                _pk, _vs_str = _pk_key.split(':', 1)
+                if _pk.isdigit() and _vs_str.isdigit() and int(_vs_str) >= 2:
+                    scraper.prefetch_texpack_layout(int(_pk))
+
         if not replacements:
             return
 
@@ -675,11 +684,77 @@ class TextureStripper:
         # scraper body can be built with original IDs after the loop.
         id_swapped: dict[int, int] = {}   # index → original_aid
 
+        # Convert TexturePack slot removals to blank-placeholder local routes.
+        # Dropping a slot from the batch breaks the entire TexturePack in Roblox;
+        # serving a 1×1 blank KTX2 keeps the pack intact for the other slots.
+        # Matches "parentId:mapIndex" and wildcard "TexturePack:N" removal keys.
+        if removals:
+            tp_slot_removals = {
+                r for r in removals
+                if (isinstance(r, str) and ':' in r
+                    and r.split(':', 1)[1].isdigit()
+                    and (r.split(':', 1)[0].isdigit() or r.split(':', 1)[0] == 'TexturePack'))
+            }
+            if tp_slot_removals:
+                blank = self._get_blank_ktx2_path()
+                if blank:
+                    removals = set(removals) - tp_slot_removals
+                    local_replacements = dict(local_replacements)
+                    for r in tp_slot_removals:
+                        local_replacements[r] = blank
+                    log_buffer.log('TexPack', f'Routing {len(tp_slot_removals)} slot removal(s) to blank placeholder')
+
         orig_len = len(data)
         data = [e for e in data if isinstance(e, dict) and not self._should_remove(e, removals)]
         if len(data) < orig_len:
             log_buffer.log('Remover', f'Removed {orig_len - len(data)} asset(s)')
             modified = True
+
+        # Pre-build ORM channel override index.
+        # Virtual slots 2-5 in local_replacements are Fleasion-level abstractions:
+        #   VS2 = Metalness (ORM.R), VS3 = Roughness (ORM.G),
+        #   VS4 = Emissive  (ORM.B), VS5 = Height    (ORM.A).
+        # All map to Roblox fidelity slot 2 (the combined ORM CDN request).
+        # If the pack's XML has been parsed, the scraper's _texpack_vslot_channel
+        # dict provides the exact per-pack channel; otherwise a fixed fallback is used.
+        _FIXED_VS_CHANNEL = {2: 'metalness', 3: 'roughness', 4: 'emissive', 5: 'height'}
+        _scraper = self._cache_scraper
+        _vslot_channel = getattr(_scraper, '_texpack_vslot_channel', {}) if _scraper else {}
+        # _orm_overrides: pack_id_or_'TexturePack' -> {channel_name: local_path}
+        _orm_overrides: dict[int | str, dict[str, str | None]] = {}
+        # Scan both cdn_replacements and local_replacements for VS≥2 keys.
+        # local_replacements is processed last so it wins on key collisions.
+        _vs2_sources: dict = {**cdn_replacements, **local_replacements}
+        for _ck, _cv in _vs2_sources.items():
+            if not isinstance(_ck, str) or ':' not in _ck:
+                continue
+            _pk, _vs_str = _ck.split(':', 1)
+            if not _vs_str.isdigit():
+                continue
+            _vs = int(_vs_str)
+            if _vs < 2:
+                continue  # VS0/VS1 are full-slot; handled by normal local_key routing
+            # Resolve channel: use XML-derived mapping when available, else fixed fallback.
+            if _pk.isdigit():
+                _pk_int = int(_pk)
+                # If the pack's XML hasn't been fetched yet, do it synchronously now
+                # so we use the correct per-pack channel rather than the fixed fallback.
+                # _texpack_layout_fetched is only marked after completion, so this is
+                # safe to call even if the startup background thread is still running.
+                if _scraper is not None and _pk_int not in getattr(_scraper, '_texpack_layout_fetched', set()):
+                    _scraper.prefetch_texpack_layout(_pk_int)
+                _ch = _vslot_channel.get((_pk_int, _vs)) or _FIXED_VS_CHANNEL.get(_vs)
+            else:
+                _ch = _FIXED_VS_CHANNEL.get(_vs)  # wildcard 'TexturePack:N'
+            if not _ch:
+                continue
+            _pk_key: int | str = int(_pk) if _pk.isdigit() else _pk
+            # KTX2/KTX paths (e.g. blank placeholder) are not valid PNG sources;
+            # treat as None = zero out this channel with _CHANNEL_ZERO defaults.
+            _cv_resolved: str | None = (
+                None if (_cv is not None and _cv.lower().endswith(('.ktx2', '.ktx'))) else _cv
+            )
+            _orm_overrides.setdefault(_pk_key, {})[_ch] = _cv_resolved
 
         for idx, e in enumerate(data):
             if not isinstance(e, dict):
@@ -687,18 +762,23 @@ class TextureStripper:
             aid = e.get('assetId')
             req_id = e.get('requestId')
             type_keys = self._get_type_keys(e)
+            is_solidmodel = (e.get('assetTypeId') == 39) or (
+                self._REVERSE.get(str(e.get('assetType', '')).lower()) == 39
+            )
 
             # Build slot key from the fidelity field in contentRepresentationPriorityList.
             # slot_key = "assetId:mapIndex" (e.g. "7547298786:1" for the normal-map slot).
-            # This allows per-slot replacement: the user can target a specific texture map
-            # of a TexturePack by its sub-asset ID (auto-resolved below) or directly.
+            # wildcard_key = "TexturePack:N" matches the N-th slot of ANY TexturePack.
             map_index = self._get_texpack_map_index(e)
             slot_key = f'{aid}:{map_index}' if (aid is not None and map_index is not None) else None
+            wildcard_key = f'TexturePack:{map_index}' if map_index is not None else None
 
             # ID/type replacement — slot-specific match takes priority over whole-asset
             matched = None
             if slot_key and slot_key in replacements:
                 matched = slot_key
+            elif wildcard_key and wildcard_key in replacements:
+                matched = wildcard_key
             elif aid in replacements:
                 matched = aid
             else:
@@ -746,15 +826,33 @@ class TextureStripper:
                 log_buffer.log('Replacer', f'Replaced {aid} -> {replacement_id}{slot_info}')
                 modified = True
 
-            # CDN / local routing — slot key takes priority
+            # CDN / local routing — slot key / wildcard key takes priority
             if req_id and aid:
-                is_solidmodel = (e.get('assetTypeId') == 39) or (
-                    self._REVERSE.get(str(e.get('assetType', '')).lower()) == 39
-                )
+                # ── ORM channel compositing (virtual slots 2-5) ──────────────────
+                # When the fidelity slot is 2 (ORM) and per-channel PNG overrides
+                # are configured via VSN keys (N≥2), composite them into one texture.
+                # This check runs BEFORE normal local_key routing so that e.g.
+                # "packId:2 → metalness.png" is composited rather than served raw.
+                if map_index == 2 and _orm_overrides:
+                    _orm_chs: dict[str, str | None] = {}
+                    # Wildcard always lowest priority
+                    _orm_chs.update(_orm_overrides.get('TexturePack', {}))
+                    # Pack-specific overrides win
+                    if aid in _orm_overrides:
+                        _orm_chs.update(_orm_overrides[aid])
+                    if _orm_chs:
+                        _comp = self._build_orm_composite(aid, _orm_chs)
+                        if _comp:
+                            self._route_local(f'{batch_id}_{req_id}', aid, _comp, is_solidmodel, is_texpack=True)
+                            modified = True
+                            continue
+                        # Composite failed — fall through to normal routing as best-effort
+
                 all_keys = ([slot_key] if slot_key else []) + ([wildcard_key] if wildcard_key else []) + [aid] + type_keys
                 # For animation entries, also check virtual rig-filter keys as fallback
                 if self._is_anim_entry(e):
                     all_keys = all_keys + [k for k in self._VIRTUAL_ANIM_RIG]
+
                 cdn_key = next((k for k in all_keys if k in cdn_replacements), None)
                 local_key = next((k for k in all_keys if k in local_replacements), None)
                 if cdn_key is not None:
@@ -1041,12 +1139,55 @@ class TextureStripper:
                     self._pending[req_id] = ('local', local_path)
                 log_buffer.log('Local', f'Queued local for {aid}')
 
+    def _build_orm_composite(
+        self, parent_id, channel_pngs: dict[str, str | None],
+    ) -> Optional[str]:
+        """Build (or retrieve from cache) a composite ORM KTX2 from per-channel PNGs.
+
+        *parent_id* is the TexturePack asset ID.  *channel_pngs* maps channel
+        name (``metalness``, ``roughness``, ``emissive``, ``height``) to local
+        PNG file paths.  The baseline ORM KTX2 from texpack_slots/ is used if
+        available so unspecified channels retain their CDN values.
+        """
+        try:
+            from ...cache.tools.orm_compositor import composite_orm
+            # Resolve CDN URLs to local cached files before compositing.
+            # On download failure the channel is omitted so the baseline KTX2
+            # value shows through, as if the user never replaced that channel.
+            resolved: dict[str, str | None] = {}
+            for _ch, _val in channel_pngs.items():
+                if _val is not None and (str(_val).startswith('http://') or str(_val).startswith('https://')):
+                    _url_hash = hashlib.md5(_val.encode()).hexdigest()[:16]
+                    _ext = Path(urlparse(_val).path).suffix.lower() or '.png'
+                    _cdn_cache = APP_CACHE_DIR / 'orm_cdn_cache' / f'{_url_hash}{_ext}'
+                    _cdn_cache.parent.mkdir(parents=True, exist_ok=True)
+                    if not _cdn_cache.exists():
+                        if not _download_remote_file(_val, _cdn_cache, f'ORM channel {_ch}'):
+                            log_buffer.log('ORM', f'CDN download failed for channel {_ch} — using original')
+                            continue  # skip channel; baseline value preserved
+                    resolved[_ch] = str(_cdn_cache)
+                else:
+                    resolved[_ch] = _val
+            baseline = APP_CACHE_DIR / 'texpack_slots' / f'{parent_id}_slot2.ktx2'
+            result = composite_orm(
+                baseline=(baseline if baseline.exists() else None),
+                channels={k: (Path(v) if v is not None else None) for k, v in resolved.items()},
+                cache_dir=APP_CACHE_DIR,
+            )
+            return result
+        except Exception as exc:
+            log_buffer.log('ORM', f'Composite failed for pack {parent_id}: {exc}')
+            return None
+
     def _should_remove(self, e: dict, removals: set) -> bool:
         aid = e.get('assetId')
         # Slot-specific check using fidelity-based map_index
         map_index = self._get_texpack_map_index(e)
         if aid is not None and map_index is not None:
             if f'{aid}:{map_index}' in removals:
+                return True
+            # Wildcard TexturePack:N removal
+            if f'TexturePack:{map_index}' in removals:
                 return True
         if aid in removals:
             return True
@@ -1060,6 +1201,39 @@ class TextureStripper:
             if self._REVERSE.get(str(at_name).lower()) in removals:
                 return True
         return False
+
+    @staticmethod
+    def _get_blank_ktx2_path() -> str | None:
+        """Return a path to a 1×1 white RGBA KTX2 placeholder texture.
+
+        Created on first call and cached in APP_CACHE_DIR.  Used to fill
+        TexturePack slots that the user has set to "Nothing" so the rest of
+        the pack keeps loading normally.
+        """
+        import struct as _struct, zlib as _zl
+        png_path = APP_CACHE_DIR / '_blank_texpack.png'
+        if not png_path.exists():
+            try:
+                def _chunk(ctype: bytes, data: bytes) -> bytes:
+                    body = ctype + data
+                    return _struct.pack('>I', len(data)) + body + _struct.pack('>I', _zl.crc32(body) & 0xFFFFFFFF)
+                sig   = b'\x89PNG\r\n\x1a\n'
+                ihdr  = _chunk(b'IHDR', _struct.pack('>IIBBBBB', 1, 1, 8, 6, 0, 0, 0))  # 1×1 RGBA
+                idat  = _chunk(b'IDAT', _zl.compress(b'\x00\xff\xff\xff\xff', 9))        # white, opaque
+                iend  = _chunk(b'IEND', b'')
+                png_path.write_bytes(sig + ihdr + idat + iend)
+                log_buffer.log('TexPack', 'Created blank 1×1 placeholder PNG')
+            except Exception as exc:
+                log_buffer.log('TexPack', f'Failed to create blank placeholder PNG: {exc}')
+                return None
+        try:
+            from ...cache.tools.image_to_ktx2.converter import get_or_create_ktx2_from_image
+            ktx_path = get_or_create_ktx2_from_image(png_path)
+            if ktx_path and ktx_path.exists():
+                return str(ktx_path)
+        except Exception as exc:
+            log_buffer.log('TexPack', f'Failed to convert blank placeholder to KTX2: {exc}')
+        return None
 
     def _get_type_keys(self, e: dict) -> list:
         keys = []
@@ -1079,12 +1253,18 @@ class TextureStripper:
         """Return texture map slot index from the batch item's fidelity field.
 
         Roblox encodes the slot as a base64 fidelity value inside
-        ``contentRepresentationPriorityList``.  The slot index lives in the
-        low 6 bits of the first decoded byte:
+        ``contentRepresentationPriorityList``.  The fidelity byte encodes:
+          bits 0–5 (& 0x3F): slot index
+          bits 6–7 (>> 6):   quality/LOD level (0=low … 3=ultra)
+
+        Confirmed slot values (empirically verified):
           0 = Color / Albedo
           1 = Normal
-          2 = Roughness / Metalness
-        Higher bits encode the quality/LOD level (1, 2, 3).
+          2 = ORM (Occlusion-Roughness-Metalness — combined map)
+
+        Slots 3+ (roughness, emissive, height) are NEVER requested as separate
+        fidelity slots.  Roughness and metalness are both delivered as part of
+        the combined ORM texture at slot 2.
         """
         crpl = e.get('contentRepresentationPriorityList')
         if not crpl:
@@ -1099,6 +1279,8 @@ class TextureStripper:
             if not fidelity_b64:
                 return None
             fb = _b64.b64decode(fidelity_b64)
+            if not fb:
+                return None
             return fb[0] & 0x3F
         except Exception:
             return None

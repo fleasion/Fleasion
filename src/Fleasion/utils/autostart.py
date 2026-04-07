@@ -26,7 +26,7 @@ TASK_NAME = 'Fleasion_Autostart'
 
 
 # Bump this whenever the task XML format changes to force recreation on next launch.
-_TASK_FORMAT_VERSION = 3
+_TASK_FORMAT_VERSION = 4
 
 def _get_launch_info() -> dict:
     """Return a dict describing how to launch the current instance."""
@@ -68,21 +68,22 @@ def _delete_task() -> None:
 
 def _create_task(launch_info: dict) -> bool:
     """Create the scheduled task with highest privileges (no UAC on logon)."""
-    import tempfile, textwrap
+    import tempfile, textwrap, html as _html
+
+    # Resolve the current user so the task is scoped to them specifically.
+    # Without an explicit <UserId> in the XML, Windows may not associate the
+    # task with the correct user and can silently discard it after a restart.
+    _username = os.environ.get('USERNAME', '')
+    _domain   = os.environ.get('USERDOMAIN', os.environ.get('COMPUTERNAME', ''))
+    user_id = _html.escape(f'{_domain}\\{_username}' if _domain else _username)
 
     if launch_info['mode'] == 'exe':
-        exe_path = launch_info['path']
+        command = _html.escape(launch_info['path'])
         args = '--no-dashboard'
     else:
         # For uv, wrap in PowerShell with -WindowStyle Hidden to suppress the
         # console window that uv.exe would otherwise show at logon.
-        uv_path = launch_info['path'].replace('\\', '\\\\')
-        project = launch_info['project'].replace('\\', '\\\\')
-        exe_path = 'powershell.exe'
-        # Wrap uv in powershell -WindowStyle Hidden to suppress the console window.
-        # Build the command string first, then XML-escape it for the task XML.
-        import html as _html
-        uv_path = launch_info['path']
+        uv_path   = launch_info['path']
         proj_path = launch_info['project']
         # PowerShell command: use single-quotes around paths (PS native quoting)
         ps_cmd = (
@@ -90,18 +91,25 @@ def _create_task(launch_info: dict) -> bool:
             f"& '{uv_path}' --project '{proj_path}' "
             f"run fleasion --no-dashboard"
         )
-        exe_path = 'powershell.exe'
+        command = 'powershell.exe'
         args = _html.escape(ps_cmd)
 
-    # We use an XML task definition so we can set RunLevel=HighestAvailable
+    # We use an XML task definition so we can set RunLevel=HighestAvailable.
+    # Both <Principal> and <LogonTrigger> must carry <UserId> so that:
+    #   - The task is owned by (and runs as) the correct user account.
+    #   - The logon trigger fires only when that specific user logs on.
     xml = textwrap.dedent(f"""
         <?xml version="1.0" encoding="UTF-16"?>
         <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
           <Triggers>
-            <LogonTrigger><Enabled>true</Enabled></LogonTrigger>
+            <LogonTrigger>
+              <Enabled>true</Enabled>
+              <UserId>{user_id}</UserId>
+            </LogonTrigger>
           </Triggers>
           <Principals>
             <Principal id="Author">
+              <UserId>{user_id}</UserId>
               <LogonType>InteractiveToken</LogonType>
               <RunLevel>HighestAvailable</RunLevel>
             </Principal>
@@ -116,7 +124,7 @@ def _create_task(launch_info: dict) -> bool:
           </Settings>
           <Actions>
             <Exec>
-              <Command>{exe_path}</Command>
+              <Command>{command}</Command>
               <Arguments>{args}</Arguments>
             </Exec>
           </Actions>
@@ -177,9 +185,11 @@ def sync_autostart(enabled: bool, config_dir: Path) -> bool:
     current = _get_launch_info()
     stored = _get_stored_launch_info(config_dir)
 
-    # Recreate if: task missing, or launch method changed since last save
+    # Recreate if: task missing, or launch method changed since last save.
+    # NOTE: _create_task uses /F (force-overwrite), so we must NOT pre-delete
+    # the old task.  If we deleted first and creation failed, the task would be
+    # permanently gone while run_on_boot remains True in settings.
     if not _task_exists() or stored != current:
-        _delete_task()
         ok = _create_task(current)
         if ok:
             _save_launch_info(config_dir, current)

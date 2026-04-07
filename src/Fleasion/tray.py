@@ -176,9 +176,15 @@ class SystemTray:
         settings_menu.addAction(self.clear_cache_action)
 
         # Run on Boot (Task Scheduler, admin required)
-        self.run_on_boot_action = QAction('Run on Boot', settings_menu)
+        import ctypes
+        _admin = bool(ctypes.windll.shell32.IsUserAnAdmin()) if hasattr(ctypes, 'windll') else False
+        self.run_on_boot_action = QAction(
+            'Run on Boot' if _admin else 'Run on Boot (admin required)',
+            settings_menu,
+        )
         self.run_on_boot_action.setCheckable(True)
         self.run_on_boot_action.setChecked(self.config_manager.run_on_boot)
+        self.run_on_boot_action.setEnabled(_admin)
         self.run_on_boot_action.triggered.connect(self._toggle_run_on_boot)
         settings_menu.addAction(self.run_on_boot_action)
 
@@ -240,7 +246,11 @@ class SystemTray:
         self.auto_delete_cache_action.setChecked(new_state)
 
     def _toggle_run_on_boot(self):
-        """Toggle run-on-boot via Windows Task Scheduler."""
+        """Toggle run-on-boot via Windows Task Scheduler (admin only)."""
+        import ctypes
+        if not (bool(ctypes.windll.shell32.IsUserAnAdmin()) if hasattr(ctypes, 'windll') else False):
+            self.run_on_boot_action.setChecked(not self.run_on_boot_action.isChecked())
+            return
         from .utils.autostart import sync_autostart
         from .utils import CONFIG_DIR
         checked = self.run_on_boot_action.isChecked()

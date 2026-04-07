@@ -491,8 +491,10 @@ def main():
     # Check for updates in the background
     start_update_check()
 
-    # Sync autostart task on every launch (updates if launch method changed)
-    if config_manager.run_on_boot:
+    # Sync autostart task on every launch (updates if launch method changed).
+    # Only attempt when running as admin: the task must launch elevated and
+    # a non-admin process should never silently modify the scheduler.
+    if config_manager.run_on_boot and _is_admin():
         try:
             from .utils.autostart import sync_autostart
             sync_autostart(True, CONFIG_DIR)

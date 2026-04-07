@@ -84,6 +84,7 @@ def _find_roblox_dirs() -> list[Path]:
                         try:
                             val, rtype = winreg.QueryValueEx(sub, 'PlayerPath')
                             if rtype == winreg.REG_SZ and val:
+                                val = val.rstrip('\x00')  # Strip null chars from registry
                                 p = Path(val)
                                 if p.name.lower() == ROBLOX_PROCESS.lower():
                                     p = p.parent
@@ -105,6 +106,7 @@ def _find_roblox_dirs() -> list[Path]:
                                 with winreg.OpenKey(sub, sub_name) as sub2:
                                     val2, rtype2 = winreg.QueryValueEx(sub2, 'PlayerPath')
                                     if rtype2 == winreg.REG_SZ and val2:
+                                        val2 = val2.rstrip('\x00')  # Strip null chars from registry
                                         p2 = Path(val2)
                                         if p2.name.lower() == ROBLOX_PROCESS.lower():
                                             p2 = p2.parent
@@ -133,7 +135,7 @@ def _find_roblox_dirs() -> list[Path]:
         ) as key:
             val, _ = winreg.QueryValueEx(key, '')
             if val:
-                val = val.strip('"').strip()
+                val = val.rstrip('\x00').strip('"').strip()  # Strip null chars and quotes
                 if val.lower().endswith('.exe'):
                     p = Path(val).parent
                     if os.path.isfile(os.path.join(str(p), ROBLOX_PROCESS)):

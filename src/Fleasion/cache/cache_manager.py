@@ -414,6 +414,7 @@ class CacheManager:
         elif asset_type in (1, 13):  # Image, Decal
             formats.insert(0, 'converted_png')
         elif asset_type == 63:  # TexturePack
+            formats.insert(0, 'slot_ktx2')
             formats.insert(0, 'converted_images')
             formats.insert(0, 'converted')
         elif asset_type == 24:  # Animation

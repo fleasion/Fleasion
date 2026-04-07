@@ -684,35 +684,51 @@ class ReplacerConfigWindow(QDialog):
 
         if action == 'new':
             name, ok = QInputDialog.getText(self, 'New Config', 'Name:')
-            if ok and name and self.config_manager.create_config(name.strip()):
-                self.config_manager.last_config = name.strip()
-                self.undo_manager.clear()
-                self.undo_manager.save_state(self.config_manager.replacement_rules)
-                self._refresh_combo()
-                self._refresh_tree()
+            if ok and name:
+                name = name.strip()
+                if not self.config_manager.is_valid_config_name(name):
+                    QMessageBox.warning(self, 'Invalid Name',
+                        'Config names cannot contain: \\ / : * ? " < > |')
+                elif not self.config_manager.create_config(name):
+                    QMessageBox.warning(self, 'Invalid Name', f"A config named '{name}' already exists.")
+                else:
+                    self.config_manager.last_config = name
+                    self.undo_manager.clear()
+                    self.undo_manager.save_state(self.config_manager.replacement_rules)
+                    self._refresh_combo()
+                    self._refresh_tree()
 
         elif action == 'dup':
             name, ok = QInputDialog.getText(
                 self, 'Duplicate', f"Copy of '{current}':"
             )
-            if ok and name and self.config_manager.duplicate_config(current, name.strip()):
-                self.config_manager.last_config = name.strip()
-                self.undo_manager.clear()
-                self.undo_manager.save_state(self.config_manager.replacement_rules)
-                self._refresh_combo()
-                self._refresh_tree()
+            if ok and name:
+                name = name.strip()
+                if not self.config_manager.is_valid_config_name(name):
+                    QMessageBox.warning(self, 'Invalid Name',
+                        'Config names cannot contain: \\ / : * ? " < > |')
+                elif not self.config_manager.duplicate_config(current, name):
+                    QMessageBox.warning(self, 'Invalid Name', f"A config named '{name}' already exists.")
+                else:
+                    self.config_manager.last_config = name
+                    self.undo_manager.clear()
+                    self.undo_manager.save_state(self.config_manager.replacement_rules)
+                    self._refresh_combo()
+                    self._refresh_tree()
 
         elif action == 'rename':
             name, ok = QInputDialog.getText(
                 self, 'Rename', 'New name:', text=current
             )
-            if (
-                ok
-                and name
-                and name.strip() != current
-                and self.config_manager.rename_config(current, name.strip())
-            ):
-                self._refresh_combo()
+            if ok and name:
+                name = name.strip()
+                if not self.config_manager.is_valid_config_name(name):
+                    QMessageBox.warning(self, 'Invalid Name',
+                        'Config names cannot contain: \\ / : * ? " < > |')
+                elif name != current and not self.config_manager.rename_config(current, name):
+                    QMessageBox.warning(self, 'Invalid Name', f"A config named '{name}' already exists.")
+                elif name != current:
+                    self._refresh_combo()
 
         elif action == 'delete':
             if len(self.config_manager.config_names) <= 1:
@@ -833,6 +849,7 @@ class ReplacerConfigWindow(QDialog):
         layout.addWidget(count_label)
 
         text_edit = QTextEdit()
+        text_edit.setAcceptRichText(False)
         text_edit.setPlainText('\n'.join(str(i) for i in ids))
         layout.addWidget(text_edit)
 
@@ -1033,11 +1050,18 @@ class ReplacerConfigWindow(QDialog):
         text = text.replace(';', ',').replace(' ', ',')
         for part in text.split(','):
             part = part.strip()
-            if part:
-                try:
-                    ids.append(int(part))
-                except ValueError:
+            if not part:
+                continue
+            # "parentId:mapIndex" or "TexturePack:N" — keep as-is
+            if ':' in part:
+                left, right = part.split(':', 1)
+                if right.isdigit() and (left.isdigit() or left == 'TexturePack'):
                     ids.append(part)
+                    continue
+            try:
+                ids.append(int(part))
+            except ValueError:
+                ids.append(part)
         return ids
         
     def _show_asset_types_popup(self):

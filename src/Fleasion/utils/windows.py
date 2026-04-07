@@ -147,13 +147,13 @@ def delete_cache() -> list[str]:
     else:
         messages.append('Storage folder not found')
 
-    # Delete Fleasion APP_CACHE_DIR (preserve predownloaded/ used by proxy)
+    # Delete Fleasion APP_CACHE_DIR (preserve predownloaded/ and texpack_slots/)
     from .paths import APP_CACHE_DIR
     if APP_CACHE_DIR.exists():
         try:
-            _preserve = APP_CACHE_DIR / 'predownloaded'
+            _preserve_set = {APP_CACHE_DIR / 'predownloaded', APP_CACHE_DIR / 'texpack_slots'}
             for child in APP_CACHE_DIR.iterdir():
-                if child == _preserve:
+                if child in _preserve_set:
                     continue
                 if child.is_dir():
                     shutil.rmtree(child)

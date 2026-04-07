@@ -144,4 +144,4 @@ def generate_host_cert(host: str, ca_cert_path: Path, ca_key_path: Path, ca_dir:
 
 def get_ca_pem(ca_cert_path: Path) -> str:
     """Return the CA certificate as a PEM string."""
-    return ca_cert_path.read_text()
+    return ca_cert_path.read_text(encoding='utf-8')
