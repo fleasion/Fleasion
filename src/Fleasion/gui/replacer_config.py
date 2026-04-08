@@ -138,9 +138,6 @@ class ReplacerConfigWindow(QDialog):
         # Create Rando Stuff tab
         from .rando_stuff_tab import RandoStuffTab
         self._rando_stuff_tab = RandoStuffTab()
-        self.tab_widget.addTab(self._rando_stuff_tab, 'Miscellaneous')
-        if self.proxy_master is not None:
-            self.proxy_master.register_module_interceptor(self._rando_stuff_tab)
 
         # Create Subplace Joiner tab
         from .subplace_joiner_tab import SubplaceJoinerTab
@@ -148,6 +145,10 @@ class ReplacerConfigWindow(QDialog):
         self.tab_widget.addTab(self._subplace_tab, 'Subplace Joiner')
         if self.proxy_master is not None:
             self.proxy_master.register_module_interceptor(self._subplace_tab)
+
+        self.tab_widget.addTab(self._rando_stuff_tab, 'Miscellaneous')
+        if self.proxy_master is not None:
+            self.proxy_master.register_module_interceptor(self._rando_stuff_tab)
 
         main_layout.addWidget(self.tab_widget)
 
