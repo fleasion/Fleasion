@@ -7,7 +7,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
-from PyQt6.QtGui import QPixmap, QImage, QFont, QIcon
+from PyQt6.QtGui import QPalette, QPixmap, QImage, QFont, QIcon
 from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
@@ -289,7 +289,7 @@ class GameCard(QFrame):
         self.thumb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.thumb_label.setScaledContents(True)
         self.thumb_label.setStyleSheet(
-            "background: #3a3a3a; border-radius: 4px; color: #777; font-size: 8pt;"
+            "background: palette(alternate-base); border-radius: 4px; color: palette(placeholder-text); font-size: 8pt;"
         )
         layout.addWidget(self.thumb_label)
 
@@ -302,11 +302,11 @@ class GameCard(QFrame):
         layout.addWidget(self.name_label)
 
         self.created_label = QLabel("")
-        self.created_label.setStyleSheet("color: #999; font-size: 7pt;")
+        self.created_label.setStyleSheet("color: palette(placeholder-text); font-size: 7pt;")
         layout.addWidget(self.created_label)
 
         self.updated_label = QLabel("")
-        self.updated_label.setStyleSheet("color: #999; font-size: 7pt;")
+        self.updated_label.setStyleSheet("color: palette(placeholder-text); font-size: 7pt;")
         layout.addWidget(self.updated_label)
 
         layout.addStretch()
@@ -388,12 +388,12 @@ class AddCard(QFrame):
 
         plus = QLabel("+")
         plus.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        plus.setStyleSheet("font-size: 36pt; color: #555;")
+        plus.setStyleSheet("font-size: 36pt; color: palette(placeholder-text);")
         layout.addWidget(plus)
 
         sub = QLabel("Add custom dump")
         sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        sub.setStyleSheet("color: #777; font-size: 9pt;")
+        sub.setStyleSheet("color: palette(placeholder-text); font-size: 9pt;")
         layout.addWidget(sub)
 
         self.setLayout(layout)
@@ -467,7 +467,7 @@ class PreJsonsDialog(QDialog):
         root.addLayout(bar)
 
         self.status_label = QLabel("Loading…")
-        self.status_label.setStyleSheet("color: #aaa; font-size: 8pt; padding-left: 2px;")
+        self.status_label.setStyleSheet("color: palette(placeholder-text); font-size: 8pt; padding-left: 2px;")
         root.addWidget(self.status_label)
 
         self.scroll = QScrollArea()
@@ -475,6 +475,8 @@ class PreJsonsDialog(QDialog):
         self.scroll.setFrameShape(QFrame.Shape.NoFrame)
 
         self.container = QWidget()
+        self.container.setAutoFillBackground(True)
+        self.container.setBackgroundRole(QPalette.ColorRole.Base)
         self.grid = QGridLayout()
         self.grid.setSpacing(10)
         self.grid.setAlignment(Qt.AlignmentFlag.AlignTop)

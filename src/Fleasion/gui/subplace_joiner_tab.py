@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 import requests
 from dateutil import parser as _dateutil_parser
 from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtGui import QPalette, QPixmap
 from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -141,7 +141,7 @@ class SubplaceGameCard(QFrame):
         self.thumb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.thumb_label.setScaledContents(True)
         self.thumb_label.setStyleSheet(
-            "background: #3a3a3a; border-radius: 4px; color: #777; font-size: 8pt;"
+            "background: palette(alternate-base); border-radius: 4px; color: palette(placeholder-text); font-size: 8pt;"
         )
         layout.addWidget(self.thumb_label)
 
@@ -154,11 +154,11 @@ class SubplaceGameCard(QFrame):
         layout.addWidget(self.name_label)
 
         self.created_label = QLabel("")
-        self.created_label.setStyleSheet("color: #999; font-size: 7pt;")
+        self.created_label.setStyleSheet("color: palette(placeholder-text); font-size: 7pt;")
         layout.addWidget(self.created_label)
 
         self.updated_label = QLabel("")
-        self.updated_label.setStyleSheet("color: #999; font-size: 7pt;")
+        self.updated_label.setStyleSheet("color: palette(placeholder-text); font-size: 7pt;")
         layout.addWidget(self.updated_label)
 
         layout.addStretch()
@@ -220,10 +220,18 @@ class SubplaceGameCard(QFrame):
 # JobId Dialog
 
 class JobIdDialog(QDialog):
-    """Fetches and displays all public server jobIds for a given placeId."""
+    """Fetches and displays public server jobIds for a given placeId."""
 
     _results_ready = pyqtSignal(list, object)   # servers, next_cursor (object so None is allowed)
     _error_ready = pyqtSignal(str)
+
+    _PAGE_LIMIT = 100
+    _SORT_OPTIONS = [
+        ("Players ↑ (fewest first)", "playing_asc"),
+        ("Players ↓ (most first)", "playing_desc"),
+        ("Ping ↑ (lowest first)", "ping_asc"),
+        ("Ping ↓ (highest first)", "ping_desc"),
+    ]
 
     def __init__(self, place_id, on_select=None, parent=None):
         super().__init__(parent)
@@ -231,14 +239,25 @@ class JobIdDialog(QDialog):
         self._on_select = on_select
         self._cursor = None
         self._loading = False
+        self._all_servers = []
 
         self._results_ready.connect(self._apply_results)
         self._error_ready.connect(self._apply_error)
 
         self.setWindowTitle(f"JobIds — Place {place_id}")
-        self.resize(480, 400)
+        self.resize(520, 440)
 
         layout = QVBoxLayout(self)
+
+        top = QHBoxLayout()
+        top.addWidget(QLabel("Sort by:"))
+        self._sort_combo = QComboBox()
+        for label, _ in self._SORT_OPTIONS:
+            self._sort_combo.addItem(label)
+        self._sort_combo.currentIndexChanged.connect(self._on_sort_changed)
+        top.addWidget(self._sort_combo)
+        top.addStretch(1)
+        layout.addLayout(top)
 
         self._status_label = QLabel("Fetching servers...")
         layout.addWidget(self._status_label)
@@ -260,6 +279,30 @@ class JobIdDialog(QDialog):
 
         self._fetch_page()
 
+    def _current_sort(self):
+        return self._SORT_OPTIONS[self._sort_combo.currentIndex()][1]
+
+    def _on_sort_changed(self):
+        sort = self._current_sort()
+        if sort in ("ping_asc", "ping_desc"):
+            # Just re-sort existing data, no refetch needed
+            self._list.clear()
+            for s in self._sorted_servers(self._all_servers):
+                job_id = s.get("id", "")
+                playing = s.get("playing", "?")
+                max_players = s.get("maxPlayers", "?")
+                ping = s.get("ping")
+                ping_str = f"  {ping}ms" if ping is not None else ""
+                item = QListWidgetItem(f"{job_id}  ({playing}/{max_players} players){ping_str}")
+                item.setData(Qt.ItemDataRole.UserRole, job_id)
+                self._list.addItem(item)
+            return
+        self._all_servers = []
+        self._cursor = None
+        self._list.clear()
+        self._load_more_btn.setEnabled(False)
+        self._fetch_page()
+
     def _fetch_page(self):
         if self._loading:
             return
@@ -270,7 +313,12 @@ class JobIdDialog(QDialog):
 
     def _worker(self):
         try:
-            url = f"https://games.roblox.com/v1/games/{self._place_id}/servers/Public?limit=100"
+            sort = self._current_sort()
+            sort_order = "Asc" if sort == "playing_asc" else "Desc"
+            url = (
+                f"https://games.roblox.com/v1/games/{self._place_id}/servers/Public"
+                f"?limit={self._PAGE_LIMIT}&sortOrder={sort_order}&excludeFullGames=false"
+            )
             if self._cursor:
                 url += f"&cursor={self._cursor}"
             r = requests.get(url, timeout=15, proxies={}, verify=False)
@@ -282,15 +330,31 @@ class JobIdDialog(QDialog):
         except Exception as exc:
             self._error_ready.emit(str(exc))
 
+    def _sorted_servers(self, servers):
+        sort = self._current_sort()
+        if sort == "playing_asc":
+            return sorted(servers, key=lambda s: s.get("playing", 0))
+        elif sort == "playing_desc":
+            return sorted(servers, key=lambda s: s.get("playing", 0), reverse=True)
+        elif sort == "ping_asc":
+            return sorted(servers, key=lambda s: s.get("ping", 9999))
+        elif sort == "ping_desc":
+            return sorted(servers, key=lambda s: s.get("ping", 0), reverse=True)
+        return servers
+
     def _apply_results(self, servers, next_cursor):
         self._cursor = next_cursor
         self._loading = False
+        self._all_servers.extend(servers)
 
-        for s in servers:
+        self._list.clear()
+        for s in self._sorted_servers(self._all_servers):
             job_id = s.get("id", "")
             playing = s.get("playing", "?")
             max_players = s.get("maxPlayers", "?")
-            item = QListWidgetItem(f"{job_id}  ({playing}/{max_players} players)")
+            ping = s.get("ping")
+            ping_str = f"  {ping}ms" if ping is not None else ""
+            item = QListWidgetItem(f"{job_id}  ({playing}/{max_players} players){ping_str}")
             item.setData(Qt.ItemDataRole.UserRole, job_id)
             self._list.addItem(item)
 
@@ -408,6 +472,8 @@ class SubplaceJoinerTab(QWidget):
         self._recent_scroll.setWidgetResizable(True)
         self.recent_contents = QWidget()
         self.recent_contents.setObjectName("RecentPlaceIdsContents")
+        self.recent_contents.setAutoFillBackground(True)
+        self.recent_contents.setBackgroundRole(QPalette.ColorRole.Base)
         self.recent_layout = QVBoxLayout(self.recent_contents)
         self.recent_layout.setContentsMargins(2, 2, 2, 2)
         self.recent_layout.setSpacing(2)
@@ -423,6 +489,8 @@ class SubplaceJoinerTab(QWidget):
         self._fav_scroll.setWidgetResizable(True)
         self.fav_contents = QWidget()
         self.fav_contents.setObjectName("FavoritedPlaceIdsContents")
+        self.fav_contents.setAutoFillBackground(True)
+        self.fav_contents.setBackgroundRole(QPalette.ColorRole.Base)
         self.fav_layout = QVBoxLayout(self.fav_contents)
         self.fav_layout.setContentsMargins(2, 2, 2, 2)
         self.fav_layout.setSpacing(2)
@@ -439,6 +507,8 @@ class SubplaceJoinerTab(QWidget):
 
         self.results_container = QWidget()
         self.results_container.setObjectName("resultsContainer")
+        self.results_container.setAutoFillBackground(True)
+        self.results_container.setBackgroundRole(QPalette.ColorRole.Base)
         self.results_grid = QGridLayout(self.results_container)
         self.results_grid.setContentsMargins(8, 8, 8, 8)
         self.results_grid.setSpacing(8)
