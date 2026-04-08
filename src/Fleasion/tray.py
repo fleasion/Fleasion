@@ -306,7 +306,13 @@ class SystemTray:
         window.show()
 
     def _show_logs(self):
-        """Show Logs window."""
+        """Show Logs window — only one instance allowed."""
+        for w in self.open_windows:
+            if isinstance(w, LogsWindow):
+                w.show()
+                w.raise_()
+                w.activateWindow()
+                return
         window = LogsWindow()
         window.destroyed.connect(lambda: self._remove_window(window))
         self.open_windows.append(window)

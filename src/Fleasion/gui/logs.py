@@ -1,7 +1,7 @@
 """Logs window."""
 
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtWidgets import QDialog, QLabel, QTextEdit, QVBoxLayout
+from PyQt6.QtWidgets import QApplication, QDialog, QHBoxLayout, QLabel, QPushButton, QTextEdit, QVBoxLayout
 
 from ..utils import APP_NAME, get_icon_path, log_buffer, time_tracker
 
@@ -45,12 +45,22 @@ class LogsWindow(QDialog):
         self.text_edit.setFont(self._get_monospace_font())
         layout.addWidget(self.text_edit)
 
-        # Time wasted label
+        bottom = QHBoxLayout()
+
+        copy_btn = QPushButton("Copy All")
+        copy_btn.setFixedWidth(80)
+        copy_btn.clicked.connect(self._copy_all)
+        bottom.addWidget(copy_btn)
+
+        bottom.addStretch(1)
+
         self.time_label = QLabel()
         self.time_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         self.time_label.setStyleSheet('color: #888; font-size: 9pt;')
         self._refresh_time_label()
-        layout.addWidget(self.time_label)
+        bottom.addWidget(self.time_label)
+
+        layout.addLayout(bottom)
 
         self.setLayout(layout)
 
@@ -102,6 +112,9 @@ class LogsWindow(QDialog):
 
             if was_at_bottom:
                 scrollbar.setValue(scrollbar.maximum())
+
+    def _copy_all(self):
+        QApplication.clipboard().setText(self.text_edit.toPlainText())
 
     def _refresh_time_label(self):
         """Update the time wasted label."""

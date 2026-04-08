@@ -257,6 +257,7 @@ class RandoStuffTab(QWidget):
         self._last_session_id = None
         self._doing_rejoin = False
         self._awaiting_rejoin_response = False
+        self._active_rejoin_attempt_id = None  # gameJoinAttemptId being redirected
         self._lock = threading.Lock()
 
         self._multi_stop = threading.Event()
@@ -281,6 +282,11 @@ class RandoStuffTab(QWidget):
         btn_row = QHBoxLayout()
         self._btn = QPushButton("Rejoin Reserved Server")
         btn_row.addWidget(self._btn)
+        help_btn = QPushButton("?")
+        help_btn.setFixedSize(22, 22)
+        help_btn.setToolTip("What is a reserved server?")
+        help_btn.clicked.connect(self._show_reserved_server_help)
+        btn_row.addWidget(help_btn)
         btn_row.addStretch()
         rjl.addLayout(btn_row)
 
@@ -288,7 +294,14 @@ class RandoStuffTab(QWidget):
         self._lbl_access = QLabel("Last accessCode = ")
         rjl.addWidget(self._lbl_place)
         rjl.addWidget(self._lbl_access)
-        rjl.addWidget(QLabel("Attempts to rejoin the last joined reserved server (doesn't work after 2 minutes)"))
+
+        self._lbl_timer = QLabel("Timer: —")
+        rjl.addWidget(self._lbl_timer)
+
+        self._rejoin_timer = QTimer(self)
+        self._rejoin_timer.setInterval(1000)
+        self._rejoin_timer.timeout.connect(self._tick_rejoin_timer)
+        self._rejoin_timer_secs = 0
 
         root.addWidget(rejoin_group)
 
@@ -382,7 +395,38 @@ class RandoStuffTab(QWidget):
         def _do():
             self._lbl_place.setText(f"Last placeID = {place_id}")
             self._lbl_access.setText(f"Last accessCode = {access_code}")
+            self._rejoin_timer_secs = 120
+            self._lbl_timer.setText("Timer: 2:00")
+            self._rejoin_timer.start()
         self._invoker.call.emit(_do)
+
+    def _tick_rejoin_timer(self):
+        self._rejoin_timer_secs -= 1
+        if self._rejoin_timer_secs <= 0:
+            self._rejoin_timer.stop()
+            self._lbl_timer.setText("Timer: Expired!")
+        else:
+            m, s = divmod(self._rejoin_timer_secs, 60)
+            self._lbl_timer.setText(f"Timer: {m}:{s:02d}")
+
+    def _show_reserved_server_help(self):
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Reserved Server Info")
+        msg.setText(
+            "<b>What the hell is a reserved server???</b><br><br>"
+            "A reserved server is basically a private server but that can be made at any time by the server, "
+            "they are typically used in subplaces to prevent other people from joining you or from other people "
+            "ending up in your servers. Take Doors for example, when you join a game in Doors you get sent a "
+            "reserved server.<br><br>"
+            "<b>How does this work?</b><br><br>"
+            "It works by scanning APIs coming in and out of your client, it specifically looks for "
+            "gamejoin.roblox.com APIs. It then keeps track of the accessCode and placeId of said server "
+            "and when you click the button it deeplinks and intercepts the gamejoin.roblox.com API from "
+            "the deeplink to join the reserved server.<br><br>"
+            "<b>Note:</b> The access code is only valid for 2 minutes after being teleported to the reserved server by the server."
+        )
+        msg.setIcon(QMessageBox.Icon.Information)
+        msg.exec()
 
     # Multi-instance
 
@@ -871,19 +915,33 @@ class RandoStuffTab(QWidget):
         if parsed.path not in self._WANTED_ENDPOINTS:
             return
 
+        try:
+            req_body = json.loads(flow.request.content)
+            attempt_id = req_body.get("gameJoinAttemptId")
+        except Exception:
+            req_body = {}
+            attempt_id = None
+
         with self._lock:
             doing = self._doing_rejoin
+            active_id = self._active_rejoin_attempt_id
             place_id = self._last_place_id
             access_code = self._last_access_code
             session_id = self._last_session_id
+
+            # First interception: consume the flag, record the attempt ID
             if doing:
                 self._doing_rejoin = False
-
-        if not doing:
-            return
+                self._active_rejoin_attempt_id = attempt_id
+                active_id = attempt_id
+            # Follow-up polls: only intercept if attempt ID matches
+            elif active_id is None or attempt_id != active_id:
+                return
 
         if place_id is None or access_code is None:
             print("[randostuff] Rejoin flag set but no reserved server stored — aborting.")
+            with self._lock:
+                self._active_rejoin_attempt_id = None
             return
 
         new_payload = {
@@ -900,7 +958,6 @@ class RandoStuffTab(QWidget):
 
         print("[randostuff] Rejoin request -> POST gamejoin.roblox.com/v1/join-reserved-game")
         print(f"[randostuff] Rejoin request body: {json.dumps(new_payload)}")
-        print(f"[randostuff] Rejoin request Roblox-Session-Id: {session_id or '(none)'}")
         with self._lock:
             self._awaiting_rejoin_response = True
 
@@ -923,6 +980,19 @@ class RandoStuffTab(QWidget):
 
         print(f"[randostuff] Rejoin response status: {resp.status_code}")
         try:
-            print(f"[randostuff] Rejoin response body: {resp.content.decode('utf-8', errors='replace')}")
+            body_text = resp.content.decode('utf-8', errors='replace')
+            print(f"[randostuff] Rejoin response body: {body_text}")
+            resp_json = json.loads(body_text)
+            # status 2 = join script ready; clear the active attempt so no more redirects
+            if resp_json.get("status") == 2 or resp_json.get("joinScriptUrl"):
+                with self._lock:
+                    self._active_rejoin_attempt_id = None
+                print("[randostuff] Reserved server join ready — stopping redirect.")
+            elif resp.status_code >= 400:
+                with self._lock:
+                    self._active_rejoin_attempt_id = None
+                print("[randostuff] Reserved server join error — stopping redirect.")
         except Exception as exc:
             print(f"[randostuff] Could not read rejoin response body: {exc}")
+            with self._lock:
+                self._active_rejoin_attempt_id = None
