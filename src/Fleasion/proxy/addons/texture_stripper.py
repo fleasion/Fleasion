@@ -244,14 +244,6 @@ class TextureStripper:
         replacements_tuple = self.config_manager.get_all_replacements()
         replacements = replacements_tuple[0]  # dict[int, int]: original -> replacement
 
-        # Pre-fetch TexturePack XML for VS≥2 pack-specific local overrides so that
-        # _texpack_vslot_channel is populated before the first batch arrives.
-        for _pk_key in replacements_tuple[3]:
-            if isinstance(_pk_key, str) and ':' in _pk_key:
-                _pk, _vs_str = _pk_key.split(':', 1)
-                if _pk.isdigit() and _vs_str.isdigit() and int(_vs_str) >= 2:
-                    scraper.prefetch_texpack_layout(int(_pk))
-
         if not replacements:
             return
 
@@ -438,41 +430,28 @@ class TextureStripper:
             modified = True
 
         # Pre-build ORM channel override index.
-        # Virtual slots 2-5 in local_replacements are Fleasion-level abstractions:
-        #   VS2 = Metalness (ORM.R), VS3 = Roughness (ORM.G),
-        #   VS4 = Emissive  (ORM.B), VS5 = Height    (ORM.A).
-        # All map to Roblox fidelity slot 2 (the combined ORM CDN request).
-        # If the pack's XML has been parsed, the scraper's _texpack_vslot_channel
-        # dict provides the exact per-pack channel; otherwise a fixed fallback is used.
-        _FIXED_VS_CHANNEL = {2: 'metalness', 3: 'roughness', 4: 'emissive', 5: 'height'}
-        _scraper = self._cache_scraper
-        _vslot_channel = getattr(_scraper, '_texpack_vslot_channel', {}) if _scraper else {}
+        # Global indices 2-5 in local_replacements map to ORM sub-channels:
+        #   GI2 = Metalness (ORM.R), GI3 = Roughness (ORM.G),
+        #   GI4 = Emissive  (ORM.B), GI5 = Height    (ORM.A).
+        # All route through the ORM compositor targeting Roblox fidelity slot 2
+        # (the combined ORM CDN request).  The mapping is GLOBAL and FIXED —
+        # it does NOT depend on the per-asset XML tag ordering.
+        _GLOBAL_INDEX_CHANNEL = {2: 'metalness', 3: 'roughness', 4: 'emissive', 5: 'height'}
         # _orm_overrides: pack_id_or_'TexturePack' -> {channel_name: local_path}
         _orm_overrides: dict[int | str, dict[str, str | None]] = {}
-        # Scan both cdn_replacements and local_replacements for VS≥2 keys.
+        # Scan both cdn_replacements and local_replacements for GI≥2 keys.
         # local_replacements is processed last so it wins on key collisions.
         _vs2_sources: dict = {**cdn_replacements, **local_replacements}
         for _ck, _cv in _vs2_sources.items():
             if not isinstance(_ck, str) or ':' not in _ck:
                 continue
-            _pk, _vs_str = _ck.split(':', 1)
-            if not _vs_str.isdigit():
+            _pk, _gi_str = _ck.split(':', 1)
+            if not _gi_str.isdigit():
                 continue
-            _vs = int(_vs_str)
-            if _vs < 2:
-                continue  # VS0/VS1 are full-slot; handled by normal local_key routing
-            # Resolve channel: use XML-derived mapping when available, else fixed fallback.
-            if _pk.isdigit():
-                _pk_int = int(_pk)
-                # If the pack's XML hasn't been fetched yet, do it synchronously now
-                # so we use the correct per-pack channel rather than the fixed fallback.
-                # _texpack_layout_fetched is only marked after completion, so this is
-                # safe to call even if the startup background thread is still running.
-                if _scraper is not None and _pk_int not in getattr(_scraper, '_texpack_layout_fetched', set()):
-                    _scraper.prefetch_texpack_layout(_pk_int)
-                _ch = _vslot_channel.get((_pk_int, _vs)) or _FIXED_VS_CHANNEL.get(_vs)
-            else:
-                _ch = _FIXED_VS_CHANNEL.get(_vs)  # wildcard 'TexturePack:N'
+            _gi = int(_gi_str)
+            if _gi < 2:
+                continue  # GI0/GI1 are full-slot; handled by normal local_key routing
+            _ch = _GLOBAL_INDEX_CHANNEL.get(_gi)
             if not _ch:
                 continue
             _pk_key: int | str = int(_pk) if _pk.isdigit() else _pk
@@ -933,21 +912,29 @@ class TextureStripper:
 
     @staticmethod
     def _get_texpack_map_index(e: dict) -> int | None:
-        """Return texture map slot index from the batch item's fidelity field.
+        """Return texture map fidelity slot index from the batch item.
 
         Roblox encodes the slot as a base64 fidelity value inside
         ``contentRepresentationPriorityList``.  The fidelity byte encodes:
           bits 0–5 (& 0x3F): slot index
           bits 6–7 (>> 6):   quality/LOD level (0=low … 3=ultra)
 
-        Confirmed slot values (empirically verified):
+        Roblox fidelity slot values (empirically verified):
           0 = Color / Albedo
           1 = Normal
-          2 = ORM (Occlusion-Roughness-Metalness — combined map)
+          2 = ORM (combined Metalness-Roughness-Emissive-Height)
 
-        Slots 3+ (roughness, emissive, height) are NEVER requested as separate
-        fidelity slots.  Roughness and metalness are both delivered as part of
-        the combined ORM texture at slot 2.
+        Fleasion global indices (fixed, asset-independent):
+          0 = Color       (fidelity 0, full slot)
+          1 = Normal      (fidelity 1, full slot)
+          2 = Metalness   (fidelity 2, ORM R channel)
+          3 = Roughness   (fidelity 2, ORM G channel)
+          4 = Emissive    (fidelity 2, ORM B channel)
+          5 = Height      (fidelity 2, ORM A channel)
+
+        This method returns the RAW fidelity index (0, 1, or 2).
+        Global indices 2–5 are resolved via ``_GLOBAL_INDEX_CHANNEL``
+        in the ORM compositor path.
         """
         crpl = e.get('contentRepresentationPriorityList')
         if not crpl:

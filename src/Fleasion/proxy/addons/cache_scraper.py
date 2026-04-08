@@ -691,27 +691,28 @@ class CacheScraper:
                     pass
 
     def _populate_texpack_subasset_lookup(self, parent_id: int, xml_content: bytes) -> None:
-        """Parse TexturePack XML and record sub-asset → (parent, fidelity_slot) mappings.
+        """Parse TexturePack XML and record sub-asset → (parent, global_index) mappings.
 
-        Roblox's batch API uses exactly 3 fidelity download slots, confirmed empirically:
-          0 = Color / Albedo
-          1 = Normal
-          2 = ORM  (Occlusion-Roughness-Metalness combined; both <metalness> and
-                    <roughness> XML tags refer to components of this combined map)
+        Fleasion global indices (fixed, asset-independent):
+          0 = Color / Albedo     (fidelity slot 0, full slot)
+          1 = Normal             (fidelity slot 1, full slot)
+          2 = Metalness          (fidelity slot 2, ORM R channel)
+          3 = Roughness          (fidelity slot 2, ORM G channel)
+          4 = Emissive           (fidelity slot 2, ORM B channel)
+          5 = Height             (fidelity slot 2, ORM A channel)
 
-        Tags like <emissive> and <height> are NOT delivered as separate batch slots
-        and are excluded from the lookup.  Duplicate sub-asset IDs (e.g. emissive
-        reusing the color texture ID) are handled correctly because those tags are
-        simply not in the mapping table.
+        The global index is FIXED and does NOT depend on the XML tag ordering.
+        This means ``TexturePack:3`` ALWAYS targets Roughness regardless of
+        the asset's XML structure.
         """
-        # Semantic mapping: XML tag name → fidelity slot index.
-        # Based on confirmed Roblox batch API behaviour (slots 0, 1, 2 only).
-        _TAG_TO_FIDELITY = {
+        # Semantic mapping: XML tag name → global index.
+        _TAG_TO_GLOBAL_INDEX = {
             'color': 0, 'albedo': 0, 'diffuse': 0, 'basecolor': 0,
             'normal': 1, 'normalmap': 1, 'bumpmap': 1,
-            # All ORM sub-channels are delivered via fidelity slot 2.
-            'metalness': 2, 'roughness': 2, 'orm': 2,
-            'emissive': 2, 'emissivemap': 2, 'height': 2, 'displacement': 2, 'heightmap': 2,
+            'metalness': 2, 'orm': 2,
+            'roughness': 3,
+            'emissive': 4, 'emissivemap': 4,
+            'height': 5, 'displacement': 5, 'heightmap': 5,
         }
         # ORM channel name for each recognised PBR sub-tag.
         # Tags without a channel (Color, Normal, or combined 'orm') map to None.
@@ -731,18 +732,18 @@ class CacheScraper:
             import xml.etree.ElementTree as _ET
             root = _ET.fromstring(xml_content)
             added = 0
-            virtual_slot = 0  # sequential index among recognised XML children
+            virtual_slot = 0  # sequential index among recognised XML children (legacy, kept for vslot_channel)
             for elem in root:  # direct children only — no recursion into sub-trees
                 tag_lower = elem.tag.lower().lstrip('{').split('}')[-1]  # strip namespace
-                fidelity_slot = _TAG_TO_FIDELITY.get(tag_lower)
-                if fidelity_slot is None:
+                global_index = _TAG_TO_GLOBAL_INDEX.get(tag_lower)
+                if global_index is None:
                     continue  # unknown tag — skip (don't advance virtual_slot)
                 text = (elem.text or '').strip()
                 if text.isdigit() and int(text) != 0:
                     sub_id = int(text)
-                    self._texpack_subasset_lookup[sub_id] = (parent_id, fidelity_slot)
+                    self._texpack_subasset_lookup[sub_id] = (parent_id, global_index)
                     added += 1
-                # Record virtual slot → channel for ORM sub-channels.
+                # Record virtual slot → channel for ORM sub-channels (legacy, kept for potential revert).
                 channel = _TAG_TO_CHANNEL.get(tag_lower)
                 if channel is not None:  # None means Color/Normal/full-ORM → no channel
                     with self._lock:
@@ -763,10 +764,14 @@ class CacheScraper:
         overwrites — larger dimensions always win, regardless of in-memory state.
         This is session-restart-safe: no in-memory quality counter is needed.
 
-        Slot meanings (empirically verified):
+        Roblox fidelity slot meanings (empirically verified):
           0 = Color / Albedo
           1 = Normal (DXT5nm swizzled: R=255, G=Y, B=0, A=X)
-          2 = ORM  (R=Metalness, G=Roughness, B=Emissive, A=Height BC3-only)
+          2 = ORM  (R=Metalness, G=Roughness, B=Emissive, A=Height — BC3 only)
+
+        Fleasion global indices (for user-facing replacement config):
+          0 = Color, 1 = Normal, 2 = Metalness, 3 = Roughness,
+          4 = Emissive, 5 = Height
         """
         try:
             import struct as _struct
