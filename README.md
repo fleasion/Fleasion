@@ -282,8 +282,8 @@ Settings are stored in `%LocalAppData%\FleasionNT\`:
 
 ## Credits
 
-- **@8ar__**, **@dis_spencer** &mdash; code
-- **@1_v** (Sky), **@Blockce**, **@0100152000022000** (Sky 2), **@emk530**, **@Yeha.** &mdash; logic and contributions
+- **@8ar__**, **@dis_spencer**, **@1_v** (Sky) &mdash; code
+- **@Blockce**, **@0100152000022000** (Sky 2), **@emk530**, **@Yeha.** &mdash; logic and contributions
 - Donators &mdash; for keeping the passion going
 
 ## License
