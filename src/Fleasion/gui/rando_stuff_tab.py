@@ -389,7 +389,7 @@ class RandoStuffTab(QWidget):
                 return
             self._doing_rejoin = True
         print(f"[randostuff] Rejoin triggered — placeId={self._last_place_id}, accessCode={self._last_access_code}")
-        os.startfile("roblox://placeId=6811068227")
+        os.startfile(f"roblox://placeId={self._last_place_id}")
 
     def _update_labels(self, place_id, access_code):
         def _do():
