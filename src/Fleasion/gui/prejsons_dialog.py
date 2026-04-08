@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ..utils import CLOG_URL, PREJSONS_DIR, APP_NAME, get_icon_path
+from ..utils import CLOG_URL, PREJSONS_DIR, ORIGINALS_DIR, REPLACEMENTS_DIR, APP_NAME, get_icon_path
 
 CUSTOM_DUMPS_DIR = PREJSONS_DIR / "custom_dumps"
 
@@ -45,6 +45,19 @@ def _http_get(url: str, timeout: int = 12) -> bytes:
     req = urllib.request.Request(url, headers={"User-Agent": "FleasionNT/1.2.0"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.read()
+
+
+def _fetch_or_read(url_or_path: str, timeout: int = 15) -> bytes:
+    """Fetch a URL or read a local file, returning raw bytes."""
+    if url_or_path.startswith(("http://", "https://")):
+        return _http_get(url_or_path, timeout=timeout)
+    return Path(url_or_path).read_bytes()
+
+
+def _safe_filename(name: str) -> str:
+    """Strip characters that are invalid in Windows filenames."""
+    import re
+    return re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', name).strip(' .')[:128] or "dump"
 
 
 # PIL-based rounded thumbnail helper
@@ -806,6 +819,25 @@ class PreJsonsDialog(QDialog):
             except Exception as e:
                 QMessageBox.warning(dlg, "Import failed", f"Could not save:\n{e}")
                 return
+
+            # Save originals/replacements for each game entry so they appear
+            # in the PreJsons system just like official downloads.
+            ORIGINALS_DIR.mkdir(parents=True, exist_ok=True)
+            REPLACEMENTS_DIR.mkdir(parents=True, exist_ok=True)
+            for g in games:
+                raw_name = g.get("name") or (f"Place {g['placeId']}" if g.get("placeId") else None)
+                if not raw_name:
+                    continue
+                fname = _safe_filename(raw_name)
+                for url_key, dest_dir in (("github", ORIGINALS_DIR), ("replacement", REPLACEMENTS_DIR)):
+                    url_or_path = g.get(url_key, "").strip()
+                    if not url_or_path:
+                        continue
+                    try:
+                        content = _fetch_or_read(url_or_path)
+                        (dest_dir / f"{fname}.json").write_bytes(content)
+                    except Exception:
+                        pass  # Non-fatal — custom dump itself is already saved
 
             for g in games:
                 card = self._make_card(g, dump_file=dump_path)

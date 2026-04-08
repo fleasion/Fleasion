@@ -112,6 +112,22 @@ class _Invoker(QObject):
 from .prejsons_dialog import _make_rounded_pixmap, _CARD_W, _CARD_H, _THUMB_W, _THUMB_H
 
 
+class _JobIdEdit(QLineEdit):
+    """QLineEdit with placeholder text for an optional JobId."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setPlaceholderText("JobId: (Optional)")
+        self.setFixedHeight(20)
+        self.setStyleSheet("font-size: 9pt;")
+
+    def get_job_id(self) -> str:
+        return self.text().strip()
+
+    def set_job_id(self, job_id: str):
+        self.setText(job_id)
+
+
 class SubplaceGameCard(QFrame):
     """Game card matching the PreJsons visual design, with subplace-joiner buttons."""
 
@@ -154,14 +170,17 @@ class SubplaceGameCard(QFrame):
         layout.addWidget(self.name_label)
 
         self.created_label = QLabel("")
-        self.created_label.setStyleSheet("color: palette(placeholder-text); font-size: 7pt;")
+        self.created_label.setStyleSheet("color: palette(placeholder-text); font-size: 8pt;")
         layout.addWidget(self.created_label)
 
         self.updated_label = QLabel("")
-        self.updated_label.setStyleSheet("color: palette(placeholder-text); font-size: 7pt;")
+        self.updated_label.setStyleSheet("color: palette(placeholder-text); font-size: 8pt;")
         layout.addWidget(self.updated_label)
 
         layout.addStretch()
+
+        self.job_id_edit = _JobIdEdit()
+        layout.addWidget(self.job_id_edit)
 
         btn_row = QHBoxLayout()
         btn_row.setSpacing(4)
@@ -174,7 +193,7 @@ class SubplaceGameCard(QFrame):
         self.open_btn.setFixedHeight(22)
         btn_row.addWidget(self.open_btn)
 
-        self.fetch_jobs_btn = QPushButton("Fetch jobIds")
+        self.fetch_jobs_btn = QPushButton("JobIds")
         self.fetch_jobs_btn.setFixedHeight(22)
         btn_row.addWidget(self.fetch_jobs_btn)
 
@@ -225,7 +244,7 @@ class JobIdDialog(QDialog):
     _results_ready = pyqtSignal(list, object)   # servers, next_cursor (object so None is allowed)
     _error_ready = pyqtSignal(str)
 
-    _PAGE_LIMIT = 100
+    _PAGE_LIMIT = 25
     _SORT_OPTIONS = [
         ("Players ↑ (fewest first)", "playing_asc"),
         ("Players ↓ (most first)", "playing_desc"),
@@ -233,13 +252,14 @@ class JobIdDialog(QDialog):
         ("Ping ↓ (highest first)", "ping_desc"),
     ]
 
-    def __init__(self, place_id, on_select=None, parent=None):
+    def __init__(self, place_id, on_select=None, parent=None, cached_servers=None, on_cache_update=None):
         super().__init__(parent)
         self._place_id = place_id
         self._on_select = on_select
+        self._on_cache_update = on_cache_update
         self._cursor = None
         self._loading = False
-        self._all_servers = []
+        self._all_servers = list(cached_servers) if cached_servers else []
 
         self._results_ready.connect(self._apply_results)
         self._error_ready.connect(self._apply_error)
@@ -268,7 +288,6 @@ class JobIdDialog(QDialog):
 
         bottom = QHBoxLayout()
         self._load_more_btn = QPushButton("Load more")
-        self._load_more_btn.setEnabled(False)
         self._load_more_btn.clicked.connect(self._fetch_page)
         bottom.addWidget(self._load_more_btn)
         bottom.addStretch(1)
@@ -277,6 +296,8 @@ class JobIdDialog(QDialog):
         bottom.addWidget(close_btn)
         layout.addLayout(bottom)
 
+        if self._all_servers:
+            self._apply_results([], None)  # render cached servers immediately
         self._fetch_page()
 
     def _current_sort(self):
@@ -285,7 +306,7 @@ class JobIdDialog(QDialog):
     def _on_sort_changed(self):
         sort = self._current_sort()
         if sort in ("ping_asc", "ping_desc"):
-            # Just re-sort existing data, no refetch needed
+            # Just re-sort existing data
             self._list.clear()
             for s in self._sorted_servers(self._all_servers):
                 job_id = s.get("id", "")
@@ -297,17 +318,14 @@ class JobIdDialog(QDialog):
                 item.setData(Qt.ItemDataRole.UserRole, job_id)
                 self._list.addItem(item)
             return
-        self._all_servers = []
+        # For player sorts: fetch new batch with the new sort order and add to existing
         self._cursor = None
-        self._list.clear()
-        self._load_more_btn.setEnabled(False)
         self._fetch_page()
 
     def _fetch_page(self):
         if self._loading:
             return
         self._loading = True
-        self._load_more_btn.setEnabled(False)
         self._status_label.setText("Fetching servers...")
         threading.Thread(target=self._worker, daemon=True).start()
 
@@ -345,7 +363,10 @@ class JobIdDialog(QDialog):
     def _apply_results(self, servers, next_cursor):
         self._cursor = next_cursor
         self._loading = False
-        self._all_servers.extend(servers)
+        existing_ids = {s.get("id") for s in self._all_servers}
+        self._all_servers.extend(s for s in servers if s.get("id") not in existing_ids)
+        if self._on_cache_update:
+            self._on_cache_update(list(self._all_servers))
 
         self._list.clear()
         for s in self._sorted_servers(self._all_servers):
@@ -361,13 +382,27 @@ class JobIdDialog(QDialog):
         total = self._list.count()
         if next_cursor:
             self._status_label.setText(f"{total} servers loaded — more available")
-            self._load_more_btn.setEnabled(True)
         else:
             self._status_label.setText(f"{total} server(s) found")
 
     def _apply_error(self, err):
         self._loading = False
-        self._status_label.setText(f"Error: {err}")
+        is_ratelimit = "429" in str(err)
+        err_msg = "Ratelimited: Slow down!" if is_ratelimit else f"Error: {str(err)[:80]}…"
+        if self._all_servers:
+            self._list.clear()
+            for s in self._sorted_servers(self._all_servers):
+                job_id = s.get("id", "")
+                playing = s.get("playing", "?")
+                max_players = s.get("maxPlayers", "?")
+                ping = s.get("ping")
+                ping_str = f"  {ping}ms" if ping is not None else ""
+                item = QListWidgetItem(f"{job_id}  ({playing}/{max_players} players){ping_str}")
+                item.setData(Qt.ItemDataRole.UserRole, job_id)
+                self._list.addItem(item)
+            self._status_label.setText(err_msg)
+        else:
+            self._status_label.setText(err_msg)
 
     def _on_item_double_clicked(self, item):
         job_id = item.data(Qt.ItemDataRole.UserRole)
@@ -396,6 +431,9 @@ class SubplaceJoinerTab(QWidget):
         self.thumb_cache: dict = {}
         self._search_cancel_event = threading.Event()
         self.joining_place = False
+        self._current_job_id: str = ""
+        self._jobid_cache: dict[int, list] = {}  # place_id -> cached servers
+        self._place_name_cache: dict[str, str] = {}  # place_id -> game name
 
         self.recent_ids: list[str] = []
         self.favorites: list[str] = []
@@ -409,6 +447,7 @@ class SubplaceJoinerTab(QWidget):
         self._load_settings()
         self._rebuild_recent_buttons()
         self._rebuild_favorite_buttons()
+        self._update_favorite_btn()
 
     # UI setup
 
@@ -420,36 +459,43 @@ class SubplaceJoinerTab(QWidget):
         top_frame = QFrame()
         top_frame.setFrameShape(QFrame.Shape.StyledPanel)
         top_frame.setFrameShadow(QFrame.Shadow.Raised)
-        grid = QGridLayout(top_frame)
+        top_layout = QVBoxLayout(top_frame)
+        top_layout.setContentsMargins(4, 4, 4, 4)
+        top_layout.setSpacing(4)
 
-        grid.addWidget(QLabel("PlaceID:"), 0, 0)
+        row0 = QHBoxLayout()
+        row0.setSpacing(4)
+        placeid_lbl = QLabel("PlaceID:")
+        row0.addWidget(placeid_lbl, 0)
         self.PlaceID_search = QLineEdit()
         self.PlaceID_search.setPlaceholderText("Place ID to search")
         self.PlaceID_search.returnPressed.connect(self.on_search_clicked)
-        grid.addWidget(self.PlaceID_search, 0, 1)
+        self.PlaceID_search.textChanged.connect(self._update_favorite_btn)
+        row0.addWidget(self.PlaceID_search, 1)
+        self.search_btn = QPushButton("Search")
+        self.search_btn.clicked.connect(self.on_search_clicked)
+        row0.addWidget(self.search_btn, 0)
+        top_layout.addLayout(row0)
 
+        row1 = QHBoxLayout()
+        row1.setSpacing(4)
+        search_lbl = QLabel("Search:")
+        search_lbl.setMinimumWidth(placeid_lbl.sizeHint().width())
+        row1.addWidget(search_lbl, 0)
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Filter by name or ID")
+        self.search_input.textChanged.connect(self.apply_search_and_sort)
+        row1.addWidget(self.search_input, 1)
+        self.favorite_btn = QPushButton("Favorite")
+        self.favorite_btn.clicked.connect(self.on_favorite_clicked)
+        row1.addWidget(self.favorite_btn, 0)
         sort_combo = QComboBox()
-        sort_combo.setMaximumHeight(22)
         for item in ("PlaceID ↑", "PlaceID ↓", "Created ↑", "Created ↓", "Updated ↑", "Updated ↓"):
             sort_combo.addItem(item)
         self.sort_combo = sort_combo
         sort_combo.currentIndexChanged.connect(self.apply_search_and_sort)
-        grid.addWidget(sort_combo, 0, 2)
-
-        grid.addWidget(QLabel("Search:"), 1, 0)
-        self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Filter by name or ID")
-        self.search_input.textChanged.connect(self.apply_search_and_sort)
-        grid.addWidget(self.search_input, 1, 1)
-
-        self.favorite_btn = QPushButton("Favorite")
-        self.favorite_btn.clicked.connect(self.on_favorite_clicked)
-        grid.addWidget(self.favorite_btn, 1, 2)
-
-        grid.addWidget(QLabel("JobID:"), 2, 0)
-        self.jobid_input = QLineEdit()
-        self.jobid_input.setPlaceholderText("Insert a jobId here to join a specific server")
-        grid.addWidget(self.jobid_input, 2, 1, 1, 2)
+        row1.addWidget(sort_combo, 0)
+        top_layout.addLayout(row1)
 
         root.addWidget(top_frame)
 
@@ -558,10 +604,38 @@ class SubplaceJoinerTab(QWidget):
             if w is not None:
                 w.deleteLater()
 
+    def _fetch_place_name(self, place_id: str, callback):
+        if place_id in self._place_name_cache:
+            callback(self._place_name_cache[place_id])
+            return
+        def _worker():
+            try:
+                cookie = _get_roblosecurity() or ""
+                r = self._get(
+                    f"https://games.roblox.com/v1/games/multiget-place-details?placeIds={place_id}",
+                    timeout=10,
+                    cookies={".ROBLOSECURITY": cookie} if cookie else None)
+                r.raise_for_status()
+                data = r.json()
+                name = data[0].get("name", place_id) if data else place_id
+            except Exception:
+                name = place_id
+            self._place_name_cache[place_id] = name
+            self._on_main(lambda n=name: callback(n))
+        threading.Thread(target=_worker, daemon=True).start()
+
     def _make_placeid_button(self, place_id: str, handler):
         btn = QPushButton(place_id)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.clicked.connect(lambda _=False, pid=place_id: handler(pid))
+        def _set_name(name, b=btn):
+            try:
+                elided = b.fontMetrics().elidedText(name, Qt.TextElideMode.ElideRight, 170)
+                b.setText(elided)
+                b.setToolTip(name)
+            except RuntimeError:
+                pass
+        self._fetch_place_name(place_id, _set_name)
         return btn
 
     def _rebuild_recent_buttons(self):
@@ -596,22 +670,49 @@ class SubplaceJoinerTab(QWidget):
         self._save_settings()
         self._rebuild_recent_buttons()
 
+    def _update_favorite_btn(self):
+        pid = self._extract_place_id(self.PlaceID_search.text())
+        self.favorite_btn.setText("Unfavorite" if pid in self.favorites else "Favorite")
+
     def on_favorite_clicked(self):
-        place_id = self.PlaceID_search.text().strip()
+        place_id = self._extract_place_id(self.PlaceID_search.text())
         if not place_id.isdigit():
             return
-        if place_id not in self.favorites:
+        if place_id in self.favorites:
+            self.favorites.remove(place_id)
+        else:
             self.favorites.insert(0, place_id)
-            self._save_settings()
-            self._rebuild_favorite_buttons()
+        self._save_settings()
+        self._rebuild_favorite_buttons()
+        self._update_favorite_btn()
 
     # Search
 
+    @staticmethod
+    def _extract_place_id(text: str) -> str:
+        """Extract numeric place ID from a raw ID or a Roblox game URL."""
+        text = text.strip()
+        if text.isdigit():
+            return text
+        # e.g. https://www.roblox.com/games/537413528/some-name
+        try:
+            path = urlparse(text).path
+            parts = path.strip("/").split("/")
+            if "games" in parts:
+                idx = parts.index("games")
+                candidate = parts[idx + 1] if idx + 1 < len(parts) else ""
+                if candidate.isdigit():
+                    return candidate
+        except Exception:
+            pass
+        return text
+
     def on_search_clicked(self):
-        place_id = self.PlaceID_search.text().strip()
+        place_id = self._extract_place_id(self.PlaceID_search.text())
         if not place_id.isdigit():
             print("[subplace] Invalid Place ID")
             return
+        self.PlaceID_search.setText(place_id)
 
         print(f"[subplace] Searching for Place ID: {place_id}")
         self.add_recent_place_id(place_id)
@@ -789,10 +890,10 @@ class SubplaceJoinerTab(QWidget):
             card.updated_iso = updated
 
             if pid is not None:
-                card.on_join(lambda _, place_id=pid, root_id=root: self._join_place(place_id, root_id))
+                card.on_join(lambda _, c=card, place_id=pid, root_id=root: self._join_place(place_id, root_id, job_id=c.job_id_edit.get_job_id()))
                 card.on_open(lambda _, pid_val=pid: os.startfile(
                     f"https://www.roblox.com/games/{pid_val}"))
-                card.on_fetch_jobs(lambda _, pid_val=pid: self._open_job_ids(pid_val))
+                card.on_fetch_jobs(lambda _, pid_val=pid, c=card: self._open_job_ids(pid_val, c))
 
             self._cards.append(card)
             if pid is not None:
@@ -883,14 +984,23 @@ class SubplaceJoinerTab(QWidget):
 
     # Join
 
-    def _open_job_ids(self, place_id):
+    def _open_job_ids(self, place_id, card=None):
+        pid = int(place_id)
         def _on_select(job_id):
-            self.jobid_input.setText(job_id)
-        dlg = JobIdDialog(place_id, on_select=_on_select, parent=self)
+            if card is not None:
+                card.job_id_edit.set_job_id(job_id)
+        def _on_cache_update(servers):
+            self._jobid_cache[pid] = servers
+        dlg = JobIdDialog(
+            place_id, on_select=_on_select, parent=self,
+            cached_servers=self._jobid_cache.get(pid),
+            on_cache_update=_on_cache_update,
+        )
         dlg.show()
 
-    def _join_place(self, place_id, root_place_id=None):
-        print(f"[subplace] Joining place ID: {place_id}")
+    def _join_place(self, place_id, root_place_id=None, job_id: str = ""):
+        self._current_job_id = job_id
+        print(f"[subplace] Joining place ID: {place_id}" + (f" with jobId: {job_id}" if job_id else ""))
         cookie = _get_roblosecurity()
         if root_place_id and int(place_id) != int(root_place_id):
             ok = self._join_root(root_place_id, cookie)
@@ -1004,7 +1114,7 @@ class SubplaceJoinerTab(QWidget):
             if "isTeleport" not in body_json:
                 body_json["isTeleport"] = True
                 print("[subplace] Added isTeleport flag")
-            job_id = self.jobid_input.text().strip()
+            job_id = self._current_job_id
             if job_id:
                 body_json["gameId"] = job_id
                 flow.request.url = "https://gamejoin.roblox.com/v1/join-game-instance"

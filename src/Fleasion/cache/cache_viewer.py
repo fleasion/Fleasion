@@ -1593,7 +1593,9 @@ class CacheViewerTab(QWidget):
         self.show_creator_id_toggle.toggled.connect(self._on_show_creator_id_toggled)
         filter_layout.addWidget(self.show_creator_id_toggle)
 
-        filter_layout.addWidget(QLabel('|'))
+        sep1 = QLabel('|')
+        sep1.setStyleSheet('padding-bottom: 6px;')
+        filter_layout.addWidget(sep1)
 
         # Cache scraper toggle - reflect actual scraper state
         self.scraper_toggle = QCheckBox('Enable Cache Scraper')
@@ -1602,11 +1604,20 @@ class CacheViewerTab(QWidget):
         self.scraper_toggle.stateChanged.connect(self._toggle_scraper)
         filter_layout.addWidget(self.scraper_toggle)
 
-        filter_layout.addWidget(QLabel('|'))
+        sep2 = QLabel('|')
+        sep2.setStyleSheet('padding-bottom: 6px;')
+        filter_layout.addWidget(sep2)
 
-        # Stats label
-        self.stats_label = QLabel('Total: 0 assets | Size: 0 B')
-        filter_layout.addWidget(self.stats_label)
+        # Stats labels
+        self.stats_total_label = QLabel('Total: 0 assets')
+        filter_layout.addWidget(self.stats_total_label)
+
+        sep3 = QLabel('|')
+        sep3.setStyleSheet('padding-bottom: 6px;')
+        filter_layout.addWidget(sep3)
+
+        self.stats_size_label = QLabel('Size: 0 B')
+        filter_layout.addWidget(self.stats_size_label)
 
         filter_group.setLayout(filter_layout)
         parent_layout.addWidget(filter_group)
@@ -1962,7 +1973,8 @@ class CacheViewerTab(QWidget):
             stats = self.cache_manager.get_cache_stats()
             total_assets = stats['total_assets']
             total_size = self._format_size(stats['total_size'])
-            self.stats_label.setText(f'Total: {total_assets} assets | Size: {total_size}')
+            self.stats_total_label.setText(f'Total: {total_assets} assets')
+            self.stats_size_label.setText(f'Size: {total_size}')
 
             # Only refresh table if asset count changed
             if total_assets != self._last_asset_count:
@@ -2221,8 +2233,9 @@ class CacheViewerTab(QWidget):
             total_assets = stats['total_assets']
             total_size = self._format_size(stats['total_size'])
             
-            self.stats_label.setText(f'Total: {total_assets} assets | Size: {total_size}')
-                
+            self.stats_total_label.setText(f'Total: {total_assets} assets')
+            self.stats_size_label.setText(f'Size: {total_size}')
+
             self._last_asset_count = total_assets
         except Exception:
             pass

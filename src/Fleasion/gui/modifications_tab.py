@@ -721,6 +721,7 @@ class ModPreviewDialog(QDialog):
         self._target_path = target_path
         self._mod_converted_bytes: bytes | None = None
         self._mod_converted_ext: str = ''
+        self._orig_unavailable: bool = False
         self.setWindowTitle(f'Preview \u2014 {display_name}')
         self.resize(500, 400)
 
@@ -745,6 +746,7 @@ class ModPreviewDialog(QDialog):
         export_conv_btn.clicked.connect(self._on_export_converted)
         btn_row.addWidget(export_conv_btn)
         export_btn = QPushButton('Export Original\u2026')
+        export_btn.setEnabled(not self._orig_unavailable)
         export_btn.clicked.connect(self._on_export)
         btn_row.addWidget(export_btn)
         layout.addLayout(btn_row)
@@ -759,7 +761,14 @@ class ModPreviewDialog(QDialog):
 
         data = self._load_data(mode)
         if data is None:
-            layout.addWidget(QLabel('No data available'))
+            lower_check = self._target_path.lower()
+            if mode == 'original' and lower_check.endswith(('.ttf', '.otf', '.ttc')):
+                lbl = QLabel('Preview of Roblox Original fonts are not supported because it includes multiple Font files')
+                lbl.setWordWrap(True)
+                layout.addWidget(lbl)
+                self._orig_unavailable = True
+            else:
+                layout.addWidget(QLabel('No data available'))
             container.setLayout(layout)
             return container
 
@@ -880,7 +889,12 @@ class ModPreviewDialog(QDialog):
             stash = MOD_ORIGINALS_DIR / roblox_dir.name / self._target_path
             if stash.is_file():
                 return stash.read_bytes()
-            # Fall back to current file (unmodified)
+            mod_active = any(
+                e.get('target_path') == self._target_path
+                for e in self._manager.entries
+            )
+            if mod_active:
+                return None
             dst = roblox_dir / self._target_path
             return dst.read_bytes() if dst.is_file() else None
 

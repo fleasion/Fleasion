@@ -368,6 +368,46 @@ class TextureStripper:
 
     # Rig auto-conversion helpers
 
+    def _is_anim_asset_id(self, asset_id: int) -> bool:
+        """Check whether an asset ID is an animation type via the economy API."""
+        scraper = self._cache_scraper
+        if scraper is None:
+            return False
+        try:
+            cookie = scraper._get_roblosecurity()
+            extra = {'Cookie': f'.ROBLOSECURITY={cookie};'} if cookie else {}
+            data = scraper._https_get(
+                'economy.roblox.com',
+                f'/v2/assets/{asset_id}/details',
+                extra_headers=extra or None,
+            )
+            if data:
+                import json as _json
+                info = _json.loads(data)
+                return int(info.get('AssetTypeId', -1)) in self._ANIM_TYPE_IDS
+        except Exception:
+            pass
+        return False
+
+    def _is_anim_replacement_key(self, key) -> bool:
+        """Return True if this local-replacement key targets an animation asset."""
+        # All animation-related string keys: virtual rig-filter types + every
+        # named animation asset type from ASSET_TYPES
+        _ANIM_STR_KEYS = frozenset(
+            name for tid, name in self.ASSET_TYPES.items() if tid in self._ANIM_TYPE_IDS
+        ) | frozenset(self._VIRTUAL_ANIM_RIG)
+        if isinstance(key, str) and key in _ANIM_STR_KEYS:
+            return True
+        # TexturePack slot keys (e.g. "12345:2") are never animations
+        if isinstance(key, str) and ':' in key:
+            return False
+        # Numeric asset ID — look up via economy API
+        try:
+            aid = int(key)
+        except (TypeError, ValueError):
+            return False
+        return self._is_anim_asset_id(aid)
+
     def precheck_anim_rigs(self) -> None:
         from ...utils.anim_converter import detect_rig
 
@@ -379,18 +419,45 @@ class TextureStripper:
         replacements_tuple = self.config_manager.get_all_replacements()
         _, _, _, local_replacements = replacements_tuple
 
-        # Collect all local paths to pre-convert (includes predownloaded privates)
+        _ANIM_EXTS = {'.rbxm', '.rbxmx'}
+
+        # Collect local paths that are definitely animation replacements.
+        # Check: animation key/type, .rbxm/.rbxmx extension, or asset type via API.
         paths_to_process: list[str] = []
 
-        # User-configured local files
-        for local_path in local_replacements.values():
-            if local_path not in paths_to_process:
-                paths_to_process.append(str(local_path))
+        for key, local_path in local_replacements.items():
+            local_path = str(local_path)
+            if local_path in paths_to_process:
+                continue
+            if (Path(local_path).suffix.lower() in _ANIM_EXTS
+                    or self._is_anim_replacement_key(key)):
+                paths_to_process.append(local_path)
 
-        # Already predownloaded private replacements
-        for local_path in self._predownloaded.values():
-            if local_path not in paths_to_process:
-                paths_to_process.append(str(local_path))
+        # Predownloaded ID-to-ID replacements: check replacement asset ID via API,
+        # then fall back to extension and magic-byte sniffing.
+        for repl_id, local_path in self._predownloaded.items():
+            local_path = str(local_path)
+            if local_path in paths_to_process:
+                continue
+            if Path(local_path).suffix.lower() in _ANIM_EXTS:
+                paths_to_process.append(local_path)
+                continue
+            # Check the replacement asset ID itself via economy API
+            try:
+                if self._is_anim_asset_id(int(repl_id)):
+                    paths_to_process.append(local_path)
+                    continue
+            except (TypeError, ValueError):
+                pass
+            # Last resort: peek at magic bytes for .dat / extensionless files
+            try:
+                head = Path(local_path).read_bytes()[:64]
+                if (head.startswith(b'<roblox!')
+                        or b'KeyframeSequence' in head
+                        or b'CurveAnimation' in head):
+                    paths_to_process.append(local_path)
+            except Exception:
+                pass
 
         converted = 0
         for local_path in paths_to_process:

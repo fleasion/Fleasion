@@ -312,7 +312,7 @@ def load_rig(rig_path: str) -> Tuple[Dict[str, Part], List[Motor6D]]:
 def load_animation_from_xml(anim_data: bytes) -> List[Keyframe]:
     """Load animation from XML bytes (RBXMX format)."""
     try:
-        text = anim_data.decode('utf-8', errors='replace')
+        text = anim_data.decode('utf-8-sig', errors='replace')
         text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
         root = ET.fromstring(text)
     except Exception:
@@ -533,7 +533,7 @@ def load_curve_animation_data(anim_data: bytes) -> List[Keyframe]:
     # XML path
     else:
         try:
-            text = anim_data.decode('utf-8', errors='replace')
+            text = anim_data.decode('utf-8-sig', errors='replace')
             text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
             root = ET.fromstring(text)
         except Exception:
@@ -642,18 +642,17 @@ def load_animation_data(anim_data: bytes) -> List[Keyframe]:
         if keys:
             return keys
 
+    # Strip UTF-8 BOM for format detection (Roblox Studio emits BOM-prefixed RBXMX)
+    _detect = anim_data[3:] if anim_data[:3] == b'\xef\xbb\xbf' else anim_data
+
     # Try to detect format
-    if anim_data.startswith(b'<roblox!'):
+    if _detect.startswith(b'<roblox!'):
         # Binary RBXM format
         return load_animation_from_rbxm(anim_data)
-    elif anim_data.strip().startswith(b'<'):
+    elif _detect.strip().startswith(b'<'):
         # XML format
         return load_animation_from_xml(anim_data)
     else:
-        # Try binary first, then XML
-        keys = load_animation_from_rbxm(anim_data)
-        if keys:
-            return keys
         return load_animation_from_xml(anim_data)
 
 
