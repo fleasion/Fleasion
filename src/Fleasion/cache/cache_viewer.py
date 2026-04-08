@@ -4085,31 +4085,34 @@ class CacheViewerTab(QWidget):
             self._texturepack_xml = xml_text  # Store for context menu
             root = ET.fromstring(xml_text)
 
-            # Extract texture map IDs using XML child position as the virtual slot index.
-            # VS0 = first recognised sub-asset, VS1 = second, etc.
-            # These virtual slot indices are what the user puts in replace_ids
-            # (e.g. "108049038086346:2" for metalness on a pack whose 3rd XML child is metalness).
-            # VSN ≥ 2 are routed through the ORM compositor on the backend.
-            _KNOWN_MAP_TAGS = {
-                'color', 'albedo', 'diffuse', 'basecolor',
-                'normal', 'normalmap', 'bumpmap',
-                'metalness', 'roughness', 'orm',
-                'emissive', 'emissivemap',
-                'height', 'heightmap', 'displacement',
+            # Extract texture map IDs using the GLOBAL fixed index system.
+            # The index for each map type is constant regardless of the asset's
+            # XML tag ordering:
+            #   0 = Color, 1 = Normal, 2 = Metalness, 3 = Roughness,
+            #   4 = Emissive, 5 = Height
+            # These global indices are what the user puts in replace_ids
+            # (e.g. "108049038086346:3" for roughness on ANY pack).
+            # GI ≥ 2 are routed through the ORM compositor on the backend.
+            _TAG_TO_GLOBAL_INDEX = {
+                'color': 0, 'albedo': 0, 'diffuse': 0, 'basecolor': 0,
+                'normal': 1, 'normalmap': 1, 'bumpmap': 1,
+                'metalness': 2, 'orm': 2,
+                'roughness': 3,
+                'emissive': 4, 'emissivemap': 4,
+                'height': 5, 'heightmap': 5, 'displacement': 5,
             }
             maps = {}          # display_name -> map_id_str
-            maps_indices = {}  # display_name -> virtual_slot_index  (= XML position among known tags)
-            virtual_slot = 0
+            maps_indices = {}  # display_name -> global_index (fixed, asset-independent)
             for child in root:
                 tag_lower = child.tag.lower().lstrip('{').split('}')[-1]
-                if tag_lower not in _KNOWN_MAP_TAGS:
+                global_idx = _TAG_TO_GLOBAL_INDEX.get(tag_lower)
+                if global_idx is None:
                     continue
                 text = (child.text or '').strip()
                 if text.isdigit() and text != '0':
                     display_name = tag_lower.capitalize()
                     maps[display_name] = text
-                    maps_indices[display_name] = virtual_slot
-                virtual_slot += 1
+                    maps_indices[display_name] = global_idx
 
             if not maps:
                 self._show_text_preview(f'No texture maps found in texture pack {asset_id}')
