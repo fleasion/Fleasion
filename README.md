@@ -241,6 +241,7 @@ src/Fleasion/
     ├── anim_converter.py           # Animation format conversion (R6↔R15, KeyframeSeq↔CurveAnim)
     ├── r15_to_r6.py                # R15 to R6 rig conversion utilities
     ├── rig_data.py                 # Rig bone definitions and mappings
+    ├── roblox_auth.py              # Centralized helper to get your Roblox Token to use for Roblox V1 APIs
     ├── updater.py                  # Update checker
     └── windows.py                  # Windows-specific operations (process management, cache deletion)
 ```
