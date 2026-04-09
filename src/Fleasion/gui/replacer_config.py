@@ -354,7 +354,7 @@ class ReplacerConfigWindow(QDialog):
             ('Delete Selected', self._delete_selected),
             ('Enable Selected', self._enable_selected),
             ('Disable Selected', self._disable_selected),
-            ('Import JSON', self._open_json),
+            ('Import JSON', self._open_prejsons_browser),
         ]:
             btn = QPushButton(text)
             btn.clicked.connect(callback)
@@ -371,7 +371,7 @@ class ReplacerConfigWindow(QDialog):
             footer_widget = QWidget()
             footer_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
             footer_layout = QHBoxLayout()
-            footer_layout.setContentsMargins(0, 5, 0, 5)
+            footer_layout.setContentsMargins(0, 4, 0, 4)
 
             footer_layout.addSpacing(12)
 
@@ -381,13 +381,13 @@ class ReplacerConfigWindow(QDialog):
 
             footer_layout.addStretch()
 
+            clear_cache_btn = QPushButton('Clear Cache')
+            clear_cache_btn.clicked.connect(self._clear_roblox_cache)
+            footer_layout.addWidget(clear_cache_btn)
+
             configs_btn = QPushButton('Open Configs')
             configs_btn.clicked.connect(lambda: open_folder(CONFIGS_FOLDER))
             footer_layout.addWidget(configs_btn)
-
-            prejsons_btn = QPushButton('PreJsons Browser')
-            prejsons_btn.clicked.connect(self._open_prejsons_browser)
-            footer_layout.addWidget(prejsons_btn)
 
             undo_btn = QPushButton('Undo (Ctrl+Z)')
             undo_btn.clicked.connect(self._do_undo)
@@ -396,6 +396,11 @@ class ReplacerConfigWindow(QDialog):
 
             footer_widget.setLayout(footer_layout)
             parent_layout.addWidget(footer_widget)
+
+    def _clear_roblox_cache(self):
+        from .delete_cache import DeleteCacheWindow
+        window = DeleteCacheWindow()
+        window.show()
 
     def _open_prejsons_browser(self):
         """Open the PreJsons browser dialog."""
@@ -1359,34 +1364,3 @@ class ReplacerConfigWindow(QDialog):
             self._refresh_tree()
             log_buffer.log('Config', f'Disabled {disabled_count} profile(s)')
 
-    def _open_json(self):
-        """Open JSON file for import."""
-        initial_dir = str(PREJSONS_DIR) if PREJSONS_DIR.exists() else None
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            'Open JSON',
-            initial_dir,
-            'JSON Files (*.json);;All Files (*.*)',
-        )
-
-        if not file_path:
-            return
-
-        try:
-            with Path(file_path).open(encoding='utf-8') as f:
-                data = json.load(f)
-        except (json.JSONDecodeError, OSError) as e:
-            QMessageBox.critical(self, 'Error', f'Failed: {e}')
-            return
-
-        def on_ids(ids):
-            cur = self.replace_entry.text()
-            self.replace_entry.setText(
-                (cur + ', ' if cur.strip() else '') + ', '.join(str(x) for x in ids)
-            )
-
-        def on_repl(val):
-            self.replacement_entry.setText(str(val))
-
-        viewer = JsonTreeViewer(self, data, Path(file_path).name, on_ids, on_repl, config_manager=self.config_manager)
-        viewer.show()

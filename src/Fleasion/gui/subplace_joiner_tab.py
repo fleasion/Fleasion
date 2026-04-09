@@ -596,6 +596,21 @@ class SubplaceJoinerTab(QWidget):
 
         root.addLayout(main_layout, 1)
 
+        footer_widget = QWidget()
+        footer_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        footer_layout = QHBoxLayout(footer_widget)
+        footer_layout.setContentsMargins(8, 4, 8, 4)
+        footer_layout.addStretch()
+        clear_cache_btn = QPushButton('Clear Cache')
+        clear_cache_btn.clicked.connect(self._clear_roblox_cache)
+        footer_layout.addWidget(clear_cache_btn)
+        root.addWidget(footer_widget)
+
+    def _clear_roblox_cache(self):
+        from .delete_cache import DeleteCacheWindow
+        window = DeleteCacheWindow()
+        window.show()
+
     # Settings persistence
 
     def _settings_path(self) -> str:

@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QCheckBox,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -257,7 +258,7 @@ class RandoStuffTab(QWidget):
 
     def _setup_ui(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(8, 8, 8, 8)
+        root.setContentsMargins(8, 8, 8, 0)
         root.setSpacing(8)
 
         rejoin_group = QGroupBox("Reserved Server Rejoin")
@@ -362,9 +363,24 @@ class RandoStuffTab(QWidget):
 
         root.addStretch()
 
+        footer_widget = QWidget()
+        footer_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        footer_layout = QHBoxLayout(footer_widget)
+        footer_layout.setContentsMargins(0, 4, 0, 4)
+        footer_layout.addStretch()
+        clear_cache_btn = QPushButton('Clear Cache')
+        clear_cache_btn.clicked.connect(self._clear_roblox_cache)
+        footer_layout.addWidget(clear_cache_btn)
+        root.addWidget(footer_widget)
+
         # Connections
         self._btn.clicked.connect(self._on_rejoin_clicked)
         self._multi_chk.toggled.connect(self._on_multi_instance_toggled)
+
+    def _clear_roblox_cache(self):
+        from .delete_cache import DeleteCacheWindow
+        window = DeleteCacheWindow()
+        window.show()
 
     # Rejoin
 
