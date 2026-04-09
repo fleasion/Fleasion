@@ -13,7 +13,7 @@ from .modifications import ModificationManager
 from .prejsons import download_prejsons
 from .proxy import ProxyMaster, check_and_patch_running_roblox_ca
 from .tray import SystemTray
-from .utils import delete_cache, get_icon_path, get_roblox_player_exe_path, is_roblox_running, is_studio_running, log_buffer, run_in_thread, start_update_check, CONFIG_DIR
+from .utils import delete_cache, get_icon_path, get_roblox_player_exe_path, get_roblox_studio_exe_path, is_roblox_running, is_studio_running, log_buffer, run_in_thread, start_update_check, time_tracker, CONFIG_DIR
 
 
 
@@ -192,17 +192,27 @@ class RobloxExitMonitor(QObject):
         else:
             self.was_running = False
 
-        # --- Roblox Studio: warn that scraping/modification is paused ---
+        # --- Roblox Studio: patch CA cert on launch, show warning ---
         studio_running = is_studio_running()
 
         if not self._studio_was_running and studio_running:
-            # Studio just opened
+            studio_exe_path = get_roblox_studio_exe_path()
+            if studio_exe_path is None:
+                for _ in range(10):
+                    time.sleep(1.0)
+                    studio_exe_path = get_roblox_studio_exe_path()
+                    if studio_exe_path is not None:
+                        break
+            if studio_exe_path is not None:
+                run_in_thread(check_and_patch_running_roblox_ca)(studio_exe_path)
+            else:
+                log_buffer.log('Certificate', 'Studio launch detected but could not resolve exe path for CA check')
+
             if not self._studio_suppress_session and not self._studio_notified:
                 self._studio_notified = True
                 self._studio_detected.emit()
 
         if self._studio_was_running and not studio_running:
-            # Studio just closed — reset so the warning shows again next time
             self._studio_notified = False
 
         self._studio_was_running = studio_running
@@ -222,8 +232,8 @@ class RobloxExitMonitor(QObject):
 
         label = QLabel(
             'Roblox Studio is currently open.\n\n'
-            'No asset modification or scraping will occur while '
-            'Roblox Studio is running. Close Roblox Studio to resume normal operation.'
+            'Asset modification and scraping may not work correctly while '
+            'Roblox Studio is running.'
         )
         label.setWordWrap(True)
         layout.addWidget(label)
@@ -445,6 +455,10 @@ def main():
 
     # Initialize config manager
     config_manager = ConfigManager()
+
+    # Start tracking time wasted from the stored total
+    time_tracker.init(config_manager.time_wasted_seconds)
+    atexit.register(time_tracker.save, config_manager)
 
     # Initialize proxy master
     proxy_master = ProxyMaster(config_manager)

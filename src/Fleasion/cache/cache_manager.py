@@ -419,6 +419,7 @@ class CacheManager:
             formats.insert(0, 'converted')
         elif asset_type == 24:  # Animation
             formats.insert(0, 'converted_rbxmx')
+            formats.insert(1, 'converted_rbxmx_curve')
         elif asset_type == 39:  # SolidModel
             formats.insert(0, 'converted_rbxmx')
             formats.insert(0, 'converted_obj')
@@ -600,7 +601,50 @@ class CacheManager:
                     return self._export_texturepack(data, asset_id, export_type_dir, filename)
 
                 elif export_format == 'converted_rbxmx' and asset_type == 24:  # Animation - export as RBXMX
-                    output_path = export_type_dir / f'{filename}.rbxmx'
+                    try:
+                        anim_data = data
+                        # Decompress gzip wrapper if present
+                        if anim_data.startswith(b'\x1f\x8b'):
+                            import gzip as gzip_module
+                            anim_data = gzip_module.decompress(anim_data)
+                        # Convert binary .rbxm -> .rbxmx XML if needed
+                        if anim_data.startswith(b'<roblox!'):
+                            from ..utils.anim_converter import rbxm_to_rbxmx
+                            anim_data = rbxm_to_rbxmx(anim_data)
+                        # Convert CurveAnimation -> KeyframeSequence
+                        if b'CurveAnimation' in anim_data:
+                            from ..utils.r15_to_r6 import curve_anim_to_keyframe_xml
+                            anim_data = curve_anim_to_keyframe_xml(anim_data)
+                        output_path = export_type_dir / f'{filename}.rbxmx'
+                        output_path.write_bytes(anim_data)
+                        return output_path
+                    except Exception as e:
+                        from ..utils import log_buffer
+                        log_buffer.log('Export', f'Failed to convert animation to RBXMX: {e}')
+                        output_path = export_type_dir / f'{filename}.rbxmx'
+
+                elif export_format == 'converted_rbxmx_curve' and asset_type == 24:  # Animation - export as CurveAnimation RBXMX
+                    try:
+                        anim_data = data
+                        # Decompress gzip wrapper if present
+                        if anim_data.startswith(b'\x1f\x8b'):
+                            import gzip as gzip_module
+                            anim_data = gzip_module.decompress(anim_data)
+                        # Convert binary .rbxm -> .rbxmx XML if needed
+                        if anim_data.startswith(b'<roblox!'):
+                            from ..utils.anim_converter import rbxm_to_rbxmx
+                            anim_data = rbxm_to_rbxmx(anim_data)
+                        # If it's a KeyframeSequence, convert to CurveAnimation
+                        if b'CurveAnimation' not in anim_data:
+                            from ..utils.r15_to_r6 import keyframe_to_curve_anim
+                            anim_data = keyframe_to_curve_anim(anim_data)
+                        output_path = export_type_dir / f'{filename}.rbxmx'
+                        output_path.write_bytes(anim_data)
+                        return output_path
+                    except Exception as e:
+                        from ..utils import log_buffer
+                        log_buffer.log('Export', f'Failed to convert animation to RBXMX: {e}')
+                        output_path = export_type_dir / f'{filename}.rbxmx'
 
                 elif export_format == 'converted_json' and asset_type == 73:  # FontFamily - JSON metadata
                     # FontFamily assets are JSON files

@@ -166,6 +166,14 @@ def _write_property(
 # --- Individual property writers ---
 
 
+def _has_invalid_xml_chars(s: str) -> bool:
+    """Return True if the string contains characters not allowed in XML 1.0."""
+    return any(
+        (ord(c) < 0x20 and c not in '\t\n\r') or ord(c) in (0xFFFE, 0xFFFF)
+        for c in s
+    )
+
+
 def _write_string_prop(parent: Element, tag: str, prop: RbxProperty) -> None:
     val = prop.value
     if isinstance(val, bytes):
@@ -173,6 +181,11 @@ def _write_string_prop(parent: Element, tag: str, prop: RbxProperty) -> None:
         el = SubElement(parent, 'BinaryString')
         el.set('name', prop.name)
         el.text = base64.b64encode(val).decode('ascii')
+    elif isinstance(val, str) and _has_invalid_xml_chars(val):
+        # String contains XML-illegal characters (e.g. null bytes in GUIDs)
+        el = SubElement(parent, 'BinaryString')
+        el.set('name', prop.name)
+        el.text = base64.b64encode(val.encode('utf-8')).decode('ascii')
     elif prop.name in {'Source', 'LinkedSource'}:
         el = SubElement(parent, 'ProtectedString')
         el.set('name', prop.name)

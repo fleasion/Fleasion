@@ -1,9 +1,9 @@
 """Logs window."""
 
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtWidgets import QDialog, QTextEdit, QVBoxLayout
+from PyQt6.QtWidgets import QApplication, QDialog, QHBoxLayout, QLabel, QPushButton, QTextEdit, QVBoxLayout
 
-from ..utils import APP_NAME, get_icon_path, log_buffer
+from ..utils import APP_NAME, get_icon_path, log_buffer, time_tracker
 
 
 class LogsWindow(QDialog):
@@ -45,6 +45,23 @@ class LogsWindow(QDialog):
         self.text_edit.setFont(self._get_monospace_font())
         layout.addWidget(self.text_edit)
 
+        bottom = QHBoxLayout()
+
+        copy_btn = QPushButton("Copy All")
+        copy_btn.setFixedWidth(80)
+        copy_btn.clicked.connect(self._copy_all)
+        bottom.addWidget(copy_btn)
+
+        bottom.addStretch(1)
+
+        self.time_label = QLabel()
+        self.time_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.time_label.setStyleSheet('color: #888; font-size: 9pt;')
+        self._refresh_time_label()
+        bottom.addWidget(self.time_label)
+
+        layout.addLayout(bottom)
+
         self.setLayout(layout)
 
     def _get_monospace_font(self):
@@ -61,6 +78,10 @@ class LogsWindow(QDialog):
         self.timer.timeout.connect(self._update_logs)
         self.timer.start(250)
         self._update_logs()
+
+        self.time_timer = QTimer()
+        self.time_timer.timeout.connect(self._refresh_time_label)
+        self.time_timer.start(1000)
 
     def _update_logs(self):
         """Update the logs display.
@@ -92,7 +113,16 @@ class LogsWindow(QDialog):
             if was_at_bottom:
                 scrollbar.setValue(scrollbar.maximum())
 
+    def _copy_all(self):
+        QApplication.clipboard().setText(self.text_edit.toPlainText())
+
+    def _refresh_time_label(self):
+        """Update the time wasted label."""
+        total = time_tracker.get_total_seconds()
+        self.time_label.setText(f'Time wasted: {time_tracker.format_duration(total)}')
+
     def closeEvent(self, event):
         """Handle window close event."""
         self.timer.stop()
+        self.time_timer.stop()
         super().closeEvent(event)

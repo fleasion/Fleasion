@@ -202,6 +202,17 @@ class ConfigManager:
         self._save_settings()
 
     @property
+    def close_to_tray(self) -> bool:
+        """Get close to tray setting."""
+        return self.settings.get('close_to_tray', True)
+
+    @close_to_tray.setter
+    def close_to_tray(self, value: bool):
+        """Set close to tray setting."""
+        self.settings['close_to_tray'] = value
+        self._save_settings()
+
+    @property
     def window_geometry(self) -> str:
         """Get the saved window geometry (hex string)."""
         return self.settings.get('window_geometry', '')
@@ -210,6 +221,24 @@ class ConfigManager:
     def window_geometry(self, value: str):
         """Set the window geometry."""
         self.settings['window_geometry'] = value
+        self._save_settings()
+
+    @property
+    def auto_convert_anim_rig(self) -> bool:
+        return True
+
+    @auto_convert_anim_rig.setter
+    def auto_convert_anim_rig(self, value: bool):
+        self.settings['auto_convert_anim_rig'] = value
+        self._save_settings()
+
+    @property
+    def skip_non_player_anim_replace(self) -> bool:
+        return self.settings.get('skip_non_player_anim_replace', False)
+
+    @skip_non_player_anim_replace.setter
+    def skip_non_player_anim_replace(self, value: bool):
+        self.settings['skip_non_player_anim_replace'] = value
         self._save_settings()
 
     @property
@@ -320,6 +349,17 @@ class ConfigManager:
     def replacement_rules(self, value: list):
         """Set rules for the currently displayed (last) config."""
         self.set_replacement_rules(self.last_config, value)
+
+    @property
+    def time_wasted_seconds(self) -> int:
+        """Get total time wasted in seconds (cumulative across sessions)."""
+        return self.settings.get('time_wasted_seconds', 0)
+
+    @time_wasted_seconds.setter
+    def time_wasted_seconds(self, value: int):
+        """Set total time wasted in seconds."""
+        self.settings['time_wasted_seconds'] = max(0, int(value))
+        self._save_settings()
 
     def save(self):
         """Save settings."""
@@ -480,10 +520,18 @@ class ConfigManager:
                     # Convert to numeric ID for proper texture_stripper matching
                     if isinstance(v, str):
                         v_lower = v.lower()
-                        # Check exact match with known asset type names
-                        if v_lower in ASSET_TYPES:
-                            # Store both the lowercase name and its numeric ID
-                            # for texture_stripper compatibility
+                        # Virtual animation rig-filter types - kept as canonical string keys
+                        _VIRTUAL_ANIM = {
+                            'r6animation':        'R6Animation',
+                            'r15animation':       'R15Animation',
+                            'nonplayeranimation': 'NonPlayerAnimation',
+                            'r6 animation':        'R6Animation',
+                            'r15 animation':       'R15Animation',
+                            'non-player animation': 'NonPlayerAnimation',
+                        }
+                        if v_lower in _VIRTUAL_ANIM:
+                            parsed_ids.append(_VIRTUAL_ANIM[v_lower])
+                        elif v_lower in ASSET_TYPES:
                             numeric_id = ASSET_TYPES[v_lower]
                             parsed_ids.append(numeric_id)
 

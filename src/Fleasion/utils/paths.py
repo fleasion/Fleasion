@@ -5,7 +5,7 @@ from pathlib import Path
 
 # Application metadata
 APP_NAME = 'Fleasion'
-APP_VERSION = '1.7.1'
+APP_VERSION = '1.8.0'
 APP_AUTHOR = 'By @8ar__ | Logic by @blockce, @1_v, @0100152000022000\n@dis_spencer, @Yeha., @emk530'
 APP_DISCORD = 'discord.gg/hXyhKehEZF'
 
@@ -58,6 +58,7 @@ DEFAULT_SETTINGS = {
     'auto_delete_cache_on_exit': True,
     'clear_cache_on_launch': True,
     'run_on_boot': False,
+    'close_to_tray': True,
     # Scraper tab - column visibility
     'scraper_column_visibility': {
         'hash_name':  True,
@@ -69,6 +70,9 @@ DEFAULT_SETTINGS = {
         'url':        False,
     },
     'scraper_column_widths': {},
+    'time_wasted_seconds': 0,
+    'auto_convert_anim_rig': False,
+    'skip_non_player_anim_replace': False,
 }
 
 

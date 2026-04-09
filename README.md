@@ -187,10 +187,12 @@ src/Fleasion/
 │   ├── cache_json_viewer.py        # Embedded JSON viewer for cache entries
 │   ├── animation_viewer.py         # 3D animation preview with R15/R6 rigs
 │   ├── audio_player.py             # Audio playback widget
+│   ├── font_viewer.py              # Font file preview widget
 │   ├── obj_viewer.py               # 3D mesh viewer (OpenGL) with orbit/FPS camera
 │   ├── mesh_processing.py          # Mesh format conversion (Roblox mesh to OBJ)
 │   ├── rbxm_parser.py              # Roblox binary model file parser
 │   └── tools/
+│       ├── orm_compositor.py       # ORM texture channel compositor (metalness/roughness)
 │       ├── solidmodel_converter/
 │       │   ├── converter.py        # RBXM deserializer entry point
 │       │   ├── obj_to_mesh.py      # OBJ to Roblox V2.00 mesh format converter
@@ -204,14 +206,29 @@ src/Fleasion/
 │       │       ├── serializer.py
 │       │       ├── types.py
 │       │       └── xml_writer.py
+│       ├── image_to_ktx2/
+│       │   └── converter.py        # PNG/image to KTX2 texture converter
+│       ├── ktx_to_png/
+│       │   └── ktx_to_png.py       # KTX2 texture to PNG converter
 │       └── animpreview/            # Animation preview assets (R15/R6 OBJ models and rigs)
+│           └── animpreview.py
 ├── gui/
 │   ├── replacer_config.py          # Main Dashboard window with profile management
+│   ├── modifications_tab.py        # Client modifications tab (fonts, fflags, global settings)
+│   ├── subplace_joiner_tab.py      # Subplace browser and server joiner tab
+│   ├── rando_stuff_tab.py          # Misc tab (reserved server rejoin, multi-instance, accounts)
+│   ├── prejsons_dialog.py          # Community preset browser dialog
 │   ├── json_viewer.py              # JSON tree viewer with search and asset preview
 │   ├── theme.py                    # Theme management (System/Light/Dark)
 │   ├── about.py                    # About dialog
 │   ├── logs.py                     # Real-time log viewer
 │   └── delete_cache.py             # Cache deletion window
+├── modifications/
+│   ├── manager.py                  # Modification orchestration (apply/revert)
+│   ├── fflag_manager.py            # Fast flags (FFlag) read/write
+│   ├── global_settings_manager.py  # GlobalSettings.json management
+│   ├── font_utils.py               # Custom font installation
+│   └── dds_to_png.py               # DDS texture to PNG conversion
 ├── prejsons/
 │   └── downloader.py               # Community preset downloader
 └── utils/
@@ -220,6 +237,10 @@ src/Fleasion/
     ├── autostart.py                # Windows Task Scheduler run-on-boot management
     ├── logging.py                  # Thread-safe log buffer
     ├── threading.py                # Threading utilities
+    ├── time_tracker.py             # Session time tracking
+    ├── anim_converter.py           # Animation format conversion (R6↔R15, KeyframeSeq↔CurveAnim)
+    ├── r15_to_r6.py                # R15 to R6 rig conversion utilities
+    ├── rig_data.py                 # Rig bone definitions and mappings
     ├── updater.py                  # Update checker
     └── windows.py                  # Windows-specific operations (process management, cache deletion)
 ```
@@ -261,8 +282,8 @@ Settings are stored in `%LocalAppData%\FleasionNT\`:
 
 ## Credits
 
-- **@8ar__**, **@dis_spencer** &mdash; code
-- **@1_v** (Sky), **@Blockce**, **@0100152000022000** (Sky 2), **@emk530**, **@Yeha.** &mdash; logic and contributions
+- **@8ar__**, **@dis_spencer**, **@1_v** (Sky) &mdash; code
+- **@Blockce**, **@0100152000022000** (Sky 2), **@emk530**, **@Yeha.** &mdash; logic and contributions
 - Donators &mdash; for keeping the passion going
 
 ## License
