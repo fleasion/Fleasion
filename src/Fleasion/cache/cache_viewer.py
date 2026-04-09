@@ -4605,16 +4605,16 @@ class CacheViewerTab(QWidget):
 
         # Search row
         search_layout = QHBoxLayout()
+        search_layout.setContentsMargins(0, 0, 0, 0)
         search_edit = QLineEdit()
         search_edit.setPlaceholderText('Search IDs')
         search_layout.addWidget(search_edit)
         apply_btn = QPushButton('Apply blacklist')
         search_layout.addWidget(apply_btn)
-        layout.addLayout(search_layout)
-
         status_label = QLabel('')
         status_label.setStyleSheet('color: #888; font-size: 9pt;')
-        layout.addWidget(status_label)
+        search_layout.addWidget(status_label)
+        layout.addLayout(search_layout)
 
         dialog.setLayout(layout)
 
