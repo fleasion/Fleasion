@@ -4609,11 +4609,13 @@ class CacheViewerTab(QWidget):
         search_edit = QLineEdit()
         search_edit.setPlaceholderText('Search IDs')
         search_layout.addWidget(search_edit)
-        apply_btn = QPushButton('Apply blacklist')
-        search_layout.addWidget(apply_btn)
+        # Push the following widgets to the right side
+        search_layout.addStretch()
         status_label = QLabel('')
         status_label.setStyleSheet('color: #888; font-size: 9pt;')
         search_layout.addWidget(status_label)
+        apply_btn = QPushButton('Apply blacklist')
+        search_layout.addWidget(apply_btn)
         layout.addLayout(search_layout)
 
         dialog.setLayout(layout)
@@ -4703,10 +4705,10 @@ class CacheViewerTab(QWidget):
 
         status_label = QLabel('')
         status_label.setStyleSheet('color: #888; font-size: 9pt;')
-        layout.addWidget(status_label)
 
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
+        btn_layout.addWidget(status_label)
 
         load_btn = QPushButton('Load Asset IDs')
         btn_layout.addWidget(load_btn)
