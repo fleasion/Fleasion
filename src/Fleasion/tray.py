@@ -70,6 +70,11 @@ class SystemTray:
         config_action.triggered.connect(self._show_replacer_config)
         self.menu.addAction(config_action)
 
+        # Configs submenu
+        self.configs_menu = QMenu('Configs', self.menu)
+        self.configs_menu.aboutToShow.connect(self._populate_configs_menu)
+        self.menu.addMenu(self.configs_menu)
+
         self.menu.addSeparator()
 
         # Windows
@@ -108,6 +113,20 @@ class SystemTray:
         exit_action = QAction('Exit', self.menu)
         exit_action.triggered.connect(self._exit_app)
         self.menu.addAction(exit_action)
+
+    def _populate_configs_menu(self):
+        """Populate the Configs submenu with current configs."""
+        self.configs_menu.clear()
+        for name in self.config_manager.config_names:
+            action = QAction(name, self.configs_menu)
+            action.setCheckable(True)
+            action.setChecked(self.config_manager.is_config_enabled(name))
+            action.triggered.connect(lambda checked, n=name: self._toggle_config(n))
+            self.configs_menu.addAction(action)
+
+    def _toggle_config(self, name: str):
+        """Toggle a config's enabled state."""
+        self.config_manager.toggle_config_enabled(name)
 
     def _create_settings_menu(self):
         """Create the Settings submenu."""

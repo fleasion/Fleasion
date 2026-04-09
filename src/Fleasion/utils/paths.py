@@ -73,6 +73,7 @@ DEFAULT_SETTINGS = {
     'time_wasted_seconds': 0,
     'auto_convert_anim_rig': False,
     'skip_non_player_anim_replace': False,
+    'scraper_blacklist': [],
 }
 
 

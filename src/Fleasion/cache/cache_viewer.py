@@ -1135,6 +1135,12 @@ class CacheViewerTab(QWidget):
         self._asset_loader: AssetLoaderThread | None = None
         self._is_deleting: bool = False
 
+        # Blacklisted asset IDs (excluded from table)
+        if config_manager is not None:
+            self._blacklisted_ids: set[str] = set(config_manager.scraper_blacklist)
+        else:
+            self._blacklisted_ids: set[str] = set()
+
         # Texturepack data for context menu
         self._texturepack_data: dict = {}  # map_name -> {id, hash, data}
         self._texturepack_xml: str = ''  # Original XML
@@ -1490,7 +1496,7 @@ class CacheViewerTab(QWidget):
     def _setup_ui(self):
         """Setup the UI."""
         layout = QVBoxLayout()
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setContentsMargins(10, 10, 10, 4)
 
         # Filters (includes scraper toggle and stats)
         self._create_filters(layout)
@@ -1925,6 +1931,10 @@ class CacheViewerTab(QWidget):
 
         actions_layout.addStretch()
 
+        blacklist_btn = QPushButton('Blacklisted IDs')
+        blacklist_btn.clicked.connect(self._show_blacklist_dialog)
+        actions_layout.addWidget(blacklist_btn)
+
         load_asset_btn = QPushButton('Load Asset...')
         load_asset_btn.clicked.connect(self._show_load_asset_dialog)
         actions_layout.addWidget(load_asset_btn)
@@ -1972,6 +1982,10 @@ class CacheViewerTab(QWidget):
 
         # Get assets
         assets = self.cache_manager.list_assets(filter_types)
+
+        # Apply blacklist filter
+        if self._blacklisted_ids:
+            assets = [a for a in assets if a['id'] not in self._blacklisted_ids]
 
         # Ensure all assets have _asset_info entries so the background name
         # resolver can discover and resolve them even when a search filter
@@ -4556,6 +4570,109 @@ class CacheViewerTab(QWidget):
     # ------------------------------------------------------------------
     # Load Asset dialog
     # ------------------------------------------------------------------
+
+    def _show_blacklist_dialog(self):
+        """Show a dialog for managing blacklisted asset IDs."""
+        from ..utils import get_icon_path
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Blacklisted IDs')
+        dialog.resize(400, 350)
+        if icon_path := get_icon_path():
+            from PyQt6.QtGui import QIcon
+            dialog.setWindowIcon(QIcon(str(icon_path)))
+
+        layout = QVBoxLayout()
+
+        title = QLabel('Blacklisted Asset IDs')
+        title.setStyleSheet('font-weight: bold;')
+        layout.addWidget(title)
+
+        hint = QLabel('Enter asset IDs separated by commas, spaces, newlines, or semicolons.')
+        hint.setStyleSheet('color: gray; font-size: 9pt;')
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        text_edit = QTextEdit()
+        text_edit.setAcceptRichText(False)
+        text_edit.setPlaceholderText('e.g. 1818, 1234567890, 9876543210')
+
+        # Populate with current blacklist
+        if self._blacklisted_ids:
+            text_edit.setPlainText(', '.join(sorted(self._blacklisted_ids, key=lambda x: int(x))))
+        layout.addWidget(text_edit)
+
+
+        # Search row
+        search_layout = QHBoxLayout()
+        search_layout.setContentsMargins(0, 0, 0, 0)
+        search_edit = QLineEdit()
+        search_edit.setPlaceholderText('Search IDs')
+        search_layout.addWidget(search_edit)
+        apply_btn = QPushButton('Apply blacklist')
+        search_layout.addWidget(apply_btn)
+        status_label = QLabel('')
+        status_label.setStyleSheet('color: #888; font-size: 9pt;')
+        search_layout.addWidget(status_label)
+        layout.addLayout(search_layout)
+
+        dialog.setLayout(layout)
+
+        _last_search_query = ['']
+
+        def _search_id():
+            query = search_edit.text().strip()
+            if not query:
+                return
+            # If query changed, reset search to start from beginning
+            if query != _last_search_query[0]:
+                _last_search_query[0] = query
+                text_edit.moveCursor(text_edit.textCursor().MoveOperation.Start)
+            # Search from current cursor position forward
+            cursor = text_edit.document().find(query, text_edit.textCursor())
+            if cursor.isNull():
+                # Wrap around to start
+                cursor = text_edit.document().find(query)
+            if not cursor.isNull():
+                text_edit.setTextCursor(cursor)
+                text_edit.ensureCursorVisible()
+                status_label.setText('')
+            else:
+                status_label.setText(f'ID {query} not found.')
+                status_label.setStyleSheet('color: #cc5555; font-size: 9pt;')
+
+        search_edit.returnPressed.connect(_search_id)
+        search_edit.textChanged.connect(lambda: status_label.setText(''))
+
+        def _apply():
+            content = text_edit.toPlainText().strip()
+            content = content.replace('\n', ',').replace(';', ',').replace(' ', ',')
+            ids = []
+            for part in content.split(','):
+                part = part.strip()
+                if part:
+                    try:
+                        ids.append(str(int(part)))
+                    except ValueError:
+                        pass
+            self._blacklisted_ids = set(ids)
+            if self.config_manager is not None:
+                self.config_manager.scraper_blacklist = ids
+            # Fast path: hide/show rows in-place rather than full repopulate
+            for row in range(self.table.rowCount()):
+                id_item = self.table.item(row, 1)
+                if id_item is None:
+                    continue
+                asset_data = id_item.data(Qt.ItemDataRole.UserRole)
+                asset_id = asset_data.get('id') if isinstance(asset_data, dict) else None
+                self.table.setRowHidden(row, asset_id in self._blacklisted_ids)
+            count = len(self._blacklisted_ids)
+            status_label.setText(f'Blacklist applied: {count} ID(s).')
+            status_label.setStyleSheet('color: #55cc55; font-size: 9pt;')
+
+        apply_btn.clicked.connect(_apply)
+
+        dialog.exec()
 
     def _show_load_asset_dialog(self):
         """Show a dialog for manually entering asset IDs to download from Roblox."""

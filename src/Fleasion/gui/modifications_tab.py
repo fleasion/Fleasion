@@ -1439,13 +1439,25 @@ class ModificationsTab(QWidget):
         scroll.setWidget(container)
         outer.addWidget(scroll)
 
-        # ── Status bar ───────────────────────────────────────────
+        footer_widget = QWidget()
+        footer_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        footer_layout = QHBoxLayout(footer_widget)
+        footer_layout.setContentsMargins(8, 4, 8, 4)
         self._status_label = QLabel()
-        self._status_label.setContentsMargins(8, 4, 8, 4)
         self._status_label.setStyleSheet('color: #888;')
-        outer.addWidget(self._status_label)
+        footer_layout.addWidget(self._status_label)
+        footer_layout.addStretch()
+        clear_cache_btn = QPushButton('Clear Cache')
+        clear_cache_btn.clicked.connect(self._clear_roblox_cache)
+        footer_layout.addWidget(clear_cache_btn)
+        outer.addWidget(footer_widget)
 
         self.setLayout(outer)
+
+    def _clear_roblox_cache(self):
+        from .delete_cache import DeleteCacheWindow
+        window = DeleteCacheWindow()
+        window.show()
 
     # ------------------------------------------------------------------
     # Status bar

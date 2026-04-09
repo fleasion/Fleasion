@@ -242,6 +242,15 @@ class ConfigManager:
         self._save_settings()
 
     @property
+    def scraper_blacklist(self) -> list[str]:
+        return self.settings.get('scraper_blacklist', [])
+
+    @scraper_blacklist.setter
+    def scraper_blacklist(self, value: list[str]):
+        self.settings['scraper_blacklist'] = value
+        self._save_settings()
+
+    @property
     def export_naming(self) -> list[str]:
         """Get export naming options (name, id, hash)."""
         return self.settings.get('export_naming', ['id'])
