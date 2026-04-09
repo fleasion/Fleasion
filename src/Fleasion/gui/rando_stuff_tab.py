@@ -381,8 +381,8 @@ class RandoStuffTab(QWidget):
         def _do():
             self._lbl_place.setText(f"Last placeID = {place_id}")
             self._lbl_access.setText(f"Last accessCode = {access_code.replace('&', '&&')}")
-            self._rejoin_timer_secs = 120
-            self._lbl_timer.setText("Timer: 2:00")
+            self._rejoin_timer_secs = 300
+            self._lbl_timer.setText("Timer: 5:00")
             self._rejoin_timer.start()
         self._invoker.call.emit(_do)
 
