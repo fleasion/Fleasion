@@ -354,7 +354,7 @@ class ReplacerConfigWindow(QDialog):
             ('Delete Selected', self._delete_selected),
             ('Enable Selected', self._enable_selected),
             ('Disable Selected', self._disable_selected),
-            ('Import JSON', self._open_prejsons_browser),
+            ('Import JSON...', self._open_prejsons_browser),
         ]:
             btn = QPushButton(text)
             btn.clicked.connect(callback)

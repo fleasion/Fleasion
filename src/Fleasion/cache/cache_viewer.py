@@ -1931,7 +1931,7 @@ class CacheViewerTab(QWidget):
 
         actions_layout.addStretch()
 
-        blacklist_btn = QPushButton('Blacklisted IDs')
+        blacklist_btn = QPushButton('Blacklist IDs...')
         blacklist_btn.clicked.connect(self._show_blacklist_dialog)
         actions_layout.addWidget(blacklist_btn)
 
@@ -4576,7 +4576,7 @@ class CacheViewerTab(QWidget):
         from ..utils import get_icon_path
 
         dialog = QDialog(self)
-        dialog.setWindowTitle('Blacklisted IDs')
+        dialog.setWindowTitle('Blacklist IDs')
         dialog.resize(400, 350)
         if icon_path := get_icon_path():
             from PyQt6.QtGui import QIcon
