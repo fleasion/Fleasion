@@ -806,28 +806,12 @@ class CacheManager:
                             from urllib.parse import urlparse
                             api_url = f'https://assetdelivery.roblox.com/v1/asset/?id={map_id}'
                             headers = {'User-Agent': 'Roblox/WinInet'}
-                            # Get cookie if available for private assets
+                            # Get cookie if available for private assets (use centralized function)
                             try:
-                                import os
-                                import json as _json
-                                import base64
-                                import re
-                                try:
-                                    import win32crypt
-                                    path = os.path.expandvars(r'%LocalAppData%/Roblox/LocalStorage/RobloxCookies.dat')
-                                    if os.path.exists(path):
-                                        with open(path) as f:
-                                            data = _json.load(f)
-                                        cookies_data = data.get('CookiesData')
-                                        if cookies_data:
-                                            enc = base64.b64decode(cookies_data)
-                                            dec = win32crypt.CryptUnprotectData(enc, None, None, None, 0)[1]
-                                            s = dec.decode('utf-8', errors='ignore')
-                                            m = re.search(r'\.ROBLOSECURITY\s+([^\s;]+)', s)
-                                            if m:
-                                                headers['Cookie'] = f'.ROBLOSECURITY={m.group(1)};'
-                                except Exception:
-                                    pass
+                                from ..utils.roblox_auth import get_roblosecurity
+                                cookie = get_roblosecurity()
+                                if cookie:
+                                    headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
                             except Exception:
                                 pass
                             response = requests.get(api_url, headers=headers, timeout=15, allow_redirects=True, verify=False)
