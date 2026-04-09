@@ -24,7 +24,7 @@ def get_roblosecurity() -> str | None:
     try:
         if not os.path.exists(path):
             return None
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         cookies_data = data.get("CookiesData")
         if not cookies_data:
