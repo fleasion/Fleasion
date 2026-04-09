@@ -23,6 +23,7 @@ from .cache_json_viewer import CacheJsonViewer
 from .font_viewer import FontViewerWidget
 from . import mesh_processing
 from ..utils import log_buffer, open_folder
+from ..utils.roblox_auth import get_roblosecurity as _get_roblosecurity
 import json
 
 
@@ -140,35 +141,6 @@ class DeleteWorkerThread(QThread):
         if not self._stop_requested:
             self.deletion_complete.emit(deleted_count, failed_count)
 
-
-def _get_roblosecurity() -> str | None:
-    """Get .ROBLOSECURITY cookie from Roblox local storage."""
-    import os
-    import json
-    import base64
-    import re
-
-    try:
-        import win32crypt
-    except ImportError:
-        return None
-
-    path = os.path.expandvars(r'%LocalAppData%/Roblox/LocalStorage/RobloxCookies.dat')
-    try:
-        if not os.path.exists(path):
-            return None
-        with open(path, 'r') as f:
-            data = json.load(f)
-        cookies_data = data.get('CookiesData')
-        if not cookies_data:
-            return None
-        enc = base64.b64decode(cookies_data)
-        dec = win32crypt.CryptUnprotectData(enc, None, None, None, 0)[1]
-        s = dec.decode(errors='ignore')
-        m = re.search(r'\.ROBLOSECURITY\s+([^\s;]+)', s)
-        return m.group(1) if m else None
-    except Exception:
-        return None
 
 
 class ImageLoaderThread(QThread):
@@ -2574,33 +2546,8 @@ class CacheViewerTab(QWidget):
                 break
 
     def _get_roblosecurity(self) -> str | None:
-        """Get .ROBLOSECURITY cookie from Roblox local storage."""
-        import os
-        import json
-        import base64
-        import re
-
-        try:
-            import win32crypt
-        except ImportError:
-            return None
-
-        path = os.path.expandvars(r'%LocalAppData%/Roblox/LocalStorage/RobloxCookies.dat')
-        try:
-            if not os.path.exists(path):
-                return None
-            with open(path, 'r') as f:
-                data = json.load(f)
-            cookies_data = data.get('CookiesData')
-            if not cookies_data:
-                return None
-            enc = base64.b64decode(cookies_data)
-            dec = win32crypt.CryptUnprotectData(enc, None, None, None, 0)[1]
-            s = dec.decode('utf-8', errors='ignore')
-            m = re.search(r'\.ROBLOSECURITY\s+([^\s;]+)', s)
-            return m.group(1) if m else None
-        except Exception:
-            return None
+        from ..utils.roblox_auth import get_roblosecurity
+        return get_roblosecurity()
 
     def _fetch_asset_names(self, asset_ids: list[str], cookie: str | None) -> dict[str, dict] | None:
         """Fetch asset names and creator info from Roblox Develop API (batch up to 50).

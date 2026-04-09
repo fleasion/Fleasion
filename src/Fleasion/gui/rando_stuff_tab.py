@@ -39,29 +39,13 @@ except Exception:
     win32crypt = None
 
 from ..utils.paths import CONFIG_DIR
+from ..utils.logging import log_buffer
+from ..utils.roblox_auth import get_roblosecurity as _get_roblosecurity
 
 ACCOUNTS_FILE = CONFIG_DIR / 'accounts.json'
 
 
 # Helpers
-
-def _get_roblosecurity():
-    path = os.path.expandvars(r"%LocalAppData%/Roblox/LocalStorage/RobloxCookies.dat")
-    try:
-        if not os.path.exists(path):
-            return None
-        with open(path, "r") as f:
-            data = json.load(f)
-        cookies_data = data.get("CookiesData")
-        if not cookies_data or not win32crypt:
-            return None
-        enc = base64.b64decode(cookies_data)
-        dec = win32crypt.CryptUnprotectData(enc, None, None, None, 0)[1]
-        s = dec.decode(errors="ignore")
-        m = re.search(r"\.ROBLOSECURITY\s+([^\s;]+)", s)
-        return m.group(1) if m else None
-    except Exception:
-        return None
 
 
 def _encrypt_cookie(cookie: str) -> str:
@@ -234,7 +218,7 @@ class _Invoker(QObject):
         try:
             fn()
         except Exception as exc:
-            print(f"[randostuff] invoker error: {exc}")
+            log_buffer.log("randostuff", f"invoker error: {exc}")
 
 
 # Tab widget
@@ -291,7 +275,9 @@ class RandoStuffTab(QWidget):
         rjl.addLayout(btn_row)
 
         self._lbl_place = QLabel("Last placeID = ")
+        self._lbl_place.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._lbl_access = QLabel("Last accessCode = ")
+        self._lbl_access.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         rjl.addWidget(self._lbl_place)
         rjl.addWidget(self._lbl_access)
 
@@ -385,16 +371,16 @@ class RandoStuffTab(QWidget):
     def _on_rejoin_clicked(self):
         with self._lock:
             if self._last_place_id is None or self._last_access_code is None:
-                print("[randostuff] No reserved server logged yet — join one first.")
+                log_buffer.log("randostuff", "No reserved server logged yet — join one first.")
                 return
             self._doing_rejoin = True
-        print(f"[randostuff] Rejoin triggered — placeId={self._last_place_id}, accessCode={self._last_access_code}")
+        log_buffer.log("randostuff", f"Rejoin triggered — placeId={self._last_place_id}, accessCode={self._last_access_code}")
         os.startfile(f"roblox://placeId={self._last_place_id}")
 
     def _update_labels(self, place_id, access_code):
         def _do():
             self._lbl_place.setText(f"Last placeID = {place_id}")
-            self._lbl_access.setText(f"Last accessCode = {access_code}")
+            self._lbl_access.setText(f"Last accessCode = {access_code.replace('&', '&&')}")
             self._rejoin_timer_secs = 120
             self._lbl_timer.setText("Timer: 2:00")
             self._rejoin_timer.start()
@@ -435,10 +421,10 @@ class RandoStuffTab(QWidget):
             self._multi_stop.clear()
             self._multi_thread = threading.Thread(target=self._multi_instance_loop, daemon=True)
             self._multi_thread.start()
-            print("[multiinstance] Enabled — watching for ROBLOX_singletonEvent")
+            log_buffer.log("multiinstance", "Enabled — watching for ROBLOX_singletonEvent")
         else:
             self._multi_stop.set()
-            print("[multiinstance] Disabled")
+            log_buffer.log("multiinstance", "Disabled")
 
     def _multi_instance_loop(self):
         seen_pids: set = set()
@@ -446,7 +432,7 @@ class RandoStuffTab(QWidget):
             try:
                 current_pids = self._get_roblox_pids()
                 for pid in current_pids - seen_pids:
-                    print(f"[multiinstance] New Roblox PID {pid} — watching for singletonEvent")
+                    log_buffer.log("multiinstance", f"New Roblox PID {pid} — watching for singletonEvent")
                     threading.Thread(
                         target=self._close_singleton_for_pid,
                         args=(pid,),
@@ -454,7 +440,7 @@ class RandoStuffTab(QWidget):
                     ).start()
                 seen_pids = current_pids
             except Exception as exc:
-                print(f"[multiinstance] Error: {exc}")
+                log_buffer.log("multiinstance", f"Error: {exc}")
 
     def _get_roblox_pids(self) -> set:
         kernel32 = ctypes.windll.kernel32
@@ -500,7 +486,7 @@ class RandoStuffTab(QWidget):
                 if self._scan_and_close_singleton(pid):
                     return
             except Exception as exc:
-                print(f"[multiinstance] Error scanning PID {pid}: {exc}")
+                log_buffer.log("multiinstance", f"Error scanning PID {pid}: {exc}")
                 return
             self._multi_stop.wait(0.1)
 
@@ -589,7 +575,7 @@ class RandoStuffTab(QWidget):
                                          current_proc, ctypes.byref(dup2),
                                          0, False, DUPLICATE_CLOSE_SOURCE)
                 kernel32.CloseHandle(dup2)
-                print(f"[multiinstance] Closed ROBLOX_singletonEvent in PID {pid}")
+                log_buffer.log("multiinstance", f"Closed ROBLOX_singletonEvent in PID {pid}")
                 found = True
                 break
         finally:
@@ -604,7 +590,7 @@ class RandoStuffTab(QWidget):
             try:
                 self._scan_and_close_singleton(pid)
             except Exception as exc:
-                print(f"[multiinstance] Error in PID {pid}: {exc}")
+                log_buffer.log("multiinstance", f"Error in PID {pid}: {exc}")
 
     # Account Manager
 
@@ -702,7 +688,7 @@ class RandoStuffTab(QWidget):
         try:
             self._write_cookie_to_dat(cookie)
             self._last_switched_account = acc
-            print(f"[accounts] Switched Roblox cookie to account: {username}")
+            log_buffer.log("accounts", f"Switched Roblox cookie to account: {username}")
         except Exception as exc:
             QMessageBox.warning(self, "Error", f"Failed to write cookie: {exc}")
 
@@ -710,7 +696,7 @@ class RandoStuffTab(QWidget):
         try:
             self._write_cookie_to_dat(cookie)
         except Exception as exc:
-            print(f"[accounts] Failed to write cookie file: {exc}")
+            log_buffer.log("accounts", f"Failed to write cookie file: {exc}")
 
         exe = _find_roblox_exe()
         if not exe:
@@ -740,16 +726,16 @@ class RandoStuffTab(QWidget):
             os.startfile(deeplink)
         else:
             os.startfile(exe)
-        print(f"[accounts] Launched Roblox for account: {username}")
+        log_buffer.log("accounts", f"Launched Roblox for account: {username}")
 
     def _write_cookie_to_dat(self, cookie: str):
         """Replace the .ROBLOSECURITY value in RobloxCookies.dat and re-encrypt."""
         if not win32crypt:
-            print("[accounts] win32crypt unavailable — cannot update cookie file")
+            log_buffer.log("accounts", "win32crypt unavailable — cannot update cookie file")
             return
         path = os.path.expandvars(r"%LocalAppData%\Roblox\LocalStorage\RobloxCookies.dat")
         if not os.path.exists(path):
-            print("[accounts] RobloxCookies.dat not found — launch Roblox once first")
+            log_buffer.log("accounts", "RobloxCookies.dat not found — launch Roblox once first")
             return
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -780,7 +766,7 @@ class RandoStuffTab(QWidget):
         try:
             self._close_singleton_event()
         except Exception as exc:
-            print(f"[multiinstance] close_singleton_event error: {exc}")
+            log_buffer.log("multiinstance", f"close_singleton_event error: {exc}")
         self._account_switched = False
 
     def get_roblox_exe(self) -> str | None:
@@ -903,13 +889,13 @@ class RandoStuffTab(QWidget):
                         self._last_place_id = place_id
                         self._last_access_code = access_code
                         self._last_session_id = session_id or None
-                    print(
-                        f"[randostuff] Logged reserved server — placeId={place_id}, "
+                    log_buffer.log(
+                        "randostuff", f"Logged reserved server — placeId={place_id}, "
                         f"accessCode={access_code}, Roblox-Session-Id={session_id or '(none)'}"
                     )
                     self._update_labels(place_id, access_code)
             except Exception as exc:
-                print(f"[randostuff] Failed to parse join-reserved-game body: {exc}")
+                log_buffer.log("randostuff", f"Failed to parse join-reserved-game body: {exc}")
             return
 
         if parsed.path not in self._WANTED_ENDPOINTS:
@@ -939,7 +925,7 @@ class RandoStuffTab(QWidget):
                 return
 
         if place_id is None or access_code is None:
-            print("[randostuff] Rejoin flag set but no reserved server stored — aborting.")
+            log_buffer.log("randostuff", "Rejoin flag set but no reserved server stored — aborting.")
             with self._lock:
                 self._active_rejoin_attempt_id = None
             return
@@ -956,8 +942,8 @@ class RandoStuffTab(QWidget):
         if session_id:
             flow.request.headers["Roblox-Session-Id"] = session_id
 
-        print("[randostuff] Rejoin request -> POST gamejoin.roblox.com/v1/join-reserved-game")
-        print(f"[randostuff] Rejoin request body: {json.dumps(new_payload)}")
+        log_buffer.log("randostuff", "Rejoin request -> POST gamejoin.roblox.com/v1/join-reserved-game")
+        log_buffer.log("randostuff", f"Rejoin request body: {json.dumps(new_payload)}")
         with self._lock:
             self._awaiting_rejoin_response = True
 
@@ -975,24 +961,24 @@ class RandoStuffTab(QWidget):
 
         resp = flow.response
         if resp is None:
-            print("[randostuff] Rejoin response: (none)")
+            log_buffer.log("randostuff", "Rejoin response: (none)")
             return
 
-        print(f"[randostuff] Rejoin response status: {resp.status_code}")
+        log_buffer.log("randostuff", f"Rejoin response status: {resp.status_code}")
         try:
             body_text = resp.content.decode('utf-8', errors='replace')
-            print(f"[randostuff] Rejoin response body: {body_text}")
+            log_buffer.log("randostuff", f"Rejoin response body: {body_text}")
             resp_json = json.loads(body_text)
             # status 2 = join script ready; clear the active attempt so no more redirects
             if resp_json.get("status") == 2 or resp_json.get("joinScriptUrl"):
                 with self._lock:
                     self._active_rejoin_attempt_id = None
-                print("[randostuff] Reserved server join ready — stopping redirect.")
+                log_buffer.log("randostuff", "Reserved server join ready — stopping redirect.")
             elif resp.status_code >= 400:
                 with self._lock:
                     self._active_rejoin_attempt_id = None
-                print("[randostuff] Reserved server join error — stopping redirect.")
+                log_buffer.log("randostuff", "Reserved server join error — stopping redirect.")
         except Exception as exc:
-            print(f"[randostuff] Could not read rejoin response body: {exc}")
+            log_buffer.log("randostuff", f"Could not read rejoin response body: {exc}")
             with self._lock:
                 self._active_rejoin_attempt_id = None

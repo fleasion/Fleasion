@@ -951,24 +951,5 @@ class CacheScraper:
     # ------------------------------------------------------------------
 
     def _get_roblosecurity(self) -> str | None:
-        try:
-            import win32crypt
-        except ImportError:
-            return None
-        path = os.path.expandvars(r'%LocalAppData%/Roblox/LocalStorage/RobloxCookies.dat')
-        try:
-            if not os.path.exists(path):
-                return None
-            import json as _json
-            with open(path) as f:
-                data = _json.load(f)
-            cookies_data = data.get('CookiesData')
-            if not cookies_data:
-                return None
-            enc = base64.b64decode(cookies_data)
-            dec = win32crypt.CryptUnprotectData(enc, None, None, None, 0)[1]
-            s = dec.decode('utf-8', errors='ignore')
-            m = re.search(r'\.ROBLOSECURITY\s+([^\s;]+)', s)
-            return m.group(1) if m else None
-        except Exception:
-            return None
+        from ...utils.roblox_auth import get_roblosecurity
+        return get_roblosecurity()

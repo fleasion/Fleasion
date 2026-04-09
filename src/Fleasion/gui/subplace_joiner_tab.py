@@ -30,12 +30,16 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-try:
-    import win32crypt  # type: ignore
-except Exception:
-    win32crypt = None
-
 from ..utils.paths import CONFIG_DIR
+from ..utils.logging import log_buffer
+from ..utils.roblox_auth import get_roblosecurity as _get_roblosecurity
+
+
+# Global rate-limit tracker for the public servers endpoint.
+# When a 429 is received, _servers_rl_until is set to now+60s so every
+# subsequent dialog that opens knows to wait out the remaining cooldown.
+_servers_rl_until: float = 0.0
+_servers_rl_lock = threading.Lock()
 
 
 # Helpers
@@ -69,26 +73,6 @@ def _humanize_time(iso_str: str) -> str:
         return iso_str
 
 
-def _get_roblosecurity():
-    import base64, re
-    path = os.path.expandvars(r"%LocalAppData%/Roblox/LocalStorage/RobloxCookies.dat")
-    try:
-        if not os.path.exists(path):
-            return None
-        with open(path, "r") as f:
-            data = json.load(f)
-        cookies_data = data.get("CookiesData")
-        if not cookies_data or not win32crypt:
-            return None
-        enc = base64.b64decode(cookies_data)
-        dec = win32crypt.CryptUnprotectData(enc, None, None, None, 0)[1]
-        s = dec.decode(errors="ignore")
-        m = re.search(r"\.ROBLOSECURITY\s+([^\s;]+)", s)
-        return m.group(1) if m else None
-    except Exception:
-        return None
-
-
 # Main-thread invoker
 
 class _Invoker(QObject):
@@ -103,7 +87,7 @@ class _Invoker(QObject):
             fn()
         except Exception as exc:
             import traceback
-            print(f"[subplace] invoker error: {exc}")
+            log_buffer.log("subplace", f"invoker error: {exc}")
             traceback.print_exc()
 
 
@@ -243,6 +227,7 @@ class JobIdDialog(QDialog):
 
     _results_ready = pyqtSignal(list, object)   # servers, next_cursor (object so None is allowed)
     _error_ready = pyqtSignal(str)
+    _status_update = pyqtSignal(str)
 
     _PAGE_LIMIT = 25
     _SORT_OPTIONS = [
@@ -281,6 +266,8 @@ class JobIdDialog(QDialog):
 
         self._status_label = QLabel("Fetching servers...")
         layout.addWidget(self._status_label)
+
+        self._status_update.connect(self._status_label.setText)
 
         self._list = QListWidget()
         self._list.itemDoubleClicked.connect(self._on_item_double_clicked)
@@ -330,6 +317,9 @@ class JobIdDialog(QDialog):
         threading.Thread(target=self._worker, daemon=True).start()
 
     def _worker(self):
+        global _servers_rl_until
+        RL_WAIT = 60  # seconds to wait after a 429
+
         try:
             sort = self._current_sort()
             sort_order = "Asc" if sort == "playing_asc" else "Desc"
@@ -339,12 +329,53 @@ class JobIdDialog(QDialog):
             )
             if self._cursor:
                 url += f"&cursor={self._cursor}"
-            r = requests.get(url, timeout=15, proxies={}, verify=False)
-            r.raise_for_status()
-            data = r.json()
-            servers = data.get("data", [])
-            next_cursor = data.get("nextPageCursor")
-            self._results_ready.emit(servers, next_cursor)
+
+            for attempt in range(2):  # initial + one retry after 429
+                # Respect the global rate-limit window before making a request.
+                # Re-check every second so if another dialog's request succeeds and
+                # clears the rate limit, this countdown stops early.
+                with _servers_rl_lock:
+                    wait_until = _servers_rl_until
+                remaining = wait_until - time.time()
+                if remaining > 0:
+                    for sec in range(int(remaining) + 1, 0, -1):
+                        with _servers_rl_lock:
+                            if _servers_rl_until != wait_until or _servers_rl_until <= time.time():
+                                break  # cleared by a successful request elsewhere
+                        self._status_update.emit(f"Rate limited — retrying in {sec}s…")
+                        time.sleep(1)
+                        if time.time() >= wait_until:
+                            break
+                    self._status_update.emit("Retrying…")
+
+                resp = requests.get(url, timeout=15, proxies={}, verify=False)
+                if resp.status_code == 429:
+                    with _servers_rl_lock:
+                        _servers_rl_until = max(_servers_rl_until, time.time() + RL_WAIT)
+                    if attempt == 0:
+                        wait_until = _servers_rl_until
+                        for sec in range(RL_WAIT, 0, -1):
+                            with _servers_rl_lock:
+                                if _servers_rl_until != wait_until or _servers_rl_until <= time.time():
+                                    break
+                            self._status_update.emit(f"Rate limited — retrying in {sec}s…")
+                            time.sleep(1)
+                            if time.time() >= wait_until:
+                                break
+                        self._status_update.emit("Retrying…")
+                        continue
+                    else:
+                        self._error_ready.emit("429 Too Many Requests: Slow down!")
+                        return
+                resp.raise_for_status()
+                # Successful response — clear the global rate-limit state
+                with _servers_rl_lock:
+                    _servers_rl_until = 0.0
+                data = resp.json()
+                servers = data.get("data", [])
+                next_cursor = data.get("nextPageCursor")
+                self._results_ready.emit(servers, next_cursor)
+                return
         except Exception as exc:
             self._error_ready.emit(str(exc))
 
@@ -581,7 +612,7 @@ class SubplaceJoinerTab(QWidget):
                 self.recent_ids = [str(x) for x in data.get("recent_ids", []) if str(x).strip()]
                 self.favorites = [str(x) for x in data.get("favorites", []) if str(x).strip()]
         except Exception as exc:
-            print(f"[subplace] Failed to load settings: {exc}")
+            log_buffer.log("subplace", f"Failed to load settings: {exc}")
             self.recent_ids = []
             self.favorites = []
 
@@ -591,7 +622,7 @@ class SubplaceJoinerTab(QWidget):
             with open(path, "w", encoding="utf-8") as f:
                 json.dump({"recent_ids": self.recent_ids, "favorites": self.favorites}, f, indent=2)
         except Exception as exc:
-            print(f"[subplace] Failed to save settings: {exc}")
+            log_buffer.log("subplace", f"Failed to save settings: {exc}")
 
     # Recent / Favorites sidebar
 
@@ -631,7 +662,7 @@ class SubplaceJoinerTab(QWidget):
         def _set_name(name, b=btn):
             try:
                 elided = b.fontMetrics().elidedText(name, Qt.TextElideMode.ElideRight, 170)
-                b.setText(elided)
+                b.setText(elided.replace('&', '&&'))
                 b.setToolTip(name)
             except RuntimeError:
                 pass
@@ -710,11 +741,11 @@ class SubplaceJoinerTab(QWidget):
     def on_search_clicked(self):
         place_id = self._extract_place_id(self.PlaceID_search.text())
         if not place_id.isdigit():
-            print("[subplace] Invalid Place ID")
+            log_buffer.log("subplace", "Invalid Place ID")
             return
         self.PlaceID_search.setText(place_id)
 
-        print(f"[subplace] Searching for Place ID: {place_id}")
+        log_buffer.log("subplace", f"Searching for Place ID: {place_id}")
         self.add_recent_place_id(place_id)
 
         self._search_cancel_event.set()
@@ -774,7 +805,7 @@ class SubplaceJoinerTab(QWidget):
                 if not cursor:
                     break
 
-            print(f"[subplace] Found {len(all_places)} places")
+            log_buffer.log("subplace", f"Found {len(all_places)} places")
 
             items = [
                 (p["display_name"], p.get("created"), p.get("updated"), p["id"], root_place_id)
@@ -816,14 +847,19 @@ class SubplaceJoinerTab(QWidget):
             threading.Thread(target=load_timestamps, daemon=True).start()
 
             def load_thumbnails():
-                for i, p in enumerate(all_places):
+                BATCH_SIZE = 100
+                pending = [p for p in all_places if p.get("id")]
+                for chunk_start in range(0, len(pending), BATCH_SIZE):
                     if cancel_event.is_set():
                         return
-                    pid_val = p.get("id")
-                    if not pid_val:
-                        continue
+                    chunk = pending[chunk_start:chunk_start + BATCH_SIZE]
+                    place_ids = [p["id"] for p in chunk]
                     try:
-                        img_bytes = self._fetch_thumb_bytes(pid_val)
+                        thumb_map = self._fetch_thumb_bytes_batch(place_ids)
+                    except Exception as exc:
+                        log_buffer.log("subplace", f"Batch thumbnail fetch failed: {exc}")
+                        continue
+                    for pid_val, img_bytes in thumb_map.items():
                         if img_bytes:
                             pid_int = int(pid_val)
                             def apply_pix(pid=pid_int, data=img_bytes):
@@ -833,35 +869,87 @@ class SubplaceJoinerTab(QWidget):
                                     if pix.loadFromData(data):
                                         card.set_thumbnail(pix)
                             self._on_main(apply_pix)
-                    except Exception as exc:
-                        print(f"[subplace] Thumbnail error for {pid_val}: {exc}")
-                    if (i + 1) % 5 == 0:
-                        time.sleep(0.2)
 
             threading.Thread(target=load_thumbnails, daemon=True).start()
 
         except Exception as exc:
-            print(f"[subplace] Search failed: {exc}")
+            log_buffer.log("subplace", f"Search failed: {exc}")
 
-    def _fetch_thumb_bytes(self, place_id) -> bytes | None:
-        if place_id in self.thumb_cache:
-            return self.thumb_cache[place_id]
-        try:
-            meta = self._get(
-                f"https://thumbnails.roblox.com/v1/places/gameicons?placeIds={place_id}&size=512x512&format=Png",
-                timeout=10)
-            meta.raise_for_status()
-            img_url = meta.json().get("data", [{}])[0].get("imageUrl")
-            if not img_url:
-                return None
-            img_resp = self._get(img_url, timeout=10)
-            img_resp.raise_for_status()
-            img_bytes = img_resp.content
-            self.thumb_cache[place_id] = img_bytes
-            return img_bytes
-        except Exception as exc:
-            print(f"[subplace] Thumbnail fetch failed for {place_id}: {exc}")
-            return None
+    def _fetch_thumb_bytes_batch(self, place_ids: list) -> dict:
+        """Fetch thumbnail image bytes for a batch of place IDs.
+
+        Uses v1/places/gameicons with comma-separated IDs — more reliable than
+        v1/batch which has a known bug returning placeholder images for game icons.
+
+        Returns {str(place_id): bytes} for all successfully fetched entries.
+        Already-cached entries are returned from cache without a network call.
+        Retries the metadata request on 429/5xx and retries failed image downloads.
+        """
+        str_ids = [str(pid) for pid in place_ids]
+        uncached = [sid for sid in str_ids if sid not in self.thumb_cache]
+        result = {sid: self.thumb_cache[sid] for sid in str_ids if sid in self.thumb_cache}
+
+        if not uncached:
+            return result
+
+        ids_param = ",".join(uncached)
+        url = (
+            f"https://thumbnails.roblox.com/v1/places/gameicons"
+            f"?placeIds={ids_param}&size=512x512&format=Png"
+        )
+
+        entries = []
+        for attempt in range(3):
+            if attempt > 0:
+                time.sleep(2 ** attempt)
+            try:
+                resp = self._get(url, timeout=15)
+                if resp.status_code == 429:
+                    log_buffer.log("subplace", f"Thumbnail batch 429 rate-limited (attempt {attempt + 1}), retrying…")
+                    continue
+                resp.raise_for_status()
+                entries = resp.json().get("data", [])
+                break
+            except Exception as exc:
+                log_buffer.log("subplace", f"Thumbnail batch failed (attempt {attempt + 1}): {exc}")
+
+        # Collect image URLs to download
+        to_download: dict[str, str] = {}  # sid → img_url
+        for entry in entries:
+            target_id = entry.get("targetId")
+            img_url = entry.get("imageUrl")
+            if target_id and img_url:
+                to_download[str(target_id)] = img_url
+
+        # Download image bytes; retry failures once
+        failed: dict[str, str] = {}
+        for sid, img_url in to_download.items():
+            try:
+                img_resp = self._get(img_url, timeout=10)
+                img_resp.raise_for_status()
+                img_bytes = img_resp.content
+                self.thumb_cache[sid] = img_bytes
+                result[sid] = img_bytes
+            except Exception:
+                failed[sid] = img_url
+
+        if failed:
+            time.sleep(1)
+            for sid, img_url in failed.items():
+                try:
+                    img_resp = self._get(img_url, timeout=10)
+                    img_resp.raise_for_status()
+                    img_bytes = img_resp.content
+                    self.thumb_cache[sid] = img_bytes
+                    result[sid] = img_bytes
+                except Exception as exc:
+                    log_buffer.log("subplace", f"Thumbnail download failed for {sid}: {exc}")
+
+        log_buffer.log(
+            "subplace",
+            f"Batch thumbs: {len(uncached)} requested, {len(entries)} returned, {len(result)} resolved",
+        )
+        return result
 
     # Cards
 
@@ -1000,11 +1088,11 @@ class SubplaceJoinerTab(QWidget):
 
     def _join_place(self, place_id, root_place_id=None, job_id: str = ""):
         self._current_job_id = job_id
-        print(f"[subplace] Joining place ID: {place_id}" + (f" with jobId: {job_id}" if job_id else ""))
+        log_buffer.log("subplace", f"Joining place ID: {place_id}" + (f" with jobId: {job_id}" if job_id else ""))
         cookie = _get_roblosecurity()
         if root_place_id and int(place_id) != int(root_place_id):
             ok = self._join_root(root_place_id, cookie)
-            print(f"[subplace] Pre-seed join {'succeeded' if ok else 'failed'} for root {root_place_id}")
+            log_buffer.log("subplace", f"Pre-seed join {'succeeded' if ok else 'failed'} for root {root_place_id}")
         url = f"roblox://experiences/start?placeId={place_id}"
         # If multi-instance is enabled, Roblox is already running, and the account was
         # switched -+ do exactly what the Launch button does: os.startfile(exe) to open
@@ -1016,7 +1104,7 @@ class SubplaceJoinerTab(QWidget):
             if is_roblox_running():
                 exe = self._rando_tab.get_roblox_exe()
                 if exe:
-                    print("[subplace] Account switched + multi-instance on — launching new Roblox instance then joining")
+                    log_buffer.log("subplace", "Account switched + multi-instance on — launching new Roblox instance then joining")
                     self._rando_tab.close_singleton_event()
                     self.joining_place = True
                     def _launch_then_join(exe=exe, url=url):
@@ -1060,7 +1148,7 @@ class SubplaceJoinerTab(QWidget):
             except Exception:
                 return False
         except Exception as exc:
-            print(f"[subplace] Pre-seed join error: {exc}")
+            log_buffer.log("subplace", f"Pre-seed join error: {exc}")
             return False
 
     def _new_session(self, cookie: str | None):
@@ -1113,12 +1201,12 @@ class SubplaceJoinerTab(QWidget):
                 return
             if "isTeleport" not in body_json:
                 body_json["isTeleport"] = True
-                print("[subplace] Added isTeleport flag")
+                log_buffer.log("subplace", "Added isTeleport flag")
             job_id = self._current_job_id
             if job_id:
                 body_json["gameId"] = job_id
                 flow.request.url = "https://gamejoin.roblox.com/v1/join-game-instance"
-                print(f"[subplace] Redirecting to join-game-instance with jobId: {job_id}")
+                log_buffer.log("subplace", f"Redirecting to join-game-instance with jobId: {job_id}")
             new_body = json.dumps(body_json, separators=(",", ":")).encode()
             flow.request.raw_content = new_body
 
