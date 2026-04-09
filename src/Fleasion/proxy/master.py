@@ -194,28 +194,197 @@ def _delete_watchdog_task() -> None:
         pass
 
 
+
+def _is_routable_public_ip(ip: str) -> bool:
+    """Return True only if *ip* is a publicly routable IPv4 address.
+
+    Rejects everything that cannot legitimately be a Roblox CDN address:
+      - Loopback          127.0.0.0/8
+      - Private (RFC1918) 10/8, 172.16/12, 192.168/16
+      - Link-local        169.254.0.0/16
+      - CGNAT / WARP vNIC 100.64.0.0/10  (includes WARP's 100.96.x.x range)
+      - Multicast         224.0.0.0/4
+      - Reserved / bogon  0.0.0.0/8, 240.0.0.0/4, 255.255.255.255, etc.
+    """
+    import ipaddress as _ipaddress
+    try:
+        addr = _ipaddress.IPv4Address(ip)
+        return not (
+            addr.is_loopback
+            or addr.is_private
+            or addr.is_link_local
+            or addr.is_multicast
+            or addr.is_reserved
+            or addr.is_unspecified
+        )
+    except ValueError:
+        return False
+
+
+def _dns_query_udp(hostname: str, server: str, port: int = 53, timeout: float = 3.0) -> list:
+    """Send a raw DNS A-record query over UDP to *server*, bypassing the OS
+    resolver stack entirely.
+
+    This sidesteps both the Windows DNS Client service cache AND VPN client
+    caches (e.g. Cloudflare WARP's WFP-level resolver) that may still be
+    serving stale 127.0.0.1 entries from a previous Fleasion crash, even after
+    we have already removed the hosts file entries and called
+    DnsFlushResolverCache().
+
+    Returns a list of IPv4 address strings, or [] on any failure.
+
+    DNS wire-format references: RFC 1035 §4.1
+    """
+    import socket as _socket
+    import struct as _struct
+
+    # --- Build a minimal DNS query packet ---
+    # Transaction ID: arbitrary 16-bit value
+    txid = 0x4649  # 'FI' — easy to spot in Wireshark
+    # Flags: standard query, recursion desired
+    flags = 0x0100
+    # 1 question, 0 answer/authority/additional RRs
+    header = _struct.pack('!HHHHHH', txid, flags, 1, 0, 0, 0)
+
+    # Encode hostname as a sequence of length-prefixed labels
+    labels = b''
+    for part in hostname.encode('ascii').split(b'.'):
+        labels += _struct.pack('B', len(part)) + part
+    labels += b'\x00'  # root label
+
+    # QTYPE=A (1), QCLASS=IN (1)
+    question = labels + _struct.pack('!HH', 1, 1)
+    packet = header + question
+
+    # --- Send and receive ---
+    sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+    sock.settimeout(timeout)
+    try:
+        sock.sendto(packet, (server, port))
+        response, _ = sock.recvfrom(4096)
+    except OSError:
+        return []
+    finally:
+        sock.close()
+
+    if len(response) < 12:
+        return []
+
+    # Parse response header
+    r_txid, r_flags, r_qdcount, r_ancount, _, _ = _struct.unpack('!HHHHHH', response[:12])
+    if r_txid != txid or r_ancount == 0:
+        return []
+
+    # Skip the question section (mirror of what we sent; just skip over it)
+    pos = 12
+    for _ in range(r_qdcount):
+        while pos < len(response):
+            length = response[pos]
+            pos += 1
+            if length == 0:
+                break
+            if length & 0xC0 == 0xC0:  # pointer
+                pos += 1
+                break
+            pos += length
+        pos += 4  # QTYPE + QCLASS
+
+    # Parse answer RRs — collect all A records
+    ips = []
+    for _ in range(r_ancount):
+        if pos >= len(response):
+            break
+        # Name field (may be a pointer)
+        if response[pos] & 0xC0 == 0xC0:
+            pos += 2
+        else:
+            while pos < len(response) and response[pos] != 0:
+                pos += response[pos] + 1
+            pos += 1
+        if pos + 10 > len(response):
+            break
+        rtype, _, _, rdlength = _struct.unpack('!HHIH', response[pos:pos + 10])
+        pos += 10
+        if rtype == 1 and rdlength == 4:  # A record
+            ip = '.'.join(str(b) for b in response[pos:pos + 4])
+            if _is_routable_public_ip(ip):
+                ips.append(ip)
+        pos += rdlength
+
+    return ips
+
+
+_DNS_FALLBACK_SERVERS = ['8.8.8.8', '1.1.1.1', '1.0.0.1']
+
+
 def _resolve_real_ips(hosts: set) -> dict:
     """Resolve real IPs for each host BEFORE we write hosts file entries.
 
     We MUST do this first - once hosts file points them to 127.0.0.1, any
     subsequent socket.getaddrinfo() call would return 127.0.0.1, causing our
     upstream connections to loop back to ourselves.
+
+    Primary strategy: socket.getaddrinfo() (uses OS resolver — fast, respects
+    IPv6 and system network config).
+
+    Fallback strategy: raw UDP DNS query to well-known public resolvers,
+    bypassing the OS resolver stack and any VPN client caches (e.g. Cloudflare
+    WARP's WFP-level resolver) that may still hold stale 127.0.0.1 mappings
+    from a previous crashed Fleasion session even after the hosts file has been
+    cleaned and DnsFlushResolverCache() has been called.
     """
     import socket
     real_ips: dict = {}
     for host in sorted(hosts):
+        ips = []
+
+        # --- Primary: OS resolver ---
         try:
-            # getaddrinfo returns all IPs; take the first IPv4 one
             results = socket.getaddrinfo(host, 443, socket.AF_INET, socket.SOCK_STREAM)
-            ips = [r[4][0] for r in results if r[4][0] != '127.0.0.1']
-            if ips:
-                real_ips[host] = ips
-                log_buffer.log('Proxy', f'Resolved {host} -> {ips[0]}')
-            else:
-                log_buffer.log('Proxy', f'Warning: no real IPs found for {host}')
+            ips = [r[4][0] for r in results if _is_routable_public_ip(r[4][0])]
         except Exception as exc:
-            log_buffer.log('Proxy', f'DNS resolve failed for {host}: {exc}')
+            log_buffer.log('Proxy', f'DNS resolve failed for {host} (OS resolver): {exc}')
+
+        if ips:
+            real_ips[host] = ips
+            log_buffer.log('Proxy', f'Resolved {host} -> {ips[0]}')
+            continue
+
+        # --- Fallback: raw UDP DNS, bypassing OS resolver + VPN cache ---
+        # Fires when the OS resolver returns no publicly routable IPs — typically
+        # caused by a VPN (e.g. Cloudflare WARP) whose internal DNS cache holds
+        # stale loopback/private entries from a previous crashed Fleasion session,
+        # or a VPN that routes Roblox to its own private/CGNAT address space.
+        # DnsFlushResolverCache() does not flush the VPN client's own in-process
+        # cache; a direct UDP query to a public resolver bypasses it entirely.
+        log_buffer.log(
+            'Proxy',
+            f'OS resolver returned no routable IPs for {host} — '
+            'trying direct UDP DNS (VPN cache bypass)…',
+        )
+        for dns_server in _DNS_FALLBACK_SERVERS:
+            try:
+                fallback_ips = _dns_query_udp(host, dns_server)
+                if fallback_ips:
+                    real_ips[host] = fallback_ips
+                    log_buffer.log(
+                        'Proxy',
+                        f'Resolved {host} -> {fallback_ips[0]} '
+                        f'(via direct UDP to {dns_server} — VPN cache bypass)',
+                    )
+                    break
+            except Exception as exc:
+                log_buffer.log('Proxy', f'Direct UDP DNS to {dns_server} failed for {host}: {exc}')
+        else:
+            log_buffer.log(
+                'Proxy',
+                f'Warning: could not resolve real IPs for {host} via any method. '
+                'If you are using a VPN or firewall that blocks outbound UDP port 53, '
+                'try temporarily disabling it before starting Fleasion.',
+            )
+
     return real_ips
+
 
 
 def _flush_dns() -> None:
