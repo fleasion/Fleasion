@@ -144,9 +144,10 @@ class RobloxExitMonitor(QObject):
     _studio_detected = pyqtSignal()
     player_status_changed = pyqtSignal(bool)  # Emitted when RobloxPlayerBeta opens/closes (True = running)
 
-    def __init__(self, config_manager):
+    def __init__(self, config_manager, proxy_master=None):
         super().__init__()
         self.config_manager = config_manager
+        self._proxy_master = proxy_master
         self.was_running = False
         self._player_was_running = False
         self._studio_was_running = False
@@ -178,7 +179,10 @@ class RobloxExitMonitor(QObject):
                     if exe_path is not None:
                         break
             if exe_path is not None:
-                run_in_thread(check_and_patch_running_roblox_ca)(exe_path)
+                if self._proxy_master is not None:
+                    run_in_thread(self._proxy_master.refresh_and_restart_roblox)(exe_path)
+                else:
+                    run_in_thread(check_and_patch_running_roblox_ca)(exe_path)
             else:
                 log_buffer.log('Certificate', 'Roblox launch detected but could not resolve exe path for CA check')
         self._player_was_running = is_running
@@ -508,7 +512,7 @@ def main():
         log_buffer.log('Proxy', 'Read-only mode: proxy not started (no admin rights)')
 
     # Setup Roblox exit monitor for auto cache deletion (before tray to pass to it)
-    roblox_monitor = RobloxExitMonitor(config_manager)
+    roblox_monitor = RobloxExitMonitor(config_manager, proxy_master)
 
     # Create system tray
     tray = SystemTray(app, config_manager, proxy_master, mod_manager, roblox_monitor)

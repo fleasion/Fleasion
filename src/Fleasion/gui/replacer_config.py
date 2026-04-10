@@ -40,6 +40,7 @@ class UndoManager:
 
     def __init__(self, max_history: int = 50):
         self.history: list[list] = []
+        self.future: list[list] = []
         self.max_history = max_history
 
     def save_state(self, rules: list):
@@ -47,19 +48,29 @@ class UndoManager:
         self.history.append(deepcopy(rules))
         if len(self.history) > self.max_history:
             self.history.pop(0)
+        self.future.clear()
 
     def undo(self) -> list | None:
         """Undo to previous state."""
         if len(self.history) > 1:
-            self.history.pop()
+            self.future.append(self.history.pop())
             return deepcopy(self.history[-1])
         if len(self.history) == 1:
             return deepcopy(self.history[0])
         return None
 
+    def redo(self) -> list | None:
+        """Redo a previously undone state."""
+        if self.future:
+            state = self.future.pop()
+            self.history.append(state)
+            return deepcopy(state)
+        return None
+
     def clear(self):
         """Clear history."""
         self.history.clear()
+        self.future.clear()
 
 
 class ReplacerConfigWindow(QDialog):
@@ -162,6 +173,9 @@ class ReplacerConfigWindow(QDialog):
 
         delete_shortcut = QShortcut(QKeySequence('Delete'), self)
         delete_shortcut.activated.connect(self._delete_selected)
+
+        redo_shortcut = QShortcut(QKeySequence('Ctrl+Y'), self)
+        redo_shortcut.activated.connect(self._do_redo)
 
     def _create_replacer_tab(self):
         """Create the replacer configuration tab."""
@@ -381,6 +395,12 @@ class ReplacerConfigWindow(QDialog):
 
             footer_layout.addStretch()
 
+            help_btn = QPushButton('?')
+            help_btn.setFixedSize(22, 22)
+            help_btn.setToolTip('View keybinds')
+            help_btn.clicked.connect(self._show_keybinds_help)
+            footer_layout.addWidget(help_btn)
+
             clear_cache_btn = QPushButton('Clear Cache')
             clear_cache_btn.clicked.connect(self._clear_roblox_cache)
             footer_layout.addWidget(clear_cache_btn)
@@ -401,6 +421,20 @@ class ReplacerConfigWindow(QDialog):
         from .delete_cache import DeleteCacheWindow
         window = DeleteCacheWindow()
         window.show()
+
+    def _show_keybinds_help(self):
+        from PyQt6.QtWidgets import QMessageBox
+        msg = QMessageBox(self)
+        msg.setWindowTitle('Keybinds')
+        msg.setTextFormat(Qt.TextFormat.RichText)
+        msg.setText(
+            '<b>All keybinds.</b><br>'
+            '- Ctrl+Z — Undo last change<br>'
+            '- Ctrl+Y — Redo last change<br>'
+            '- Ctrl+A — Select all rows<br>'
+            '- Delete — Delete selected row(s)'
+        )
+        msg.exec()
 
     def _open_prejsons_browser(self):
         """Open the PreJsons browser dialog."""
@@ -764,6 +798,13 @@ class ReplacerConfigWindow(QDialog):
             self.config_manager.replacement_rules = prev
             self._refresh_tree()
             log_buffer.log('Config', 'Undo performed')
+
+    def _do_redo(self):
+        """Perform redo."""
+        if next_state := self.undo_manager.redo():
+            self.config_manager.replacement_rules = next_state
+            self._refresh_tree()
+            log_buffer.log('Config', 'Redo performed')
 
     def _show_context_menu(self, pos):
         """Show context menu for tree item."""

@@ -822,6 +822,8 @@ class PreJsonsDialog(QDialog):
 
             # Save originals/replacements for each game entry so they appear
             # in the PreJsons system just like official downloads.
+            # Also update the paths in each game entry to point to the copied
+            # files so the cards and the saved dump use the right location.
             ORIGINALS_DIR.mkdir(parents=True, exist_ok=True)
             REPLACEMENTS_DIR.mkdir(parents=True, exist_ok=True)
             for g in games:
@@ -833,11 +835,20 @@ class PreJsonsDialog(QDialog):
                     url_or_path = g.get(url_key, "").strip()
                     if not url_or_path:
                         continue
+                    dest_path = dest_dir / f"{fname}.json"
                     try:
                         content = _fetch_or_read(url_or_path)
-                        (dest_dir / f"{fname}.json").write_bytes(content)
+                        dest_path.write_bytes(content)
+                        # Update the game entry to point to the copied file
+                        g[url_key] = str(dest_path)
                     except Exception:
-                        pass  # Non-fatal — custom dump itself is already saved
+                        pass  # Non-fatal — keep original path if copy fails
+
+            # Re-save the dump with updated paths so they survive dialog restarts
+            try:
+                dump_path.write_text(json.dumps({"games": {"_": games[0]}} if len(games) == 1 else {"games": {g["name"]: g for g in games}}, indent=2), encoding="utf-8")
+            except Exception:
+                pass
 
             for g in games:
                 card = self._make_card(g, dump_file=dump_path)

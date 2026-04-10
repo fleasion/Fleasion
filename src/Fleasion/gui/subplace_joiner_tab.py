@@ -19,10 +19,12 @@ from PyQt6.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -465,6 +467,7 @@ class SubplaceJoinerTab(QWidget):
         self._current_job_id: str = ""
         self._jobid_cache: dict[int, list] = {}  # place_id -> cached servers
         self._place_name_cache: dict[str, str] = {}  # place_id -> game name
+        self._custom_names: dict[str, str] = {}  # place_id -> user-defined name
 
         self.recent_ids: list[str] = []
         self.favorites: list[str] = []
@@ -626,16 +629,22 @@ class SubplaceJoinerTab(QWidget):
                     data = json.load(f)
                 self.recent_ids = [str(x) for x in data.get("recent_ids", []) if str(x).strip()]
                 self.favorites = [str(x) for x in data.get("favorites", []) if str(x).strip()]
+                self._custom_names = {str(k): str(v) for k, v in data.get("custom_names", {}).items()}
         except Exception as exc:
             log_buffer.log("subplace", f"Failed to load settings: {exc}")
             self.recent_ids = []
             self.favorites = []
+            self._custom_names = {}
 
     def _save_settings(self):
         path = self._settings_path()
         try:
             with open(path, "w", encoding="utf-8") as f:
-                json.dump({"recent_ids": self.recent_ids, "favorites": self.favorites}, f, indent=2)
+                json.dump({
+                    "recent_ids": self.recent_ids,
+                    "favorites": self.favorites,
+                    "custom_names": self._custom_names,
+                }, f, indent=2)
         except Exception as exc:
             log_buffer.log("subplace", f"Failed to save settings: {exc}")
 
@@ -651,6 +660,11 @@ class SubplaceJoinerTab(QWidget):
                 w.deleteLater()
 
     def _fetch_place_name(self, place_id: str, callback):
+        if place_id in self._custom_names:
+            name = self._custom_names[place_id]
+            self._place_name_cache[place_id] = name
+            callback(name)
+            return
         if place_id in self._place_name_cache:
             callback(self._place_name_cache[place_id])
             return
@@ -674,6 +688,10 @@ class SubplaceJoinerTab(QWidget):
         btn = QPushButton(place_id)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.clicked.connect(lambda _=False, pid=place_id: handler(pid))
+        btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        btn.customContextMenuRequested.connect(
+            lambda pos, pid=place_id, b=btn: self._show_sidebar_context_menu(pid, b, pos)
+        )
         def _set_name(name, b=btn):
             try:
                 elided = b.fontMetrics().elidedText(name, Qt.TextElideMode.ElideRight, 170)
@@ -683,6 +701,45 @@ class SubplaceJoinerTab(QWidget):
                 pass
         self._fetch_place_name(place_id, _set_name)
         return btn
+
+    def _show_sidebar_context_menu(self, place_id: str, btn: QPushButton, pos):
+        menu = QMenu(self)
+        rename_action = menu.addAction("Rename")
+        remove_recent_action = None
+        remove_fav_action = None
+        if place_id in self.recent_ids:
+            remove_recent_action = menu.addAction("Remove from recents")
+        if place_id in self.favorites:
+            remove_fav_action = menu.addAction("Remove from favorites")
+        action = menu.exec(btn.mapToGlobal(pos))
+        if action is None:
+            return
+        if action == rename_action:
+            self._rename_sidebar_entry(place_id, btn)
+        elif remove_recent_action and action == remove_recent_action:
+            self.recent_ids.remove(place_id)
+            self._save_settings()
+            self._rebuild_recent_buttons()
+        elif remove_fav_action and action == remove_fav_action:
+            self.favorites.remove(place_id)
+            self._save_settings()
+            self._rebuild_favorite_buttons()
+
+    def _rename_sidebar_entry(self, place_id: str, btn: QPushButton):
+        current = self._custom_names.get(place_id) or self._place_name_cache.get(place_id, place_id)
+        name, ok = QInputDialog.getText(self, "Rename", f"Name for {place_id}:", text=current)
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        self._custom_names[place_id] = name
+        self._place_name_cache[place_id] = name
+        self._save_settings()
+        try:
+            elided = btn.fontMetrics().elidedText(name, Qt.TextElideMode.ElideRight, 170)
+            btn.setText(elided.replace('&', '&&'))
+            btn.setToolTip(name)
+        except RuntimeError:
+            pass
 
     def _rebuild_recent_buttons(self):
         self._clear_layout_buttons(self.recent_layout)
