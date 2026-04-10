@@ -1668,7 +1668,23 @@ class _CustomModDialog(QDialog):
             self._target_edit.setText(path)
 
     def _browse_source(self):
-        path, _ = QFileDialog.getOpenFileName(self, 'Select source file')
+        # Try to open the dialog in the directory/path the user may have pasted
+        current_val = self._source_edit.text().strip(' \t"\'')
+        initial_dir = ''
+        if current_val:
+            try:
+                p = Path(current_val)
+                if p.exists():
+                    # If it's a directory, start there; if it's a file, start in its parent
+                    initial_dir = str(p) if p.is_dir() else str(p.parent)
+                else:
+                    # If the exact path doesn't exist but the parent does, use the parent
+                    if p.parent.exists():
+                        initial_dir = str(p.parent)
+            except Exception:
+                initial_dir = ''
+
+        path, _ = QFileDialog.getOpenFileName(self, 'Select source file', initial_dir)
         if path:
             self._source_edit.setText(path)
 
