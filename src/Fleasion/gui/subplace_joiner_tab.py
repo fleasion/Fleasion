@@ -2,12 +2,13 @@
 
 import json
 import os
+import random
 import subprocess
 import threading
 import time
 import uuid
 from datetime import datetime, timezone
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
 
 import requests
 from dateutil import parser as _dateutil_parser
@@ -1165,41 +1166,40 @@ class SubplaceJoinerTab(QWidget):
         if root_place_id and int(place_id) != int(root_place_id):
             ok = self._join_root(root_place_id, cookie)
             log_buffer.log("subplace", f"Pre-seed join {'succeeded' if ok else 'failed'} for root {root_place_id}")
-        url = f"roblox://experiences/start?placeId={place_id}"
-        # If multi-instance is enabled, Roblox is already running, and the account was
-        # switched -+ do exactly what the Launch button does: os.startfile(exe) to open
-        # a fresh Roblox instance, then fire the deeplink once it has had time to boot.
         if (self._rando_tab is not None
                 and self._rando_tab.is_multi_instance_enabled()
                 and self._rando_tab._account_switched):
             from ..utils.windows import is_roblox_running
             if is_roblox_running():
-                exe = self._rando_tab.get_roblox_exe()
-                if exe:
-                    log_buffer.log("subplace", "Account switched + multi-instance on — launching new Roblox instance then joining")
-                    self._rando_tab.close_singleton_event()
-                    self.joining_place = True
-                    def _launch_then_join(exe=exe, url=url):
-                        def _count_roblox():
-                            try:
-                                out = subprocess.check_output(
-                                    ['tasklist', '/FI', 'IMAGENAME eq RobloxPlayerBeta.exe'],
-                                    text=True, creationflags=0x08000000)
-                                return out.lower().count('robloxplayerbeta.exe')
-                            except Exception:
-                                return 0
-                        before = _count_roblox()
-                        os.startfile(exe)
-                        for _ in range(60):  # poll up to 30 s
-                            time.sleep(0.5)
-                            if _count_roblox() > before:
-                                break
-                        time.sleep(0.5)
-                        os.startfile(url)
-                    threading.Thread(target=_launch_then_join, daemon=True).start()
-                    return
+                log_buffer.log("subplace", "Account switched + multi-instance on — launching new Roblox instance then joining")
+                self._rando_tab.close_singleton_event()
+                self.joining_place = True
+                def _launch_with_uri(place_id=place_id, cookie=cookie):
+                    from .rando_stuff_tab import _get_auth_ticket
+                    ticket = _get_auth_ticket(cookie)
+                    if not ticket:
+                        log_buffer.log("subplace", "Failed to get auth ticket for multi-instance join")
+                        return
+                    tracker_id = random.randint(10_000_000_000, 99_999_999_999)
+                    place_launcher_url = (
+                        f"https://www.roblox.com/Game/PlaceLauncher.ashx"
+                        f"?request=RequestGame"
+                        f"&browserTrackerId={tracker_id}"
+                        f"&placeId={place_id}"
+                        f"&isPlayTogetherGame=false"
+                    )
+                    roblox_player_uri = (
+                        f"roblox-player:1+launchmode:play+gameinfo:{ticket}"
+                        f"+launchtime:{int(time.time() * 1000)}"
+                        f"+placelauncherurl:{quote(place_launcher_url, safe='')}"
+                        f"+browsertrackerid:{tracker_id}+robloxLocale:en_us+gameLocale:en_us"
+                        f"+channel:+LaunchExp:InApp"
+                    )
+                    os.startfile(roblox_player_uri)
+                threading.Thread(target=_launch_with_uri, daemon=True).start()
+                return
         self.joining_place = True
-        os.startfile(url)
+        os.startfile(f"roblox://experiences/start?placeId={place_id}")
 
     def _join_root(self, root_place_id: int, cookie: str | None = None) -> bool:
         try:
