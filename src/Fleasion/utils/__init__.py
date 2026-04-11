@@ -43,6 +43,7 @@ from .windows import (
     show_message_box,
     terminate_roblox,
     wait_for_roblox_exit,
+    wait_for_roblox_window,
 )
 
 __all__ = [
@@ -88,4 +89,5 @@ __all__ = [
     'show_message_box',
     'terminate_roblox',
     'wait_for_roblox_exit',
+    'wait_for_roblox_window',
 ]

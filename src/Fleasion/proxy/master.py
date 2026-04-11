@@ -45,9 +45,10 @@ from ..utils import (
     STORAGE_DB_GDK,
     log_buffer,
     terminate_roblox,
-        wait_for_roblox_exit,
-        delete_cache,
-        run_in_thread,
+    wait_for_roblox_exit,
+    wait_for_roblox_window,
+    delete_cache,
+    run_in_thread,
 )
 from .addons import CacheScraper, TextureStripper
 from .server import FleasionProxy, INTERCEPT_HOSTS
@@ -1118,7 +1119,12 @@ class ProxyMaster:
             if fut.exception():
                 log_buffer.log('Certificate', f'Error during {label}: {fut.exception()}')
 
-        log_buffer.log('Certificate', 'Cert injected and IPs refreshed — restarting Roblox...')
+        log_buffer.log('Certificate', 'Cert injected and IPs refreshed — waiting for Roblox to finish launching...')
+        if not wait_for_roblox_window(timeout=60.0):
+            log_buffer.log('Certificate', 'Warning: Roblox window did not appear within 60 s — restarting anyway')
+        time.sleep(2)
+
+        log_buffer.log('Certificate', 'Restarting Roblox...')
         terminate_roblox()
         if not wait_for_roblox_exit(timeout=15.0):
             log_buffer.log('Certificate', 'Warning: Roblox did not exit within 15 s — skipping restart')
