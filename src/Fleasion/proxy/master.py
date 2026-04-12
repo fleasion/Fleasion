@@ -45,9 +45,10 @@ from ..utils import (
     STORAGE_DB_GDK,
     log_buffer,
     terminate_roblox,
-        wait_for_roblox_exit,
-        delete_cache,
-        run_in_thread,
+    wait_for_roblox_exit,
+    wait_for_roblox_window,
+    delete_cache,
+    run_in_thread,
 )
 from .addons import CacheScraper, TextureStripper
 from .server import FleasionProxy, INTERCEPT_HOSTS
@@ -963,15 +964,18 @@ def _install_ca_into_roblox(ca_pem: str) -> None:
             log_buffer.log('Certificate', f'Failed to write CA for {d.name}: {exc}')
 
 
-def check_and_patch_running_roblox_ca(exe_path: 'Path') -> None:
+def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
     """Check if the currently running Roblox instance has our CA in its cacert.pem.
 
     Called when RobloxPlayerBeta.exe is detected launching at runtime.
     If the cert is absent it is injected immediately and an alert is logged.
+
+    Returns True if the cert was missing and has been injected (Roblox needs a
+    restart).  Returns False if already patched or the CA has not been generated.
     """
     ca_cert_path = PROXY_CA_DIR / 'ca.crt'
     if not ca_cert_path.exists():
-        return  # CA not generated yet – nothing to patch
+        return False  # CA not generated yet – nothing to patch
 
     ca_pem = get_ca_pem(ca_cert_path)
     roblox_dir = exe_path.parent
@@ -984,7 +988,7 @@ def check_and_patch_running_roblox_ca(exe_path: 'Path') -> None:
         existing = ''
 
     if ca_pem in existing:
-        return  # Already patched – nothing to do
+        return False  # Already patched – nothing to do
 
     log_buffer.log(
         'Certificate',
@@ -997,6 +1001,7 @@ def check_and_patch_running_roblox_ca(exe_path: 'Path') -> None:
         log_buffer.log('Certificate', f'CA injected into running Roblox instance: {roblox_dir.name}')
     except (PermissionError, OSError) as exc:
         log_buffer.log('Certificate', f'Failed to inject CA into running Roblox instance: {exc}')
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1061,6 +1066,78 @@ class ProxyMaster:
         if self._watchdog_thread and self._watchdog_thread.is_alive():
             self._watchdog_thread.join(timeout=2.0)
         _delete_watchdog_task()
+
+    def refresh_and_restart_roblox(self, exe_path: Path) -> None:
+        """Called when Roblox launches without our CA cert.
+
+        Runs cert injection and IP/hosts refresh in parallel (two threads), then
+        kills Roblox and restarts it so the new cert and fresh hosts entries take
+        effect immediately.
+        """
+        # Quick-check: cert already present → nothing to do
+        ca_cert_path = PROXY_CA_DIR / 'ca.crt'
+        if not ca_cert_path.exists():
+            return
+        ca_pem = get_ca_pem(ca_cert_path)
+        ca_file = exe_path.parent / 'ssl' / 'cacert.pem'
+        try:
+            existing = ca_file.read_text(encoding='utf-8', errors='replace') if ca_file.exists() else ''
+        except OSError:
+            existing = ''
+        if ca_pem in existing:
+            return  # Already patched — no restart needed
+
+        log_buffer.log('Certificate', 'Roblox missing CA cert — refreshing hosts and restarting...')
+
+        def _patch_cert() -> None:
+            check_and_patch_running_roblox_ca(exe_path)
+
+        def _refresh_ips() -> None:
+            if not self._hosts_installed:
+                return
+            # Remove entries temporarily so getaddrinfo() sees real IPs again
+            _remove_hosts_entries(set(INTERCEPT_HOSTS))
+            _flush_dns()
+            new_ips = _resolve_real_ips(set(INTERCEPT_HOSTS))
+            # Re-install entries pointing back to our proxy
+            _add_hosts_entries(set(INTERCEPT_HOSTS))
+            _flush_dns()
+            # Update running proxy and scraper with fresh upstream IPs
+            if self._proxy is not None and new_ips:
+                self._proxy._upstream_ips = new_ips
+            scraper_ips = {host: ips[0] for host, ips in new_ips.items() if ips}
+            if scraper_ips:
+                self.cache_scraper.set_real_ips(scraper_ips)
+
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix='fleasion-cert-refresh') as pool:
+            f_cert = pool.submit(_patch_cert)
+            f_ips = pool.submit(_refresh_ips)
+        # Both futures are done after the with block (shutdown waits for them)
+
+        for label, fut in (('cert patch', f_cert), ('IP refresh', f_ips)):
+            if fut.exception():
+                log_buffer.log('Certificate', f'Error during {label}: {fut.exception()}')
+
+        log_buffer.log('Certificate', 'Cert injected and IPs refreshed — waiting for Roblox to finish launching...')
+        if not wait_for_roblox_window(timeout=60.0):
+            log_buffer.log('Certificate', 'Warning: Roblox window did not appear within 60 s — restarting anyway')
+        time.sleep(2)
+
+        log_buffer.log('Certificate', 'Restarting Roblox...')
+        terminate_roblox()
+        if not wait_for_roblox_exit(timeout=15.0):
+            log_buffer.log('Certificate', 'Warning: Roblox did not exit within 15 s — skipping restart')
+            return
+
+        try:
+            subprocess.Popen(
+                [str(exe_path)],
+                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+            )
+            log_buffer.log('Certificate', f'Roblox restarted: {exe_path.name}')
+        except OSError as exc:
+            log_buffer.log('Certificate', f'Failed to restart Roblox: {exc}')
 
     def start(self) -> None:
         with self._lock:

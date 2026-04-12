@@ -5,12 +5,14 @@ import ctypes
 import ctypes.wintypes as wintypes
 import json
 import os
+import random
 import re
 import subprocess
+import uuid
 import threading
 import time
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, quote
 
 import requests as _requests
 
@@ -86,10 +88,81 @@ def _save_accounts(accounts: list[dict]):
     ACCOUNTS_FILE.write_text(json.dumps(accounts, indent=2), encoding="utf-8")
 
 
-def _parse_private_server_deeplink(link: str) -> str | None:
-    """Parse a Roblox private server URL and return a roblox:// deeplink, or None if invalid."""
+def _get_auth_ticket(cookie: str) -> str | None:
+    """Fetch a Roblox authentication ticket using the user's cookie."""
+    url = "https://auth.roblox.com/v1/authentication-ticket"
+    headers = {
+        "Cookie": f".ROBLOSECURITY={cookie}",
+        "Referer": "https://www.roblox.com",
+        "Content-Type": "application/json",
+    }
+    try:
+        # First request — Roblox returns 403 with X-CSRF-TOKEN on POST endpoints
+        resp = _requests.post(url, headers=headers, json={}, timeout=10)
+        if resp.status_code == 403 and "x-csrf-token" in resp.headers:
+            headers["X-CSRF-TOKEN"] = resp.headers["x-csrf-token"]
+            resp = _requests.post(url, headers=headers, json={}, timeout=10)
+        if resp.status_code == 200:
+            return resp.headers.get("rbx-authentication-ticket")
+    except Exception:
+        pass
+    return None
+
+
+def _get_access_code(place_id: str, link_code: str, cookie: str) -> str | None:
+    """Resolve a privateServerLinkCode to the UUID accessCode.
+
+    Tries the games API first, then falls back to parsing the game page HTML
+    (the approach used by Roblox Account Manager).
+    """
+    sess = _requests.Session()
+    sess.cookies.set(".ROBLOSECURITY", cookie, domain=".roblox.com")
+    sess.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+    })
+
+    # games.roblox.com API (fastest path)
+    for url in (
+        f"https://games.roblox.com/v1/private-servers?serverLinkCode={link_code}",
+        f"https://games.roblox.com/v1/private-servers/{link_code}",
+    ):
+        try:
+            resp = sess.get(url, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                code = data.get("accessCode") or data.get("vipServerAccessCode")
+                if code:
+                    return code
+        except Exception:
+            pass
+
+    # Fall back to parsing game page HTML
+    try:
+        resp = sess.get(
+            f"https://www.roblox.com/games/{place_id}",
+            params={"privateServerLinkCode": link_code},
+            headers={"Referer": "https://www.roblox.com/games/4924922222/Brookhaven-RP"},
+            timeout=15,
+        )
+        for pat in (
+            r"Roblox\.GameLauncher\.joinPrivateGame\(\d+,\s*'([\w-]+)'",
+            r"Roblox\.GameLauncher\.joinPrivateGame\(\d+,\s*\"([\w-]+)\"",
+            r'"accessCode"\s*:\s*"([\w-]{36})"',
+        ):
+            m = re.search(pat, resp.text)
+            if m:
+                return m.group(1)
+    except Exception:
+        pass
+
+    return None
+
+
+def _parse_private_server_params(link: str) -> tuple[str | None, str | None]:
+    """Parse a Roblox private server URL and return (place_id, link_code), or (None, None)."""
     if not link:
-        return None
+        return None, None
     try:
         parsed = urlparse(link)
         parts = [p for p in parsed.path.split('/') if p]
@@ -100,10 +173,11 @@ def _parse_private_server_deeplink(link: str) -> str | None:
                 place_id = parts[idx + 1]
         link_code = parse_qs(parsed.query).get('privateServerLinkCode', [None])[0]
         if place_id and link_code:
-            return f"roblox://experiences/start?placeId={place_id}&linkCode={link_code}"
+            return place_id, link_code
     except Exception:
         pass
-    return None
+    return None, None
+
 
 
 def _find_roblox_exe() -> str | None:
@@ -258,7 +332,7 @@ class RandoStuffTab(QWidget):
 
     def _setup_ui(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(8, 8, 8, 0)
+        root.setContentsMargins(10, 10, 0, 0)
         root.setSpacing(8)
 
         rejoin_group = QGroupBox("Reserved Server Rejoin")
@@ -366,7 +440,7 @@ class RandoStuffTab(QWidget):
         footer_widget = QWidget()
         footer_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         footer_layout = QHBoxLayout(footer_widget)
-        footer_layout.setContentsMargins(0, 4, 0, 4)
+        footer_layout.setContentsMargins(8, 4, 8, 4)
         footer_layout.addStretch()
         clear_cache_btn = QPushButton('Clear Cache')
         clear_cache_btn.clicked.connect(self._clear_roblox_cache)
@@ -722,24 +796,35 @@ class RandoStuffTab(QWidget):
             ))
             return
 
-        deeplink = _parse_private_server_deeplink(private_server_link)
-        if deeplink:
-            def _count_roblox():
-                try:
-                    out = subprocess.check_output(
-                        ['tasklist', '/FI', 'IMAGENAME eq RobloxPlayerBeta.exe'],
-                        text=True, creationflags=0x08000000)
-                    return out.lower().count('robloxplayerbeta.exe')
-                except Exception:
-                    return 0
-            before = _count_roblox()
-            os.startfile(exe)
-            for _ in range(60):  # poll up to 30 s
-                time.sleep(0.5)
-                if _count_roblox() > before:
-                    break
-            time.sleep(0.5)
-            os.startfile(deeplink)
+        place_id, link_code = _parse_private_server_params(private_server_link)
+        if place_id and link_code:
+            ticket = _get_auth_ticket(cookie)
+            if ticket:
+                access_code = _get_access_code(place_id, link_code, cookie) or link_code
+                tracker_id = random.randint(10_000_000_000, 99_999_999_999)
+                place_launcher_url = (
+                    f"https://www.roblox.com/Game/PlaceLauncher.ashx"
+                    f"?request=RequestPrivateGame"
+                    f"&browserTrackerId={tracker_id}"
+                    f"&placeId={place_id}"
+                    f"&accessCode={access_code}"
+                    f"&linkCode={link_code}"
+                    f"&joinAttemptId={uuid.uuid4()}"
+                )
+                roblox_player_uri = (
+                    f"roblox-player:1+launchmode:play+gameinfo:{ticket}"
+                    f"+launchtime:{int(time.time() * 1000)}"
+                    f"+placelauncherurl:{quote(place_launcher_url, safe='')}"
+                    f"+browsertrackerid:{tracker_id}+robloxLocale:en_us+gameLocale:en_us"
+                    f"+channel:+LaunchExp:InApp"
+                )
+                os.startfile(roblox_player_uri)
+            else:
+                log_buffer.log("accounts", "Failed to get auth ticket, falling back to deeplink")
+                deeplink = f"roblox://experiences/start?placeId={place_id}&linkCode={link_code}"
+                os.startfile(exe)
+                time.sleep(3)
+                os.startfile(deeplink)
         else:
             os.startfile(exe)
         log_buffer.log("accounts", f"Launched Roblox for account: {username}")

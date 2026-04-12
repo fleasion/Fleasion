@@ -1,5 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
+import re, pathlib
 from PyInstaller.utils.hooks import collect_all, collect_submodules
+
+_paths_src = pathlib.Path('src/Fleasion/utils/paths.py').read_text()
+_version = re.search(r"APP_VERSION\s*=\s*['\"]([^'\"]+)['\"]", _paths_src).group(1)
 
 datas = [
     ('src\\Fleasion\\fleasionlogoHR.ico', '.'),
@@ -78,7 +82,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='Fleasion',
+    name=f'Fleasion-V{_version}',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

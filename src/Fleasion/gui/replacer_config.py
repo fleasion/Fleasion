@@ -40,6 +40,7 @@ class UndoManager:
 
     def __init__(self, max_history: int = 50):
         self.history: list[list] = []
+        self.future: list[list] = []
         self.max_history = max_history
 
     def save_state(self, rules: list):
@@ -47,30 +48,41 @@ class UndoManager:
         self.history.append(deepcopy(rules))
         if len(self.history) > self.max_history:
             self.history.pop(0)
+        self.future.clear()
 
     def undo(self) -> list | None:
         """Undo to previous state."""
         if len(self.history) > 1:
-            self.history.pop()
+            self.future.append(self.history.pop())
             return deepcopy(self.history[-1])
         if len(self.history) == 1:
             return deepcopy(self.history[0])
         return None
 
+    def redo(self) -> list | None:
+        """Redo a previously undone state."""
+        if self.future:
+            state = self.future.pop()
+            self.history.append(state)
+            return deepcopy(state)
+        return None
+
     def clear(self):
         """Clear history."""
         self.history.clear()
+        self.future.clear()
 
 
 class ReplacerConfigWindow(QDialog):
     """Replacer configuration window with tabs."""
 
-    def __init__(self, config_manager, proxy_master=None, mod_manager=None, roblox_monitor=None):
+    def __init__(self, config_manager, proxy_master=None, mod_manager=None, roblox_monitor=None, system_tray=None):
         super().__init__()
         self.config_manager = config_manager
         self.proxy_master = proxy_master
         self._mod_manager = mod_manager
         self.roblox_monitor = roblox_monitor
+        self._system_tray = system_tray
         self.undo_manager = UndoManager()
         self.undo_manager.save_state(self.config_manager.replacement_rules)
         self.config_enabled_vars = {}
@@ -150,6 +162,11 @@ class ReplacerConfigWindow(QDialog):
         if self.proxy_master is not None:
             self.proxy_master.register_module_interceptor(self._rando_stuff_tab)
 
+        # Create Settings tab
+        from .settings_tab import SettingsTab
+        self._settings_tab = SettingsTab(self.config_manager, system_tray=self._system_tray)
+        self.tab_widget.addTab(self._settings_tab, 'Settings')
+
         main_layout.addWidget(self.tab_widget)
 
         self.setLayout(main_layout)
@@ -162,6 +179,9 @@ class ReplacerConfigWindow(QDialog):
 
         delete_shortcut = QShortcut(QKeySequence('Delete'), self)
         delete_shortcut.activated.connect(self._delete_selected)
+
+        redo_shortcut = QShortcut(QKeySequence('Ctrl+Y'), self)
+        redo_shortcut.activated.connect(self._do_redo)
 
     def _create_replacer_tab(self):
         """Create the replacer configuration tab."""
@@ -267,9 +287,6 @@ class ReplacerConfigWindow(QDialog):
         title_label.setStyleSheet('font-weight: bold; padding-left: 5px;')
         label_layout.addWidget(title_label)
 
-        hint_label = QLabel('(Ctrl+Z to undo)')
-        hint_label.setStyleSheet('color: gray;')
-        label_layout.addWidget(hint_label)
         label_layout.addStretch()
         parent_layout.addLayout(label_layout)
 
@@ -351,14 +368,16 @@ class ReplacerConfigWindow(QDialog):
             ('Add New', self._add_rule),
             ('Load Selected', self._load_selected),
             ('Update Selected', self._update_selected),
-            ('Delete Selected', self._delete_selected),
-            ('Enable Selected', self._enable_selected),
-            ('Disable Selected', self._disable_selected),
-            ('Import JSON...', self._open_prejsons_browser),
         ]:
             btn = QPushButton(text)
+            btn.setMinimumWidth(130)
             btn.clicked.connect(callback)
             btn_layout.addWidget(btn)
+        btn_layout.addStretch()
+        import_btn = QPushButton('Scraped games...')
+        import_btn.setMinimumWidth(130)
+        import_btn.clicked.connect(self._open_prejsons_browser)
+        btn_layout.addWidget(import_btn)
         edit_layout.addLayout(btn_layout)
 
         edit_group.setLayout(edit_layout)
@@ -381,6 +400,12 @@ class ReplacerConfigWindow(QDialog):
 
             footer_layout.addStretch()
 
+            help_btn = QPushButton('?')
+            help_btn.setFixedSize(22, 22)
+            help_btn.setToolTip('View keybinds')
+            help_btn.clicked.connect(self._show_keybinds_help)
+            footer_layout.addWidget(help_btn)
+
             clear_cache_btn = QPushButton('Clear Cache')
             clear_cache_btn.clicked.connect(self._clear_roblox_cache)
             footer_layout.addWidget(clear_cache_btn)
@@ -401,6 +426,23 @@ class ReplacerConfigWindow(QDialog):
         from .delete_cache import DeleteCacheWindow
         window = DeleteCacheWindow()
         window.show()
+
+    def _show_keybinds_help(self):
+        from PyQt6.QtWidgets import QMessageBox
+        msg = QMessageBox(self)
+        msg.setWindowTitle('Keybinds')
+        msg.setTextFormat(Qt.TextFormat.RichText)
+        msg.setText(
+            '<b>All keybinds.</b><br>'
+            '- Ctrl+Z — Undo last change<br>'
+            '- Ctrl+Y — Redo last change<br>'
+            '- Ctrl+A — Select all rows<br>'
+            '- Delete — Delete selected row(s)<br>'
+            '<br>'
+            '<b>Tips.</b><br>'
+            '- Right-click a profile to delete, enable, or disable it'
+        )
+        msg.exec()
 
     def _open_prejsons_browser(self):
         """Open the PreJsons browser dialog."""
@@ -765,6 +807,13 @@ class ReplacerConfigWindow(QDialog):
             self._refresh_tree()
             log_buffer.log('Config', 'Undo performed')
 
+    def _do_redo(self):
+        """Perform redo."""
+        if next_state := self.undo_manager.redo():
+            self.config_manager.replacement_rules = next_state
+            self._refresh_tree()
+            log_buffer.log('Config', 'Redo performed')
+
     def _show_context_menu(self, pos):
         """Show context menu for tree item."""
         item = self.tree.itemAt(pos)
@@ -789,18 +838,15 @@ class ReplacerConfigWindow(QDialog):
                 return
 
             rule = rules[idx]
-            column = self.tree.columnAt(pos.x())
 
-            if column == 0:  # Status
-                enabled = rule.get('enabled', True)
-                text = 'Disable Profile' if enabled else 'Enable Profile'
-                menu.addAction(text, lambda: self._toggle_profile(idx))
-            elif column == 1:  # Name
-                menu.addAction('Rename Profile', lambda: self._rename_profile(idx))
-            elif column == 3:  # Asset IDs
-                menu.addAction('Edit Asset IDs', lambda: self._edit_asset_ids(idx))
-            elif column == 4:  # Replacement
-                menu.addAction('Edit Replacement', lambda: self._edit_replacement(idx))
+            enabled = rule.get('enabled', True)
+            text = 'Disable Profile' if enabled else 'Enable Profile'
+            menu.addAction(text, lambda: self._toggle_profile(idx))
+            menu.addAction('Rename Profile', lambda: self._rename_profile(idx))
+            menu.addAction('Edit Asset IDs', lambda: self._edit_asset_ids(idx))
+            menu.addAction('Edit Replacement', lambda: self._edit_replacement(idx))
+            menu.addSeparator()
+            menu.addAction('Delete Profile', lambda: self._delete_selected())
 
         if menu.actions():
             menu.exec(self.tree.mapToGlobal(pos))

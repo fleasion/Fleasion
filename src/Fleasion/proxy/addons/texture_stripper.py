@@ -222,6 +222,8 @@ class TextureStripper:
     _predownloaded: Dict[int, str] = {}
     # IDs confirmed publicly accessible (no pre-download needed).
     _checked_public: set = set()
+    # IDs currently being checked in a precheck thread (to avoid duplicate spawns).
+    _precheck_pending: set = set()
 
     _PREDOWNLOAD_DIR: Path = APP_CACHE_DIR / 'predownloaded'
 
@@ -275,6 +277,11 @@ class TextureStripper:
 
         # Deduplicate: multiple originals can map to the same replacement ID
         unique_targets = set(replacements.values())
+        # Filter out IDs already pending in another thread
+        unique_targets -= self._precheck_pending
+        if not unique_targets:
+            return
+        self._precheck_pending.update(unique_targets)
         log_buffer.log('Replacer', f'Pre-checking {len(unique_targets)} replacement asset(s)...')
 
         self._PREDOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -355,6 +362,7 @@ class TextureStripper:
                 log_buffer.log('Replacer', f'Could not pre-download private asset {target_id} (status {dl_status})')
                 failed_count += 1
 
+        self._precheck_pending -= unique_targets
         log_buffer.log('Replacer',
                        f'Pre-check complete: {public_count} public, {private_count} private (pre-downloaded), {failed_count} failed')
 
@@ -732,7 +740,8 @@ class TextureStripper:
         # trigger a background precheck so the next batch can serve them locally.
         if replacements and self._cache_scraper is not None:
             unknown = {int(v) for v in replacements.values()
-                       if int(v) not in self._predownloaded and int(v) not in self._checked_public}
+                       if int(v) not in self._predownloaded and int(v) not in self._checked_public
+                       and int(v) not in self._precheck_pending}
             if unknown:
                 import threading as _thr
                 _thr.Thread(target=self.precheck_replacements,

@@ -217,6 +217,11 @@ class SystemTray:
         self.menu.addMenu(settings_menu)
 
 
+    def _refresh_settings_tab(self):
+        """Push current config state to the Settings tab if the dashboard is open."""
+        if self.dashboard_window and hasattr(self.dashboard_window, '_settings_tab'):
+            self.dashboard_window._settings_tab.refresh_from_config()
+
     def _set_theme(self, theme: str):
         """Set the application theme."""
         # Update checkmarks
@@ -228,11 +233,13 @@ class SystemTray:
 
         # Save to config
         self.config_manager.theme = theme
+        self._refresh_settings_tab()
 
     def _toggle_export_naming(self, option: str):
         """Toggle an export naming option."""
         new_state = self.config_manager.toggle_export_naming(option)
         self.export_naming_actions[option].setChecked(new_state)
+        self._refresh_settings_tab()
 
     def _toggle_always_on_top(self):
         """Toggle always on top setting."""
@@ -251,18 +258,21 @@ class SystemTray:
                     flags &= ~Qt.WindowType.WindowStaysOnTopHint
                 window.setWindowFlags(flags)
                 window.show()
+        self._refresh_settings_tab()
 
     def _toggle_open_dashboard_on_launch(self):
         """Toggle open dashboard on launch setting."""
         new_state = not self.config_manager.open_dashboard_on_launch
         self.config_manager.open_dashboard_on_launch = new_state
         self.open_dashboard_action.setChecked(new_state)
+        self._refresh_settings_tab()
 
     def _toggle_auto_delete_cache(self):
         """Toggle auto delete cache on Roblox exit setting."""
         new_state = not self.config_manager.auto_delete_cache_on_exit
         self.config_manager.auto_delete_cache_on_exit = new_state
         self.auto_delete_cache_action.setChecked(new_state)
+        self._refresh_settings_tab()
 
     def _toggle_run_on_boot(self):
         """Toggle run-on-boot via Windows Task Scheduler (admin only)."""
@@ -276,6 +286,7 @@ class SystemTray:
         ok = sync_autostart(checked, CONFIG_DIR)
         if ok:
             self.config_manager.run_on_boot = checked
+            self._refresh_settings_tab()
         else:
             # Revert UI state and show error dialog with detail
             self.run_on_boot_action.setChecked(not checked)
@@ -301,12 +312,14 @@ class SystemTray:
         new_state = not self.config_manager.clear_cache_on_launch
         self.config_manager.clear_cache_on_launch = new_state
         self.clear_cache_action.setChecked(new_state)
+        self._refresh_settings_tab()
 
     def _toggle_close_to_tray(self):
         """Toggle close to tray setting."""
         new_state = not self.config_manager.close_to_tray
         self.config_manager.close_to_tray = new_state
         self.close_to_tray_action.setChecked(new_state)
+        self._refresh_settings_tab()
 
     def _apply_always_on_top_to_window(self, window):
         """Apply always on top setting to a window."""
@@ -347,7 +360,7 @@ class SystemTray:
             return
 
         from PyQt6.QtCore import Qt
-        window = ReplacerConfigWindow(self.config_manager, self.proxy_master, self.mod_manager, self.roblox_monitor)
+        window = ReplacerConfigWindow(self.config_manager, self.proxy_master, self.mod_manager, self.roblox_monitor, system_tray=self)
         window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         window.destroyed.connect(self._on_dashboard_destroyed)
         self.dashboard_window = window

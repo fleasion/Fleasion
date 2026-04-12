@@ -11,8 +11,8 @@ from PyQt6.QtGui import QIcon
 
 from .paths import APP_VERSION
 
-_RELEASES_API = 'https://api.github.com/repos/qrhrqiohj/Fleasion/releases/latest'
-_RELEASES_PAGE = 'https://github.com/qrhrqiohj/Fleasion/releases/latest'
+_RELEASES_API = 'https://api.github.com/repos/fleasion/Fleasion/releases/latest'
+_RELEASES_PAGE = 'https://github.com/fleasion/Fleasion/releases/latest'
 _TIMEOUT = 10
 
 
