@@ -287,9 +287,6 @@ class ReplacerConfigWindow(QDialog):
         title_label.setStyleSheet('font-weight: bold; padding-left: 5px;')
         label_layout.addWidget(title_label)
 
-        hint_label = QLabel('(Ctrl+Z to undo)')
-        hint_label.setStyleSheet('color: gray;')
-        label_layout.addWidget(hint_label)
         label_layout.addStretch()
         parent_layout.addLayout(label_layout)
 
@@ -371,14 +368,16 @@ class ReplacerConfigWindow(QDialog):
             ('Add New', self._add_rule),
             ('Load Selected', self._load_selected),
             ('Update Selected', self._update_selected),
-            ('Delete Selected', self._delete_selected),
-            ('Enable Selected', self._enable_selected),
-            ('Disable Selected', self._disable_selected),
-            ('Import JSON...', self._open_prejsons_browser),
         ]:
             btn = QPushButton(text)
+            btn.setMinimumWidth(130)
             btn.clicked.connect(callback)
             btn_layout.addWidget(btn)
+        btn_layout.addStretch()
+        import_btn = QPushButton('Import JSON...')
+        import_btn.setMinimumWidth(130)
+        import_btn.clicked.connect(self._open_prejsons_browser)
+        btn_layout.addWidget(import_btn)
         edit_layout.addLayout(btn_layout)
 
         edit_group.setLayout(edit_layout)
@@ -438,7 +437,10 @@ class ReplacerConfigWindow(QDialog):
             '- Ctrl+Z — Undo last change<br>'
             '- Ctrl+Y — Redo last change<br>'
             '- Ctrl+A — Select all rows<br>'
-            '- Delete — Delete selected row(s)'
+            '- Delete — Delete selected row(s)<br>'
+            '<br>'
+            '<b>Tips.</b><br>'
+            '- Right-click a profile to delete, enable, or disable it'
         )
         msg.exec()
 

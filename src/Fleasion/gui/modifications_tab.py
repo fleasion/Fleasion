@@ -1289,9 +1289,7 @@ class ModificationsTab(QWidget):
         # grey used by QTreeWidget / QGroupBox content in the Replacer and
         # Scraper tabs).  Without this, Fusion paints through to Window (#202020).
         container.setObjectName('_FleasionModContainer')
-        container.setStyleSheet(
-            'QWidget#_FleasionModContainer { background-color: palette(alternate-base); }'
-        )
+        self._mod_container = container
         self._container_layout = QVBoxLayout()
         self._container_layout.setSpacing(10)
         self._container_layout.setContentsMargins(10, 10, 10, 10)
@@ -1453,6 +1451,35 @@ class ModificationsTab(QWidget):
         outer.addWidget(footer_widget)
 
         self.setLayout(outer)
+        self._update_container_bg()
+
+    def changeEvent(self, event):
+        from PyQt6.QtCore import QEvent
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.PaletteChange:
+            self._update_container_bg()
+
+    def _update_container_bg(self):
+        """Keep the modifications container background consistent across themes.
+
+        On the explicit Dark theme AlternateBase (64,64,64) is lighter than
+        Window (32,32,32), giving a subtle card effect.  On the System theme
+        with Windows dark mode the OS palette can make AlternateBase darker
+        than Window, which looks wrong.  When that happens we force the same
+        card colour the Dark theme uses.
+        """
+        pal = self.palette()
+        win_light = pal.window().color().lightness()
+        alt_light = pal.alternateBase().color().lightness()
+        if win_light < 128 and alt_light <= win_light:
+            # System dark mode: alternate-base is no lighter than window —
+            # force the same card colour as the explicit dark theme.
+            bg = 'background-color: rgb(64, 64, 64);'
+        else:
+            bg = 'background-color: palette(alternate-base);'
+        self._mod_container.setStyleSheet(
+            f'QWidget#_FleasionModContainer {{ {bg} }}'
+        )
 
     def _clear_roblox_cache(self):
         from .delete_cache import DeleteCacheWindow

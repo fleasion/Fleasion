@@ -13,7 +13,7 @@ from urllib.parse import urlparse, quote
 import requests
 from dateutil import parser as _dateutil_parser
 from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal
-from PyQt6.QtGui import QPalette, QPixmap
+from PyQt6.QtGui import QPalette, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -36,6 +36,27 @@ from PyQt6.QtWidgets import (
 from ..utils.paths import CONFIG_DIR
 from ..utils.logging import log_buffer
 from ..utils.roblox_auth import get_roblosecurity as _get_roblosecurity
+
+
+_DEFAULT_THUMB_URL = (
+    "https://static.wikia.nocookie.net/roblox/images/5/54/Default_Thumbnail_1_updated.png"
+    "/revision/latest/scale-to-width-down/1000?cb=20250523160858"
+)
+_default_thumb_bytes_cache: list[bytes] = []  # single-element list so it's mutable
+
+
+def _get_default_thumb_bytes() -> bytes | None:
+    """Return cached bytes for the default thumbnail, fetching once on first call."""
+    if _default_thumb_bytes_cache:
+        return _default_thumb_bytes_cache[0]
+    try:
+        resp = requests.get(_DEFAULT_THUMB_URL, timeout=10)
+        resp.raise_for_status()
+        _default_thumb_bytes_cache.append(resp.content)
+        return resp.content
+    except Exception:
+        return None
+
 
 
 # Global rate-limit tracker for the public servers endpoint.
@@ -96,7 +117,7 @@ class _Invoker(QObject):
 
 # GameCardWidget (inline, PyQt6)
 
-from .prejsons_dialog import _make_rounded_pixmap, _CARD_W, _CARD_H, _THUMB_W, _THUMB_H
+from .prejsons_dialog import _make_rounded_pixmap, _preprocess_thumb_bytes, _CARD_W, _CARD_H, _THUMB_W, _THUMB_H
 
 
 class _JobIdEdit(QLineEdit):
@@ -884,7 +905,7 @@ class SubplaceJoinerTab(QWidget):
                 (p["display_name"], p.get("created"), p.get("updated"), p["id"], root_place_id)
                 for p in all_places
             ]
-            self._on_main(lambda: self._add_new_cards(items))
+            self._on_main_guarded(lambda: self._add_new_cards(items), cancel_event)
 
             cookie = _get_roblosecurity() or ""
 
@@ -915,7 +936,7 @@ class SubplaceJoinerTab(QWidget):
                     updated.append(p)
                     if (i + 1) % 5 == 0 or i == len(all_places) - 1:
                         pc = [(p["display_name"], p.get("created"), p.get("updated")) for p in updated.copy()]
-                        self._on_main(lambda x=pc: self._update_cards(x))
+                        self._on_main_guarded(lambda x=pc: self._update_cards(x), cancel_event)
 
             threading.Thread(target=load_timestamps, daemon=True).start()
 
@@ -931,17 +952,38 @@ class SubplaceJoinerTab(QWidget):
                         thumb_map = self._fetch_thumb_bytes_batch(place_ids)
                     except Exception as exc:
                         log_buffer.log("subplace", f"Batch thumbnail fetch failed: {exc}")
-                        continue
+                        thumb_map = {}
                     for pid_val, img_bytes in thumb_map.items():
                         if img_bytes:
                             pid_int = int(pid_val)
-                            def apply_pix(pid=pid_int, data=img_bytes):
-                                card = self._card_by_place_id.get(pid)
-                                if card:
-                                    pix = QPixmap()
-                                    if pix.loadFromData(data):
-                                        card.set_thumbnail(pix)
-                            self._on_main(apply_pix)
+                            processed = _preprocess_thumb_bytes(img_bytes, _THUMB_W, _THUMB_H)
+                            if processed:
+                                rgba, pw, ph = processed
+                                def apply_pix(pid=pid_int, rgba=rgba, pw=pw, ph=ph):
+                                    card = self._card_by_place_id.get(pid)
+                                    if card:
+                                        qimg = QImage(rgba, pw, ph, QImage.Format.Format_RGBA8888)
+                                        card.thumb_label.setPixmap(QPixmap.fromImage(qimg))
+                                        card.thumb_label.setText("")
+                                        card.thumb_label.setStyleSheet("background: transparent;")
+                                self._on_main_guarded(apply_pix, cancel_event)
+                    # Apply default thumbnail to any place IDs that didn't get one
+                    missing_ids = [pid for pid in place_ids if not thumb_map.get(str(pid))]
+                    if missing_ids:
+                        fallback = _get_default_thumb_bytes()
+                        if fallback:
+                            fallback_processed = _preprocess_thumb_bytes(fallback, _THUMB_W, _THUMB_H)
+                            if fallback_processed:
+                                f_rgba, f_pw, f_ph = fallback_processed
+                                for pid_int in missing_ids:
+                                    def apply_fallback(pid=pid_int, rgba=f_rgba, pw=f_pw, ph=f_ph):
+                                        card = self._card_by_place_id.get(pid)
+                                        if card:
+                                            qimg = QImage(rgba, pw, ph, QImage.Format.Format_RGBA8888)
+                                            card.thumb_label.setPixmap(QPixmap.fromImage(qimg))
+                                            card.thumb_label.setText("")
+                                            card.thumb_label.setStyleSheet("background: transparent;")
+                                    self._on_main_guarded(apply_fallback, cancel_event)
 
             threading.Thread(target=load_thumbnails, daemon=True).start()
 
@@ -1143,6 +1185,11 @@ class SubplaceJoinerTab(QWidget):
         super().resizeEvent(event)
         self._resize_timer.start(60)
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._cards:
+            self.apply_search_and_sort()
+
     # Join
 
     def _open_job_ids(self, place_id, card=None):
@@ -1255,6 +1302,13 @@ class SubplaceJoinerTab(QWidget):
 
     def _on_main(self, fn):
         self._invoker.call.emit(fn)
+
+    def _on_main_guarded(self, fn, cancel_event: threading.Event):
+        """Post fn to the main thread, but skip execution if cancel_event is set by then."""
+        def wrapped():
+            if not cancel_event.is_set():
+                fn()
+        self._invoker.call.emit(wrapped)
 
     # Proxy interceptor hooks (called by ProxyMaster on gamejoin traffic)
 

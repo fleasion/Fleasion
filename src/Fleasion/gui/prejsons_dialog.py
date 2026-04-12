@@ -1,6 +1,8 @@
 """PreJsons browser dialog - shows game configs as interactive cards with thumbnails."""
 
+import io
 import json
+import threading
 import uuid
 import urllib.request
 from pathlib import Path
@@ -30,6 +32,12 @@ from PyQt6.QtWidgets import (
 from ..utils import CLOG_URL, PREJSONS_DIR, ORIGINALS_DIR, REPLACEMENTS_DIR, APP_NAME, get_icon_path
 
 CUSTOM_DUMPS_DIR = PREJSONS_DIR / "custom_dumps"
+
+_DEFAULT_THUMB_URL = (
+    "https://static.wikia.nocookie.net/roblox/images/5/54/Default_Thumbnail_1_updated.png"
+    "/revision/latest/scale-to-width-down/1000?cb=20250523160858"
+)
+_default_thumb_bytes_cache: list[bytes] = []  # single-element list so it's mutable
 
 # Module-level caches (persist across dialog instances)
 
@@ -97,6 +105,39 @@ def _make_rounded_pixmap(pix: QPixmap, w: int, h: int, radius: int = 6) -> QPixm
     )
     return QPixmap.fromImage(out)
 
+
+def _preprocess_thumb_bytes(raw: bytes, w: int, h: int, radius: int = 6) -> tuple[bytes, int, int] | None:
+    """Crop, resize, and round-corner raw image bytes using PIL only.
+
+    Safe to call from a background thread — no Qt objects involved.
+    Returns (rgba_bytes, w, h) ready to hand to QImage on the main thread.
+    """
+    try:
+        img = Image.open(io.BytesIO(raw)).convert("RGBA")
+        src_w, src_h = img.size
+        if src_w == 0 or src_h == 0:
+            return None
+        ratio = w / h
+        src_ratio = src_w / src_h
+        if src_ratio > ratio:
+            new_w = int(src_h * ratio)
+            left = (src_w - new_w) // 2
+            img = img.crop((left, 0, left + new_w, src_h))
+        else:
+            new_h = int(src_w / ratio)
+            top = (src_h - new_h) // 2
+            img = img.crop((0, top, src_w, top + new_h))
+        scale = 2
+        img = img.resize((w * scale, h * scale), Image.LANCZOS)
+        mask = Image.new("L", img.size, 0)
+        draw = ImageDraw.Draw(mask)
+        draw.rounded_rectangle((0, 0, img.width, img.height), radius=radius * scale, fill=255)
+        img.putalpha(mask)
+        img = img.resize((w, h), Image.LANCZOS)
+        return img.tobytes("raw", "RGBA"), w, h
+    except Exception:
+        return None
+
 # Normalize game entry
 
 def _normalize_entry(e: dict) -> dict | None:
@@ -113,10 +154,16 @@ def _normalize_entry(e: dict) -> dict | None:
         name = f"Place {pid}"
     if not name:
         return None
+    credit = (
+        e.get("credit") or e.get("Credit") or
+        e.get("Owner") or e.get("owner") or
+        e.get("author") or e.get("Author") or ""
+    )
     return {
         "name": str(name),
         "created": str(e.get("created") or ""),
         "updated": str(e.get("updated") or ""),
+        "credit": str(credit),
         "placeId": pid,
         "github": e.get("github") or "",
         "replacement": e.get("replacement") or e.get("Replacement") or "",
@@ -220,6 +267,21 @@ class _CardMetaWorker(QThread):
             pass
 
 
+def _get_default_thumb_bytes() -> bytes | None:
+    """Return cached bytes for the default thumbnail, fetching once on first call."""
+    if _default_thumb_bytes_cache:
+        return _default_thumb_bytes_cache[0]
+    try:
+        data = _http_get(_DEFAULT_THUMB_URL, timeout=10)
+        _default_thumb_bytes_cache.append(data)
+        return data
+    except Exception:
+        return None
+
+# Pre-fetch the default thumbnail in the background as soon as the module loads
+threading.Thread(target=_get_default_thumb_bytes, daemon=True).start()
+
+
 class _CardThumbWorker(QThread):
     """Fetches the thumbnail for one card via Roblox thumbnails API."""
     thumb_ready = pyqtSignal(QPixmap)
@@ -229,6 +291,7 @@ class _CardThumbWorker(QThread):
         self._pid = place_id
 
     def run(self):
+        img_bytes = None
         try:
             meta = json.loads(_http_get(
                 f"https://thumbnails.roblox.com/v1/places/gameicons"
@@ -236,15 +299,19 @@ class _CardThumbWorker(QThread):
                 timeout=10,
             ))
             img_url = (meta.get("data") or [{}])[0].get("imageUrl") or ""
-            if not img_url:
-                return
-            img_bytes = _http_get(img_url, timeout=10)
-            _thumb_bytes_cache[self._pid] = img_bytes
+            if img_url:
+                img_bytes = _http_get(img_url, timeout=10)
+                _thumb_bytes_cache[self._pid] = img_bytes
+        except Exception:
+            pass
+
+        if not img_bytes:
+            img_bytes = _get_default_thumb_bytes()
+
+        if img_bytes:
             pix = QPixmap()
             if pix.loadFromData(img_bytes):
                 self.thumb_ready.emit(pix)
-        except Exception:
-            pass
 
 
 class _JsonFetchWorker(QThread):
@@ -269,7 +336,7 @@ class _JsonFetchWorker(QThread):
 # Card constants
 
 _CARD_W = 210
-_CARD_H = 275
+_CARD_H = 292
 _THUMB_W = 196
 _THUMB_H = 128
 
@@ -295,7 +362,7 @@ class GameCard(QFrame):
         layout.setContentsMargins(7, 7, 7, 7)
         layout.setSpacing(4)
 
-        self.thumb_label = QLabel("Loading…")
+        self.thumb_label = QLabel()
         self.thumb_label.setFixedHeight(_THUMB_H)
         self.thumb_label.setMinimumWidth(_THUMB_W)
         self.thumb_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -305,6 +372,17 @@ class GameCard(QFrame):
             "background: palette(alternate-base); border-radius: 4px; color: palette(placeholder-text); font-size: 8pt;"
         )
         layout.addWidget(self.thumb_label)
+        # Apply the default thumbnail immediately if already cached
+        default_bytes = _default_thumb_bytes_cache[0] if _default_thumb_bytes_cache else None
+        if default_bytes:
+            _pix = QPixmap()
+            if _pix.loadFromData(default_bytes):
+                try:
+                    _pix = _make_rounded_pixmap(_pix, _THUMB_W, _THUMB_H, radius=6)
+                except Exception:
+                    pass
+                self.thumb_label.setPixmap(_pix)
+                self.thumb_label.setStyleSheet("background: transparent;")
 
         self.name_label = QLabel("Unknown")
         self.name_label.setWordWrap(True)
@@ -321,6 +399,10 @@ class GameCard(QFrame):
         self.updated_label = QLabel("")
         self.updated_label.setStyleSheet("color: palette(placeholder-text); font-size: 7pt;")
         layout.addWidget(self.updated_label)
+
+        self.credit_label = QLabel("")
+        self.credit_label.setStyleSheet("color: palette(placeholder-text); font-size: 7pt;")
+        layout.addWidget(self.credit_label)
 
         layout.addStretch()
 
@@ -340,13 +422,15 @@ class GameCard(QFrame):
         layout.addLayout(btn_row)
         self.setLayout(layout)
 
-    def set_data(self, name: str, created: str = "", updated: str = ""):
+    def set_data(self, name: str, created: str = "", updated: str = "", credit: str = ""):
         self._game_name = name
         self.name_label.setText(name)
         if created:
             self.created_label.setText("Created: " + created[:10])
         if updated:
             self.updated_label.setText("Updated: " + updated[:10])
+        if credit:
+            self.credit_label.setText("Credit: " + credit)
 
     def set_thumbnail(self, pix: QPixmap):
         if not pix or pix.isNull():
@@ -544,7 +628,7 @@ class PreJsonsDialog(QDialog):
     def _make_card(self, g: dict, dump_file: Path | None = None) -> GameCard:
         """Build a GameCard from a normalised game dict."""
         card = GameCard(self.container)
-        card.set_data(g["name"], g.get("created", ""), g.get("updated", ""))
+        card.set_data(g["name"], g.get("created", ""), g.get("updated", ""), g.get("credit", ""))
 
         gh_url = (g.get("github") or "").strip()
         rep_url = (g.get("replacement") or "").strip()
@@ -680,6 +764,7 @@ class PreJsonsDialog(QDialog):
             '{\n'
             '  "name": "My Game",\n'
             '  "placeId": 12345,\n'
+            '  "credit": "YourName",\n'
             '  "github": "https://raw.githubusercontent.com/.../assets.json",\n'
             '  "replacement": "https://raw.githubusercontent.com/.../replacements.json"\n'
             '}'
@@ -731,6 +816,11 @@ class PreJsonsDialog(QDialog):
             rep_edit.setText(path) if path else None,
         ))
 
+        layout.addWidget(QLabel("Credit (optional):"))
+        credit_edit = QLineEdit()
+        credit_edit.setPlaceholderText("Your name")
+        layout.addWidget(credit_edit)
+
         # OR import from URL / file
         sep2 = QFrame()
         sep2.setFrameShape(QFrame.Shape.HLine)
@@ -776,6 +866,8 @@ class PreJsonsDialog(QDialog):
                     data["github"] = assets_edit.text().strip()
                 if rep_edit.text().strip():
                     data["replacement"] = rep_edit.text().strip()
+                if credit_edit.text().strip():
+                    data["credit"] = credit_edit.text().strip()
             else:
                 url_text = url_edit.text().strip()
                 if not url_text:
