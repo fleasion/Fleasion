@@ -838,18 +838,13 @@ class ReplacerConfigWindow(QDialog):
                 return
 
             rule = rules[idx]
-            column = self.tree.columnAt(pos.x())
 
-            if column == 0:  # Status
-                enabled = rule.get('enabled', True)
-                text = 'Disable Profile' if enabled else 'Enable Profile'
-                menu.addAction(text, lambda: self._toggle_profile(idx))
-            elif column == 1:  # Name
-                menu.addAction('Rename Profile', lambda: self._rename_profile(idx))
-            elif column == 3:  # Asset IDs
-                menu.addAction('Edit Asset IDs', lambda: self._edit_asset_ids(idx))
-            elif column == 4:  # Replacement
-                menu.addAction('Edit Replacement', lambda: self._edit_replacement(idx))
+            enabled = rule.get('enabled', True)
+            text = 'Disable Profile' if enabled else 'Enable Profile'
+            menu.addAction(text, lambda: self._toggle_profile(idx))
+            menu.addAction('Rename Profile', lambda: self._rename_profile(idx))
+            menu.addAction('Edit Asset IDs', lambda: self._edit_asset_ids(idx))
+            menu.addAction('Edit Replacement', lambda: self._edit_replacement(idx))
 
         if menu.actions():
             menu.exec(self.tree.mapToGlobal(pos))
