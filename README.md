@@ -12,7 +12,7 @@ To request help or request content, join our community <a href="https://discord.
 
 ### Standalone Executable
 
-Download `Fleasion.exe` from the [Releases](https://github.com/qrhrqiohj/Fleasion/releases) page. No Python installation required.
+Download `Fleasion.exe` from the [Releases](https://github.com/fleasion/Fleasion/releases) page. No Python installation required.
 
 ## Requirements for Building from Source
 
@@ -24,7 +24,7 @@ Download `Fleasion.exe` from the [Releases](https://github.com/qrhrqiohj/Fleasio
 
 ```bash
 # Clone the repository
-git clone https://github.com/qrhrqiohj/Fleasion.git
+git clone https://github.com/fleasion/Fleasion.git
 cd fleasion
 
 # Install dependencies with uv
@@ -105,7 +105,7 @@ The cache scraper is a live interception system that captures every asset Roblox
 
 - **KTX textures** (Images, Decals) &mdash; converts KTX textures locally on device into usable PNGs
 - **TexturePacks** &mdash; fetches the XML manifest that maps Color, Normal, Metalness, and Roughness texture IDs, then resolves each individual texture
-- **3D Models** (SolidMdodels and Meshes) &mdash; Converts every single Mesh and SolidModel type into .obj files in both directions
+- **3D Models** (SolidModels and Meshes) &mdash; Converts every single Mesh and SolidModel type into .obj files in both directions
 
 **Performance:**
 
@@ -276,6 +276,8 @@ Settings are stored in `%LocalAppData%\FleasionNT\`:
 | sounddevice + soundfile | Audio playback |
 | lz4 | Compression support |
 | orjson | Fast JSON parsing |
+| zstandard | CDN payload decompression |
+| python-dateutil | Date parsing |
 
 ## Community
 

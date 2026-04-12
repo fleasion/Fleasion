@@ -973,6 +973,8 @@ class PreJsonsDialog(QDialog):
     # Open JSON in tree viewer
 
     def _fetch_and_open(self, url: str):
+        self.close()
+
         # Local file path - read directly
         p = Path(url)
         if p.is_file():

@@ -374,7 +374,7 @@ class ReplacerConfigWindow(QDialog):
             btn.clicked.connect(callback)
             btn_layout.addWidget(btn)
         btn_layout.addStretch()
-        import_btn = QPushButton('Import JSON...')
+        import_btn = QPushButton('Scraped games...')
         import_btn.setMinimumWidth(130)
         import_btn.clicked.connect(self._open_prejsons_browser)
         btn_layout.addWidget(import_btn)
@@ -845,6 +845,8 @@ class ReplacerConfigWindow(QDialog):
             menu.addAction('Rename Profile', lambda: self._rename_profile(idx))
             menu.addAction('Edit Asset IDs', lambda: self._edit_asset_ids(idx))
             menu.addAction('Edit Replacement', lambda: self._edit_replacement(idx))
+            menu.addSeparator()
+            menu.addAction('Delete Profile', lambda: self._delete_selected())
 
         if menu.actions():
             menu.exec(self.tree.mapToGlobal(pos))
