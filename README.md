@@ -217,6 +217,7 @@ src/Fleasion/
 │   ├── modifications_tab.py        # Client modifications tab (fonts, fflags, global settings)
 │   ├── subplace_joiner_tab.py      # Subplace browser and server joiner tab
 │   ├── rando_stuff_tab.py          # Misc tab (reserved server rejoin, multi-instance, accounts)
+│   ├── settings_tab.py             # Settings tab (mirrors all tray menu settings in the dashboard)
 │   ├── prejsons_dialog.py          # Community preset browser dialog
 │   ├── json_viewer.py              # JSON tree viewer with search and asset preview
 │   ├── theme.py                    # Theme management (System/Light/Dark)

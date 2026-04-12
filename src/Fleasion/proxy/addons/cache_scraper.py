@@ -305,7 +305,7 @@ class CacheScraper:
         Stores real IPs so API calls can bypass our hosts file redirect.
         """
         self._real_ips = real_ips
-        log_buffer.log('Cache', f'API redirect configured for: {list(real_ips.keys())}')
+        log_buffer.log('Cache', f'API bypass configured for: {list(real_ips.keys())}')
 
     def _https_get(self, hostname: str, path: str, extra_headers: dict | None = None,
                    timeout: float = 8.0, max_redirects: int = 6,

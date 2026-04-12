@@ -332,7 +332,7 @@ class RandoStuffTab(QWidget):
 
     def _setup_ui(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(8, 8, 8, 0)
+        root.setContentsMargins(10, 10, 0, 0)
         root.setSpacing(8)
 
         rejoin_group = QGroupBox("Reserved Server Rejoin")
@@ -440,7 +440,7 @@ class RandoStuffTab(QWidget):
         footer_widget = QWidget()
         footer_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         footer_layout = QHBoxLayout(footer_widget)
-        footer_layout.setContentsMargins(0, 4, 0, 4)
+        footer_layout.setContentsMargins(8, 4, 8, 4)
         footer_layout.addStretch()
         clear_cache_btn = QPushButton('Clear Cache')
         clear_cache_btn.clicked.connect(self._clear_roblox_cache)
