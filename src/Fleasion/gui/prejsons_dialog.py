@@ -346,12 +346,19 @@ _THUMB_H = 128
 class GameCard(QFrame):
     """A single game card: thumbnail + name + dates + action buttons."""
 
+    def _apply_style(self, hover=False):
+        dark = QApplication.palette().color(QPalette.ColorRole.Window).lightness() < 128
+        border = "rgba(255,255,255,0.22)" if dark else "rgba(0,0,0,0.18)"
+        bg = ("rgba(255,255,255,0.07)" if hover else "rgba(255,255,255,0.04)") if dark else ("rgba(0,0,0,0.06)" if hover else "transparent")
+        self.setStyleSheet(f"GameCard {{ border: 1px solid {border}; background: {bg}; }}")
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setMinimumWidth(_CARD_W)
         self.setFixedHeight(_CARD_H)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._apply_style()
         self._game_name = ""
         self._dump_file: Path | None = None
         self._on_delete = None
@@ -458,11 +465,11 @@ class GameCard(QFrame):
             self._on_delete(self)
 
     def enterEvent(self, event):
-        self.setStyleSheet("GameCard { background: rgba(255,255,255,0.06); }")
+        self._apply_style(hover=True)
         super().enterEvent(event)
 
     def leaveEvent(self, event):
-        self.setStyleSheet("")
+        self._apply_style()
         super().leaveEvent(event)
 
 
@@ -472,9 +479,16 @@ class AddCard(QFrame):
     """Clickable '+' card that opens the import dialog."""
     clicked = pyqtSignal()
 
+    def _apply_style(self, hover=False):
+        dark = QApplication.palette().color(QPalette.ColorRole.Window).lightness() < 128
+        border = "rgba(255,255,255,0.22)" if dark else "rgba(0,0,0,0.18)"
+        bg = ("rgba(255,255,255,0.07)" if hover else "rgba(255,255,255,0.04)") if dark else ("rgba(0,0,0,0.06)" if hover else "transparent")
+        self.setStyleSheet(f"AddCard {{ border: 1px solid {border}; background: {bg}; }}")
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFrameShape(QFrame.Shape.StyledPanel)
+        self._apply_style()
         self.setMinimumWidth(_CARD_W)
         self.setFixedHeight(_CARD_H)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -501,11 +515,11 @@ class AddCard(QFrame):
         super().mousePressEvent(event)
 
     def enterEvent(self, event):
-        self.setStyleSheet("AddCard { background: rgba(255,255,255,0.06); }")
+        self._apply_style(hover=True)
         super().enterEvent(event)
 
     def leaveEvent(self, event):
-        self.setStyleSheet("")
+        self._apply_style()
         super().leaveEvent(event)
 
 
@@ -516,7 +530,7 @@ class PreJsonsDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(f"{APP_NAME} - PreJsons Browser")
+        self.setWindowTitle(f"{APP_NAME} - Scraped Games")
         self.resize(760, 580)
         self.setMinimumSize(640, 480)
         self.setWindowFlags(
@@ -973,7 +987,9 @@ class PreJsonsDialog(QDialog):
     # Open JSON in tree viewer
 
     def _fetch_and_open(self, url: str):
-        self.close()
+        cfg = getattr(self.parent(), 'config_manager', None)
+        if cfg is None or cfg.close_scraped_games_on_open:
+            self.close()
 
         # Local file path - read directly
         p = Path(url)

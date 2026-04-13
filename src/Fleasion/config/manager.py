@@ -213,6 +213,15 @@ class ConfigManager:
         self._save_settings()
 
     @property
+    def close_scraped_games_on_open(self) -> bool:
+        return self.settings.get('close_scraped_games_on_open', True)
+
+    @close_scraped_games_on_open.setter
+    def close_scraped_games_on_open(self, value: bool):
+        self.settings['close_scraped_games_on_open'] = value
+        self._save_settings()
+
+    @property
     def window_geometry(self) -> str:
         """Get the saved window geometry (hex string)."""
         return self.settings.get('window_geometry', '')

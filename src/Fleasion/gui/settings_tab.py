@@ -134,6 +134,11 @@ class SettingsTab(QWidget):
         self._clear_cache_launch_chk.toggled.connect(self._on_clear_cache_launch_toggled)
         layout.addWidget(self._clear_cache_launch_chk)
 
+        self._close_scraped_games_chk = QCheckBox("Close Scraped Games on Open")
+        self._close_scraped_games_chk.setChecked(self._config.close_scraped_games_on_open)
+        self._close_scraped_games_chk.toggled.connect(self._on_close_scraped_games_toggled)
+        layout.addWidget(self._close_scraped_games_chk)
+
         return group
 
     # Export naming
@@ -172,6 +177,7 @@ class SettingsTab(QWidget):
             (self._close_to_tray_chk, self._config.close_to_tray),
             (self._auto_clear_cache_chk, self._config.auto_delete_cache_on_exit),
             (self._clear_cache_launch_chk, self._config.clear_cache_on_launch),
+            (self._close_scraped_games_chk, self._config.close_scraped_games_on_open),
         ]:
             chk.blockSignals(True)
             chk.setChecked(value)
@@ -256,6 +262,11 @@ class SettingsTab(QWidget):
         self._config.clear_cache_on_launch = checked
         if self._tray and hasattr(self._tray, 'clear_cache_action'):
             self._tray.clear_cache_action.setChecked(checked)
+
+    def _on_close_scraped_games_toggled(self, checked: bool):
+        self._config.close_scraped_games_on_open = checked
+        if self._tray and hasattr(self._tray, 'close_scraped_games_action'):
+            self._tray.close_scraped_games_action.setChecked(checked)
 
     def _on_export_naming_toggled(self, checked: bool, option: str):
         current = self._config.is_export_naming_enabled(option)

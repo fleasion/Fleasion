@@ -342,7 +342,8 @@ class RandoStuffTab(QWidget):
         self._btn = QPushButton("Rejoin Reserved Server")
         btn_row.addWidget(self._btn)
         help_btn = QPushButton("?")
-        help_btn.setFixedSize(22, 22)
+        _btn_h = self._btn.sizeHint().height()
+        help_btn.setFixedSize(_btn_h, _btn_h)
         help_btn.setToolTip("What is a reserved server?")
         help_btn.clicked.connect(self._show_reserved_server_help)
         btn_row.addWidget(help_btn)
@@ -501,7 +502,7 @@ class RandoStuffTab(QWidget):
             "the deeplink to join the reserved server.<br><br>"
             "<b>Note:</b> The access code is only valid for 2 minutes after being teleported to the reserved server by the server."
         )
-        msg.setIcon(QMessageBox.Icon.Information)
+        msg.setIcon(QMessageBox.Icon.NoIcon)
         msg.exec()
 
     # Multi-instance
