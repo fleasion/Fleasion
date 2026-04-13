@@ -401,7 +401,7 @@ class ReplacerConfigWindow(QDialog):
             footer_layout.addStretch()
 
             help_btn = QPushButton('?')
-            help_btn.setFixedSize(22, 22)
+            help_btn.setMaximumWidth(25)
             help_btn.setToolTip('View keybinds')
             help_btn.clicked.connect(self._show_keybinds_help)
             footer_layout.addWidget(help_btn)
