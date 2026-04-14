@@ -1,71 +1,92 @@
 """About window."""
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QDialog, QLabel, QPushButton, QVBoxLayout
+from PyQt6.QtWidgets import QDialog, QFrame, QLabel, QPushButton, QVBoxLayout
 
-from ..utils import APP_AUTHOR, APP_DISCORD, APP_NAME, APP_VERSION, get_icon_path
+from ..utils import APP_AUTHOR, APP_CONCEPT, APP_LOGIC, APP_NAME, APP_REPO, APP_VERSION, get_icon_path
 
 
 class AboutWindow(QDialog):
     """About dialog window."""
 
-    def __init__(self, proxy_running: bool = False):
+    def __init__(self):
         super().__init__()
         self.setWindowTitle(f'About {APP_NAME}')
-        self.setFixedSize(370, 200)
-
-        # Set window flags to allow minimize/maximize
+        self.setFixedSize(360, 240)
         self.setWindowFlags(
             Qt.WindowType.Window |
             Qt.WindowType.WindowMinimizeButtonHint |
             Qt.WindowType.WindowCloseButtonHint
         )
-
-        self._setup_ui(proxy_running)
+        self._setup_ui()
         self._set_icon()
 
     def _set_icon(self):
-        """Set window icon."""
         if icon_path := get_icon_path():
             from PyQt6.QtGui import QIcon
-
             self.setWindowIcon(QIcon(str(icon_path)))
 
-    def _setup_ui(self, proxy_running: bool):
-        """Setup the UI."""
+    def _setup_ui(self):
         layout = QVBoxLayout()
-        layout.setSpacing(3)
-        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(0)
+        layout.setContentsMargins(24, 20, 24, 20)
 
         # App name
         name_label = QLabel(APP_NAME)
-        name_label.setStyleSheet('font-size: 14pt; font-weight: bold;')
+        name_label.setStyleSheet('font-size: 16pt; font-weight: bold;')
         name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(name_label)
 
         # Version
         version_label = QLabel(f'Version {APP_VERSION}')
+        version_label.setStyleSheet('color: palette(placeholder-text); font-size: 9pt;')
         version_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(version_label)
 
-        # Author
-        author_label = QLabel(APP_AUTHOR)
-        author_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(author_label)
+        layout.addSpacing(14)
 
-        # Discord
-        discord_label = QLabel(f'Distributed in {APP_DISCORD}')
-        discord_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(discord_label)
+        # Divider
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setFrameShadow(QFrame.Shadow.Sunken)
+        layout.addWidget(line)
 
-        # Status
-        status_text = 'Running' if proxy_running else 'Starting...'
-        status_label = QLabel(f'\nStatus: {status_text}')
-        status_label.setStyleSheet('font-weight: bold;')
-        status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(status_label)
+        layout.addSpacing(10)
 
-        layout.addStretch()
+        # Credits
+        by_label = QLabel(f'<b>By:</b> {APP_AUTHOR}')
+        by_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(by_label)
+
+        logic_label = QLabel(f'<b>Logic:</b> {APP_LOGIC}')
+        logic_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(logic_label)
+
+        concept_label = QLabel(f'<b>Concept:</b> {APP_CONCEPT}')
+        concept_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(concept_label)
+
+        handles_label = QLabel('(Discord handles)')
+        handles_label.setStyleSheet('color: palette(placeholder-text); font-size: 8pt;')
+        handles_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(handles_label)
+
+        layout.addSpacing(10)
+
+        # Repo link
+        repo_label = QLabel(
+            f'<b>Distributed at:</b> '
+            f'<a href="{APP_REPO}">{APP_REPO}</a>'
+        )
+        repo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        repo_label.setOpenExternalLinks(True)
+        repo_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextBrowserInteraction
+        )
+        repo_label.setWordWrap(True)
+        layout.addWidget(repo_label)
+
+        layout.addSpacing(10)
 
         # Close button
         close_btn = QPushButton('Close')

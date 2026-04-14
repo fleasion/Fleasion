@@ -345,7 +345,7 @@ class SystemTray:
 
     def _show_about(self):
         """Show About window."""
-        window = AboutWindow(self.proxy_master.is_running)
+        window = AboutWindow()
         window.destroyed.connect(lambda: self._remove_window(window))
         self.open_windows.append(window)
         self._apply_always_on_top_to_window(window)

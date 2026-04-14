@@ -6,8 +6,11 @@ from pathlib import Path
 # Application metadata
 APP_NAME = 'Fleasion'
 APP_VERSION = '1.8.0'
-APP_AUTHOR = 'By @8ar__ | Logic by @blockce, @1_v, @0100152000022000\n@dis_spencer, @Yeha., @emk530'
+APP_AUTHOR = '@8ar__, @dis_spencer, @1_v'
+APP_LOGIC = '@blockce, @0100152000022000, @Yeha., @emk530'
+APP_CONCEPT = '@cro.p'
 APP_DISCORD = 'discord.gg/hXyhKehEZF'
+APP_REPO = 'https://github.com/fleasion/Fleasion'
 
 # Process and proxy configuration
 ROBLOX_PROCESS = 'RobloxPlayerBeta.exe'
@@ -57,7 +60,7 @@ DEFAULT_SETTINGS = {
     'first_time_setup_complete': False,
     'auto_delete_cache_on_exit': True,
     'clear_cache_on_launch': True,
-    'run_on_boot': False,
+    'run_on_boot': True,
     'close_to_tray': True,
     # Scraper tab - column visibility
     'scraper_column_visibility': {

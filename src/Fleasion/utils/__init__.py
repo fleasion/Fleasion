@@ -4,7 +4,10 @@ from .logging import LogBuffer, log_buffer
 from .time_tracker import TimeTracker, time_tracker
 from .paths import (
     APP_AUTHOR,
+    APP_LOGIC,
+    APP_CONCEPT,
     APP_DISCORD,
+    APP_REPO,
     APP_NAME,
     APP_VERSION,
     APP_CACHE_DIR,
@@ -48,7 +51,10 @@ from .windows import (
 
 __all__ = [
     'APP_AUTHOR',
+    'APP_LOGIC',
+    'APP_CONCEPT',
     'APP_DISCORD',
+    'APP_REPO',
     'APP_NAME',
     'APP_VERSION',
     'APP_CACHE_DIR',

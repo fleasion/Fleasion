@@ -513,6 +513,30 @@ class SubplaceJoinerTab(QWidget):
         self._rebuild_recent_buttons()
         self._rebuild_favorite_buttons()
         self._update_favorite_btn()
+        threading.Thread(target=self._resolve_current_user, daemon=True).start()
+
+    def _resolve_current_user(self):
+        """Background thread: read the active Roblox cookie and resolve the username."""
+        cookie = _get_roblosecurity()
+        if not cookie:
+            return
+        try:
+            sess = requests.Session()
+            sess.trust_env = False
+            sess.proxies = {}
+            try:
+                sess.cookies.set(".ROBLOSECURITY", cookie)
+            except Exception:
+                sess.headers["Cookie"] = f".ROBLOSECURITY={cookie};"
+            resp = sess.get("https://users.roblox.com/v1/users/authenticated", timeout=10)
+            if resp.status_code == 200:
+                username = resp.json().get("name", "")
+                if username:
+                    def _update(u=username):
+                        self._selected_label.setText(f"Selected: {u}")
+                    self._invoker.call.emit(_update)
+        except Exception:
+            pass
 
     # UI setup
 
@@ -634,6 +658,9 @@ class SubplaceJoinerTab(QWidget):
         footer_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         footer_layout = QHBoxLayout(footer_widget)
         footer_layout.setContentsMargins(8, 4, 8, 4)
+        self._selected_label = QLabel("Selected: (none)")
+        self._selected_label.setStyleSheet("color: palette(placeholder-text); font-size: 9pt;")
+        footer_layout.addWidget(self._selected_label)
         footer_layout.addStretch()
         clear_cache_btn = QPushButton('Clear Cache')
         clear_cache_btn.clicked.connect(self._clear_roblox_cache)
