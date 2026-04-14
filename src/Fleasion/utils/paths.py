@@ -38,7 +38,7 @@ CONFIGS_FOLDER = CONFIG_DIR / 'configs'
 PROXY_CA_DIR = CONFIG_DIR / 'proxy_ca'
 
 # PreJsons
-CLOG_URL = 'https://raw.githubusercontent.com/qrhrqiohj/PFTEST/refs/heads/main/CLOG.json'
+CLOG_URL = 'https://raw.githubusercontent.com/fleasion/Fleasion/refs/heads/clog/CLOG.json'
 PREJSONS_DIR = CONFIG_DIR / 'PreJsons'
 ORIGINALS_DIR = PREJSONS_DIR / 'originals'
 REPLACEMENTS_DIR = PREJSONS_DIR / 'replacements'
