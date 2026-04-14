@@ -5,7 +5,7 @@ from pathlib import Path
 
 # Application metadata
 APP_NAME = 'Fleasion'
-APP_VERSION = '1.8.0'
+APP_VERSION = '2.0.0'
 APP_AUTHOR = '@8ar__, @dis_spencer, @1_v'
 APP_LOGIC = '@blockce, @0100152000022000, @Yeha., @emk530'
 APP_CONCEPT = '@cro.p'
@@ -38,7 +38,7 @@ CONFIGS_FOLDER = CONFIG_DIR / 'configs'
 PROXY_CA_DIR = CONFIG_DIR / 'proxy_ca'
 
 # PreJsons
-CLOG_URL = 'https://raw.githubusercontent.com/qrhrqiohj/PFTEST/refs/heads/main/CLOG.json'
+CLOG_URL = 'https://raw.githubusercontent.com/fleasion/Fleasion/refs/heads/clog/CLOG.json'
 PREJSONS_DIR = CONFIG_DIR / 'PreJsons'
 ORIGINALS_DIR = PREJSONS_DIR / 'originals'
 REPLACEMENTS_DIR = PREJSONS_DIR / 'replacements'
@@ -62,6 +62,7 @@ DEFAULT_SETTINGS = {
     'clear_cache_on_launch': True,
     'run_on_boot': True,
     'close_to_tray': True,
+    'multi_instance_launching': False,
     # Scraper tab - column visibility
     'scraper_column_visibility': {
         'hash_name':  True,

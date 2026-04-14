@@ -212,7 +212,7 @@ def delete_cache() -> list[str]:
             messages.extend(['Roblox termination timed out', 'Cache deletion aborted'])
             return messages
     else:
-        messages.append('Roblox is not running')
+        messages.append('Roblox was closed')
 
     # Delete rbx-storage.db (standard install)
     _delete_db_file(STORAGE_DB, messages, 'Storage database')

@@ -394,8 +394,9 @@ class RandoStuffTab(QWidget):
         "/v1/join-game-instance",
     )
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, config_manager=None):
         super().__init__(parent)
+        self._config = config_manager
         self._invoker = _Invoker(self)
 
         self._last_place_id = None
@@ -418,6 +419,13 @@ class RandoStuffTab(QWidget):
         self._auto_filled_for_place: str | None = None
 
         self._setup_ui()
+        if self._config is not None:
+            enabled = self._config.multi_instance_launching
+            self._multi_chk.blockSignals(True)
+            self._multi_chk.setChecked(enabled)
+            self._multi_chk.blockSignals(False)
+            if enabled:
+                self._on_multi_instance_toggled(True, persist=False)
         threading.Thread(target=self._check_cookies_on_boot, daemon=True).start()
         threading.Thread(target=self._resolve_current_user, daemon=True).start()
 
@@ -603,14 +611,16 @@ class RandoStuffTab(QWidget):
             "gamejoin.roblox.com APIs. It then keeps track of the accessCode and placeId of said server "
             "and when you click the button it deeplinks and intercepts the gamejoin.roblox.com API from "
             "the deeplink to join the reserved server.<br><br>"
-            "<b>Note:</b> The access code is only valid for 2 minutes after being teleported to the reserved server by the server."
+            "<b>Note:</b> The access code is only valid for 5 minutes after being teleported to the reserved server by the server."
         )
         msg.setIcon(QMessageBox.Icon.NoIcon)
         msg.exec()
 
     # Multi-instance
 
-    def _on_multi_instance_toggled(self, checked):
+    def _on_multi_instance_toggled(self, checked, persist=True):
+        if persist and self._config is not None:
+            self._config.multi_instance_launching = checked
         if checked:
             self._multi_stop.clear()
             self._multi_thread = threading.Thread(target=self._multi_instance_loop, daemon=True)
@@ -621,18 +631,25 @@ class RandoStuffTab(QWidget):
             log_buffer.log("multiinstance", "Disabled")
 
     def _multi_instance_loop(self):
-        seen_pids: set = set()
-        while not self._multi_stop.wait(0.5):
+        stripped_pids: set = set()
+        while not self._multi_stop.wait(0.2):
             try:
                 current_pids = self._get_roblox_pids()
-                for pid in current_pids - seen_pids:
-                    log_buffer.log("multiinstance", f"New Roblox PID {pid} — watching for singletonEvent")
-                    threading.Thread(
-                        target=self._close_singleton_for_pid,
-                        args=(pid,),
-                        daemon=True,
-                    ).start()
-                seen_pids = current_pids
+                
+                # Only strip singletons if there is more than 1 instance running.
+                if len(current_pids) > 1:
+                    for pid in current_pids - stripped_pids:
+                        log_buffer.log("multiinstance", f"Multiple PIDs detected ({len(current_pids)}). Stripping singleton for PID {pid}")
+                        threading.Thread(
+                            target=self._close_singleton_for_pid,
+                            args=(pid,),
+                            daemon=True,
+                        ).start()
+                        stripped_pids.add(pid)
+                
+                # Clean up to prevent building up old PIDs
+                stripped_pids.intersection_update(current_pids)
+
             except Exception as exc:
                 log_buffer.log("multiinstance", f"Error: {exc}")
 
