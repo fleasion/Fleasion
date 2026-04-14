@@ -1108,8 +1108,8 @@ class CacheViewerTab(QWidget):
         self._active_search_cols: set = self._load_search_cols()
         self._last_asset_count = 0  # Track for change detection
         self._selected_asset_id: str | None = None  # Track selected asset by ID
-        self._show_names = True  # Show names instead of hashes (on by default)
-        self._show_creator_id = False  # Show creator userId instead of username
+        self._show_names = config_manager.show_names if config_manager is not None else True
+        self._show_creator_id = config_manager.show_creator_id if config_manager is not None else False
         self._asset_info: dict[str, dict] = {}  # asset_id -> {resolved_name, creator_id, creator_name, creator_type, hash, row}
         self._current_pixmap = None  # Store current image for resize
         
@@ -1138,6 +1138,8 @@ class CacheViewerTab(QWidget):
         # Blacklisted asset IDs (excluded from table)
         if config_manager is not None:
             self._blacklisted_ids: set[str] = set(config_manager.scraper_blacklist)
+            if self._blacklisted_ids:
+                log_buffer.log('Scraper', f'Loaded blacklist: {len(self._blacklisted_ids)} ID(s) active — {", ".join(sorted(self._blacklisted_ids, key=lambda x: int(x) if x.isdigit() else 0))}')
         else:
             self._blacklisted_ids: set[str] = set()
 
@@ -1558,18 +1560,6 @@ class CacheViewerTab(QWidget):
         filter_layout.addWidget(self.search_col_btn)
 
         filter_layout.addStretch()
-
-        # Show names toggle (on by default)
-        self.show_names_toggle = QCheckBox('Show Names')
-        self.show_names_toggle.setChecked(True)
-        self.show_names_toggle.toggled.connect(self._on_show_names_toggled)
-        filter_layout.addWidget(self.show_names_toggle)
-
-        # Show userId toggle (off by default)
-        self.show_creator_id_toggle = QCheckBox('Show User ID')
-        self.show_creator_id_toggle.setChecked(False)
-        self.show_creator_id_toggle.toggled.connect(self._on_show_creator_id_toggled)
-        filter_layout.addWidget(self.show_creator_id_toggle)
 
         sep1 = QLabel('|')
         sep1.setStyleSheet('padding-bottom: 6px;')
@@ -2349,6 +2339,8 @@ class CacheViewerTab(QWidget):
     def _on_show_creator_id_toggled(self, checked: bool):
         """Handle Show User ID toggle — refresh the creator column for all rows."""
         self._show_creator_id = checked
+        if self.config_manager is not None:
+            self.config_manager.show_creator_id = checked
         self.table.setUpdatesEnabled(False)
         try:
             for asset_id, info in self._asset_info.items():
@@ -2364,6 +2356,8 @@ class CacheViewerTab(QWidget):
     def _on_show_names_toggled(self, checked: bool):
         """Handle Show Names toggle."""
         self._show_names = checked
+        if self.config_manager is not None:
+            self.config_manager.show_names = checked
 
         # Disable updates for performance
         self.table.setUpdatesEnabled(False)
@@ -4671,6 +4665,10 @@ class CacheViewerTab(QWidget):
             count = len(self._blacklisted_ids)
             status_label.setText(f'Blacklist applied: {count} ID(s).')
             status_label.setStyleSheet('color: #55cc55; font-size: 9pt;')
+            if self._blacklisted_ids:
+                log_buffer.log('Scraper', f'Blacklist updated: {count} ID(s) active — {", ".join(sorted(self._blacklisted_ids, key=lambda x: int(x) if x.isdigit() else 0))}')
+            else:
+                log_buffer.log('Scraper', 'Blacklist cleared')
 
         apply_btn.clicked.connect(_apply)
 

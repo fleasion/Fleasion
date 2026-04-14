@@ -139,6 +139,16 @@ class SettingsTab(QWidget):
         self._close_scraped_games_chk.toggled.connect(self._on_close_scraped_games_toggled)
         layout.addWidget(self._close_scraped_games_chk)
 
+        self._show_names_chk = QCheckBox("Show Names")
+        self._show_names_chk.setChecked(self._config.show_names)
+        self._show_names_chk.toggled.connect(self._on_show_names_toggled)
+        layout.addWidget(self._show_names_chk)
+
+        self._show_creator_id_chk = QCheckBox("Show User ID")
+        self._show_creator_id_chk.setChecked(self._config.show_creator_id)
+        self._show_creator_id_chk.toggled.connect(self._on_show_creator_id_toggled)
+        layout.addWidget(self._show_creator_id_chk)
+
         return group
 
     # Export naming
@@ -178,6 +188,8 @@ class SettingsTab(QWidget):
             (self._auto_clear_cache_chk, self._config.auto_delete_cache_on_exit),
             (self._clear_cache_launch_chk, self._config.clear_cache_on_launch),
             (self._close_scraped_games_chk, self._config.close_scraped_games_on_open),
+            (self._show_names_chk, self._config.show_names),
+            (self._show_creator_id_chk, self._config.show_creator_id),
         ]:
             chk.blockSignals(True)
             chk.setChecked(value)
@@ -267,6 +279,27 @@ class SettingsTab(QWidget):
         self._config.close_scraped_games_on_open = checked
         if self._tray and hasattr(self._tray, 'close_scraped_games_action'):
             self._tray.close_scraped_games_action.setChecked(checked)
+
+    def _on_show_names_toggled(self, checked: bool):
+        self._config.show_names = checked
+        if self._tray and hasattr(self._tray, 'show_names_action'):
+            self._tray.show_names_action.setChecked(checked)
+        self._apply_to_cache_viewer('show_names', checked)
+
+    def _on_show_creator_id_toggled(self, checked: bool):
+        self._config.show_creator_id = checked
+        if self._tray and hasattr(self._tray, 'show_creator_id_action'):
+            self._tray.show_creator_id_action.setChecked(checked)
+        self._apply_to_cache_viewer('show_creator_id', checked)
+
+    def _apply_to_cache_viewer(self, setting: str, value: bool):
+        if self._tray and self._tray.dashboard_window:
+            tab = getattr(self._tray.dashboard_window, '_cache_viewer_tab', None)
+            if tab is not None:
+                if setting == 'show_names':
+                    tab._on_show_names_toggled(value)
+                elif setting == 'show_creator_id':
+                    tab._on_show_creator_id_toggled(value)
 
     def _on_export_naming_toggled(self, checked: bool, option: str):
         current = self._config.is_export_naming_enabled(option)
