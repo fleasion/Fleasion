@@ -40,18 +40,21 @@ from ..utils import (
     PROXY_CA_DIR,
     PROXY_PORT,
     ROBLOX_PROCESS,
+    ROBLOX_STUDIO_PROCESS,
     STORAGE_DB,
     STORAGE_DB_GDK,
     log_buffer,
     terminate_roblox,
-        wait_for_roblox_exit,
-        delete_cache,
-        run_in_thread,
+    wait_for_roblox_exit,
+    wait_for_roblox_window,
+    delete_cache,
+    run_in_thread,
 )
 from .addons import CacheScraper, TextureStripper
 from .server import FleasionProxy, INTERCEPT_HOSTS
 from ..cache.cache_manager import CacheManager
 from ..utils.certs import generate_ca, generate_host_cert, get_ca_pem
+from ..utils.windows import launch_as_standard_user
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +148,7 @@ def _build_watchdog_xml(run_at: datetime) -> str:
     <Enabled>true</Enabled>
     <Hidden>true</Hidden>
   </Settings>
-  <Actions Context="Author">
+  <Actions>
     <Exec>
       <Command>powershell.exe</Command>
       <Arguments>-NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand {_WATCHDOG_PS_ENCODED}</Arguments>
@@ -193,28 +196,197 @@ def _delete_watchdog_task() -> None:
         pass
 
 
+
+def _is_routable_public_ip(ip: str) -> bool:
+    """Return True only if *ip* is a publicly routable IPv4 address.
+
+    Rejects everything that cannot legitimately be a Roblox CDN address:
+      - Loopback          127.0.0.0/8
+      - Private (RFC1918) 10/8, 172.16/12, 192.168/16
+      - Link-local        169.254.0.0/16
+      - CGNAT / WARP vNIC 100.64.0.0/10  (includes WARP's 100.96.x.x range)
+      - Multicast         224.0.0.0/4
+      - Reserved / bogon  0.0.0.0/8, 240.0.0.0/4, 255.255.255.255, etc.
+    """
+    import ipaddress as _ipaddress
+    try:
+        addr = _ipaddress.IPv4Address(ip)
+        return not (
+            addr.is_loopback
+            or addr.is_private
+            or addr.is_link_local
+            or addr.is_multicast
+            or addr.is_reserved
+            or addr.is_unspecified
+        )
+    except ValueError:
+        return False
+
+
+def _dns_query_udp(hostname: str, server: str, port: int = 53, timeout: float = 3.0) -> list:
+    """Send a raw DNS A-record query over UDP to *server*, bypassing the OS
+    resolver stack entirely.
+
+    This sidesteps both the Windows DNS Client service cache AND VPN client
+    caches (e.g. Cloudflare WARP's WFP-level resolver) that may still be
+    serving stale 127.0.0.1 entries from a previous Fleasion crash, even after
+    we have already removed the hosts file entries and called
+    DnsFlushResolverCache().
+
+    Returns a list of IPv4 address strings, or [] on any failure.
+
+    DNS wire-format references: RFC 1035 §4.1
+    """
+    import socket as _socket
+    import struct as _struct
+
+    # --- Build a minimal DNS query packet ---
+    # Transaction ID: arbitrary 16-bit value
+    txid = 0x4649  # 'FI' — easy to spot in Wireshark
+    # Flags: standard query, recursion desired
+    flags = 0x0100
+    # 1 question, 0 answer/authority/additional RRs
+    header = _struct.pack('!HHHHHH', txid, flags, 1, 0, 0, 0)
+
+    # Encode hostname as a sequence of length-prefixed labels
+    labels = b''
+    for part in hostname.encode('ascii').split(b'.'):
+        labels += _struct.pack('B', len(part)) + part
+    labels += b'\x00'  # root label
+
+    # QTYPE=A (1), QCLASS=IN (1)
+    question = labels + _struct.pack('!HH', 1, 1)
+    packet = header + question
+
+    # --- Send and receive ---
+    sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+    sock.settimeout(timeout)
+    try:
+        sock.sendto(packet, (server, port))
+        response, _ = sock.recvfrom(4096)
+    except OSError:
+        return []
+    finally:
+        sock.close()
+
+    if len(response) < 12:
+        return []
+
+    # Parse response header
+    r_txid, r_flags, r_qdcount, r_ancount, _, _ = _struct.unpack('!HHHHHH', response[:12])
+    if r_txid != txid or r_ancount == 0:
+        return []
+
+    # Skip the question section (mirror of what we sent; just skip over it)
+    pos = 12
+    for _ in range(r_qdcount):
+        while pos < len(response):
+            length = response[pos]
+            pos += 1
+            if length == 0:
+                break
+            if length & 0xC0 == 0xC0:  # pointer
+                pos += 1
+                break
+            pos += length
+        pos += 4  # QTYPE + QCLASS
+
+    # Parse answer RRs — collect all A records
+    ips = []
+    for _ in range(r_ancount):
+        if pos >= len(response):
+            break
+        # Name field (may be a pointer)
+        if response[pos] & 0xC0 == 0xC0:
+            pos += 2
+        else:
+            while pos < len(response) and response[pos] != 0:
+                pos += response[pos] + 1
+            pos += 1
+        if pos + 10 > len(response):
+            break
+        rtype, _, _, rdlength = _struct.unpack('!HHIH', response[pos:pos + 10])
+        pos += 10
+        if rtype == 1 and rdlength == 4:  # A record
+            ip = '.'.join(str(b) for b in response[pos:pos + 4])
+            if _is_routable_public_ip(ip):
+                ips.append(ip)
+        pos += rdlength
+
+    return ips
+
+
+_DNS_FALLBACK_SERVERS = ['8.8.8.8', '1.1.1.1', '1.0.0.1']
+
+
 def _resolve_real_ips(hosts: set) -> dict:
     """Resolve real IPs for each host BEFORE we write hosts file entries.
 
     We MUST do this first - once hosts file points them to 127.0.0.1, any
     subsequent socket.getaddrinfo() call would return 127.0.0.1, causing our
     upstream connections to loop back to ourselves.
+
+    Primary strategy: socket.getaddrinfo() (uses OS resolver — fast, respects
+    IPv6 and system network config).
+
+    Fallback strategy: raw UDP DNS query to well-known public resolvers,
+    bypassing the OS resolver stack and any VPN client caches (e.g. Cloudflare
+    WARP's WFP-level resolver) that may still hold stale 127.0.0.1 mappings
+    from a previous crashed Fleasion session even after the hosts file has been
+    cleaned and DnsFlushResolverCache() has been called.
     """
     import socket
     real_ips: dict = {}
     for host in sorted(hosts):
+        ips = []
+
+        # --- Primary: OS resolver ---
         try:
-            # getaddrinfo returns all IPs; take the first IPv4 one
             results = socket.getaddrinfo(host, 443, socket.AF_INET, socket.SOCK_STREAM)
-            ips = [r[4][0] for r in results if r[4][0] != '127.0.0.1']
-            if ips:
-                real_ips[host] = ips
-                log_buffer.log('Proxy', f'Resolved {host} -> {ips[0]}')
-            else:
-                log_buffer.log('Proxy', f'Warning: no real IPs found for {host}')
+            ips = [r[4][0] for r in results if _is_routable_public_ip(r[4][0])]
         except Exception as exc:
-            log_buffer.log('Proxy', f'DNS resolve failed for {host}: {exc}')
+            log_buffer.log('Proxy', f'DNS resolve failed for {host} (OS resolver): {exc}')
+
+        if ips:
+            real_ips[host] = ips
+            log_buffer.log('Proxy', f'Resolved {host} -> {ips[0]}')
+            continue
+
+        # --- Fallback: raw UDP DNS, bypassing OS resolver + VPN cache ---
+        # Fires when the OS resolver returns no publicly routable IPs — typically
+        # caused by a VPN (e.g. Cloudflare WARP) whose internal DNS cache holds
+        # stale loopback/private entries from a previous crashed Fleasion session,
+        # or a VPN that routes Roblox to its own private/CGNAT address space.
+        # DnsFlushResolverCache() does not flush the VPN client's own in-process
+        # cache; a direct UDP query to a public resolver bypasses it entirely.
+        log_buffer.log(
+            'Proxy',
+            f'OS resolver returned no routable IPs for {host} — '
+            'trying direct UDP DNS (VPN cache bypass)…',
+        )
+        for dns_server in _DNS_FALLBACK_SERVERS:
+            try:
+                fallback_ips = _dns_query_udp(host, dns_server)
+                if fallback_ips:
+                    real_ips[host] = fallback_ips
+                    log_buffer.log(
+                        'Proxy',
+                        f'Resolved {host} -> {fallback_ips[0]} '
+                        f'(via direct UDP to {dns_server} — VPN cache bypass)',
+                    )
+                    break
+            except Exception as exc:
+                log_buffer.log('Proxy', f'Direct UDP DNS to {dns_server} failed for {host}: {exc}')
+        else:
+            log_buffer.log(
+                'Proxy',
+                f'Warning: could not resolve real IPs for {host} via any method. '
+                'If you are using a VPN or firewall that blocks outbound UDP port 53, '
+                'try temporarily disabling it before starting Fleasion.',
+            )
+
     return real_ips
+
 
 
 def _flush_dns() -> None:
@@ -557,12 +729,17 @@ def _add_hosts_entries(hosts: Set[str]) -> bool:
         return False
 
 
-def _remove_hosts_entries(hosts: Set[str]) -> None:
-    """Remove any hosts file entries we previously added."""
+def _remove_hosts_entries(hosts: Set[str]) -> bool:
+    """Remove any hosts file entries we previously added.
+
+    Returns True if the hosts file is clean (entries removed or were already
+    absent).  Returns False if the write failed — callers must NOT cancel the
+    reboot guard in that case, so the next boot still cleans up automatically.
+    """
     try:
         existing = HOSTS_FILE.read_text(encoding='utf-8', errors='replace')
     except OSError:
-        return
+        return True  # Can't read — assume nothing to clean, not a write failure
 
     lines = existing.splitlines(keepends=True)
     filtered = [
@@ -573,13 +750,15 @@ def _remove_hosts_entries(hosts: Set[str]) -> None:
     ]
 
     if len(filtered) == len(lines):
-        return  # nothing to remove
+        return True  # Nothing to remove — already clean
 
     try:
         _write_hosts_file(''.join(filtered))
         log_buffer.log('Hosts', 'Removed proxy hosts entries')
+        return True
     except OSError as exc:
         log_buffer.log('Hosts', f'Failed to clean hosts file: {exc}')
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -587,13 +766,14 @@ def _remove_hosts_entries(hosts: Set[str]) -> None:
 # ---------------------------------------------------------------------------
 
 def _find_roblox_dirs() -> list:
-    """Locate every RobloxPlayerBeta.exe installation via registry and known paths.
+    """Locate every RobloxPlayerBeta.exe and RobloxStudioBeta.exe installation.
 
     Methods used (combined):
-      1. Main Registry   — HKCU\\Software (two levels) for REG_SZ "PlayerPath"
+      1. Main Registry   — HKCU\\Software (two levels) for REG_SZ "PlayerPath"/"StudioPath"
       2. MS Store        — C:\\XboxGames\\Roblox up to two layers deep
-      3. Active Roblox   — HKCU\\...\\roblox-player\\open\\command (Default)
+      3. Active Player   — HKCU\\...\\roblox-player\\open\\command (Default)
       4. Regular Roblox  — %LocalAppData%\\Roblox\\Versions one layer deep
+      5. Active Studio   — HKCU\\...\\roblox-studio\\open\\command (Default)
     """
     import winreg
 
@@ -609,7 +789,7 @@ def _find_roblox_dirs() -> list:
         return False
 
     def _scan_for_exe(root: Path, max_depth: int) -> list:
-        """Return all subdirs up to max_depth layers under root that contain RobloxPlayerBeta.exe."""
+        """Return all subdirs up to max_depth layers under root that contain RobloxPlayerBeta.exe or RobloxStudioBeta.exe."""
         results: list = []
 
         def _recurse(path: Path, depth: int) -> None:
@@ -617,7 +797,8 @@ def _find_roblox_dirs() -> list:
                 for entry in os.scandir(path):
                     if not entry.is_dir():
                         continue
-                    if os.path.isfile(os.path.join(entry.path, ROBLOX_PROCESS)):
+                    if (os.path.isfile(os.path.join(entry.path, ROBLOX_PROCESS)) or
+                            os.path.isfile(os.path.join(entry.path, ROBLOX_STUDIO_PROCESS))):
                         results.append(Path(entry.path))
                     if depth < max_depth:
                         _recurse(Path(entry.path), depth + 1)
@@ -635,23 +816,24 @@ def _find_roblox_dirs() -> list:
 
     def _check_player_path_key(key) -> None:
         nonlocal reg_found
-        try:
-            val, rtype = winreg.QueryValueEx(key, 'PlayerPath')
-        except OSError:
-            return
-        if rtype != winreg.REG_SZ or not val:
-            return
-        p = Path(val)
-        # PlayerPath may occasionally point at the exe itself rather than the dir
-        if p.name.lower() == ROBLOX_PROCESS.lower():
-            p = p.parent
-        if os.path.isfile(os.path.join(str(p), ROBLOX_PROCESS)):
-            reg_found += 1
-            _add(p)
-        else:
-            for d in _scan_for_exe(p, 1):
+        for value_name, process_name in (('PlayerPath', ROBLOX_PROCESS), ('StudioPath', ROBLOX_STUDIO_PROCESS)):
+            try:
+                val, rtype = winreg.QueryValueEx(key, value_name)
+            except OSError:
+                continue
+            if rtype != winreg.REG_SZ or not val:
+                continue
+            p = Path(val)
+            # Path may occasionally point at the exe itself rather than the dir
+            if p.name.lower() == process_name.lower():
+                p = p.parent
+            if os.path.isfile(os.path.join(str(p), process_name)):
                 reg_found += 1
-                _add(d)
+                _add(p)
+            else:
+                for d in _scan_for_exe(p, 1):
+                    reg_found += 1
+                    _add(d)
 
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r'Software') as hkey:
@@ -727,11 +909,39 @@ def _find_roblox_dirs() -> list:
         _add(d)
     log_buffer.log('Certificate', f'  AppData Roblox\\Versions: {int((time.perf_counter() - t) * 1000)} ms ({roblox_found} found)')
 
+    # ── 5. Active Studio ─────────────────────────────────────────────────
+    # Read HKCU\...\roblox-studio\shell\open\command (Default); parse the exe
+    # path and search up to two layers under its parent directory.
+    t = time.perf_counter()
+    studio_found = 0
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r'SOFTWARE\Classes\roblox-studio\shell\open\command',
+        ) as key:
+            try:
+                cmd, rtype = winreg.QueryValueEx(key, '')
+                if rtype == winreg.REG_SZ and cmd:
+                    cmd = cmd.strip()
+                    if cmd.startswith('"'):
+                        exe_path = cmd[1 : cmd.index('"', 1)]
+                    else:
+                        exe_path = cmd.split()[0]
+                    exe_dir = Path(exe_path).parent
+                    for d in _scan_for_exe(exe_dir, 2):
+                        studio_found += 1
+                        _add(d)
+            except (OSError, ValueError):
+                pass
+    except OSError:
+        pass
+    log_buffer.log('Certificate', f'  Active Studio (registry): {int((time.perf_counter() - t) * 1000)} ms ({studio_found} found)')
+
     return found
 
 
 def _install_ca_into_roblox(ca_pem: str) -> None:
-    """Append our CA cert to ssl/cacert.pem next to every found RobloxPlayerBeta.exe."""
+    """Append our CA cert to ssl/cacert.pem next to every found Roblox Player/Studio install."""
     t0 = time.perf_counter()
     dirs = _find_roblox_dirs()
     elapsed_ms = int((time.perf_counter() - t0) * 1000)
@@ -745,25 +955,28 @@ def _install_ca_into_roblox(ca_pem: str) -> None:
         ssl_dir.mkdir(exist_ok=True)
         ca_file = ssl_dir / 'cacert.pem'
         try:
-            existing = ca_file.read_text() if ca_file.exists() else ''
+            existing = ca_file.read_text(encoding='utf-8', errors='replace') if ca_file.exists() else ''
             if ca_pem not in existing:
-                ca_file.write_text(f'{existing}\n{ca_pem}')
+                ca_file.write_text(f'{existing}\n{ca_pem}', encoding='utf-8')
                 log_buffer.log('Certificate', f'Installed CA into {d.name}')
             else:
                 log_buffer.log('Certificate', f'CA already installed in {d.name}')
-        except (PermissionError, OSError) as exc:
+        except (PermissionError, OSError, UnicodeDecodeError) as exc:
             log_buffer.log('Certificate', f'Failed to write CA for {d.name}: {exc}')
 
 
-def check_and_patch_running_roblox_ca(exe_path: 'Path') -> None:
+def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
     """Check if the currently running Roblox instance has our CA in its cacert.pem.
 
     Called when RobloxPlayerBeta.exe is detected launching at runtime.
     If the cert is absent it is injected immediately and an alert is logged.
+
+    Returns True if the cert was missing and has been injected (Roblox needs a
+    restart).  Returns False if already patched or the CA has not been generated.
     """
     ca_cert_path = PROXY_CA_DIR / 'ca.crt'
     if not ca_cert_path.exists():
-        return  # CA not generated yet – nothing to patch
+        return False  # CA not generated yet – nothing to patch
 
     ca_pem = get_ca_pem(ca_cert_path)
     roblox_dir = exe_path.parent
@@ -776,12 +989,12 @@ def check_and_patch_running_roblox_ca(exe_path: 'Path') -> None:
         existing = ''
 
     if ca_pem in existing:
-        return  # Already patched – nothing to do
+        return False  # Already patched – nothing to do
 
     log_buffer.log(
         'Certificate',
-        '[ALERT] The currently running RobloxPlayerBeta.exe does not have a modified '
-        'cacert.pem! It has been injected into Roblox, you may need to relaunch it.',
+        f'[ALERT] {exe_path.name} does not have a modified '
+        'cacert.pem! It has been injected, you may need to relaunch it.',
     )
     try:
         ssl_dir.mkdir(exist_ok=True)
@@ -789,6 +1002,7 @@ def check_and_patch_running_roblox_ca(exe_path: 'Path') -> None:
         log_buffer.log('Certificate', f'CA injected into running Roblox instance: {roblox_dir.name}')
     except (PermissionError, OSError) as exc:
         log_buffer.log('Certificate', f'Failed to inject CA into running Roblox instance: {exc}')
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -819,10 +1033,18 @@ class ProxyMaster:
         self._hosts_installed: bool = False
         self._watchdog_stop: Optional[threading.Event] = None
         self._watchdog_thread: Optional[threading.Thread] = None
+        self._module_interceptors: list = []
 
     @property
     def is_running(self) -> bool:
         return self._running
+
+    def register_module_interceptor(self, module) -> None:
+        """Register a module whose request()/response() methods are called for gamejoin traffic."""
+        if module not in self._module_interceptors:
+            self._module_interceptors.append(module)
+        if self._proxy is not None:
+            self._proxy.set_module_interceptors(self._module_interceptors)
 
     def _start_watchdog(self) -> None:
         """Start the background thread that keeps the watchdog task pushed ahead."""
@@ -845,6 +1067,76 @@ class ProxyMaster:
         if self._watchdog_thread and self._watchdog_thread.is_alive():
             self._watchdog_thread.join(timeout=2.0)
         _delete_watchdog_task()
+
+    def refresh_and_restart_roblox(self, exe_path: Path) -> None:
+        """Called when Roblox launches without our CA cert.
+
+        Runs cert injection and IP/hosts refresh in parallel (two threads), then
+        kills Roblox and restarts it so the new cert and fresh hosts entries take
+        effect immediately.
+        """
+        # Quick-check: cert already present → nothing to do
+        ca_cert_path = PROXY_CA_DIR / 'ca.crt'
+        if not ca_cert_path.exists():
+            return
+        ca_pem = get_ca_pem(ca_cert_path)
+        ca_file = exe_path.parent / 'ssl' / 'cacert.pem'
+        try:
+            existing = ca_file.read_text(encoding='utf-8', errors='replace') if ca_file.exists() else ''
+        except OSError:
+            existing = ''
+        if ca_pem in existing:
+            return  # Already patched — no restart needed
+
+        log_buffer.log('Certificate', 'Roblox missing CA cert — refreshing hosts and restarting...')
+
+        def _patch_cert() -> None:
+            check_and_patch_running_roblox_ca(exe_path)
+
+        def _refresh_ips() -> None:
+            if not self._hosts_installed:
+                return
+            # Remove entries temporarily so getaddrinfo() sees real IPs again
+            _remove_hosts_entries(set(INTERCEPT_HOSTS))
+            _flush_dns()
+            new_ips = _resolve_real_ips(set(INTERCEPT_HOSTS))
+            # Re-install entries pointing back to our proxy
+            _add_hosts_entries(set(INTERCEPT_HOSTS))
+            _flush_dns()
+            # Update running proxy and scraper with fresh upstream IPs
+            if self._proxy is not None and new_ips:
+                self._proxy._upstream_ips = new_ips
+            scraper_ips = {host: ips[0] for host, ips in new_ips.items() if ips}
+            if scraper_ips:
+                self.cache_scraper.set_real_ips(scraper_ips)
+
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix='fleasion-cert-refresh') as pool:
+            f_cert = pool.submit(_patch_cert)
+            f_ips = pool.submit(_refresh_ips)
+        # Both futures are done after the with block (shutdown waits for them)
+
+        for label, fut in (('cert patch', f_cert), ('IP refresh', f_ips)):
+            if fut.exception():
+                log_buffer.log('Certificate', f'Error during {label}: {fut.exception()}')
+
+        log_buffer.log('Certificate', 'Cert injected and IPs refreshed — waiting for Roblox to finish launching...')
+        if not wait_for_roblox_window(timeout=60.0):
+            log_buffer.log('Certificate', 'Warning: Roblox window did not appear within 60 s — restarting anyway')
+        time.sleep(2)
+
+        log_buffer.log('Certificate', 'Restarting Roblox...')
+        terminate_roblox()
+        if not wait_for_roblox_exit(timeout=15.0):
+            log_buffer.log('Certificate', 'Warning: Roblox did not exit within 15 s — skipping restart')
+            return
+
+        try:
+            if not launch_as_standard_user(exe_path):
+                raise OSError('launch failed')
+            log_buffer.log('Certificate', f'Roblox restarted: {exe_path.name}')
+        except OSError as exc:
+            log_buffer.log('Certificate', f'Failed to restart Roblox: {exc}')
 
     def start(self) -> None:
         with self._lock:
@@ -870,10 +1162,14 @@ class ProxyMaster:
             # Clean up hosts file first so Roblox stops routing to us immediately
             if self._hosts_installed:
                 self._stop_watchdog()           # Cancel the force-kill guard task first
-                _remove_hosts_entries(set(INTERCEPT_HOSTS))
+                hosts_cleaned = _remove_hosts_entries(set(INTERCEPT_HOSTS))
                 self._hosts_installed = False
                 _flush_dns()  # Clear stale 127.0.0.1 cache so new connections stop coming in
-                _cancel_hosts_cleanup_on_reboot()  # No longer needed after a clean stop
+                # Only cancel the reboot guard if the hosts file was actually cleaned.
+                # If cleanup failed, the PendingFileRenameOperations entry must remain
+                # so the next reboot still removes our entries automatically.
+                if hosts_cleaned:
+                    _cancel_hosts_cleanup_on_reboot()
                 try:
                     _PROXY_OWNER_PID_FILE.unlink(missing_ok=True)
                 except OSError:
@@ -956,8 +1252,16 @@ class ProxyMaster:
             _delete_watchdog_task()
             # Remove stale hosts entries: if the previous session crashed without
             # calling stop(), our entries may still be present.  getaddrinfo()
-            # would return 127.0.0.1 instead of real CDN IPs.
-            _remove_hosts_entries(set(INTERCEPT_HOSTS))
+            # would return 127.0.0.1 instead of real CDN IPs, and upstream
+            # connections would fail with WinError 1225.
+            if not _remove_hosts_entries(set(INTERCEPT_HOSTS)):
+                log_buffer.log('Error',
+                    'Failed to remove stale proxy hosts entries — real CDN IPs '
+                    'cannot be resolved safely.  Aborting proxy start. '
+                    'If the problem persists, manually remove "# Fleasion proxy entry" '
+                    'lines from %SystemRoot%\\System32\\drivers\\etc\\hosts and restart.')
+                self._running = False
+                return
             _flush_dns()
         else:
             log_buffer.log('Proxy', 'Another proxy owner is running — skipping startup cleanup')
@@ -995,6 +1299,7 @@ class ProxyMaster:
             upstream_ips=real_ips,
             port=PROXY_PORT,
         )
+        self._proxy.set_module_interceptors(self._module_interceptors)
         try:
             await self._proxy.start()
         except OSError as exc:
@@ -1045,6 +1350,12 @@ class ProxyMaster:
                 daemon=True,
             )
             _precheck_thread.start()
+            # Always pre-create rig-converted copies (auto-convert is always enabled)
+            threading.Thread(
+                target=self._texture_stripper.precheck_anim_rigs,
+                name='AnimRigPrecheck',
+                daemon=True,
+            ).start()
 
         # ── Run until the server is stopped ──────────────────────────────
         try:
@@ -1055,10 +1366,11 @@ class ProxyMaster:
             # Ensure hosts file is cleaned up even if stop() wasn't called
             if self._hosts_installed:
                 self._stop_watchdog()
-                _remove_hosts_entries(set(INTERCEPT_HOSTS))
+                hosts_cleaned = _remove_hosts_entries(set(INTERCEPT_HOSTS))
                 self._hosts_installed = False
                 _flush_dns()
-                _cancel_hosts_cleanup_on_reboot()
+                if hosts_cleaned:
+                    _cancel_hosts_cleanup_on_reboot()
                 try:
                     _PROXY_OWNER_PID_FILE.unlink(missing_ok=True)
                 except OSError:

@@ -7,6 +7,9 @@ from pathlib import Path
 
 from ..utils import CONFIG_DIR, CONFIG_FILE, CONFIGS_FOLDER, DEFAULT_SETTINGS
 
+# Windows forbids these characters in file and folder names.
+_INVALID_FILENAME_CHARS = frozenset('\\/:*?"<>|')
+
 
 class ConfigManager:
     """Manages application settings and replacement configurations."""
@@ -199,6 +202,37 @@ class ConfigManager:
         self._save_settings()
 
     @property
+    def close_to_tray(self) -> bool:
+        """Get close to tray setting."""
+        return self.settings.get('close_to_tray', True)
+
+    @close_to_tray.setter
+    def close_to_tray(self, value: bool):
+        """Set close to tray setting."""
+        self.settings['close_to_tray'] = value
+        self._save_settings()
+
+    @property
+    def multi_instance_launching(self) -> bool:
+        """Get multi-instance launching setting."""
+        return self.settings.get('multi_instance_launching', False)
+
+    @multi_instance_launching.setter
+    def multi_instance_launching(self, value: bool):
+        """Set multi-instance launching setting."""
+        self.settings['multi_instance_launching'] = value
+        self._save_settings()
+
+    @property
+    def close_scraped_games_on_open(self) -> bool:
+        return self.settings.get('close_scraped_games_on_open', True)
+
+    @close_scraped_games_on_open.setter
+    def close_scraped_games_on_open(self, value: bool):
+        self.settings['close_scraped_games_on_open'] = value
+        self._save_settings()
+
+    @property
     def window_geometry(self) -> str:
         """Get the saved window geometry (hex string)."""
         return self.settings.get('window_geometry', '')
@@ -207,6 +241,51 @@ class ConfigManager:
     def window_geometry(self, value: str):
         """Set the window geometry."""
         self.settings['window_geometry'] = value
+        self._save_settings()
+
+    @property
+    def auto_convert_anim_rig(self) -> bool:
+        return True
+
+    @auto_convert_anim_rig.setter
+    def auto_convert_anim_rig(self, value: bool):
+        self.settings['auto_convert_anim_rig'] = value
+        self._save_settings()
+
+    @property
+    def skip_non_player_anim_replace(self) -> bool:
+        return self.settings.get('skip_non_player_anim_replace', False)
+
+    @skip_non_player_anim_replace.setter
+    def skip_non_player_anim_replace(self, value: bool):
+        self.settings['skip_non_player_anim_replace'] = value
+        self._save_settings()
+
+    @property
+    def scraper_blacklist(self) -> list[str]:
+        return self.settings.get('scraper_blacklist', [])
+
+    @scraper_blacklist.setter
+    def scraper_blacklist(self, value: list[str]):
+        self.settings['scraper_blacklist'] = value
+        self._save_settings()
+
+    @property
+    def show_names(self) -> bool:
+        return self.settings.get('show_names', True)
+
+    @show_names.setter
+    def show_names(self, value: bool):
+        self.settings['show_names'] = value
+        self._save_settings()
+
+    @property
+    def show_creator_id(self) -> bool:
+        return self.settings.get('show_creator_id', False)
+
+    @show_creator_id.setter
+    def show_creator_id(self, value: bool):
+        self.settings['show_creator_id'] = value
         self._save_settings()
 
     @property
@@ -318,13 +397,32 @@ class ConfigManager:
         """Set rules for the currently displayed (last) config."""
         self.set_replacement_rules(self.last_config, value)
 
+    @property
+    def time_wasted_seconds(self) -> int:
+        """Get total time wasted in seconds (cumulative across sessions)."""
+        return self.settings.get('time_wasted_seconds', 0)
+
+    @time_wasted_seconds.setter
+    def time_wasted_seconds(self, value: int):
+        """Set total time wasted in seconds."""
+        self.settings['time_wasted_seconds'] = max(0, int(value))
+        self._save_settings()
+
     def save(self):
         """Save settings."""
         self._save_settings()
 
+    @staticmethod
+    def is_valid_config_name(name: str) -> bool:
+        """Return True if *name* is safe to use as a Windows filename."""
+        if not name or not name.strip():
+            return False
+        # Characters Windows forbids in file/folder names
+        return not any(c in name for c in _INVALID_FILENAME_CHARS)
+
     def create_config(self, name: str) -> bool:
         """Create a new config. Returns True if successful."""
-        if not name or name in self.config_names:
+        if not name or name in self.config_names or not self.is_valid_config_name(name):
             return False
         self._save_config(name, {'replacement_rules': []})
         return True
@@ -354,6 +452,7 @@ class ConfigManager:
             not new_name
             or old_name not in self.config_names
             or new_name in self.config_names
+            or not self.is_valid_config_name(new_name)
         ):
             return False
         try:
@@ -378,6 +477,7 @@ class ConfigManager:
             not new_name
             or name not in self.config_names
             or new_name in self.config_names
+            or not self.is_valid_config_name(new_name)
         ):
             return False
         config = self._load_config(name)
@@ -444,11 +544,16 @@ class ConfigManager:
 
                 parsed_ids: list[int | str] = []
                 for v in ids:
-                    # "parentId:mapIndex" slot key (e.g. "7547298786:1") — keep as str
                     if isinstance(v, str) and ':' in v:
                         parts = v.split(':', 1)
+                        # "parentId:mapIndex" slot key (e.g. "7547298786:1") — keep as str
                         if parts[0].isdigit() and parts[1].isdigit():
                             parsed_ids.append(v)
+                            continue
+                        # "TexturePack:N" wildcard — replace N-th slot of every TexturePack
+                        if parts[0] == 'TexturePack' and parts[1].isdigit():
+                            parsed_ids.append(v)
+                            continue
                         continue
                     
                     # Try to parse as integer ID first
@@ -462,10 +567,18 @@ class ConfigManager:
                     # Convert to numeric ID for proper texture_stripper matching
                     if isinstance(v, str):
                         v_lower = v.lower()
-                        # Check exact match with known asset type names
-                        if v_lower in ASSET_TYPES:
-                            # Store both the lowercase name and its numeric ID
-                            # for texture_stripper compatibility
+                        # Virtual animation rig-filter types - kept as canonical string keys
+                        _VIRTUAL_ANIM = {
+                            'r6animation':        'R6Animation',
+                            'r15animation':       'R15Animation',
+                            'nonplayeranimation': 'NonPlayerAnimation',
+                            'r6 animation':        'R6Animation',
+                            'r15 animation':       'R15Animation',
+                            'non-player animation': 'NonPlayerAnimation',
+                        }
+                        if v_lower in _VIRTUAL_ANIM:
+                            parsed_ids.append(_VIRTUAL_ANIM[v_lower])
+                        elif v_lower in ASSET_TYPES:
                             numeric_id = ASSET_TYPES[v_lower]
                             parsed_ids.append(numeric_id)
 

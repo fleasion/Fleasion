@@ -414,10 +414,12 @@ class CacheManager:
         elif asset_type in (1, 13):  # Image, Decal
             formats.insert(0, 'converted_png')
         elif asset_type == 63:  # TexturePack
+            formats.insert(0, 'slot_ktx2')
             formats.insert(0, 'converted_images')
             formats.insert(0, 'converted')
         elif asset_type == 24:  # Animation
             formats.insert(0, 'converted_rbxmx')
+            formats.insert(1, 'converted_rbxmx_curve')
         elif asset_type == 39:  # SolidModel
             formats.insert(0, 'converted_rbxmx')
             formats.insert(0, 'converted_obj')
@@ -599,7 +601,50 @@ class CacheManager:
                     return self._export_texturepack(data, asset_id, export_type_dir, filename)
 
                 elif export_format == 'converted_rbxmx' and asset_type == 24:  # Animation - export as RBXMX
-                    output_path = export_type_dir / f'{filename}.rbxmx'
+                    try:
+                        anim_data = data
+                        # Decompress gzip wrapper if present
+                        if anim_data.startswith(b'\x1f\x8b'):
+                            import gzip as gzip_module
+                            anim_data = gzip_module.decompress(anim_data)
+                        # Convert binary .rbxm -> .rbxmx XML if needed
+                        if anim_data.startswith(b'<roblox!'):
+                            from ..utils.anim_converter import rbxm_to_rbxmx
+                            anim_data = rbxm_to_rbxmx(anim_data)
+                        # Convert CurveAnimation -> KeyframeSequence
+                        if b'CurveAnimation' in anim_data:
+                            from ..utils.r15_to_r6 import curve_anim_to_keyframe_xml
+                            anim_data = curve_anim_to_keyframe_xml(anim_data)
+                        output_path = export_type_dir / f'{filename}.rbxmx'
+                        output_path.write_bytes(anim_data)
+                        return output_path
+                    except Exception as e:
+                        from ..utils import log_buffer
+                        log_buffer.log('Export', f'Failed to convert animation to RBXMX: {e}')
+                        output_path = export_type_dir / f'{filename}.rbxmx'
+
+                elif export_format == 'converted_rbxmx_curve' and asset_type == 24:  # Animation - export as CurveAnimation RBXMX
+                    try:
+                        anim_data = data
+                        # Decompress gzip wrapper if present
+                        if anim_data.startswith(b'\x1f\x8b'):
+                            import gzip as gzip_module
+                            anim_data = gzip_module.decompress(anim_data)
+                        # Convert binary .rbxm -> .rbxmx XML if needed
+                        if anim_data.startswith(b'<roblox!'):
+                            from ..utils.anim_converter import rbxm_to_rbxmx
+                            anim_data = rbxm_to_rbxmx(anim_data)
+                        # If it's a KeyframeSequence, convert to CurveAnimation
+                        if b'CurveAnimation' not in anim_data:
+                            from ..utils.r15_to_r6 import keyframe_to_curve_anim
+                            anim_data = keyframe_to_curve_anim(anim_data)
+                        output_path = export_type_dir / f'{filename}.rbxmx'
+                        output_path.write_bytes(anim_data)
+                        return output_path
+                    except Exception as e:
+                        from ..utils import log_buffer
+                        log_buffer.log('Export', f'Failed to convert animation to RBXMX: {e}')
+                        output_path = export_type_dir / f'{filename}.rbxmx'
 
                 elif export_format == 'converted_json' and asset_type == 73:  # FontFamily - JSON metadata
                     # FontFamily assets are JSON files
@@ -761,28 +806,12 @@ class CacheManager:
                             from urllib.parse import urlparse
                             api_url = f'https://assetdelivery.roblox.com/v1/asset/?id={map_id}'
                             headers = {'User-Agent': 'Roblox/WinInet'}
-                            # Get cookie if available for private assets
+                            # Get cookie if available for private assets (use centralized function)
                             try:
-                                import os
-                                import json as _json
-                                import base64
-                                import re
-                                try:
-                                    import win32crypt
-                                    path = os.path.expandvars(r'%LocalAppData%/Roblox/LocalStorage/RobloxCookies.dat')
-                                    if os.path.exists(path):
-                                        with open(path) as f:
-                                            data = _json.load(f)
-                                        cookies_data = data.get('CookiesData')
-                                        if cookies_data:
-                                            enc = base64.b64decode(cookies_data)
-                                            dec = win32crypt.CryptUnprotectData(enc, None, None, None, 0)[1]
-                                            s = dec.decode('utf-8', errors='ignore')
-                                            m = re.search(r'\.ROBLOSECURITY\s+([^\s;]+)', s)
-                                            if m:
-                                                headers['Cookie'] = f'.ROBLOSECURITY={m.group(1)};'
-                                except Exception:
-                                    pass
+                                from ..utils.roblox_auth import get_roblosecurity
+                                cookie = get_roblosecurity()
+                                if cookie:
+                                    headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
                             except Exception:
                                 pass
                             response = requests.get(api_url, headers=headers, timeout=15, allow_redirects=True, verify=False)

@@ -5,6 +5,7 @@ threading.Lock so it is safely shared across all MITM thread-pool workers.
 """
 
 import gzip
+import io
 import json
 import urllib.request
 import hashlib
@@ -221,8 +222,35 @@ class TextureStripper:
     _predownloaded: Dict[int, str] = {}
     # IDs confirmed publicly accessible (no pre-download needed).
     _checked_public: set = set()
+    # IDs currently being checked in a precheck thread (to avoid duplicate spawns).
+    _precheck_pending: set = set()
 
     _PREDOWNLOAD_DIR: Path = APP_CACHE_DIR / 'predownloaded'
+
+    # Animation type IDs (main + all subtypes)
+    _ANIM_TYPE_IDS: frozenset = frozenset({24, 48, 49, 50, 51, 52, 53, 54, 55, 56, 61, 78})
+    _CONV_CACHE_DIR: Path = APP_CACHE_DIR / 'rig_converted'
+
+    # Virtual rig-filter type keys -> required original rig ('R6', 'R15', 'unknown')
+    _VIRTUAL_ANIM_RIG: Dict[str, str] = {
+        'R6Animation':        'R6',
+        'R15Animation':       'R15',
+        'NonPlayerAnimation': 'unknown',
+    }
+
+    # rig of replacement local file, keyed by normalised path string
+    _anim_repl_rig: Dict[str, str] = {}
+    # converted file path, keyed by f'{content_hash16}_{target_rig}'
+    _anim_conv_paths: Dict[str, str] = {}
+    # CDN URLs for animation replacements that need upstream rig detection before serving.
+    # Populated by process_batch_response; checked by check_cdn_request.
+    # These do NOT short-circuit - upstream response is read to detect original rig.
+    # Value: (local_path, required_rig) where required_rig is 'R6'|'R15'|'unknown'|'any'
+    _anim_rig_local: Dict[str, Tuple[str, str]] = {}   # base_cdn_url -> (local_path, required_rig)
+    # pending_key -> (local_path, required_rig)
+    _anim_local_pending: Dict[str, Tuple[str, str]] = {}
+    # separate lock for rig-conversion state (avoids holding _lock during file I/O)
+    _anim_lock: Lock = Lock()
 
     def precheck_replacements(self) -> None:
         """Eagerly check all replacement asset IDs and pre-download private ones.
@@ -243,11 +271,17 @@ class TextureStripper:
 
         replacements_tuple = self.config_manager.get_all_replacements()
         replacements = replacements_tuple[0]  # dict[int, int]: original -> replacement
+
         if not replacements:
             return
 
         # Deduplicate: multiple originals can map to the same replacement ID
         unique_targets = set(replacements.values())
+        # Filter out IDs already pending in another thread
+        unique_targets -= self._precheck_pending
+        if not unique_targets:
+            return
+        self._precheck_pending.update(unique_targets)
         log_buffer.log('Replacer', f'Pre-checking {len(unique_targets)} replacement asset(s)...')
 
         self._PREDOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -288,8 +322,15 @@ class TextureStripper:
                 return_status=True,
             )
             if _data:
-                # 200 — publicly accessible, normal ID swap will work
-                self._checked_public.add(int(target_id))
+                # 200 — publicly accessible.
+                # Always save to disk so the rig-conversion path can intercept
+                # the CDN response instead of a raw ID swap.
+                try:
+                    local_path.write_bytes(_data)
+                    self._predownloaded[int(target_id)] = str(local_path)
+                    log_buffer.log('Replacer', f'Cached public asset {target_id} for rig conversion ({len(_data)} bytes)')
+                except Exception:
+                    self._checked_public.add(int(target_id))
                 public_count += 1
                 continue
 
@@ -321,8 +362,316 @@ class TextureStripper:
                 log_buffer.log('Replacer', f'Could not pre-download private asset {target_id} (status {dl_status})')
                 failed_count += 1
 
+        self._precheck_pending -= unique_targets
         log_buffer.log('Replacer',
                        f'Pre-check complete: {public_count} public, {private_count} private (pre-downloaded), {failed_count} failed')
+
+    # Rig auto-conversion helpers
+
+    def _is_anim_asset_id(self, asset_id: int) -> bool:
+        """Check whether an asset ID is an animation type via the economy API."""
+        scraper = self._cache_scraper
+        if scraper is None:
+            return False
+        try:
+            cookie = scraper._get_roblosecurity()
+            extra = {'Cookie': f'.ROBLOSECURITY={cookie};'} if cookie else {}
+            data = scraper._https_get(
+                'economy.roblox.com',
+                f'/v2/assets/{asset_id}/details',
+                extra_headers=extra or None,
+            )
+            if data:
+                import json as _json
+                info = _json.loads(data)
+                return int(info.get('AssetTypeId', -1)) in self._ANIM_TYPE_IDS
+        except Exception:
+            pass
+        return False
+
+    def _is_anim_replacement_key(self, key) -> bool:
+        """Return True if this local-replacement key targets an animation asset."""
+        # All animation-related string keys: virtual rig-filter types + every
+        # named animation asset type from ASSET_TYPES
+        _ANIM_STR_KEYS = frozenset(
+            name for tid, name in self.ASSET_TYPES.items() if tid in self._ANIM_TYPE_IDS
+        ) | frozenset(self._VIRTUAL_ANIM_RIG)
+        if isinstance(key, str) and key in _ANIM_STR_KEYS:
+            return True
+        # TexturePack slot keys (e.g. "12345:2") are never animations
+        if isinstance(key, str) and ':' in key:
+            return False
+        # Numeric asset ID — look up via economy API
+        try:
+            aid = int(key)
+        except (TypeError, ValueError):
+            return False
+        return self._is_anim_asset_id(aid)
+
+    def precheck_anim_rigs(self) -> None:
+        from ...utils.anim_converter import detect_rig
+
+        try:
+            self._CONV_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
+        replacements_tuple = self.config_manager.get_all_replacements()
+        _, _, _, local_replacements = replacements_tuple
+
+        _ANIM_EXTS = {'.rbxm', '.rbxmx'}
+
+        # Collect local paths that are definitely animation replacements.
+        # Check: animation key/type, .rbxm/.rbxmx extension, or asset type via API.
+        paths_to_process: list[str] = []
+
+        for key, local_path in local_replacements.items():
+            local_path = str(local_path)
+            if local_path in paths_to_process:
+                continue
+            if (Path(local_path).suffix.lower() in _ANIM_EXTS
+                    or self._is_anim_replacement_key(key)):
+                paths_to_process.append(local_path)
+
+        # Predownloaded ID-to-ID replacements: check replacement asset ID via API,
+        # then fall back to extension and magic-byte sniffing.
+        for repl_id, local_path in self._predownloaded.items():
+            local_path = str(local_path)
+            if local_path in paths_to_process:
+                continue
+            if Path(local_path).suffix.lower() in _ANIM_EXTS:
+                paths_to_process.append(local_path)
+                continue
+            # Check the replacement asset ID itself via economy API
+            try:
+                if self._is_anim_asset_id(int(repl_id)):
+                    paths_to_process.append(local_path)
+                    continue
+            except (TypeError, ValueError):
+                pass
+            # Last resort: peek at magic bytes for .dat / extensionless files
+            try:
+                head = Path(local_path).read_bytes()[:64]
+                if (head.startswith(b'<roblox!')
+                        or b'KeyframeSequence' in head
+                        or b'CurveAnimation' in head):
+                    paths_to_process.append(local_path)
+            except Exception:
+                pass
+
+        converted = 0
+        for local_path in paths_to_process:
+            p = Path(local_path)
+            if not p.exists():
+                continue
+            try:
+                data = p.read_bytes()
+            except Exception:
+                continue
+
+            # Only process animation files
+            rig = detect_rig(data)
+            if rig == 'unknown':
+                continue
+
+            with self._anim_lock:
+                self._anim_repl_rig[local_path] = rig
+
+            # Pre-create the opposite rig KeyframeSequence version
+            for target_rig in ('R6', 'R15'):
+                if target_rig == rig:
+                    continue
+                self._get_or_create_converted(local_path, target_rig, data=data)
+
+            # Pre-create CurveAnimation versions for both rigs (needed when the CDN
+            # asset is a CurveAnimation — we must serve back a CurveAnimation)
+            for target_rig in ('R6', 'R15'):
+                self._get_or_create_converted_curve(local_path, target_rig, data=data)
+            converted += 1
+
+        log_buffer.log('AnimConv', f'Pre-conversion complete: {converted} animation(s) processed')
+
+    def _get_or_create_converted(self, local_path: str, target_rig: str,
+                                  data: bytes | None = None) -> Optional[str]:
+        """Return path to a rig-converted copy of local_path, creating it if needed."""
+        import xml.etree.ElementTree as ET
+
+        p = Path(local_path)
+        if not p.exists():
+            return None
+
+        try:
+            if data is None:
+                data = p.read_bytes()
+            content_key = hashlib.sha256(data).hexdigest()[:16]
+        except Exception:
+            return None
+
+        cache_key = f'{content_key}_{target_rig}'
+
+        with self._anim_lock:
+            if cache_key in self._anim_conv_paths:
+                cp = Path(self._anim_conv_paths[cache_key])
+                if cp.exists():
+                    return str(cp)
+
+        # Build converted file path
+        out_path = self._CONV_CACHE_DIR / f'{cache_key}.rbxmx'
+        if out_path.exists():
+            with self._anim_lock:
+                self._anim_conv_paths[cache_key] = str(out_path)
+            return str(out_path)
+
+        try:
+            self._CONV_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+            # Convert binary .rbxm to XML if needed
+            from ...utils.anim_converter import rbxm_to_rbxmx
+            if data[:8] == b'<roblox!':
+                xml_data = rbxm_to_rbxmx(data)
+            else:
+                xml_data = data
+
+            # If it's a CurveAnimation, convert to KeyframeSequence first
+            if b'CurveAnimation' in xml_data:
+                from ...utils.r15_to_r6 import curve_anim_to_keyframe_xml
+                xml_data = curve_anim_to_keyframe_xml(xml_data)
+
+            # Use the same conversion logic as the misc tab
+            from ...utils.r15_to_r6 import (convert_keyframe_r15_to_r6,
+                                             convert_keyframe_r6_to_r15, sanitize_xml)
+            from ...utils.rig_data import R6_PARTS, R6_JOINTS, R15_PARTS, R15_JOINTS
+
+            root = ET.fromstring(sanitize_xml(xml_data))
+            etree = ET.ElementTree(root)
+
+            ks = root.find("Item[@class='KeyframeSequence']")
+            if ks is None:
+                raise ValueError('No KeyframeSequence found')
+            keyframes = ks.findall("Item[@class='Keyframe']")
+            if not keyframes:
+                raise ValueError('No Keyframes found')
+
+            if target_rig == 'R6':
+                for kf in keyframes:
+                    convert_keyframe_r15_to_r6(kf, R6_PARTS, R6_JOINTS, R15_PARTS, R15_JOINTS)
+            else:
+                for kf in keyframes:
+                    convert_keyframe_r6_to_r15(kf, R6_PARTS, R6_JOINTS, R15_PARTS, R15_JOINTS)
+
+            etree.write(str(out_path), encoding='utf-8', xml_declaration=True)
+            with self._anim_lock:
+                self._anim_conv_paths[cache_key] = str(out_path)
+            log_buffer.log('AnimConv', f'Created {target_rig} version: {out_path.name}')
+            return str(out_path)
+        except Exception as exc:
+            log_buffer.log('AnimConv', f'Conversion failed for {p.name} -> {target_rig}: {exc}')
+            return None
+
+    def _get_or_create_converted_curve(self, local_path: str, target_rig: str,
+                                        data: bytes | None = None) -> Optional[str]:
+        """Return path to a rig-converted CurveAnimation copy of local_path, creating it if needed.
+
+        Pipeline: source -> XML (if binary) -> KeyframeSequence (if CurveAnimation)
+                  -> rig-convert if needed -> CurveAnimation
+        """
+        p = Path(local_path)
+        if not p.exists():
+            return None
+
+        try:
+            if data is None:
+                data = p.read_bytes()
+            content_key = hashlib.sha256(data).hexdigest()[:16]
+        except Exception:
+            return None
+
+        cache_key = f'{content_key}_{target_rig}_curve'
+
+        with self._anim_lock:
+            if cache_key in self._anim_conv_paths:
+                cp = Path(self._anim_conv_paths[cache_key])
+                if cp.exists():
+                    return str(cp)
+
+        out_path = self._CONV_CACHE_DIR / f'{cache_key}.rbxmx'
+        if out_path.exists():
+            with self._anim_lock:
+                self._anim_conv_paths[cache_key] = str(out_path)
+            return str(out_path)
+
+        try:
+            self._CONV_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+            # Step 1: Convert binary .rbxm -> XML if needed
+            from ...utils.anim_converter import rbxm_to_rbxmx, detect_rig
+            xml_data = rbxm_to_rbxmx(data) if data[:10].startswith(b'<roblox!\x89\xff') else data
+
+            # Step 2: Convert CurveAnimation -> KeyframeSequence if needed
+            if b'CurveAnimation' in xml_data:
+                from ...utils.r15_to_r6 import curve_anim_to_keyframe_xml
+                xml_data = curve_anim_to_keyframe_xml(xml_data)
+
+            # Step 3: Rig-convert if source rig differs from target rig
+            import xml.etree.ElementTree as ET
+            from ...utils.r15_to_r6 import (convert_keyframe_r15_to_r6,
+                                             convert_keyframe_r6_to_r15, sanitize_xml)
+            from ...utils.rig_data import R6_PARTS, R6_JOINTS, R15_PARTS, R15_JOINTS
+
+            src_rig = detect_rig(xml_data)
+            if src_rig != 'unknown' and src_rig != target_rig:
+                root = ET.fromstring(sanitize_xml(xml_data))
+                ks = root.find("Item[@class='KeyframeSequence']")
+                if ks is None:
+                    raise ValueError('No KeyframeSequence found after curve conversion')
+                keyframes = ks.findall("Item[@class='Keyframe']")
+                if not keyframes:
+                    raise ValueError('No Keyframes found after curve conversion')
+                if target_rig == 'R6':
+                    for kf in keyframes:
+                        convert_keyframe_r15_to_r6(kf, R6_PARTS, R6_JOINTS, R15_PARTS, R15_JOINTS)
+                else:
+                    for kf in keyframes:
+                        convert_keyframe_r6_to_r15(kf, R6_PARTS, R6_JOINTS, R15_PARTS, R15_JOINTS)
+                buf = io.BytesIO()
+                ET.ElementTree(root).write(buf, encoding='utf-8', xml_declaration=True)
+                xml_data = buf.getvalue()
+
+            # Step 4: Convert KeyframeSequence -> CurveAnimation
+            from ...utils.r15_to_r6 import keyframe_to_curve_anim
+            curve_data = keyframe_to_curve_anim(xml_data)
+
+            out_path.write_bytes(curve_data)
+            with self._anim_lock:
+                self._anim_conv_paths[cache_key] = str(out_path)
+            log_buffer.log('AnimConv', f'Created {target_rig} CurveAnimation version: {out_path.name}')
+            return str(out_path)
+        except Exception as exc:
+            log_buffer.log('AnimConv', f'CurveAnim conversion failed for {p.name} -> {target_rig}: {exc}')
+            return None
+
+    def _detect_repl_rig(self, local_path: str) -> str:
+        """Detect and cache the rig type of a local replacement animation file."""
+        with self._anim_lock:
+            if local_path in self._anim_repl_rig:
+                return self._anim_repl_rig[local_path]
+        try:
+            from ...utils.anim_converter import detect_rig
+            rig = detect_rig(Path(local_path).read_bytes())
+        except Exception:
+            rig = 'unknown'
+        with self._anim_lock:
+            self._anim_repl_rig[local_path] = rig
+        return rig
+
+    def _is_anim_entry(self, e: dict) -> bool:
+        """Return True if batch entry is an animation asset type."""
+        tid = e.get('assetTypeId')
+        if tid in self._ANIM_TYPE_IDS:
+            return True
+        at_name = str(e.get('assetType', '')).lower()
+        mapped = self._REVERSE.get(at_name)
+        return mapped in self._ANIM_TYPE_IDS
 
     # ------------------------------------------------------------------
     # Batch request (called from server MITM thread)
@@ -391,7 +740,8 @@ class TextureStripper:
         # trigger a background precheck so the next batch can serve them locally.
         if replacements and self._cache_scraper is not None:
             unknown = {int(v) for v in replacements.values()
-                       if int(v) not in self._predownloaded and int(v) not in self._checked_public}
+                       if int(v) not in self._predownloaded and int(v) not in self._checked_public
+                       and int(v) not in self._precheck_pending}
             if unknown:
                 import threading as _thr
                 _thr.Thread(target=self.precheck_replacements,
@@ -402,11 +752,64 @@ class TextureStripper:
         # scraper body can be built with original IDs after the loop.
         id_swapped: dict[int, int] = {}   # index → original_aid
 
+        # Convert TexturePack slot removals to blank-placeholder local routes.
+        # Dropping a slot from the batch breaks the entire TexturePack in Roblox;
+        # serving a 1×1 blank KTX2 keeps the pack intact for the other slots.
+        # Matches "parentId:mapIndex" and wildcard "TexturePack:N" removal keys.
+        if removals:
+            tp_slot_removals = {
+                r for r in removals
+                if (isinstance(r, str) and ':' in r
+                    and r.split(':', 1)[1].isdigit()
+                    and (r.split(':', 1)[0].isdigit() or r.split(':', 1)[0] == 'TexturePack'))
+            }
+            if tp_slot_removals:
+                blank = self._get_blank_ktx2_path()
+                if blank:
+                    removals = set(removals) - tp_slot_removals
+                    local_replacements = dict(local_replacements)
+                    for r in tp_slot_removals:
+                        local_replacements[r] = blank
+                    log_buffer.log('TexPack', f'Routing {len(tp_slot_removals)} slot removal(s) to blank placeholder')
+
         orig_len = len(data)
         data = [e for e in data if isinstance(e, dict) and not self._should_remove(e, removals)]
         if len(data) < orig_len:
             log_buffer.log('Remover', f'Removed {orig_len - len(data)} asset(s)')
             modified = True
+
+        # Pre-build ORM channel override index.
+        # Global indices 2-5 in local_replacements map to ORM sub-channels:
+        #   GI2 = Metalness (ORM.R), GI3 = Roughness (ORM.G),
+        #   GI4 = Emissive  (ORM.B), GI5 = Height    (ORM.A).
+        # All route through the ORM compositor targeting Roblox fidelity slot 2
+        # (the combined ORM CDN request).  The mapping is GLOBAL and FIXED —
+        # it does NOT depend on the per-asset XML tag ordering.
+        _GLOBAL_INDEX_CHANNEL = {2: 'metalness', 3: 'roughness', 4: 'emissive', 5: 'height'}
+        # _orm_overrides: pack_id_or_'TexturePack' -> {channel_name: local_path}
+        _orm_overrides: dict[int | str, dict[str, str | None]] = {}
+        # Scan both cdn_replacements and local_replacements for GI≥2 keys.
+        # local_replacements is processed last so it wins on key collisions.
+        _vs2_sources: dict = {**cdn_replacements, **local_replacements}
+        for _ck, _cv in _vs2_sources.items():
+            if not isinstance(_ck, str) or ':' not in _ck:
+                continue
+            _pk, _gi_str = _ck.split(':', 1)
+            if not _gi_str.isdigit():
+                continue
+            _gi = int(_gi_str)
+            if _gi < 2:
+                continue  # GI0/GI1 are full-slot; handled by normal local_key routing
+            _ch = _GLOBAL_INDEX_CHANNEL.get(_gi)
+            if not _ch:
+                continue
+            _pk_key: int | str = int(_pk) if _pk.isdigit() else _pk
+            # KTX2/KTX paths (e.g. blank placeholder) are not valid PNG sources;
+            # treat as None = zero out this channel with _CHANNEL_ZERO defaults.
+            _cv_resolved: str | None = (
+                None if (_cv is not None and _cv.lower().endswith(('.ktx2', '.ktx'))) else _cv
+            )
+            _orm_overrides.setdefault(_pk_key, {})[_ch] = _cv_resolved
 
         for idx, e in enumerate(data):
             if not isinstance(e, dict):
@@ -414,18 +817,23 @@ class TextureStripper:
             aid = e.get('assetId')
             req_id = e.get('requestId')
             type_keys = self._get_type_keys(e)
+            is_solidmodel = (e.get('assetTypeId') == 39) or (
+                self._REVERSE.get(str(e.get('assetType', '')).lower()) == 39
+            )
 
             # Build slot key from the fidelity field in contentRepresentationPriorityList.
             # slot_key = "assetId:mapIndex" (e.g. "7547298786:1" for the normal-map slot).
-            # This allows per-slot replacement: the user can target a specific texture map
-            # of a TexturePack by its sub-asset ID (auto-resolved below) or directly.
+            # wildcard_key = "TexturePack:N" matches the N-th slot of ANY TexturePack.
             map_index = self._get_texpack_map_index(e)
             slot_key = f'{aid}:{map_index}' if (aid is not None and map_index is not None) else None
+            wildcard_key = f'TexturePack:{map_index}' if map_index is not None else None
 
             # ID/type replacement — slot-specific match takes priority over whole-asset
             matched = None
             if slot_key and slot_key in replacements:
                 matched = slot_key
+            elif wildcard_key and wildcard_key in replacements:
+                matched = wildcard_key
             elif aid in replacements:
                 matched = aid
             else:
@@ -473,12 +881,33 @@ class TextureStripper:
                 log_buffer.log('Replacer', f'Replaced {aid} -> {replacement_id}{slot_info}')
                 modified = True
 
-            # CDN / local routing — slot key takes priority
+            # CDN / local routing — slot key / wildcard key takes priority
             if req_id and aid:
-                is_solidmodel = (e.get('assetTypeId') == 39) or (
-                    self._REVERSE.get(str(e.get('assetType', '')).lower()) == 39
-                )
-                all_keys = ([slot_key] if slot_key else []) + [aid] + type_keys
+                # ── ORM channel compositing (virtual slots 2-5) ──────────────────
+                # When the fidelity slot is 2 (ORM) and per-channel PNG overrides
+                # are configured via VSN keys (N≥2), composite them into one texture.
+                # This check runs BEFORE normal local_key routing so that e.g.
+                # "packId:2 → metalness.png" is composited rather than served raw.
+                if map_index == 2 and _orm_overrides:
+                    _orm_chs: dict[str, str | None] = {}
+                    # Wildcard always lowest priority
+                    _orm_chs.update(_orm_overrides.get('TexturePack', {}))
+                    # Pack-specific overrides win
+                    if aid in _orm_overrides:
+                        _orm_chs.update(_orm_overrides[aid])
+                    if _orm_chs:
+                        _comp = self._build_orm_composite(aid, _orm_chs)
+                        if _comp:
+                            self._route_local(f'{batch_id}_{req_id}', aid, _comp, is_solidmodel, is_texpack=True)
+                            modified = True
+                            continue
+                        # Composite failed — fall through to normal routing as best-effort
+
+                all_keys = ([slot_key] if slot_key else []) + ([wildcard_key] if wildcard_key else []) + [aid] + type_keys
+                # For animation entries, also check virtual rig-filter keys as fallback
+                if self._is_anim_entry(e):
+                    all_keys = all_keys + [k for k in self._VIRTUAL_ANIM_RIG]
+
                 cdn_key = next((k for k in all_keys if k in cdn_replacements), None)
                 local_key = next((k for k in all_keys if k in local_replacements), None)
                 if cdn_key is not None:
@@ -491,7 +920,24 @@ class TextureStripper:
                     is_texpack = (':' in str(local_key)) or (e.get('assetTypeId') == 63) or (
                         self._REVERSE.get(str(e.get('assetType', '')).lower()) == 63
                     )
-                    self._route_local(f'{batch_id}_{req_id}', aid, local_replacements[local_key], is_solidmodel, is_texpack)
+                    _repl_local_path = local_replacements[local_key]
+                    self._route_local(f'{batch_id}_{req_id}', aid, _repl_local_path, is_solidmodel, is_texpack)
+                    # Tag animation replacements for upstream rig detection.
+                    # Determine required_rig from virtual type key(s), or 'any' for normal types.
+                    if aid is not None and self._is_anim_entry(e):
+                        if str(local_key) in self._VIRTUAL_ANIM_RIG:
+                            # Collect all virtual keys in local_replacements pointing to the
+                            # same file — user may have "R6Animation, R15Animation" in one rule.
+                            _covered = frozenset(
+                                self._VIRTUAL_ANIM_RIG[vk]
+                                for vk in self._VIRTUAL_ANIM_RIG
+                                if local_replacements.get(vk) == _repl_local_path
+                            )
+                            _required_rig = 'any' if _covered >= {'R6', 'R15', 'unknown'} else _covered
+                        else:
+                            _required_rig = 'any'
+                        with self._anim_lock:
+                            self._anim_local_pending[f'{batch_id}_{req_id}'] = (str(_repl_local_path), _required_rig)
 
         if modified:
             result = _dumps(data)
@@ -536,8 +982,18 @@ class TextureStripper:
                     self._cdn_redirects[base_loc] = url_value
                     log_buffer.log('CDN', f'Will redirect {base_loc[:60]}...')
                 elif url_type == 'local':
-                    self._local_redirects[base_loc] = url_value
-                    log_buffer.log('Local', f'Will serve local for {base_loc[:60]}...')
+                    # Check if this is a tagged animation replacement — if so, put it in
+                    # _anim_rig_local so server.py reads the upstream CDN response first
+                    # to detect the original rig, rather than short-circuiting immediately.
+                    with self._anim_lock:
+                        _anim_pending = self._anim_local_pending.pop(pending_key, None)
+                    if _anim_pending is not None:
+                        _anim_path, _required_rig = _anim_pending
+                        self._anim_rig_local[base_loc] = (_anim_path, _required_rig)
+                        log_buffer.log('AnimConv', f'Queued rig-detect for {base_loc[:60]}...')
+                    else:
+                        self._local_redirects[base_loc] = url_value
+                        log_buffer.log('Local', f'Will serve local for {base_loc[:60]}...')
                 elif url_type == 'solid':
                     self._solidmodel_injections[base_loc] = url_value
                     log_buffer.log('SolidModel', f'Will inject OBJ for {base_loc[:60]}...')
@@ -547,8 +1003,21 @@ class TextureStripper:
     # ------------------------------------------------------------------
 
     def check_cdn_request(self, host: str, path: str) -> Optional[Tuple[str, str]]:
-        """Returns ('local'|'cdn'|'solid', value) or None."""
+        """Returns ('local'|'cdn'|'solid'|'anim_rig', value) or None.
+
+        'anim_rig' means: let the upstream CDN request proceed normally so server.py
+        can read the original response bytes, detect the rig, then serve the
+        rig-matched local replacement file instead.
+        """
         base_url = f'https://{host}{path}'.split('?')[0]
+        # Check animation rig-detect entries first (separate dict, no _lock needed here
+        # since _anim_lock guards it; checked before _local_redirects so these never
+        # accidentally land in the normal short-circuit path).
+        with self._anim_lock:
+            anim_entry = self._anim_rig_local.pop(base_url, None)
+        if anim_entry is not None:
+            return ('anim_rig', anim_entry)
+
         with self._lock:
             if base_url in self._local_redirects:
                 return ('local', self._local_redirects.pop(base_url))
@@ -725,12 +1194,55 @@ class TextureStripper:
                     self._pending[req_id] = ('local', local_path)
                 log_buffer.log('Local', f'Queued local for {aid}')
 
+    def _build_orm_composite(
+        self, parent_id, channel_pngs: dict[str, str | None],
+    ) -> Optional[str]:
+        """Build (or retrieve from cache) a composite ORM KTX2 from per-channel PNGs.
+
+        *parent_id* is the TexturePack asset ID.  *channel_pngs* maps channel
+        name (``metalness``, ``roughness``, ``emissive``, ``height``) to local
+        PNG file paths.  The baseline ORM KTX2 from texpack_slots/ is used if
+        available so unspecified channels retain their CDN values.
+        """
+        try:
+            from ...cache.tools.orm_compositor import composite_orm
+            # Resolve CDN URLs to local cached files before compositing.
+            # On download failure the channel is omitted so the baseline KTX2
+            # value shows through, as if the user never replaced that channel.
+            resolved: dict[str, str | None] = {}
+            for _ch, _val in channel_pngs.items():
+                if _val is not None and (str(_val).startswith('http://') or str(_val).startswith('https://')):
+                    _url_hash = hashlib.md5(_val.encode()).hexdigest()[:16]
+                    _ext = Path(urlparse(_val).path).suffix.lower() or '.png'
+                    _cdn_cache = APP_CACHE_DIR / 'orm_cdn_cache' / f'{_url_hash}{_ext}'
+                    _cdn_cache.parent.mkdir(parents=True, exist_ok=True)
+                    if not _cdn_cache.exists():
+                        if not _download_remote_file(_val, _cdn_cache, f'ORM channel {_ch}'):
+                            log_buffer.log('ORM', f'CDN download failed for channel {_ch} — using original')
+                            continue  # skip channel; baseline value preserved
+                    resolved[_ch] = str(_cdn_cache)
+                else:
+                    resolved[_ch] = _val
+            baseline = APP_CACHE_DIR / 'texpack_slots' / f'{parent_id}_slot2.ktx2'
+            result = composite_orm(
+                baseline=(baseline if baseline.exists() else None),
+                channels={k: (Path(v) if v is not None else None) for k, v in resolved.items()},
+                cache_dir=APP_CACHE_DIR,
+            )
+            return result
+        except Exception as exc:
+            log_buffer.log('ORM', f'Composite failed for pack {parent_id}: {exc}')
+            return None
+
     def _should_remove(self, e: dict, removals: set) -> bool:
         aid = e.get('assetId')
         # Slot-specific check using fidelity-based map_index
         map_index = self._get_texpack_map_index(e)
         if aid is not None and map_index is not None:
             if f'{aid}:{map_index}' in removals:
+                return True
+            # Wildcard TexturePack:N removal
+            if f'TexturePack:{map_index}' in removals:
                 return True
         if aid in removals:
             return True
@@ -744,6 +1256,39 @@ class TextureStripper:
             if self._REVERSE.get(str(at_name).lower()) in removals:
                 return True
         return False
+
+    @staticmethod
+    def _get_blank_ktx2_path() -> str | None:
+        """Return a path to a 1×1 white RGBA KTX2 placeholder texture.
+
+        Created on first call and cached in APP_CACHE_DIR.  Used to fill
+        TexturePack slots that the user has set to "Nothing" so the rest of
+        the pack keeps loading normally.
+        """
+        import struct as _struct, zlib as _zl
+        png_path = APP_CACHE_DIR / '_blank_texpack.png'
+        if not png_path.exists():
+            try:
+                def _chunk(ctype: bytes, data: bytes) -> bytes:
+                    body = ctype + data
+                    return _struct.pack('>I', len(data)) + body + _struct.pack('>I', _zl.crc32(body) & 0xFFFFFFFF)
+                sig   = b'\x89PNG\r\n\x1a\n'
+                ihdr  = _chunk(b'IHDR', _struct.pack('>IIBBBBB', 1, 1, 8, 6, 0, 0, 0))  # 1×1 RGBA
+                idat  = _chunk(b'IDAT', _zl.compress(b'\x00\xff\xff\xff\xff', 9))        # white, opaque
+                iend  = _chunk(b'IEND', b'')
+                png_path.write_bytes(sig + ihdr + idat + iend)
+                log_buffer.log('TexPack', 'Created blank 1×1 placeholder PNG')
+            except Exception as exc:
+                log_buffer.log('TexPack', f'Failed to create blank placeholder PNG: {exc}')
+                return None
+        try:
+            from ...cache.tools.image_to_ktx2.converter import get_or_create_ktx2_from_image
+            ktx_path = get_or_create_ktx2_from_image(png_path)
+            if ktx_path and ktx_path.exists():
+                return str(ktx_path)
+        except Exception as exc:
+            log_buffer.log('TexPack', f'Failed to convert blank placeholder to KTX2: {exc}')
+        return None
 
     def _get_type_keys(self, e: dict) -> list:
         keys = []
@@ -760,15 +1305,29 @@ class TextureStripper:
 
     @staticmethod
     def _get_texpack_map_index(e: dict) -> int | None:
-        """Return texture map slot index from the batch item's fidelity field.
+        """Return texture map fidelity slot index from the batch item.
 
         Roblox encodes the slot as a base64 fidelity value inside
-        ``contentRepresentationPriorityList``.  The slot index lives in the
-        low 6 bits of the first decoded byte:
+        ``contentRepresentationPriorityList``.  The fidelity byte encodes:
+          bits 0–5 (& 0x3F): slot index
+          bits 6–7 (>> 6):   quality/LOD level (0=low … 3=ultra)
+
+        Roblox fidelity slot values (empirically verified):
           0 = Color / Albedo
           1 = Normal
-          2 = Roughness / Metalness
-        Higher bits encode the quality/LOD level (1, 2, 3).
+          2 = ORM (combined Metalness-Roughness-Emissive-Height)
+
+        Fleasion global indices (fixed, asset-independent):
+          0 = Color       (fidelity 0, full slot)
+          1 = Normal      (fidelity 1, full slot)
+          2 = Metalness   (fidelity 2, ORM R channel)
+          3 = Roughness   (fidelity 2, ORM G channel)
+          4 = Emissive    (fidelity 2, ORM B channel)
+          5 = Height      (fidelity 2, ORM A channel)
+
+        This method returns the RAW fidelity index (0, 1, or 2).
+        Global indices 2–5 are resolved via ``_GLOBAL_INDEX_CHANNEL``
+        in the ORM compositor path.
         """
         crpl = e.get('contentRepresentationPriorityList')
         if not crpl:
@@ -783,6 +1342,8 @@ class TextureStripper:
             if not fidelity_b64:
                 return None
             fb = _b64.b64decode(fidelity_b64)
+            if not fb:
+                return None
             return fb[0] & 0x3F
         except Exception:
             return None

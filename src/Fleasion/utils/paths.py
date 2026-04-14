@@ -5,9 +5,12 @@ from pathlib import Path
 
 # Application metadata
 APP_NAME = 'Fleasion'
-APP_VERSION = '1.7.1'
-APP_AUTHOR = 'By @8ar__ | Logic by @blockce, @1_v, @0100152000022000\n@dis_spencer, @Yeha., @emk530'
+APP_VERSION = '2.0.0'
+APP_AUTHOR = '@8ar__, @dis_spencer, @1_v'
+APP_LOGIC = '@blockce, @0100152000022000, @Yeha., @emk530'
+APP_CONCEPT = '@cro.p'
 APP_DISCORD = 'discord.gg/hXyhKehEZF'
+APP_REPO = 'https://github.com/fleasion/Fleasion'
 
 # Process and proxy configuration
 ROBLOX_PROCESS = 'RobloxPlayerBeta.exe'
@@ -35,7 +38,7 @@ CONFIGS_FOLDER = CONFIG_DIR / 'configs'
 PROXY_CA_DIR = CONFIG_DIR / 'proxy_ca'
 
 # PreJsons
-CLOG_URL = 'https://raw.githubusercontent.com/qrhrqiohj/PFTEST/refs/heads/main/CLOG.json'
+CLOG_URL = 'https://raw.githubusercontent.com/fleasion/Fleasion/refs/heads/clog/CLOG.json'
 PREJSONS_DIR = CONFIG_DIR / 'PreJsons'
 ORIGINALS_DIR = PREJSONS_DIR / 'originals'
 REPLACEMENTS_DIR = PREJSONS_DIR / 'replacements'
@@ -57,7 +60,9 @@ DEFAULT_SETTINGS = {
     'first_time_setup_complete': False,
     'auto_delete_cache_on_exit': True,
     'clear_cache_on_launch': True,
-    'run_on_boot': False,
+    'run_on_boot': True,
+    'close_to_tray': True,
+    'multi_instance_launching': False,
     # Scraper tab - column visibility
     'scraper_column_visibility': {
         'hash_name':  True,
@@ -69,6 +74,10 @@ DEFAULT_SETTINGS = {
         'url':        False,
     },
     'scraper_column_widths': {},
+    'time_wasted_seconds': 0,
+    'auto_convert_anim_rig': False,
+    'skip_non_player_anim_replace': False,
+    'scraper_blacklist': [],
 }
 
 

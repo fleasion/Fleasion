@@ -1,5 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
+import re, pathlib
 from PyInstaller.utils.hooks import collect_all, collect_submodules
+
+_paths_src = pathlib.Path('src/Fleasion/utils/paths.py').read_text()
+_version = re.search(r"APP_VERSION\s*=\s*['\"]([^'\"]+)['\"]", _paths_src).group(1)
 
 datas = [
     ('src\\Fleasion\\fleasionlogoHR.ico', '.'),
@@ -16,6 +20,10 @@ hiddenimports = []
 
 # cryptography has Rust/C binary extensions that must be collected explicitly
 tmp_ret = collect_all('cryptography')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+
+# numpy has C-extensions (.pyd files) that must be bundled - without this, the .exe fails with C-extension import errors
+tmp_ret = collect_all('numpy')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 # PyQt6 has many optional sub-packages; collect_all ensures nothing is missed
@@ -74,7 +82,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='Fleasion',
+    name=f'Fleasion-v{_version}',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

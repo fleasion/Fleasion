@@ -12,7 +12,7 @@ To request help or request content, join our community <a href="https://discord.
 
 ### Standalone Executable
 
-Download `Fleasion.exe` from the [Releases](https://github.com/qrhrqiohj/Fleasion/releases) page. No Python installation required.
+Download `Fleasion.exe` from the [Releases](https://github.com/fleasion/Fleasion/releases) page. No Python installation required.
 
 ## Requirements for Building from Source
 
@@ -24,21 +24,13 @@ Download `Fleasion.exe` from the [Releases](https://github.com/qrhrqiohj/Fleasio
 
 ```bash
 # Clone the repository
-git clone https://github.com/qrhrqiohj/Fleasion.git
+git clone https://github.com/fleasion/Fleasion.git
 cd fleasion
 
-# Install dependencies with uv
-uv sync
-
-# Run the application
+# Run the application (auto-installs all dependencies)
 uv run Fleasion
-```
 
-### Building a Standalone Executable
-
-To build a standalone executable, within the "Fleasion" folder, run:
-
-```bash
+# (OPTIONAL) Compile as a standalone .exe
 uv run pyinstaller Fleasion.spec
 ```
 
@@ -105,7 +97,7 @@ The cache scraper is a live interception system that captures every asset Roblox
 
 - **KTX textures** (Images, Decals) &mdash; converts KTX textures locally on device into usable PNGs
 - **TexturePacks** &mdash; fetches the XML manifest that maps Color, Normal, Metalness, and Roughness texture IDs, then resolves each individual texture
-- **3D Models** (SolidMdodels and Meshes) &mdash; Converts every single Mesh and SolidModel type into .obj files in both directions
+- **3D Models** (SolidModels and Meshes) &mdash; Converts every single Mesh and SolidModel type into .obj files in both directions
 
 **Performance:**
 
@@ -187,10 +179,12 @@ src/Fleasion/
 │   ├── cache_json_viewer.py        # Embedded JSON viewer for cache entries
 │   ├── animation_viewer.py         # 3D animation preview with R15/R6 rigs
 │   ├── audio_player.py             # Audio playback widget
+│   ├── font_viewer.py              # Font file preview widget
 │   ├── obj_viewer.py               # 3D mesh viewer (OpenGL) with orbit/FPS camera
 │   ├── mesh_processing.py          # Mesh format conversion (Roblox mesh to OBJ)
 │   ├── rbxm_parser.py              # Roblox binary model file parser
 │   └── tools/
+│       ├── orm_compositor.py       # ORM texture channel compositor (metalness/roughness)
 │       ├── solidmodel_converter/
 │       │   ├── converter.py        # RBXM deserializer entry point
 │       │   ├── obj_to_mesh.py      # OBJ to Roblox V2.00 mesh format converter
@@ -204,14 +198,30 @@ src/Fleasion/
 │       │       ├── serializer.py
 │       │       ├── types.py
 │       │       └── xml_writer.py
+│       ├── image_to_ktx2/
+│       │   └── converter.py        # PNG/image to KTX2 texture converter
+│       ├── ktx_to_png/
+│       │   └── ktx_to_png.py       # KTX2 texture to PNG converter
 │       └── animpreview/            # Animation preview assets (R15/R6 OBJ models and rigs)
+│           └── animpreview.py
 ├── gui/
 │   ├── replacer_config.py          # Main Dashboard window with profile management
+│   ├── modifications_tab.py        # Client modifications tab (fonts, fflags, global settings)
+│   ├── subplace_joiner_tab.py      # Subplace browser and server joiner tab
+│   ├── rando_stuff_tab.py          # Misc tab (reserved server rejoin, multi-instance, accounts)
+│   ├── settings_tab.py             # Settings tab (mirrors all tray menu settings in the dashboard)
+│   ├── prejsons_dialog.py          # Community preset browser dialog
 │   ├── json_viewer.py              # JSON tree viewer with search and asset preview
 │   ├── theme.py                    # Theme management (System/Light/Dark)
 │   ├── about.py                    # About dialog
 │   ├── logs.py                     # Real-time log viewer
 │   └── delete_cache.py             # Cache deletion window
+├── modifications/
+│   ├── manager.py                  # Modification orchestration (apply/revert)
+│   ├── fflag_manager.py            # Fast flags (FFlag) read/write
+│   ├── global_settings_manager.py  # GlobalSettings.json management
+│   ├── font_utils.py               # Custom font installation
+│   └── dds_to_png.py               # DDS texture to PNG conversion
 ├── prejsons/
 │   └── downloader.py               # Community preset downloader
 └── utils/
@@ -220,6 +230,11 @@ src/Fleasion/
     ├── autostart.py                # Windows Task Scheduler run-on-boot management
     ├── logging.py                  # Thread-safe log buffer
     ├── threading.py                # Threading utilities
+    ├── time_tracker.py             # Session time tracking
+    ├── anim_converter.py           # Animation format conversion (R6↔R15, KeyframeSeq↔CurveAnim)
+    ├── r15_to_r6.py                # R15 to R6 rig conversion utilities
+    ├── rig_data.py                 # Rig bone definitions and mappings
+    ├── roblox_auth.py              # Centralized helper to get your Roblox Token to use for Roblox V1 APIs
     ├── updater.py                  # Update checker
     └── windows.py                  # Windows-specific operations (process management, cache deletion)
 ```
@@ -253,6 +268,8 @@ Settings are stored in `%LocalAppData%\FleasionNT\`:
 | sounddevice + soundfile | Audio playback |
 | lz4 | Compression support |
 | orjson | Fast JSON parsing |
+| zstandard | CDN payload decompression |
+| python-dateutil | Date parsing |
 
 ## Community
 
@@ -261,8 +278,8 @@ Settings are stored in `%LocalAppData%\FleasionNT\`:
 
 ## Credits
 
-- **@8ar__**, **@dis_spencer** &mdash; code
-- **@1_v** (Sky), **@Blockce**, **@0100152000022000** (Sky 2), **@emk530**, **@Yeha.** &mdash; logic and contributions
+- **@8ar__**, **@dis_spencer**, **@1_v** (Sky) &mdash; code
+- **@Blockce**, **@0100152000022000** (Sky 2), **@emk530**, **@Yeha.** &mdash; logic and contributions
 - Donators &mdash; for keeping the passion going
 
 ## License

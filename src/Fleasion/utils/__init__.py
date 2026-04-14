@@ -1,9 +1,13 @@
 """Utilities package."""
 
 from .logging import LogBuffer, log_buffer
+from .time_tracker import TimeTracker, time_tracker
 from .paths import (
     APP_AUTHOR,
+    APP_LOGIC,
+    APP_CONCEPT,
     APP_DISCORD,
+    APP_REPO,
     APP_NAME,
     APP_VERSION,
     APP_CACHE_DIR,
@@ -35,17 +39,22 @@ from .updater import start_update_check
 from .windows import (
     delete_cache,
     get_roblox_player_exe_path,
+    get_roblox_studio_exe_path,
     is_roblox_running,
     is_studio_running,
     open_folder,
     show_message_box,
     terminate_roblox,
     wait_for_roblox_exit,
+    wait_for_roblox_window,
 )
 
 __all__ = [
     'APP_AUTHOR',
+    'APP_LOGIC',
+    'APP_CONCEPT',
     'APP_DISCORD',
+    'APP_REPO',
     'APP_NAME',
     'APP_VERSION',
     'APP_CACHE_DIR',
@@ -71,9 +80,12 @@ __all__ = [
     'STORAGE_DB_GDK',
     'STRIPPABLE_ASSET_TYPES',
     'LogBuffer',
+    'TimeTracker',
+    'time_tracker',
     'delete_cache',
     'get_icon_path',
     'get_roblox_player_exe_path',
+    'get_roblox_studio_exe_path',
     'is_roblox_running',
     'is_studio_running',
     'log_buffer',
@@ -83,4 +95,5 @@ __all__ = [
     'show_message_box',
     'terminate_roblox',
     'wait_for_roblox_exit',
+    'wait_for_roblox_window',
 ]

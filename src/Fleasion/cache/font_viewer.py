@@ -87,7 +87,8 @@ class FontViewerWidget(QWidget):
         info_group = QGroupBox("Font Information")
         info_layout = QVBoxLayout()
         
-        family_label = QLabel(f"<b>Family:</b> {self.font_family}")
+        escaped_family = self.font_family.replace('&', '&amp;')
+        family_label = QLabel(f"<b>Family:</b> {escaped_family}")
         family_label.setWordWrap(True)
         info_layout.addWidget(family_label)
         
@@ -160,7 +161,7 @@ class FontViewerWidget(QWidget):
             "Abcdefghijklmnopqrstuvwxyz",
             "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
             "0123456789",
-            "!@#$%^&*()_+-=[]{}|;:',.<>?/`~",
+            "!@#$%^&&*()_+-=[]{}|;:',.<>?/`~",
             "The quick brown fox jumps over the lazy dog",
             "Pack my box with five dozen liquor jugs",
             "How vexingly quick daft zebras jump",

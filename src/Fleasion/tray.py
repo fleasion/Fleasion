@@ -22,6 +22,7 @@ class SystemTray:
         # Keep references to open windows to prevent garbage collection
         self.open_windows = []
         self.dashboard_window = None
+        self._exiting = False
 
         # Create tray icon
         self.tray = QSystemTrayIcon()
@@ -69,6 +70,11 @@ class SystemTray:
         config_action.triggered.connect(self._show_replacer_config)
         self.menu.addAction(config_action)
 
+        # Configs submenu
+        self.configs_menu = QMenu('Configs', self.menu)
+        self.configs_menu.aboutToShow.connect(self._populate_configs_menu)
+        self.menu.addMenu(self.configs_menu)
+
         self.menu.addSeparator()
 
         # Windows
@@ -107,6 +113,20 @@ class SystemTray:
         exit_action = QAction('Exit', self.menu)
         exit_action.triggered.connect(self._exit_app)
         self.menu.addAction(exit_action)
+
+    def _populate_configs_menu(self):
+        """Populate the Configs submenu with current configs."""
+        self.configs_menu.clear()
+        for name in self.config_manager.config_names:
+            action = QAction(name, self.configs_menu)
+            action.setCheckable(True)
+            action.setChecked(self.config_manager.is_config_enabled(name))
+            action.triggered.connect(lambda checked, n=name: self._toggle_config(n))
+            self.configs_menu.addAction(action)
+
+    def _toggle_config(self, name: str):
+        """Toggle a config's enabled state."""
+        self.config_manager.toggle_config_enabled(name)
 
     def _create_settings_menu(self):
         """Create the Settings submenu."""
@@ -175,14 +195,53 @@ class SystemTray:
         settings_menu.addAction(self.clear_cache_action)
 
         # Run on Boot (Task Scheduler, admin required)
-        self.run_on_boot_action = QAction('Run on Boot', settings_menu)
+        import ctypes
+        _admin = bool(ctypes.windll.shell32.IsUserAnAdmin()) if hasattr(ctypes, 'windll') else False
+        self.run_on_boot_action = QAction(
+            'Run on Boot' if _admin else 'Run on Boot (admin required)',
+            settings_menu,
+        )
         self.run_on_boot_action.setCheckable(True)
         self.run_on_boot_action.setChecked(self.config_manager.run_on_boot)
+        self.run_on_boot_action.setEnabled(_admin)
         self.run_on_boot_action.triggered.connect(self._toggle_run_on_boot)
         settings_menu.addAction(self.run_on_boot_action)
 
+        # Close Scraped Games on Open
+        self.close_scraped_games_action = QAction('Close Scraped Games on Open', settings_menu)
+        self.close_scraped_games_action.setCheckable(True)
+        self.close_scraped_games_action.setChecked(self.config_manager.close_scraped_games_on_open)
+        self.close_scraped_games_action.triggered.connect(self._toggle_close_scraped_games)
+        settings_menu.addAction(self.close_scraped_games_action)
+
+        # Close to Tray
+        self.close_to_tray_action = QAction('Close to Tray', settings_menu)
+        self.close_to_tray_action.setCheckable(True)
+        self.close_to_tray_action.setChecked(self.config_manager.close_to_tray)
+        self.close_to_tray_action.triggered.connect(self._toggle_close_to_tray)
+        settings_menu.addAction(self.close_to_tray_action)
+
+        # Show Names
+        self.show_names_action = QAction('Show Names', settings_menu)
+        self.show_names_action.setCheckable(True)
+        self.show_names_action.setChecked(self.config_manager.show_names)
+        self.show_names_action.triggered.connect(self._toggle_show_names)
+        settings_menu.addAction(self.show_names_action)
+
+        # Show User ID
+        self.show_creator_id_action = QAction('Show User ID', settings_menu)
+        self.show_creator_id_action.setCheckable(True)
+        self.show_creator_id_action.setChecked(self.config_manager.show_creator_id)
+        self.show_creator_id_action.triggered.connect(self._toggle_show_creator_id)
+        settings_menu.addAction(self.show_creator_id_action)
+
         self.menu.addMenu(settings_menu)
 
+
+    def _refresh_settings_tab(self):
+        """Push current config state to the Settings tab if the dashboard is open."""
+        if self.dashboard_window and hasattr(self.dashboard_window, '_settings_tab'):
+            self.dashboard_window._settings_tab.refresh_from_config()
 
     def _set_theme(self, theme: str):
         """Set the application theme."""
@@ -195,11 +254,13 @@ class SystemTray:
 
         # Save to config
         self.config_manager.theme = theme
+        self._refresh_settings_tab()
 
     def _toggle_export_naming(self, option: str):
         """Toggle an export naming option."""
         new_state = self.config_manager.toggle_export_naming(option)
         self.export_naming_actions[option].setChecked(new_state)
+        self._refresh_settings_tab()
 
     def _toggle_always_on_top(self):
         """Toggle always on top setting."""
@@ -218,27 +279,35 @@ class SystemTray:
                     flags &= ~Qt.WindowType.WindowStaysOnTopHint
                 window.setWindowFlags(flags)
                 window.show()
+        self._refresh_settings_tab()
 
     def _toggle_open_dashboard_on_launch(self):
         """Toggle open dashboard on launch setting."""
         new_state = not self.config_manager.open_dashboard_on_launch
         self.config_manager.open_dashboard_on_launch = new_state
         self.open_dashboard_action.setChecked(new_state)
+        self._refresh_settings_tab()
 
     def _toggle_auto_delete_cache(self):
         """Toggle auto delete cache on Roblox exit setting."""
         new_state = not self.config_manager.auto_delete_cache_on_exit
         self.config_manager.auto_delete_cache_on_exit = new_state
         self.auto_delete_cache_action.setChecked(new_state)
+        self._refresh_settings_tab()
 
     def _toggle_run_on_boot(self):
-        """Toggle run-on-boot via Windows Task Scheduler."""
+        """Toggle run-on-boot via Windows Task Scheduler (admin only)."""
+        import ctypes
+        if not (bool(ctypes.windll.shell32.IsUserAnAdmin()) if hasattr(ctypes, 'windll') else False):
+            self.run_on_boot_action.setChecked(not self.run_on_boot_action.isChecked())
+            return
         from .utils.autostart import sync_autostart
         from .utils import CONFIG_DIR
         checked = self.run_on_boot_action.isChecked()
         ok = sync_autostart(checked, CONFIG_DIR)
         if ok:
             self.config_manager.run_on_boot = checked
+            self._refresh_settings_tab()
         else:
             # Revert UI state and show error dialog with detail
             self.run_on_boot_action.setChecked(not checked)
@@ -264,6 +333,43 @@ class SystemTray:
         new_state = not self.config_manager.clear_cache_on_launch
         self.config_manager.clear_cache_on_launch = new_state
         self.clear_cache_action.setChecked(new_state)
+        self._refresh_settings_tab()
+
+    def _toggle_close_scraped_games(self):
+        """Toggle close scraped games on open setting."""
+        new_state = not self.config_manager.close_scraped_games_on_open
+        self.config_manager.close_scraped_games_on_open = new_state
+        self.close_scraped_games_action.setChecked(new_state)
+        self._refresh_settings_tab()
+
+    def _toggle_close_to_tray(self):
+        """Toggle close to tray setting."""
+        new_state = not self.config_manager.close_to_tray
+        self.config_manager.close_to_tray = new_state
+        self.close_to_tray_action.setChecked(new_state)
+        self._refresh_settings_tab()
+
+    def _toggle_show_names(self):
+        """Toggle Show Names setting."""
+        new_state = not self.config_manager.show_names
+        self.config_manager.show_names = new_state
+        self.show_names_action.setChecked(new_state)
+        if self.dashboard_window:
+            tab = getattr(self.dashboard_window, '_cache_viewer_tab', None)
+            if tab is not None:
+                tab._on_show_names_toggled(new_state)
+        self._refresh_settings_tab()
+
+    def _toggle_show_creator_id(self):
+        """Toggle Show User ID setting."""
+        new_state = not self.config_manager.show_creator_id
+        self.config_manager.show_creator_id = new_state
+        self.show_creator_id_action.setChecked(new_state)
+        if self.dashboard_window:
+            tab = getattr(self.dashboard_window, '_cache_viewer_tab', None)
+            if tab is not None:
+                tab._on_show_creator_id_toggled(new_state)
+        self._refresh_settings_tab()
 
     def _apply_always_on_top_to_window(self, window):
         """Apply always on top setting to a window."""
@@ -275,14 +381,20 @@ class SystemTray:
 
     def _show_about(self):
         """Show About window."""
-        window = AboutWindow(self.proxy_master.is_running)
+        window = AboutWindow()
         window.destroyed.connect(lambda: self._remove_window(window))
         self.open_windows.append(window)
         self._apply_always_on_top_to_window(window)
         window.show()
 
     def _show_logs(self):
-        """Show Logs window."""
+        """Show Logs window — only one instance allowed."""
+        for w in self.open_windows:
+            if isinstance(w, LogsWindow):
+                w.show()
+                w.raise_()
+                w.activateWindow()
+                return
         window = LogsWindow()
         window.destroyed.connect(lambda: self._remove_window(window))
         self.open_windows.append(window)
@@ -297,7 +409,9 @@ class SystemTray:
             self.dashboard_window.activateWindow()
             return
 
-        window = ReplacerConfigWindow(self.config_manager, self.proxy_master, self.mod_manager, self.roblox_monitor)
+        from PyQt6.QtCore import Qt
+        window = ReplacerConfigWindow(self.config_manager, self.proxy_master, self.mod_manager, self.roblox_monitor, system_tray=self)
+        window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         window.destroyed.connect(self._on_dashboard_destroyed)
         self.dashboard_window = window
         self.open_windows.append(window)
@@ -309,6 +423,8 @@ class SystemTray:
         if self.dashboard_window in self.open_windows:
             self.open_windows.remove(self.dashboard_window)
         self.dashboard_window = None
+        if not self._exiting and not self.config_manager.close_to_tray:
+            self._exit_app()
 
     def _toggle_dashboard(self):
         """Toggle dashboard visibility."""
@@ -364,6 +480,7 @@ class SystemTray:
 
     def _exit_app(self):
         """Exit the application."""
+        self._exiting = True
         # Stop proxy: always attempt to stop so startup failures (e.g., UAC rejected)
         # that leave background threads or waiters won't be skipped.
         try:

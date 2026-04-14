@@ -13,7 +13,7 @@ from .modifications import ModificationManager
 from .prejsons import download_prejsons
 from .proxy import ProxyMaster, check_and_patch_running_roblox_ca
 from .tray import SystemTray
-from .utils import delete_cache, get_icon_path, get_roblox_player_exe_path, is_roblox_running, is_studio_running, log_buffer, run_in_thread, start_update_check, CONFIG_DIR
+from .utils import delete_cache, get_icon_path, get_roblox_player_exe_path, get_roblox_studio_exe_path, is_roblox_running, is_studio_running, log_buffer, run_in_thread, start_update_check, time_tracker, CONFIG_DIR
 
 
 
@@ -144,9 +144,10 @@ class RobloxExitMonitor(QObject):
     _studio_detected = pyqtSignal()
     player_status_changed = pyqtSignal(bool)  # Emitted when RobloxPlayerBeta opens/closes (True = running)
 
-    def __init__(self, config_manager):
+    def __init__(self, config_manager, proxy_master=None):
         super().__init__()
         self.config_manager = config_manager
+        self._proxy_master = proxy_master
         self.was_running = False
         self._player_was_running = False
         self._studio_was_running = False
@@ -178,7 +179,10 @@ class RobloxExitMonitor(QObject):
                     if exe_path is not None:
                         break
             if exe_path is not None:
-                run_in_thread(check_and_patch_running_roblox_ca)(exe_path)
+                if self._proxy_master is not None:
+                    run_in_thread(self._proxy_master.refresh_and_restart_roblox)(exe_path)
+                else:
+                    run_in_thread(check_and_patch_running_roblox_ca)(exe_path)
             else:
                 log_buffer.log('Certificate', 'Roblox launch detected but could not resolve exe path for CA check')
         self._player_was_running = is_running
@@ -192,17 +196,27 @@ class RobloxExitMonitor(QObject):
         else:
             self.was_running = False
 
-        # --- Roblox Studio: warn that scraping/modification is paused ---
+        # --- Roblox Studio: patch CA cert on launch, show warning ---
         studio_running = is_studio_running()
 
         if not self._studio_was_running and studio_running:
-            # Studio just opened
+            studio_exe_path = get_roblox_studio_exe_path()
+            if studio_exe_path is None:
+                for _ in range(10):
+                    time.sleep(1.0)
+                    studio_exe_path = get_roblox_studio_exe_path()
+                    if studio_exe_path is not None:
+                        break
+            if studio_exe_path is not None:
+                run_in_thread(check_and_patch_running_roblox_ca)(studio_exe_path)
+            else:
+                log_buffer.log('Certificate', 'Studio launch detected but could not resolve exe path for CA check')
+
             if not self._studio_suppress_session and not self._studio_notified:
                 self._studio_notified = True
                 self._studio_detected.emit()
 
         if self._studio_was_running and not studio_running:
-            # Studio just closed — reset so the warning shows again next time
             self._studio_notified = False
 
         self._studio_was_running = studio_running
@@ -222,8 +236,8 @@ class RobloxExitMonitor(QObject):
 
         label = QLabel(
             'Roblox Studio is currently open.\n\n'
-            'No asset modification or scraping will occur while '
-            'Roblox Studio is running. Close Roblox Studio to resume normal operation.'
+            'Asset modification and scraping may not work correctly while '
+            'Roblox Studio is running.'
         )
         label.setWordWrap(True)
         layout.addWidget(label)
@@ -331,6 +345,7 @@ def kill_other_fleasion_instances():
             )
         except Exception:
             pass
+
 
 
 def main():
@@ -443,8 +458,36 @@ def main():
     else:
         _show_readonly_notice = False
 
+    # Warn if no Roblox installations can be found (same scan used for cert injection)
+    from .proxy.master import _find_roblox_dirs as _scan_roblox_dirs
+    if not _scan_roblox_dirs():
+        _top = QApplication.topLevelWidgets()
+        _parent = next((w for w in _top if w.isVisible()), None)
+        _on_top = any(w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in _top)
+        _no_roblox_msg = QMessageBox(_parent)
+        if _on_top:
+            _no_roblox_msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
+        _no_roblox_msg.setWindowTitle('Fleasion — Roblox Not Found')
+        _no_roblox_msg.setIcon(QMessageBox.Icon.Warning)
+        _no_roblox_msg.setText('Roblox does not appear to be installed.')
+        _no_roblox_msg.setInformativeText(
+            'Fleasion could not find any Roblox installations on this computer.\n\n'
+            'Please close Fleasion, install Roblox, and then relaunch Fleasion.\n\n'
+            'Without Roblox installed, the majority of Fleasion\'s features cannot be used.\n\n'
+            'Note: To fully close Fleasion, right click Fleasion in the system tray and click Exit.'
+        )
+        _no_roblox_msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        if icon_path := get_icon_path():
+            from PyQt6.QtGui import QIcon
+            _no_roblox_msg.setWindowIcon(QIcon(str(icon_path)))
+        _no_roblox_msg.exec()
+
     # Initialize config manager
     config_manager = ConfigManager()
+
+    # Start tracking time wasted from the stored total
+    time_tracker.init(config_manager.time_wasted_seconds)
+    atexit.register(time_tracker.save, config_manager)
 
     # Initialize proxy master
     proxy_master = ProxyMaster(config_manager)
@@ -477,8 +520,10 @@ def main():
     # Check for updates in the background
     start_update_check()
 
-    # Sync autostart task on every launch (updates if launch method changed)
-    if config_manager.run_on_boot:
+    # Sync autostart task on every launch (updates if launch method changed).
+    # Only attempt when running as admin: the task must launch elevated and
+    # a non-admin process should never silently modify the scheduler.
+    if config_manager.run_on_boot and _is_admin():
         try:
             from .utils.autostart import sync_autostart
             sync_autostart(True, CONFIG_DIR)
@@ -492,7 +537,7 @@ def main():
         log_buffer.log('Proxy', 'Read-only mode: proxy not started (no admin rights)')
 
     # Setup Roblox exit monitor for auto cache deletion (before tray to pass to it)
-    roblox_monitor = RobloxExitMonitor(config_manager)
+    roblox_monitor = RobloxExitMonitor(config_manager, proxy_master)
 
     # Create system tray
     tray = SystemTray(app, config_manager, proxy_master, mod_manager, roblox_monitor)

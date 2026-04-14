@@ -721,6 +721,7 @@ class ModPreviewDialog(QDialog):
         self._target_path = target_path
         self._mod_converted_bytes: bytes | None = None
         self._mod_converted_ext: str = ''
+        self._orig_unavailable: bool = False
         self.setWindowTitle(f'Preview \u2014 {display_name}')
         self.resize(500, 400)
 
@@ -745,6 +746,7 @@ class ModPreviewDialog(QDialog):
         export_conv_btn.clicked.connect(self._on_export_converted)
         btn_row.addWidget(export_conv_btn)
         export_btn = QPushButton('Export Original\u2026')
+        export_btn.setEnabled(not self._orig_unavailable)
         export_btn.clicked.connect(self._on_export)
         btn_row.addWidget(export_btn)
         layout.addLayout(btn_row)
@@ -759,7 +761,14 @@ class ModPreviewDialog(QDialog):
 
         data = self._load_data(mode)
         if data is None:
-            layout.addWidget(QLabel('No data available'))
+            lower_check = self._target_path.lower()
+            if mode == 'original' and lower_check.endswith(('.ttf', '.otf', '.ttc')):
+                lbl = QLabel('Preview of Roblox Original fonts are not supported because it includes multiple Font files')
+                lbl.setWordWrap(True)
+                layout.addWidget(lbl)
+                self._orig_unavailable = True
+            else:
+                layout.addWidget(QLabel('No data available'))
             container.setLayout(layout)
             return container
 
@@ -880,7 +889,12 @@ class ModPreviewDialog(QDialog):
             stash = MOD_ORIGINALS_DIR / roblox_dir.name / self._target_path
             if stash.is_file():
                 return stash.read_bytes()
-            # Fall back to current file (unmodified)
+            mod_active = any(
+                e.get('target_path') == self._target_path
+                for e in self._manager.entries
+            )
+            if mod_active:
+                return None
             dst = roblox_dir / self._target_path
             return dst.read_bytes() if dst.is_file() else None
 
@@ -1275,9 +1289,7 @@ class ModificationsTab(QWidget):
         # grey used by QTreeWidget / QGroupBox content in the Replacer and
         # Scraper tabs).  Without this, Fusion paints through to Window (#202020).
         container.setObjectName('_FleasionModContainer')
-        container.setStyleSheet(
-            'QWidget#_FleasionModContainer { background-color: palette(alternate-base); }'
-        )
+        self._mod_container = container
         self._container_layout = QVBoxLayout()
         self._container_layout.setSpacing(10)
         self._container_layout.setContentsMargins(10, 10, 10, 10)
@@ -1425,13 +1437,54 @@ class ModificationsTab(QWidget):
         scroll.setWidget(container)
         outer.addWidget(scroll)
 
-        # ── Status bar ───────────────────────────────────────────
+        footer_widget = QWidget()
+        footer_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        footer_layout = QHBoxLayout(footer_widget)
+        footer_layout.setContentsMargins(8, 4, 8, 4)
         self._status_label = QLabel()
-        self._status_label.setContentsMargins(8, 4, 8, 4)
         self._status_label.setStyleSheet('color: #888;')
-        outer.addWidget(self._status_label)
+        footer_layout.addWidget(self._status_label)
+        footer_layout.addStretch()
+        clear_cache_btn = QPushButton('Clear Cache')
+        clear_cache_btn.clicked.connect(self._clear_roblox_cache)
+        footer_layout.addWidget(clear_cache_btn)
+        outer.addWidget(footer_widget)
 
         self.setLayout(outer)
+        self._update_container_bg()
+
+    def changeEvent(self, event):
+        from PyQt6.QtCore import QEvent
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.PaletteChange:
+            self._update_container_bg()
+
+    def _update_container_bg(self):
+        """Keep the modifications container background consistent across themes.
+
+        On the explicit Dark theme AlternateBase (64,64,64) is lighter than
+        Window (32,32,32), giving a subtle card effect.  On the System theme
+        with Windows dark mode the OS palette can make AlternateBase darker
+        than Window, which looks wrong.  When that happens we force the same
+        card colour the Dark theme uses.
+        """
+        pal = self.palette()
+        win_light = pal.window().color().lightness()
+        alt_light = pal.alternateBase().color().lightness()
+        if win_light < 128 and alt_light <= win_light:
+            # System dark mode: alternate-base is no lighter than window —
+            # force the same card colour as the explicit dark theme.
+            bg = 'background-color: rgb(64, 64, 64);'
+        else:
+            bg = 'background-color: palette(alternate-base);'
+        self._mod_container.setStyleSheet(
+            f'QWidget#_FleasionModContainer {{ {bg} }}'
+        )
+
+    def _clear_roblox_cache(self):
+        from .delete_cache import DeleteCacheWindow
+        window = DeleteCacheWindow()
+        window.show()
 
     # ------------------------------------------------------------------
     # Status bar
@@ -1642,7 +1695,23 @@ class _CustomModDialog(QDialog):
             self._target_edit.setText(path)
 
     def _browse_source(self):
-        path, _ = QFileDialog.getOpenFileName(self, 'Select source file')
+        # Try to open the dialog in the directory/path the user may have pasted
+        current_val = self._source_edit.text().strip(' \t"\'')
+        initial_dir = ''
+        if current_val:
+            try:
+                p = Path(current_val)
+                if p.exists():
+                    # If it's a directory, start there; if it's a file, start in its parent
+                    initial_dir = str(p) if p.is_dir() else str(p.parent)
+                else:
+                    # If the exact path doesn't exist but the parent does, use the parent
+                    if p.parent.exists():
+                        initial_dir = str(p.parent)
+            except Exception:
+                initial_dir = ''
+
+        path, _ = QFileDialog.getOpenFileName(self, 'Select source file', initial_dir)
         if path:
             self._source_edit.setText(path)
 

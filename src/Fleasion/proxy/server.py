@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-INTERCEPT_HOSTS: frozenset = frozenset({'assetdelivery.roblox.com', 'fts.rbxcdn.com'})
+INTERCEPT_HOSTS: frozenset = frozenset({'assetdelivery.roblox.com', 'fts.rbxcdn.com', 'gamejoin.roblox.com'})
 
 _ZSTD_MAGIC = b'\x28\xb5\x2f\xfd'
 _GZIP_MAGIC  = b'\x1f\x8b'
@@ -226,6 +226,99 @@ def _make_redirect(target_url: str) -> bytes:
     )
 
 
+# ProxyFlow: lightweight mock flow object passed to module interceptors
+
+class _FlowHeaders:
+    """Minimal case-insensitive header accessor for module interceptors."""
+
+    def __init__(self, headers: Dict[bytes, bytes]) -> None:
+        self._h: Dict[bytes, bytes] = {k.lower(): v for k, v in headers.items()}
+
+    def get(self, key: str, default: str = '') -> str:
+        v = self._h.get(key.lower().encode('ascii', errors='replace'))
+        if v is None:
+            return default
+        return v.decode('ascii', errors='replace')
+
+    def __setitem__(self, key: str, value: str) -> None:
+        self._h[key.lower().encode('ascii', errors='replace')] = (
+            value.encode('ascii', errors='replace') if isinstance(value, str) else value
+        )
+
+    def __getitem__(self, key: str) -> str:
+        v = self._h[key.lower().encode('ascii', errors='replace')]
+        return v.decode('ascii', errors='replace')
+
+    def to_bytes_dict(self) -> Dict[bytes, bytes]:
+        return dict(self._h)
+
+
+class _FlowRequest:
+    def __init__(self, first_line: bytes, headers: Dict[bytes, bytes], body: bytes, host: str) -> None:
+        parts = first_line.split(b' ', 2)
+        self._method: bytes = parts[0] if parts else b'POST'
+        self._original_path: str = parts[1].decode('ascii', errors='replace') if len(parts) > 1 else '/'
+        self._path: str = self._original_path
+        self._host: str = host
+        self._body: bytes = body
+        self.headers: _FlowHeaders = _FlowHeaders(headers)
+
+    @property
+    def content(self) -> bytes:
+        return self._body
+
+    @property
+    def raw_content(self) -> bytes:
+        return self._body
+
+    @raw_content.setter
+    def raw_content(self, value: bytes) -> None:
+        self._body = value
+
+    @property
+    def pretty_url(self) -> str:
+        return f'https://{self._host}{self._path}'
+
+    @property
+    def url(self) -> str:
+        return f'https://{self._host}{self._path}'
+
+    @url.setter
+    def url(self, value: str) -> None:
+        from urllib.parse import urlparse as _urlparse
+        self._path = _urlparse(value).path
+
+    def _get_modified_first_line(self, original: bytes) -> bytes:
+        if self._path == self._original_path:
+            return original
+        parts = original.split(b' ', 2)
+        if len(parts) >= 3:
+            return parts[0] + b' ' + self._path.encode('ascii') + b' ' + parts[2]
+        return original
+
+
+class _FlowResponse:
+    def __init__(self, status_line: bytes, body: bytes) -> None:
+        parts = status_line.split(b' ', 2)
+        try:
+            self.status_code: int = int(parts[1])
+        except (IndexError, ValueError):
+            self.status_code = 200
+        self.content: bytes = body
+
+    def json(self):
+        import json as _json
+        return _json.loads(self.content)
+
+
+class ProxyFlow:
+    """Minimal flow object passed to module interceptors (request + response hooks)."""
+
+    def __init__(self, req_first: bytes, req_headers: Dict[bytes, bytes], body: bytes, host: str) -> None:
+        self.request: _FlowRequest = _FlowRequest(req_first, req_headers, body, host)
+        self.response: Optional[_FlowResponse] = None
+
+
 class FleasionProxy:
     """Direct TLS-terminating asyncio proxy for Roblox asset hosts."""
 
@@ -241,6 +334,7 @@ class FleasionProxy:
         self.texture_stripper = texture_stripper
         self.cache_scraper = cache_scraper
         self.port = port
+        self._module_interceptors: List = []
         self._upstream_ips = upstream_ips
         self._server: Optional[asyncio.Server] = None
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix='fleasion-cpu')
@@ -284,6 +378,10 @@ class FleasionProxy:
             reuse_address=True,
         )
         logger.info('Fleasion proxy listening on 127.0.0.1:%d (TLS)', self.port)
+
+    def set_module_interceptors(self, interceptors: List) -> None:
+        """Set the list of module interceptors for gamejoin traffic hooks."""
+        self._module_interceptors = interceptors
 
     async def stop(self) -> None:
         if self._server:
@@ -378,7 +476,7 @@ class FleasionProxy:
             parts = req_first.split(b' ', 2)
             path = parts[1].decode('ascii', errors='replace') if len(parts) > 1 else '/'
             is_batch = (host == 'assetdelivery.roblox.com' and b'/v1/assets/batch' in req_first)
-
+            _gamejoin_flow: Optional[ProxyFlow] = None
 
             # ── TextureStripper: CDN short-circuit (replace before upstream) ──
             # Race condition fix: the batch-request coroutine (on the assetdelivery
@@ -432,7 +530,7 @@ class FleasionProxy:
                         if not _keep_alive(req_first, req_headers):
                             break
                         continue
-                    # 'solid' falls through - needs upstream response to inject into
+                    # 'solid' and 'anim_rig' fall through - need upstream response
 
             # ── Modify batch request body if needed ───────────────────────
             if is_batch:
@@ -454,6 +552,26 @@ class FleasionProxy:
                     req_body_plain, req_headers, replacements_tuple, batch_id,
                 )
                 up_writer.write(_build_modified_request(req_first, req_headers, req_body_modified))
+            elif host == 'gamejoin.roblox.com':
+                # Module interceptors: allow request body/URL modification for gamejoin traffic
+                _req_body_plain = _decompress_body(req_body_raw, req_headers)
+                if self._module_interceptors:
+                    _gamejoin_flow = ProxyFlow(req_first, req_headers, _req_body_plain, host)
+                    for _interceptor in list(self._module_interceptors):
+                        try:
+                            _interceptor.request(_gamejoin_flow)
+                        except Exception as _exc:
+                            logger.debug('Module interceptor request error: %s', _exc)
+                    _new_first = _gamejoin_flow.request._get_modified_first_line(req_first)
+                    _new_body = _gamejoin_flow.request.raw_content
+                    if _new_first != req_first or _new_body != _req_body_plain:
+                        up_writer.write(_build_modified_request(
+                            _new_first, _gamejoin_flow.request.headers.to_bytes_dict(), _new_body,
+                        ))
+                    else:
+                        up_writer.write(_reassemble_raw_response(req_first, req_headers, req_body_raw))
+                else:
+                    up_writer.write(_reassemble_raw_response(req_first, req_headers, req_body_raw))
             else:
                 # Forward request as-is (raw bytes, original headers)
                 up_writer.write(_reassemble_raw_response(req_first, req_headers, req_body_raw))
@@ -524,12 +642,80 @@ class FleasionProxy:
                     )
                     response_modified = True
 
+                elif short_circuit is not None and short_circuit[0] == 'anim_rig':
+                    # Auto-convert rig: read the original CDN bytes to detect the rig,
+                    # then serve the rig-matched local replacement (or a converted copy).
+                    _anim_repl_path, _required_rig = short_circuit[1]
+                    _orig_bytes = _decompress_body(resp_body_raw, resp_headers)
+
+                    def _pick_rig_matched_file(orig_bytes: bytes, repl_path: str, required_rig: str = 'any') -> bytes:
+                        from ..utils.anim_converter import detect_rig, detect_player_rig, is_curve_animation
+                        from ..utils import log_buffer as _lb
+                        orig_rig = detect_rig(orig_bytes)
+                        # If this rule only targets specific rig type(s), skip if it doesn't match
+                        if required_rig != 'any' and orig_rig not in required_rig:
+                            _lb.log('AnimConv', f'Skipping replacement: original rig={orig_rig}, required={required_rig}')
+                            return orig_bytes
+                        if is_curve_animation(orig_bytes):
+                            # Must serve back a CurveAnimation regardless of replacement format.
+                            # For non-player animations (unknown rig) use the replacement's own
+                            # rig so no unwanted rig conversion is applied.
+                            if orig_rig == 'unknown':
+                                target_rig = self.texture_stripper._detect_repl_rig(repl_path)
+                                if target_rig == 'unknown':
+                                    target_rig = 'R15'  # last resort default
+                            else:
+                                target_rig = orig_rig
+                            repl_p = Path(repl_path)
+                            if not repl_p.exists():
+                                _lb.log('AnimConv', f'Replacement file not found: {repl_p.name}')
+                                return orig_bytes
+                            conv_path = self.texture_stripper._get_or_create_converted_curve(repl_path, target_rig)
+                            if conv_path:
+                                _lb.log('AnimConv', f'Serving {target_rig} CurveAnimation replacement ({Path(conv_path).name})')
+                                return Path(conv_path).read_bytes()
+                            _lb.log('AnimConv', f'CurveAnimation conversion failed for {repl_p.name} → {target_rig}')
+                            return orig_bytes
+                        # KeyframeSequence path: serve rig-matched replacement.
+                        final_path = repl_path
+                        # For non-player / mixed animations orig_rig is 'unknown' —
+                        # use detect_player_rig to find which player rig they target
+                        # (e.g. gun anim that moves Left Arm → R6) so we can still
+                        # serve the right converted version of the replacement.
+                        conv_rig = orig_rig if orig_rig != 'unknown' else (
+                            detect_player_rig(orig_bytes)
+                        )
+                        if conv_rig != 'unknown':
+                            repl_rig = self.texture_stripper._detect_repl_rig(repl_path)
+                            if repl_rig == 'unknown':
+                                _lb.log('AnimConv', f'Rig detection unknown for replacement: {Path(repl_path).name}')
+                            elif repl_rig != conv_rig:
+                                conv = self.texture_stripper._get_or_create_converted(repl_path, conv_rig)
+                                if conv:
+                                    final_path = conv
+                        p = Path(final_path)
+                        return p.read_bytes() if p.exists() else orig_bytes
+
+                    resp_body_raw = await asyncio.get_event_loop().run_in_executor(
+                        self._executor, _pick_rig_matched_file, _orig_bytes, _anim_repl_path, _required_rig,
+                    )
+                    response_modified = True
+
                 if self.cache_scraper.enabled:
                     # Cache the decompressed bytes for storage
                     resp_body_for_cache = _decompress_body(resp_body_raw, resp_headers) \
                         if not response_modified else resp_body_raw
                     ct = resp_headers.get(b'content-type', b'').decode('ascii', errors='replace')
                     self.cache_scraper.process_cdn_response(full_url, path, resp_body_for_cache, ct)
+
+            if host == 'gamejoin.roblox.com' and _gamejoin_flow is not None and self._module_interceptors:
+                _resp_body_plain = _decompress_body(resp_body_raw, resp_headers)
+                _gamejoin_flow.response = _FlowResponse(resp_first, _resp_body_plain)
+                for _interceptor in list(self._module_interceptors):
+                    try:
+                        _interceptor.response(_gamejoin_flow)
+                    except Exception as _exc:
+                        logger.debug('Module interceptor response error: %s', _exc)
 
             # ── Forward response to Roblox ────────────────────────────────
             if response_modified:

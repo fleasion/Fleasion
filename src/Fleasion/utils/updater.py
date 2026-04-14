@@ -11,8 +11,8 @@ from PyQt6.QtGui import QIcon
 
 from .paths import APP_VERSION
 
-_RELEASES_API = 'https://api.github.com/repos/qrhrqiohj/Fleasion/releases/latest'
-_RELEASES_PAGE = 'https://github.com/qrhrqiohj/Fleasion/releases/latest'
+_RELEASES_API = 'https://api.github.com/repos/fleasion/Fleasion/releases/latest'
+_RELEASES_PAGE = 'https://github.com/fleasion/Fleasion/releases/latest'
 _TIMEOUT = 10
 
 
@@ -101,7 +101,7 @@ def _worker(signal: _UpdateSignal) -> None:
 
     tag: str = (data.get('tag_name') or '').strip()
     # TEST_ONLY: force tag for equality testing
-    # tag = '1.7.1'
+    # tag = '2.0.0'
     if not tag:
         return
 

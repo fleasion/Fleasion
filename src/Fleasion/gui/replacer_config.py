@@ -10,7 +10,6 @@ from urllib.error import URLError
 from PyQt6.QtCore import Qt, QByteArray
 from PyQt6.QtGui import QPixmap, QPainter, QColor, QIcon
 from PyQt6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDialog,
     QFileDialog,
@@ -41,6 +40,7 @@ class UndoManager:
 
     def __init__(self, max_history: int = 50):
         self.history: list[list] = []
+        self.future: list[list] = []
         self.max_history = max_history
 
     def save_state(self, rules: list):
@@ -48,30 +48,41 @@ class UndoManager:
         self.history.append(deepcopy(rules))
         if len(self.history) > self.max_history:
             self.history.pop(0)
+        self.future.clear()
 
     def undo(self) -> list | None:
         """Undo to previous state."""
         if len(self.history) > 1:
-            self.history.pop()
+            self.future.append(self.history.pop())
             return deepcopy(self.history[-1])
         if len(self.history) == 1:
             return deepcopy(self.history[0])
         return None
 
+    def redo(self) -> list | None:
+        """Redo a previously undone state."""
+        if self.future:
+            state = self.future.pop()
+            self.history.append(state)
+            return deepcopy(state)
+        return None
+
     def clear(self):
         """Clear history."""
         self.history.clear()
+        self.future.clear()
 
 
 class ReplacerConfigWindow(QDialog):
     """Replacer configuration window with tabs."""
 
-    def __init__(self, config_manager, proxy_master=None, mod_manager=None, roblox_monitor=None):
+    def __init__(self, config_manager, proxy_master=None, mod_manager=None, roblox_monitor=None, system_tray=None):
         super().__init__()
         self.config_manager = config_manager
         self.proxy_master = proxy_master
         self._mod_manager = mod_manager
         self.roblox_monitor = roblox_monitor
+        self._system_tray = system_tray
         self.undo_manager = UndoManager()
         self.undo_manager.save_state(self.config_manager.replacement_rules)
         self.config_enabled_vars = {}
@@ -136,6 +147,26 @@ class ReplacerConfigWindow(QDialog):
             modifications_tab = ModificationsTab(self._mod_manager, self.roblox_monitor)
             self.tab_widget.addTab(modifications_tab, 'Modifications')
 
+        # Create Rando Stuff tab
+        from .rando_stuff_tab import RandoStuffTab
+        self._rando_stuff_tab = RandoStuffTab(config_manager=self.config_manager)
+
+        # Create Subplace Joiner tab
+        from .subplace_joiner_tab import SubplaceJoinerTab
+        self._subplace_tab = SubplaceJoinerTab(rando_tab=self._rando_stuff_tab)
+        self.tab_widget.addTab(self._subplace_tab, 'Subplace Joiner')
+        if self.proxy_master is not None:
+            self.proxy_master.register_module_interceptor(self._subplace_tab)
+
+        self.tab_widget.addTab(self._rando_stuff_tab, 'Miscellaneous')
+        if self.proxy_master is not None:
+            self.proxy_master.register_module_interceptor(self._rando_stuff_tab)
+
+        # Create Settings tab
+        from .settings_tab import SettingsTab
+        self._settings_tab = SettingsTab(self.config_manager, system_tray=self._system_tray)
+        self.tab_widget.addTab(self._settings_tab, 'Settings')
+
         main_layout.addWidget(self.tab_widget)
 
         self.setLayout(main_layout)
@@ -148,6 +179,9 @@ class ReplacerConfigWindow(QDialog):
 
         delete_shortcut = QShortcut(QKeySequence('Delete'), self)
         delete_shortcut.activated.connect(self._delete_selected)
+
+        redo_shortcut = QShortcut(QKeySequence('Ctrl+Y'), self)
+        redo_shortcut.activated.connect(self._do_redo)
 
     def _create_replacer_tab(self):
         """Create the replacer configuration tab."""
@@ -175,12 +209,17 @@ class ReplacerConfigWindow(QDialog):
         from ..cache import CacheViewerTab
 
         cache_scraper = getattr(self.proxy_master, 'cache_scraper', None)
-        return CacheViewerTab(
+        tab = CacheViewerTab(
             self.proxy_master.cache_manager,
             cache_scraper,
             self,
             config_manager=self.config_manager
         )
+        # Store direct reference so Send-to-Replacer can find the entry fields
+        # regardless of how Qt re-parents the widget when added to QTabWidget.
+        tab._replacer_window_ref = self
+        self._cache_viewer_tab = tab
+        return tab
 
     def _create_config_section(self, parent_layout):
         """Create the configuration selector section."""
@@ -249,9 +288,6 @@ class ReplacerConfigWindow(QDialog):
         title_label.setStyleSheet('font-weight: bold; padding-left: 5px;')
         label_layout.addWidget(title_label)
 
-        hint_label = QLabel('(Ctrl+Z to undo)')
-        hint_label.setStyleSheet('color: gray;')
-        label_layout.addWidget(hint_label)
         label_layout.addStretch()
         parent_layout.addLayout(label_layout)
 
@@ -261,6 +297,8 @@ class ReplacerConfigWindow(QDialog):
         self.tree.setSelectionMode(QTreeWidget.SelectionMode.ExtendedSelection)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._show_context_menu)
+
+        self.tree.setSortingEnabled(True)
 
         header = self.tree.header()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
@@ -331,14 +369,16 @@ class ReplacerConfigWindow(QDialog):
             ('Add New', self._add_rule),
             ('Load Selected', self._load_selected),
             ('Update Selected', self._update_selected),
-            ('Delete Selected', self._delete_selected),
-            ('Enable Selected', self._enable_selected),
-            ('Disable Selected', self._disable_selected),
-            ('Import JSON', self._open_json),
         ]:
             btn = QPushButton(text)
+            btn.setMinimumWidth(130)
             btn.clicked.connect(callback)
             btn_layout.addWidget(btn)
+        btn_layout.addStretch()
+        import_btn = QPushButton('Scraped games...')
+        import_btn.setMinimumWidth(130)
+        import_btn.clicked.connect(self._open_prejsons_browser)
+        btn_layout.addWidget(import_btn)
         edit_layout.addLayout(btn_layout)
 
         edit_group.setLayout(edit_layout)
@@ -351,7 +391,9 @@ class ReplacerConfigWindow(QDialog):
             footer_widget = QWidget()
             footer_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
             footer_layout = QHBoxLayout()
-            footer_layout.setContentsMargins(0, 5, 0, 5)
+            footer_layout.setContentsMargins(0, 4, 0, 4)
+
+            footer_layout.addSpacing(12)
 
             path_label = QLabel(f'Configs: {CONFIGS_FOLDER}')
             path_label.setStyleSheet('color: gray; font-size: 8pt; padding-left: 5px;')
@@ -359,13 +401,19 @@ class ReplacerConfigWindow(QDialog):
 
             footer_layout.addStretch()
 
+            help_btn = QPushButton('?')
+            help_btn.setMaximumWidth(25)
+            help_btn.setToolTip('View keybinds')
+            help_btn.clicked.connect(self._show_keybinds_help)
+            footer_layout.addWidget(help_btn)
+
+            clear_cache_btn = QPushButton('Clear Cache')
+            clear_cache_btn.clicked.connect(self._clear_roblox_cache)
+            footer_layout.addWidget(clear_cache_btn)
+
             configs_btn = QPushButton('Open Configs')
             configs_btn.clicked.connect(lambda: open_folder(CONFIGS_FOLDER))
             footer_layout.addWidget(configs_btn)
-
-            prejsons_btn = QPushButton('Open PreJsons')
-            prejsons_btn.clicked.connect(lambda: open_folder(PREJSONS_DIR))
-            footer_layout.addWidget(prejsons_btn)
 
             undo_btn = QPushButton('Undo (Ctrl+Z)')
             undo_btn.clicked.connect(self._do_undo)
@@ -374,6 +422,34 @@ class ReplacerConfigWindow(QDialog):
 
             footer_widget.setLayout(footer_layout)
             parent_layout.addWidget(footer_widget)
+
+    def _clear_roblox_cache(self):
+        from .delete_cache import DeleteCacheWindow
+        window = DeleteCacheWindow()
+        window.show()
+
+    def _show_keybinds_help(self):
+        from PyQt6.QtWidgets import QMessageBox
+        msg = QMessageBox(self)
+        msg.setWindowTitle('Keybinds')
+        msg.setTextFormat(Qt.TextFormat.RichText)
+        msg.setText(
+            '<b>All keybinds.</b><br>'
+            '- Ctrl+Z — Undo last change<br>'
+            '- Ctrl+Y — Redo last change<br>'
+            '- Ctrl+A — Select all rows<br>'
+            '- Delete — Delete selected row(s)<br>'
+            '<br>'
+            '<b>Tips.</b><br>'
+            '- Right-click a profile to delete, enable, or disable it'
+        )
+        msg.exec()
+
+    def _open_prejsons_browser(self):
+        """Open the PreJsons browser dialog."""
+        from .prejsons_dialog import PreJsonsDialog
+        dialog = PreJsonsDialog(self)
+        dialog.show()
 
     def eventFilter(self, obj, event):
         """Event filter to keep enabled menu open after clicking checkboxes."""
@@ -657,35 +733,51 @@ class ReplacerConfigWindow(QDialog):
 
         if action == 'new':
             name, ok = QInputDialog.getText(self, 'New Config', 'Name:')
-            if ok and name and self.config_manager.create_config(name.strip()):
-                self.config_manager.last_config = name.strip()
-                self.undo_manager.clear()
-                self.undo_manager.save_state(self.config_manager.replacement_rules)
-                self._refresh_combo()
-                self._refresh_tree()
+            if ok and name:
+                name = name.strip()
+                if not self.config_manager.is_valid_config_name(name):
+                    QMessageBox.warning(self, 'Invalid Name',
+                        'Config names cannot contain: \\ / : * ? " < > |')
+                elif not self.config_manager.create_config(name):
+                    QMessageBox.warning(self, 'Invalid Name', f"A config named '{name}' already exists.")
+                else:
+                    self.config_manager.last_config = name
+                    self.undo_manager.clear()
+                    self.undo_manager.save_state(self.config_manager.replacement_rules)
+                    self._refresh_combo()
+                    self._refresh_tree()
 
         elif action == 'dup':
             name, ok = QInputDialog.getText(
                 self, 'Duplicate', f"Copy of '{current}':"
             )
-            if ok and name and self.config_manager.duplicate_config(current, name.strip()):
-                self.config_manager.last_config = name.strip()
-                self.undo_manager.clear()
-                self.undo_manager.save_state(self.config_manager.replacement_rules)
-                self._refresh_combo()
-                self._refresh_tree()
+            if ok and name:
+                name = name.strip()
+                if not self.config_manager.is_valid_config_name(name):
+                    QMessageBox.warning(self, 'Invalid Name',
+                        'Config names cannot contain: \\ / : * ? " < > |')
+                elif not self.config_manager.duplicate_config(current, name):
+                    QMessageBox.warning(self, 'Invalid Name', f"A config named '{name}' already exists.")
+                else:
+                    self.config_manager.last_config = name
+                    self.undo_manager.clear()
+                    self.undo_manager.save_state(self.config_manager.replacement_rules)
+                    self._refresh_combo()
+                    self._refresh_tree()
 
         elif action == 'rename':
             name, ok = QInputDialog.getText(
                 self, 'Rename', 'New name:', text=current
             )
-            if (
-                ok
-                and name
-                and name.strip() != current
-                and self.config_manager.rename_config(current, name.strip())
-            ):
-                self._refresh_combo()
+            if ok and name:
+                name = name.strip()
+                if not self.config_manager.is_valid_config_name(name):
+                    QMessageBox.warning(self, 'Invalid Name',
+                        'Config names cannot contain: \\ / : * ? " < > |')
+                elif name != current and not self.config_manager.rename_config(current, name):
+                    QMessageBox.warning(self, 'Invalid Name', f"A config named '{name}' already exists.")
+                elif name != current:
+                    self._refresh_combo()
 
         elif action == 'delete':
             if len(self.config_manager.config_names) <= 1:
@@ -716,6 +808,13 @@ class ReplacerConfigWindow(QDialog):
             self._refresh_tree()
             log_buffer.log('Config', 'Undo performed')
 
+    def _do_redo(self):
+        """Perform redo."""
+        if next_state := self.undo_manager.redo():
+            self.config_manager.replacement_rules = next_state
+            self._refresh_tree()
+            log_buffer.log('Config', 'Redo performed')
+
     def _show_context_menu(self, pos):
         """Show context menu for tree item."""
         item = self.tree.itemAt(pos)
@@ -740,18 +839,15 @@ class ReplacerConfigWindow(QDialog):
                 return
 
             rule = rules[idx]
-            column = self.tree.columnAt(pos.x())
 
-            if column == 0:  # Status
-                enabled = rule.get('enabled', True)
-                text = 'Disable Profile' if enabled else 'Enable Profile'
-                menu.addAction(text, lambda: self._toggle_profile(idx))
-            elif column == 1:  # Name
-                menu.addAction('Rename Profile', lambda: self._rename_profile(idx))
-            elif column == 3:  # Asset IDs
-                menu.addAction('Edit Asset IDs', lambda: self._edit_asset_ids(idx))
-            elif column == 4:  # Replacement
-                menu.addAction('Edit Replacement', lambda: self._edit_replacement(idx))
+            enabled = rule.get('enabled', True)
+            text = 'Disable Profile' if enabled else 'Enable Profile'
+            menu.addAction(text, lambda: self._toggle_profile(idx))
+            menu.addAction('Rename Profile', lambda: self._rename_profile(idx))
+            menu.addAction('Edit Asset IDs', lambda: self._edit_asset_ids(idx))
+            menu.addAction('Edit Replacement', lambda: self._edit_replacement(idx))
+            menu.addSeparator()
+            menu.addAction('Delete Profile', lambda: self._delete_selected())
 
         if menu.actions():
             menu.exec(self.tree.mapToGlobal(pos))
@@ -806,6 +902,7 @@ class ReplacerConfigWindow(QDialog):
         layout.addWidget(count_label)
 
         text_edit = QTextEdit()
+        text_edit.setAcceptRichText(False)
         text_edit.setPlainText('\n'.join(str(i) for i in ids))
         layout.addWidget(text_edit)
 
@@ -839,20 +936,25 @@ class ReplacerConfigWindow(QDialog):
         def show_dialog_types_popup():
             from ..cache.cache_viewer import CategoryFilterPopup
             from ..cache.cache_manager import CacheManager
-            
+
+            _VIRTUAL_ANIM_TYPES = {'R6Animation', 'R15Animation', 'NonPlayerAnimation'}
+
             content = text_edit.toPlainText().strip()
             current_ids = self._parse_ids(content.replace('\n', ','))
-            
+
             active_filters = set()
             for item in current_ids:
                 if isinstance(item, str):
+                    if item in _VIRTUAL_ANIM_TYPES:
+                        active_filters.add(item)
+                        continue
                     for tid, name in CacheManager.ASSET_TYPES.items():
                         if name.lower() == item.lower():
                             active_filters.add(tid)
                             break
-            
+
             popup = CategoryFilterPopup(parent=dialog, active_filters=active_filters)
-            
+
             def on_filters_changed(filters):
                 curr_content = text_edit.toPlainText().strip()
                 curr_ids = self._parse_ids(curr_content.replace('\n', ','))
@@ -862,21 +964,26 @@ class ReplacerConfigWindow(QDialog):
                         new_ids.append(item)
                     elif isinstance(item, str):
                         is_mapped = False
-                        for tid, name in CacheManager.ASSET_TYPES.items():
-                            if name.lower() == item.lower():
-                                is_mapped = True
-                                break
+                        if item in _VIRTUAL_ANIM_TYPES:
+                            is_mapped = True
+                        else:
+                            for tid, name in CacheManager.ASSET_TYPES.items():
+                                if name.lower() == item.lower():
+                                    is_mapped = True
+                                    break
                         if not is_mapped:
                             new_ids.append(item)
                 for tid in filters:
-                    if tid in CacheManager.ASSET_TYPES:
+                    if tid in _VIRTUAL_ANIM_TYPES:
+                        new_ids.append(tid)
+                    elif tid in CacheManager.ASSET_TYPES:
                         new_ids.append(CacheManager.ASSET_TYPES[tid])
-                
+
                 if new_ids:
                     text_edit.setPlainText('\n'.join(str(i) for i in new_ids))
                 else:
                     text_edit.setPlainText('')
-                    
+
             popup.filters_changed.connect(on_filters_changed)
             
             # Line up TOP LEFT of our popup menu with TOP LEFT of the Asset Types button
@@ -996,24 +1103,36 @@ class ReplacerConfigWindow(QDialog):
         text = text.replace(';', ',').replace(' ', ',')
         for part in text.split(','):
             part = part.strip()
-            if part:
-                try:
-                    ids.append(int(part))
-                except ValueError:
+            if not part:
+                continue
+            # "parentId:mapIndex" or "TexturePack:N" — keep as-is
+            if ':' in part:
+                left, right = part.split(':', 1)
+                if right.isdigit() and (left.isdigit() or left == 'TexturePack'):
                     ids.append(part)
+                    continue
+            try:
+                ids.append(int(part))
+            except ValueError:
+                ids.append(part)
         return ids
         
     def _show_asset_types_popup(self):
         """Show the asset types popup menu."""
         from ..cache.cache_manager import CacheManager
-        
+
+        _VIRTUAL_ANIM_TYPES = {'R6Animation', 'R15Animation', 'NonPlayerAnimation'}
+
         # Parse current text to update active filters
         current_text = self.replace_entry.text()
         current_ids = self._parse_ids(current_text)
-        
+
         active_filters = set()
         for item in current_ids:
             if isinstance(item, str):
+                if item in _VIRTUAL_ANIM_TYPES:
+                    active_filters.add(item)
+                    continue
                 # Reverse lookup the asset type integer from name
                 for tid, name in CacheManager.ASSET_TYPES.items():
                     if name.lower() == item.lower():
@@ -1046,13 +1165,12 @@ class ReplacerConfigWindow(QDialog):
     def _on_asset_types_changed(self, filters):
         """Handle asset types selection change."""
         from ..cache.cache_manager import CacheManager
-        
+
+        _VIRTUAL_ANIM_TYPES = {'R6Animation', 'R15Animation', 'NonPlayerAnimation'}
+
         current_text = self.replace_entry.text().strip()
         current_ids = self._parse_ids(current_text)
-        
-        # We need to maintain non-string IDs from the user's current box, and add/remove string types.
-        # So we keep everything not representing a mapped type.
-        
+
         new_ids = []
         for item in current_ids:
             if isinstance(item, int):
@@ -1063,17 +1181,20 @@ class ReplacerConfigWindow(QDialog):
                     if name.lower() == item.lower():
                         is_mapped = True
                         break
+                # Also treat virtual anim type strings as mapped (so they get removed/re-added cleanly)
+                if item in _VIRTUAL_ANIM_TYPES:
+                    is_mapped = True
                 if not is_mapped:
                     new_ids.append(item)
-                    
+
         # Add the string representations of the selected filters
         for tid in filters:
-            if tid in CacheManager.ASSET_TYPES:
+            if tid in _VIRTUAL_ANIM_TYPES:
+                new_ids.append(tid)
+            elif tid in CacheManager.ASSET_TYPES:
                 new_ids.append(CacheManager.ASSET_TYPES[tid])
-                
-        # Format the rest back cleanly
+
         if new_ids:
-            # We want commas naturally, but without a weird leading comma if spacing is weird
             self.replace_entry.setText(', '.join(str(i) for i in new_ids).strip(', '))
         else:
             self.replace_entry.setText('')
@@ -1290,34 +1411,3 @@ class ReplacerConfigWindow(QDialog):
             self._refresh_tree()
             log_buffer.log('Config', f'Disabled {disabled_count} profile(s)')
 
-    def _open_json(self):
-        """Open JSON file for import."""
-        initial_dir = str(PREJSONS_DIR) if PREJSONS_DIR.exists() else None
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            'Open JSON',
-            initial_dir,
-            'JSON Files (*.json);;All Files (*.*)',
-        )
-
-        if not file_path:
-            return
-
-        try:
-            with Path(file_path).open(encoding='utf-8') as f:
-                data = json.load(f)
-        except (json.JSONDecodeError, OSError) as e:
-            QMessageBox.critical(self, 'Error', f'Failed: {e}')
-            return
-
-        def on_ids(ids):
-            cur = self.replace_entry.text()
-            self.replace_entry.setText(
-                (cur + ', ' if cur.strip() else '') + ', '.join(str(x) for x in ids)
-            )
-
-        def on_repl(val):
-            self.replacement_entry.setText(str(val))
-
-        viewer = JsonTreeViewer(self, data, Path(file_path).name, on_ids, on_repl, config_manager=self.config_manager)
-        viewer.show()

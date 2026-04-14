@@ -48,11 +48,28 @@ class CacheScraper:
         # base CDN URL (no query) -> list[asset_id]  (1:many – same replacement ID → same CDN URL)
         self._url_to_asset: dict[str, list] = {}
         # TexturePack sub-asset lookup: sub_asset_id -> (parent_pack_id, map_index)
-        # map_index 0=Color/Albedo, 1=Normal, 2=Roughness/Metalness
+        # map_index 0=Color/Albedo, 1=Normal, 2=ORM (Roughness+Metalness combined)
         # Populated when a TexturePack XML is successfully fetched and cached.
         # Lets the replacer resolve a sub-asset ID directly to the correct
         # texture slot without the user needing to know the parent pack ID.
         self._texpack_subasset_lookup: dict[int, tuple[int, int]] = {}
+
+        # Per-slot high-quality KTX2 store for research/ORM analysis.
+        # Maps CDN base_url -> (parent_id, slot, quality) so process_cdn_response
+        # knows which slot a KTX2 response belongs to.
+        self._url_to_texpack_slot: dict[str, tuple[int, int, int]] = {}
+        # Tracks the highest quality level (0-3) already stored per (parent_id, slot).
+        # A new CDN response is written to disk only if it has higher quality.
+        self._texpack_slot_quality: dict[tuple[int, int], int] = {}
+        # Virtual-slot (XML position index) → ORM channel name for packs where
+        # the XML has been fetched.  Virtual slot 0 = first XML sub-asset, etc.
+        # Only populated for virtual slots ≥ 2 (ORM sub-channels); slots 0 and 1
+        # are full-slot replacements and need no channel mapping.
+        # Values: 'metalness' | 'roughness' | 'emissive' | 'height'
+        self._texpack_vslot_channel: dict[tuple[int, int], str] = {}
+        # Tracks which TexturePack parent IDs have had their XML pre-fetched
+        # (or attempted) to avoid redundant API calls from precheck_replacements.
+        self._texpack_layout_fetched: set[int] = set()
 
         # Background thread pool for API conversion (KTX->PNG etc.)
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='cache_api')
@@ -99,7 +116,15 @@ class CacheScraper:
                     continue
                 location = res_item.get('location')
                 asset_type = res_item.get('assetTypeId')
-                if location is None or asset_type is None:
+                if location is None:
+                    continue
+                # Roblox often omits assetTypeId on the 2nd and 3rd slots of a
+                # TexturePack batch (all share the same assetId).  Fall back to
+                # whatever type we already recorded for this assetId in a prior
+                # iteration of this same batch.
+                if asset_type is None:
+                    asset_type = self.cache_logs.get(asset_id, {}).get('assetTypeId')
+                if asset_type is None:
                     continue
                 base_url = location.split('?')[0]
                 # Skip if this exact CDN URL is already registered.
@@ -130,6 +155,26 @@ class CacheScraper:
 
                 url_list.append(asset_id)
                 tracked += 1
+
+                # For TexturePack slots: decode fidelity byte to learn slot + quality
+                # so process_cdn_response can store each slot KTX2 separately.
+                if asset_type == 63 and base_url not in self._url_to_texpack_slot:
+                    crpl = item.get('contentRepresentationPriorityList', '')
+                    if crpl:
+                        try:
+                            import base64 as _fb64, json as _fj
+                            crpl_dec = _fj.loads(_fb64.b64decode(crpl))
+                            if crpl_dec:
+                                fid_b64 = crpl_dec[0].get('fidelity', '')
+                                if fid_b64:
+                                    fb = _fb64.b64decode(fid_b64)
+                                    if fb:
+                                        _slot = fb[0] & 0x3F
+                                        _qual = (fb[0] >> 6) & 0x3
+                                        self._url_to_texpack_slot[base_url] = (
+                                            int(asset_id), _slot, _qual)
+                        except Exception:
+                            pass
 
         # Submit copy tasks outside the lock
         for source_id, dest_id, asset_type, url in to_copy:
@@ -167,18 +212,23 @@ class CacheScraper:
             )
 
         with self._lock:
+            # Grab tp_slot_meta BEFORE the asset_ids check so that higher-quality
+            # CDN responses still get stored even after clear_tracking() clears
+            # _url_to_asset (tp_slot_meta dict is NOT cleared by clear_tracking).
+            tp_slot_meta_early = self._url_to_texpack_slot.get(base_url)
             asset_ids = self._url_to_asset.get(base_url)
-            if not asset_ids:
+            if not asset_ids and not tp_slot_meta_early:
                 return
             # Collect all asset IDs that still need caching for this CDN URL
             pending: list[tuple[int, int]] = []  # (asset_id, asset_type)
-            for aid in asset_ids:
-                info = self.cache_logs.get(aid)
-                if info and 'cached' not in info:
-                    info['cached'] = True
-                    pending.append((aid, info.get('assetTypeId', 0)))
-            if not pending:
-                return
+            if asset_ids:
+                for aid in asset_ids:
+                    info = self.cache_logs.get(aid)
+                    if info and 'cached' not in info:
+                        info['cached'] = True
+                        pending.append((aid, info.get('assetTypeId', 0)))
+        if not pending and not tp_slot_meta_early:
+            return
 
         cache_hash = path.rsplit('/', 1)[-1]
         metadata = {
@@ -207,6 +257,20 @@ class CacheScraper:
                     body, max_output_size=64 * 1024 * 1024)
             except Exception:
                 inner = body
+
+        # For TexturePack slots: if this CDN URL is a known slot response,
+        # stash the raw KTX2 bytes quality-aware so higher-res versions replace
+        # lower-res ones.  This runs regardless of normal asset caching.
+        _KTX_MAGIC = (b'\xabKTX 20\xbb', b'\xabKTX 11\xbb')
+        if tp_slot_meta_early and inner[:8] in _KTX_MAGIC:
+            _tp_id, _tp_slot, _tp_qual = tp_slot_meta_early
+            try:
+                self._executor.submit(
+                    self._store_texpack_slot_ktx2_async,
+                    _tp_id, _tp_slot, _tp_qual, inner,
+                )
+            except RuntimeError as exc:
+                log_buffer.log('Cache', f'Failed to submit texpack slot store: {exc}')
 
         # Store / convert for every original asset ID that shares this CDN URL
         for asset_id, asset_type in pending:
@@ -627,46 +691,151 @@ class CacheScraper:
                     pass
 
     def _populate_texpack_subasset_lookup(self, parent_id: int, xml_content: bytes) -> None:
-        """Parse TexturePack XML and record sub-asset → (parent, map_index) mappings.
+        """Parse TexturePack XML and record sub-asset → (parent, global_index) mappings.
 
-        map_index is the POSITIONAL index of each map tag among all known map tags
-        present in this specific XML.  This matches the ``fidelity`` slot encoding
-        that Roblox uses in the batch request API.
+        Fleasion global indices (fixed, asset-independent):
+          0 = Color / Albedo     (fidelity slot 0, full slot)
+          1 = Normal             (fidelity slot 1, full slot)
+          2 = Metalness          (fidelity slot 2, ORM R channel)
+          3 = Roughness          (fidelity slot 2, ORM G channel)
+          4 = Emissive           (fidelity slot 2, ORM B channel)
+          5 = Height             (fidelity slot 2, ORM A channel)
 
-        Example — pack with <color>, <normal>, <metalness>, <roughness>:
-          color → 0, normal → 1, metalness → 2, roughness → 3
-
-        Example — pack with <color>, <normal>, <roughness>, <emissive>, <height>:
-          color → 0, normal → 1, roughness → 2, emissive → 3, height → 4
+        The global index is FIXED and does NOT depend on the XML tag ordering.
+        This means ``TexturePack:3`` ALWAYS targets Roughness regardless of
+        the asset's XML structure.
         """
-        # All tag names that represent texture map slots (lowercase).
-        # The position of a tag in this set does NOT matter — only document order does.
-        _KNOWN_MAP_TAGS = {
-            'color', 'albedo', 'diffuse', 'basecolor',
-            'normal', 'normalmap', 'bumpmap',
-            'roughness', 'metalness', 'orm',
-            'emissive', 'emissivemap',
-            'height', 'heightmap', 'displacement',
+        # Semantic mapping: XML tag name → global index.
+        _TAG_TO_GLOBAL_INDEX = {
+            'color': 0, 'albedo': 0, 'diffuse': 0, 'basecolor': 0,
+            'normal': 1, 'normalmap': 1, 'bumpmap': 1,
+            'metalness': 2, 'orm': 2,
+            'roughness': 3,
+            'emissive': 4, 'emissivemap': 4,
+            'height': 5, 'displacement': 5, 'heightmap': 5,
+        }
+        # ORM channel name for each recognised PBR sub-tag.
+        # Tags without a channel (Color, Normal, or combined 'orm') map to None.
+        _TAG_TO_CHANNEL: dict[str, str | None] = {
+            'color': None, 'albedo': None, 'diffuse': None, 'basecolor': None,
+            'normal': None, 'normalmap': None, 'bumpmap': None,
+            'orm': None,          # full combined ORM — no single channel
+            'metalness': 'metalness',
+            'roughness': 'roughness',
+            'emissive':  'emissive',
+            'emissivemap': 'emissive',
+            'height':    'height',
+            'displacement': 'height',
+            'heightmap':    'height',
         }
         try:
             import xml.etree.ElementTree as _ET
             root = _ET.fromstring(xml_content)
             added = 0
-            slot_idx = 0
+            virtual_slot = 0  # sequential index among recognised XML children (legacy, kept for vslot_channel)
             for elem in root:  # direct children only — no recursion into sub-trees
                 tag_lower = elem.tag.lower().lstrip('{').split('}')[-1]  # strip namespace
-                if tag_lower not in _KNOWN_MAP_TAGS:
-                    continue
+                global_index = _TAG_TO_GLOBAL_INDEX.get(tag_lower)
+                if global_index is None:
+                    continue  # unknown tag — skip (don't advance virtual_slot)
                 text = (elem.text or '').strip()
                 if text.isdigit() and int(text) != 0:
                     sub_id = int(text)
-                    self._texpack_subasset_lookup[sub_id] = (parent_id, slot_idx)
+                    self._texpack_subasset_lookup[sub_id] = (parent_id, global_index)
                     added += 1
-                slot_idx += 1  # every map slot increments the index even if empty/zero
+                # Record virtual slot → channel for ORM sub-channels (legacy, kept for potential revert).
+                channel = _TAG_TO_CHANNEL.get(tag_lower)
+                if channel is not None:  # None means Color/Normal/full-ORM → no channel
+                    with self._lock:
+                        self._texpack_vslot_channel[(parent_id, virtual_slot)] = channel
+                virtual_slot += 1
             if added:
                 log_buffer.log('Cache', f'TexturePack {parent_id}: mapped {added} sub-asset(s)')
         except Exception as exc:
             log_buffer.log('Cache', f'TexturePack {parent_id} sub-asset parse error: {exc}')
+
+    def _store_texpack_slot_ktx2_async(
+        self, parent_id: int, slot: int, quality: int, ktx2_bytes: bytes,
+    ) -> None:
+        """Quality-aware per-slot KTX2 storage for TexturePacks.
+
+        Stores raw CDN KTX2 bytes under APP_CACHE_DIR/texpack_slots/ keyed by
+        (parent_id, slot).  Uses pixel dimensions from the KTX2 header to gate
+        overwrites — larger dimensions always win, regardless of in-memory state.
+        This is session-restart-safe: no in-memory quality counter is needed.
+
+        Roblox fidelity slot meanings (empirically verified):
+          0 = Color / Albedo
+          1 = Normal (DXT5nm swizzled: R=255, G=Y, B=0, A=X)
+          2 = ORM  (R=Metalness, G=Roughness, B=Emissive, A=Height — BC3 only)
+
+        Fleasion global indices (for user-facing replacement config):
+          0 = Color, 1 = Normal, 2 = Metalness, 3 = Roughness,
+          4 = Emissive, 5 = Height
+        """
+        try:
+            import struct as _struct
+            from ...utils.paths import APP_CACHE_DIR
+            slot_dir = APP_CACHE_DIR / 'texpack_slots'
+            slot_dir.mkdir(parents=True, exist_ok=True)
+            slot_path = slot_dir / f'{parent_id}_slot{slot}.ktx2'
+
+            # Gate: only overwrite if new KTX2 has strictly larger width than existing.
+            # Parse width from KTX2 header offset 20 (uint32 LE).
+            new_w = _struct.unpack_from('<I', ktx2_bytes, 20)[0] if len(ktx2_bytes) >= 24 else 0
+            if slot_path.exists():
+                try:
+                    existing = slot_path.read_bytes()
+                    existing_w = _struct.unpack_from('<I', existing, 20)[0] if len(existing) >= 24 else 0
+                    if new_w <= existing_w:
+                        # Already have same or better — skip silently
+                        return
+                    log_buffer.log('TexPackSlot',
+                                   f'Upgrading {parent_id} slot{slot}: {existing_w}px → {new_w}px')
+                except Exception:
+                    pass  # can't read existing — overwrite it
+
+            slot_path.write_bytes(ktx2_bytes)
+            # Update in-memory quality tracker for within-session fast-path.
+            key = (parent_id, slot)
+            with self._lock:
+                self._texpack_slot_quality[key] = quality
+
+            _SLOT_NAMES = {0: 'Color', 1: 'Normal', 2: 'ORM'}
+            slot_name = _SLOT_NAMES.get(slot, f'slot{slot}')
+            log_buffer.log('TexPackSlot',
+                           f'Cached {slot_name} q={quality} {new_w}px for pack {parent_id} '
+                           f'({len(ktx2_bytes)} bytes) → {slot_path.name}')
+        except Exception as exc:
+            log_buffer.log('TexPackSlot', f'Failed to store slot {slot} for {parent_id}: {exc}')
+
+    def prefetch_texpack_layout(self, parent_id: int) -> None:
+        """Fetch and parse TexturePack XML to populate _texpack_vslot_channel.
+
+        Called by TextureStripper.precheck_replacements at proxy startup for
+        packs that have VS≥2 local overrides configured, ensuring the ORM
+        channel mapping is ready before the first batch request arrives.
+        No-op if the pack has already been fetched or attempted.
+        """
+        with self._lock:
+            if parent_id in self._texpack_layout_fetched:
+                return
+        # Note: _texpack_layout_fetched is only marked after the fetch completes so
+        # that a concurrent batch thread isn't falsely returned early while the
+        # background thread is still mid-request.  Duplicate concurrent fetches are
+        # harmless since _populate_texpack_subasset_lookup is idempotent.
+        try:
+            xml_data = self._fetch_from_api(str(parent_id))
+            if xml_data and xml_data.lstrip()[:1] == b'<':
+                self._populate_texpack_subasset_lookup(parent_id, xml_data)
+                log_buffer.log('Cache', f'Pre-fetched TexturePack layout for {parent_id}')
+            else:
+                log_buffer.log('Cache', f'TexturePack {parent_id} did not return XML for pre-fetch')
+        except Exception as exc:
+            log_buffer.log('Cache', f'TexturePack pre-fetch failed for {parent_id}: {exc}')
+        finally:
+            with self._lock:
+                self._texpack_layout_fetched.add(parent_id)
 
     def _store_asset_async(
         self, asset_id: str, asset_type: int, data: bytes, url: str, metadata: dict,
@@ -782,24 +951,5 @@ class CacheScraper:
     # ------------------------------------------------------------------
 
     def _get_roblosecurity(self) -> str | None:
-        try:
-            import win32crypt
-        except ImportError:
-            return None
-        path = os.path.expandvars(r'%LocalAppData%/Roblox/LocalStorage/RobloxCookies.dat')
-        try:
-            if not os.path.exists(path):
-                return None
-            import json as _json
-            with open(path) as f:
-                data = _json.load(f)
-            cookies_data = data.get('CookiesData')
-            if not cookies_data:
-                return None
-            enc = base64.b64decode(cookies_data)
-            dec = win32crypt.CryptUnprotectData(enc, None, None, None, 0)[1]
-            s = dec.decode('utf-8', errors='ignore')
-            m = re.search(r'\.ROBLOSECURITY\s+([^\s;]+)', s)
-            return m.group(1) if m else None
-        except Exception:
-            return None
+        from ...utils.roblox_auth import get_roblosecurity
+        return get_roblosecurity()

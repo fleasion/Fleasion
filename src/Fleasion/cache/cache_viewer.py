@@ -23,6 +23,7 @@ from .cache_json_viewer import CacheJsonViewer
 from .font_viewer import FontViewerWidget
 from . import mesh_processing
 from ..utils import log_buffer, open_folder
+from ..utils.roblox_auth import get_roblosecurity as _get_roblosecurity
 import json
 
 
@@ -43,11 +44,12 @@ class SearchWorkerThread(QThread):
 
     results_ready = pyqtSignal(list)
 
-    def __init__(self, assets: list, search_text: str, asset_info: dict):
+    def __init__(self, assets: list, search_text: str, asset_info: dict, search_columns=None):
         super().__init__()
         self.assets = assets
         self.search_text = search_text.strip().lower()
         self.asset_info = asset_info
+        self.search_columns = search_columns if search_columns is not None else _ALL_SEARCH_COL_KEYS
         self._stop_requested = False
 
     def stop(self):
@@ -73,37 +75,36 @@ class SearchWorkerThread(QThread):
                     return
 
                 asset_id = a['id']
+                cols = self.search_columns
+                matched = False
 
-                # Fast path: check ID first
-                if self.search_text in asset_id.lower():
-                    filtered.append(a)
-                    continue
+                if not matched and 'id' in cols and self.search_text in asset_id.lower():
+                    matched = True
 
-                # Check type name
-                if self.search_text in a['type_name'].lower():
-                    filtered.append(a)
-                    continue
+                if not matched and 'type' in cols and self.search_text in a['type_name'].lower():
+                    matched = True
 
-                # Check resolved name if available
-                if asset_id in self.asset_info:
+                if not matched and ('name' in cols or 'creator' in cols) and asset_id in self.asset_info:
                     info = self.asset_info[asset_id]
-                    name = info.get('resolved_name')
-                    if name and self.search_text in name.lower():
-                        filtered.append(a)
-                        continue
-                    creator_name = info.get('creator_name')
-                    if creator_name and self.search_text in creator_name.lower():
-                        filtered.append(a)
-                        continue
+                    if 'name' in cols:
+                        name = info.get('resolved_name')
+                        if name and self.search_text in name.lower():
+                            matched = True
+                    if not matched and 'creator' in cols:
+                        creator_name = info.get('creator_name')
+                        if creator_name and self.search_text in creator_name.lower():
+                            matched = True
 
-                # Check other fields
-                url = a.get('url', '').lower()
-                hash_val = a.get('hash', '').lower()
-                cached_at = a.get('cached_at', '').lower()
+                if not matched and 'url' in cols and self.search_text in a.get('url', '').lower():
+                    matched = True
 
-                if (self.search_text in url or
-                    self.search_text in hash_val or
-                    self.search_text in cached_at):
+                if not matched and 'hash' in cols and self.search_text in a.get('hash', '').lower():
+                    matched = True
+
+                if not matched and 'cached_at' in cols and self.search_text in a.get('cached_at', '').lower():
+                    matched = True
+
+                if matched:
                     filtered.append(a)
 
         if not self._stop_requested:
@@ -140,35 +141,6 @@ class DeleteWorkerThread(QThread):
         if not self._stop_requested:
             self.deletion_complete.emit(deleted_count, failed_count)
 
-
-def _get_roblosecurity() -> str | None:
-    """Get .ROBLOSECURITY cookie from Roblox local storage."""
-    import os
-    import json
-    import base64
-    import re
-
-    try:
-        import win32crypt
-    except ImportError:
-        return None
-
-    path = os.path.expandvars(r'%LocalAppData%/Roblox/LocalStorage/RobloxCookies.dat')
-    try:
-        if not os.path.exists(path):
-            return None
-        with open(path, 'r') as f:
-            data = json.load(f)
-        cookies_data = data.get('CookiesData')
-        if not cookies_data:
-            return None
-        enc = base64.b64decode(cookies_data)
-        dec = win32crypt.CryptUnprotectData(enc, None, None, None, 0)[1]
-        s = dec.decode(errors='ignore')
-        m = re.search(r'\.ROBLOSECURITY\s+([^\s;]+)', s)
-        return m.group(1) if m else None
-    except Exception:
-        return None
 
 
 class ImageLoaderThread(QThread):
@@ -789,7 +761,7 @@ class CategoryFilterPopup(QMenu):
             '3D Models': [4, 10, 39, 40, 32, 17, 79, 75], 
             'Images/Textures': [1, 13, 63, 21, 22, 18], 
             'Audio/Video': [3, 62, 33], 
-            'Animations': [24, 48, 49, 50, 51, 52, 53, 54, 55, 56, 61, 78], 
+            'Animations': [24, ('R6Animation', 'R6 Animation'), ('R15Animation', 'R15 Animation'), ('NonPlayerAnimation', 'Non-player Animation'), 48, 49, 50, 51, 52, 53, 54, 55, 56, 61, 78],
             'Avatar Parts': [16, 25, 26, 27, 28, 29, 30, 31], 
             'Clothing': [2, 11, 12, 8, 19], 
             'Accessories': [41, 42, 43, 44, 45, 46, 47, 57, 58, 64, 65, 66, 67, 68, 69, 70, 71, 72, 76, 77],
@@ -832,7 +804,10 @@ class CategoryFilterPopup(QMenu):
             
             cat_types = []
             for tid in type_ids:
-                if isinstance(tid, str):
+                if isinstance(tid, tuple):
+                    # (key, display_name) pair - key is stored in filters, name is shown in UI
+                    tid, name = tid
+                elif isinstance(tid, str):
                     # String detected-type entry (e.g. 'Json')
                     name = tid
                 elif tid in CacheManager.ASSET_TYPES:
@@ -973,6 +948,86 @@ _COL_IDX_TO_KEY = ['_toggle'] + [c[0] for c in SCRAPER_COLUMNS]
 # Column key → logical index
 _COL_KEY_TO_IDX = {'_toggle': 0, **{c[0]: i + 1 for i, c in enumerate(SCRAPER_COLUMNS)}}
 
+# Search column definitions for the column-picker button
+_SEARCH_COLS = [
+    ('id',        'Asset ID'),
+    ('type',      'Type'),
+    ('name',      'Name'),
+    ('creator',   'Creator'),
+    ('url',       'URL'),
+    ('hash',      'Hash'),
+    ('cached_at', 'Cached At'),
+]
+_ALL_SEARCH_COL_KEYS = frozenset(k for k, _ in _SEARCH_COLS)
+
+
+class ColumnFilterPopup(QMenu):
+    """Simple popup to pick which fields are included in the text search."""
+    cols_changed = pyqtSignal(set)
+
+    def __init__(self, parent=None, active_cols=None):
+        super().__init__(parent)
+        self.setStyleSheet("""
+            QMenu { background-color: palette(window); border: 1px solid palette(mid);
+                    border-radius: 4px; color: palette(window-text); }
+            QWidget#ColContainer { background-color: palette(window); }
+            QCheckBox { padding: 2px 4px; color: palette(window-text); font-size: 12px; }
+            QCheckBox::indicator { width: 14px; height: 14px; }
+        """)
+        self.active_cols = set(active_cols) if active_cols else set(_ALL_SEARCH_COL_KEYS)
+
+        container = QWidget()
+        container.setObjectName('ColContainer')
+        vbox = QVBoxLayout(container)
+        vbox.setContentsMargins(10, 10, 10, 10)
+        vbox.setSpacing(4)
+
+        self.checkboxes: dict = {}
+        for key, label in _SEARCH_COLS:
+            cb = QCheckBox(label)
+            cb.setChecked(key in self.active_cols)
+            cb.stateChanged.connect(lambda state, k=key: self._on_toggle(k, bool(state)))
+            self.checkboxes[key] = cb
+            vbox.addWidget(cb)
+
+        btn_row = QHBoxLayout()
+        all_btn = QPushButton('All')
+        all_btn.setFixedHeight(22)
+        all_btn.clicked.connect(self._select_all)
+        none_btn = QPushButton('None')
+        none_btn.setFixedHeight(22)
+        none_btn.clicked.connect(self._select_none)
+        btn_row.addWidget(all_btn)
+        btn_row.addWidget(none_btn)
+        vbox.addLayout(btn_row)
+
+        wa = QWidgetAction(self)
+        wa.setDefaultWidget(container)
+        self.addAction(wa)
+
+    def _on_toggle(self, key: str, checked: bool):
+        if checked:
+            self.active_cols.add(key)
+        else:
+            self.active_cols.discard(key)
+        self.cols_changed.emit(set(self.active_cols))
+
+    def _select_all(self):
+        self.active_cols = set(_ALL_SEARCH_COL_KEYS)
+        for cb in self.checkboxes.values():
+            cb.blockSignals(True)
+            cb.setChecked(True)
+            cb.blockSignals(False)
+        self.cols_changed.emit(set(self.active_cols))
+
+    def _select_none(self):
+        self.active_cols.clear()
+        for cb in self.checkboxes.values():
+            cb.blockSignals(True)
+            cb.setChecked(False)
+            cb.blockSignals(False)
+        self.cols_changed.emit(set(self.active_cols))
+
 
 class ColumnVisibilityMenu(QMenu):
     """
@@ -1050,9 +1105,11 @@ class CacheViewerTab(QWidget):
         self.cache_scraper = cache_scraper
         self.config_manager = config_manager
         self._active_filters = set()
+        self._active_search_cols: set = self._load_search_cols()
         self._last_asset_count = 0  # Track for change detection
         self._selected_asset_id: str | None = None  # Track selected asset by ID
-        self._show_names = True  # Show names instead of hashes (on by default)
+        self._show_names = config_manager.show_names if config_manager is not None else True
+        self._show_creator_id = config_manager.show_creator_id if config_manager is not None else False
         self._asset_info: dict[str, dict] = {}  # asset_id -> {resolved_name, creator_id, creator_name, creator_type, hash, row}
         self._current_pixmap = None  # Store current image for resize
         
@@ -1077,6 +1134,14 @@ class CacheViewerTab(QWidget):
         # Asset loader worker thread
         self._asset_loader: AssetLoaderThread | None = None
         self._is_deleting: bool = False
+
+        # Blacklisted asset IDs (excluded from table)
+        if config_manager is not None:
+            self._blacklisted_ids: set[str] = set(config_manager.scraper_blacklist)
+            if self._blacklisted_ids:
+                log_buffer.log('Scraper', f'Loaded blacklist: {len(self._blacklisted_ids)} ID(s) active — {", ".join(sorted(self._blacklisted_ids, key=lambda x: int(x) if x.isdigit() else 0))}')
+        else:
+            self._blacklisted_ids: set[str] = set()
 
         # Texturepack data for context menu
         self._texturepack_data: dict = {}  # map_name -> {id, hash, data}
@@ -1433,7 +1498,7 @@ class CacheViewerTab(QWidget):
     def _setup_ui(self):
         """Setup the UI."""
         layout = QVBoxLayout()
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setContentsMargins(10, 10, 10, 4)
 
         # Filters (includes scraper toggle and stats)
         self._create_filters(layout)
@@ -1479,7 +1544,7 @@ class CacheViewerTab(QWidget):
         # Search box first
         filter_layout.addWidget(QLabel('Search:'))
         self.search_box = QLineEdit()
-        self.search_box.setPlaceholderText('Search all columns...')
+        self.search_box.setPlaceholderText('Search columns')
         self.search_box.textChanged.connect(self._on_search_text_changed)
         filter_layout.addWidget(self.search_box)
 
@@ -1488,15 +1553,17 @@ class CacheViewerTab(QWidget):
         self.filter_btn.clicked.connect(self._show_filter_popup)
         filter_layout.addWidget(self.filter_btn)
 
+        # Search columns picker
+        self.search_col_btn = QPushButton('Search columns: All')
+        self.search_col_btn.clicked.connect(self._show_search_col_popup)
+        self._update_search_col_btn()
+        filter_layout.addWidget(self.search_col_btn)
+
         filter_layout.addStretch()
 
-        # Show names toggle (on by default)
-        self.show_names_toggle = QCheckBox('Show Names')
-        self.show_names_toggle.setChecked(True)
-        self.show_names_toggle.toggled.connect(self._on_show_names_toggled)
-        filter_layout.addWidget(self.show_names_toggle)
-
-        filter_layout.addWidget(QLabel('|'))
+        sep1 = QLabel('|')
+        sep1.setStyleSheet('padding-bottom: 6px;')
+        filter_layout.addWidget(sep1)
 
         # Cache scraper toggle - reflect actual scraper state
         self.scraper_toggle = QCheckBox('Enable Cache Scraper')
@@ -1505,11 +1572,20 @@ class CacheViewerTab(QWidget):
         self.scraper_toggle.stateChanged.connect(self._toggle_scraper)
         filter_layout.addWidget(self.scraper_toggle)
 
-        filter_layout.addWidget(QLabel('|'))
+        sep2 = QLabel('|')
+        sep2.setStyleSheet('padding-bottom: 6px;')
+        filter_layout.addWidget(sep2)
 
-        # Stats label
-        self.stats_label = QLabel('Total: 0 assets | Size: 0 B')
-        filter_layout.addWidget(self.stats_label)
+        # Stats labels
+        self.stats_total_label = QLabel('Total: 0 assets')
+        filter_layout.addWidget(self.stats_total_label)
+
+        sep3 = QLabel('|')
+        sep3.setStyleSheet('padding-bottom: 6px;')
+        filter_layout.addWidget(sep3)
+
+        self.stats_size_label = QLabel('Size: 0 B')
+        filter_layout.addWidget(self.stats_size_label)
 
         filter_group.setLayout(filter_layout)
         parent_layout.addWidget(filter_group)
@@ -1586,6 +1662,77 @@ class CacheViewerTab(QWidget):
             self.filter_btn.setText(f'{count} Filters...')
             
         self._filter_debounce.start(300)
+
+    # Search columns picker
+
+    def _load_search_cols(self) -> set:
+        if self.config_manager is None:
+            return set(_ALL_SEARCH_COL_KEYS)
+        saved = self.config_manager.settings.get('scraper_search_columns', None)
+        if saved is None:
+            return set(_ALL_SEARCH_COL_KEYS)
+        valid = {k for k in saved if k in _ALL_SEARCH_COL_KEYS}
+        return valid if valid else set(_ALL_SEARCH_COL_KEYS)
+
+    def _save_search_cols(self):
+        if self.config_manager is None:
+            return
+        self.config_manager.settings['scraper_search_columns'] = sorted(self._active_search_cols)
+        self.config_manager.save()
+
+    def _update_search_col_btn(self):
+        cols = self._active_search_cols
+        if cols >= _ALL_SEARCH_COL_KEYS:
+            self.search_col_btn.setText('Search columns: All')
+        elif not cols:
+            self.search_col_btn.setText('Search columns: None')
+        elif len(cols) == 1:
+            key = next(iter(cols))
+            label = next((l for k, l in _SEARCH_COLS if k == key), key)
+            self.search_col_btn.setText(f'Search columns: {label}')
+        else:
+            self.search_col_btn.setText(f'Search columns: {len(cols)} selected')
+
+    def _show_search_col_popup(self):
+        from PyQt6.QtCore import QPoint
+        from PyQt6.QtGui import QScreen
+        self._col_popup = ColumnFilterPopup(self, self._active_search_cols)
+        self._col_popup.cols_changed.connect(self._on_search_cols_changed)
+
+        self._col_popup.adjustSize()
+        btn = self.search_col_btn
+        btn_rect = btn.rect()
+        btn_bottom = btn.mapToGlobal(btn_rect.bottomLeft())
+        btn_top = btn.mapToGlobal(btn_rect.topLeft())
+
+        screen: QScreen | None = btn.screen()
+        if screen is None:
+            self._col_popup.exec(btn_bottom)
+            return
+
+        sg = screen.availableGeometry()
+        ph = self._col_popup.sizeHint().height()
+        pw = self._col_popup.sizeHint().width()
+
+        x = btn_bottom.x()
+        if x + pw > sg.right():
+            x = sg.right() - pw
+        x = max(x, sg.left())
+
+        if btn_bottom.y() + ph <= sg.bottom():
+            y = btn_bottom.y()
+        elif btn_top.y() - ph >= sg.top():
+            y = btn_top.y() - ph
+        else:
+            y = max(sg.bottom() - ph, sg.top())
+
+        self._col_popup.exec(QPoint(x, y))
+
+    def _on_search_cols_changed(self, cols: set):
+        self._active_search_cols = cols
+        self._update_search_col_btn()
+        self._save_search_cols()
+        self._search_debounce.start(300)
 
     def _create_table(self, parent_layout):
         """Create asset table."""
@@ -1774,6 +1921,10 @@ class CacheViewerTab(QWidget):
 
         actions_layout.addStretch()
 
+        blacklist_btn = QPushButton('Blacklist IDs...')
+        blacklist_btn.clicked.connect(self._show_blacklist_dialog)
+        actions_layout.addWidget(blacklist_btn)
+
         load_asset_btn = QPushButton('Load Asset...')
         load_asset_btn.clicked.connect(self._show_load_asset_dialog)
         actions_layout.addWidget(load_asset_btn)
@@ -1794,7 +1945,8 @@ class CacheViewerTab(QWidget):
             stats = self.cache_manager.get_cache_stats()
             total_assets = stats['total_assets']
             total_size = self._format_size(stats['total_size'])
-            self.stats_label.setText(f'Total: {total_assets} assets | Size: {total_size}')
+            self.stats_total_label.setText(f'Total: {total_assets} assets')
+            self.stats_size_label.setText(f'Size: {total_size}')
 
             # Only refresh table if asset count changed
             if total_assets != self._last_asset_count:
@@ -1821,6 +1973,10 @@ class CacheViewerTab(QWidget):
         # Get assets
         assets = self.cache_manager.list_assets(filter_types)
 
+        # Apply blacklist filter
+        if self._blacklisted_ids:
+            assets = [a for a in assets if a['id'] not in self._blacklisted_ids]
+
         # Ensure all assets have _asset_info entries so the background name
         # resolver can discover and resolve them even when a search filter
         # hides them from the table.
@@ -1843,7 +1999,7 @@ class CacheViewerTab(QWidget):
 
         # Always use worker thread for searches to prevent UI freezing
         self._is_searching = True
-        self._search_worker = SearchWorkerThread(assets, search_text, self._asset_info)
+        self._search_worker = SearchWorkerThread(assets, search_text, self._asset_info, self._active_search_cols)
         self._search_worker.results_ready.connect(self._on_search_complete)
         self._search_worker.finished.connect(self._on_search_finished)
         self._search_worker.start()
@@ -1930,16 +2086,7 @@ class CacheViewerTab(QWidget):
                 self.table.setItem(row, 1, name_item)
 
                 # Column 2: Creator
-                creator_name = info.get('creator_name')
-                creator_id = info.get('creator_id')
-                if creator_name is not None:
-                    creator_display = creator_name
-                elif creator_id is not None:
-                    # Fallback to creator_id if name not yet resolved
-                    creator_display = str(creator_id)
-                else:
-                    creator_display = ''
-                creator_item = QTableWidgetItem(creator_display)
+                creator_item = QTableWidgetItem(self._creator_display(info))
                 self.table.setItem(row, 2, creator_item)
 
                 # Column 3: Asset ID
@@ -1958,8 +2105,21 @@ class CacheViewerTab(QWidget):
                 self.table.setItem(row, 4, type_item)
 
                 # Column 5: Size
-                # For TexturePack we show the raw KTX2 size when available
+                # For TexturePack show the combined on-disk slot KTX2 sizes so the
+                # user sees the real texture data footprint, not the tiny XML size.
                 size = asset.get('raw_size', asset.get('size', 0))
+                if asset['type'] == 63:
+                    try:
+                        from ..utils.paths import APP_CACHE_DIR
+                        _slot_dir = APP_CACHE_DIR / 'texpack_slots'
+                        _tp_slot_size = sum(
+                            f.stat().st_size
+                            for f in _slot_dir.glob(f'{asset_id}_slot*.ktx2')
+                        )
+                        if _tp_slot_size > 0:
+                            size = _tp_slot_size
+                    except Exception:
+                        pass
                 size_str = self._format_size(size)
                 size_item = NumericSortItem(size, size_str)
                 self.table.setItem(row, 5, size_item)
@@ -1995,15 +2155,10 @@ class CacheViewerTab(QWidget):
                         name_item.setText(info['resolved_name'])
                 
                 # Update creator if resolved - be explicit with None checks
-                creator_name = info.get('creator_name')
-                creator_id = info.get('creator_id')
-                if creator_name is not None or creator_id is not None:
+                if info.get('creator_name') is not None or info.get('creator_id') is not None:
                     creator_item = self.table.item(row, 2)
                     if creator_item:
-                        if creator_name is not None:
-                            creator_item.setText(creator_name)
-                        else:
-                            creator_item.setText(str(creator_id))
+                        creator_item.setText(self._creator_display(info))
         finally:
             # Re-enable updates
             self.table.blockSignals(False)
@@ -2054,8 +2209,9 @@ class CacheViewerTab(QWidget):
             total_assets = stats['total_assets']
             total_size = self._format_size(stats['total_size'])
             
-            self.stats_label.setText(f'Total: {total_assets} assets | Size: {total_size}')
-                
+            self.stats_total_label.setText(f'Total: {total_assets} assets')
+            self.stats_size_label.setText(f'Size: {total_size}')
+
             self._last_asset_count = total_assets
         except Exception:
             pass
@@ -2104,7 +2260,7 @@ class CacheViewerTab(QWidget):
 
         # Always use worker thread to prevent UI freezing
         self._is_searching = True
-        self._search_worker = SearchWorkerThread(assets, search_text, self._asset_info)
+        self._search_worker = SearchWorkerThread(assets, search_text, self._asset_info, self._active_search_cols)
         self._search_worker.results_ready.connect(self._on_search_complete)
         self._search_worker.finished.connect(self._on_search_finished)
         self._search_worker.start()
@@ -2166,9 +2322,42 @@ class CacheViewerTab(QWidget):
                         self._asset_info[asset_id]['creator_type'] = creator_type
         log_buffer.log('Scraper', f'[Cache Viewer] Loaded {loaded_count} persisted asset names from index')
 
+    def _creator_display(self, info: dict) -> str:
+        """Return the display text for the creator column based on current toggle state."""
+        creator_name = info.get('creator_name')
+        creator_id = info.get('creator_id')
+        if self._show_creator_id:
+            if creator_id is not None:
+                return str(creator_id)
+            return creator_name or ''
+        if creator_name is not None:
+            return creator_name
+        if creator_id is not None:
+            return str(creator_id)
+        return ''
+
+    def _on_show_creator_id_toggled(self, checked: bool):
+        """Handle Show User ID toggle — refresh the creator column for all rows."""
+        self._show_creator_id = checked
+        if self.config_manager is not None:
+            self.config_manager.show_creator_id = checked
+        self.table.setUpdatesEnabled(False)
+        try:
+            for asset_id, info in self._asset_info.items():
+                row = info.get('row')
+                if row is None or row >= self.table.rowCount():
+                    continue
+                creator_item = self.table.item(row, 2)
+                if creator_item:
+                    creator_item.setText(self._creator_display(info))
+        finally:
+            self.table.setUpdatesEnabled(True)
+
     def _on_show_names_toggled(self, checked: bool):
         """Handle Show Names toggle."""
         self._show_names = checked
+        if self.config_manager is not None:
+            self.config_manager.show_names = checked
 
         # Disable updates for performance
         self.table.setUpdatesEnabled(False)
@@ -2288,12 +2477,10 @@ class CacheViewerTab(QWidget):
                         item.setText(info['resolved_name'])
 
                 # Update creator column if resolved
-                creator_name = info.get('creator_name')
-                creator_id   = info.get('creator_id')
-                if creator_name is not None or creator_id is not None:
+                if info.get('creator_name') is not None or info.get('creator_id') is not None:
                     creator_item = self.table.item(row, 2)
                     if creator_item:
-                        desired = creator_name if creator_name is not None else str(creator_id)
+                        desired = self._creator_display(info)
                         if creator_item.text() != desired:
                             creator_item.setText(desired)
         finally:
@@ -2337,11 +2524,7 @@ class CacheViewerTab(QWidget):
             return
         item = self.table.item(row, 2)  # Creator is col 2
         if item:
-            # Prefer name, fallback to ID
-            if creator_name is not None:
-                item.setText(creator_name)
-            elif creator_id is not None:
-                item.setText(str(creator_id))
+            item.setText(self._creator_display(info))
             # Force immediate repaint of this row
             self.table.viewport().update()
 
@@ -2371,33 +2554,8 @@ class CacheViewerTab(QWidget):
                 break
 
     def _get_roblosecurity(self) -> str | None:
-        """Get .ROBLOSECURITY cookie from Roblox local storage."""
-        import os
-        import json
-        import base64
-        import re
-
-        try:
-            import win32crypt
-        except ImportError:
-            return None
-
-        path = os.path.expandvars(r'%LocalAppData%/Roblox/LocalStorage/RobloxCookies.dat')
-        try:
-            if not os.path.exists(path):
-                return None
-            with open(path, 'r') as f:
-                data = json.load(f)
-            cookies_data = data.get('CookiesData')
-            if not cookies_data:
-                return None
-            enc = base64.b64decode(cookies_data)
-            dec = win32crypt.CryptUnprotectData(enc, None, None, None, 0)[1]
-            s = dec.decode('utf-8', errors='ignore')
-            m = re.search(r'\.ROBLOSECURITY\s+([^\s;]+)', s)
-            return m.group(1) if m else None
-        except Exception:
-            return None
+        from ..utils.roblox_auth import get_roblosecurity
+        return get_roblosecurity()
 
     def _fetch_asset_names(self, asset_ids: list[str], cookie: str | None) -> dict[str, dict] | None:
         """Fetch asset names and creator info from Roblox Develop API (batch up to 50).
@@ -3011,8 +3169,8 @@ class CacheViewerTab(QWidget):
         if not selected_rows:
             return
 
-        # Add actions
-        add_to_replacer_action = menu.addAction('Add IDs to Replacer')
+        send_replace_action = menu.addAction('Replace')
+        send_replace_with_action = menu.addAction('Replace with')
 
         # Export submenu with format options
         export_menu = menu.addMenu('Export Selected')
@@ -3043,15 +3201,17 @@ class CacheViewerTab(QWidget):
         export_actions = {}
         format_labels = {
             'converted_obj': 'Converted (.obj)',
-            'converted_rbxmx': 'Converted (.rbxmx)',
+            'converted_rbxmx': 'Converted - KeyframeSequence (.rbxmx)',
+            'converted_rbxmx_curve': 'Converted - CurveAnimation (.rbxmx)',
             'converted_png': 'Converted (.png)',
             'converted_audio': 'Converted (.ogg/.mp3)',
             'converted': 'Converted (.xml)',
             'converted_images': 'Converted (Images)',
+            'slot_ktx2': 'Slot KTX2 Files',
             'bin': 'Binary (decompressed)',
             'raw': 'Raw (original cache)',
         }
-        for fmt in ['converted_obj', 'converted_rbxmx', 'converted_png', 'converted_audio', 'converted', 'converted_images', 'bin', 'raw']:
+        for fmt in ['slot_ktx2', 'converted_obj', 'converted_rbxmx', 'converted_rbxmx_curve', 'converted_png', 'converted_audio', 'converted', 'converted_images', 'bin', 'raw']:
             if fmt in available_formats:
                 action = export_menu.addAction(format_labels[fmt])
                 export_actions[action] = fmt
@@ -3076,16 +3236,53 @@ class CacheViewerTab(QWidget):
         # Add Open Creator action below the Copy menu
         open_creator_action = menu.addAction('Open Creator')
 
+        # Export as game dump
+        copy_dump_action = menu.addAction('Export as Game Dump')
+
+        # Convert animation rig - only when exactly one Animation is selected
+        convert_anim_action = None
+        _convert_anim_asset = None
+        if len(selected_rows) == 1 and asset_types == {24}:
+            row = selected_rows[0].row()
+            item = self.table.item(row, 1)
+            if item:
+                _convert_anim_asset = item.data(Qt.ItemDataRole.UserRole)
+                if _convert_anim_asset:
+                    try:
+                        from ..utils.anim_converter import detect_rig, rbxm_to_rbxmx
+                        _anim_data = self.cache_manager.get_asset(
+                            _convert_anim_asset['id'], _convert_anim_asset['type']
+                        )
+                        if _anim_data:
+                            _rig = detect_rig(_anim_data)
+                            _target_rig = 'R6' if _rig == 'R15' else 'R15'
+                            convert_anim_action = menu.addAction(f'Convert to {_target_rig}')
+                    except Exception:
+                        pass
+
         menu.addSeparator()
         delete_action = menu.addAction('Delete Selected')
 
         # Execute menu
         action = menu.exec(self.table.viewport().mapToGlobal(position))
 
-        if action == add_to_replacer_action:
+        if action == send_replace_action:
             self._add_selected_to_replacer()
+        elif action == send_replace_with_action:
+            self._add_latest_as_replace_with()
         elif action in export_actions:
-            self._export_selected_multiple(export_format=export_actions[action])
+            _fmt = export_actions[action]
+            if _fmt == 'slot_ktx2':
+                # Export slot KTX2 files for all selected TexturePack rows
+                for row_index in selected_rows:
+                    _row = row_index.row()
+                    _item = self.table.item(_row, 1)
+                    if _item:
+                        _asset = _item.data(Qt.ItemDataRole.UserRole)
+                        if _asset and _asset.get('type') == 63:
+                            self._export_texpack_slot_ktx2(str(_asset['id']))
+            else:
+                self._export_selected_multiple(export_format=_fmt)
         elif action == delete_action:
             self._delete_selected()
         elif action == copy_hash_action:
@@ -3102,6 +3299,131 @@ class CacheViewerTab(QWidget):
             self._open_creator_in_browser()
         elif action == copy_converted_action:
             self._copy_converted()
+        elif action == copy_dump_action:
+            self._export_as_game_dump()
+        elif action is not None and action == convert_anim_action and _convert_anim_asset:
+            self._convert_animation_rig(_convert_anim_asset, _target_rig)
+
+    def _convert_animation_rig(self, asset: dict, target: str):
+        """Convert an animation between R6 and R15 and save to a user-chosen path."""
+        import threading
+        from pathlib import Path
+        from PyQt6.QtWidgets import QFileDialog
+
+        asset_id = asset.get('id', 'animation')
+        default_name = f'{asset_id}_{target.lower()}.rbxmx'
+        out_str, _ = QFileDialog.getSaveFileName(
+            self, 'Save Converted Animation', default_name,
+            'Roblox Animation (*.rbxmx);;All files (*.*)',
+        )
+        if not out_str:
+            return
+
+        def _do_convert():
+            import re
+            import sys
+            import xml.etree.ElementTree as _ET
+            try:
+                from ..utils.anim_converter import rbxm_to_rbxmx
+                from ..utils.rig_data import R6_PARTS, R6_JOINTS, R15_PARTS, R15_JOINTS
+            except Exception as e:
+                QMessageBox.warning(self, 'Convert Error', f'Failed to load converter: {e}')
+                return
+
+            anim_data = self.cache_manager.get_asset(asset['id'], asset['type'])
+            if not anim_data:
+                QMessageBox.warning(self, 'Convert Error', 'Could not load asset data.')
+                return
+
+            if anim_data.startswith(b'<roblox!'):
+                try:
+                    anim_data = rbxm_to_rbxmx(anim_data)
+                except Exception as e:
+                    QMessageBox.warning(self, 'Convert Error', f'.rbxm conversion failed: {e}')
+                    return
+
+            try:
+                from ..utils.r15_to_r6 import (convert_keyframe_r15_to_r6,
+                                                convert_keyframe_r6_to_r15, sanitize_xml)
+
+                root = _ET.fromstring(sanitize_xml(anim_data))
+                etree = _ET.ElementTree(root)
+
+                ks = root.find("Item[@class='KeyframeSequence']")
+                if ks is None:
+                    QMessageBox.warning(self, 'Convert Error', 'No KeyframeSequence found.')
+                    return
+                keyframes = ks.findall("Item[@class='Keyframe']")
+                if not keyframes:
+                    QMessageBox.warning(self, 'Convert Error', 'No Keyframes found.')
+                    return
+
+                if target == 'R6':
+                    for kf in keyframes:
+                        convert_keyframe_r15_to_r6(kf, R6_PARTS, R6_JOINTS, R15_PARTS, R15_JOINTS)
+                else:
+                    for kf in keyframes:
+                        convert_keyframe_r6_to_r15(kf, R6_PARTS, R6_JOINTS, R15_PARTS, R15_JOINTS)
+
+                etree.write(out_str, encoding='utf-8', xml_declaration=True)
+            except Exception as e:
+                QMessageBox.warning(self, 'Convert Error', f'Conversion failed: {e}')
+
+        threading.Thread(target=_do_convert, daemon=True).start()
+
+    def _export_as_game_dump(self):
+        """Export selected assets as a game dump JSON grouped by type.
+
+        Produces {TypeName: {AssetName: assetId, ...}, ...} — the same format
+        that the PreJsons Browser accepts when importing a custom dump.
+        """
+        selected_rows = self.table.selectionModel().selectedRows()
+        if not selected_rows:
+            return
+
+        by_type: dict[str, dict] = {}
+        name_counts: dict[tuple, int] = {}
+
+        for idx in sorted(selected_rows, key=lambda x: x.row()):
+            row = idx.row()
+            item = self.table.item(row, 1)   # col 1 carries the asset dict in UserRole
+            if not item:
+                continue
+            asset = item.data(Qt.ItemDataRole.UserRole)
+            if not isinstance(asset, dict):
+                continue
+
+            asset_id = asset.get('id') or asset.get('asset_id')
+            try:
+                asset_id = int(asset_id)
+            except (TypeError, ValueError):
+                continue
+
+            name = item.text() or 'Unknown'
+            type_name = self.cache_manager.get_type_name_for_asset(asset_id, asset.get('type', ''))
+
+            bucket = by_type.setdefault(type_name, {})
+            key = name
+            count_key = (type_name, name)
+            if key in bucket:
+                name_counts[count_key] = name_counts.get(count_key, 1) + 1
+                key = f'{name} ({name_counts[count_key]})'
+            bucket[key] = asset_id
+
+        if not by_type:
+            return
+
+        result = {t: by_type[t] for t in sorted(by_type)}
+        from PyQt6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getSaveFileName(
+            self, 'Export Game Dump', 'game_dump.json', 'JSON Files (*.json);;All Files (*)'
+        )
+        if not path:
+            return
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(json.dumps(result, indent=2))
+        total = sum(len(v) for v in result.values())
+        log_buffer.log('Scraper', f'Exported game dump ({total} assets) to {path}')
 
     def _copy_column(self, column: int):
         """Copy column contents for selected rows."""
@@ -3431,15 +3753,7 @@ class CacheViewerTab(QWidget):
         if not asset_ids:
             return
 
-        # Try to find the replacer entry field (walk up parent chain)
-        replacer_window = None
-        widget = self
-        while widget is not None:
-            if hasattr(widget, 'replace_entry'):
-                replacer_window = widget
-                break
-            widget = widget.parent() if hasattr(widget, 'parent') else None
-
+        replacer_window = getattr(self, '_replacer_window_ref', None)
         if replacer_window:
             # Add to existing IDs if there are any
             current_text = replacer_window.replace_entry.text().strip()
@@ -3466,6 +3780,36 @@ class CacheViewerTab(QWidget):
                 self,
                 'Copied to Clipboard',
                 f'Copied {len(asset_ids)} asset ID(s) to clipboard:\n{", ".join(asset_ids[:5])}{"..." if len(asset_ids) > 5 else ""}'
+            )
+
+    def _add_latest_as_replace_with(self):
+        """Send the latest selected asset ID to the Replace With field."""
+        row = self.table.currentIndex().row()
+        if row < 0:
+            return
+
+        id_item = self.table.item(row, 3)
+        if not id_item:
+            return
+        asset_id = id_item.text()
+
+        replacer_window = getattr(self, '_replacer_window_ref', None)
+        if replacer_window:
+            replacer_window.replacement_entry.setText(asset_id)
+            log_buffer.log('Scraper', f'Set Replace With to asset ID {asset_id}')
+            QMessageBox.information(
+                self,
+                'Replace With Set',
+                f'Replace With set to asset ID {asset_id}',
+            )
+        else:
+            from PyQt6.QtWidgets import QApplication
+            QApplication.clipboard().setText(asset_id)
+            log_buffer.log('Scraper', f'Copied asset ID {asset_id} to clipboard (no replacer window found)')
+            QMessageBox.information(
+                self,
+                'Copied to Clipboard',
+                f'Copied asset ID {asset_id} to clipboard',
             )
 
     def _stop_preview(self):
@@ -3696,25 +4040,34 @@ class CacheViewerTab(QWidget):
             self._texturepack_xml = xml_text  # Store for context menu
             root = ET.fromstring(xml_text)
 
-            # Extract texture map IDs in document order.
-            # map_index is POSITIONAL — the Nth map tag present in this XML.
-            # This matches the fidelity slot encoding Roblox uses in batch requests.
-            _KNOWN_MAP_TAGS = {'color', 'albedo', 'normal', 'metalness', 'roughness',
-                               'emissive', 'height', 'orm', 'diffuse', 'normalmap',
-                               'bumpmap', 'heightmap', 'displacement'}
+            # Extract texture map IDs using the GLOBAL fixed index system.
+            # The index for each map type is constant regardless of the asset's
+            # XML tag ordering:
+            #   0 = Color, 1 = Normal, 2 = Metalness, 3 = Roughness,
+            #   4 = Emissive, 5 = Height
+            # These global indices are what the user puts in replace_ids
+            # (e.g. "108049038086346:3" for roughness on ANY pack).
+            # GI ≥ 2 are routed through the ORM compositor on the backend.
+            _TAG_TO_GLOBAL_INDEX = {
+                'color': 0, 'albedo': 0, 'diffuse': 0, 'basecolor': 0,
+                'normal': 1, 'normalmap': 1, 'bumpmap': 1,
+                'metalness': 2, 'orm': 2,
+                'roughness': 3,
+                'emissive': 4, 'emissivemap': 4,
+                'height': 5, 'heightmap': 5, 'displacement': 5,
+            }
             maps = {}          # display_name -> map_id_str
-            maps_indices = {}  # display_name -> positional slot_idx
-            slot_idx = 0
+            maps_indices = {}  # display_name -> global_index (fixed, asset-independent)
             for child in root:
                 tag_lower = child.tag.lower().lstrip('{').split('}')[-1]
-                if tag_lower not in _KNOWN_MAP_TAGS:
+                global_idx = _TAG_TO_GLOBAL_INDEX.get(tag_lower)
+                if global_idx is None:
                     continue
                 text = (child.text or '').strip()
                 if text.isdigit() and text != '0':
                     display_name = tag_lower.capitalize()
                     maps[display_name] = text
-                    maps_indices[display_name] = slot_idx
-                slot_idx += 1  # every known slot tag advances the index
+                    maps_indices[display_name] = global_idx
 
             if not maps:
                 self._show_text_preview(f'No texture maps found in texture pack {asset_id}')
@@ -3891,6 +4244,11 @@ class CacheViewerTab(QWidget):
         # Copy XML
         copy_xml_action = menu.addAction('Copy TexturePack XML')
 
+        menu.addSeparator()
+
+        # Export raw per-slot KTX2 files captured during game session.
+        export_slot_ktx2_action = menu.addAction('Export Slot KTX2 Files')
+
         action = menu.exec(label.mapToGlobal(pos))
 
         if action == copy_image_action:
@@ -3907,6 +4265,56 @@ class CacheViewerTab(QWidget):
             QApplication.clipboard().setText(map_hash)
         elif action == copy_xml_action:
             QApplication.clipboard().setText(self._texturepack_xml)
+        elif action == export_slot_ktx2_action:
+            self._export_texpack_slot_ktx2(slot_key.split(':')[0] if ':' in slot_key else '')
+
+    def _export_texpack_slot_ktx2(self, asset_id: str) -> None:
+        """Export high-quality per-slot KTX2 files for a TexturePack.
+
+        Exports whichever quality level has been captured so far from
+        APP_CACHE_DIR/texpack_slots/<asset_id>_slot{N}.ktx2.
+        """
+        if not asset_id:
+            return
+        from PyQt6.QtWidgets import QFileDialog
+        from ..utils import APP_CACHE_DIR
+
+        slot_dir = APP_CACHE_DIR / 'texpack_slots'
+        _SLOT_NAMES = {0: 'Color', 1: 'Normal', 2: 'ORM'}
+        found = []
+        for slot, name in _SLOT_NAMES.items():
+            src = slot_dir / f'{asset_id}_slot{slot}.ktx2'
+            if src.exists():
+                found.append((src, f'{asset_id}_slot{slot}_{name}.ktx2'))
+
+        if not found:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.information(
+                self, 'No Slot KTX2 Files',
+                f'No slot KTX2 files found for pack {asset_id}.\n\n'
+                'Load the asset in-game while Fleasion is running to capture them.'
+            )
+            return
+
+        dest_dir_str = QFileDialog.getExistingDirectory(
+            self, f'Export Slot KTX2 for {asset_id}', str(APP_CACHE_DIR),
+        )
+        if not dest_dir_str:
+            return
+        from pathlib import Path as _Path
+        dest_dir = _Path(dest_dir_str)
+        exported = []
+        for src, dest_name in found:
+            dst = dest_dir / dest_name
+            import shutil
+            shutil.copy2(str(src), str(dst))
+            exported.append(dest_name)
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.information(
+            self, 'Export Complete',
+            f'Exported {len(exported)} slot KTX2 file(s) to:\n{dest_dir}\n\n' +
+            '\n'.join(exported),
+        )
 
     def _preview_audio(self, data: bytes, asset_id: str):
         """Preview an audio asset."""
@@ -4157,6 +4565,115 @@ class CacheViewerTab(QWidget):
     # Load Asset dialog
     # ------------------------------------------------------------------
 
+    def _show_blacklist_dialog(self):
+        """Show a dialog for managing blacklisted asset IDs."""
+        from ..utils import get_icon_path
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Blacklist IDs')
+        dialog.resize(400, 350)
+        if icon_path := get_icon_path():
+            from PyQt6.QtGui import QIcon
+            dialog.setWindowIcon(QIcon(str(icon_path)))
+
+        layout = QVBoxLayout()
+
+        title = QLabel('Blacklisted Asset IDs')
+        title.setStyleSheet('font-weight: bold;')
+        layout.addWidget(title)
+
+        hint = QLabel('Enter asset IDs separated by commas, spaces, newlines, or semicolons.')
+        hint.setStyleSheet('color: gray; font-size: 9pt;')
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        text_edit = QTextEdit()
+        text_edit.setAcceptRichText(False)
+        text_edit.setPlaceholderText('e.g. 1818, 1234567890, 9876543210')
+
+        # Populate with current blacklist
+        if self._blacklisted_ids:
+            text_edit.setPlainText(', '.join(sorted(self._blacklisted_ids, key=lambda x: int(x))))
+        layout.addWidget(text_edit)
+
+
+        # Search row
+        search_layout = QHBoxLayout()
+        search_layout.setContentsMargins(0, 0, 0, 0)
+        search_edit = QLineEdit()
+        search_edit.setPlaceholderText('Search IDs')
+        search_layout.addWidget(search_edit)
+        # Push the following widgets to the right side
+        search_layout.addStretch()
+        status_label = QLabel('')
+        status_label.setStyleSheet('color: #888; font-size: 9pt;')
+        search_layout.addWidget(status_label)
+        apply_btn = QPushButton('Apply blacklist')
+        search_layout.addWidget(apply_btn)
+        layout.addLayout(search_layout)
+
+        dialog.setLayout(layout)
+
+        _last_search_query = ['']
+
+        def _search_id():
+            query = search_edit.text().strip()
+            if not query:
+                return
+            # If query changed, reset search to start from beginning
+            if query != _last_search_query[0]:
+                _last_search_query[0] = query
+                text_edit.moveCursor(text_edit.textCursor().MoveOperation.Start)
+            # Search from current cursor position forward
+            cursor = text_edit.document().find(query, text_edit.textCursor())
+            if cursor.isNull():
+                # Wrap around to start
+                cursor = text_edit.document().find(query)
+            if not cursor.isNull():
+                text_edit.setTextCursor(cursor)
+                text_edit.ensureCursorVisible()
+                status_label.setText('')
+            else:
+                status_label.setText(f'ID {query} not found.')
+                status_label.setStyleSheet('color: #cc5555; font-size: 9pt;')
+
+        search_edit.returnPressed.connect(_search_id)
+        search_edit.textChanged.connect(lambda: status_label.setText(''))
+
+        def _apply():
+            content = text_edit.toPlainText().strip()
+            content = content.replace('\n', ',').replace(';', ',').replace(' ', ',')
+            ids = []
+            for part in content.split(','):
+                part = part.strip()
+                if part:
+                    try:
+                        ids.append(str(int(part)))
+                    except ValueError:
+                        pass
+            self._blacklisted_ids = set(ids)
+            if self.config_manager is not None:
+                self.config_manager.scraper_blacklist = ids
+            # Fast path: hide/show rows in-place rather than full repopulate
+            for row in range(self.table.rowCount()):
+                id_item = self.table.item(row, 1)
+                if id_item is None:
+                    continue
+                asset_data = id_item.data(Qt.ItemDataRole.UserRole)
+                asset_id = asset_data.get('id') if isinstance(asset_data, dict) else None
+                self.table.setRowHidden(row, asset_id in self._blacklisted_ids)
+            count = len(self._blacklisted_ids)
+            status_label.setText(f'Blacklist applied: {count} ID(s).')
+            status_label.setStyleSheet('color: #55cc55; font-size: 9pt;')
+            if self._blacklisted_ids:
+                log_buffer.log('Scraper', f'Blacklist updated: {count} ID(s) active — {", ".join(sorted(self._blacklisted_ids, key=lambda x: int(x) if x.isdigit() else 0))}')
+            else:
+                log_buffer.log('Scraper', 'Blacklist cleared')
+
+        apply_btn.clicked.connect(_apply)
+
+        dialog.exec()
+
     def _show_load_asset_dialog(self):
         """Show a dialog for manually entering asset IDs to download from Roblox."""
         from ..utils import get_icon_path
@@ -4180,15 +4697,16 @@ class CacheViewerTab(QWidget):
         layout.addWidget(hint)
 
         text_edit = QTextEdit()
+        text_edit.setAcceptRichText(False)
         text_edit.setPlaceholderText('e.g. 1818, 1234567890, 9876543210')
         layout.addWidget(text_edit)
 
         status_label = QLabel('')
         status_label.setStyleSheet('color: #888; font-size: 9pt;')
-        layout.addWidget(status_label)
 
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
+        btn_layout.addWidget(status_label)
 
         load_btn = QPushButton('Load Asset IDs')
         btn_layout.addWidget(load_btn)
