@@ -260,6 +260,24 @@ class ConfigManager:
         self._save_settings()
 
     @property
+    def show_names(self) -> bool:
+        return self.settings.get('show_names', True)
+
+    @show_names.setter
+    def show_names(self, value: bool):
+        self.settings['show_names'] = value
+        self._save_settings()
+
+    @property
+    def show_creator_id(self) -> bool:
+        return self.settings.get('show_creator_id', False)
+
+    @show_creator_id.setter
+    def show_creator_id(self, value: bool):
+        self.settings['show_creator_id'] = value
+        self._save_settings()
+
+    @property
     def export_naming(self) -> list[str]:
         """Get export naming options (name, id, hash)."""
         return self.settings.get('export_naming', ['id'])

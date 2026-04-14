@@ -218,6 +218,7 @@ class ReplacerConfigWindow(QDialog):
         # Store direct reference so Send-to-Replacer can find the entry fields
         # regardless of how Qt re-parents the widget when added to QTabWidget.
         tab._replacer_window_ref = self
+        self._cache_viewer_tab = tab
         return tab
 
     def _create_config_section(self, parent_layout):

@@ -347,6 +347,7 @@ def kill_other_fleasion_instances():
             pass
 
 
+
 def main():
     """Main application entry point."""
     import argparse as _ap
@@ -456,6 +457,30 @@ def main():
         _show_readonly_notice = True
     else:
         _show_readonly_notice = False
+
+    # Warn if no Roblox installations can be found (same scan used for cert injection)
+    from .proxy.master import _find_roblox_dirs as _scan_roblox_dirs
+    if not _scan_roblox_dirs():
+        _top = QApplication.topLevelWidgets()
+        _parent = next((w for w in _top if w.isVisible()), None)
+        _on_top = any(w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in _top)
+        _no_roblox_msg = QMessageBox(_parent)
+        if _on_top:
+            _no_roblox_msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
+        _no_roblox_msg.setWindowTitle('Fleasion — Roblox Not Found')
+        _no_roblox_msg.setIcon(QMessageBox.Icon.Warning)
+        _no_roblox_msg.setText('Roblox does not appear to be installed.')
+        _no_roblox_msg.setInformativeText(
+            'Fleasion could not find any Roblox installations on this computer.\n\n'
+            'Please close Fleasion, install Roblox, and then relaunch Fleasion.\n\n'
+            'Without Roblox installed, the majority of Fleasion\'s features cannot be used.\n\n'
+            'Note: To fully close Fleasion, right click Fleasion in the system tray and click Exit.'
+        )
+        _no_roblox_msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        if icon_path := get_icon_path():
+            from PyQt6.QtGui import QIcon
+            _no_roblox_msg.setWindowIcon(QIcon(str(icon_path)))
+        _no_roblox_msg.exec()
 
     # Initialize config manager
     config_manager = ConfigManager()

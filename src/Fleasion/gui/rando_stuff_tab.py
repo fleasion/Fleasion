@@ -7,7 +7,6 @@ import json
 import os
 import random
 import re
-import subprocess
 import uuid
 import threading
 import time
@@ -43,7 +42,6 @@ except Exception:
 
 from ..utils.paths import CONFIG_DIR
 from ..utils.logging import log_buffer
-from ..utils.roblox_auth import get_roblosecurity as _get_roblosecurity
 from ..utils.windows import launch_as_standard_user
 
 ACCOUNTS_FILE = CONFIG_DIR / 'accounts.json'
@@ -87,6 +85,7 @@ def _save_accounts(accounts: list[dict]):
     """Persist accounts list to disk."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     ACCOUNTS_FILE.write_text(json.dumps(accounts, indent=2), encoding="utf-8")
+
 
 
 def _get_auth_ticket(cookie: str) -> str | None:
@@ -160,10 +159,20 @@ def _get_access_code(place_id: str, link_code: str, cookie: str) -> str | None:
     return None
 
 
-def _parse_private_server_params(link: str) -> tuple[str | None, str | None]:
-    """Parse a Roblox private server URL and return (place_id, link_code), or (None, None)."""
+
+def _parse_game_link(link: str) -> tuple[str | None, str | None]:
+    """Parse any Roblox game URL and return (place_id, link_code_or_None).
+
+    Accepts:
+    - Plain numeric placeId, e.g. "1818"
+    - Full game URL, e.g. https://www.roblox.com/games/1818/Classic-Crossroads
+    - Private server URL with privateServerLinkCode query param
+    """
     if not link:
         return None, None
+    # Plain numeric placeId
+    if link.isdigit():
+        return link, None
     try:
         parsed = urlparse(link)
         parts = [p for p in parsed.path.split('/') if p]
@@ -173,12 +182,89 @@ def _parse_private_server_params(link: str) -> tuple[str | None, str | None]:
             if idx + 1 < len(parts) and parts[idx + 1].isdigit():
                 place_id = parts[idx + 1]
         link_code = parse_qs(parsed.query).get('privateServerLinkCode', [None])[0]
-        if place_id and link_code:
+        if place_id:
             return place_id, link_code
     except Exception:
         pass
     return None, None
 
+
+def _is_share_link(link: str) -> bool:
+    """Return True if link is a roblox.com/share?code=...&type=Server link."""
+    if not link:
+        return False
+    try:
+        parsed = urlparse(link)
+        qs = parse_qs(parsed.query)
+        return (
+            "roblox.com" in parsed.netloc
+            and parsed.path.rstrip('/') == "/share"
+            and "code" in qs
+        )
+    except Exception:
+        return False
+
+
+def _resolve_share_link(link: str, cookie: str = "") -> tuple[str, str]:
+    """Resolve a roblox.com/share link via the sharelinks API."""
+    try:
+        parsed = urlparse(link)
+        qs = parse_qs(parsed.query)
+        link_id = (qs.get("code") or [None])[0]
+        link_type = (qs.get("type") or ["Server"])[0]
+        if not link_id:
+            return "", ""
+
+        sess = _requests.Session()
+        if cookie:
+            sess.cookies.set(".ROBLOSECURITY", cookie, domain=".roblox.com")
+        sess.headers.update({
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Referer": "https://www.roblox.com/",
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/json;charset=UTF-8",
+        })
+
+        body = {"linkId": link_id, "linkType": link_type}
+        resp = sess.post(
+            "https://apis.roblox.com/sharelinks/v1/resolve-link",
+            json=body,
+            timeout=10,
+        )
+        # Roblox returns 403 with X-CSRF-TOKEN on first POST — retry with token
+        if resp.status_code == 403 and "x-csrf-token" in resp.headers:
+            sess.headers["X-CSRF-TOKEN"] = resp.headers["x-csrf-token"]
+            resp = sess.post(
+                "https://apis.roblox.com/sharelinks/v1/resolve-link",
+                json=body,
+                timeout=10,
+            )
+        if resp.status_code != 200:
+            return "", ""
+
+        data = resp.json()
+
+        def _extract(d: dict) -> tuple[str, str]:
+            pid = str(d.get("placeId") or d.get("rootPlaceId") or "")
+            lc = d.get("privateServerLinkCode") or d.get("linkCode") or d.get("accessCode") or ""
+            return pid, lc
+
+        place_id, link_code = _extract(data)
+        for key in ("privateServerInviteData", "privateServerData", "gameDetails", "serverData"):
+            nested = data.get(key)
+            if isinstance(nested, dict):
+                p, l = _extract(nested)
+                place_id = place_id or p
+                link_code = link_code or l
+
+        if place_id and link_code:
+            return place_id, link_code
+    except Exception:
+        pass
+    return "", ""
 
 
 def _find_roblox_exe() -> str | None:
@@ -326,8 +412,14 @@ class RandoStuffTab(QWidget):
         self._last_switched_account: dict | None = None
 
         self._accounts: list[dict] = _load_accounts()
+        self._game_jobs: dict = {}  # placeId -> jobId, session-only memory
+        self._account_manager_job_id: str = ""
+        self._account_manager_capture_place_id: str | None = None
+        self._auto_filled_for_place: str | None = None
 
         self._setup_ui()
+        threading.Thread(target=self._check_cookies_on_boot, daemon=True).start()
+        threading.Thread(target=self._resolve_current_user, daemon=True).start()
 
     # UI
 
@@ -382,11 +474,20 @@ class RandoStuffTab(QWidget):
         self._account_list.customContextMenuRequested.connect(self._on_account_ctx_menu)
         aml.addWidget(self._account_list)
 
+        self._selected_label = QLabel("Selected: (none)")
+        self._selected_label.setStyleSheet("color: palette(placeholder-text); font-size: 9pt;")
+        aml.addWidget(self._selected_label)
+
         self._private_server_input = QLineEdit()
         self._private_server_input.setPlaceholderText(
-            'Private server link, e.g. https://www.roblox.com/games/123/Name?privateServerLinkCode=AbCd...'
+            'Game link, e.g. https://www.roblox.com/games/123/Name or ...?privateServerLinkCode=AbCd...'
         )
+        self._private_server_input.textChanged.connect(self._on_game_link_changed)
         aml.addWidget(self._private_server_input)
+
+        self._job_id_input = QLineEdit()
+        self._job_id_input.setPlaceholderText("JobId: (Optional)")
+        aml.addWidget(self._job_id_input)
 
         am_btns = QHBoxLayout()
         self._add_acct_btn = QPushButton("Add Account")
@@ -687,6 +788,77 @@ class RandoStuffTab(QWidget):
 
     # Account Manager
 
+    def _on_game_link_changed(self, text: str):
+        place_id, link_code = _parse_game_link(text.strip())
+        if place_id and not link_code:
+            # Normal game link — auto-fill stored jobId if field is empty or was auto-filled
+            stored_job = self._game_jobs.get(place_id, "")
+            current = self._job_id_input.text().strip()
+            if not current or self._auto_filled_for_place is not None:
+                self._job_id_input.setText(stored_job)
+                self._auto_filled_for_place = place_id if stored_job else None
+        elif link_code:
+            # Private server link — clear any auto-filled jobId
+            if self._auto_filled_for_place is not None:
+                self._job_id_input.clear()
+                self._auto_filled_for_place = None
+        else:
+            if self._auto_filled_for_place is not None:
+                self._job_id_input.clear()
+                self._auto_filled_for_place = None
+
+    def _resolve_current_user(self):
+        """Background thread: read the active Roblox cookie and update the selected label."""
+        from ..utils.roblox_auth import get_roblosecurity as _get_roblosecurity
+        cookie = _get_roblosecurity()
+        if not cookie:
+            return
+        try:
+            sess = _requests.Session()
+            sess.trust_env = False
+            sess.proxies = {}
+            try:
+                sess.cookies.set(".ROBLOSECURITY", cookie)
+            except Exception:
+                sess.headers["Cookie"] = f".ROBLOSECURITY={cookie};"
+            resp = sess.get("https://users.roblox.com/v1/users/authenticated", timeout=10)
+            if resp.status_code == 200:
+                username = resp.json().get("name", "")
+                if username:
+                    def _update(u=username):
+                        self._selected_label.setText(f"Selected: {u}")
+                    self._invoker.call.emit(_update)
+        except Exception:
+            pass
+
+    def _check_cookies_on_boot(self):
+        """Background thread: validate every stored cookie and flag expired ones in the list."""
+        for idx, acc in enumerate(self._accounts):
+            cookie = _decrypt_cookie(acc.get("cookie", ""))
+            expired = not cookie
+            if not expired:
+                try:
+                    sess = _requests.Session()
+                    sess.trust_env = False
+                    sess.proxies = {}
+                    try:
+                        sess.cookies.set(".ROBLOSECURITY", cookie)
+                    except Exception:
+                        sess.headers["Cookie"] = f".ROBLOSECURITY={cookie};"
+                    resp = sess.get(
+                        "https://users.roblox.com/v1/users/authenticated",
+                        timeout=10,
+                    )
+                    expired = resp.status_code != 200
+                except Exception:
+                    pass  # Network error — don't mark as expired
+            if expired:
+                def _mark(i=idx):
+                    item = self._account_list.item(i)
+                    if item:
+                        item.setText("Expired! Right click to update.")
+                self._invoker.call.emit(_mark)
+
     def _populate_account_list(self):
         self._account_list.clear()
         for acc in self._accounts:
@@ -760,10 +932,42 @@ class RandoStuffTab(QWidget):
             QMessageBox.warning(self, "Error", "Could not decrypt the stored cookie.")
             return
         username = acc.get("username", "(unknown)")
-        private_server_link = self._private_server_input.text().strip()
+        link = self._private_server_input.text().strip()
+        job_id = self._job_id_input.text().strip()
+
+        if _is_share_link(link):
+            self._launch_acct_btn.setEnabled(False)
+            self._launch_acct_btn.setText("Resolving…")
+            def _resolve_thread():
+                place_id, link_code = _resolve_share_link(link, cookie)
+                def _done():
+                    self._launch_acct_btn.setEnabled(True)
+                    self._launch_acct_btn.setText("Launch")
+                    if place_id and link_code:
+                        resolved = f"https://www.roblox.com/games/{place_id}/game?privateServerLinkCode={link_code}"
+                        self._private_server_input.setText(resolved)
+                        threading.Thread(
+                            target=self._launch_account_thread,
+                            args=(cookie, username, resolved, job_id),
+                            daemon=True,
+                        ).start()
+                    else:
+                        QMessageBox.warning(
+                            self,
+                            "Unsupported Link Format",
+                            "This looks like a Roblox share link:\n"
+                            f"  {link}\n\n"
+                            "Paste it into your browser first — it will redirect to the full "
+                            "private server link (with privateServerLinkCode=…). "
+                            "Copy that URL and paste it here instead.",
+                        )
+                self._invoker.call.emit(_done)
+            threading.Thread(target=_resolve_thread, daemon=True).start()
+            return
+
         threading.Thread(
             target=self._launch_account_thread,
-            args=(cookie, username, private_server_link),
+            args=(cookie, username, link, job_id),
             daemon=True,
         ).start()
 
@@ -781,11 +985,12 @@ class RandoStuffTab(QWidget):
         try:
             self._write_cookie_to_dat(cookie)
             self._last_switched_account = acc
+            self._selected_label.setText(f"Selected: {username}")
             log_buffer.log("accounts", f"Switched Roblox cookie to account: {username}")
         except Exception as exc:
             QMessageBox.warning(self, "Error", f"Failed to write cookie: {exc}")
 
-    def _launch_account_thread(self, cookie: str, username: str, private_server_link: str = ""):
+    def _launch_account_thread(self, cookie: str, username: str, private_server_link: str = "", job_id: str = ""):
         try:
             self._write_cookie_to_dat(cookie)
         except Exception as exc:
@@ -799,9 +1004,10 @@ class RandoStuffTab(QWidget):
             ))
             return
 
-        place_id, link_code = _parse_private_server_params(private_server_link)
+        place_id, link_code = _parse_game_link(private_server_link)
         launch_ok = False
         if place_id and link_code:
+            # Private server launch
             ticket = _get_auth_ticket(cookie)
             if ticket:
                 access_code = _get_access_code(place_id, link_code, cookie) or link_code
@@ -828,6 +1034,57 @@ class RandoStuffTab(QWidget):
             else:
                 log_buffer.log("accounts", "Failed to get auth ticket, falling back to deeplink")
                 deeplink = f"roblox://experiences/start?placeId={place_id}&linkCode={link_code}"
+                exe_started = launch_as_standard_user(exe)
+                if not exe_started:
+                    log_buffer.log("accounts", "Failed to launch RobloxPlayerBeta.exe without elevation")
+                time.sleep(3)
+                deeplink_started = launch_as_standard_user(deeplink)
+                if not deeplink_started:
+                    log_buffer.log("accounts", "Failed to launch Roblox deeplink without elevation")
+                launch_ok = exe_started and deeplink_started
+        elif place_id:
+            # Normal game link — optionally join a specific job
+            ticket = _get_auth_ticket(cookie)
+            if ticket:
+                tracker_id = random.randint(10_000_000_000, 99_999_999_999)
+                if job_id:
+                    request_type = "RequestGameJob"
+                    extra = f"&gameId={job_id}"
+                else:
+                    request_type = "RequestGame"
+                    extra = ""
+                    with self._lock:
+                        self._account_manager_capture_place_id = place_id
+                place_launcher_url = (
+                    f"https://www.roblox.com/Game/PlaceLauncher.ashx"
+                    f"?request={request_type}"
+                    f"&browserTrackerId={tracker_id}"
+                    f"&placeId={place_id}"
+                    f"{extra}"
+                    f"&joinAttemptId={uuid.uuid4()}"
+                )
+                roblox_player_uri = (
+                    f"roblox-player:1+launchmode:play+gameinfo:{ticket}"
+                    f"+launchtime:{int(time.time() * 1000)}"
+                    f"+placelauncherurl:{quote(place_launcher_url, safe='')}"
+                    f"+browsertrackerid:{tracker_id}+robloxLocale:en_us+gameLocale:en_us"
+                    f"+channel:+LaunchExp:InApp"
+                )
+                launch_ok = launch_as_standard_user(roblox_player_uri)
+                if not launch_ok:
+                    log_buffer.log("accounts", "Failed to launch Roblox URI without elevation")
+            else:
+                log_buffer.log("accounts", "Failed to get auth ticket, falling back to deeplink")
+                if not job_id:
+                    with self._lock:
+                        self._account_manager_capture_place_id = place_id
+                    # Proxy intercept will handle jobId capture; set pending job ID to empty
+                    with self._lock:
+                        self._account_manager_job_id = ""
+                else:
+                    with self._lock:
+                        self._account_manager_job_id = job_id
+                deeplink = f"roblox://experiences/start?placeId={place_id}"
                 exe_started = launch_as_standard_user(exe)
                 if not exe_started:
                     log_buffer.log("accounts", "Failed to launch RobloxPlayerBeta.exe without elevation")
@@ -1018,6 +1275,23 @@ class RandoStuffTab(QWidget):
         if parsed.path not in self._WANTED_ENDPOINTS:
             return
 
+        # Account manager: redirect join-game to join-game-instance if a jobId is pending
+        if parsed.path == "/v1/join-game":
+            with self._lock:
+                pending_job = self._account_manager_job_id
+            if pending_job:
+                try:
+                    body = json.loads(flow.request.content)
+                    body["gameId"] = pending_job
+                    flow.request.url = "https://gamejoin.roblox.com/v1/join-game-instance"
+                    flow.request.raw_content = json.dumps(body).encode("utf-8")
+                    with self._lock:
+                        self._account_manager_job_id = ""
+                    log_buffer.log("accounts", f"Redirected join-game -> join-game-instance with jobId={pending_job}")
+                except Exception as exc:
+                    log_buffer.log("accounts", f"Failed to intercept join-game for jobId: {exc}")
+                return
+
         try:
             req_body = json.loads(flow.request.content)
             attempt_id = req_body.get("gameJoinAttemptId")
@@ -1067,6 +1341,29 @@ class RandoStuffTab(QWidget):
     def response(self, flow):
         if "gamejoin.roblox.com" not in flow.request.pretty_url:
             return
+
+        # Capture jobId from a normal game join initiated by the account manager
+        with self._lock:
+            capture_place_id = self._account_manager_capture_place_id
+        if capture_place_id:
+            req_path = urlparse(flow.request.pretty_url).path
+            if req_path in ("/v1/join-game", "/v1/join-game-instance"):
+                try:
+                    resp_json = json.loads(flow.response.content)
+                    job_id = resp_json.get("jobId") or resp_json.get("gameId")
+                    if job_id:
+                        self._game_jobs[capture_place_id] = job_id
+                        place_id_snap = capture_place_id
+                        def _update_ui(jid=job_id, pid=place_id_snap):
+                            if not self._job_id_input.text().strip():
+                                self._job_id_input.setText(jid)
+                                self._auto_filled_for_place = pid
+                        self._invoker.call.emit(_update_ui)
+                        log_buffer.log("accounts", f"Captured jobId={job_id} for placeId={capture_place_id}")
+                except Exception as exc:
+                    log_buffer.log("accounts", f"Failed to capture jobId from response: {exc}")
+                with self._lock:
+                    self._account_manager_capture_place_id = None
 
         with self._lock:
             waiting = self._awaiting_rejoin_response

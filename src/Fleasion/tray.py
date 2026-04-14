@@ -221,6 +221,20 @@ class SystemTray:
         self.close_to_tray_action.triggered.connect(self._toggle_close_to_tray)
         settings_menu.addAction(self.close_to_tray_action)
 
+        # Show Names
+        self.show_names_action = QAction('Show Names', settings_menu)
+        self.show_names_action.setCheckable(True)
+        self.show_names_action.setChecked(self.config_manager.show_names)
+        self.show_names_action.triggered.connect(self._toggle_show_names)
+        settings_menu.addAction(self.show_names_action)
+
+        # Show User ID
+        self.show_creator_id_action = QAction('Show User ID', settings_menu)
+        self.show_creator_id_action.setCheckable(True)
+        self.show_creator_id_action.setChecked(self.config_manager.show_creator_id)
+        self.show_creator_id_action.triggered.connect(self._toggle_show_creator_id)
+        settings_menu.addAction(self.show_creator_id_action)
+
         self.menu.addMenu(settings_menu)
 
 
@@ -335,6 +349,28 @@ class SystemTray:
         self.close_to_tray_action.setChecked(new_state)
         self._refresh_settings_tab()
 
+    def _toggle_show_names(self):
+        """Toggle Show Names setting."""
+        new_state = not self.config_manager.show_names
+        self.config_manager.show_names = new_state
+        self.show_names_action.setChecked(new_state)
+        if self.dashboard_window:
+            tab = getattr(self.dashboard_window, '_cache_viewer_tab', None)
+            if tab is not None:
+                tab._on_show_names_toggled(new_state)
+        self._refresh_settings_tab()
+
+    def _toggle_show_creator_id(self):
+        """Toggle Show User ID setting."""
+        new_state = not self.config_manager.show_creator_id
+        self.config_manager.show_creator_id = new_state
+        self.show_creator_id_action.setChecked(new_state)
+        if self.dashboard_window:
+            tab = getattr(self.dashboard_window, '_cache_viewer_tab', None)
+            if tab is not None:
+                tab._on_show_creator_id_toggled(new_state)
+        self._refresh_settings_tab()
+
     def _apply_always_on_top_to_window(self, window):
         """Apply always on top setting to a window."""
         if self.config_manager.always_on_top:
@@ -345,7 +381,7 @@ class SystemTray:
 
     def _show_about(self):
         """Show About window."""
-        window = AboutWindow(self.proxy_master.is_running)
+        window = AboutWindow()
         window.destroyed.connect(lambda: self._remove_window(window))
         self.open_windows.append(window)
         self._apply_always_on_top_to_window(window)
