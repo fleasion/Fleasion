@@ -1,0 +1,78 @@
+{
+    "games": {
+        "Roblox": {
+            "Owner": "Tyler",
+            "id": null,
+            "github": "https://raw.githubusercontent.com/qrhrqiohj/PFTEST/refs/heads/main/Roblox.json",
+            "replacement": "https://raw.githubusercontent.com/qrhrqiohj/PFTEST/refs/heads/main/Replacements.json"
+        },
+        "CBRO": {
+            "Owner": "Tyler",
+            "id": 301549746,
+            "github": "https://raw.githubusercontent.com/FleaNafo/Cb-Ro.json/refs/heads/main/CBRO.json",
+            "replacement": null
+        },          
+        "Phantom Forces": {
+            "Owner": "T4T",
+            "id": 292439477,
+            "github": "https://raw.githubusercontent.com/qrhrqiohj/PFTEST/refs/heads/main/PhantomForces.json",
+            "replacement": "https://raw.githubusercontent.com/qrhrqiohj/PFTEST/refs/heads/main/PfReplacement.json"
+        },
+        "AR2": {
+            "Owner": "TinyPeruzo",
+            "id": 863266079,
+            "github": "https://raw.githubusercontent.com/standingmcdonalds/ar2fleasion/refs/heads/main/ar2%20new.json",
+            "replacement": null
+        },
+        "DaHood": {
+            "Owner": ".o0x",
+            "id": 2788229376,
+            "github": "https://raw.githubusercontent.com/gastrophobic/Fleasion_Contributes/refs/heads/main/dahood.json",
+            "replacement": null
+        },
+        "Rivals": {
+            "Owner": "nafo",
+            "id": 17625359962,
+            "github": "https://raw.githubusercontent.com/FleaNafo/Rivals.json/refs/heads/main/Rivals.json",
+            "replacement": null
+        },
+        "Jailbreak": {
+            "Owner": "Sky",
+            "id": 606849621,
+            "github": "https://raw.githubusercontent.com/CfwSky/Jailbreak-Floppr/refs/heads/main/ORIGINAL.json",
+            "replacement": "https://raw.githubusercontent.com/CfwSky/Jailbreak-Floppr/refs/heads/main/REPLACEMENT.json"
+        },
+        "Prison Life": {
+            "Owner": "Sky",
+            "id": 155615604,
+            "github": "https://raw.githubusercontent.com/CfwSky/PrisonLife-Floppr/refs/heads/main/ORIGINAL.json",
+            "Replacement": "https://raw.githubusercontent.com/CfwSky/PrisonLife-Floppr/refs/heads/main/REPLACEMENT.json"
+        },
+        "SEWH": {
+            "Owner": "Sky",
+            "id": 16991287194,
+            "github": "https://raw.githubusercontent.com/CfwSky/SEWH-Floppr/refs/heads/main/ORIGINAL.json",
+            "Replacement": "https://raw.githubusercontent.com/CfwSky/SEWH-Floppr/refs/heads/main/REPLACEMENT.json"
+        },
+        "MMM2": {
+            "Owner": "Sky",
+            "id": 142823291,
+            "github": "https://raw.githubusercontent.com/CfwSky/MM2-Floppr/refs/heads/main/ORIGINAL.json",
+            "Replacement": null
+        },
+        "T4T Modpack": {
+            "Owner": "T4T",
+            "id": null,
+            "github": null,
+            "Replacement": "https://raw.githubusercontent.com/Time4trouble/Fleasion-Dump/refs/heads/main/T4T%20ModPack.json"
+        }
+    }
+
+}
+
+
+
+
+
+
+
