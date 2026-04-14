@@ -15,6 +15,7 @@ from dateutil import parser as _dateutil_parser
 from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal
 from PyQt6.QtGui import QPalette, QImage, QPixmap
 from PyQt6.QtWidgets import (
+    QApplication,
     QComboBox,
     QDialog,
     QFrame,
@@ -139,6 +140,12 @@ class _JobIdEdit(QLineEdit):
 class SubplaceGameCard(QFrame):
     """Game card matching the PreJsons visual design, with subplace-joiner buttons."""
 
+    def _apply_style(self, hover=False):
+        dark = QApplication.palette().color(QPalette.ColorRole.Window).lightness() < 128
+        border = "rgba(255,255,255,0.22)" if dark else "rgba(0,0,0,0.18)"
+        bg = ("rgba(255,255,255,0.07)" if hover else "rgba(255,255,255,0.04)") if dark else ("rgba(0,0,0,0.06)" if hover else "transparent")
+        self.setStyleSheet(f"SubplaceGameCard {{ border: 1px solid {border}; background: {bg}; }}")
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.place_id = None
@@ -147,6 +154,7 @@ class SubplaceGameCard(QFrame):
         self.updated_iso = None
 
         self.setFrameShape(QFrame.Shape.StyledPanel)
+        self._apply_style()
         self.setMinimumWidth(_CARD_W)
         self.setFixedHeight(_CARD_H)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -236,11 +244,11 @@ class SubplaceGameCard(QFrame):
         self.fetch_jobs_btn.clicked.connect(fn)
 
     def enterEvent(self, event):
-        self.setStyleSheet("SubplaceGameCard { background: rgba(255,255,255,0.06); }")
+        self._apply_style(hover=True)
         super().enterEvent(event)
 
     def leaveEvent(self, event):
-        self.setStyleSheet("")
+        self._apply_style()
         super().leaveEvent(event)
 
 

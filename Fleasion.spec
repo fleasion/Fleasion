@@ -82,7 +82,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name=f'Fleasion-V{_version}',
+    name=f'Fleasion-v{_version}',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

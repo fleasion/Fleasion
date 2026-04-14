@@ -207,6 +207,13 @@ class SystemTray:
         self.run_on_boot_action.triggered.connect(self._toggle_run_on_boot)
         settings_menu.addAction(self.run_on_boot_action)
 
+        # Close Scraped Games on Open
+        self.close_scraped_games_action = QAction('Close Scraped Games on Open', settings_menu)
+        self.close_scraped_games_action.setCheckable(True)
+        self.close_scraped_games_action.setChecked(self.config_manager.close_scraped_games_on_open)
+        self.close_scraped_games_action.triggered.connect(self._toggle_close_scraped_games)
+        settings_menu.addAction(self.close_scraped_games_action)
+
         # Close to Tray
         self.close_to_tray_action = QAction('Close to Tray', settings_menu)
         self.close_to_tray_action.setCheckable(True)
@@ -312,6 +319,13 @@ class SystemTray:
         new_state = not self.config_manager.clear_cache_on_launch
         self.config_manager.clear_cache_on_launch = new_state
         self.clear_cache_action.setChecked(new_state)
+        self._refresh_settings_tab()
+
+    def _toggle_close_scraped_games(self):
+        """Toggle close scraped games on open setting."""
+        new_state = not self.config_manager.close_scraped_games_on_open
+        self.config_manager.close_scraped_games_on_open = new_state
+        self.close_scraped_games_action.setChecked(new_state)
         self._refresh_settings_tab()
 
     def _toggle_close_to_tray(self):
