@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 from .paths import ROBLOX_PROCESS, ROBLOX_STUDIO_PROCESS, STORAGE_DB, STORAGE_DB_GDK
+from .logging import log_buffer
 
 
 def run_cmd(args: list[str]) -> str:
@@ -253,6 +254,217 @@ def delete_cache() -> list[str]:
             messages.append(f'Failed to delete obj cache: {e}')
 
     return messages
+
+
+def _is_process_elevated() -> bool:
+    """Return True when the current process is running elevated on Windows."""
+    if not hasattr(ctypes, 'windll'):
+        return False
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+_TOKEN_ASSIGN_PRIMARY = 0x0001
+_TOKEN_DUPLICATE = 0x0002
+_TOKEN_QUERY = 0x0008
+_TOKEN_ADJUST_DEFAULT = 0x0080
+_TOKEN_ADJUST_SESSIONID = 0x0100
+_SECURITY_IMPERSONATION = 2
+_TOKEN_PRIMARY = 1
+_STARTF_USESHOWWINDOW = 0x00000001
+_SW_SHOWNORMAL = 1
+_LOGON_WITH_PROFILE = 0x00000001
+
+
+class _STARTUPINFOW(ctypes.Structure):
+    _fields_ = [
+        ('cb', ctypes.wintypes.DWORD),
+        ('lpReserved', ctypes.wintypes.LPWSTR),
+        ('lpDesktop', ctypes.wintypes.LPWSTR),
+        ('lpTitle', ctypes.wintypes.LPWSTR),
+        ('dwX', ctypes.wintypes.DWORD),
+        ('dwY', ctypes.wintypes.DWORD),
+        ('dwXSize', ctypes.wintypes.DWORD),
+        ('dwYSize', ctypes.wintypes.DWORD),
+        ('dwXCountChars', ctypes.wintypes.DWORD),
+        ('dwYCountChars', ctypes.wintypes.DWORD),
+        ('dwFillAttribute', ctypes.wintypes.DWORD),
+        ('dwFlags', ctypes.wintypes.DWORD),
+        ('wShowWindow', ctypes.wintypes.WORD),
+        ('cbReserved2', ctypes.wintypes.WORD),
+        ('lpReserved2', ctypes.POINTER(ctypes.c_ubyte)),
+        ('hStdInput', ctypes.wintypes.HANDLE),
+        ('hStdOutput', ctypes.wintypes.HANDLE),
+        ('hStdError', ctypes.wintypes.HANDLE),
+    ]
+
+
+class _PROCESS_INFORMATION(ctypes.Structure):
+    _fields_ = [
+        ('hProcess', ctypes.wintypes.HANDLE),
+        ('hThread', ctypes.wintypes.HANDLE),
+        ('dwProcessId', ctypes.wintypes.DWORD),
+        ('dwThreadId', ctypes.wintypes.DWORD),
+    ]
+
+
+def _close_handle(handle) -> None:
+    """Close a Win32 handle if it is valid."""
+    raw = getattr(handle, 'value', handle)
+    if raw:
+        ctypes.windll.kernel32.CloseHandle(raw)
+
+
+def _build_launch_command(target_str: str) -> tuple[str, Optional[str]]:
+    """Build command line + cwd for token-based process creation."""
+    is_uri = '://' in target_str or target_str.startswith(('roblox-player:', 'roblox:'))
+    if is_uri:
+        system_root = Path(os.environ.get('SystemRoot', r'C:\Windows'))
+        rundll = system_root / 'System32' / 'rundll32.exe'
+        cmdline = f'"{rundll}" url.dll,FileProtocolHandler "{target_str}"'
+        return cmdline, None
+
+    target_path = Path(target_str)
+    cwd = str(target_path.parent) if target_path.exists() else None
+    return f'"{target_str}"', cwd
+
+
+def _launch_with_shell_token(target_str: str) -> bool:
+    """Launch target with the desktop shell's primary token (non-elevated)."""
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    advapi32 = ctypes.windll.advapi32
+
+    advapi32.OpenProcessToken.argtypes = [
+        ctypes.wintypes.HANDLE,
+        ctypes.wintypes.DWORD,
+        ctypes.POINTER(ctypes.wintypes.HANDLE),
+    ]
+    advapi32.OpenProcessToken.restype = ctypes.wintypes.BOOL
+
+    advapi32.DuplicateTokenEx.argtypes = [
+        ctypes.wintypes.HANDLE,
+        ctypes.wintypes.DWORD,
+        ctypes.c_void_p,
+        ctypes.wintypes.DWORD,
+        ctypes.wintypes.DWORD,
+        ctypes.POINTER(ctypes.wintypes.HANDLE),
+    ]
+    advapi32.DuplicateTokenEx.restype = ctypes.wintypes.BOOL
+
+    advapi32.CreateProcessWithTokenW.argtypes = [
+        ctypes.wintypes.HANDLE,
+        ctypes.wintypes.DWORD,
+        ctypes.wintypes.LPCWSTR,
+        ctypes.wintypes.LPWSTR,
+        ctypes.wintypes.DWORD,
+        ctypes.c_void_p,
+        ctypes.wintypes.LPCWSTR,
+        ctypes.POINTER(_STARTUPINFOW),
+        ctypes.POINTER(_PROCESS_INFORMATION),
+    ]
+    advapi32.CreateProcessWithTokenW.restype = ctypes.wintypes.BOOL
+
+    shell_hwnd = user32.GetShellWindow()
+    if not shell_hwnd:
+        log_buffer.log('Launcher', 'Could not get shell window for unelevated launch')
+        return False
+
+    shell_pid = ctypes.wintypes.DWORD(0)
+    user32.GetWindowThreadProcessId(shell_hwnd, ctypes.byref(shell_pid))
+    if not shell_pid.value:
+        log_buffer.log('Launcher', 'Could not resolve shell process id for unelevated launch')
+        return False
+
+    shell_process = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, shell_pid.value)
+    if not shell_process:
+        err = kernel32.GetLastError()
+        log_buffer.log('Launcher', f'OpenProcess(shell) failed: WinError {err}')
+        return False
+
+    shell_token = ctypes.wintypes.HANDLE()
+    primary_token = ctypes.wintypes.HANDLE()
+    proc_info = _PROCESS_INFORMATION()
+    try:
+        open_access = _TOKEN_DUPLICATE | _TOKEN_ASSIGN_PRIMARY | _TOKEN_QUERY
+        if not advapi32.OpenProcessToken(shell_process, open_access, ctypes.byref(shell_token)):
+            err = kernel32.GetLastError()
+            log_buffer.log('Launcher', f'OpenProcessToken(shell) failed: WinError {err}')
+            return False
+
+        dup_access = (
+            _TOKEN_ASSIGN_PRIMARY |
+            _TOKEN_DUPLICATE |
+            _TOKEN_QUERY |
+            _TOKEN_ADJUST_DEFAULT |
+            _TOKEN_ADJUST_SESSIONID
+        )
+        if not advapi32.DuplicateTokenEx(
+            shell_token,
+            dup_access,
+            None,
+            _SECURITY_IMPERSONATION,
+            _TOKEN_PRIMARY,
+            ctypes.byref(primary_token),
+        ):
+            err = kernel32.GetLastError()
+            log_buffer.log('Launcher', f'DuplicateTokenEx(shell) failed: WinError {err}')
+            return False
+
+        cmdline, cwd = _build_launch_command(target_str)
+        startup = _STARTUPINFOW()
+        startup.cb = ctypes.sizeof(_STARTUPINFOW)
+        startup.dwFlags = _STARTF_USESHOWWINDOW
+        startup.wShowWindow = _SW_SHOWNORMAL
+
+        cmd_buf = ctypes.create_unicode_buffer(cmdline)
+        created = advapi32.CreateProcessWithTokenW(
+            primary_token,
+            _LOGON_WITH_PROFILE,
+            None,
+            cmd_buf,
+            0,
+            None,
+            cwd,
+            ctypes.byref(startup),
+            ctypes.byref(proc_info),
+        )
+        if not created:
+            err = kernel32.GetLastError()
+            log_buffer.log('Launcher', f'CreateProcessWithTokenW failed: WinError {err}')
+            return False
+
+        return True
+    finally:
+        _close_handle(proc_info.hThread)
+        _close_handle(proc_info.hProcess)
+        _close_handle(primary_token)
+        _close_handle(shell_token)
+        _close_handle(shell_process)
+
+
+def launch_as_standard_user(target: str | Path) -> bool:
+    """Launch a URI/path as a standard user when Fleasion is elevated."""
+    target_str = str(target).strip()
+    if not target_str:
+        return False
+
+    # os.startfile inherits the current process token. If Fleasion is elevated,
+    # using it here would reintroduce the exact admin-inheritance bug.
+    if _is_process_elevated():
+        launched = _launch_with_shell_token(target_str)
+        if launched:
+            return True
+        log_buffer.log('Launcher', f'Elevated shell launch failed, falling back to os.startfile: {target_str}')
+
+    try:
+        os.startfile(target_str)
+        return True
+    except OSError as exc:
+        log_buffer.log('Launcher', f'Fallback launch failed: {exc}')
+        return False
 
 
 def open_folder(path: Path):

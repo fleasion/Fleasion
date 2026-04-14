@@ -44,6 +44,7 @@ except Exception:
 from ..utils.paths import CONFIG_DIR
 from ..utils.logging import log_buffer
 from ..utils.roblox_auth import get_roblosecurity as _get_roblosecurity
+from ..utils.windows import launch_as_standard_user
 
 ACCOUNTS_FILE = CONFIG_DIR / 'accounts.json'
 
@@ -466,7 +467,8 @@ class RandoStuffTab(QWidget):
                 return
             self._doing_rejoin = True
         log_buffer.log("randostuff", f"Rejoin triggered — placeId={self._last_place_id}, accessCode={self._last_access_code}")
-        os.startfile(f"roblox://placeId={self._last_place_id}")
+        if not launch_as_standard_user(f"roblox://placeId={self._last_place_id}"):
+            log_buffer.log("randostuff", "Failed to launch Roblox without elevation")
 
     def _update_labels(self, place_id, access_code):
         def _do():
@@ -798,6 +800,7 @@ class RandoStuffTab(QWidget):
             return
 
         place_id, link_code = _parse_private_server_params(private_server_link)
+        launch_ok = False
         if place_id and link_code:
             ticket = _get_auth_ticket(cookie)
             if ticket:
@@ -819,16 +822,28 @@ class RandoStuffTab(QWidget):
                     f"+browsertrackerid:{tracker_id}+robloxLocale:en_us+gameLocale:en_us"
                     f"+channel:+LaunchExp:InApp"
                 )
-                os.startfile(roblox_player_uri)
+                launch_ok = launch_as_standard_user(roblox_player_uri)
+                if not launch_ok:
+                    log_buffer.log("accounts", "Failed to launch Roblox URI without elevation")
             else:
                 log_buffer.log("accounts", "Failed to get auth ticket, falling back to deeplink")
                 deeplink = f"roblox://experiences/start?placeId={place_id}&linkCode={link_code}"
-                os.startfile(exe)
+                exe_started = launch_as_standard_user(exe)
+                if not exe_started:
+                    log_buffer.log("accounts", "Failed to launch RobloxPlayerBeta.exe without elevation")
                 time.sleep(3)
-                os.startfile(deeplink)
+                deeplink_started = launch_as_standard_user(deeplink)
+                if not deeplink_started:
+                    log_buffer.log("accounts", "Failed to launch Roblox deeplink without elevation")
+                launch_ok = exe_started and deeplink_started
         else:
-            os.startfile(exe)
-        log_buffer.log("accounts", f"Launched Roblox for account: {username}")
+            launch_ok = launch_as_standard_user(exe)
+            if not launch_ok:
+                log_buffer.log("accounts", "Failed to launch RobloxPlayerBeta.exe without elevation")
+        if launch_ok:
+            log_buffer.log("accounts", f"Launched Roblox for account: {username}")
+        else:
+            log_buffer.log("accounts", f"Launch failed for account: {username}")
 
     def _write_cookie_to_dat(self, cookie: str):
         """Replace the .ROBLOSECURITY value in RobloxCookies.dat and re-encrypt."""

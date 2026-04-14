@@ -37,6 +37,7 @@ from PyQt6.QtWidgets import (
 from ..utils.paths import CONFIG_DIR
 from ..utils.logging import log_buffer
 from ..utils.roblox_auth import get_roblosecurity as _get_roblosecurity
+from ..utils.windows import launch_as_standard_user
 
 
 _DEFAULT_THUMB_URL = (
@@ -1250,11 +1251,13 @@ class SubplaceJoinerTab(QWidget):
                         f"+browsertrackerid:{tracker_id}+robloxLocale:en_us+gameLocale:en_us"
                         f"+channel:+LaunchExp:InApp"
                     )
-                    os.startfile(roblox_player_uri)
+                    if not launch_as_standard_user(roblox_player_uri):
+                        log_buffer.log("subplace", "Failed to launch Roblox URI without elevation")
                 threading.Thread(target=_launch_with_uri, daemon=True).start()
                 return
         self.joining_place = True
-        os.startfile(f"roblox://experiences/start?placeId={place_id}")
+        if not launch_as_standard_user(f"roblox://experiences/start?placeId={place_id}"):
+            log_buffer.log("subplace", "Failed to launch Roblox deeplink without elevation")
 
     def _join_root(self, root_place_id: int, cookie: str | None = None) -> bool:
         try:

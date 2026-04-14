@@ -54,6 +54,7 @@ from .addons import CacheScraper, TextureStripper
 from .server import FleasionProxy, INTERCEPT_HOSTS
 from ..cache.cache_manager import CacheManager
 from ..utils.certs import generate_ca, generate_host_cert, get_ca_pem
+from ..utils.windows import launch_as_standard_user
 
 logger = logging.getLogger(__name__)
 
@@ -1131,10 +1132,8 @@ class ProxyMaster:
             return
 
         try:
-            subprocess.Popen(
-                [str(exe_path)],
-                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
-            )
+            if not launch_as_standard_user(exe_path):
+                raise OSError('launch failed')
             log_buffer.log('Certificate', f'Roblox restarted: {exe_path.name}')
         except OSError as exc:
             log_buffer.log('Certificate', f'Failed to restart Roblox: {exc}')
