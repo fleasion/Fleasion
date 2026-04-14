@@ -149,7 +149,7 @@ class ReplacerConfigWindow(QDialog):
 
         # Create Rando Stuff tab
         from .rando_stuff_tab import RandoStuffTab
-        self._rando_stuff_tab = RandoStuffTab()
+        self._rando_stuff_tab = RandoStuffTab(config_manager=self.config_manager)
 
         # Create Subplace Joiner tab
         from .subplace_joiner_tab import SubplaceJoinerTab

@@ -275,7 +275,7 @@ def process_v2_to_v5(data: bytes, version_num: str) -> str:
 
                 # The main mesh uses faces [0, lod_offsets[1])
                 # lod_offsets[0] is typically 0 (start of main mesh faces)
-                if len(lod_offsets) >= 2 and lod_offsets[1] < len(faces):
+                if len(lod_offsets) >= 2 and lod_offsets[1] > 0 and lod_offsets[1] < len(faces):
                     original_count = len(faces)
                     faces = faces[:lod_offsets[1]]
                     log_buffer.log('Mesh',
@@ -471,8 +471,9 @@ def process_v6_v7(data: bytes) -> str:
                         offset2 = struct.unpack_from(
                             "<I", lod_data, lod_pos)[0]
                         # Calculate high-quality face count
-                        max_faces = offset2 - offset1
-                        if max_faces < len(faces):
+                        computed = offset2 - offset1
+                        if computed > 0 and computed < len(faces):
+                            max_faces = computed
                             log_buffer.log('Mesh',
                                 f"Applying high-quality LOD: {len(faces):,} → {max_faces:,} faces")
                 except Exception as e:

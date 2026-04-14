@@ -213,6 +213,17 @@ class ConfigManager:
         self._save_settings()
 
     @property
+    def multi_instance_launching(self) -> bool:
+        """Get multi-instance launching setting."""
+        return self.settings.get('multi_instance_launching', False)
+
+    @multi_instance_launching.setter
+    def multi_instance_launching(self, value: bool):
+        """Set multi-instance launching setting."""
+        self.settings['multi_instance_launching'] = value
+        self._save_settings()
+
+    @property
     def close_scraped_games_on_open(self) -> bool:
         return self.settings.get('close_scraped_games_on_open', True)
 

@@ -27,18 +27,10 @@ Download `Fleasion.exe` from the [Releases](https://github.com/fleasion/Fleasion
 git clone https://github.com/fleasion/Fleasion.git
 cd fleasion
 
-# Install dependencies with uv
-uv sync
-
-# Run the application
+# Run the application (auto-installs all dependencies)
 uv run Fleasion
-```
 
-### Building a Standalone Executable
-
-To build a standalone executable, within the "Fleasion" folder, run:
-
-```bash
+# (OPTIONAL) Compile as a standalone .exe
 uv run pyinstaller Fleasion.spec
 ```
 
