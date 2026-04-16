@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlparse, quote
 
 import requests
+import urllib3
 from dateutil import parser as _dateutil_parser
 from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal
 from PyQt6.QtGui import QPalette, QImage, QPixmap
@@ -45,6 +46,8 @@ _DEFAULT_THUMB_URL = (
     "/revision/latest/scale-to-width-down/1000?cb=20250523160858"
 )
 _default_thumb_bytes_cache: list[bytes] = []  # single-element list so it's mutable
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 def _get_default_thumb_bytes() -> bytes | None:
@@ -533,10 +536,15 @@ class SubplaceJoinerTab(QWidget):
                 username = resp.json().get("name", "")
                 if username:
                     def _update(u=username):
-                        self._selected_label.setText(f"Selected: {u}")
+                        self.set_selected_account(u)
                     self._invoker.call.emit(_update)
         except Exception:
             pass
+
+    def set_selected_account(self, username: str):
+        """Update the selected-account footer label from external account switches."""
+        username = (username or '').strip()
+        self._selected_label.setText(f"Selected: {username if username else '(none)'}")
 
     # UI setup
 

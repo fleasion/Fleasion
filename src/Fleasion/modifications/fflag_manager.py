@@ -76,7 +76,9 @@ class FastFlagManager:
         # ── MSAA ────────────────────────────────────────────────────
         msaa = settings.get('msaa', 'Default')
         if msaa != 'Default':
-            flags[PRESET_FLAGS['Rendering.MSAA']] = str(msaa)
+            # Strip "x" suffix and any "(Lowest)"/"(Highest)" suffix (e.g., "1x (Lowest)" -> "1")
+            msaa_val = msaa.replace('x', '').split(' ')[0]
+            flags[PRESET_FLAGS['Rendering.MSAA']] = msaa_val
 
         # ── Toggles ─────────────────────────────────────────────────
         if settings.get('disable_dpi_scale'):
@@ -88,22 +90,28 @@ class FastFlagManager:
         # ── Texture Quality ─────────────────────────────────────────
         tex = settings.get('texture_quality', 'Default')
         if tex != 'Default':
+            # Extract numeric value from "Level X" or "Level X (Lowest/Highest)" format
+            tex_val = tex.replace('Level ', '').split(' ')[0]
             flags[PRESET_FLAGS['Rendering.TextureQuality.OverrideEnabled']] = 'True'
-            flags[PRESET_FLAGS['Rendering.TextureQuality.Level']] = str(tex)
+            flags[PRESET_FLAGS['Rendering.TextureQuality.Level']] = tex_val
 
         # ── Mesh LOD (mirrors Fishstrap MeshQuality setter) ─────────
+        # Slider: 0 = Default (no flag), 1 = Level 0, 2 = Level 1, 3 = Level 2, 4 = Level 3
         if settings.get('mesh_lod_enabled'):
-            level = int(settings.get('mesh_lod', 3))
-            level = max(0, min(level, len(LOD_LEVELS) - 1))
-            for i, lod_name in enumerate(LOD_LEVELS):
-                lod_value = max(0, min(level - i, 3))
-                flags[PRESET_FLAGS[f'Geometry.MeshLOD.{lod_name}']] = str(lod_value)
-            flags[PRESET_FLAGS['Geometry.MeshLOD.Static']] = str(level)
+            level = int(settings.get('mesh_lod', 4))
+            if level > 0:  # 0 = Default means no flag written
+                level = max(1, min(level, len(LOD_LEVELS)))  # 1-4 maps to Level 0-3
+                for i, lod_name in enumerate(LOD_LEVELS):
+                    lod_value = max(0, min(level - 1 - i, 3))
+                    flags[PRESET_FLAGS[f'Geometry.MeshLOD.{lod_name}']] = str(lod_value)
+                flags[PRESET_FLAGS['Geometry.MeshLOD.Static']] = str(level - 1)  # Store as 0-3
 
         # ── FRM Quality Override ────────────────────────────────────
+        # Slider: 0 = Default (no flag), 1-21 = quality level
         if settings.get('frm_quality_enabled'):
             val = int(settings.get('frm_quality', 21))
-            flags[PRESET_FLAGS['Rendering.FRMQualityOverride']] = str(val)
+            if val > 0:  # 0 = Default means no flag written
+                flags[PRESET_FLAGS['Rendering.FRMQualityOverride']] = str(val)
 
         # ── Extra standalone flags ──────────────────────────────────
         if settings.get('grey_sky'):

@@ -388,6 +388,8 @@ class _Invoker(QObject):
 class RandoStuffTab(QWidget):
     """Rando Stuff tab – proxy interceptor + UI combined."""
 
+    selected_account_changed = pyqtSignal(str)
+
     _WANTED_ENDPOINTS = (
         "/v1/join-game",
         "/v1/join-play-together-game",
@@ -575,7 +577,7 @@ class RandoStuffTab(QWidget):
                 log_buffer.log("randostuff", "No reserved server logged yet — join one first.")
                 return
             self._doing_rejoin = True
-        log_buffer.log("randostuff", f"Rejoin triggered — placeId={self._last_place_id}, accessCode={self._last_access_code}")
+        log_buffer.log("randostuff", f"Rejoin triggered — placeId={self._last_place_id}")
         if not launch_as_standard_user(f"roblox://placeId={self._last_place_id}"):
             log_buffer.log("randostuff", "Failed to launch Roblox without elevation")
 
@@ -824,6 +826,14 @@ class RandoStuffTab(QWidget):
                 self._job_id_input.clear()
                 self._auto_filled_for_place = None
 
+    def _set_selected_account(self, username: str):
+        username = (username or '').strip()
+        if not username:
+            self._selected_label.setText('Selected: (none)')
+            return
+        self._selected_label.setText(f'Selected: {username}')
+        self.selected_account_changed.emit(username)
+
     def _resolve_current_user(self):
         """Background thread: read the active Roblox cookie and update the selected label."""
         from ..utils.roblox_auth import get_roblosecurity as _get_roblosecurity
@@ -843,7 +853,7 @@ class RandoStuffTab(QWidget):
                 username = resp.json().get("name", "")
                 if username:
                     def _update(u=username):
-                        self._selected_label.setText(f"Selected: {u}")
+                        self._set_selected_account(u)
                     self._invoker.call.emit(_update)
         except Exception:
             pass
@@ -1002,7 +1012,7 @@ class RandoStuffTab(QWidget):
         try:
             self._write_cookie_to_dat(cookie)
             self._last_switched_account = acc
-            self._selected_label.setText(f"Selected: {username}")
+            self._set_selected_account(username)
             log_buffer.log("accounts", f"Switched Roblox cookie to account: {username}")
         except Exception as exc:
             QMessageBox.warning(self, "Error", f"Failed to write cookie: {exc}")
@@ -1280,9 +1290,10 @@ class RandoStuffTab(QWidget):
                         self._last_place_id = place_id
                         self._last_access_code = access_code
                         self._last_session_id = session_id or None
+                    has_session = bool(session_id)
                     log_buffer.log(
                         "randostuff", f"Logged reserved server — placeId={place_id}, "
-                        f"accessCode={access_code}, Roblox-Session-Id={session_id or '(none)'}"
+                        f"sessionHeader={'present' if has_session else 'missing'}"
                     )
                     self._update_labels(place_id, access_code)
             except Exception as exc:
@@ -1351,7 +1362,6 @@ class RandoStuffTab(QWidget):
             flow.request.headers["Roblox-Session-Id"] = session_id
 
         log_buffer.log("randostuff", "Rejoin request -> POST gamejoin.roblox.com/v1/join-reserved-game")
-        log_buffer.log("randostuff", f"Rejoin request body: {json.dumps(new_payload)}")
         with self._lock:
             self._awaiting_rejoin_response = True
 
@@ -1395,13 +1405,17 @@ class RandoStuffTab(QWidget):
             log_buffer.log("randostuff", "Rejoin response: (none)")
             return
 
-        log_buffer.log("randostuff", f"Rejoin response status: {resp.status_code}")
         try:
             body_text = resp.content.decode('utf-8', errors='replace')
-            log_buffer.log("randostuff", f"Rejoin response body: {body_text}")
             resp_json = json.loads(body_text)
+            join_ready = bool(resp_json.get("joinScriptUrl"))
+            log_buffer.log(
+                "randostuff",
+                f"Rejoin response status: http={resp.status_code}, status={resp_json.get('status')}, "
+                f"joinScriptUrl={'yes' if join_ready else 'no'}",
+            )
             # status 2 = join script ready; clear the active attempt so no more redirects
-            if resp_json.get("status") == 2 or resp_json.get("joinScriptUrl"):
+            if resp_json.get("status") == 2 or join_ready:
                 with self._lock:
                     self._active_rejoin_attempt_id = None
                 log_buffer.log("randostuff", "Reserved server join ready — stopping redirect.")
@@ -1410,6 +1424,6 @@ class RandoStuffTab(QWidget):
                     self._active_rejoin_attempt_id = None
                 log_buffer.log("randostuff", "Reserved server join error — stopping redirect.")
         except Exception as exc:
-            log_buffer.log("randostuff", f"Could not read rejoin response body: {exc}")
+            log_buffer.log("randostuff", f"Could not parse rejoin response JSON: {exc}")
             with self._lock:
                 self._active_rejoin_attempt_id = None

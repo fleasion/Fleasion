@@ -22,7 +22,9 @@ VPN compatibility:
 
 import asyncio
 import base64
+import csv
 import ctypes
+import json
 import logging
 import os
 import subprocess
@@ -33,7 +35,7 @@ import time
 import winreg
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Set
+from typing import Callable, Optional, Set
 
 from ..utils import (
     LOCAL_APPDATA,
@@ -54,7 +56,7 @@ from .addons import CacheScraper, TextureStripper
 from .server import FleasionProxy, INTERCEPT_HOSTS
 from ..cache.cache_manager import CacheManager
 from ..utils.certs import generate_ca, generate_host_cert, get_ca_pem
-from ..utils.windows import launch_as_standard_user
+from ..utils.windows import get_roblox_player_exe_path, get_roblox_studio_exe_path, launch_as_standard_user
 
 logger = logging.getLogger(__name__)
 
@@ -577,6 +579,202 @@ def _is_admin() -> bool:
         return False
 
 
+def _extract_exe_from_command(command: str) -> Optional[Path]:
+    """Extract an executable path from a registry shell/open command string."""
+    if not command:
+        return None
+
+    cmd = command.rstrip('\x00').strip()
+    if not cmd:
+        return None
+
+    if cmd.startswith('"'):
+        end_quote = cmd.find('"', 1)
+        if end_quote <= 1:
+            return None
+        exe_path = cmd[1:end_quote]
+    else:
+        exe_path = cmd.split()[0]
+
+    if not exe_path:
+        return None
+    return Path(exe_path)
+
+
+def _get_process_name_from_pid(pid: int) -> str:
+    """Resolve a PID to process name using tasklist."""
+    try:
+        result = subprocess.run(
+            ['tasklist', '/FI', f'PID eq {pid}', '/FO', 'CSV', '/NH'],
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            timeout=5,
+        )
+    except Exception:
+        return 'Unknown'
+
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.upper().startswith('INFO:'):
+            return 'Unknown'
+        try:
+            row = next(csv.reader([line]))
+        except Exception:
+            continue
+        if row and row[0]:
+            return row[0].strip()
+    return 'Unknown'
+
+
+def _list_port_listeners_powershell(port: int) -> list[dict]:
+    """Return listening process info for a TCP port via Get-NetTCPConnection."""
+    ps_cmd = (
+        f"$rows=Get-NetTCPConnection -State Listen -LocalPort {port} -ErrorAction SilentlyContinue | "
+        "ForEach-Object { "
+        "$p=Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue; "
+        "[PSCustomObject]@{ "
+        "LocalAddress=$_.LocalAddress; "
+        "PID=$_.OwningProcess; "
+        "ProcessName=$(if($p){$p.ProcessName}else{'Unknown'}) "
+        "} "
+        "}; "
+        "if($rows){$rows | ConvertTo-Json -Compress}"
+    )
+    try:
+        result = subprocess.run(
+            ['powershell', '-NoProfile', '-Command', ps_cmd],
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            timeout=6,
+        )
+    except Exception:
+        return []
+
+    if result.returncode != 0:
+        return []
+
+    payload = (result.stdout or '').strip()
+    if not payload:
+        return []
+
+    try:
+        parsed = json.loads(payload)
+    except json.JSONDecodeError:
+        return []
+
+    rows = parsed if isinstance(parsed, list) else [parsed]
+    listeners: list[dict] = []
+    for row in rows:
+        try:
+            pid = int(row.get('PID', 0))
+        except Exception:
+            pid = 0
+        if pid <= 0:
+            continue
+
+        process_name = str(row.get('ProcessName') or 'Unknown').strip() or 'Unknown'
+        local_address = str(row.get('LocalAddress') or '0.0.0.0').strip() or '0.0.0.0'
+        listeners.append(
+            {
+                'pid': pid,
+                'process_name': process_name,
+                'local_address': local_address,
+            }
+        )
+    return listeners
+
+
+def _list_port_listeners_netstat(port: int) -> list[dict]:
+    """Fallback listener lookup using netstat + tasklist."""
+    try:
+        result = subprocess.run(
+            ['netstat', '-aon', '-p', 'tcp'],
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            timeout=6,
+        )
+    except Exception:
+        return []
+
+    listeners: list[dict] = []
+    suffix = f':{port}'
+    for raw_line in result.stdout.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) < 5:
+            continue
+
+        proto, local_addr, _, state, pid_text = parts[:5]
+        if proto.upper() != 'TCP' or state.upper() != 'LISTENING':
+            continue
+        if not (local_addr.endswith(suffix) or local_addr.endswith(f']{suffix}')):
+            continue
+
+        try:
+            pid = int(pid_text)
+        except ValueError:
+            continue
+
+        local_address = local_addr
+        if local_addr.startswith('['):
+            # [::]:443 -> [::]
+            local_address = local_addr.rsplit(']:', 1)[0] + ']'
+        elif ':' in local_addr:
+            # 0.0.0.0:443 -> 0.0.0.0
+            local_address = local_addr.rsplit(':', 1)[0]
+
+        listeners.append(
+            {
+                'pid': pid,
+                'process_name': _get_process_name_from_pid(pid),
+                'local_address': local_address,
+            }
+        )
+
+    return listeners
+
+
+def _list_port_listeners(port: int) -> list[dict]:
+    """Return unique listener records for a TCP port."""
+    listeners = _list_port_listeners_powershell(port)
+    if not listeners:
+        listeners = _list_port_listeners_netstat(port)
+
+    unique: list[dict] = []
+    seen: set[tuple[int, str, str]] = set()
+    for entry in listeners:
+        pid = int(entry.get('pid', 0) or 0)
+        process_name = str(entry.get('process_name') or 'Unknown').strip() or 'Unknown'
+        local_address = str(entry.get('local_address') or '0.0.0.0').strip() or '0.0.0.0'
+        key = (pid, process_name.lower(), local_address)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(
+            {
+                'pid': pid,
+                'process_name': process_name,
+                'local_address': local_address,
+            }
+        )
+
+    unique.sort(key=lambda x: (x['pid'], x['process_name'].lower(), x['local_address']))
+    return unique
+
+
 # ---------------------------------------------------------------------------
 # Hosts file management
 # ---------------------------------------------------------------------------
@@ -772,8 +970,10 @@ def _find_roblox_dirs() -> list:
       1. Main Registry   — HKCU\\Software (two levels) for REG_SZ "PlayerPath"/"StudioPath"
       2. MS Store        — C:\\XboxGames\\Roblox up to two layers deep
       3. Active Player   — HKCU\\...\\roblox-player\\open\\command (Default)
-      4. Regular Roblox  — %LocalAppData%\\Roblox\\Versions one layer deep
-      5. Active Studio   — HKCU\\...\\roblox-studio\\open\\command (Default)
+      4. Program Files   — C:\\Program Files (x86)\\Roblox\\Versions up to two layers deep
+      5. Regular Roblox  — %LocalAppData%\\Roblox\\Versions one layer deep
+      6. Active Studio   — HKCU\\...\\roblox-studio\\open\\command (Default)
+      7. Running Process — currently running RobloxPlayerBeta/RobloxStudioBeta path
     """
     import winreg
 
@@ -792,16 +992,25 @@ def _find_roblox_dirs() -> list:
         """Return all subdirs up to max_depth layers under root that contain RobloxPlayerBeta.exe or RobloxStudioBeta.exe."""
         results: list = []
 
+        def _has_roblox_exe(path: Path) -> bool:
+            return (
+                os.path.isfile(os.path.join(path, ROBLOX_PROCESS))
+                or os.path.isfile(os.path.join(path, ROBLOX_STUDIO_PROCESS))
+            )
+
+        if root.is_dir() and _has_roblox_exe(root):
+            results.append(root)
+
         def _recurse(path: Path, depth: int) -> None:
             try:
                 for entry in os.scandir(path):
                     if not entry.is_dir():
                         continue
-                    if (os.path.isfile(os.path.join(entry.path, ROBLOX_PROCESS)) or
-                            os.path.isfile(os.path.join(entry.path, ROBLOX_STUDIO_PROCESS))):
-                        results.append(Path(entry.path))
+                    entry_path = Path(entry.path)
+                    if _has_roblox_exe(entry_path):
+                        results.append(entry_path)
                     if depth < max_depth:
-                        _recurse(Path(entry.path), depth + 1)
+                        _recurse(entry_path, depth + 1)
             except OSError:
                 pass
 
@@ -885,22 +1094,27 @@ def _find_roblox_dirs() -> list:
             try:
                 cmd, rtype = winreg.QueryValueEx(key, '')
                 if rtype == winreg.REG_SZ and cmd:
-                    cmd = cmd.strip()
-                    if cmd.startswith('"'):
-                        exe_path = cmd[1 : cmd.index('"', 1)]
-                    else:
-                        exe_path = cmd.split()[0]
-                    exe_dir = Path(exe_path).parent
-                    for d in _scan_for_exe(exe_dir, 2):
-                        active_found += 1
-                        _add(d)
+                    exe_path = _extract_exe_from_command(cmd)
+                    if exe_path is not None:
+                        exe_dir = exe_path.parent
+                        for d in _scan_for_exe(exe_dir, 2):
+                            active_found += 1
+                            _add(d)
             except (OSError, ValueError):
                 pass
     except OSError:
         pass
     log_buffer.log('Certificate', f'  Active Roblox (registry): {int((time.perf_counter() - t) * 1000)} ms ({active_found} found)')
 
-    # ── 4. Regular Roblox ────────────────────────────────────────────────
+    # ── 4. Program Files (x86) Roblox ────────────────────────────────────
+    t = time.perf_counter()
+    program_files_found = 0
+    for d in _scan_for_exe(Path(r'C:\Program Files (x86)\Roblox\Versions'), 2):
+        program_files_found += 1
+        _add(d)
+    log_buffer.log('Certificate', f'  Program Files (x86) Roblox\\Versions: {int((time.perf_counter() - t) * 1000)} ms ({program_files_found} found)')
+
+    # ── 5. Regular Roblox ────────────────────────────────────────────────
     # %LocalAppData%\Roblox\Versions — one layer down.
     t = time.perf_counter()
     roblox_found = 0
@@ -909,7 +1123,7 @@ def _find_roblox_dirs() -> list:
         _add(d)
     log_buffer.log('Certificate', f'  AppData Roblox\\Versions: {int((time.perf_counter() - t) * 1000)} ms ({roblox_found} found)')
 
-    # ── 5. Active Studio ─────────────────────────────────────────────────
+    # ── 6. Active Studio ─────────────────────────────────────────────────
     # Read HKCU\...\roblox-studio\shell\open\command (Default); parse the exe
     # path and search up to two layers under its parent directory.
     t = time.perf_counter()
@@ -922,20 +1136,27 @@ def _find_roblox_dirs() -> list:
             try:
                 cmd, rtype = winreg.QueryValueEx(key, '')
                 if rtype == winreg.REG_SZ and cmd:
-                    cmd = cmd.strip()
-                    if cmd.startswith('"'):
-                        exe_path = cmd[1 : cmd.index('"', 1)]
-                    else:
-                        exe_path = cmd.split()[0]
-                    exe_dir = Path(exe_path).parent
-                    for d in _scan_for_exe(exe_dir, 2):
-                        studio_found += 1
-                        _add(d)
+                    exe_path = _extract_exe_from_command(cmd)
+                    if exe_path is not None:
+                        exe_dir = exe_path.parent
+                        for d in _scan_for_exe(exe_dir, 2):
+                            studio_found += 1
+                            _add(d)
             except (OSError, ValueError):
                 pass
     except OSError:
         pass
     log_buffer.log('Certificate', f'  Active Studio (registry): {int((time.perf_counter() - t) * 1000)} ms ({studio_found} found)')
+
+    # ── 7. Running process install paths ─────────────────────────────────
+    t = time.perf_counter()
+    running_found = 0
+    for running_exe in (get_roblox_player_exe_path(), get_roblox_studio_exe_path()):
+        if running_exe is None:
+            continue
+        if _add(running_exe.parent):
+            running_found += 1
+    log_buffer.log('Certificate', f'  Running Roblox process path: {int((time.perf_counter() - t) * 1000)} ms ({running_found} found)')
 
     return found
 
@@ -1012,9 +1233,10 @@ def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
 class ProxyMaster:
     """Manages the Fleasion proxy lifecycle."""
 
-    def __init__(self, config_manager) -> None:
+    def __init__(self, config_manager, on_proxy_start_error: Optional[Callable[[str, dict], None]] = None) -> None:
         self.config_manager = config_manager
         self.cache_manager = CacheManager(config_manager)
+        self._on_proxy_start_error = on_proxy_start_error
 
         # Singleton addon instances - GUI holds references to these directly
         self.cache_scraper = CacheScraper(self.cache_manager)
@@ -1045,6 +1267,15 @@ class ProxyMaster:
             self._module_interceptors.append(module)
         if self._proxy is not None:
             self._proxy.set_module_interceptors(self._module_interceptors)
+
+    def _emit_proxy_start_error(self, code: str, details: dict) -> None:
+        """Forward startup failures to the app layer for user-facing dialogs."""
+        if self._on_proxy_start_error is None:
+            return
+        try:
+            self._on_proxy_start_error(code, details)
+        except Exception as exc:
+            log_buffer.log('Error', f'Failed to dispatch proxy startup error callback: {exc}')
 
     def _start_watchdog(self) -> None:
         """Start the background thread that keeps the watchdog task pushed ahead."""
@@ -1303,11 +1534,32 @@ class ProxyMaster:
         try:
             await self._proxy.start()
         except OSError as exc:
-            if exc.errno == 10013 or 'access' in str(exc).lower() or '443' in str(exc):
+            err_text = str(exc).lower()
+            if (
+                exc.errno in (10013, 10048)
+                or 'access' in err_text
+                or 'address already in use' in err_text
+                or 'only one usage of each socket address' in err_text
+                or (str(PROXY_PORT) in err_text and 'bind' in err_text)
+            ):
+                owners = _list_port_listeners(PROXY_PORT)
                 log_buffer.log('Error', (
-                    f'Cannot bind port {PROXY_PORT}: access denied. '
+                    f'Cannot bind port {PROXY_PORT}: another process is already listening. '
                     'Ensure no other process is using this port and run as Administrator.'
                 ))
+                if owners:
+                    owners_summary = '; '.join(
+                        f"{owner['process_name']} (PID {owner['pid']}) on {owner['local_address']}:{PROXY_PORT}"
+                        for owner in owners
+                    )
+                    log_buffer.log('Error', f'Port {PROXY_PORT} listeners: {owners_summary}')
+                self._emit_proxy_start_error(
+                    'port_bind_failed',
+                    {
+                        'port': PROXY_PORT,
+                        'owners': owners,
+                    },
+                )
             else:
                 log_buffer.log('Error', f'Failed to start proxy: {exc}')
             self._running = False

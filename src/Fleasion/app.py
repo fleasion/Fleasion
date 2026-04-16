@@ -1,11 +1,12 @@
 """Application entrypoint."""
 
 import atexit
+import html
 import platform
 import sys
 import time
 
-from PyQt6.QtCore import Qt, QTimer, QSharedMemory, QObject, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QSharedMemory, QObject, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import QApplication, QMessageBox, QPushButton, QDialog, QVBoxLayout, QHBoxLayout, QLabel
 
 from .config import ConfigManager
@@ -13,7 +14,7 @@ from .modifications import ModificationManager
 from .prejsons import download_prejsons
 from .proxy import ProxyMaster, check_and_patch_running_roblox_ca
 from .tray import SystemTray
-from .utils import delete_cache, get_icon_path, get_roblox_player_exe_path, get_roblox_studio_exe_path, is_roblox_running, is_studio_running, log_buffer, run_in_thread, start_update_check, time_tracker, CONFIG_DIR
+from .utils import APP_DISCORD, CONFIG_DIR, delete_cache, get_icon_path, get_roblox_player_exe_path, get_roblox_studio_exe_path, is_roblox_running, is_studio_running, log_buffer, run_in_thread, start_update_check, time_tracker
 
 
 
@@ -136,6 +137,68 @@ def _attempt_silent_elevation(extra_args: str = '') -> bool:
 
     # User clicked "No" on UAC — stay open in read-only mode
     return False
+
+
+def _show_proxy_bind_error_dialog(details: dict):
+    """Show a user-facing popup when Fleasion cannot bind proxy port 443."""
+    port = int(details.get('port') or 443)
+    owners = details.get('owners') or []
+
+    _top = QApplication.topLevelWidgets()
+    _parent = next((w for w in _top if w.isVisible()), None)
+    _on_top = any(w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in _top)
+
+    msg = QMessageBox(_parent)
+    if _on_top:
+        msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
+    msg.setWindowTitle('Fleasion - Proxy Port Conflict')
+    msg.setIcon(QMessageBox.Icon.Warning)
+    msg.setText(f'Fleasion could not start its local proxy on port {port}.')
+
+    if owners:
+        owner_lines = '<br>'.join(
+            f"- {html.escape(str(owner.get('process_name') or 'Unknown'))} "
+            f"(PID {int(owner.get('pid') or 0)}) on "
+            f"{html.escape(str(owner.get('local_address') or '0.0.0.0'))}:{port}"
+            for owner in owners
+        )
+        owners_html = f'Port {port} is already in use by:<br>{owner_lines}<br><br>'
+    else:
+        owners_html = f'Port {port} is already in use by another process.<br><br>'
+
+    discord_url = APP_DISCORD
+    if not discord_url.startswith(('http://', 'https://')):
+        discord_url = f'https://{discord_url}'
+
+    msg.setTextFormat(Qt.TextFormat.RichText)
+    msg.setInformativeText(
+        owners_html
+        + 'Close the conflicting process, then relaunch Fleasion.<br><br>'
+        + f'Need help? <a href="{html.escape(discord_url)}">{html.escape(APP_DISCORD)}</a>'
+    )
+    msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+    if icon_path := get_icon_path():
+        from PyQt6.QtGui import QIcon
+        msg.setWindowIcon(QIcon(str(icon_path)))
+
+    for label in msg.findChildren(QLabel):
+        label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextBrowserInteraction
+            | Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        label.setOpenExternalLinks(True)
+
+    msg.exec()
+
+
+class _ProxyErrorInvoker(QObject):
+    """Main-thread bridge for proxy startup errors emitted from worker threads."""
+
+    show_proxy_error = pyqtSignal(dict)
+
+    @pyqtSlot(dict)
+    def handle_proxy_error(self, details: dict):
+        _show_proxy_bind_error_dialog(details)
 
 
 class RobloxExitMonitor(QObject):
@@ -489,8 +552,16 @@ def main():
     time_tracker.init(config_manager.time_wasted_seconds)
     atexit.register(time_tracker.save, config_manager)
 
+    proxy_error_invoker = _ProxyErrorInvoker()
+    proxy_error_invoker.show_proxy_error.connect(proxy_error_invoker.handle_proxy_error)
+
+    def _on_proxy_start_error(code: str, details: dict):
+        if code != 'port_bind_failed':
+            return
+        proxy_error_invoker.show_proxy_error.emit(dict(details))
+
     # Initialize proxy master
-    proxy_master = ProxyMaster(config_manager)
+    proxy_master = ProxyMaster(config_manager, on_proxy_start_error=_on_proxy_start_error)
 
     # Initialize modification manager (pass cache_scraper for asset-id resolution)
     mod_manager = ModificationManager(
