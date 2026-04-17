@@ -53,7 +53,7 @@ def _find_roblox_dirs() -> list[Path]:
         return False
 
     def _extract_exe_from_command(command: str) -> Path | None:
-        command = (command or '').rstrip('\x00').strip()
+        command = (command or '').replace('\x00', '').strip()
         if not command:
             return None
         if command.startswith('"'):
@@ -107,7 +107,7 @@ def _find_roblox_dirs() -> list[Path]:
                         try:
                             val, rtype = winreg.QueryValueEx(sub, 'PlayerPath')
                             if rtype == winreg.REG_SZ and val:
-                                val = val.rstrip('\x00')  # Strip null chars from registry
+                                val = val.replace('\x00', '').strip()
                                 p = Path(val)
                                 if p.name.lower() == ROBLOX_PROCESS.lower():
                                     p = p.parent
@@ -129,7 +129,7 @@ def _find_roblox_dirs() -> list[Path]:
                                 with winreg.OpenKey(sub, sub_name) as sub2:
                                     val2, rtype2 = winreg.QueryValueEx(sub2, 'PlayerPath')
                                     if rtype2 == winreg.REG_SZ and val2:
-                                        val2 = val2.rstrip('\x00')  # Strip null chars from registry
+                                        val2 = val2.replace('\x00', '').strip()
                                         p2 = Path(val2)
                                         if p2.name.lower() == ROBLOX_PROCESS.lower():
                                             p2 = p2.parent
@@ -194,7 +194,11 @@ def _find_roblox_dirs() -> list[Path]:
 def _bundled_path(name: str) -> Path:
     """Resolve a bundled asset filename to an absolute path."""
     if getattr(sys, 'frozen', False):
-        base = Path(sys._MEIPASS) / 'Fleasion' / 'modifications' / 'bundled'
+        meipass = getattr(sys, '_MEIPASS', None)
+        if meipass is None:
+            base = Path(__file__).parent / 'bundled'
+        else:
+            base = Path(meipass) / 'Fleasion' / 'modifications' / 'bundled'
     else:
         base = Path(__file__).parent / 'bundled'
     return base / name

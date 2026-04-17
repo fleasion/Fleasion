@@ -8,7 +8,7 @@ import subprocess
 import time
 import winreg
 from pathlib import Path
-from typing import Optional
+from typing import Optional, cast
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .paths import ROBLOX_PROCESS, ROBLOX_STUDIO_PROCESS, STORAGE_DB, STORAGE_DB_GDK
@@ -188,7 +188,7 @@ def _delete_db_file(db_path: Path, messages: list, label: str = 'Storage databas
                     0,
                     None
                 )
-                win32file.CloseHandle(handle)
+                win32file.CloseHandle(cast(int, handle))
             except pywintypes.error:
                 pass
 
@@ -328,7 +328,7 @@ def _is_roblox_launch_uri(target_str: str) -> bool:
 
 def _extract_exe_from_command(command: str) -> Optional[Path]:
     """Extract executable path from a shell/open command string."""
-    command = (command or '').rstrip('\x00').strip()
+    command = (command or '').replace('\x00', '').strip()
     if not command:
         return None
     if command.startswith('"'):

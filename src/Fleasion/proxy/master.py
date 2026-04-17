@@ -346,7 +346,11 @@ def _resolve_real_ips(hosts: set) -> dict:
         # --- Primary: OS resolver ---
         try:
             results = socket.getaddrinfo(host, 443, socket.AF_INET, socket.SOCK_STREAM)
-            ips = [r[4][0] for r in results if _is_routable_public_ip(r[4][0])]
+            ips = []
+            for result in results:
+                ip = result[4][0]
+                if isinstance(ip, str) and _is_routable_public_ip(ip):
+                    ips.append(ip)
         except Exception as exc:
             log_buffer.log('Proxy', f'DNS resolve failed for {host} (OS resolver): {exc}')
 
@@ -585,7 +589,7 @@ def _extract_exe_from_command(command: str) -> Optional[Path]:
     if not command:
         return None
 
-    cmd = command.rstrip('\x00').strip()
+    cmd = command.replace('\x00', '').strip()
     if not cmd:
         return None
 
@@ -1033,6 +1037,9 @@ def _find_roblox_dirs() -> list:
                 continue
             if rtype != winreg.REG_SZ or not val:
                 continue
+            val = val.replace('\x00', '').strip()
+            if not val:
+                continue
             p = Path(val)
             # Path may occasionally point at the exe itself rather than the dir
             if p.name.lower() == process_name.lower():
@@ -1335,8 +1342,18 @@ class ProxyMaster:
             _remove_hosts_entries(set(INTERCEPT_HOSTS))
             _flush_dns()
             new_ips = _resolve_real_ips(set(INTERCEPT_HOSTS))
-            # Re-install entries pointing back to our proxy
-            _add_hosts_entries(set(INTERCEPT_HOSTS))
+            # Re-install entries pointing back to our proxy.
+            # Acquire the lock before re-adding to guard against a race with
+            # stop(): if stop() ran while we were resolving IPs it will have
+            # set _hosts_installed = False under this same lock, cancelled all
+            # cleanup guards, and returned.  Adding entries at that point would
+            # leave the hosts file dirty with no mechanism to clean it up.
+            with self._lock:
+                if not self._hosts_installed:
+                    # stop() already ran — do not re-add entries.
+                    return
+                _add_hosts_entries(set(INTERCEPT_HOSTS))
+                
             _flush_dns()
             # Update running proxy and scraper with fresh upstream IPs
             if self._proxy is not None and new_ips:
@@ -1615,7 +1632,10 @@ class ProxyMaster:
 
         # ── Run until the server is stopped ──────────────────────────────
         try:
-            await self._proxy._server.serve_forever()
+            server = self._proxy._server
+            if server is None:
+                return
+            await server.serve_forever()
         except (asyncio.CancelledError, Exception):
             pass  # Normal shutdown path
         finally:
