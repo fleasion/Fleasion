@@ -42,7 +42,7 @@ except Exception:
 
 from ..utils.paths import CONFIG_DIR
 from ..utils.logging import log_buffer
-from ..utils.windows import launch_as_standard_user
+from ..utils.windows import launch_as_standard_user, resolve_roblox_player_exe_for_launch
 
 ACCOUNTS_FILE = CONFIG_DIR / 'accounts.json'
 
@@ -268,18 +268,9 @@ def _resolve_share_link(link: str, cookie: str = "") -> tuple[str, str]:
 
 
 def _find_roblox_exe() -> str | None:
-    """Return path to RobloxPlayerBeta.exe from the most-recently-modified version folder."""
-    versions_dir = Path(os.path.expandvars(r"%LocalAppData%")) / "Roblox" / "Versions"
-    if not versions_dir.exists():
-        return None
-    candidates = []
-    for d in versions_dir.iterdir():
-        exe = d / "RobloxPlayerBeta.exe"
-        if exe.exists():
-            candidates.append((d.stat().st_mtime, str(exe)))
-    if candidates:
-        return sorted(candidates, reverse=True)[0][1]
-    return None
+    """Return best Roblox executable path using shared resolver fallbacks."""
+    exe_path = resolve_roblox_player_exe_for_launch()
+    return str(exe_path) if exe_path is not None else None
 
 
 # Add / Change Cookie dialog
@@ -949,18 +940,25 @@ class RandoStuffTab(QWidget):
         self._populate_account_list()
 
     def _on_launch_account(self):
+        log_buffer.log("accounts", "Launch button clicked")
         acc = self._last_switched_account
         if acc is None:
+            log_buffer.log("accounts", "Launch aborted: no switched account selected")
             QMessageBox.information(self, "No Account Switched",
                                     "Use 'Switch to selected' first to pick an account.")
             return
         cookie = _decrypt_cookie(acc.get("cookie", ""))
         if not cookie:
+            log_buffer.log("accounts", "Launch aborted: failed to decrypt cookie")
             QMessageBox.warning(self, "Error", "Could not decrypt the stored cookie.")
             return
         username = acc.get("username", "(unknown)")
         link = self._private_server_input.text().strip()
         job_id = self._job_id_input.text().strip()
+        log_buffer.log(
+            "accounts",
+            f"Launch request prepared for {username}: hasLink={'yes' if bool(link) else 'no'}, hasJobId={'yes' if bool(job_id) else 'no'}",
+        )
 
         if _is_share_link(link):
             self._launch_acct_btn.setEnabled(False)
@@ -1025,13 +1023,19 @@ class RandoStuffTab(QWidget):
 
         exe = _find_roblox_exe()
         if not exe:
+            log_buffer.log("accounts", "Roblox executable resolution failed before launch")
             QTimer.singleShot(0, lambda: QMessageBox.warning(
                 self, "Roblox Not Found",
                 "Could not locate RobloxPlayerBeta.exe. Is Roblox installed?"
             ))
             return
+        log_buffer.log("accounts", f"Resolved Roblox executable: {exe}")
 
         place_id, link_code = _parse_game_link(private_server_link)
+        log_buffer.log(
+            "accounts",
+            f"Launch parse result: placeId={place_id or '(none)'}, linkCode={'present' if bool(link_code) else 'missing'}, jobId={'present' if bool(job_id) else 'missing'}",
+        )
         launch_ok = False
         if place_id and link_code:
             # Private server launch
@@ -1055,16 +1059,19 @@ class RandoStuffTab(QWidget):
                     f"+browsertrackerid:{tracker_id}+robloxLocale:en_us+gameLocale:en_us"
                     f"+channel:+LaunchExp:InApp"
                 )
+                log_buffer.log("accounts", f"Launching Roblox URI to placeId={place_id} (private server)")
                 launch_ok = launch_as_standard_user(roblox_player_uri)
                 if not launch_ok:
                     log_buffer.log("accounts", "Failed to launch Roblox URI without elevation")
             else:
                 log_buffer.log("accounts", "Failed to get auth ticket, falling back to deeplink")
                 deeplink = f"roblox://experiences/start?placeId={place_id}&linkCode={link_code}"
+                log_buffer.log("accounts", f"Launching Roblox executable fallback: {exe}")
                 exe_started = launch_as_standard_user(exe)
                 if not exe_started:
                     log_buffer.log("accounts", "Failed to launch RobloxPlayerBeta.exe without elevation")
                 time.sleep(3)
+                log_buffer.log("accounts", f"Launching Roblox deeplink to placeId={place_id} with linkCode")
                 deeplink_started = launch_as_standard_user(deeplink)
                 if not deeplink_started:
                     log_buffer.log("accounts", "Failed to launch Roblox deeplink without elevation")
@@ -1097,6 +1104,10 @@ class RandoStuffTab(QWidget):
                     f"+browsertrackerid:{tracker_id}+robloxLocale:en_us+gameLocale:en_us"
                     f"+channel:+LaunchExp:InApp"
                 )
+                if job_id:
+                    log_buffer.log("accounts", f"Launching Roblox URI to placeId={place_id}, gameId={job_id}")
+                else:
+                    log_buffer.log("accounts", f"Launching Roblox URI to placeId={place_id}")
                 launch_ok = launch_as_standard_user(roblox_player_uri)
                 if not launch_ok:
                     log_buffer.log("accounts", "Failed to launch Roblox URI without elevation")
@@ -1112,15 +1123,18 @@ class RandoStuffTab(QWidget):
                     with self._lock:
                         self._account_manager_job_id = job_id
                 deeplink = f"roblox://experiences/start?placeId={place_id}"
+                log_buffer.log("accounts", f"Launching Roblox executable fallback: {exe}")
                 exe_started = launch_as_standard_user(exe)
                 if not exe_started:
                     log_buffer.log("accounts", "Failed to launch RobloxPlayerBeta.exe without elevation")
                 time.sleep(3)
+                log_buffer.log("accounts", f"Launching Roblox deeplink to placeId={place_id}")
                 deeplink_started = launch_as_standard_user(deeplink)
                 if not deeplink_started:
                     log_buffer.log("accounts", "Failed to launch Roblox deeplink without elevation")
                 launch_ok = exe_started and deeplink_started
         else:
+            log_buffer.log("accounts", f"Launching Roblox executable: {exe}")
             launch_ok = launch_as_standard_user(exe)
             if not launch_ok:
                 log_buffer.log("accounts", "Failed to launch RobloxPlayerBeta.exe without elevation")

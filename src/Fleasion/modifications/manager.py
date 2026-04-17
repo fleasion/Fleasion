@@ -19,6 +19,7 @@ from pathlib import Path
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from ..utils import CONFIG_DIR, LOCAL_APPDATA, ROBLOX_PROCESS, get_roblox_player_exe_path, log_buffer
+from ..utils.roblox_dirs import load_saved_roblox_dirs, save_saved_roblox_dirs
 from ..utils.threading import run_in_thread
 from .fflag_manager import FastFlagManager
 from .global_settings_manager import GlobalSettingsManager
@@ -177,6 +178,11 @@ def _find_roblox_dirs() -> list[Path]:
     running_player = get_roblox_player_exe_path()
     if running_player is not None:
         _add(running_player.parent)
+
+    for cached_dir in load_saved_roblox_dirs():
+        _add(cached_dir)
+
+    save_saved_roblox_dirs(found)
 
     return found
 

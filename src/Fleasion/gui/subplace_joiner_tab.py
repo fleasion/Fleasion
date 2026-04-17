@@ -1141,6 +1141,13 @@ class SubplaceJoinerTab(QWidget):
                 card.on_open(lambda _, pid_val=pid: os.startfile(
                     f"https://www.roblox.com/games/{pid_val}"))
                 card.on_fetch_jobs(lambda _, pid_val=pid, c=card: self._open_job_ids(pid_val, c))
+            else:
+                card.join_btn.setEnabled(False)
+                card.fetch_jobs_btn.setEnabled(False)
+                card.job_id_edit.setEnabled(False)
+                card.join_btn.setToolTip('Join unavailable: placeId is missing for this card')
+                card.fetch_jobs_btn.setToolTip('JobIds unavailable: placeId is missing for this card')
+                log_buffer.log("subplace", f"Card created without placeId; join disabled (name={name})")
 
             self._cards.append(card)
             if pid is not None:
@@ -1286,11 +1293,13 @@ class SubplaceJoinerTab(QWidget):
                         f"+browsertrackerid:{tracker_id}+robloxLocale:en_us+gameLocale:en_us"
                         f"+channel:+LaunchExp:InApp"
                     )
+                    log_buffer.log("subplace", f"Launching Roblox URI to placeId={place_id} (multi-instance)")
                     if not launch_as_standard_user(roblox_player_uri):
                         log_buffer.log("subplace", "Failed to launch Roblox URI without elevation")
                 threading.Thread(target=_launch_with_uri, daemon=True).start()
                 return
         self.joining_place = True
+        log_buffer.log("subplace", f"Launching Roblox deeplink to placeId={place_id}")
         if not launch_as_standard_user(f"roblox://experiences/start?placeId={place_id}"):
             log_buffer.log("subplace", "Failed to launch Roblox deeplink without elevation")
 

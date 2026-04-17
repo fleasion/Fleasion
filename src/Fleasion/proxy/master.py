@@ -56,6 +56,7 @@ from .addons import CacheScraper, TextureStripper
 from .server import FleasionProxy, INTERCEPT_HOSTS
 from ..cache.cache_manager import CacheManager
 from ..utils.certs import generate_ca, generate_host_cert, get_ca_pem
+from ..utils.roblox_dirs import load_saved_roblox_dirs
 from ..utils.windows import get_roblox_player_exe_path, get_roblox_studio_exe_path, launch_as_standard_user
 
 logger = logging.getLogger(__name__)
@@ -1157,6 +1158,9 @@ def _find_roblox_dirs() -> list:
         if _add(running_exe.parent):
             running_found += 1
     log_buffer.log('Certificate', f'  Running Roblox process path: {int((time.perf_counter() - t) * 1000)} ms ({running_found} found)')
+
+    for cached_dir in load_saved_roblox_dirs():
+        _add(cached_dir)
 
     return found
 
