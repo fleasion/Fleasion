@@ -162,6 +162,15 @@ def _get_access_code(place_id: str, link_code: str, cookie: str) -> str | None:
 
 
 
+_UUID_RE = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', re.IGNORECASE)
+
+def _extract_job_id(raw: str) -> str:
+    """Return just the UUID from a job ID string, stripping any prefix like 'JoinGame=JOBID '."""
+    raw = raw.strip()
+    m = _UUID_RE.search(raw)
+    return m.group(0) if m else raw
+
+
 def _parse_game_link(link: str) -> tuple[str | None, str | None]:
     """Parse any Roblox game URL and return (place_id, link_code_or_None).
 
@@ -1174,7 +1183,7 @@ class RandoStuffTab(QWidget):
             return
         username = acc.get("username", "(unknown)")
         link = self._private_server_input.text().strip()
-        job_id = self._job_id_input.text().strip()
+        job_id = _extract_job_id(self._job_id_input.text())
         log_buffer.log(
             "accounts",
             f"Launch request prepared for {username}: hasLink={'yes' if bool(link) else 'no'}, hasJobId={'yes' if bool(job_id) else 'no'}",
@@ -1651,7 +1660,7 @@ class RandoStuffTab(QWidget):
             if req_path in ("/v1/join-game", "/v1/join-game-instance"):
                 try:
                     resp_json = json.loads(flow.response.content)
-                    job_id = resp_json.get("jobId") or resp_json.get("gameId")
+                    job_id = _extract_job_id(resp_json.get("jobId") or resp_json.get("gameId") or "")
                     if job_id:
                         self._game_jobs[capture_place_id] = job_id
                         place_id_snap = capture_place_id
