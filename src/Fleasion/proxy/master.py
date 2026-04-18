@@ -27,6 +27,7 @@ import ctypes
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -1194,8 +1195,98 @@ def _find_roblox_dirs() -> list:
     return found
 
 
+_PEM_CERT_BLOCK_RE = re.compile(
+    r'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----',
+    re.DOTALL,
+)
+
+
+def _normalize_newlines(text: str) -> str:
+    """Normalize mixed newlines to LF for stable PEM comparisons."""
+    return text.replace('\r\n', '\n').replace('\r', '\n')
+
+
+def _normalize_pem_block(pem_block: str) -> str:
+    """Return a canonical PEM block representation (LF + trailing newline)."""
+    return f"{_normalize_newlines(pem_block).strip()}\n"
+
+
+def _is_fleasion_ca_cert_block(pem_block: str) -> bool:
+    """Return True if *pem_block* is a Fleasion self-signed CA cert."""
+    try:
+        from cryptography import x509
+        from cryptography.x509.oid import NameOID
+
+        cert = x509.load_pem_x509_certificate(pem_block.encode('utf-8'))
+        cn_attrs = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+        org_attrs = cert.subject.get_attributes_for_oid(NameOID.ORGANIZATION_NAME)
+        cn = cn_attrs[0].value if cn_attrs else ''
+        org = org_attrs[0].value if org_attrs else ''
+        return (
+            cert.subject == cert.issuer
+            and cn == 'Fleasion Proxy CA'
+            and org == 'Fleasion'
+        )
+    except Exception:
+        return False
+
+
+def _analyze_and_strip_fleasion_cas(pem_bundle: str, current_ca_pem: str) -> tuple[str, int, int]:
+    """Remove all Fleasion CA blocks and return (cleaned_text, fleasion_count, current_count)."""
+    normalized_bundle = _normalize_newlines(pem_bundle)
+    normalized_current = _normalize_pem_block(current_ca_pem)
+
+    parts: list[str] = []
+    last_end = 0
+    fleasion_count = 0
+    current_count = 0
+
+    for match in _PEM_CERT_BLOCK_RE.finditer(normalized_bundle):
+        parts.append(normalized_bundle[last_end:match.start()])
+        block = match.group(0)
+
+        if _is_fleasion_ca_cert_block(block):
+            fleasion_count += 1
+            if _normalize_pem_block(block) == normalized_current:
+                current_count += 1
+        else:
+            parts.append(block)
+
+        last_end = match.end()
+
+    parts.append(normalized_bundle[last_end:])
+    return ''.join(parts), fleasion_count, current_count
+
+
+def _upsert_fleasion_ca_in_cacert(ca_file: Path, ca_pem: str) -> tuple[bool, int, int]:
+    """Ensure exactly one current Fleasion CA exists in *ca_file*.
+
+    Returns (changed, fleasion_count_before, current_count_before).
+    """
+    existing = ca_file.read_text(encoding='utf-8', errors='replace') if ca_file.exists() else ''
+    normalized_existing = _normalize_newlines(existing)
+
+    cleaned, fleasion_count, current_count = _analyze_and_strip_fleasion_cas(existing, ca_pem)
+    normalized_current = _normalize_pem_block(ca_pem)
+
+    cleaned = cleaned.rstrip('\n')
+    updated = f'{cleaned}\n{normalized_current}' if cleaned else normalized_current
+
+    changed = updated != normalized_existing
+    if changed:
+        ca_file.write_text(updated, encoding='utf-8')
+
+    return changed, fleasion_count, current_count
+
+
+def _cacert_has_only_current_fleasion_ca(cacert_text: str, current_ca_pem: str) -> bool:
+    """Return True when cacert contains exactly one Fleasion CA and it is current."""
+    _, fleasion_count, current_count = _analyze_and_strip_fleasion_cas(cacert_text, current_ca_pem)
+    return fleasion_count == 1 and current_count == 1
+
+
 def _install_ca_into_roblox(ca_pem: str) -> None:
-    """Append our CA cert to ssl/cacert.pem next to every found Roblox Player/Studio install."""
+    """Ensure each Roblox ssl/cacert.pem has exactly one current Fleasion CA cert."""
     t0 = time.perf_counter()
     dirs = _find_roblox_dirs()
     elapsed_ms = int((time.perf_counter() - t0) * 1000)
@@ -1209,10 +1300,19 @@ def _install_ca_into_roblox(ca_pem: str) -> None:
         ssl_dir.mkdir(exist_ok=True)
         ca_file = ssl_dir / 'cacert.pem'
         try:
-            existing = ca_file.read_text(encoding='utf-8', errors='replace') if ca_file.exists() else ''
-            if ca_pem not in existing:
-                ca_file.write_text(f'{existing}\n{ca_pem}', encoding='utf-8')
-                log_buffer.log('Certificate', f'Installed CA into {d.name}')
+            changed, fleasion_count, current_count = _upsert_fleasion_ca_in_cacert(ca_file, ca_pem)
+            already_current = fleasion_count == 1 and current_count == 1
+
+            if changed and not already_current:
+                stale_count = max(fleasion_count - current_count, 0)
+                duplicate_current = max(current_count - 1, 0)
+                removed_count = stale_count + duplicate_current
+                if removed_count > 0:
+                    log_buffer.log('Certificate', f'Refreshed CA in {d.name} (removed {removed_count} stale/duplicate Fleasion CA entries)')
+                else:
+                    log_buffer.log('Certificate', f'Installed CA into {d.name}')
+            elif changed:
+                log_buffer.log('Certificate', f'Normalized CA bundle formatting in {d.name}')
             else:
                 log_buffer.log('Certificate', f'CA already installed in {d.name}')
         except (PermissionError, OSError, UnicodeDecodeError) as exc:
@@ -1223,10 +1323,11 @@ def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
     """Check if the currently running Roblox instance has our CA in its cacert.pem.
 
     Called when RobloxPlayerBeta.exe is detected launching at runtime.
-    If the cert is absent it is injected immediately and an alert is logged.
+    If the cert chain is stale/missing it is normalized immediately and an alert
+    is logged.
 
-    Returns True if the cert was missing and has been injected (Roblox needs a
-    restart).  Returns False if already patched or the CA has not been generated.
+    Returns True if the cert bundle needed refresh (Roblox needs a restart).
+    Returns False if already patched or the CA has not been generated.
     """
     ca_cert_path = PROXY_CA_DIR / 'ca.crt'
     if not ca_cert_path.exists():
@@ -1238,25 +1339,37 @@ def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
     ca_file = ssl_dir / 'cacert.pem'
 
     try:
-        existing = ca_file.read_text(encoding='utf-8', errors='replace') if ca_file.exists() else ''
-    except OSError:
-        existing = ''
-
-    if ca_pem in existing:
-        log_buffer.log('Certificate', f'Roblox launch detected: cacert.pem already patched for {roblox_dir.name}')
-        return False  # Already patched – nothing to do
-
-    log_buffer.log(
-        'Certificate',
-        f'[ALERT] {exe_path.name} does not have a modified '
-        'cacert.pem! It has been injected, you may need to relaunch it.',
-    )
-    try:
         ssl_dir.mkdir(exist_ok=True)
-        ca_file.write_text(f'{existing}\n{ca_pem}', encoding='utf-8')
-        log_buffer.log('Certificate', f'CA injected into running Roblox instance: {roblox_dir.name}')
+        changed, fleasion_count, current_count = _upsert_fleasion_ca_in_cacert(ca_file, ca_pem)
     except (PermissionError, OSError) as exc:
         log_buffer.log('Certificate', f'Failed to inject CA into running Roblox instance: {exc}')
+        return False
+
+    already_current = fleasion_count == 1 and current_count == 1
+    if already_current:
+        log_buffer.log('Certificate', f'Roblox launch detected: cacert.pem already patched for {roblox_dir.name}')
+        return False
+
+    stale_count = max(fleasion_count - current_count, 0)
+    duplicate_current = max(current_count - 1, 0)
+    removed_count = stale_count + duplicate_current
+
+    if current_count == 0:
+        log_buffer.log(
+            'Certificate',
+            f'[ALERT] {exe_path.name} does not have a valid modified '
+            'cacert.pem! It has been injected, you may need to relaunch it.',
+        )
+    elif removed_count > 0:
+        log_buffer.log(
+            'Certificate',
+            f'[ALERT] {exe_path.name} had stale/duplicate Fleasion CAs in cacert.pem '
+            f'({removed_count} removed). You may need to relaunch it.',
+        )
+
+    if changed:
+        log_buffer.log('Certificate', f'CA injected into running Roblox instance: {roblox_dir.name}')
+
     return True
 
 
@@ -1350,7 +1463,7 @@ class ProxyMaster:
             existing = ca_file.read_text(encoding='utf-8', errors='replace') if ca_file.exists() else ''
         except OSError:
             existing = ''
-        if ca_pem in existing:
+        if _cacert_has_only_current_fleasion_ca(existing, ca_pem):
             log_buffer.log('Certificate', f'Roblox launch detected: cacert.pem already patched for {exe_path.parent.name}')
             return  # Already patched — no restart needed
 
