@@ -30,7 +30,9 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QCheckBox,
+    QRadioButton,
     QSizePolicy,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -398,6 +400,17 @@ class RandoStuffTab(QWidget):
         self._doing_rejoin = False
         self._awaiting_rejoin_response = False
         self._active_rejoin_attempt_id = None  # gameJoinAttemptId being redirected
+        loaded_subplace_blacklist = []
+        loaded_subplace_mode = 'block'
+        if self._config is not None:
+            loaded_subplace_blacklist = getattr(self._config, 'subplace_blacklist', [])
+            loaded_subplace_mode = getattr(self._config, 'subplace_blacklist_mode', 'block')
+        self._subplace_blacklisted_ids: set[str] = set(
+            self._parse_numeric_id_list(','.join(str(x) for x in loaded_subplace_blacklist))
+        )
+        self._subplace_block_mode = 'stall' if loaded_subplace_mode == 'stall' else 'block'
+        self._blocked_subplace_log_at: dict[str, float] = {}
+        self._subplace_unblock_until = 0.0
         self._lock = threading.Lock()
 
         self._multi_stop = threading.Event()
@@ -421,6 +434,97 @@ class RandoStuffTab(QWidget):
                 self._on_multi_instance_toggled(True, persist=False)
         threading.Thread(target=self._check_cookies_on_boot, daemon=True).start()
         threading.Thread(target=self._resolve_current_user, daemon=True).start()
+
+        if self._subplace_blacklisted_ids:
+            count = len(self._subplace_blacklisted_ids)
+            log_buffer.log('subplace', f'Loaded subplace blacklist: {count} ID(s) active')
+
+    @staticmethod
+    def _normalize_numeric_id(value) -> str | None:
+        try:
+            return str(int(str(value).strip()))
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _parse_numeric_id_list(cls, raw_value: str) -> list[str]:
+        content = raw_value.replace('\n', ',').replace(';', ',').replace(' ', ',')
+        ids = []
+        for part in content.split(','):
+            normalized = cls._normalize_numeric_id(part)
+            if normalized is not None:
+                ids.append(normalized)
+        return ids
+
+    def _is_subplace_blacklisted(self, place_id) -> bool:
+        normalized = self._normalize_numeric_id(place_id)
+        return normalized is not None and normalized in self._subplace_blacklisted_ids
+
+    def _drop_subplace_join(self, flow, place_id: str, attempt_id: str | None = None):
+        with self._lock:
+            mode = self._subplace_block_mode
+
+        if mode == 'stall':
+            payload = {
+                'jobId': None,
+                'status': 1,
+                'joinScriptUrl': None,
+                'authenticationUrl': None,
+                'authenticationTicket': None,
+                'message': '',
+                'joinScript': None,
+                'queuePosition': 0,
+            }
+            log_interval = 10.0
+        else:
+            payload = {
+                'jobId': None,
+                'status': 12,
+                'joinScriptUrl': None,
+                'authenticationUrl': None,
+                'authenticationTicket': None,
+                'message': 'Teleport blocked by Subplace Blacklist.',
+                'joinScript': None,
+                'queuePosition': 0,
+            }
+            log_interval = 5.0
+
+        flow.drop_request = True
+        flow.drop_status_code = 200
+        flow.drop_body = json.dumps(payload, separators=(',', ':')).encode('utf-8')
+
+        key = f'{place_id}:{attempt_id or ""}'
+        now = time.time()
+        last = self._blocked_subplace_log_at.get(key, 0.0)
+        if now - last >= log_interval:
+            self._blocked_subplace_log_at[key] = now
+            if len(self._blocked_subplace_log_at) > 512:
+                cutoff = now - 30.0
+                self._blocked_subplace_log_at = {
+                    k: ts for k, ts in self._blocked_subplace_log_at.items() if ts >= cutoff
+                }
+            log_buffer.log('subplace', f'Blocked join request to blacklisted subplace ID: {place_id}')
+
+    def _set_subplace_block_mode(self, mode: str, checked: bool):
+        if not checked:
+            return
+        with self._lock:
+            self._subplace_block_mode = mode
+        if self._config is not None:
+            self._config.subplace_blacklist_mode = mode
+        if mode == 'stall':
+            log_buffer.log('subplace', 'Subplace blacklist mode: Infinitely Stall Subplace')
+        else:
+            log_buffer.log('subplace', 'Subplace blacklist mode: Block Subplace')
+
+    def _is_subplace_unblock_active(self) -> bool:
+        with self._lock:
+            return time.time() < self._subplace_unblock_until
+
+    def _on_subplace_unblock_for_5s(self):
+        with self._lock:
+            self._subplace_unblock_until = time.time() + 5.0
+        log_buffer.log('subplace', 'Subplace blacklist bypass enabled for 5 seconds')
 
     # UI
 
@@ -539,6 +643,34 @@ class RandoStuffTab(QWidget):
 
         root.addWidget(ac_group)
 
+        subplace_blacklist_group = QGroupBox('Subplace Blacklist')
+        subplace_blacklist_layout = QVBoxLayout(subplace_blacklist_group)
+        subplace_blacklist_row = QHBoxLayout()
+        self._subplace_blacklist_btn = QPushButton('Blacklist Subplaces...')
+        self._subplace_blacklist_btn.clicked.connect(self._show_subplace_blacklist_dialog)
+        subplace_blacklist_row.addWidget(self._subplace_blacklist_btn)
+        self._subplace_unblock_btn = QPushButton('Unblock For 5s')
+        self._subplace_unblock_btn.clicked.connect(self._on_subplace_unblock_for_5s)
+        subplace_blacklist_row.addWidget(self._subplace_unblock_btn)
+        subplace_blacklist_row.addStretch()
+        subplace_blacklist_layout.addLayout(subplace_blacklist_row)
+
+        self._subplace_block_radio = QRadioButton('Block Subplace')
+        self._subplace_stall_radio = QRadioButton('Infinitely Stall Subplace')
+        if self._subplace_block_mode == 'stall':
+            self._subplace_stall_radio.setChecked(True)
+        else:
+            self._subplace_block_radio.setChecked(True)
+        self._subplace_block_radio.toggled.connect(
+            lambda checked: self._set_subplace_block_mode('block', checked)
+        )
+        self._subplace_stall_radio.toggled.connect(
+            lambda checked: self._set_subplace_block_mode('stall', checked)
+        )
+        subplace_blacklist_layout.addWidget(self._subplace_block_radio)
+        subplace_blacklist_layout.addWidget(self._subplace_stall_radio)
+        root.addWidget(subplace_blacklist_group)
+
         root.addStretch()
 
         footer_widget = QWidget()
@@ -608,6 +740,94 @@ class RandoStuffTab(QWidget):
         )
         msg.setIcon(QMessageBox.Icon.NoIcon)
         msg.exec()
+
+    def _show_subplace_blacklist_dialog(self):
+        from ..utils import get_icon_path
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Blacklist Subplace...')
+        dialog.resize(400, 350)
+        if icon_path := get_icon_path():
+            from PyQt6.QtGui import QIcon
+            dialog.setWindowIcon(QIcon(str(icon_path)))
+
+        layout = QVBoxLayout()
+
+        title = QLabel('Blacklisted Subplace IDs')
+        title.setStyleSheet('font-weight: bold;')
+        layout.addWidget(title)
+
+        hint = QLabel('Enter subplace IDs separated by commas, spaces, newlines, or semicolons.')
+        hint.setStyleSheet('color: gray; font-size: 9pt;')
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        text_edit = QTextEdit()
+        text_edit.setAcceptRichText(False)
+        text_edit.setPlaceholderText('e.g. 1818, 1234567890, 9876543210')
+
+        if self._subplace_blacklisted_ids:
+            text_edit.setPlainText(', '.join(sorted(self._subplace_blacklisted_ids, key=lambda x: int(x))))
+        layout.addWidget(text_edit)
+
+        search_layout = QHBoxLayout()
+        search_layout.setContentsMargins(0, 0, 0, 0)
+        search_edit = QLineEdit()
+        search_edit.setPlaceholderText('Search IDs')
+        search_layout.addWidget(search_edit)
+        search_layout.addStretch()
+        status_label = QLabel('')
+        status_label.setStyleSheet('color: #888; font-size: 9pt;')
+        search_layout.addWidget(status_label)
+        apply_btn = QPushButton('Apply blacklist')
+        search_layout.addWidget(apply_btn)
+        layout.addLayout(search_layout)
+
+        dialog.setLayout(layout)
+
+        _last_search_query = ['']
+
+        def _search_id():
+            query = search_edit.text().strip()
+            if not query:
+                return
+            doc = text_edit.document()
+            if doc is None:
+                return
+            if query != _last_search_query[0]:
+                _last_search_query[0] = query
+                text_edit.moveCursor(text_edit.textCursor().MoveOperation.Start)
+            cursor = doc.find(query, text_edit.textCursor())
+            if cursor.isNull():
+                cursor = doc.find(query)
+            if not cursor.isNull():
+                text_edit.setTextCursor(cursor)
+                text_edit.ensureCursorVisible()
+                status_label.setText('')
+            else:
+                status_label.setText(f'ID {query} not found.')
+                status_label.setStyleSheet('color: #cc5555; font-size: 9pt;')
+
+        search_edit.returnPressed.connect(_search_id)
+        search_edit.textChanged.connect(lambda: status_label.setText(''))
+
+        def _apply():
+            ids = self._parse_numeric_id_list(text_edit.toPlainText().strip())
+            self._subplace_blacklisted_ids = set(ids)
+            if self._config is not None:
+                self._config.subplace_blacklist = ids
+            count = len(self._subplace_blacklisted_ids)
+            status_label.setText(f'Blacklist applied: {count} ID(s).')
+            status_label.setStyleSheet('color: #55cc55; font-size: 9pt;')
+            if self._subplace_blacklisted_ids:
+                ordered = ', '.join(sorted(self._subplace_blacklisted_ids, key=lambda x: int(x) if x.isdigit() else 0))
+                log_buffer.log('subplace', f'Subplace blacklist updated: {count} ID(s) active - {ordered}')
+            else:
+                log_buffer.log('subplace', 'Subplace blacklist cleared')
+
+        apply_btn.clicked.connect(_apply)
+
+        dialog.exec()
 
     # Multi-instance
 
@@ -1298,6 +1518,15 @@ class RandoStuffTab(QWidget):
                 body = json.loads(flow.request.content)
                 place_id = body.get("placeId")
                 access_code = body.get("accessCode")
+                attempt_id = body.get('gameJoinAttemptId')
+                normalized_place_id = self._normalize_numeric_id(place_id)
+                if (
+                    normalized_place_id is not None
+                    and normalized_place_id in self._subplace_blacklisted_ids
+                    and not self._is_subplace_unblock_active()
+                ):
+                    self._drop_subplace_join(flow, normalized_place_id, attempt_id=str(attempt_id) if attempt_id else None)
+                    return
                 session_id = flow.request.headers.get("Roblox-Session-Id", "")
                 if place_id is not None and access_code is not None:
                     with self._lock:
@@ -1316,6 +1545,24 @@ class RandoStuffTab(QWidget):
 
         if parsed.path not in self._WANTED_ENDPOINTS:
             return
+
+        try:
+            precheck_body = json.loads(flow.request.content)
+            blocked_place_id = self._normalize_numeric_id(precheck_body.get('placeId'))
+            if (
+                blocked_place_id is not None
+                and blocked_place_id in self._subplace_blacklisted_ids
+                and not self._is_subplace_unblock_active()
+            ):
+                precheck_attempt_id = precheck_body.get('gameJoinAttemptId')
+                self._drop_subplace_join(
+                    flow,
+                    blocked_place_id,
+                    attempt_id=str(precheck_attempt_id) if precheck_attempt_id else None,
+                )
+                return
+        except Exception:
+            pass
 
         # Account manager: redirect join-game to join-game-instance if a jobId is pending
         if parsed.path == "/v1/join-game":
@@ -1363,6 +1610,18 @@ class RandoStuffTab(QWidget):
                 self._active_rejoin_attempt_id = None
             return
 
+        normalized_place_id = self._normalize_numeric_id(place_id)
+        if (
+            normalized_place_id is not None
+            and normalized_place_id in self._subplace_blacklisted_ids
+            and not self._is_subplace_unblock_active()
+        ):
+            self._drop_subplace_join(flow, normalized_place_id, attempt_id=str(attempt_id) if attempt_id else None)
+            with self._lock:
+                self._active_rejoin_attempt_id = None
+                self._awaiting_rejoin_response = False
+            return
+
         new_payload = {
             "placeId": place_id,
             "accessCode": access_code,
@@ -1383,11 +1642,12 @@ class RandoStuffTab(QWidget):
         if "gamejoin.roblox.com" not in flow.request.pretty_url:
             return
 
+        req_path = urlparse(flow.request.pretty_url).path
+
         # Capture jobId from a normal game join initiated by the account manager
         with self._lock:
             capture_place_id = self._account_manager_capture_place_id
         if capture_place_id:
-            req_path = urlparse(flow.request.pretty_url).path
             if req_path in ("/v1/join-game", "/v1/join-game-instance"):
                 try:
                     resp_json = json.loads(flow.response.content)

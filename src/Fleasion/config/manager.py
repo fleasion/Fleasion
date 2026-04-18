@@ -285,6 +285,25 @@ class ConfigManager:
         self._save_settings()
 
     @property
+    def subplace_blacklist(self) -> list[str]:
+        return self.settings.get('subplace_blacklist', [])
+
+    @subplace_blacklist.setter
+    def subplace_blacklist(self, value: list[str]):
+        self.settings['subplace_blacklist'] = value
+        self._save_settings()
+
+    @property
+    def subplace_blacklist_mode(self) -> str:
+        mode = self.settings.get('subplace_blacklist_mode', 'block')
+        return mode if mode in ('block', 'stall') else 'block'
+
+    @subplace_blacklist_mode.setter
+    def subplace_blacklist_mode(self, value: str):
+        self.settings['subplace_blacklist_mode'] = value if value in ('block', 'stall') else 'block'
+        self._save_settings()
+
+    @property
     def show_names(self) -> bool:
         return self.settings.get('show_names', True)
 
