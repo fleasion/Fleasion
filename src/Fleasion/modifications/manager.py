@@ -138,7 +138,7 @@ def _find_roblox_dirs() -> list[Path]:
                                         else:
                                             for d in _scan_for_exe(p2, 1):
                                                 _add(d)
-                            except OSError:
+                            except (OSError, ValueError):
                                 pass
                 except OSError:
                     pass

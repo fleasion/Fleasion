@@ -1072,7 +1072,7 @@ def _find_roblox_dirs() -> list:
                             try:
                                 with winreg.OpenKey(sk, sub) as ssk:
                                     _check_player_path_key(ssk)
-                            except OSError:
+                            except (OSError, ValueError):
                                 pass
                 except OSError:
                     pass
