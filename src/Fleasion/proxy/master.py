@@ -1243,6 +1243,7 @@ def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
         existing = ''
 
     if ca_pem in existing:
+        log_buffer.log('Certificate', f'Roblox launch detected: cacert.pem already patched for {roblox_dir.name}')
         return False  # Already patched – nothing to do
 
     log_buffer.log(
@@ -1350,6 +1351,7 @@ class ProxyMaster:
         except OSError:
             existing = ''
         if ca_pem in existing:
+            log_buffer.log('Certificate', f'Roblox launch detected: cacert.pem already patched for {exe_path.parent.name}')
             return  # Already patched — no restart needed
 
         log_buffer.log('Certificate', 'Roblox missing CA cert — refreshing hosts and restarting...')
