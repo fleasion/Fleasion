@@ -153,6 +153,15 @@ def _try_bin_to_obj(path: Path, ctx: str) -> Optional[Path]:
         return None
 
 
+def _try_rbxmx_to_obj(path: Path, ctx: str) -> Optional[Path]:
+    try:
+        from ...cache.tools.solidmodel_converter.mesh_intermediary import rbxmx_file_to_cached_obj
+        return rbxmx_file_to_cached_obj(path)
+    except Exception as exc:
+        log_buffer.log('Intermediary', f'{ctx}: .rbxmx->OBJ failed: {exc}')
+        return None
+
+
 def _download_remote_file(url: str, dest: Path, label: str) -> bool:
     try:
         APP_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -1211,6 +1220,11 @@ class TextureStripper:
                 else:
                     # Not a CSGMDL, serve as-is
                     val = ('local', local_path)
+                with self._lock:
+                    self._pending[req_id] = val
+            elif ext == '.rbxmx':
+                obj = _try_rbxmx_to_obj(path, f'SolidModel {aid}')
+                val = ('solid', str(obj)) if obj else ('local', local_path)
                 with self._lock:
                     self._pending[req_id] = val
             else:
