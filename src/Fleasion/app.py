@@ -191,14 +191,93 @@ def _show_proxy_bind_error_dialog(details: dict):
     msg.exec()
 
 
+def _show_hosts_write_exhausted_dialog(details: dict):
+    """Show a user-facing popup when hosts writes fail after all retries."""
+    import os
+
+    hosts_path = str(details.get('hosts_path') or r'C:\Windows\System32\drivers\etc\hosts')
+    hosts_directory = str(
+        details.get('hosts_directory')
+        or os.path.dirname(hosts_path)
+        or r'C:\Windows\System32\drivers\etc'
+    )
+    raw_error = str(details.get('error') or '').strip()
+
+    _top = QApplication.topLevelWidgets()
+    _parent = next((w for w in _top if w.isVisible()), None)
+    _on_top = any(w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in _top)
+
+    discord_url = APP_DISCORD
+    if not discord_url.startswith(('http://', 'https://')):
+        discord_url = f'https://{discord_url}'
+
+    while True:
+        msg = QMessageBox(_parent)
+        if _on_top:
+            msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
+        msg.setWindowTitle('Fleasion - Hosts File Write Failed')
+        msg.setIcon(QMessageBox.Icon.Warning)
+        msg.setText('Fleasion could not modify the Windows hosts file after every write attempt was exhausted.')
+
+        diagnostics_html = ''
+        if raw_error:
+            diagnostics_html = (
+                'Technical details:<br>'
+                + html.escape(raw_error)
+                + '<br><br>'
+            )
+
+        msg.setTextFormat(Qt.TextFormat.RichText)
+        msg.setInformativeText(
+            'Most likely causes:<br>'
+            'A) Antivirus/security software is protecting the hosts file '
+            '(for example Webroot).<br>'
+            'B) A restrictive Windows permission setting is blocking writes.<br><br>'
+            + f'Hosts file path:<br>{html.escape(hosts_path)}<br><br>'
+            + 'Quick fix:<br>'
+            + '1) Click "Click Here to Open Directory".<br>'
+            + '2) Rename the file named "hosts" (no extension) to anything, or delete it.<br>'
+            + '3) Restart Fleasion.<br><br>'
+            + diagnostics_html
+            + f'Need help? <a href="{html.escape(discord_url)}">{html.escape(APP_DISCORD)}</a>'
+        )
+
+        open_dir_button = msg.addButton('Click Here to Open Directory', QMessageBox.ButtonRole.ActionRole)
+        msg.addButton(QMessageBox.StandardButton.Ok)
+
+        if icon_path := get_icon_path():
+            from PyQt6.QtGui import QIcon
+            msg.setWindowIcon(QIcon(str(icon_path)))
+
+        for label in msg.findChildren(QLabel):
+            label.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextBrowserInteraction
+                | Qt.TextInteractionFlag.TextSelectableByMouse
+            )
+            label.setOpenExternalLinks(True)
+
+        msg.exec()
+
+        if msg.clickedButton() == open_dir_button:
+            try:
+                os.startfile(hosts_directory)
+            except OSError as exc:
+                log_buffer.log('Hosts', f'Could not open hosts directory: {exc}')
+            continue
+        break
+
+
 class _ProxyErrorInvoker(QObject):
     """Main-thread bridge for proxy startup errors emitted from worker threads."""
 
-    show_proxy_error = pyqtSignal(dict)
+    show_proxy_error = pyqtSignal(str, dict)
 
-    @pyqtSlot(dict)
-    def handle_proxy_error(self, details: dict):
-        _show_proxy_bind_error_dialog(details)
+    @pyqtSlot(str, dict)
+    def handle_proxy_error(self, code: str, details: dict):
+        if code == 'port_bind_failed':
+            _show_proxy_bind_error_dialog(details)
+        elif code == 'hosts_write_exhausted':
+            _show_hosts_write_exhausted_dialog(details)
 
 
 class RobloxExitMonitor(QObject):
@@ -559,9 +638,9 @@ def main():
     proxy_error_invoker.show_proxy_error.connect(proxy_error_invoker.handle_proxy_error)
 
     def _on_proxy_start_error(code: str, details: dict):
-        if code != 'port_bind_failed':
+        if code not in ('port_bind_failed', 'hosts_write_exhausted'):
             return
-        proxy_error_invoker.show_proxy_error.emit(dict(details))
+        proxy_error_invoker.show_proxy_error.emit(code, dict(details))
 
     # Initialize proxy master
     proxy_master = ProxyMaster(config_manager, on_proxy_start_error=_on_proxy_start_error)

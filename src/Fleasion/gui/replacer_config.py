@@ -89,6 +89,7 @@ class ReplacerConfigWindow(QDialog):
         self.config_enabled_vars = {}
         self._asset_types_popup_last_closed = 0.0
         self._dialog_asset_types_popup_last_closed = 0.0
+        self._prejsons_dialog: QDialog | None = None
 
         self.setWindowTitle(f'{APP_NAME} - Dashboard')
         self.resize(900, 750)
@@ -470,8 +471,22 @@ class ReplacerConfigWindow(QDialog):
     def _open_prejsons_browser(self):
         """Open the PreJsons browser dialog."""
         from .prejsons_dialog import PreJsonsDialog
+
+        try:
+            if self._prejsons_dialog is not None:
+                self._prejsons_dialog.show()
+                self._prejsons_dialog.raise_()
+                self._prejsons_dialog.activateWindow()
+                return
+        except RuntimeError:
+            self._prejsons_dialog = None
+
         dialog = PreJsonsDialog(self)
+        dialog.destroyed.connect(lambda *_: setattr(self, '_prejsons_dialog', None))
+        self._prejsons_dialog = dialog
         dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
 
     def eventFilter(self, obj, event):
         """Event filter to keep enabled menu open after clicking checkboxes."""

@@ -504,16 +504,6 @@ class JsonTreeViewer(QDialog):
         self.splitter.splitterMoved.connect(self._on_splitter_moved)
         layout.addWidget(self.splitter, stretch=1)
 
-        # Selection label + match navigation indicator
-        selection_row = QHBoxLayout()
-        self.selection_label = QLabel('Selected: 0 values')
-        selection_row.addWidget(self.selection_label)
-        self.match_label = QLabel('')
-        self.match_label.setStyleSheet('color: #888; font-size: 11px;')
-        selection_row.addWidget(self.match_label)
-        selection_row.addStretch()
-        layout.addLayout(selection_row)
-
         # Import buttons
         btn_layout = QHBoxLayout()
         btn_layout.addWidget(QLabel('Import selected as:'))
@@ -527,6 +517,17 @@ class JsonTreeViewer(QDialog):
         btn_layout.addWidget(repl_btn)
 
         btn_layout.addStretch()
+
+        self.match_label = QLabel('')
+        self.match_label.setStyleSheet('color: #888; font-size: 11px;')
+        btn_layout.addWidget(self.match_label)
+
+        btn_layout.addSpacing(8)
+
+        self.selection_label = QLabel('Selected: 0 value(s)')
+        self.selection_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        btn_layout.addWidget(self.selection_label)
+
         layout.addLayout(btn_layout)
 
         self.setLayout(layout)
@@ -1538,7 +1539,13 @@ class JsonTreeViewer(QDialog):
         vals = self._get_selected_values()
         if vals:
             self.on_import_ids(vals)
-            self.accept()
+            value_label = 'asset ID(s)' if all(isinstance(v, int) for v in vals) else 'value(s)'
+            QMessageBox.information(
+                self,
+                'Added to Replacer',
+                f'Added {len(vals)} {value_label} to replacer:\n'
+                f'{", ".join(str(v) for v in vals[:5])}{"..." if len(vals) > 5 else ""}',
+            )
         else:
             QMessageBox.information(self, 'Info', 'No valid values selected (numeric or links/paths)')
 
@@ -1557,5 +1564,14 @@ class JsonTreeViewer(QDialog):
             )
             if reply != QMessageBox.StandardButton.Yes:
                 return
-        self.on_import_replacement(vals[0])
-        self.accept()
+        selected_value = vals[0]
+        self.on_import_replacement(selected_value)
+        if isinstance(selected_value, int):
+            result_text = f'Replace With set to asset ID {selected_value}'
+        else:
+            result_text = f'Replace With set to value {selected_value}'
+        QMessageBox.information(
+            self,
+            'Replace With Set',
+            result_text,
+        )

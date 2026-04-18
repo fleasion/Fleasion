@@ -865,12 +865,30 @@ def _write_hosts_file(content: str) -> None:
         ) from exc
 
 
-def _add_hosts_entries(hosts: Set[str]) -> bool:
+def _add_hosts_entries(hosts: Set[str], error_details: Optional[dict] = None) -> bool:
     """Append redirect entries for *hosts* to the system hosts file.
 
     Returns True on success.  Skips entries already present.
     Creates the hosts file from the Windows default if it is missing.
+    If *error_details* is provided and a write fails with PermissionError,
+    it is populated with metadata for user-facing error notifications.
     """
+    def _record_error(exc: OSError) -> None:
+        if error_details is None:
+            return
+        err_text = str(exc)
+        all_attempts_exhausted = 'all strategies exhausted' in err_text.lower()
+        error_details.clear()
+        error_details.update(
+            {
+                'hosts_path': str(HOSTS_FILE),
+                'hosts_directory': str(HOSTS_FILE.parent),
+                'error': err_text,
+                'all_attempts_exhausted': all_attempts_exhausted,
+                'notify_user': isinstance(exc, PermissionError) or all_attempts_exhausted,
+            }
+        )
+
     try:
         existing = HOSTS_FILE.read_text(encoding='utf-8', errors='replace')
     except FileNotFoundError:
@@ -903,9 +921,11 @@ def _add_hosts_entries(hosts: Set[str]) -> bool:
             log_buffer.log('Hosts', 'hosts file was missing — created new default hosts file')
         except OSError as exc:
             log_buffer.log('Hosts', f'Failed to create hosts file: {exc}')
+            _record_error(exc)
             return False
     except OSError as exc:
         log_buffer.log('Hosts', f'Cannot read hosts file: {exc}')
+        _record_error(exc)
         return False
 
     lines_to_add = []
@@ -926,9 +946,11 @@ def _add_hosts_entries(hosts: Set[str]) -> bool:
         return True
     except PermissionError as exc:
         log_buffer.log('Hosts', f'Permission denied writing hosts file: {exc}')
+        _record_error(exc)
         return False
     except OSError as exc:
         log_buffer.log('Hosts', f'Failed to write hosts file: {exc}')
+        _record_error(exc)
         return False
 
 
@@ -1591,7 +1613,10 @@ class ProxyMaster:
             return
 
         # ── Write hosts file entries ──────────────────────────────────────
-        if not _add_hosts_entries(set(INTERCEPT_HOSTS)):
+        hosts_error_details: dict = {}
+        if not _add_hosts_entries(set(INTERCEPT_HOSTS), error_details=hosts_error_details):
+            if hosts_error_details.get('notify_user'):
+                self._emit_proxy_start_error('hosts_write_exhausted', hosts_error_details)
             # Hosts write failed - stop the server and bail
             await self._proxy.stop()
             self._running = False
