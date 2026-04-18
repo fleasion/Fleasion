@@ -135,6 +135,16 @@ class LogsWindow(QDialog):
         self.time_timer.timeout.connect(self._refresh_time_label)
         self.time_timer.start(1000)
 
+    def showEvent(self, a0):
+        if not self.timer.isActive():
+            self.timer.start(250)
+        if not self.time_timer.isActive():
+            self.time_timer.start(1000)
+
+        self._update_logs()
+        self._refresh_time_label()
+        super().showEvent(a0)
+
     def _update_logs(self):
         logs = log_buffer.get_all()
         count = len(logs)
@@ -165,7 +175,7 @@ class LogsWindow(QDialog):
         total = time_tracker.get_total_seconds()
         self.time_label.setText(f'Time wasted: {time_tracker.format_duration(total)}')
 
-    def closeEvent(self, event):
+    def closeEvent(self, a0):
         self.timer.stop()
         self.time_timer.stop()
-        super().closeEvent(event)
+        super().closeEvent(a0)

@@ -4,6 +4,7 @@ import json
 import urllib.request
 from copy import deepcopy
 from pathlib import Path
+import time
 from typing import Union
 from urllib.error import URLError
 
@@ -86,6 +87,8 @@ class ReplacerConfigWindow(QDialog):
         self.undo_manager = UndoManager()
         self.undo_manager.save_state(self.config_manager.replacement_rules)
         self.config_enabled_vars = {}
+        self._asset_types_popup_last_closed = 0.0
+        self._dialog_asset_types_popup_last_closed = 0.0
 
         self.setWindowTitle(f'{APP_NAME} - Dashboard')
         self.resize(900, 750)
@@ -115,6 +118,15 @@ class ReplacerConfigWindow(QDialog):
     def closeEvent(self, event):
         """Save window geometry on close."""
         self.config_manager.window_geometry = self.saveGeometry().toHex().data().decode('utf-8')
+        if (
+            self._system_tray is not None
+            and self._system_tray.config_manager.close_to_tray
+            and not self._system_tray._exiting
+        ):
+            try:
+                self._system_tray.notify_dashboard_closed()
+            except Exception:
+                pass
         super().closeEvent(event)
 
     def _set_icon(self):
@@ -154,6 +166,7 @@ class ReplacerConfigWindow(QDialog):
         # Create Subplace Joiner tab
         from .subplace_joiner_tab import SubplaceJoinerTab
         self._subplace_tab = SubplaceJoinerTab(rando_tab=self._rando_stuff_tab)
+        self._rando_stuff_tab.selected_account_changed.connect(self._subplace_tab.set_selected_account)
         self.tab_widget.addTab(self._subplace_tab, 'Subplace Joiner')
         if self.proxy_master is not None:
             self.proxy_master.register_module_interceptor(self._subplace_tab)
@@ -182,6 +195,9 @@ class ReplacerConfigWindow(QDialog):
 
         redo_shortcut = QShortcut(QKeySequence('Ctrl+Y'), self)
         redo_shortcut.activated.connect(self._do_redo)
+
+        escape_shortcut = QShortcut(QKeySequence('Escape'), self)
+        escape_shortcut.activated.connect(self.close)
 
     def _create_replacer_tab(self):
         """Create the replacer configuration tab."""
@@ -227,7 +243,7 @@ class ReplacerConfigWindow(QDialog):
         config_group.setStyleSheet('QGroupBox::title { padding-left: 5px; }')
         config_layout = QVBoxLayout()
 
-        # Row 1: Config editing selector
+        # Row 1: Configuration controls
         row1 = QHBoxLayout()
         editing_label = QLabel('Editing:')
         editing_label.setFixedWidth(50)
@@ -243,6 +259,30 @@ class ReplacerConfigWindow(QDialog):
 
         self._rebuild_editing_menu()
 
+        row1.addSpacing(12)
+
+        enabled_label = QLabel('Enabled:')
+        enabled_label.setFixedWidth(50)
+        row1.addWidget(enabled_label)
+
+        self.enabled_menu_btn = QPushButton('Select...')
+        self.enabled_menu = QMenu(self.enabled_menu_btn)
+        # Install event filter to keep menu open on checkbox click
+        self.enabled_menu.installEventFilter(self)
+        self.enabled_menu.aboutToShow.connect(self._rebuild_enabled_menu)
+        self.enabled_menu_btn.setMenu(self.enabled_menu)
+        row1.addWidget(self.enabled_menu_btn)
+
+        self._rebuild_enabled_menu()
+
+        row1.addSpacing(8)
+
+        separator = QLabel('|')
+        separator.setStyleSheet('padding-bottom: 6px;')
+        row1.addWidget(separator)
+
+        row1.addSpacing(8)
+
         for text, action in [
             ('New', 'new'),
             ('Duplicate', 'dup'),
@@ -257,25 +297,6 @@ class ReplacerConfigWindow(QDialog):
 
         row1.addStretch()
         config_layout.addLayout(row1)
-
-        # Row 2: Enabled configs selector
-        row2 = QHBoxLayout()
-        enabled_label = QLabel('Enabled:')
-        enabled_label.setFixedWidth(50)
-        row2.addWidget(enabled_label)
-
-        self.enabled_menu_btn = QPushButton('Select...')
-        self.enabled_menu = QMenu(self.enabled_menu_btn)
-        # Install event filter to keep menu open on checkbox click
-        self.enabled_menu.installEventFilter(self)
-        self.enabled_menu.aboutToShow.connect(self._rebuild_enabled_menu)
-        self.enabled_menu_btn.setMenu(self.enabled_menu)
-        row2.addWidget(self.enabled_menu_btn)
-
-        self._rebuild_enabled_menu()
-
-        row2.addStretch()
-        config_layout.addLayout(row2)
 
         config_group.setLayout(config_layout)
         parent_layout.addWidget(config_group)
@@ -344,6 +365,7 @@ class ReplacerConfigWindow(QDialog):
         from ..cache.cache_viewer import CategoryFilterPopup
         self.asset_types_popup = CategoryFilterPopup(parent=self)
         self.asset_types_popup.filters_changed.connect(self._on_asset_types_changed)
+        self.asset_types_popup.aboutToHide.connect(self._mark_asset_types_popup_closed)
         ids_layout.addWidget(self.asset_types_btn)
         
         edit_layout.addLayout(ids_layout)
@@ -934,28 +956,9 @@ class ReplacerConfigWindow(QDialog):
         types_btn = QPushButton('Asset Types')
         
         def show_dialog_types_popup():
-            from ..cache.cache_viewer import CategoryFilterPopup
-            from ..cache.cache_manager import CacheManager
-
-            _VIRTUAL_ANIM_TYPES = {'R6Animation', 'R15Animation', 'NonPlayerAnimation'}
-
-            content = text_edit.toPlainText().strip()
-            current_ids = self._parse_ids(content.replace('\n', ','))
-
-            active_filters = set()
-            for item in current_ids:
-                if isinstance(item, str):
-                    if item in _VIRTUAL_ANIM_TYPES:
-                        active_filters.add(item)
-                        continue
-                    for tid, name in CacheManager.ASSET_TYPES.items():
-                        if name.lower() == item.lower():
-                            active_filters.add(tid)
-                            break
-
-            popup = CategoryFilterPopup(parent=dialog, active_filters=active_filters)
-
             def on_filters_changed(filters):
+                from ..cache.cache_manager import CacheManager
+
                 curr_content = text_edit.toPlainText().strip()
                 curr_ids = self._parse_ids(curr_content.replace('\n', ','))
                 new_ids = []
@@ -984,11 +987,51 @@ class ReplacerConfigWindow(QDialog):
                 else:
                     text_edit.setPlainText('')
 
-            popup.filters_changed.connect(on_filters_changed)
-            
+            import time as _time
+            from ..cache.cache_viewer import CategoryFilterPopup
+            from ..cache.cache_manager import CacheManager
+            from PyQt6.QtCore import QPoint
+
+            if _time.monotonic() - self._dialog_asset_types_popup_last_closed < 0.25:
+                return
+
+            _VIRTUAL_ANIM_TYPES = {'R6Animation', 'R15Animation', 'NonPlayerAnimation'}
+
+            content = text_edit.toPlainText().strip()
+            current_ids = self._parse_ids(content.replace('\n', ','))
+
+            active_filters = set()
+            for item in current_ids:
+                if isinstance(item, str):
+                    if item in _VIRTUAL_ANIM_TYPES:
+                        active_filters.add(item)
+                        continue
+                    for tid, name in CacheManager.ASSET_TYPES.items():
+                        if name.lower() == item.lower():
+                            active_filters.add(tid)
+                            break
+
+            popup = getattr(self, '_dialog_asset_types_popup', None)
+            if popup is not None:
+                try:
+                    if popup.isVisible():
+                        popup.close()
+                        self._dialog_asset_types_popup_last_closed = _time.monotonic()
+                        return
+                except RuntimeError:
+                    popup = None
+
+            if popup is None:
+                popup = CategoryFilterPopup(parent=dialog, active_filters=active_filters)
+                popup.filters_changed.connect(on_filters_changed)
+                popup.aboutToHide.connect(self._mark_dialog_asset_types_popup_closed)
+                self._dialog_asset_types_popup = popup
+            else:
+                popup.set_active_filters(active_filters)
+
             # Line up TOP LEFT of our popup menu with TOP LEFT of the Asset Types button
             pos = types_btn.mapToGlobal(types_btn.rect().topLeft())
-            popup.exec(pos)
+            popup.popup(pos)
 
         types_btn.clicked.connect(show_dialog_types_popup)
         btn_layout.addWidget(types_btn)
@@ -1120,6 +1163,17 @@ class ReplacerConfigWindow(QDialog):
     def _show_asset_types_popup(self):
         """Show the asset types popup menu."""
         from ..cache.cache_manager import CacheManager
+        from PyQt6.QtCore import QPoint
+        from PyQt6.QtWidgets import QApplication
+
+        if time.monotonic() - self._asset_types_popup_last_closed < 0.25:
+            return
+
+        popup = self.asset_types_popup
+        if popup.isVisible():
+            popup.close()
+            self._asset_types_popup_last_closed = time.monotonic()
+            return
 
         _VIRTUAL_ANIM_TYPES = {'R6Animation', 'R15Animation', 'NonPlayerAnimation'}
 
@@ -1138,17 +1192,13 @@ class ReplacerConfigWindow(QDialog):
                     if name.lower() == item.lower():
                         active_filters.add(tid)
                         break
-        
-        # Create fresh popup with current active filters
-        from ..cache.cache_viewer import CategoryFilterPopup
-        self.asset_types_popup = CategoryFilterPopup(parent=self, active_filters=active_filters)
-        self.asset_types_popup.filters_changed.connect(self._on_asset_types_changed)
-        
-        from PyQt6.QtCore import QPoint
-        from PyQt6.QtWidgets import QApplication
+
+        # Reuse the existing popup instance and update its current selection.
+        popup = self.asset_types_popup
+        popup.set_active_filters(active_filters)
 
         global_top_right = self.asset_types_btn.mapToGlobal(self.asset_types_btn.rect().topRight())
-        popup_size = self.asset_types_popup.sizeHint()
+        popup_size = popup.sizeHint()
 
         # Ideal: bottom-right of popup aligns with top-right of button
         ideal_x = global_top_right.x() - popup_size.width()
@@ -1160,7 +1210,15 @@ class ReplacerConfigWindow(QDialog):
         x = max(avail.left(), min(ideal_x, avail.right() - popup_size.width()))
         y = max(avail.top(), min(ideal_y, avail.bottom() - popup_size.height()))
 
-        self.asset_types_popup.exec(QPoint(x, y))
+        popup.popup(QPoint(x, y))
+
+    def _mark_asset_types_popup_closed(self):
+        """Remember that the Asset Types popup just closed to debounce reopen clicks."""
+        self._asset_types_popup_last_closed = time.monotonic()
+
+    def _mark_dialog_asset_types_popup_closed(self):
+        """Remember that the edit dialog Asset Types popup just closed."""
+        self._dialog_asset_types_popup_last_closed = time.monotonic()
         
     def _on_asset_types_changed(self, filters):
         """Handle asset types selection change."""

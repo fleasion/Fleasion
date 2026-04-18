@@ -30,7 +30,9 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QCheckBox,
+    QRadioButton,
     QSizePolicy,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -42,7 +44,7 @@ except Exception:
 
 from ..utils.paths import CONFIG_DIR
 from ..utils.logging import log_buffer
-from ..utils.windows import launch_as_standard_user
+from ..utils.windows import launch_as_standard_user, resolve_roblox_player_exe_for_launch
 
 ACCOUNTS_FILE = CONFIG_DIR / 'accounts.json'
 
@@ -268,18 +270,9 @@ def _resolve_share_link(link: str, cookie: str = "") -> tuple[str, str]:
 
 
 def _find_roblox_exe() -> str | None:
-    """Return path to RobloxPlayerBeta.exe from the most-recently-modified version folder."""
-    versions_dir = Path(os.path.expandvars(r"%LocalAppData%")) / "Roblox" / "Versions"
-    if not versions_dir.exists():
-        return None
-    candidates = []
-    for d in versions_dir.iterdir():
-        exe = d / "RobloxPlayerBeta.exe"
-        if exe.exists():
-            candidates.append((d.stat().st_mtime, str(exe)))
-    if candidates:
-        return sorted(candidates, reverse=True)[0][1]
-    return None
+    """Return best Roblox executable path using shared resolver fallbacks."""
+    exe_path = resolve_roblox_player_exe_for_launch()
+    return str(exe_path) if exe_path is not None else None
 
 
 # Add / Change Cookie dialog
@@ -388,6 +381,8 @@ class _Invoker(QObject):
 class RandoStuffTab(QWidget):
     """Rando Stuff tab – proxy interceptor + UI combined."""
 
+    selected_account_changed = pyqtSignal(str)
+
     _WANTED_ENDPOINTS = (
         "/v1/join-game",
         "/v1/join-play-together-game",
@@ -405,6 +400,17 @@ class RandoStuffTab(QWidget):
         self._doing_rejoin = False
         self._awaiting_rejoin_response = False
         self._active_rejoin_attempt_id = None  # gameJoinAttemptId being redirected
+        loaded_subplace_blacklist = []
+        loaded_subplace_mode = 'block'
+        if self._config is not None:
+            loaded_subplace_blacklist = getattr(self._config, 'subplace_blacklist', [])
+            loaded_subplace_mode = getattr(self._config, 'subplace_blacklist_mode', 'block')
+        self._subplace_blacklisted_ids: set[str] = set(
+            self._parse_numeric_id_list(','.join(str(x) for x in loaded_subplace_blacklist))
+        )
+        self._subplace_block_mode = 'stall' if loaded_subplace_mode == 'stall' else 'block'
+        self._blocked_subplace_log_at: dict[str, float] = {}
+        self._subplace_unblock_until = 0.0
         self._lock = threading.Lock()
 
         self._multi_stop = threading.Event()
@@ -428,6 +434,97 @@ class RandoStuffTab(QWidget):
                 self._on_multi_instance_toggled(True, persist=False)
         threading.Thread(target=self._check_cookies_on_boot, daemon=True).start()
         threading.Thread(target=self._resolve_current_user, daemon=True).start()
+
+        if self._subplace_blacklisted_ids:
+            count = len(self._subplace_blacklisted_ids)
+            log_buffer.log('subplace', f'Loaded subplace blacklist: {count} ID(s) active')
+
+    @staticmethod
+    def _normalize_numeric_id(value) -> str | None:
+        try:
+            return str(int(str(value).strip()))
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _parse_numeric_id_list(cls, raw_value: str) -> list[str]:
+        content = raw_value.replace('\n', ',').replace(';', ',').replace(' ', ',')
+        ids = []
+        for part in content.split(','):
+            normalized = cls._normalize_numeric_id(part)
+            if normalized is not None:
+                ids.append(normalized)
+        return ids
+
+    def _is_subplace_blacklisted(self, place_id) -> bool:
+        normalized = self._normalize_numeric_id(place_id)
+        return normalized is not None and normalized in self._subplace_blacklisted_ids
+
+    def _drop_subplace_join(self, flow, place_id: str, attempt_id: str | None = None):
+        with self._lock:
+            mode = self._subplace_block_mode
+
+        if mode == 'stall':
+            payload = {
+                'jobId': None,
+                'status': 1,
+                'joinScriptUrl': None,
+                'authenticationUrl': None,
+                'authenticationTicket': None,
+                'message': '',
+                'joinScript': None,
+                'queuePosition': 0,
+            }
+            log_interval = 10.0
+        else:
+            payload = {
+                'jobId': None,
+                'status': 12,
+                'joinScriptUrl': None,
+                'authenticationUrl': None,
+                'authenticationTicket': None,
+                'message': 'Teleport blocked by Subplace Blacklist.',
+                'joinScript': None,
+                'queuePosition': 0,
+            }
+            log_interval = 5.0
+
+        flow.drop_request = True
+        flow.drop_status_code = 200
+        flow.drop_body = json.dumps(payload, separators=(',', ':')).encode('utf-8')
+
+        key = f'{place_id}:{attempt_id or ""}'
+        now = time.time()
+        last = self._blocked_subplace_log_at.get(key, 0.0)
+        if now - last >= log_interval:
+            self._blocked_subplace_log_at[key] = now
+            if len(self._blocked_subplace_log_at) > 512:
+                cutoff = now - 30.0
+                self._blocked_subplace_log_at = {
+                    k: ts for k, ts in self._blocked_subplace_log_at.items() if ts >= cutoff
+                }
+            log_buffer.log('subplace', f'Blocked join request to blacklisted subplace ID: {place_id}')
+
+    def _set_subplace_block_mode(self, mode: str, checked: bool):
+        if not checked:
+            return
+        with self._lock:
+            self._subplace_block_mode = mode
+        if self._config is not None:
+            self._config.subplace_blacklist_mode = mode
+        if mode == 'stall':
+            log_buffer.log('subplace', 'Subplace blacklist mode: Infinitely Stall Subplace')
+        else:
+            log_buffer.log('subplace', 'Subplace blacklist mode: Block Subplace')
+
+    def _is_subplace_unblock_active(self) -> bool:
+        with self._lock:
+            return time.time() < self._subplace_unblock_until
+
+    def _on_subplace_unblock_for_5s(self):
+        with self._lock:
+            self._subplace_unblock_until = time.time() + 5.0
+        log_buffer.log('subplace', 'Subplace blacklist bypass enabled for 5 seconds')
 
     # UI
 
@@ -546,6 +643,34 @@ class RandoStuffTab(QWidget):
 
         root.addWidget(ac_group)
 
+        subplace_blacklist_group = QGroupBox('Subplace Blacklist')
+        subplace_blacklist_layout = QVBoxLayout(subplace_blacklist_group)
+        subplace_blacklist_row = QHBoxLayout()
+        self._subplace_blacklist_btn = QPushButton('Blacklist Subplaces...')
+        self._subplace_blacklist_btn.clicked.connect(self._show_subplace_blacklist_dialog)
+        subplace_blacklist_row.addWidget(self._subplace_blacklist_btn)
+        self._subplace_unblock_btn = QPushButton('Unblock For 5s')
+        self._subplace_unblock_btn.clicked.connect(self._on_subplace_unblock_for_5s)
+        subplace_blacklist_row.addWidget(self._subplace_unblock_btn)
+        subplace_blacklist_row.addStretch()
+        subplace_blacklist_layout.addLayout(subplace_blacklist_row)
+
+        self._subplace_block_radio = QRadioButton('Block Subplace')
+        self._subplace_stall_radio = QRadioButton('Infinitely Stall Subplace')
+        if self._subplace_block_mode == 'stall':
+            self._subplace_stall_radio.setChecked(True)
+        else:
+            self._subplace_block_radio.setChecked(True)
+        self._subplace_block_radio.toggled.connect(
+            lambda checked: self._set_subplace_block_mode('block', checked)
+        )
+        self._subplace_stall_radio.toggled.connect(
+            lambda checked: self._set_subplace_block_mode('stall', checked)
+        )
+        subplace_blacklist_layout.addWidget(self._subplace_block_radio)
+        subplace_blacklist_layout.addWidget(self._subplace_stall_radio)
+        root.addWidget(subplace_blacklist_group)
+
         root.addStretch()
 
         footer_widget = QWidget()
@@ -575,7 +700,7 @@ class RandoStuffTab(QWidget):
                 log_buffer.log("randostuff", "No reserved server logged yet — join one first.")
                 return
             self._doing_rejoin = True
-        log_buffer.log("randostuff", f"Rejoin triggered — placeId={self._last_place_id}, accessCode={self._last_access_code}")
+        log_buffer.log("randostuff", f"Rejoin triggered — placeId={self._last_place_id}")
         if not launch_as_standard_user(f"roblox://placeId={self._last_place_id}"):
             log_buffer.log("randostuff", "Failed to launch Roblox without elevation")
 
@@ -615,6 +740,94 @@ class RandoStuffTab(QWidget):
         )
         msg.setIcon(QMessageBox.Icon.NoIcon)
         msg.exec()
+
+    def _show_subplace_blacklist_dialog(self):
+        from ..utils import get_icon_path
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Blacklist Subplace...')
+        dialog.resize(400, 350)
+        if icon_path := get_icon_path():
+            from PyQt6.QtGui import QIcon
+            dialog.setWindowIcon(QIcon(str(icon_path)))
+
+        layout = QVBoxLayout()
+
+        title = QLabel('Blacklisted Subplace IDs')
+        title.setStyleSheet('font-weight: bold;')
+        layout.addWidget(title)
+
+        hint = QLabel('Enter subplace IDs separated by commas, spaces, newlines, or semicolons.')
+        hint.setStyleSheet('color: gray; font-size: 9pt;')
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        text_edit = QTextEdit()
+        text_edit.setAcceptRichText(False)
+        text_edit.setPlaceholderText('e.g. 1818, 1234567890, 9876543210')
+
+        if self._subplace_blacklisted_ids:
+            text_edit.setPlainText(', '.join(sorted(self._subplace_blacklisted_ids, key=lambda x: int(x))))
+        layout.addWidget(text_edit)
+
+        search_layout = QHBoxLayout()
+        search_layout.setContentsMargins(0, 0, 0, 0)
+        search_edit = QLineEdit()
+        search_edit.setPlaceholderText('Search IDs')
+        search_layout.addWidget(search_edit)
+        search_layout.addStretch()
+        status_label = QLabel('')
+        status_label.setStyleSheet('color: #888; font-size: 9pt;')
+        search_layout.addWidget(status_label)
+        apply_btn = QPushButton('Apply blacklist')
+        search_layout.addWidget(apply_btn)
+        layout.addLayout(search_layout)
+
+        dialog.setLayout(layout)
+
+        _last_search_query = ['']
+
+        def _search_id():
+            query = search_edit.text().strip()
+            if not query:
+                return
+            doc = text_edit.document()
+            if doc is None:
+                return
+            if query != _last_search_query[0]:
+                _last_search_query[0] = query
+                text_edit.moveCursor(text_edit.textCursor().MoveOperation.Start)
+            cursor = doc.find(query, text_edit.textCursor())
+            if cursor.isNull():
+                cursor = doc.find(query)
+            if not cursor.isNull():
+                text_edit.setTextCursor(cursor)
+                text_edit.ensureCursorVisible()
+                status_label.setText('')
+            else:
+                status_label.setText(f'ID {query} not found.')
+                status_label.setStyleSheet('color: #cc5555; font-size: 9pt;')
+
+        search_edit.returnPressed.connect(_search_id)
+        search_edit.textChanged.connect(lambda: status_label.setText(''))
+
+        def _apply():
+            ids = self._parse_numeric_id_list(text_edit.toPlainText().strip())
+            self._subplace_blacklisted_ids = set(ids)
+            if self._config is not None:
+                self._config.subplace_blacklist = ids
+            count = len(self._subplace_blacklisted_ids)
+            status_label.setText(f'Blacklist applied: {count} ID(s).')
+            status_label.setStyleSheet('color: #55cc55; font-size: 9pt;')
+            if self._subplace_blacklisted_ids:
+                ordered = ', '.join(sorted(self._subplace_blacklisted_ids, key=lambda x: int(x) if x.isdigit() else 0))
+                log_buffer.log('subplace', f'Subplace blacklist updated: {count} ID(s) active - {ordered}')
+            else:
+                log_buffer.log('subplace', 'Subplace blacklist cleared')
+
+        apply_btn.clicked.connect(_apply)
+
+        dialog.exec()
 
     # Multi-instance
 
@@ -824,6 +1037,14 @@ class RandoStuffTab(QWidget):
                 self._job_id_input.clear()
                 self._auto_filled_for_place = None
 
+    def _set_selected_account(self, username: str):
+        username = (username or '').strip()
+        if not username:
+            self._selected_label.setText('Selected: (none)')
+            return
+        self._selected_label.setText(f'Selected: {username}')
+        self.selected_account_changed.emit(username)
+
     def _resolve_current_user(self):
         """Background thread: read the active Roblox cookie and update the selected label."""
         from ..utils.roblox_auth import get_roblosecurity as _get_roblosecurity
@@ -843,7 +1064,7 @@ class RandoStuffTab(QWidget):
                 username = resp.json().get("name", "")
                 if username:
                     def _update(u=username):
-                        self._selected_label.setText(f"Selected: {u}")
+                        self._set_selected_account(u)
                     self._invoker.call.emit(_update)
         except Exception:
             pass
@@ -939,18 +1160,25 @@ class RandoStuffTab(QWidget):
         self._populate_account_list()
 
     def _on_launch_account(self):
+        log_buffer.log("accounts", "Launch button clicked")
         acc = self._last_switched_account
         if acc is None:
+            log_buffer.log("accounts", "Launch aborted: no switched account selected")
             QMessageBox.information(self, "No Account Switched",
                                     "Use 'Switch to selected' first to pick an account.")
             return
         cookie = _decrypt_cookie(acc.get("cookie", ""))
         if not cookie:
+            log_buffer.log("accounts", "Launch aborted: failed to decrypt cookie")
             QMessageBox.warning(self, "Error", "Could not decrypt the stored cookie.")
             return
         username = acc.get("username", "(unknown)")
         link = self._private_server_input.text().strip()
         job_id = self._job_id_input.text().strip()
+        log_buffer.log(
+            "accounts",
+            f"Launch request prepared for {username}: hasLink={'yes' if bool(link) else 'no'}, hasJobId={'yes' if bool(job_id) else 'no'}",
+        )
 
         if _is_share_link(link):
             self._launch_acct_btn.setEnabled(False)
@@ -1002,7 +1230,7 @@ class RandoStuffTab(QWidget):
         try:
             self._write_cookie_to_dat(cookie)
             self._last_switched_account = acc
-            self._selected_label.setText(f"Selected: {username}")
+            self._set_selected_account(username)
             log_buffer.log("accounts", f"Switched Roblox cookie to account: {username}")
         except Exception as exc:
             QMessageBox.warning(self, "Error", f"Failed to write cookie: {exc}")
@@ -1015,13 +1243,19 @@ class RandoStuffTab(QWidget):
 
         exe = _find_roblox_exe()
         if not exe:
+            log_buffer.log("accounts", "Roblox executable resolution failed before launch")
             QTimer.singleShot(0, lambda: QMessageBox.warning(
                 self, "Roblox Not Found",
                 "Could not locate RobloxPlayerBeta.exe. Is Roblox installed?"
             ))
             return
+        log_buffer.log("accounts", f"Resolved Roblox executable: {exe}")
 
         place_id, link_code = _parse_game_link(private_server_link)
+        log_buffer.log(
+            "accounts",
+            f"Launch parse result: placeId={place_id or '(none)'}, linkCode={'present' if bool(link_code) else 'missing'}, jobId={'present' if bool(job_id) else 'missing'}",
+        )
         launch_ok = False
         if place_id and link_code:
             # Private server launch
@@ -1045,16 +1279,19 @@ class RandoStuffTab(QWidget):
                     f"+browsertrackerid:{tracker_id}+robloxLocale:en_us+gameLocale:en_us"
                     f"+channel:+LaunchExp:InApp"
                 )
+                log_buffer.log("accounts", f"Launching Roblox URI to placeId={place_id} (private server)")
                 launch_ok = launch_as_standard_user(roblox_player_uri)
                 if not launch_ok:
                     log_buffer.log("accounts", "Failed to launch Roblox URI without elevation")
             else:
                 log_buffer.log("accounts", "Failed to get auth ticket, falling back to deeplink")
                 deeplink = f"roblox://experiences/start?placeId={place_id}&linkCode={link_code}"
+                log_buffer.log("accounts", f"Launching Roblox executable fallback: {exe}")
                 exe_started = launch_as_standard_user(exe)
                 if not exe_started:
                     log_buffer.log("accounts", "Failed to launch RobloxPlayerBeta.exe without elevation")
                 time.sleep(3)
+                log_buffer.log("accounts", f"Launching Roblox deeplink to placeId={place_id} with linkCode")
                 deeplink_started = launch_as_standard_user(deeplink)
                 if not deeplink_started:
                     log_buffer.log("accounts", "Failed to launch Roblox deeplink without elevation")
@@ -1087,6 +1324,10 @@ class RandoStuffTab(QWidget):
                     f"+browsertrackerid:{tracker_id}+robloxLocale:en_us+gameLocale:en_us"
                     f"+channel:+LaunchExp:InApp"
                 )
+                if job_id:
+                    log_buffer.log("accounts", f"Launching Roblox URI to placeId={place_id}, gameId={job_id}")
+                else:
+                    log_buffer.log("accounts", f"Launching Roblox URI to placeId={place_id}")
                 launch_ok = launch_as_standard_user(roblox_player_uri)
                 if not launch_ok:
                     log_buffer.log("accounts", "Failed to launch Roblox URI without elevation")
@@ -1102,15 +1343,18 @@ class RandoStuffTab(QWidget):
                     with self._lock:
                         self._account_manager_job_id = job_id
                 deeplink = f"roblox://experiences/start?placeId={place_id}"
+                log_buffer.log("accounts", f"Launching Roblox executable fallback: {exe}")
                 exe_started = launch_as_standard_user(exe)
                 if not exe_started:
                     log_buffer.log("accounts", "Failed to launch RobloxPlayerBeta.exe without elevation")
                 time.sleep(3)
+                log_buffer.log("accounts", f"Launching Roblox deeplink to placeId={place_id}")
                 deeplink_started = launch_as_standard_user(deeplink)
                 if not deeplink_started:
                     log_buffer.log("accounts", "Failed to launch Roblox deeplink without elevation")
                 launch_ok = exe_started and deeplink_started
         else:
+            log_buffer.log("accounts", f"Launching Roblox executable: {exe}")
             launch_ok = launch_as_standard_user(exe)
             if not launch_ok:
                 log_buffer.log("accounts", "Failed to launch RobloxPlayerBeta.exe without elevation")
@@ -1274,15 +1518,25 @@ class RandoStuffTab(QWidget):
                 body = json.loads(flow.request.content)
                 place_id = body.get("placeId")
                 access_code = body.get("accessCode")
+                attempt_id = body.get('gameJoinAttemptId')
+                normalized_place_id = self._normalize_numeric_id(place_id)
+                if (
+                    normalized_place_id is not None
+                    and normalized_place_id in self._subplace_blacklisted_ids
+                    and not self._is_subplace_unblock_active()
+                ):
+                    self._drop_subplace_join(flow, normalized_place_id, attempt_id=str(attempt_id) if attempt_id else None)
+                    return
                 session_id = flow.request.headers.get("Roblox-Session-Id", "")
                 if place_id is not None and access_code is not None:
                     with self._lock:
                         self._last_place_id = place_id
                         self._last_access_code = access_code
                         self._last_session_id = session_id or None
+                    has_session = bool(session_id)
                     log_buffer.log(
                         "randostuff", f"Logged reserved server — placeId={place_id}, "
-                        f"accessCode={access_code}, Roblox-Session-Id={session_id or '(none)'}"
+                        f"sessionHeader={'present' if has_session else 'missing'}"
                     )
                     self._update_labels(place_id, access_code)
             except Exception as exc:
@@ -1291,6 +1545,24 @@ class RandoStuffTab(QWidget):
 
         if parsed.path not in self._WANTED_ENDPOINTS:
             return
+
+        try:
+            precheck_body = json.loads(flow.request.content)
+            blocked_place_id = self._normalize_numeric_id(precheck_body.get('placeId'))
+            if (
+                blocked_place_id is not None
+                and blocked_place_id in self._subplace_blacklisted_ids
+                and not self._is_subplace_unblock_active()
+            ):
+                precheck_attempt_id = precheck_body.get('gameJoinAttemptId')
+                self._drop_subplace_join(
+                    flow,
+                    blocked_place_id,
+                    attempt_id=str(precheck_attempt_id) if precheck_attempt_id else None,
+                )
+                return
+        except Exception:
+            pass
 
         # Account manager: redirect join-game to join-game-instance if a jobId is pending
         if parsed.path == "/v1/join-game":
@@ -1338,6 +1610,18 @@ class RandoStuffTab(QWidget):
                 self._active_rejoin_attempt_id = None
             return
 
+        normalized_place_id = self._normalize_numeric_id(place_id)
+        if (
+            normalized_place_id is not None
+            and normalized_place_id in self._subplace_blacklisted_ids
+            and not self._is_subplace_unblock_active()
+        ):
+            self._drop_subplace_join(flow, normalized_place_id, attempt_id=str(attempt_id) if attempt_id else None)
+            with self._lock:
+                self._active_rejoin_attempt_id = None
+                self._awaiting_rejoin_response = False
+            return
+
         new_payload = {
             "placeId": place_id,
             "accessCode": access_code,
@@ -1351,7 +1635,6 @@ class RandoStuffTab(QWidget):
             flow.request.headers["Roblox-Session-Id"] = session_id
 
         log_buffer.log("randostuff", "Rejoin request -> POST gamejoin.roblox.com/v1/join-reserved-game")
-        log_buffer.log("randostuff", f"Rejoin request body: {json.dumps(new_payload)}")
         with self._lock:
             self._awaiting_rejoin_response = True
 
@@ -1359,11 +1642,12 @@ class RandoStuffTab(QWidget):
         if "gamejoin.roblox.com" not in flow.request.pretty_url:
             return
 
+        req_path = urlparse(flow.request.pretty_url).path
+
         # Capture jobId from a normal game join initiated by the account manager
         with self._lock:
             capture_place_id = self._account_manager_capture_place_id
         if capture_place_id:
-            req_path = urlparse(flow.request.pretty_url).path
             if req_path in ("/v1/join-game", "/v1/join-game-instance"):
                 try:
                     resp_json = json.loads(flow.response.content)
@@ -1395,13 +1679,17 @@ class RandoStuffTab(QWidget):
             log_buffer.log("randostuff", "Rejoin response: (none)")
             return
 
-        log_buffer.log("randostuff", f"Rejoin response status: {resp.status_code}")
         try:
             body_text = resp.content.decode('utf-8', errors='replace')
-            log_buffer.log("randostuff", f"Rejoin response body: {body_text}")
             resp_json = json.loads(body_text)
+            join_ready = bool(resp_json.get("joinScriptUrl"))
+            log_buffer.log(
+                "randostuff",
+                f"Rejoin response status: http={resp.status_code}, status={resp_json.get('status')}, "
+                f"joinScriptUrl={'yes' if join_ready else 'no'}",
+            )
             # status 2 = join script ready; clear the active attempt so no more redirects
-            if resp_json.get("status") == 2 or resp_json.get("joinScriptUrl"):
+            if resp_json.get("status") == 2 or join_ready:
                 with self._lock:
                     self._active_rejoin_attempt_id = None
                 log_buffer.log("randostuff", "Reserved server join ready — stopping redirect.")
@@ -1410,6 +1698,6 @@ class RandoStuffTab(QWidget):
                     self._active_rejoin_attempt_id = None
                 log_buffer.log("randostuff", "Reserved server join error — stopping redirect.")
         except Exception as exc:
-            log_buffer.log("randostuff", f"Could not read rejoin response body: {exc}")
+            log_buffer.log("randostuff", f"Could not parse rejoin response JSON: {exc}")
             with self._lock:
                 self._active_rejoin_attempt_id = None

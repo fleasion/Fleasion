@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlparse, quote
 
 import requests
+import urllib3
 from dateutil import parser as _dateutil_parser
 from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal
 from PyQt6.QtGui import QPalette, QImage, QPixmap
@@ -45,6 +46,8 @@ _DEFAULT_THUMB_URL = (
     "/revision/latest/scale-to-width-down/1000?cb=20250523160858"
 )
 _default_thumb_bytes_cache: list[bytes] = []  # single-element list so it's mutable
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 def _get_default_thumb_bytes() -> bytes | None:
@@ -533,10 +536,15 @@ class SubplaceJoinerTab(QWidget):
                 username = resp.json().get("name", "")
                 if username:
                     def _update(u=username):
-                        self._selected_label.setText(f"Selected: {u}")
+                        self.set_selected_account(u)
                     self._invoker.call.emit(_update)
         except Exception:
             pass
+
+    def set_selected_account(self, username: str):
+        """Update the selected-account footer label from external account switches."""
+        username = (username or '').strip()
+        self._selected_label.setText(f"Selected: {username if username else '(none)'}")
 
     # UI setup
 
@@ -1133,6 +1141,13 @@ class SubplaceJoinerTab(QWidget):
                 card.on_open(lambda _, pid_val=pid: os.startfile(
                     f"https://www.roblox.com/games/{pid_val}"))
                 card.on_fetch_jobs(lambda _, pid_val=pid, c=card: self._open_job_ids(pid_val, c))
+            else:
+                card.join_btn.setEnabled(False)
+                card.fetch_jobs_btn.setEnabled(False)
+                card.job_id_edit.setEnabled(False)
+                card.join_btn.setToolTip('Join unavailable: placeId is missing for this card')
+                card.fetch_jobs_btn.setToolTip('JobIds unavailable: placeId is missing for this card')
+                log_buffer.log("subplace", f"Card created without placeId; join disabled (name={name})")
 
             self._cards.append(card)
             if pid is not None:
@@ -1278,11 +1293,13 @@ class SubplaceJoinerTab(QWidget):
                         f"+browsertrackerid:{tracker_id}+robloxLocale:en_us+gameLocale:en_us"
                         f"+channel:+LaunchExp:InApp"
                     )
+                    log_buffer.log("subplace", f"Launching Roblox URI to placeId={place_id} (multi-instance)")
                     if not launch_as_standard_user(roblox_player_uri):
                         log_buffer.log("subplace", "Failed to launch Roblox URI without elevation")
                 threading.Thread(target=_launch_with_uri, daemon=True).start()
                 return
         self.joining_place = True
+        log_buffer.log("subplace", f"Launching Roblox deeplink to placeId={place_id}")
         if not launch_as_standard_user(f"roblox://experiences/start?placeId={place_id}"):
             log_buffer.log("subplace", "Failed to launch Roblox deeplink without elevation")
 

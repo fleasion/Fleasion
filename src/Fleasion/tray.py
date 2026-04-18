@@ -1,5 +1,9 @@
 """System tray implementation."""
 
+import ctypes
+import os
+import winreg
+
 from PyQt6.QtGui import QAction, QIcon
 from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
@@ -7,6 +11,8 @@ from .gui import AboutWindow, DeleteCacheWindow, LogsWindow, ReplacerConfigWindo
 from .utils import APP_DISCORD, APP_NAME, APP_VERSION, get_icon_path, run_in_thread
 
 APP_KOFI = 'ko-fi.com/fleasion'
+_NOTIFICATION_APP_ID = f'{APP_NAME}.Notifications'
+_TOAST_TEMPLATE = '<toast><visual><binding template="ToastGeneric"></binding></visual></toast>'
 
 
 class SystemTray:
@@ -23,6 +29,8 @@ class SystemTray:
         self.open_windows = []
         self.dashboard_window = None
         self._exiting = False
+        self._dashboard_close_notice_shown = False
+        self._notification_app_id = None
 
         # Create tray icon
         self.tray = QSystemTrayIcon()
@@ -432,6 +440,82 @@ class SystemTray:
             self.dashboard_window.hide()
         else:
             self._show_replacer_config()
+
+    def notify_dashboard_closed(self):
+        """Show the tray notice that the app is still running."""
+        if self._dashboard_close_notice_shown:
+            return
+
+        self._dashboard_close_notice_shown = True
+        title = APP_NAME
+        message = 'Fleasion is still running in the system tray. Right click and select the exit option to quit.'
+        icon_path = get_icon_path()
+
+        if os.name != 'nt':
+            if icon_path is not None:
+                self.tray.showMessage(title, message, QIcon(str(icon_path)), 10000)
+            else:
+                self.tray.showMessage(title, message, QSystemTrayIcon.MessageIcon.NoIcon, 10000)
+            return
+
+        if self._show_windows_notification(title, message, icon_path):
+            return
+
+        if icon_path is not None:
+            self.tray.showMessage(title, message, QIcon(str(icon_path)), 10000)
+        else:
+            self.tray.showMessage(title, message, QSystemTrayIcon.MessageIcon.NoIcon, 10000)
+
+    def _show_windows_notification(self, title: str, message: str, icon_path) -> bool:
+        """Show a silent Windows toast with the app icon and app identity."""
+        try:
+            app_id = self._ensure_notification_app_id()
+            if not app_id:
+                return False
+
+            from win11toast import notify
+
+            notify(
+                title=title,
+                body=message,
+                icon=str(icon_path) if icon_path is not None else None,
+                audio={'silent': 'true'},
+                duration='short',
+                app_id=app_id,
+                xml=_TOAST_TEMPLATE,
+            )
+            return True
+        except Exception:
+            return False
+
+    def _ensure_notification_app_id(self) -> str | None:
+        """Register and cache the AUMID used for Fleasion notifications."""
+        if self._notification_app_id:
+            return self._notification_app_id
+
+        if os.name != 'nt':
+            return None
+
+        app_id = _NOTIFICATION_APP_ID
+        icon_path = get_icon_path()
+
+        try:
+            key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, rf'SOFTWARE\Classes\AppUserModelId\{app_id}')
+            winreg.SetValueEx(key, 'DisplayName', 0, winreg.REG_EXPAND_SZ, APP_NAME)
+            winreg.SetValueEx(key, 'IconBackgroundColor', 0, winreg.REG_SZ, '00000000')
+            if icon_path is not None:
+                winreg.SetValueEx(key, 'IconUri', 0, winreg.REG_SZ, str(icon_path))
+            winreg.SetValueEx(key, 'ShowInSettings', 0, winreg.REG_DWORD, 1)
+            try:
+                key.Close()
+            except Exception:
+                pass
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
+        except Exception:
+            return None
+
+        self._notification_app_id = app_id
+        return app_id
 
     def _on_tray_activated(self, reason):
         """Handle tray icon activation (e.g., click)."""

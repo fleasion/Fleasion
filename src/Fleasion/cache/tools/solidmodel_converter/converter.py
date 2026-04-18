@@ -141,6 +141,12 @@ def _export_obj_from_doc(
                     result = parse_csg_mesh_full(mesh_bytes)
                     vertices = result.vertices
                     indices = result.indices
+                    
+                    try:
+                        from ....utils import log_buffer
+                        log_buffer.log('SolidModel', f'Detected SolidModel version: version {result.version}.00')
+                    except Exception:
+                        pass
 
                     if result.submesh_boundaries and len(result.submesh_boundaries) > 1:
                         visual_end = result.submesh_boundaries[1]
@@ -151,11 +157,19 @@ def _export_obj_from_doc(
                             name, class_name, len(vertices), len(indices), total,
                             len(indices) // 3, (total - len(indices)) // 3,
                         )
+                        try:
+                            log_buffer.log('SolidModel', f'SolidModel part decoded: {len(vertices):,} vertices, {len(indices) // 3:,} faces (visual)')
+                        except Exception:
+                            pass
                     else:
                         log.info(
                             '  %s (%s): %d vertices, %d indices (%d triangles)',
                             name, class_name, len(vertices), len(indices), len(indices) // 3,
                         )
+                        try:
+                            log_buffer.log('SolidModel', f'SolidModel part decoded: {len(vertices):,} vertices, {len(indices) // 3:,} faces')
+                        except Exception:
+                            pass
 
                     obj_parts.append(ObjMeshPart(
                         name=name,
@@ -176,6 +190,12 @@ def _export_obj_from_doc(
     result = parse_csg_mesh_full(mesh_data)
     vertices = result.vertices
     indices = result.indices
+    
+    try:
+        from ....utils import log_buffer
+        log_buffer.log('SolidModel', f'Detected SolidModel version: version {result.version}.00')
+    except Exception:
+        pass
 
     # Use only the visual sub-mesh for v3/v4
     if result.submesh_boundaries and len(result.submesh_boundaries) > 1:
@@ -187,11 +207,19 @@ def _export_obj_from_doc(
             len(vertices), len(indices), total,
             len(indices) // 3, (total - len(indices)) // 3,
         )
+        try:
+            log_buffer.log('SolidModel', f'SolidModel decoded: {len(vertices):,} vertices, {len(indices) // 3:,} faces (visual)')
+        except Exception:
+            pass
     else:
         log.info(
             'Exporting pre-computed result: %d vertices, %d indices (%d triangles)',
             len(vertices), len(indices), len(indices) // 3,
         )
+        try:
+            log_buffer.log('SolidModel', f'SolidModel decoded: {len(vertices):,} vertices, {len(indices) // 3:,} faces')
+        except Exception:
+            pass
 
     obj_name = 'CSGMesh'
     for inst in doc.roots:

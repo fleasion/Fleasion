@@ -78,6 +78,8 @@ DEFAULT_SETTINGS = {
     'auto_convert_anim_rig': False,
     'skip_non_player_anim_replace': False,
     'scraper_blacklist': [],
+    'subplace_blacklist': [],
+    'subplace_blacklist_mode': 'block',
 }
 
 

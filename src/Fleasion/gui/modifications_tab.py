@@ -306,11 +306,33 @@ class CollapsibleSection(QWidget):
 
 
 # ═══════════════════════════════════════════════════════════════════
+# NoWheelSpinBox — QSpinBox that ignores mouse wheel events
+# ═══════════════════════════════════════════════════════════════════
+
+class NoWheelSpinBox(QSpinBox):
+    """QSpinBox that ignores wheel events to prevent accidental value changes."""
+
+    def wheelEvent(self, e):
+        e.ignore()
+
+
+class NoWheelSlider(QSlider):
+    """QSlider that ignores wheel events to prevent accidental value changes."""
+
+    def wheelEvent(self, e):
+        e.ignore()
+
+
+# ═══════════════════════════════════════════════════════════════════
 # DropdownComboBox — QComboBox with ▼ indicator instead of OS arrow
 # ═══════════════════════════════════════════════════════════════════
 
 class DropdownComboBox(QComboBox):
-    """QComboBox that paints ▼ as the dropdown indicator."""
+    """QComboBox that paints ▼ as the dropdown indicator and ignores wheel events."""
+
+    def wheelEvent(self, e):
+        """Ignore wheel events to prevent accidental value changes."""
+        e.ignore()
 
     def paintEvent(self, e):
         from PyQt6.QtWidgets import QStylePainter, QStyleOptionComboBox, QStyle
@@ -986,7 +1008,7 @@ class FFlagSection(QWidget):
         # MSAA
         grid.addWidget(QLabel('MSAA Level'), row, 0)
         self._msaa = DropdownComboBox()
-        self._msaa.addItems(['Default', '1', '2', '4'])
+        self._msaa.addItems(['Default', '1x (Lowest)', '2x', '4x (Highest)'])
         self._msaa.currentTextChanged.connect(self._schedule_write)
         grid.addWidget(self._msaa, row, 1)
         row += 1
@@ -1006,7 +1028,7 @@ class FFlagSection(QWidget):
         # Texture Quality
         grid.addWidget(QLabel('Texture Quality'), row, 0)
         self._texture_quality = DropdownComboBox()
-        self._texture_quality.addItems(['Default', '0', '1', '2', '3'])
+        self._texture_quality.addItems(['Default', 'Level 0 (Lowest)', 'Level 1', 'Level 2', 'Level 3 (Highest)'])
         self._texture_quality.currentTextChanged.connect(self._schedule_write)
         grid.addWidget(self._texture_quality, row, 1)
         row += 1
@@ -1016,16 +1038,17 @@ class FFlagSection(QWidget):
         self._mesh_lod_enabled.toggled.connect(self._on_mesh_lod_toggle)
         grid.addWidget(self._mesh_lod_enabled, row, 0)
         lod_row = QHBoxLayout()
-        self._mesh_lod_slider = QSlider(Qt.Orientation.Horizontal)
-        self._mesh_lod_slider.setRange(0, 3)
-        self._mesh_lod_slider.setValue(3)
+        lod_row.addWidget(QLabel('Default'))
+        self._mesh_lod_slider = NoWheelSlider(Qt.Orientation.Horizontal)
+        self._mesh_lod_slider.setRange(0, 4)  # 0=Default(no flag), 1=Level0, 2=Level1, 3=Level2, 4=Level3
+        self._mesh_lod_slider.setValue(4)
         self._mesh_lod_slider.setEnabled(False)
         self._mesh_lod_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self._mesh_lod_slider.setTickInterval(1)
         self._mesh_lod_slider.valueChanged.connect(self._schedule_write)
-        self._mesh_lod_value = QLabel('3')
+        self._mesh_lod_value = QLabel('Level 3')
         self._mesh_lod_slider.valueChanged.connect(
-            lambda v: self._mesh_lod_value.setText(str(v))
+            lambda v: self._mesh_lod_value.setText('Default' if v == 0 else f'Level {v - 1}')
         )
         lod_row.addWidget(self._mesh_lod_slider)
         lod_row.addWidget(self._mesh_lod_value)
@@ -1038,12 +1061,24 @@ class FFlagSection(QWidget):
         self._frm_enabled = QCheckBox('FRM Quality Override')
         self._frm_enabled.toggled.connect(self._on_frm_toggle)
         grid.addWidget(self._frm_enabled, row, 0)
-        self._frm_spin = QSpinBox()
-        self._frm_spin.setRange(1, 21)
-        self._frm_spin.setValue(21)
-        self._frm_spin.setEnabled(False)
-        self._frm_spin.valueChanged.connect(self._schedule_write)
-        grid.addWidget(self._frm_spin, row, 1)
+        frm_row = QHBoxLayout()
+        frm_row.addWidget(QLabel('Default'))
+        self._frm_slider = NoWheelSlider(Qt.Orientation.Horizontal)
+        self._frm_slider.setRange(0, 21)  # 0=Default(no flag), 1-21=Quality levels
+        self._frm_slider.setValue(21)
+        self._frm_slider.setEnabled(False)
+        self._frm_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self._frm_slider.setTickInterval(1)
+        self._frm_slider.valueChanged.connect(self._schedule_write)
+        frm_row.addWidget(self._frm_slider)
+        self._frm_value = QLabel('Quality 21')
+        self._frm_slider.valueChanged.connect(
+            lambda v: self._frm_value.setText('Default' if v == 0 else f'Quality {v}')
+        )
+        frm_row.addWidget(self._frm_value)
+        frm_container = QWidget()
+        frm_container.setLayout(frm_row)
+        grid.addWidget(frm_container, row, 1)
         row += 1
 
         # Grey Sky
@@ -1065,7 +1100,7 @@ class FFlagSection(QWidget):
             ('Grass Motion Factor', '_grass_motion'),
         ]:
             grid.addWidget(QLabel(label_text), row, 0)
-            spin = QSpinBox()
+            spin = NoWheelSpinBox()
             spin.setRange(0, 100000)
             spin.setSpecialValueText('Default')
             spin.valueChanged.connect(self._schedule_write)
@@ -1077,7 +1112,7 @@ class FFlagSection(QWidget):
         framerate_label = QLabel('Framerate Cap (FPS)')
         self._framerate_cap_label = framerate_label  # Store for enable/disable
         grid.addWidget(framerate_label, row, 0)
-        self._framerate_cap = QSpinBox()
+        self._framerate_cap = NoWheelSpinBox()
         self._framerate_cap.setRange(0, 999999999)
         self._framerate_cap.setSpecialValueText('Default')
         self._framerate_cap.valueChanged.connect(self._on_framerate_changed)
@@ -1101,7 +1136,7 @@ class FFlagSection(QWidget):
         self._schedule_write()
 
     def _on_frm_toggle(self, checked):
-        self._frm_spin.setEnabled(checked)
+        self._frm_slider.setEnabled(checked)
         self._schedule_write()
 
     def _on_framerate_changed(self, *_args):
@@ -1135,16 +1170,31 @@ class FFlagSection(QWidget):
         self._debounce_timer.start()
 
     def _gather_settings(self) -> dict:
+        # Convert display values to stored numeric values
+        msaa_text = self._msaa.currentText()
+        if msaa_text == 'Default':
+            msaa_save = 'Default'
+        else:
+            # "1x (Lowest)" -> "1", "4x (Highest)" -> "4", "2x" -> "2"
+            msaa_save = msaa_text.replace('x', '').split(' ')[0]
+
+        tex_text = self._texture_quality.currentText()
+        if tex_text == 'Default':
+            tex_save = 'Default'
+        else:
+            # "Level 0 (Lowest)" -> "0", "Level 3 (Highest)" -> "3", "Level 1" -> "1"
+            tex_save = tex_text.replace('Level ', '').split(' ')[0]
+
         return {
             'rendering_mode': self._rendering_mode.currentText(),
-            'msaa': self._msaa.currentText(),
+            'msaa': msaa_save,
             'disable_dpi_scale': self._dpi_scale.isChecked(),
             'alt_enter_fullscreen': self._alt_enter.isChecked(),
-            'texture_quality': self._texture_quality.currentText(),
+            'texture_quality': tex_save,
             'mesh_lod_enabled': self._mesh_lod_enabled.isChecked(),
             'mesh_lod': self._mesh_lod_slider.value(),
             'frm_quality_enabled': self._frm_enabled.isChecked(),
-            'frm_quality': self._frm_spin.value(),
+            'frm_quality': self._frm_slider.value(),
             'grey_sky': self._grey_sky.isChecked(),
             'pause_voxelizer': self._pause_vox.isChecked(),
             'grass_max': self._grass_max.value() or None,
@@ -1178,7 +1228,7 @@ class FFlagSection(QWidget):
         widgets = [
             self._rendering_mode, self._msaa, self._dpi_scale,
             self._alt_enter, self._texture_quality, self._mesh_lod_enabled,
-            self._mesh_lod_slider, self._frm_enabled, self._frm_spin,
+            self._mesh_lod_slider, self._frm_enabled, self._frm_slider,
             self._grey_sky, self._pause_vox, self._grass_max,
             self._grass_min, self._grass_motion, self._framerate_cap,
         ]
@@ -1189,24 +1239,50 @@ class FFlagSection(QWidget):
         if idx >= 0:
             self._rendering_mode.setCurrentIndex(idx)
 
-        idx = self._msaa.findText(str(s.get('msaa', 'Default')))
+        # MSAA: stored as "1", "2", "4", display as "1x (Lowest)", "2x", "4x (Highest)"
+        msaa_val = s.get('msaa', 'Default')
+        if msaa_val != 'Default' and msaa_val is not None:
+            if msaa_val == '1':
+                msaa_display = '1x (Lowest)'
+            elif msaa_val == '4':
+                msaa_display = '4x (Highest)'
+            else:
+                msaa_display = f'{msaa_val}x'
+        else:
+            msaa_display = 'Default'
+        idx = self._msaa.findText(msaa_display)
         if idx >= 0:
             self._msaa.setCurrentIndex(idx)
 
         self._dpi_scale.setChecked(s.get('disable_dpi_scale', False))
         self._alt_enter.setChecked(s.get('alt_enter_fullscreen', False))
 
-        idx = self._texture_quality.findText(str(s.get('texture_quality', 'Default')))
+        # Texture Quality: stored as "0", "1", "2", "3", display as "Level 0 (Lowest)", "Level 1", etc.
+        tex_val = s.get('texture_quality', 'Default')
+        if tex_val != 'Default' and tex_val is not None:
+            if tex_val == '0':
+                tex_display = 'Level 0 (Lowest)'
+            elif tex_val == '3':
+                tex_display = 'Level 3 (Highest)'
+            else:
+                tex_display = f'Level {tex_val}'
+        else:
+            tex_display = 'Default'
+        idx = self._texture_quality.findText(tex_display)
         if idx >= 0:
             self._texture_quality.setCurrentIndex(idx)
 
         self._mesh_lod_enabled.setChecked(s.get('mesh_lod_enabled', False))
-        self._mesh_lod_slider.setValue(s.get('mesh_lod', 3))
+        mesh_lod_val = s.get('mesh_lod', 4)
+        self._mesh_lod_slider.setValue(mesh_lod_val)
         self._mesh_lod_slider.setEnabled(s.get('mesh_lod_enabled', False))
+        self._mesh_lod_value.setText('Default' if mesh_lod_val == 0 else f'Level {mesh_lod_val - 1}')
 
         self._frm_enabled.setChecked(s.get('frm_quality_enabled', False))
-        self._frm_spin.setValue(s.get('frm_quality', 21))
-        self._frm_spin.setEnabled(s.get('frm_quality_enabled', False))
+        frm_val = s.get('frm_quality', 21)
+        self._frm_slider.setValue(frm_val)
+        self._frm_slider.setEnabled(s.get('frm_quality_enabled', False))
+        self._frm_value.setText('Default' if frm_val == 0 else f'Quality {frm_val}')
 
         self._grey_sky.setChecked(s.get('grey_sky', False))
         self._pause_vox.setChecked(s.get('pause_voxelizer', False))
@@ -1228,9 +1304,11 @@ class FFlagSection(QWidget):
         self._alt_enter.setChecked(False)
         self._texture_quality.setCurrentIndex(0)
         self._mesh_lod_enabled.setChecked(False)
-        self._mesh_lod_slider.setValue(3)
+        self._mesh_lod_slider.setValue(4)  # Default to Level 3 (rightmost)
+        self._mesh_lod_value.setText('Level 3')
         self._frm_enabled.setChecked(False)
-        self._frm_spin.setValue(21)
+        self._frm_slider.setValue(21)  # Default to Quality 21 (rightmost)
+        self._frm_value.setText('Quality 21')
         self._grey_sky.setChecked(False)
         self._pause_vox.setChecked(False)
         self._grass_max.setValue(0)

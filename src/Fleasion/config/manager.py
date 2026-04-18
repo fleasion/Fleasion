@@ -1,6 +1,7 @@
 """Configuration management."""
 
 import json
+import stat
 import threading
 from copy import deepcopy
 from pathlib import Path
@@ -86,11 +87,22 @@ class ConfigManager:
         """Get the path for a config file."""
         return CONFIGS_FOLDER / f'{name}.json'
 
+    @staticmethod
+    def _clear_read_only(path: Path) -> None:
+        """Clear the read-only attribute on an existing file."""
+        if not path.exists():
+            return
+        try:
+            path.chmod(path.stat().st_mode | stat.S_IWRITE)
+        except OSError:
+            pass
+
     def _load_config(self, name: str) -> dict:
         """Load a config from disk."""
         path = self._get_config_path(name)
         if path.exists():
             try:
+                self._clear_read_only(path)
                 with Path(path).open(encoding='utf-8') as f:
                     return json.load(f)
             except (json.JSONDecodeError, OSError):
@@ -101,7 +113,9 @@ class ConfigManager:
         """Save a config to disk."""
         with self._lock:
             CONFIGS_FOLDER.mkdir(parents=True, exist_ok=True)
-            with Path(self._get_config_path(name)).open('w', encoding='utf-8') as f:
+            path = self._get_config_path(name)
+            self._clear_read_only(path)
+            with Path(path).open('w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2)
 
     @property
@@ -268,6 +282,25 @@ class ConfigManager:
     @scraper_blacklist.setter
     def scraper_blacklist(self, value: list[str]):
         self.settings['scraper_blacklist'] = value
+        self._save_settings()
+
+    @property
+    def subplace_blacklist(self) -> list[str]:
+        return self.settings.get('subplace_blacklist', [])
+
+    @subplace_blacklist.setter
+    def subplace_blacklist(self, value: list[str]):
+        self.settings['subplace_blacklist'] = value
+        self._save_settings()
+
+    @property
+    def subplace_blacklist_mode(self) -> str:
+        mode = self.settings.get('subplace_blacklist_mode', 'block')
+        return mode if mode in ('block', 'stall') else 'block'
+
+    @subplace_blacklist_mode.setter
+    def subplace_blacklist_mode(self, value: str):
+        self.settings['subplace_blacklist_mode'] = value if value in ('block', 'stall') else 'block'
         self._save_settings()
 
     @property

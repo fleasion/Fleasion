@@ -18,7 +18,8 @@ from pathlib import Path
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
-from ..utils import CONFIG_DIR, ROBLOX_PROCESS, log_buffer
+from ..utils import CONFIG_DIR, LOCAL_APPDATA, ROBLOX_PROCESS, get_roblox_player_exe_path, log_buffer
+from ..utils.roblox_dirs import load_saved_roblox_dirs, save_saved_roblox_dirs
 from ..utils.threading import run_in_thread
 from .fflag_manager import FastFlagManager
 from .global_settings_manager import GlobalSettingsManager
@@ -51,18 +52,40 @@ def _find_roblox_dirs() -> list[Path]:
             return True
         return False
 
+    def _extract_exe_from_command(command: str) -> Path | None:
+        command = (command or '').replace('\x00', '').strip()
+        if not command:
+            return None
+        if command.startswith('"'):
+            end_quote = command.find('"', 1)
+            if end_quote <= 1:
+                return None
+            exe_path = command[1:end_quote]
+        else:
+            exe_path = command.split()[0]
+        if not exe_path:
+            return None
+        return Path(exe_path)
+
     def _scan_for_exe(root: Path, max_depth: int) -> list[Path]:
         results: list[Path] = []
+
+        def _has_player(path: Path) -> bool:
+            return os.path.isfile(os.path.join(path, ROBLOX_PROCESS))
+
+        if root.is_dir() and _has_player(root):
+            results.append(root)
 
         def _recurse(p: Path, depth: int) -> None:
             try:
                 for entry in os.scandir(p):
                     if not entry.is_dir():
                         continue
-                    if os.path.isfile(os.path.join(entry.path, ROBLOX_PROCESS)):
-                        results.append(Path(entry.path))
+                    entry_path = Path(entry.path)
+                    if _has_player(entry_path):
+                        results.append(entry_path)
                     if depth < max_depth:
-                        _recurse(Path(entry.path), depth + 1)
+                        _recurse(entry_path, depth + 1)
             except OSError:
                 pass
 
@@ -84,7 +107,7 @@ def _find_roblox_dirs() -> list[Path]:
                         try:
                             val, rtype = winreg.QueryValueEx(sub, 'PlayerPath')
                             if rtype == winreg.REG_SZ and val:
-                                val = val.rstrip('\x00')  # Strip null chars from registry
+                                val = val.replace('\x00', '').strip()
                                 p = Path(val)
                                 if p.name.lower() == ROBLOX_PROCESS.lower():
                                     p = p.parent
@@ -106,7 +129,7 @@ def _find_roblox_dirs() -> list[Path]:
                                 with winreg.OpenKey(sub, sub_name) as sub2:
                                     val2, rtype2 = winreg.QueryValueEx(sub2, 'PlayerPath')
                                     if rtype2 == winreg.REG_SZ and val2:
-                                        val2 = val2.rstrip('\x00')  # Strip null chars from registry
+                                        val2 = val2.replace('\x00', '').strip()
                                         p2 = Path(val2)
                                         if p2.name.lower() == ROBLOX_PROCESS.lower():
                                             p2 = p2.parent
@@ -115,7 +138,7 @@ def _find_roblox_dirs() -> list[Path]:
                                         else:
                                             for d in _scan_for_exe(p2, 1):
                                                 _add(d)
-                            except OSError:
+                            except (OSError, ValueError):
                                 pass
                 except OSError:
                     pass
@@ -134,19 +157,32 @@ def _find_roblox_dirs() -> list[Path]:
             r'Software\Classes\roblox-player\shell\open\command',
         ) as key:
             val, _ = winreg.QueryValueEx(key, '')
-            if val:
-                val = val.rstrip('\x00').strip('"').strip()  # Strip null chars and quotes
-                if val.lower().endswith('.exe'):
-                    p = Path(val).parent
-                    if os.path.isfile(os.path.join(str(p), ROBLOX_PROCESS)):
-                        _add(p)
+            exe_path = _extract_exe_from_command(val)
+            if exe_path is not None:
+                for d in _scan_for_exe(exe_path.parent, 2):
+                    _add(d)
     except OSError:
         pass
 
-    # 4. %LocalAppData%\Roblox\Versions
-    local_versions = Path.home() / 'AppData' / 'Local' / 'Roblox' / 'Versions'
+    # 4. Program Files (x86) Roblox installs
+    program_files_versions = Path(r'C:\Program Files (x86)\Roblox\Versions')
+    for d in _scan_for_exe(program_files_versions, 2):
+        _add(d)
+
+    # 5. %LocalAppData%\Roblox\Versions
+    local_versions = LOCAL_APPDATA / 'Roblox' / 'Versions'
     for d in _scan_for_exe(local_versions, 1):
         _add(d)
+
+    # 6. Live running RobloxPlayerBeta.exe install directory
+    running_player = get_roblox_player_exe_path()
+    if running_player is not None:
+        _add(running_player.parent)
+
+    for cached_dir in load_saved_roblox_dirs():
+        _add(cached_dir)
+
+    save_saved_roblox_dirs(found)
 
     return found
 
@@ -158,7 +194,11 @@ def _find_roblox_dirs() -> list[Path]:
 def _bundled_path(name: str) -> Path:
     """Resolve a bundled asset filename to an absolute path."""
     if getattr(sys, 'frozen', False):
-        base = Path(sys._MEIPASS) / 'Fleasion' / 'modifications' / 'bundled'
+        meipass = getattr(sys, '_MEIPASS', None)
+        if meipass is None:
+            base = Path(__file__).parent / 'bundled'
+        else:
+            base = Path(meipass) / 'Fleasion' / 'modifications' / 'bundled'
     else:
         base = Path(__file__).parent / 'bundled'
     return base / name

@@ -226,6 +226,28 @@ def _make_redirect(target_url: str) -> bytes:
     )
 
 
+def _make_local_response(status_code: int = 204, body: bytes = b'') -> bytes:
+    reason_map = {
+        200: 'OK',
+        204: 'No Content',
+        400: 'Bad Request',
+        403: 'Forbidden',
+        404: 'Not Found',
+        500: 'Internal Server Error',
+    }
+    reason = reason_map.get(status_code, 'OK')
+    base = f'HTTP/1.1 {status_code} {reason}\r\n'.encode('ascii')
+    if body:
+        return (
+            base
+            + b'Content-Type: application/json\r\n'
+            + f'Content-Length: {len(body)}\r\n'.encode('ascii')
+            + b'Connection: keep-alive\r\n\r\n'
+            + body
+        )
+    return base + b'Content-Length: 0\r\nConnection: keep-alive\r\n\r\n'
+
+
 # ProxyFlow: lightweight mock flow object passed to module interceptors
 
 class _FlowHeaders:
@@ -317,6 +339,9 @@ class ProxyFlow:
     def __init__(self, req_first: bytes, req_headers: Dict[bytes, bytes], body: bytes, host: str) -> None:
         self.request: _FlowRequest = _FlowRequest(req_first, req_headers, body, host)
         self.response: Optional[_FlowResponse] = None
+        self.drop_request: bool = False
+        self.drop_status_code: int = 204
+        self.drop_body: bytes = b''
 
 
 class FleasionProxy:
@@ -530,7 +555,7 @@ class FleasionProxy:
                         if not _keep_alive(req_first, req_headers):
                             break
                         continue
-                    # 'solid' and 'anim_rig' fall through - need upstream response
+                    # 'solid', 'solid_v3', and 'anim_rig' fall through - need upstream response
 
             # ── Modify batch request body if needed ───────────────────────
             if is_batch:
@@ -562,6 +587,15 @@ class FleasionProxy:
                             _interceptor.request(_gamejoin_flow)
                         except Exception as _exc:
                             logger.debug('Module interceptor request error: %s', _exc)
+                    if _gamejoin_flow.drop_request:
+                        _drop_body = _gamejoin_flow.drop_body
+                        if isinstance(_drop_body, str):
+                            _drop_body = _drop_body.encode('utf-8', errors='replace')
+                        writer.write(_make_local_response(_gamejoin_flow.drop_status_code, _drop_body))
+                        await writer.drain()
+                        if not _keep_alive(req_first, req_headers):
+                            break
+                        continue
                     _new_first = _gamejoin_flow.request._get_modified_first_line(req_first)
                     _new_body = _gamejoin_flow.request.raw_content
                     if _new_first != req_first or _new_body != _req_body_plain:
@@ -631,14 +665,15 @@ class FleasionProxy:
             elif host == 'fts.rbxcdn.com':
                 full_url = f'https://{host}{path}'
 
-                if short_circuit is not None and short_circuit[0] == 'solid':
+                if short_circuit is not None and short_circuit[0] in ('solid', 'solid_v3'):
                     # SolidModel injection - we MUST modify the body
                     resp_body_plain = _decompress_body(resp_body_raw, resp_headers)
                     _cdn_base_url = full_url.split('?')[0]
+                    _prefer_v3 = (short_circuit[0] == 'solid_v3')
                     resp_body_raw = await asyncio.get_event_loop().run_in_executor(
                         self._executor,
                         self.texture_stripper.process_solidmodel_response,
-                        resp_body_plain, short_circuit[1], _cdn_base_url,
+                        resp_body_plain, short_circuit[1], _cdn_base_url, _prefer_v3,
                     )
                     response_modified = True
 

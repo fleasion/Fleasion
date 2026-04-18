@@ -1,3 +1,7 @@
+# Fleasion has switched domains
+
+Fleasion has now left Beta, as such this is the final release that will be posted on this account. For all future Fleasion releated releases/news check https://github.com/fleasion/Fleasion
+
 # Fleasion
 
 A Windows application for intercepting and replacing Roblox game assets in real time. Fleasion runs a local proxy that sits between Roblox and its servers, letting you swap textures, audio, meshes, animations, and other assets before they reach the game client.

@@ -48,7 +48,7 @@ def _decompress_cdn_response(data: bytes) -> bytes:
     return data
 
 
-def _inject_obj_into_solidmodel(bin_data: bytes, obj_path: Path) -> bytes:
+def _inject_obj_into_solidmodel(bin_data: bytes, obj_path: Path, prefer_v3: bool = False) -> bytes:
     from ...cache.tools.solidmodel_converter.obj_to_csg import export_csg_mesh
     from ...cache.tools.solidmodel_converter.converter import deserialize_rbxm
     from ...cache.tools.solidmodel_converter.rbxm.serializer import write_rbxm
@@ -60,16 +60,19 @@ def _inject_obj_into_solidmodel(bin_data: bytes, obj_path: Path) -> bytes:
     _INJECTABLE = frozenset({'PartOperationAsset', 'UnionOperation', 'NegateOperation', 'PartOperation'})
 
     csg_version = 3
-    for inst in doc.roots:
-        if inst.class_name in _INJECTABLE:
-            prop = inst.properties.get('MeshData')
-            if prop is not None and prop.value:
-                mesh_bytes = prop.value if isinstance(prop.value, bytes) else bytes(prop.value, 'latin-1')
-                detected = _detect_csgmdl_version(mesh_bytes)
-                if detected is not None:
-                    csg_version = detected
-                    log_buffer.log('SolidModel', f'Detected original CSGMDL v{csg_version}')
-            break
+    if prefer_v3:
+        log_buffer.log('SolidModel', 'Using forced CSGMDL v3 for direct OBJ replacement')
+    else:
+        for inst in doc.roots:
+            if inst.class_name in _INJECTABLE:
+                prop = inst.properties.get('MeshData')
+                if prop is not None and prop.value:
+                    mesh_bytes = prop.value if isinstance(prop.value, bytes) else bytes(prop.value, 'latin-1')
+                    detected = _detect_csgmdl_version(mesh_bytes)
+                    if detected is not None:
+                        csg_version = detected
+                        log_buffer.log('SolidModel', f'Detected original CSGMDL v{csg_version}')
+                break
 
     csg_bytes = export_csg_mesh(obj_path, version=csg_version)
     injected = 0
@@ -181,6 +184,7 @@ class TextureStripper:
     _cdn_redirects: Dict[str, str] = {}              # base_cdn_url -> redirect_url
     _local_redirects: Dict[str, str] = {}            # base_cdn_url -> local_path
     _solidmodel_injections: Dict[str, str] = {}      # base_cdn_url -> obj_path
+    _solidmodel_force_v3: set = set()                # base_cdn_url values that should force v3 CSG export
     # ─────────────────────────────────────────────────────────────────────
 
     ASSET_TYPES: Dict[int, str] = {
@@ -967,14 +971,45 @@ class TextureStripper:
         if not isinstance(resp_data, list):
             return
 
+        # Roblox may renumber response requestIds after the request body has
+        # been filtered/rewritten. Keep an index-aligned copy of outbound
+        # requestIds so we can map each response entry back to the right
+        # pending route even when response requestIds drift.
+        req_ids_by_index: list[str] = []
+        if req_body:
+            try:
+                req_data = _loads(req_body)
+                if isinstance(req_data, list):
+                    for req_item in req_data:
+                        if isinstance(req_item, dict):
+                            req_ids_by_index.append(str(req_item.get('requestId', '')))
+                        else:
+                            req_ids_by_index.append('')
+            except Exception:
+                req_ids_by_index = []
+
         with self._lock:
-            for item in resp_data:
+            for idx, item in enumerate(resp_data):
                 if not isinstance(item, dict):
                     continue
                 req_id_raw = str(item.get('requestId', ''))
                 location = item.get('location')
-                pending_key = f'{batch_id}_{req_id_raw}'
-                if not req_id_raw or not location or pending_key not in self._pending:
+
+                pending_key = ''
+                if req_id_raw:
+                    by_response_id = f'{batch_id}_{req_id_raw}'
+                    if by_response_id in self._pending:
+                        pending_key = by_response_id
+
+                # Fallback: map by response index to the outbound requestId.
+                # This handles batches where Roblox rewrites requestIds in the response.
+                mapped_req_id = req_ids_by_index[idx] if idx < len(req_ids_by_index) else ''
+                if not pending_key and mapped_req_id:
+                    by_request_index = f'{batch_id}_{mapped_req_id}'
+                    if by_request_index in self._pending:
+                        pending_key = by_request_index
+
+                if not location or not pending_key:
                     continue
                 url_type, url_value = self._pending.pop(pending_key)
                 base_loc = location.split('?')[0]
@@ -996,6 +1031,11 @@ class TextureStripper:
                         log_buffer.log('Local', f'Will serve local for {base_loc[:60]}...')
                 elif url_type == 'solid':
                     self._solidmodel_injections[base_loc] = url_value
+                    self._solidmodel_force_v3.discard(base_loc)
+                    log_buffer.log('SolidModel', f'Will inject OBJ for {base_loc[:60]}...')
+                elif url_type == 'solid_obj':
+                    self._solidmodel_injections[base_loc] = url_value
+                    self._solidmodel_force_v3.add(base_loc)
                     log_buffer.log('SolidModel', f'Will inject OBJ for {base_loc[:60]}...')
 
     # ------------------------------------------------------------------
@@ -1003,7 +1043,7 @@ class TextureStripper:
     # ------------------------------------------------------------------
 
     def check_cdn_request(self, host: str, path: str) -> Optional[Tuple[str, str]]:
-        """Returns ('local'|'cdn'|'solid'|'anim_rig', value) or None.
+        """Returns ('local'|'cdn'|'solid'|'solid_v3'|'anim_rig', value) or None.
 
         'anim_rig' means: let the upstream CDN request proceed normally so server.py
         can read the original response bytes, detect the rig, then serve the
@@ -1024,6 +1064,8 @@ class TextureStripper:
             if base_url in self._cdn_redirects:
                 return ('cdn', self._cdn_redirects.pop(base_url))
             if base_url in self._solidmodel_injections:
+                if base_url in self._solidmodel_force_v3:
+                    return ('solid_v3', self._solidmodel_injections[base_url])
                 return ('solid', self._solidmodel_injections[base_url])
         return None
 
@@ -1040,7 +1082,7 @@ class TextureStripper:
     # SolidModel response injection (called from server MITM thread)
     # ------------------------------------------------------------------
 
-    def process_solidmodel_response(self, resp_body: bytes, obj_path_str: str, cdn_url: str = '') -> bytes:
+    def process_solidmodel_response(self, resp_body: bytes, obj_path_str: str, cdn_url: str = '', prefer_v3: bool = False) -> bytes:
         # Pop ONLY this specific CDN URL, not every URL mapped to the same obj.
         # Popping all-by-value was the root cause of the SolidModel partial-replacement
         # bug: SolidModel A's injection would pop entries for B, C, D, E (same .obj),
@@ -1049,13 +1091,15 @@ class TextureStripper:
         with self._lock:
             if cdn_url:
                 self._solidmodel_injections.pop(cdn_url, None)
+                self._solidmodel_force_v3.discard(cdn_url)
             else:
                 # Fallback: pop all by value (legacy path, shouldn't be hit)
                 to_pop = [k for k, v in self._solidmodel_injections.items() if v == obj_path_str]
                 for k in to_pop:
                     self._solidmodel_injections.pop(k, None)
+                    self._solidmodel_force_v3.discard(k)
         try:
-            modified = _inject_obj_into_solidmodel(resp_body, obj_path)
+            modified = _inject_obj_into_solidmodel(resp_body, obj_path, prefer_v3=prefer_v3)
             log_buffer.log('SolidModel', f'Injected OBJ ({len(modified)} bytes)')
             return modified
         except Exception as exc:
@@ -1074,7 +1118,7 @@ class TextureStripper:
         if ext == '.obj':
             local_cache = APP_CACHE_DIR / f'{url_hash}.obj'
             if _download_remote_file(cdn_url, local_cache, '.obj'):
-                kind = 'solid' if is_solidmodel else 'local'
+                kind = 'solid_obj' if is_solidmodel else 'local'
                 with self._lock:
                     self._pending[req_id] = (kind, str(local_cache))
                 return
@@ -1153,7 +1197,7 @@ class TextureStripper:
         if is_solidmodel:
             if ext == '.obj':
                 with self._lock:
-                    self._pending[req_id] = ('solid', local_path)
+                    self._pending[req_id] = ('solid_obj', local_path)
             elif ext == '.mesh':
                 obj = _try_mesh_to_obj(path, f'SolidModel {aid}')
                 val = ('solid', str(obj)) if obj else ('local', local_path)

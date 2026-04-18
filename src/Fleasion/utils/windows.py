@@ -3,10 +3,13 @@
 import ctypes
 import ctypes.wintypes
 import os
+import re
 import subprocess
 import time
+import winreg
 from pathlib import Path
-from typing import Optional
+from typing import Optional, cast
+from urllib.parse import parse_qs, unquote, urlparse
 
 from .paths import ROBLOX_PROCESS, ROBLOX_STUDIO_PROCESS, STORAGE_DB, STORAGE_DB_GDK
 from .logging import log_buffer
@@ -185,7 +188,7 @@ def _delete_db_file(db_path: Path, messages: list, label: str = 'Storage databas
                     0,
                     None
                 )
-                win32file.CloseHandle(handle)
+                win32file.CloseHandle(cast(int, handle))
             except pywintypes.error:
                 pass
 
@@ -317,10 +320,220 @@ def _close_handle(handle) -> None:
         ctypes.windll.kernel32.CloseHandle(raw)
 
 
-def _build_launch_command(target_str: str) -> tuple[str, Optional[str]]:
+def _is_roblox_launch_uri(target_str: str) -> bool:
+    """Return True when target looks like a Roblox protocol URI."""
+    lowered = target_str.lower()
+    return lowered.startswith(('roblox://', 'roblox-player:', 'roblox:'))
+
+
+def _extract_exe_from_command(command: str) -> Optional[Path]:
+    """Extract executable path from a shell/open command string."""
+    command = (command or '').replace('\x00', '').strip()
+    if not command:
+        return None
+    if command.startswith('"'):
+        end_quote = command.find('"', 1)
+        if end_quote <= 1:
+            return None
+        exe_path = command[1:end_quote]
+    else:
+        exe_path = command.split()[0]
+    if not exe_path:
+        return None
+    return Path(exe_path)
+
+
+def _scan_for_player_exes(root: Path, max_depth: int) -> list[Path]:
+    """Return Roblox player executables found under a root folder."""
+    results: list[Path] = []
+    seen: set[str] = set()
+
+    def _add(path: Path) -> None:
+        key = str(path).lower()
+        if key in seen:
+            return
+        seen.add(key)
+        results.append(path)
+
+    def _has_player(path: Path) -> bool:
+        return (path / ROBLOX_PROCESS).is_file()
+
+    if root.is_dir() and _has_player(root):
+        _add(root / ROBLOX_PROCESS)
+
+    def _recurse(path: Path, depth: int) -> None:
+        try:
+            for entry in os.scandir(path):
+                if not entry.is_dir():
+                    continue
+                entry_path = Path(entry.path)
+                if _has_player(entry_path):
+                    _add(entry_path / ROBLOX_PROCESS)
+                if depth < max_depth:
+                    _recurse(entry_path, depth + 1)
+        except OSError:
+            pass
+
+    if root.is_dir():
+        _recurse(root, 0)
+    return results
+
+
+def _safe_mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _resolve_roblox_player_exe_for_launch() -> Optional[Path]:
+    """Resolve best Roblox executable path for URI launches with fallbacks."""
+    candidates: list[tuple[int, float, Path]] = []
+    seen: set[str] = set()
+
+    def _add(path: Path, priority: int) -> None:
+        if not path.is_file():
+            return
+        key = str(path).lower()
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append((priority, _safe_mtime(path), path))
+
+    # 1) Running client path (highest confidence)
+    running_exe = get_roblox_player_exe_path()
+    if running_exe is not None:
+        _add(running_exe, 300)
+
+    # 2) Registry shell/open command (lowest confidence; can be stale)
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r'Software\Classes\roblox-player\shell\open\command',
+        ) as key:
+            command, _ = winreg.QueryValueEx(key, '')
+            exe_path = _extract_exe_from_command(command)
+            if exe_path is not None:
+                _add(exe_path, 200)
+    except OSError:
+        pass
+
+    # 3) %LocalAppData%\Roblox\Versions
+    local_versions = Path(os.path.expandvars(r'%LocalAppData%')) / 'Roblox' / 'Versions'
+    for exe_path in _scan_for_player_exes(local_versions, 1):
+        _add(exe_path, 260)
+
+    # 4) C:\Program Files (x86)\Roblox\Versions
+    pf_versions = Path(r'C:\Program Files (x86)\Roblox\Versions')
+    for exe_path in _scan_for_player_exes(pf_versions, 2):
+        _add(exe_path, 240)
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return candidates[0][2]
+
+
+def resolve_roblox_player_exe_for_launch() -> Optional[Path]:
+    """Public wrapper for Roblox executable resolution used by launch callers."""
+    return _resolve_roblox_player_exe_for_launch()
+
+
+def _extract_launch_metadata(target_str: str) -> dict[str, str]:
+    """Extract place/game identifiers from Roblox launch targets for diagnostics."""
+    if not _is_roblox_launch_uri(target_str):
+        return {}
+
+    metadata: dict[str, str] = {}
+    keys = ('placeId', 'gameId', 'linkCode', 'accessCode')
+
+    # Direct URI query parsing (roblox://...)
+    try:
+        parsed = urlparse(target_str)
+        query = parse_qs(parsed.query)
+        for key in keys:
+            values = query.get(key)
+            if values and values[0]:
+                metadata[key] = values[0]
+    except Exception:
+        pass
+
+    # Direct key=value scans (covers non-standard forms too)
+    for key in keys:
+        if key in metadata:
+            continue
+        m = re.search(rf'{re.escape(key)}=([^&+]+)', target_str, re.IGNORECASE)
+        if m:
+            metadata[key] = m.group(1)
+
+    # roblox-player URI embeds encoded PlaceLauncher URL in placelauncherurl
+    if 'placelauncherurl:' in target_str:
+        encoded_url = target_str.split('placelauncherurl:', 1)[1].split('+', 1)[0]
+        decoded_url = unquote(encoded_url)
+        try:
+            parsed = urlparse(decoded_url)
+            query = parse_qs(parsed.query)
+            for key in keys:
+                if key in metadata:
+                    continue
+                values = query.get(key)
+                if values and values[0]:
+                    metadata[key] = values[0]
+        except Exception:
+            pass
+
+    return metadata
+
+
+def _format_launch_metadata(metadata: dict[str, str]) -> str:
+    """Format launch metadata for concise logs."""
+    if not metadata:
+        return 'no identifiers parsed'
+    ordered = ('placeId', 'gameId', 'linkCode', 'accessCode')
+    parts = [f'{key}={metadata[key]}' for key in ordered if key in metadata]
+    for key, value in metadata.items():
+        if key not in ordered:
+            parts.append(f'{key}={value}')
+    return ', '.join(parts)
+
+
+def _launch_roblox_uri_direct(target_str: str) -> bool:
+    """Launch Roblox URI by executing resolved RobloxPlayerBeta.exe directly."""
+    exe_path = _resolve_roblox_player_exe_for_launch()
+    if exe_path is None:
+        log_buffer.log('Launcher', 'Direct Roblox URI launch skipped: no Roblox executable resolved')
+        return False
+    try:
+        subprocess.Popen(
+            [str(exe_path), target_str],
+            cwd=str(exe_path.parent),
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        metadata = _extract_launch_metadata(target_str)
+        log_buffer.log(
+            'Launcher',
+            f'Direct Roblox launch via {exe_path} ({_format_launch_metadata(metadata)})',
+        )
+        return True
+    except OSError as exc:
+        log_buffer.log('Launcher', f'Direct Roblox launch failed via {exe_path}: {exc}')
+        return False
+
+
+def _build_launch_command(target_str: str, prefer_direct_roblox_uri: bool = False) -> tuple[str, Optional[str]]:
     """Build command line + cwd for token-based process creation."""
     is_uri = '://' in target_str or target_str.startswith(('roblox-player:', 'roblox:'))
     if is_uri:
+        if prefer_direct_roblox_uri and _is_roblox_launch_uri(target_str):
+            exe_path = _resolve_roblox_player_exe_for_launch()
+            if exe_path is not None:
+                metadata = _extract_launch_metadata(target_str)
+                log_buffer.log(
+                    'Launcher',
+                    f'Using direct executable for Roblox URI launch: {exe_path} ({_format_launch_metadata(metadata)})',
+                )
+                return f'"{exe_path}" "{target_str}"', str(exe_path.parent)
+            log_buffer.log('Launcher', 'Roblox URI executable resolution failed; using protocol fallback')
         system_root = Path(os.environ.get('SystemRoot', r'C:\Windows'))
         rundll = system_root / 'System32' / 'rundll32.exe'
         cmdline = f'"{rundll}" url.dll,FileProtocolHandler "{target_str}"'
@@ -331,7 +544,7 @@ def _build_launch_command(target_str: str) -> tuple[str, Optional[str]]:
     return f'"{target_str}"', cwd
 
 
-def _launch_with_shell_token(target_str: str) -> bool:
+def _launch_with_shell_token(target_str: str, prefer_direct_roblox_uri: bool = False) -> bool:
     """Launch target with the desktop shell's primary token (non-elevated)."""
     user32 = ctypes.windll.user32
     kernel32 = ctypes.windll.kernel32
@@ -413,7 +626,10 @@ def _launch_with_shell_token(target_str: str) -> bool:
             log_buffer.log('Launcher', f'DuplicateTokenEx(shell) failed: WinError {err}')
             return False
 
-        cmdline, cwd = _build_launch_command(target_str)
+        cmdline, cwd = _build_launch_command(
+            target_str,
+            prefer_direct_roblox_uri=prefer_direct_roblox_uri,
+        )
         startup = _STARTUPINFOW()
         startup.cb = ctypes.sizeof(_STARTUPINFOW)
         startup.dwFlags = _STARTF_USESHOWWINDOW
@@ -445,22 +661,90 @@ def _launch_with_shell_token(target_str: str) -> bool:
         _close_handle(shell_process)
 
 
+def _wait_for_roblox_process_start(timeout: float = 6.0) -> bool:
+    """Wait briefly for RobloxPlayerBeta.exe to appear after a launch request."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if is_roblox_running():
+            return True
+        time.sleep(0.2)
+    return is_roblox_running()
+
+
 def launch_as_standard_user(target: str | Path) -> bool:
     """Launch a URI/path as a standard user when Fleasion is elevated."""
     target_str = str(target).strip()
     if not target_str:
+        log_buffer.log('Launcher', 'Launch aborted: empty target')
+        return False
+
+    is_roblox_uri = _is_roblox_launch_uri(target_str)
+    launch_meta = _extract_launch_metadata(target_str) if is_roblox_uri else {}
+    if is_roblox_uri:
+        log_buffer.log('Launcher', f'Launch request (Roblox URI): {_format_launch_metadata(launch_meta)}')
+    else:
+        log_buffer.log('Launcher', f'Launch request (path): {target_str}')
+
+    was_running_before = is_roblox_running() if is_roblox_uri else False
+
+    def _roblox_launch_confirmed(launch_started: bool, method: str) -> bool:
+        if not launch_started:
+            return False
+        if was_running_before:
+            log_buffer.log('Launcher', f'{method} dispatched while Roblox was already running')
+            return True
+        if _wait_for_roblox_process_start():
+            log_buffer.log('Launcher', f'{method} confirmed Roblox process start')
+            return True
+        log_buffer.log('Launcher', f'{method} did not start Roblox process within timeout')
+        return False
+
+    if is_roblox_uri:
+        # Protocol first, raw executable fallback only if protocol launch does not start Roblox.
+        if _is_process_elevated():
+            protocol_started = _launch_with_shell_token(target_str, prefer_direct_roblox_uri=False)
+            if _roblox_launch_confirmed(protocol_started, 'Protocol launch (shell token)'):
+                return True
+
+            log_buffer.log('Launcher', 'Protocol launch failed to start Roblox; falling back to direct executable launch')
+            direct_started = _launch_with_shell_token(target_str, prefer_direct_roblox_uri=True)
+            if _roblox_launch_confirmed(direct_started, 'Direct executable launch (shell token)'):
+                return True
+
+            log_buffer.log('Launcher', 'Direct executable fallback via shell token failed')
+            return False
+
+        try:
+            os.startfile(target_str)
+            protocol_started = True
+            log_buffer.log('Launcher', 'Protocol launch dispatched via os.startfile')
+        except OSError as exc:
+            protocol_started = False
+            log_buffer.log('Launcher', f'Protocol launch via os.startfile failed: {exc}')
+
+        if _roblox_launch_confirmed(protocol_started, 'Protocol launch (os.startfile)'):
+            return True
+
+        log_buffer.log('Launcher', 'Protocol launch failed to start Roblox; falling back to direct executable launch')
+        direct_started = _launch_roblox_uri_direct(target_str)
+        if _roblox_launch_confirmed(direct_started, 'Direct executable launch'):
+            return True
+
+        log_buffer.log('Launcher', 'Direct executable fallback failed')
         return False
 
     # os.startfile inherits the current process token. If Fleasion is elevated,
     # using it here would reintroduce the exact admin-inheritance bug.
     if _is_process_elevated():
-        launched = _launch_with_shell_token(target_str)
+        launched = _launch_with_shell_token(target_str, prefer_direct_roblox_uri=False)
         if launched:
+            log_buffer.log('Launcher', 'Launch succeeded via shell token')
             return True
         log_buffer.log('Launcher', f'Elevated shell launch failed, falling back to os.startfile: {target_str}')
 
     try:
         os.startfile(target_str)
+        log_buffer.log('Launcher', 'Launch succeeded via os.startfile')
         return True
     except OSError as exc:
         log_buffer.log('Launcher', f'Fallback launch failed: {exc}')

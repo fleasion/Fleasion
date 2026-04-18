@@ -815,10 +815,8 @@ class CategoryFilterPopup(QMenu):
                 else:
                     continue
 
-                # Calculate reasonable elide width based on parent or fallback
+                # Keep labels compact so the popup cannot balloon across the screen.
                 max_w = 130
-                if self.parent() and self.parent().parent():
-                    max_w = max(80, int(self.parent().parent().width() * 0.15) - 20)
 
                 elided = fm.elidedText(name, Qt.TextElideMode.ElideRight, max_w)
                 cb = QCheckBox(elided)
@@ -856,13 +854,27 @@ class CategoryFilterPopup(QMenu):
         action.setDefaultWidget(self.container)
         self.addAction(action)
 
-    def mouseReleaseEvent(self, e):
+    def set_active_filters(self, active_filters):
+        """Update the popup checks without rebuilding the widget."""
+        self.active_filters = set(active_filters) if active_filters else set()
+        self._updating = True
+        for tid, cb in self.checkboxes.items():
+            cb.blockSignals(True)
+            cb.setChecked(tid in self.active_filters)
+            cb.blockSignals(False)
+        for cat_name in self.categories:
+            self._update_category_state(cat_name)
+        self._updating = False
+
+    def mouseReleaseEvent(self, a0):
         # Prevent the menu from closing if the user clicks inside the container but not on a specific checkbox
-        action = self.actionAt(e.pos())
-        if action and action.defaultWidget() == self.container:
+        if a0 is None:
+            return
+        action = self.actionAt(a0.pos())
+        if isinstance(action, QWidgetAction) and action.defaultWidget() == self.container:
             # We clicked inside the container area
             return
-        super().mouseReleaseEvent(e)
+        super().mouseReleaseEvent(a0)
 
     def _on_category_clicked(self, type_ids, cat_name):
         if self._updating: return
@@ -1058,12 +1070,14 @@ class ColumnVisibilityMenu(QMenu):
     # Prevent the menu from closing when the user clicks a checkable item.
     # It will still close on Escape or clicking outside.
     # ------------------------------------------------------------------
-    def mouseReleaseEvent(self, event):
-        action = self.actionAt(event.pos())
+    def mouseReleaseEvent(self, a0):
+        if a0 is None:
+            return
+        action = self.actionAt(a0.pos())
         if action and action.isCheckable():
             action.toggle()          # manually toggle without closing
             return
-        super().mouseReleaseEvent(event)
+        super().mouseReleaseEvent(a0)
 
     def _on_toggled(self, key: str, checked: bool):
         if self._building:
