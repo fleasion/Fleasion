@@ -530,7 +530,7 @@ class FleasionProxy:
                         if not _keep_alive(req_first, req_headers):
                             break
                         continue
-                    # 'solid' and 'anim_rig' fall through - need upstream response
+                    # 'solid', 'solid_v3', and 'anim_rig' fall through - need upstream response
 
             # ── Modify batch request body if needed ───────────────────────
             if is_batch:
@@ -631,14 +631,15 @@ class FleasionProxy:
             elif host == 'fts.rbxcdn.com':
                 full_url = f'https://{host}{path}'
 
-                if short_circuit is not None and short_circuit[0] == 'solid':
+                if short_circuit is not None and short_circuit[0] in ('solid', 'solid_v3'):
                     # SolidModel injection - we MUST modify the body
                     resp_body_plain = _decompress_body(resp_body_raw, resp_headers)
                     _cdn_base_url = full_url.split('?')[0]
+                    _prefer_v3 = (short_circuit[0] == 'solid_v3')
                     resp_body_raw = await asyncio.get_event_loop().run_in_executor(
                         self._executor,
                         self.texture_stripper.process_solidmodel_response,
-                        resp_body_plain, short_circuit[1], _cdn_base_url,
+                        resp_body_plain, short_circuit[1], _cdn_base_url, _prefer_v3,
                     )
                     response_modified = True
 
