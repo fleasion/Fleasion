@@ -24,6 +24,12 @@
             "github": "https://raw.githubusercontent.com/standingmcdonalds/ar2fleasion/refs/heads/main/ar2%20new.json",
             "replacement": null
         },
+        "Arsenal": {
+            "Owner": "Sky",
+            "id": 286090429,
+            "github": "https://raw.githubusercontent.com/CfwSky/ARSENAL-FLOPPR/refs/heads/main/ORIGINAL.json",
+            "replacement": "https://raw.githubusercontent.com/CfwSky/ARSENAL-FLOPPR/refs/heads/main/REPLACEMENT.json"
+        },
         "DaHood": {
             "Owner": ".o0x",
             "id": 2788229376,
