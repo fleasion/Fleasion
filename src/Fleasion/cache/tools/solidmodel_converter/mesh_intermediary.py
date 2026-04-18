@@ -277,3 +277,61 @@ def bin_file_to_cached_obj(bin_path: Path) -> Path:
         f'({len(vertices)} verts, {len(indices) // 3} tris)',
     )
     return cached_obj
+
+
+# .rbxmx (XML SolidModel export) -> cached OBJ
+
+def rbxmx_file_to_cached_obj(rbxmx_path: Path) -> Path:
+    """Parse MeshData from an RBXMX SolidModel export and convert to a cached OBJ."""
+    import base64
+    from xml.etree.ElementTree import parse as _xml_parse
+    from .csg_mesh import parse_csg_mesh
+
+    rbxmx_path = Path(rbxmx_path).resolve()
+    if not rbxmx_path.exists():
+        raise FileNotFoundError(f'RBXMX file not found: {rbxmx_path}')
+
+    APP_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cached_obj = _cache_obj_path(rbxmx_path)
+
+    if _is_cache_fresh(rbxmx_path, cached_obj):
+        log_buffer.log('Intermediary', f'Using cached OBJ for .rbxmx: {cached_obj.name}')
+        return cached_obj
+
+    log_buffer.log('Intermediary', f'Converting .rbxmx (CSGMDL) -> OBJ: {rbxmx_path.name}')
+
+    tree = _xml_parse(str(rbxmx_path))
+    xml_root = tree.getroot()
+
+    mesh_data: bytes | None = None
+    for item in xml_root.iter('Item'):
+        if item.get('class', '') in _INJECTABLE:
+            props = item.find('Properties')
+            if props is not None:
+                for prop_el in props:
+                    if prop_el.tag == 'BinaryString' and prop_el.get('name') == 'MeshData':
+                        mesh_data = base64.b64decode((prop_el.text or '').strip())
+                        break
+        if mesh_data is not None:
+            break
+
+    if not mesh_data:
+        raise ValueError(
+            f'No MeshData BinaryString found in .rbxmx: {rbxmx_path}\n'
+            f'  Make sure this is a SolidModel (PartOperationAsset) export.'
+        )
+
+    vertices, indices = parse_csg_mesh(mesh_data)
+
+    if not vertices or not indices:
+        raise ValueError(f'CSGMDL in {rbxmx_path} produced no usable geometry')
+
+    obj_content = _csg_vertices_to_obj(vertices, indices)
+    cached_obj.write_text(obj_content, encoding='utf-8')
+
+    log_buffer.log(
+        'Intermediary',
+        f'.rbxmx -> OBJ done: {cached_obj.name} '
+        f'({len(vertices)} verts, {len(indices) // 3} tris)',
+    )
+    return cached_obj

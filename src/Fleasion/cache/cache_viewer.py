@@ -3217,6 +3217,7 @@ class CacheViewerTab(QWidget):
             'converted_obj': 'Converted (.obj)',
             'converted_rbxmx': 'Converted - KeyframeSequence (.rbxmx)',
             'converted_rbxmx_curve': 'Converted - CurveAnimation (.rbxmx)',
+            'converted_rbxmx_model': 'Converted (.rbxmx)',
             'converted_png': 'Converted (.png)',
             'converted_audio': 'Converted (.ogg/.mp3)',
             'converted': 'Converted (.xml)',
@@ -3225,7 +3226,7 @@ class CacheViewerTab(QWidget):
             'bin': 'Binary (decompressed)',
             'raw': 'Raw (original cache)',
         }
-        for fmt in ['slot_ktx2', 'converted_obj', 'converted_rbxmx', 'converted_rbxmx_curve', 'converted_png', 'converted_audio', 'converted', 'converted_images', 'bin', 'raw']:
+        for fmt in ['slot_ktx2', 'converted_obj', 'converted_rbxmx_model', 'converted_rbxmx', 'converted_rbxmx_curve', 'converted_png', 'converted_audio', 'converted', 'converted_images', 'bin', 'raw']:
             if fmt in available_formats:
                 action = export_menu.addAction(format_labels[fmt])
                 export_actions[action] = fmt

@@ -421,7 +421,7 @@ class CacheManager:
             formats.insert(0, 'converted_rbxmx')
             formats.insert(1, 'converted_rbxmx_curve')
         elif asset_type == 39:  # SolidModel
-            formats.insert(0, 'converted_rbxmx')
+            formats.insert(0, 'converted_rbxmx_model')
             formats.insert(0, 'converted_obj')
         elif asset_type == 73:  # FontFamily - JSON metadata
             formats.insert(0, 'converted_json')
@@ -538,7 +538,7 @@ class CacheManager:
                         log_buffer.log('Export', f'Failed to export SolidModel OBJ: {e}')
                         pass # Fall through to binary
                     
-                elif export_format == 'converted_rbxmx' and asset_type == 39:  # SolidModel -> rbxmx
+                elif export_format == 'converted_rbxmx_model' and asset_type == 39:  # SolidModel -> rbxmx
                     from .tools.solidmodel_converter.converter import deserialize_rbxm, _try_extract_child_data, _get_top_level_mesh_data, _inject_mesh_data
                     from .tools.solidmodel_converter.rbxm.xml_writer import write_rbxmx
                     try:
