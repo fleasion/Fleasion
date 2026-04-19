@@ -617,6 +617,7 @@ def main():
         _no_roblox_msg.setText('Roblox does not appear to be installed.')
         _no_roblox_msg.setInformativeText(
             'Fleasion could not find any Roblox installations on this computer.\n\n'
+            'If this is incorrect, click OK and launch Roblox, Fleasion will attempt to detect it.\n\n'
             'Please close Fleasion, install Roblox, and then relaunch Fleasion.\n\n'
             'Without Roblox installed, the majority of Fleasion\'s features cannot be used.\n\n'
             'Note: To fully close Fleasion, right click Fleasion in the system tray and click Exit.'
