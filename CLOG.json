@@ -42,6 +42,12 @@
             "github": "https://raw.githubusercontent.com/FleaNafo/Rivals.json/refs/heads/main/Rivals.json",
             "replacement": null
         },
+        "Town": {
+            "Owner": "Altruissms",
+            "id": 4991214437,
+            "github": "https://raw.githubusercontent.com/fentanylgaming7-ctrl/fleasion-town/refs/heads/main/town-originals.json",
+            "replacement": "https://raw.githubusercontent.com/fentanylgaming7-ctrl/fleasion-town/refs/heads/main/town-replacements.json"
+        },
         "Jailbreak": {
             "Owner": "Sky",
             "id": 606849621,
