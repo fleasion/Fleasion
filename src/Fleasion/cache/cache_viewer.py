@@ -168,7 +168,7 @@ class ImageLoaderThread(QThread):
                 data = _ktx_convert(data)
                 if data is None:
                     if not self._stop_requested:
-                        self.error.emit('KTX format not supported for local preview')
+                        self.error.emit('KTX Conversion failed, see logs for details.')
                     return
 
             image = Image.open(io.BytesIO(data))

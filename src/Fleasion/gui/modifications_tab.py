@@ -1388,7 +1388,7 @@ class ModificationsTab(QWidget):
         self._container_layout.addWidget(fflag_section)
 
         # ── Default Skyboxes ─────────────────────────────────────
-        sky_section = CollapsibleSection('Default Skyboxes', expanded=True)
+        sky_section = CollapsibleSection('Default Roblox Skyboxes', expanded=True)
 
         # "Apply to All Sky Faces" button
         apply_all_btn = QPushButton('Apply to All Sky Faces\u2026')
@@ -1453,7 +1453,7 @@ class ModificationsTab(QWidget):
         self._container_layout.addWidget(sounds_section)
 
         # ── Custom Font ──────────────────────────────────────────
-        font_section = CollapsibleSection('Custom Font', expanded=False)
+        font_section = CollapsibleSection('Custom Font', expanded=True)
         font_row = ModRowWidget(
             self._manager, 'Custom Font',
             r'content\fonts\CustomFont.ttf',

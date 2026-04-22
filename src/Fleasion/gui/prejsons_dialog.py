@@ -1027,12 +1027,30 @@ class PreJsonsDialog(QDialog):
 
         config_manager = getattr(parent, 'config_manager', None)
         viewer = JsonTreeViewer(
-            self,
+            None,
             data,
             filename,
             on_import_ids=on_ids,
             on_import_replacement=on_repl,
             config_manager=config_manager,
         )
+        viewer.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        viewer.destroyed.connect(self._on_viewer_destroyed)
         viewer.show()
         self._viewers.append(viewer)
+
+    def _on_viewer_destroyed(self, *_):
+        """Remove a JSON viewer after it closes."""
+        viewer = self.sender()
+        if viewer is not None and viewer in self._viewers:
+            self._viewers.remove(viewer)
+
+    def closeEvent(self, event):
+        """Close any open JSON viewer windows with the dialog."""
+        for viewer in self._viewers[:]:
+            try:
+                viewer.close()
+            except Exception:
+                pass
+        self._viewers.clear()
+        super().closeEvent(event)

@@ -15,10 +15,12 @@ from urllib.parse import urlparse, parse_qs, quote
 
 import requests as _requests
 
-from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QPalette
 from PyQt6.QtWidgets import (
     QDialog,
     QFileDialog,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -32,6 +34,7 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QRadioButton,
     QSizePolicy,
+    QScrollArea,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -538,9 +541,20 @@ class RandoStuffTab(QWidget):
     # UI
 
     def _setup_ui(self):
-        root = QVBoxLayout(self)
-        root.setContentsMargins(10, 10, 0, 0)
-        root.setSpacing(8)
+        outer = QVBoxLayout()
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(8)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+        container = QWidget()
+        container.setObjectName('_FleasionMiscContainer')
+        self._misc_container = container
+        root = QVBoxLayout(container)
+        root.setContentsMargins(10, 10, 10, 10)
+        root.setSpacing(10)
 
         rejoin_group = QGroupBox("Reserved Server Rejoin")
         rjl = QVBoxLayout(rejoin_group)
@@ -690,11 +704,34 @@ class RandoStuffTab(QWidget):
         clear_cache_btn = QPushButton('Clear Cache')
         clear_cache_btn.clicked.connect(self._clear_roblox_cache)
         footer_layout.addWidget(clear_cache_btn)
-        root.addWidget(footer_widget)
+
+        scroll.setWidget(container)
+        outer.addWidget(scroll)
+        outer.addWidget(footer_widget)
 
         # Connections
+        self.setLayout(outer)
+        self._update_container_bg()
         self._btn.clicked.connect(self._on_rejoin_clicked)
         self._multi_chk.toggled.connect(self._on_multi_instance_toggled)
+
+    def changeEvent(self, a0: QEvent | None):
+        super().changeEvent(a0)
+        if a0 is not None and a0.type() == QEvent.Type.PaletteChange:
+            self._update_container_bg()
+
+    def _update_container_bg(self):
+        """Keep the Miscellaneous tab background aligned with the tab theme."""
+        pal = self.palette()
+        win_light = pal.window().color().lightness()
+        alt_light = pal.alternateBase().color().lightness()
+        if win_light < 128 and alt_light <= win_light:
+            bg = 'background-color: rgb(64, 64, 64);'
+        else:
+            bg = 'background-color: palette(alternate-base);'
+        self._misc_container.setStyleSheet(
+            f'QWidget#_FleasionMiscContainer {{ {bg} }}'
+        )
 
     def _clear_roblox_cache(self):
         from .delete_cache import DeleteCacheWindow

@@ -247,6 +247,26 @@ class ConfigManager:
         self._save_settings()
 
     @property
+    def close_viewer_on_replace(self) -> bool:
+        return self.settings.get('close_viewer_on_replace', True)
+
+    @close_viewer_on_replace.setter
+    def close_viewer_on_replace(self, value: bool):
+        self.settings['close_viewer_on_replace'] = value
+        self._save_settings()
+
+    @property
+    def show_replacer_notifications(self) -> bool:
+        """Get show replacer notifications setting."""
+        return self.settings.get('show_replacer_notifications', True)
+
+    @show_replacer_notifications.setter
+    def show_replacer_notifications(self, value: bool):
+        """Set show replacer notifications setting."""
+        self.settings['show_replacer_notifications'] = value
+        self._save_settings()
+
+    @property
     def window_geometry(self) -> str:
         """Get the saved window geometry (hex string)."""
         return self.settings.get('window_geometry', '')

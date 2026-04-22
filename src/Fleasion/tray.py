@@ -174,74 +174,97 @@ class SystemTray:
 
         settings_menu.addMenu(export_menu)
 
+        # Convenience submenu
+        convenience_menu = QMenu('Convenience', settings_menu)
+
         # Always on Top toggle
-        self.always_on_top_action = QAction('Always on Top', settings_menu)
+        self.always_on_top_action = QAction('Always on Top', convenience_menu)
         self.always_on_top_action.setCheckable(True)
         self.always_on_top_action.setChecked(self.config_manager.always_on_top)
         self.always_on_top_action.triggered.connect(self._toggle_always_on_top)
-        settings_menu.addAction(self.always_on_top_action)
+        convenience_menu.addAction(self.always_on_top_action)
 
         # Open dashboard on launch
-        self.open_dashboard_action = QAction('Open Dashboard on Start', settings_menu)
+        self.open_dashboard_action = QAction('Open Dashboard on Start', convenience_menu)
         self.open_dashboard_action.setCheckable(True)
         self.open_dashboard_action.setChecked(self.config_manager.open_dashboard_on_launch)
         self.open_dashboard_action.triggered.connect(self._toggle_open_dashboard_on_launch)
-        settings_menu.addAction(self.open_dashboard_action)
+        convenience_menu.addAction(self.open_dashboard_action)
 
         # Auto delete cache on Roblox exit
-        self.auto_delete_cache_action = QAction('Auto-Clear Cache on Exit', settings_menu)
+        self.auto_delete_cache_action = QAction('Auto-Clear Cache on Exit', convenience_menu)
         self.auto_delete_cache_action.setCheckable(True)
         self.auto_delete_cache_action.setChecked(self.config_manager.auto_delete_cache_on_exit)
         self.auto_delete_cache_action.triggered.connect(self._toggle_auto_delete_cache)
-        settings_menu.addAction(self.auto_delete_cache_action)
+        convenience_menu.addAction(self.auto_delete_cache_action)
 
         # Clear cache on launch
-        self.clear_cache_action = QAction('Clear Cache on Launch', settings_menu)
+        self.clear_cache_action = QAction('Clear Cache on Launch', convenience_menu)
         self.clear_cache_action.setCheckable(True)
         self.clear_cache_action.setChecked(self.config_manager.clear_cache_on_launch)
         self.clear_cache_action.triggered.connect(self._toggle_clear_cache_on_launch)
-        settings_menu.addAction(self.clear_cache_action)
+        convenience_menu.addAction(self.clear_cache_action)
 
         # Run on Boot (Task Scheduler, admin required)
         import ctypes
         _admin = bool(ctypes.windll.shell32.IsUserAnAdmin()) if hasattr(ctypes, 'windll') else False
         self.run_on_boot_action = QAction(
             'Run on Boot' if _admin else 'Run on Boot (admin required)',
-            settings_menu,
+            convenience_menu,
         )
         self.run_on_boot_action.setCheckable(True)
         self.run_on_boot_action.setChecked(self.config_manager.run_on_boot)
         self.run_on_boot_action.setEnabled(_admin)
         self.run_on_boot_action.triggered.connect(self._toggle_run_on_boot)
-        settings_menu.addAction(self.run_on_boot_action)
+        convenience_menu.addAction(self.run_on_boot_action)
 
-        # Close Scraped Games on Open
-        self.close_scraped_games_action = QAction('Close Scraped Games on Open', settings_menu)
+        # Close Roblox on Open
+        self.close_scraped_games_action = QAction('Close Roblox on Open', convenience_menu)
         self.close_scraped_games_action.setCheckable(True)
         self.close_scraped_games_action.setChecked(self.config_manager.close_scraped_games_on_open)
         self.close_scraped_games_action.triggered.connect(self._toggle_close_scraped_games)
-        settings_menu.addAction(self.close_scraped_games_action)
+        convenience_menu.addAction(self.close_scraped_games_action)
 
         # Close to Tray
-        self.close_to_tray_action = QAction('Close to Tray', settings_menu)
+        self.close_to_tray_action = QAction('Close to Tray', convenience_menu)
         self.close_to_tray_action.setCheckable(True)
         self.close_to_tray_action.setChecked(self.config_manager.close_to_tray)
         self.close_to_tray_action.triggered.connect(self._toggle_close_to_tray)
-        settings_menu.addAction(self.close_to_tray_action)
+        convenience_menu.addAction(self.close_to_tray_action)
+
+        settings_menu.addMenu(convenience_menu)
+
+        # Scraper submenu
+        scraper_menu = QMenu('Scraper', settings_menu)
 
         # Show Names
-        self.show_names_action = QAction('Show Names', settings_menu)
+        self.show_names_action = QAction('Show Names', scraper_menu)
         self.show_names_action.setCheckable(True)
         self.show_names_action.setChecked(self.config_manager.show_names)
         self.show_names_action.triggered.connect(self._toggle_show_names)
-        settings_menu.addAction(self.show_names_action)
+        scraper_menu.addAction(self.show_names_action)
 
         # Show User ID
-        self.show_creator_id_action = QAction('Show User ID', settings_menu)
+        self.show_creator_id_action = QAction('Show User ID', scraper_menu)
         self.show_creator_id_action.setCheckable(True)
         self.show_creator_id_action.setChecked(self.config_manager.show_creator_id)
         self.show_creator_id_action.triggered.connect(self._toggle_show_creator_id)
-        settings_menu.addAction(self.show_creator_id_action)
+        scraper_menu.addAction(self.show_creator_id_action)
+
+        settings_menu.addMenu(scraper_menu)
+
+        scraped_games_menu = QMenu('Scraped Games', settings_menu)
+        self.show_replacer_notifications_action = QAction('Show Replacer Notifications', scraped_games_menu)
+        self.show_replacer_notifications_action.setCheckable(True)
+        self.show_replacer_notifications_action.setChecked(self.config_manager.show_replacer_notifications)
+        self.show_replacer_notifications_action.triggered.connect(self._toggle_show_replacer_notifications)
+        scraped_games_menu.addAction(self.show_replacer_notifications_action)
+        self.close_viewer_on_replace_action = QAction('Close Viewer on Replace', scraped_games_menu)
+        self.close_viewer_on_replace_action.setCheckable(True)
+        self.close_viewer_on_replace_action.setChecked(self.config_manager.close_viewer_on_replace)
+        self.close_viewer_on_replace_action.triggered.connect(self._toggle_close_viewer_on_replace)
+        scraped_games_menu.addAction(self.close_viewer_on_replace_action)
+        settings_menu.addMenu(scraped_games_menu)
 
         self.menu.addMenu(settings_menu)
 
@@ -344,10 +367,24 @@ class SystemTray:
         self._refresh_settings_tab()
 
     def _toggle_close_scraped_games(self):
-        """Toggle close scraped games on open setting."""
+        """Toggle close Roblox on open setting."""
         new_state = not self.config_manager.close_scraped_games_on_open
         self.config_manager.close_scraped_games_on_open = new_state
         self.close_scraped_games_action.setChecked(new_state)
+        self._refresh_settings_tab()
+
+    def _toggle_close_viewer_on_replace(self):
+        """Toggle close viewer on replace setting."""
+        new_state = not self.config_manager.close_viewer_on_replace
+        self.config_manager.close_viewer_on_replace = new_state
+        self.close_viewer_on_replace_action.setChecked(new_state)
+        self._refresh_settings_tab()
+
+    def _toggle_show_replacer_notifications(self):
+        """Toggle replacer notification popups."""
+        new_state = not self.config_manager.show_replacer_notifications
+        self.config_manager.show_replacer_notifications = new_state
+        self.show_replacer_notifications_action.setChecked(new_state)
         self._refresh_settings_tab()
 
     def _toggle_close_to_tray(self):

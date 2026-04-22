@@ -62,6 +62,8 @@ DEFAULT_SETTINGS = {
     'clear_cache_on_launch': True,
     'run_on_boot': True,
     'close_to_tray': True,
+    'close_viewer_on_replace': True,
+    'show_replacer_notifications': True,
     'multi_instance_launching': False,
     # Scraper tab - column visibility
     'scraper_column_visibility': {

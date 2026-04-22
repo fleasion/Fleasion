@@ -2,10 +2,11 @@
 
 import ctypes
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QEvent, Qt
 from PyQt6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -13,6 +14,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QSizePolicy,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -41,17 +43,26 @@ class SettingsTab(QWidget):
     # UI construction
 
     def _setup_ui(self):
-        root = QVBoxLayout(self)
-        root.setContentsMargins(10, 10, 0, 0)
+        outer = QVBoxLayout()
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(8)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+        container = QWidget()
+        container.setObjectName('_FleasionSettingsContainer')
+        self._settings_container = container
+        root = QVBoxLayout(container)
+        root.setContentsMargins(10, 10, 10, 10)
         root.setSpacing(10)
 
         root.addWidget(self._build_appearance_group())
-        root.addWidget(self._build_startup_group())
-        root.addWidget(self._build_behavior_group())
+        root.addWidget(self._build_settings_sections())
         root.addWidget(self._build_export_group())
         root.addStretch()
 
-        # Footer – matches the pattern used in other tabs
         footer_widget = QWidget()
         footer_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         footer_layout = QHBoxLayout(footer_widget)
@@ -60,7 +71,17 @@ class SettingsTab(QWidget):
         clear_cache_btn = QPushButton('Clear Cache')
         clear_cache_btn.clicked.connect(self._clear_roblox_cache)
         footer_layout.addWidget(clear_cache_btn)
-        root.addWidget(footer_widget)
+
+        scroll.setWidget(container)
+        outer.addWidget(scroll)
+        outer.addWidget(footer_widget)
+        self.setLayout(outer)
+        self._update_container_bg()
+
+    def changeEvent(self, a0: QEvent | None):
+        super().changeEvent(a0)
+        if a0 is not None and a0.type() == QEvent.Type.PaletteChange:
+            self._update_container_bg()
 
     # Appearance
 
@@ -89,40 +110,28 @@ class SettingsTab(QWidget):
 
     # Startup
 
-    def _build_startup_group(self) -> QGroupBox:
-        group = QGroupBox("Startup")
+    def _build_settings_sections(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+
+        layout.addWidget(self._build_convenience_group())
+        layout.addWidget(self._build_scraper_group())
+        layout.addWidget(self._build_scraped_games_group())
+
+        return page
+
+    def _build_convenience_group(self) -> QGroupBox:
+        group = QGroupBox("Convenience")
         layout = QVBoxLayout(group)
+
+        admin = _is_admin()
 
         self._open_dashboard_chk = QCheckBox("Open Dashboard on Start")
         self._open_dashboard_chk.setChecked(self._config.open_dashboard_on_launch)
         self._open_dashboard_chk.toggled.connect(self._on_open_dashboard_toggled)
         layout.addWidget(self._open_dashboard_chk)
-
-        admin = _is_admin()
-        boot_label = "Run on Boot" if admin else "Run on Boot  (requires administrator)"
-        self._run_on_boot_chk = QCheckBox(boot_label)
-        self._run_on_boot_chk.setChecked(self._config.run_on_boot)
-        self._run_on_boot_chk.setEnabled(admin)
-        self._run_on_boot_chk.toggled.connect(self._on_run_on_boot_toggled)
-        layout.addWidget(self._run_on_boot_chk)
-
-        return group
-
-    # Behavior
-
-    def _build_behavior_group(self) -> QGroupBox:
-        group = QGroupBox("Behavior")
-        layout = QVBoxLayout(group)
-
-        self._always_on_top_chk = QCheckBox("Always on Top")
-        self._always_on_top_chk.setChecked(self._config.always_on_top)
-        self._always_on_top_chk.toggled.connect(self._on_always_on_top_toggled)
-        layout.addWidget(self._always_on_top_chk)
-
-        self._close_to_tray_chk = QCheckBox("Close to Tray")
-        self._close_to_tray_chk.setChecked(self._config.close_to_tray)
-        self._close_to_tray_chk.toggled.connect(self._on_close_to_tray_toggled)
-        layout.addWidget(self._close_to_tray_chk)
 
         self._auto_clear_cache_chk = QCheckBox("Auto-Clear Cache on Exit")
         self._auto_clear_cache_chk.setChecked(self._config.auto_delete_cache_on_exit)
@@ -134,10 +143,33 @@ class SettingsTab(QWidget):
         self._clear_cache_launch_chk.toggled.connect(self._on_clear_cache_launch_toggled)
         layout.addWidget(self._clear_cache_launch_chk)
 
-        self._close_scraped_games_chk = QCheckBox("Close Scraped Games on Open")
+        boot_label = "Run on Boot" if admin else "Run on Boot  (requires administrator)"
+        self._run_on_boot_chk = QCheckBox(boot_label)
+        self._run_on_boot_chk.setChecked(self._config.run_on_boot)
+        self._run_on_boot_chk.setEnabled(admin)
+        self._run_on_boot_chk.toggled.connect(self._on_run_on_boot_toggled)
+        layout.addWidget(self._run_on_boot_chk)
+
+        self._close_scraped_games_chk = QCheckBox("Close Roblox on Open")
         self._close_scraped_games_chk.setChecked(self._config.close_scraped_games_on_open)
         self._close_scraped_games_chk.toggled.connect(self._on_close_scraped_games_toggled)
         layout.addWidget(self._close_scraped_games_chk)
+
+        self._close_to_tray_chk = QCheckBox("Close to Tray")
+        self._close_to_tray_chk.setChecked(self._config.close_to_tray)
+        self._close_to_tray_chk.toggled.connect(self._on_close_to_tray_toggled)
+        layout.addWidget(self._close_to_tray_chk)
+
+        self._always_on_top_chk = QCheckBox("Always on Top")
+        self._always_on_top_chk.setChecked(self._config.always_on_top)
+        self._always_on_top_chk.toggled.connect(self._on_always_on_top_toggled)
+        layout.addWidget(self._always_on_top_chk)
+
+        return group
+
+    def _build_scraper_group(self) -> QGroupBox:
+        group = QGroupBox("Scraper")
+        layout = QVBoxLayout(group)
 
         self._show_names_chk = QCheckBox("Show Names")
         self._show_names_chk.setChecked(self._config.show_names)
@@ -171,6 +203,35 @@ class SettingsTab(QWidget):
 
         return group
 
+    def _build_scraped_games_group(self) -> QGroupBox:
+        group = QGroupBox("Scraped Games")
+        layout = QVBoxLayout(group)
+
+        self._show_replacer_notifications_chk = QCheckBox("Show Replacer Notifications")
+        self._show_replacer_notifications_chk.setChecked(self._config.show_replacer_notifications)
+        self._show_replacer_notifications_chk.toggled.connect(self._on_show_replacer_notifications_toggled)
+        layout.addWidget(self._show_replacer_notifications_chk)
+
+        self._close_viewer_on_replace_chk = QCheckBox("Close Viewer on Replace")
+        self._close_viewer_on_replace_chk.setChecked(self._config.close_viewer_on_replace)
+        self._close_viewer_on_replace_chk.toggled.connect(self._on_close_viewer_on_replace_toggled)
+        layout.addWidget(self._close_viewer_on_replace_chk)
+
+        return group
+
+    def _update_container_bg(self):
+        """Keep the Settings tab background aligned with the tab theme."""
+        pal = self.palette()
+        win_light = pal.window().color().lightness()
+        alt_light = pal.alternateBase().color().lightness()
+        if win_light < 128 and alt_light <= win_light:
+            bg = 'background-color: rgb(64, 64, 64);'
+        else:
+            bg = 'background-color: palette(alternate-base);'
+        self._settings_container.setStyleSheet(
+            f'QWidget#_FleasionSettingsContainer {{ {bg} }}'
+        )
+
     # Public
 
     def refresh_from_config(self):
@@ -182,12 +243,14 @@ class SettingsTab(QWidget):
 
         for chk, value in [
             (self._open_dashboard_chk, self._config.open_dashboard_on_launch),
-            (self._run_on_boot_chk, self._config.run_on_boot),
-            (self._always_on_top_chk, self._config.always_on_top),
-            (self._close_to_tray_chk, self._config.close_to_tray),
             (self._auto_clear_cache_chk, self._config.auto_delete_cache_on_exit),
             (self._clear_cache_launch_chk, self._config.clear_cache_on_launch),
+            (self._run_on_boot_chk, self._config.run_on_boot),
             (self._close_scraped_games_chk, self._config.close_scraped_games_on_open),
+            (self._close_to_tray_chk, self._config.close_to_tray),
+            (self._always_on_top_chk, self._config.always_on_top),
+            (self._show_replacer_notifications_chk, self._config.show_replacer_notifications),
+            (self._close_viewer_on_replace_chk, self._config.close_viewer_on_replace),
             (self._show_names_chk, self._config.show_names),
             (self._show_creator_id_chk, self._config.show_creator_id),
         ]:
@@ -279,6 +342,16 @@ class SettingsTab(QWidget):
         self._config.close_scraped_games_on_open = checked
         if self._tray and hasattr(self._tray, 'close_scraped_games_action'):
             self._tray.close_scraped_games_action.setChecked(checked)
+
+    def _on_close_viewer_on_replace_toggled(self, checked: bool):
+        self._config.close_viewer_on_replace = checked
+        if self._tray and hasattr(self._tray, 'close_viewer_on_replace_action'):
+            self._tray.close_viewer_on_replace_action.setChecked(checked)
+
+    def _on_show_replacer_notifications_toggled(self, checked: bool):
+        self._config.show_replacer_notifications = checked
+        if self._tray and hasattr(self._tray, 'show_replacer_notifications_action'):
+            self._tray.show_replacer_notifications_action.setChecked(checked)
 
     def _on_show_names_toggled(self, checked: bool):
         self._config.show_names = checked

@@ -1534,18 +1534,39 @@ class JsonTreeViewer(QDialog):
         """Collapse all items."""
         self.tree.collapseAll()
 
+    def _show_replacer_notification(self, title: str, message: str):
+        """Show the replacer success popup unless it is disabled in settings."""
+        if self.config_manager is not None and not getattr(self.config_manager, 'show_replacer_notifications', True):
+            return
+
+        dialog = QMessageBox(self)
+        dialog.setIcon(QMessageBox.Icon.Information)
+        dialog.setWindowTitle(title)
+        dialog.setText(message)
+        dialog.setInformativeText('You can turn this off in Settings > Scraped Games.')
+        dialog.setMinimumWidth(640)
+        dialog.setStyleSheet(
+            'QLabel#qt_msgbox_informativelabel { color: palette(window-text); font-size: 7pt; }'
+        )
+        dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
+        dialog.exec()
+
+    def _maybe_close_after_replace(self):
+        if self.config_manager is None or getattr(self.config_manager, 'close_viewer_on_replace', True):
+            self.close()
+
     def _import_as_replace_ids(self):
         """Import selected values as IDs to replace."""
         vals = self._get_selected_values()
         if vals:
             self.on_import_ids(vals)
             value_label = 'asset ID(s)' if all(isinstance(v, int) for v in vals) else 'value(s)'
-            QMessageBox.information(
-                self,
+            self._show_replacer_notification(
                 'Added to Replacer',
                 f'Added {len(vals)} {value_label} to replacer:\n'
                 f'{", ".join(str(v) for v in vals[:5])}{"..." if len(vals) > 5 else ""}',
             )
+            self._maybe_close_after_replace()
         else:
             QMessageBox.information(self, 'Info', 'No valid values selected (numeric or links/paths)')
 
@@ -1570,8 +1591,5 @@ class JsonTreeViewer(QDialog):
             result_text = f'Replace With set to asset ID {selected_value}'
         else:
             result_text = f'Replace With set to value {selected_value}'
-        QMessageBox.information(
-            self,
-            'Replace With Set',
-            result_text,
-        )
+        self._show_replacer_notification('Replace With Set', result_text)
+        self._maybe_close_after_replace()
