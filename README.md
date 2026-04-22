@@ -16,8 +16,7 @@ Download `Fleasion.exe` from the [Releases](https://github.com/fleasion/Fleasion
 
 ## Requirements for Building from Source
 
-- **Windows** (required &mdash; uses Windows-specific APIs)
-- **Python 3.14+**
+- **Windows 10+** (required &mdash; uses Windows-specific APIs)
 - [**uv**](https://docs.astral.sh/uv/) package manager
 
 ### Building from Source
