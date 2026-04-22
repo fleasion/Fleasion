@@ -6,7 +6,7 @@ import os
 from functools import partial
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QEvent, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -1145,11 +1145,12 @@ class FFlagSection(QWidget):
 
     def _write_framerate_cap(self):
         """Write the framerate cap to GlobalBasicSettings_13.xml only if FFlagsare enabled."""
-        # Only write if FFlagsare enabled
+        value = self._framerate_cap.value()
+        self._manager.framerate_cap = value
+
+        # Only write if FFlags are enabled
         if not self._manager.fast_flags_enabled:
             return
-            
-        value = self._framerate_cap.value()
         
         # Check if Roblox Player is running
         is_roblox_running = False
@@ -1161,10 +1162,7 @@ class FFlagSection(QWidget):
             self._manager.pending_modifications_queue.enqueue_framerate_cap(value)
         else:
             # Write immediately
-            if value == 0:  # Default (unset)
-                run_in_thread(self._manager.global_settings_manager.restore)()
-            else:
-                run_in_thread(self._manager.global_settings_manager.write)(value)
+            run_in_thread(self._manager.sync_saved_global_settings)()
 
     def _schedule_write(self, *_args):
         self._debounce_timer.start()
@@ -1200,7 +1198,6 @@ class FFlagSection(QWidget):
             'grass_max': self._grass_max.value() or None,
             'grass_min': self._grass_min.value() or None,
             'grass_motion': self._grass_motion.value() or None,
-            'framerate_cap': self._framerate_cap.value() or None,
         }
 
     def _write_flags(self):
@@ -1221,8 +1218,6 @@ class FFlagSection(QWidget):
     def _load_from_manager(self):
         """Populate controls from the persisted fast-flag settings."""
         s = self._manager.fast_flags
-        if not s:
-            return
 
         # Block signals while bulk-setting
         widgets = [
@@ -1291,7 +1286,7 @@ class FFlagSection(QWidget):
         self._grass_min.setValue(s.get('grass_min') or 0)
         self._grass_motion.setValue(s.get('grass_motion') or 0)
         
-        self._framerate_cap.setValue(s.get('framerate_cap') or 0)
+        self._framerate_cap.setValue(self._manager.framerate_cap)
 
         for w in widgets:
             w.blockSignals(False)
@@ -1315,6 +1310,7 @@ class FFlagSection(QWidget):
         self._grass_min.setValue(0)
         self._grass_motion.setValue(0)
         self._framerate_cap.setValue(0)
+        self._manager.framerate_cap = 0
 
         self._manager.fast_flags_enabled = False
         try:
@@ -1517,6 +1513,7 @@ class ModificationsTab(QWidget):
 
         footer_widget = QWidget()
         footer_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self._footer_widget = footer_widget
         footer_layout = QHBoxLayout(footer_widget)
         footer_layout.setContentsMargins(8, 4, 8, 4)
         self._status_label = QLabel()
@@ -1531,10 +1528,10 @@ class ModificationsTab(QWidget):
         self.setLayout(outer)
         self._update_container_bg()
 
-    def changeEvent(self, event):
+    def changeEvent(self, a0: QEvent | None):
         from PyQt6.QtCore import QEvent
-        super().changeEvent(event)
-        if event.type() == QEvent.Type.PaletteChange:
+        super().changeEvent(a0)
+        if a0 is not None and a0.type() == QEvent.Type.PaletteChange:
             self._update_container_bg()
 
     def _update_container_bg(self):
@@ -1558,6 +1555,9 @@ class ModificationsTab(QWidget):
         self._mod_container.setStyleSheet(
             f'QWidget#_FleasionModContainer {{ {bg} }}'
         )
+        footer_widget = getattr(self, '_footer_widget', None)
+        if footer_widget is not None:
+            footer_widget.setStyleSheet(bg)
 
     def _clear_roblox_cache(self):
         from .delete_cache import DeleteCacheWindow
@@ -1572,10 +1572,16 @@ class ModificationsTab(QWidget):
         applied = sum(1 for e in self._manager.entries if e.get('status') == 'applied')
         roblox_count = len(self._manager.roblox_dirs)
         noun = 'modification' if applied == 1 else 'modifications'
-        self._status_label.setText(
-            f'{applied} {noun} applied \u2022 '
-            f'{roblox_count} Roblox dir(s) detected'
-        )
+        status_label = getattr(self, '_status_label', None)
+        if status_label is None:
+            return
+        try:
+            status_label.setText(
+                f'{applied} {noun} applied \u2022 '
+                f'{roblox_count} Roblox dir(s) detected'
+            )
+        except RuntimeError:
+            return
 
     # ------------------------------------------------------------------
     # Section: Avatar Meshes — Add Head Variant
@@ -1681,6 +1687,7 @@ class ModificationsTab(QWidget):
         if checked:
             # Immediately write current settings
             self._fflag_widget._schedule_write()
+            self._fflag_widget._write_framerate_cap()
 
     def _on_roblox_player_status_changed(self, is_running: bool):
         """Apply all queued modifications when Roblox Player exits."""

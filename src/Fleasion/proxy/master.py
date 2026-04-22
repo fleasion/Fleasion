@@ -33,6 +33,7 @@ import sys
 import tempfile
 import threading
 import time
+import warnings
 import winreg
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -1215,9 +1216,16 @@ def _is_fleasion_ca_cert_block(pem_block: str) -> bool:
     """Return True if *pem_block* is a Fleasion self-signed CA cert."""
     try:
         from cryptography import x509
+        from cryptography.utils import CryptographyDeprecationWarning
         from cryptography.x509.oid import NameOID
 
-        cert = x509.load_pem_x509_certificate(pem_block.encode('utf-8'))
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                'ignore',
+                category=CryptographyDeprecationWarning,
+                message=r"Parsed a serial number which wasn't positive.*",
+            )
+            cert = x509.load_pem_x509_certificate(pem_block.encode('utf-8'))
         cn_attrs = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
         org_attrs = cert.subject.get_attributes_for_oid(NameOID.ORGANIZATION_NAME)
         cn = cn_attrs[0].value if cn_attrs else ''

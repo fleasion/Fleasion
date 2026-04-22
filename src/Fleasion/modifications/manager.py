@@ -318,10 +318,15 @@ class ModificationManager(QObject):
                         # No target_path key — keep as-is (edge case)
                         seen[e.get('id', str(id(e)))] = e
                 data['entries'] = list(seen.values())
+                if 'global_settings' not in data:
+                    data['global_settings'] = {}
+                legacy_framerate = data.get('fast_flags', {}).pop('framerate_cap', None)
+                if legacy_framerate is not None and data['global_settings'].get('framerate_cap') is None:
+                    data['global_settings']['framerate_cap'] = legacy_framerate
                 return data
             except (json.JSONDecodeError, OSError):
                 pass
-        return {'entries': [], 'fast_flags_enabled': False, 'fast_flags': {}}
+        return {'entries': [], 'fast_flags_enabled': False, 'fast_flags': {}, 'global_settings': {}}
 
     def _save_json(self) -> None:
         MODIFICATIONS_JSON.parent.mkdir(parents=True, exist_ok=True)
@@ -729,6 +734,9 @@ class ModificationManager(QObject):
         if self._data.get('fast_flags_enabled') and self._data.get('fast_flags'):
             self.fflag_manager.write(self._data['fast_flags'])
 
+        if self._data.get('fast_flags_enabled'):
+            self.sync_saved_global_settings()
+
         log_buffer.log('Modifications', 'Re-applied all modifications (crash recovery)')
 
     # ------------------------------------------------------------------
@@ -747,6 +755,10 @@ class ModificationManager(QObject):
                 self.fflag_manager.restore()
             except Exception:
                 pass
+            try:
+                self.global_settings_manager.restore()
+            except Exception:
+                pass
         self._save_json()
 
     @property
@@ -755,15 +767,49 @@ class ModificationManager(QObject):
 
     @fast_flags.setter
     def fast_flags(self, settings: dict) -> None:
-        self._data['fast_flags'] = settings
+        self._data['fast_flags'] = {k: v for k, v in settings.items() if k != 'framerate_cap'}
         self._save_json()
+
+    @property
+    def global_settings(self) -> dict:
+        return self._data.setdefault('global_settings', {})
+
+    @global_settings.setter
+    def global_settings(self, settings: dict) -> None:
+        self._data['global_settings'] = settings
+        self._save_json()
+
+    @property
+    def framerate_cap(self) -> int:
+        value = self.global_settings.get('framerate_cap')
+        if value is None:
+            value = self.fast_flags.get('framerate_cap')
+        try:
+            return 0 if value in (None, '', 'Default') else int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    @framerate_cap.setter
+    def framerate_cap(self, value: int | None) -> None:
+        settings = dict(self.global_settings)
+        settings['framerate_cap'] = None if value in (None, 0) else int(value)
+        self.global_settings = settings
+
+    def sync_saved_global_settings(self) -> None:
+        """Write the saved global settings to Roblox, or restore defaults."""
+        framerate = self.framerate_cap
+        if framerate:
+            self.global_settings_manager.write(framerate)
+        else:
+            self.global_settings_manager.restore()
 
     def write_fast_flags(self, settings: dict) -> None:
         """Update and write fast-flags to disk."""
-        self._data['fast_flags'] = settings
+        self._data['fast_flags'] = {k: v for k, v in settings.items() if k != 'framerate_cap'}
         self._data['fast_flags_enabled'] = True
         self._save_json()
         self.fflag_manager.write(settings)
+        self.sync_saved_global_settings()
 
     def refresh_roblox_dirs(self) -> None:
         """Re-discover Roblox directories (e.g. after an update)."""
@@ -784,10 +830,7 @@ class ModificationManager(QObject):
         
         if framerate is not None:
             try:
-                if framerate == 0:
-                    self.global_settings_manager.restore()
-                else:
-                    run_in_thread(self.global_settings_manager.write)(framerate)
+                self.sync_saved_global_settings()
                 log_buffer.log('Modifications', 'Applied queued framerate cap after Roblox exit')
             except Exception as exc:
                 log_buffer.log('Modifications', f'Error applying queued framerate cap: {exc}')

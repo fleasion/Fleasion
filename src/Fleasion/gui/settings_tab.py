@@ -7,12 +7,10 @@ from PyQt6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
     QFrame,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPushButton,
-    QRadioButton,
     QSizePolicy,
     QScrollArea,
     QVBoxLayout,
@@ -20,6 +18,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ..gui.theme import ThemeManager
+from .modifications_tab import CollapsibleSection
 from ..utils.autostart import sync_autostart
 from ..utils import CONFIG_DIR
 
@@ -45,7 +44,7 @@ class SettingsTab(QWidget):
     def _setup_ui(self):
         outer = QVBoxLayout()
         outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(8)
+        outer.setSpacing(0)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -54,19 +53,27 @@ class SettingsTab(QWidget):
         container = QWidget()
         container.setObjectName('_FleasionSettingsContainer')
         self._settings_container = container
-        root = QVBoxLayout(container)
-        root.setContentsMargins(10, 10, 10, 10)
-        root.setSpacing(10)
+        self._container_layout = QVBoxLayout()
+        self._container_layout.setSpacing(10)
+        self._container_layout.setContentsMargins(10, 10, 10, 10)
 
-        root.addWidget(self._build_appearance_group())
-        root.addWidget(self._build_settings_sections())
-        root.addWidget(self._build_export_group())
-        root.addStretch()
+        self._container_layout.addWidget(self._build_appearance_section())
+        self._container_layout.addWidget(self._build_convenience_section())
+        self._container_layout.addWidget(self._build_scraper_section())
+        self._container_layout.addWidget(self._build_scraped_games_section())
+        self._container_layout.addWidget(self._build_export_section())
+        self._container_layout.addStretch()
+
+        container.setLayout(self._container_layout)
 
         footer_widget = QWidget()
         footer_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self._footer_widget = footer_widget
         footer_layout = QHBoxLayout(footer_widget)
         footer_layout.setContentsMargins(8, 4, 8, 4)
+        self._status_label = QLabel('')
+        self._status_label.setStyleSheet('color: #888;')
+        footer_layout.addWidget(self._status_label)
         footer_layout.addStretch()
         clear_cache_btn = QPushButton('Clear Cache')
         clear_cache_btn.clicked.connect(self._clear_roblox_cache)
@@ -85,113 +92,99 @@ class SettingsTab(QWidget):
 
     # Appearance
 
-    def _build_appearance_group(self) -> QGroupBox:
-        group = QGroupBox("Appearance")
-        layout = QVBoxLayout(group)
+    def _build_appearance_section(self) -> CollapsibleSection:
+        section = CollapsibleSection('Appearance', expanded=True)
 
-        theme_label = QLabel("Theme")
-        layout.addWidget(theme_label)
-
-        self._theme_buttons: dict[str, QRadioButton] = {}
+        self._theme_buttons: dict[str, QCheckBox] = {}
         btn_group = QButtonGroup(self)
+        btn_group.setExclusive(True)
         theme_row = QHBoxLayout()
+        theme_row.setContentsMargins(0, 0, 0, 0)
         current_theme = self._config.theme
-        for name in ("System", "Light", "Dark"):
-            rb = QRadioButton(name)
-            rb.setChecked(name == current_theme)
-            rb.toggled.connect(lambda checked, t=name: self._on_theme_toggled(checked, t))
-            btn_group.addButton(rb)
-            theme_row.addWidget(rb)
-            self._theme_buttons[name] = rb
+        for name in ('System', 'Light', 'Dark'):
+            chk = QCheckBox(name)
+            chk.setChecked(name == current_theme)
+            chk.toggled.connect(lambda checked, t=name: self._on_theme_toggled(checked, t))
+            btn_group.addButton(chk)
+            theme_row.addWidget(chk)
+            self._theme_buttons[name] = chk
         theme_row.addStretch()
-        layout.addLayout(theme_row)
 
-        return group
+        row_widget = QWidget()
+        row_widget.setLayout(theme_row)
+        section.add_widget(row_widget)
+
+        return section
 
     # Startup
 
-    def _build_settings_sections(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
-
-        layout.addWidget(self._build_convenience_group())
-        layout.addWidget(self._build_scraper_group())
-        layout.addWidget(self._build_scraped_games_group())
-
-        return page
-
-    def _build_convenience_group(self) -> QGroupBox:
-        group = QGroupBox("Convenience")
-        layout = QVBoxLayout(group)
+    def _build_convenience_section(self) -> CollapsibleSection:
+        section = CollapsibleSection('Convenience', expanded=True)
 
         admin = _is_admin()
 
         self._open_dashboard_chk = QCheckBox("Open Dashboard on Start")
         self._open_dashboard_chk.setChecked(self._config.open_dashboard_on_launch)
         self._open_dashboard_chk.toggled.connect(self._on_open_dashboard_toggled)
-        layout.addWidget(self._open_dashboard_chk)
+        section.add_widget(self._open_dashboard_chk)
 
         self._auto_clear_cache_chk = QCheckBox("Auto-Clear Cache on Exit")
         self._auto_clear_cache_chk.setChecked(self._config.auto_delete_cache_on_exit)
         self._auto_clear_cache_chk.toggled.connect(self._on_auto_clear_cache_toggled)
-        layout.addWidget(self._auto_clear_cache_chk)
+        section.add_widget(self._auto_clear_cache_chk)
 
         self._clear_cache_launch_chk = QCheckBox("Clear Cache on Launch")
         self._clear_cache_launch_chk.setChecked(self._config.clear_cache_on_launch)
         self._clear_cache_launch_chk.toggled.connect(self._on_clear_cache_launch_toggled)
-        layout.addWidget(self._clear_cache_launch_chk)
+        section.add_widget(self._clear_cache_launch_chk)
 
         boot_label = "Run on Boot" if admin else "Run on Boot  (requires administrator)"
         self._run_on_boot_chk = QCheckBox(boot_label)
         self._run_on_boot_chk.setChecked(self._config.run_on_boot)
         self._run_on_boot_chk.setEnabled(admin)
         self._run_on_boot_chk.toggled.connect(self._on_run_on_boot_toggled)
-        layout.addWidget(self._run_on_boot_chk)
+        section.add_widget(self._run_on_boot_chk)
 
         self._close_scraped_games_chk = QCheckBox("Close Roblox on Open")
         self._close_scraped_games_chk.setChecked(self._config.close_scraped_games_on_open)
         self._close_scraped_games_chk.toggled.connect(self._on_close_scraped_games_toggled)
-        layout.addWidget(self._close_scraped_games_chk)
+        section.add_widget(self._close_scraped_games_chk)
 
         self._close_to_tray_chk = QCheckBox("Close to Tray")
         self._close_to_tray_chk.setChecked(self._config.close_to_tray)
         self._close_to_tray_chk.toggled.connect(self._on_close_to_tray_toggled)
-        layout.addWidget(self._close_to_tray_chk)
+        section.add_widget(self._close_to_tray_chk)
 
         self._always_on_top_chk = QCheckBox("Always on Top")
         self._always_on_top_chk.setChecked(self._config.always_on_top)
         self._always_on_top_chk.toggled.connect(self._on_always_on_top_toggled)
-        layout.addWidget(self._always_on_top_chk)
+        section.add_widget(self._always_on_top_chk)
 
-        return group
+        return section
 
-    def _build_scraper_group(self) -> QGroupBox:
-        group = QGroupBox("Scraper")
-        layout = QVBoxLayout(group)
+    def _build_scraper_section(self) -> CollapsibleSection:
+        section = CollapsibleSection('Scraper', expanded=True)
 
         self._show_names_chk = QCheckBox("Show Names")
         self._show_names_chk.setChecked(self._config.show_names)
         self._show_names_chk.toggled.connect(self._on_show_names_toggled)
-        layout.addWidget(self._show_names_chk)
+        section.add_widget(self._show_names_chk)
 
         self._show_creator_id_chk = QCheckBox("Show User ID")
         self._show_creator_id_chk.setChecked(self._config.show_creator_id)
         self._show_creator_id_chk.toggled.connect(self._on_show_creator_id_toggled)
-        layout.addWidget(self._show_creator_id_chk)
+        section.add_widget(self._show_creator_id_chk)
 
-        return group
+        return section
 
     # Export naming
 
-    def _build_export_group(self) -> QGroupBox:
-        group = QGroupBox("Export Naming")
-        layout = QVBoxLayout(group)
-        layout.addWidget(QLabel("Include in exported file names:"))
+    def _build_export_section(self) -> CollapsibleSection:
+        section = CollapsibleSection('Export Naming', expanded=True)
 
         self._export_chks: dict[str, QCheckBox] = {}
         row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
         for option in ("name", "id", "hash"):
             chk = QCheckBox(option.capitalize())
             chk.setChecked(self._config.is_export_naming_enabled(option))
@@ -199,25 +192,26 @@ class SettingsTab(QWidget):
             row.addWidget(chk)
             self._export_chks[option] = chk
         row.addStretch()
-        layout.addLayout(row)
+        row_widget = QWidget()
+        row_widget.setLayout(row)
+        section.add_widget(row_widget)
 
-        return group
+        return section
 
-    def _build_scraped_games_group(self) -> QGroupBox:
-        group = QGroupBox("Scraped Games")
-        layout = QVBoxLayout(group)
+    def _build_scraped_games_section(self) -> CollapsibleSection:
+        section = CollapsibleSection('Scraped Games', expanded=True)
 
         self._show_replacer_notifications_chk = QCheckBox("Show Replacer Notifications")
         self._show_replacer_notifications_chk.setChecked(self._config.show_replacer_notifications)
         self._show_replacer_notifications_chk.toggled.connect(self._on_show_replacer_notifications_toggled)
-        layout.addWidget(self._show_replacer_notifications_chk)
+        section.add_widget(self._show_replacer_notifications_chk)
 
         self._close_viewer_on_replace_chk = QCheckBox("Close Viewer on Replace")
         self._close_viewer_on_replace_chk.setChecked(self._config.close_viewer_on_replace)
         self._close_viewer_on_replace_chk.toggled.connect(self._on_close_viewer_on_replace_toggled)
-        layout.addWidget(self._close_viewer_on_replace_chk)
+        section.add_widget(self._close_viewer_on_replace_chk)
 
-        return group
+        return section
 
     def _update_container_bg(self):
         """Keep the Settings tab background aligned with the tab theme."""
@@ -231,6 +225,9 @@ class SettingsTab(QWidget):
         self._settings_container.setStyleSheet(
             f'QWidget#_FleasionSettingsContainer {{ {bg} }}'
         )
+        footer_widget = getattr(self, '_footer_widget', None)
+        if footer_widget is not None:
+            footer_widget.setStyleSheet(bg)
 
     # Public
 

@@ -651,9 +651,8 @@ def main():
         cache_scraper=getattr(proxy_master, 'cache_scraper', None)
     )
 
-    # Crash recovery: if a previous session left a stash, re-apply
-    if (CONFIG_DIR / 'ModOriginals').exists() and any((CONFIG_DIR / 'ModOriginals').iterdir()):
-        run_in_thread(mod_manager.reapply_all)()
+    # Re-apply saved modifications on launch so the GUI state and Roblox files stay in sync.
+    run_in_thread(mod_manager.reapply_all)()
 
     # ── Shutdown guards ───────────────────────────────────────────────────
     # 1. Graceful Windows shutdown / log-off: Qt fires commitDataRequest before
