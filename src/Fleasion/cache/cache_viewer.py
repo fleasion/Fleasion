@@ -1815,8 +1815,13 @@ class CacheViewerTab(QWidget):
         preview_layout = QVBoxLayout()
         preview_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.preview_group = QGroupBox('Preview')
+        self.preview_group = QWidget()
         preview_group_layout = QVBoxLayout()
+        preview_group_layout.setContentsMargins(0, 0, 0, 0)
+        preview_group_layout.setSpacing(4)
+
+        self.preview_title_label = QLabel('Preview')
+        preview_group_layout.addWidget(self.preview_title_label)
 
         # Scrollable container for all preview content
         self.preview_scroll = QScrollArea()
@@ -2903,9 +2908,59 @@ class CacheViewerTab(QWidget):
 
         if export_path:
             log_buffer.log('Scraper', f"Exported asset {asset['id']} to {export_path}")
-            QMessageBox.information(self, 'Success', f'Asset exported to:\n{export_path}')
+            self._show_export_complete_message(
+                'Success',
+                f'Asset exported to:\n{export_path}',
+                [export_path],
+            )
         else:
             QMessageBox.critical(self, 'Error', 'Failed to export asset')
+
+    def _get_export_open_target(self, exported_paths):
+        """Return the Explorer target and whether it should be selected."""
+        import os
+        from pathlib import Path
+
+        paths = [Path(path) for path in exported_paths if path]
+        if not paths:
+            return self.cache_manager.export_dir, False
+
+        if len(paths) == 1:
+            path = paths[0]
+            return path, path.is_file()
+
+        containers = [path if path.is_dir() else path.parent for path in paths]
+        if all(container == containers[0] for container in containers):
+            return containers[0], False
+
+        common_parent = Path(os.path.commonpath([str(container) for container in containers]))
+        return common_parent, False
+
+    def _open_export_target(self, exported_paths):
+        """Open exported output in Explorer, selecting a single exported file when possible."""
+        import subprocess
+
+        target, select_file = self._get_export_open_target(exported_paths)
+        try:
+            if select_file:
+                subprocess.Popen(['explorer.exe', f'/select,{target}'])
+            else:
+                open_folder(target)
+        except Exception as exc:
+            log_buffer.log('Export', f'Could not open export target {target}: {exc}')
+
+    def _show_export_complete_message(self, title: str, message: str, exported_paths):
+        """Show an export completion dialog with a shortcut to the destination folder."""
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Information)
+        msg.setWindowTitle(title)
+        msg.setText(message)
+        open_button = msg.addButton('Open in Explorer', QMessageBox.ButtonRole.ActionRole)
+        msg.addButton(QMessageBox.StandardButton.Ok)
+        msg.exec()
+
+        if msg.clickedButton() == open_button:
+            self._open_export_target(exported_paths)
 
     def _export_all(self):
         """Export all visible assets."""
@@ -2955,6 +3010,7 @@ class CacheViewerTab(QWidget):
             return
 
         exported_count = 0
+        exported_paths = []
         for asset in assets:
             asset_id = asset['id']
             resolved_name = None
@@ -2962,14 +3018,17 @@ class CacheViewerTab(QWidget):
                 resolved_name = self._asset_info[asset_id].get('resolved_name')
             safe_name = self._sanitize_filename(resolved_name) if resolved_name else None
 
-            if self.cache_manager.export_asset(asset['id'], asset['type'], resolved_name=safe_name):
+            export_path = self.cache_manager.export_asset(asset['id'], asset['type'], resolved_name=safe_name)
+            if export_path:
                 exported_count += 1
+                exported_paths.append(export_path)
 
         log_buffer.log('Scraper', f'Exported {exported_count}/{len(assets)} assets')
-        QMessageBox.information(
-            self,
+        location, _ = self._get_export_open_target(exported_paths)
+        self._show_export_complete_message(
             'Export Complete',
-            f'Exported {exported_count} asset(s)\n\nLocation: {self.cache_manager.export_dir}'
+            f'Exported {exported_count} asset(s)\n\nLocation: {location}',
+            exported_paths,
         )
 
     def _delete_selected(self):
@@ -3123,10 +3182,10 @@ class CacheViewerTab(QWidget):
             # Trim long names/hashes to keep the UI tidy
             if len(display) > 60:
                 display = display[:57] + '...'
-            self.preview_group.setTitle(f'Preview: {display}')
+            self.preview_title_label.setText(f'Preview: {display}')
         except Exception:
             try:
-                self.preview_group.setTitle('Preview')
+                self.preview_title_label.setText('Preview')
             except Exception:
                 pass
 
@@ -3439,6 +3498,12 @@ class CacheViewerTab(QWidget):
             f.write(json.dumps(result, indent=2))
         total = sum(len(v) for v in result.values())
         log_buffer.log('Scraper', f'Exported game dump ({total} assets) to {path}')
+        from pathlib import Path
+        self._show_export_complete_message(
+            'Export Complete',
+            f'Exported game dump with {total} asset(s) to:\n{path}',
+            [Path(path)],
+        )
 
     def _copy_column(self, column: int):
         """Copy column contents for selected rows."""
@@ -3722,6 +3787,7 @@ class CacheViewerTab(QWidget):
 
         # Export all with sanitized resolved names
         exported_count = 0
+        exported_paths = []
         for asset in assets_to_export:
             asset_id = asset['id']
             resolved_name = None
@@ -3729,26 +3795,21 @@ class CacheViewerTab(QWidget):
                 resolved_name = self._asset_info[asset_id].get('resolved_name')
             safe_name = self._sanitize_filename(resolved_name) if resolved_name else None
 
-            if self.cache_manager.export_asset(
+            export_path = self.cache_manager.export_asset(
                 asset['id'], asset['type'],
                 resolved_name=safe_name,
                 export_format=export_format
-            ):
+            )
+            if export_path:
                 exported_count += 1
-
-        # Determine export location based on format (matching cache_manager logic)
-        if export_format == 'raw':
-            format_dir = self.cache_manager.export_dir / 'raw'
-        elif export_format == 'bin':
-            format_dir = self.cache_manager.export_dir / 'bin'
-        else:  # All 'converted*' formats go to 'converted' directory
-            format_dir = self.cache_manager.export_dir / 'converted'
+                exported_paths.append(export_path)
         
         log_buffer.log('Scraper', f'Exported {exported_count}/{len(assets_to_export)} assets as {export_format}')
-        QMessageBox.information(
-            self,
+        location, _ = self._get_export_open_target(exported_paths)
+        self._show_export_complete_message(
             'Export Complete',
-            f'Exported {exported_count} asset(s) as {export_format}\n\nLocation: {format_dir}'
+            f'Exported {exported_count} asset(s) as {export_format}\n\nLocation: {location}',
+            exported_paths,
         )
 
     def _add_selected_to_replacer(self):
@@ -3853,7 +3914,7 @@ class CacheViewerTab(QWidget):
         # Reset preview group title back to default
         try:
             if hasattr(self, 'preview_group'):
-                self.preview_group.setTitle('Preview')
+                self.preview_title_label.setText('Preview')
         except Exception:
             pass
         
@@ -4324,11 +4385,11 @@ class CacheViewerTab(QWidget):
             import shutil
             shutil.copy2(str(src), str(dst))
             exported.append(dest_name)
-        from PyQt6.QtWidgets import QMessageBox
-        QMessageBox.information(
-            self, 'Export Complete',
+        self._show_export_complete_message(
+            'Export Complete',
             f'Exported {len(exported)} slot KTX2 file(s) to:\n{dest_dir}\n\n' +
             '\n'.join(exported),
+            [dest_dir / name for name in exported],
         )
 
     def _preview_audio(self, data: bytes, asset_id: str):

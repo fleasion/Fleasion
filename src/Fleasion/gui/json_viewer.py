@@ -655,8 +655,13 @@ class JsonTreeViewer(QDialog):
         preview_layout = QVBoxLayout()
         preview_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.preview_group = QGroupBox('Preview')
+        self.preview_group = QWidget()
         preview_group_layout = QVBoxLayout()
+        preview_group_layout.setContentsMargins(0, 0, 0, 0)
+        preview_group_layout.setSpacing(4)
+
+        self.preview_title_label = QLabel('Preview')
+        preview_group_layout.addWidget(self.preview_title_label)
 
         self.preview_scroll = QScrollArea()
         self.preview_scroll.setWidgetResizable(True)
@@ -772,7 +777,7 @@ class JsonTreeViewer(QDialog):
             display = str(val)
             if len(display) > 60:
                 display = display[:57] + '...'
-            self.preview_group.setTitle(f'Preview: {display}')
+            self.preview_title_label.setText(f'Preview: {display}')
         except Exception:
             pass
 
@@ -1315,7 +1320,7 @@ class JsonTreeViewer(QDialog):
         self.preview_panel.hide()
         self._previewing_value = None
         try:
-            self.preview_group.setTitle('Preview')
+            self.preview_title_label.setText('Preview')
         except Exception:
             pass
 

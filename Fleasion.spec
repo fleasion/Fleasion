@@ -61,7 +61,7 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=['pyinstaller_hooks/rthook_harden_dll_search.py'],
     excludes=[
         'PySide6',
         'PyQt5',

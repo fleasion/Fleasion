@@ -31,7 +31,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ..modifications.manager import ModificationManager
-from ..utils import log_buffer
+from ..utils import log_buffer, open_folder
 from ..utils.threading import run_in_thread
 
 # ---------------------------------------------------------------------------
@@ -932,7 +932,13 @@ class ModPreviewDialog(QDialog):
         if path:
             data = self._load_data('mod')
             if data:
-                Path(path).write_bytes(data)
+                export_path = Path(path)
+                export_path.write_bytes(data)
+                self._show_export_complete_message(
+                    'Export Complete',
+                    f'File exported to:\n{export_path}',
+                    [export_path],
+                )
 
     def _on_export_converted(self):
         if not self._mod_converted_bytes:
@@ -943,7 +949,35 @@ class ModPreviewDialog(QDialog):
             self, 'Export Converted File', default_name,
         )
         if path:
-            Path(path).write_bytes(self._mod_converted_bytes)
+            export_path = Path(path)
+            export_path.write_bytes(self._mod_converted_bytes)
+            self._show_export_complete_message(
+                'Export Complete',
+                f'File exported to:\n{export_path}',
+                [export_path],
+            )
+
+    def _show_export_complete_message(self, title: str, message: str, exported_paths):
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Information)
+        msg.setWindowTitle(title)
+        msg.setText(message)
+        open_button = msg.addButton('Open in Explorer', QMessageBox.ButtonRole.ActionRole)
+        msg.addButton(QMessageBox.StandardButton.Ok)
+        msg.exec()
+
+        if msg.clickedButton() == open_button:
+            try:
+                import subprocess
+
+                paths = [Path(path) for path in exported_paths if path]
+                if len(paths) == 1 and paths[0].is_file():
+                    subprocess.Popen(['explorer.exe', f'/select,{paths[0]}'])
+                elif paths:
+                    target = paths[0] if paths[0].is_dir() else paths[0].parent
+                    open_folder(target)
+            except Exception as exc:
+                log_buffer.log('Export', f'Could not open exported file location: {exc}')
 
 
 # ═══════════════════════════════════════════════════════════════════
