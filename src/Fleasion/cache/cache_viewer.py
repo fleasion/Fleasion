@@ -1924,6 +1924,7 @@ class CacheViewerTab(QWidget):
     def _create_actions(self, parent_layout):
         """Create action buttons."""
         actions_layout = QHBoxLayout()
+        actions_layout.setContentsMargins(8, 4, 8, 4)
 
         delete_db_btn = QPushButton('Delete DB')
         delete_db_btn.clicked.connect(self._clear_cache)

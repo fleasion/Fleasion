@@ -1589,9 +1589,6 @@ class ModificationsTab(QWidget):
         self._mod_container.setStyleSheet(
             f'QWidget#_FleasionModContainer {{ {bg} }}'
         )
-        footer_widget = getattr(self, '_footer_widget', None)
-        if footer_widget is not None:
-            footer_widget.setStyleSheet(bg)
 
     def _clear_roblox_cache(self):
         from .delete_cache import DeleteCacheWindow

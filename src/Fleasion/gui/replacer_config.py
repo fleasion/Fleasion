@@ -413,10 +413,8 @@ class ReplacerConfigWindow(QDialog):
             """Create the footer section with buttons snapped to the right."""
             footer_widget = QWidget()
             footer_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-            footer_layout = QHBoxLayout()
-            footer_layout.setContentsMargins(0, 4, 0, 4)
-
-            footer_layout.addSpacing(12)
+            footer_layout = QHBoxLayout(footer_widget)
+            footer_layout.setContentsMargins(8, 4, 8, 4)
 
             path_label = QLabel(f'Configs: {CONFIGS_FOLDER}')
             path_label.setStyleSheet('color: gray; font-size: 8pt; padding-left: 5px;')
@@ -441,9 +439,7 @@ class ReplacerConfigWindow(QDialog):
             undo_btn = QPushButton('Undo (Ctrl+Z)')
             undo_btn.clicked.connect(self._do_undo)
             footer_layout.addWidget(undo_btn)
-            footer_layout.addSpacing(12)
 
-            footer_widget.setLayout(footer_layout)
             parent_layout.addWidget(footer_widget)
 
     def _clear_roblox_cache(self):

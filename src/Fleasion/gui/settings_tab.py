@@ -235,9 +235,6 @@ class SettingsTab(QWidget):
         self._settings_container.setStyleSheet(
             f'QWidget#_FleasionSettingsContainer {{ {bg} }}'
         )
-        footer_widget = getattr(self, '_footer_widget', None)
-        if footer_widget is not None:
-            footer_widget.setStyleSheet(bg)
 
     # Public
 
