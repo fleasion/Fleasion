@@ -79,6 +79,7 @@ DEFAULT_SETTINGS = {
     'first_time_setup_complete': False,
     'auto_delete_cache_on_exit': True,
     'clear_cache_on_launch': True,
+    'proxy_features_enabled': True,
     'run_on_boot': True,
     'close_to_tray': True,
     'close_scraped_games_menu_on_open': True,

@@ -48,6 +48,7 @@ except Exception:
 from ..utils.paths import CONFIG_DIR
 from ..utils.logging import log_buffer
 from ..utils.windows import launch_as_standard_user, resolve_roblox_player_exe_for_launch
+from .proxy_gate import ProxyGate
 
 ACCOUNTS_FILE = CONFIG_DIR / 'accounts.json'
 
@@ -586,7 +587,8 @@ class RandoStuffTab(QWidget):
         self._rejoin_timer.timeout.connect(self._tick_rejoin_timer)
         self._rejoin_timer_secs = 0
 
-        root.addWidget(rejoin_group)
+        self._rejoin_proxy_gate = ProxyGate(rejoin_group, compact=True)
+        root.addWidget(self._rejoin_proxy_gate)
 
         mi_group = QGroupBox("Multi-Instance")
         mil = QVBoxLayout(mi_group)
@@ -692,7 +694,8 @@ class RandoStuffTab(QWidget):
         )
         subplace_blacklist_layout.addWidget(self._subplace_block_radio)
         subplace_blacklist_layout.addWidget(self._subplace_stall_radio)
-        root.addWidget(subplace_blacklist_group)
+        self._subplace_blacklist_proxy_gate = ProxyGate(subplace_blacklist_group, compact=True)
+        root.addWidget(self._subplace_blacklist_proxy_gate)
 
         root.addStretch()
 
@@ -732,6 +735,12 @@ class RandoStuffTab(QWidget):
         self._misc_container.setStyleSheet(
             f'QWidget#_FleasionMiscContainer {{ {bg} }}'
         )
+
+    def set_proxy_features_enabled(self, enabled: bool):
+        for gate_name in ('_rejoin_proxy_gate', '_subplace_blacklist_proxy_gate'):
+            gate = getattr(self, gate_name, None)
+            if gate is not None:
+                gate.set_proxy_enabled(enabled)
 
     def _clear_roblox_cache(self):
         from .delete_cache import DeleteCacheWindow

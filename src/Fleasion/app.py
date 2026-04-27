@@ -328,12 +328,15 @@ class RobloxExitMonitor(QObject):
                     if exe_path is not None:
                         break
             if exe_path is not None:
+                proxy_features_enabled = self.config_manager.proxy_features_enabled
                 if self._mod_manager is not None:
                     self._mod_manager.refresh_roblox_dirs()
-                if self._proxy_master is not None:
+                if self._proxy_master is not None and proxy_features_enabled:
                     run_in_thread(self._proxy_master.refresh_and_restart_roblox)(exe_path)
-                else:
+                elif self._proxy_master is None and proxy_features_enabled:
                     run_in_thread(check_and_patch_running_roblox_ca)(exe_path)
+                elif not proxy_features_enabled:
+                    log_buffer.log('Certificate', 'Roblox launch detected: proxy features disabled, skipping proxy CA refresh')
             else:
                 log_buffer.log('Certificate', 'Roblox launch detected but could not resolve exe path for CA check')
         self._player_was_running = is_running
@@ -358,8 +361,10 @@ class RobloxExitMonitor(QObject):
                     studio_exe_path = get_roblox_studio_exe_path()
                     if studio_exe_path is not None:
                         break
-            if studio_exe_path is not None:
+            if studio_exe_path is not None and self.config_manager.proxy_features_enabled:
                 run_in_thread(check_and_patch_running_roblox_ca)(studio_exe_path)
+            elif studio_exe_path is not None:
+                log_buffer.log('Certificate', 'Studio launch detected: proxy features disabled, skipping proxy CA refresh')
             else:
                 log_buffer.log('Certificate', 'Studio launch detected but could not resolve exe path for CA check')
 
@@ -600,11 +605,15 @@ def main():
             # Note: shared_memory object will be garbage collected or go out of scope,
             # but since we didn't successfully create it, we don't hold the lock.
 
+    # Initialize config manager before elevation so a saved disabled proxy setting
+    # can avoid an unnecessary UAC prompt.
+    config_manager = ConfigManager()
+
     # Silently attempt UAC elevation. Shows only the standard Windows UAC prompt.
     # If the user accepts, this instance exits and the elevated copy takes over.
     # If declined, we stay open in read-only mode with no extra dialogs.
-    start_proxy = _attempt_silent_elevation()
-    if not start_proxy and not _is_admin():
+    start_proxy = config_manager.proxy_features_enabled and _attempt_silent_elevation()
+    if config_manager.proxy_features_enabled and not start_proxy and not _is_admin():
         # Schedule a tray notification once the tray is ready (deferred so tray exists)
         _show_readonly_notice = True
     else:
@@ -634,9 +643,6 @@ def main():
             from PyQt6.QtGui import QIcon
             _no_roblox_msg.setWindowIcon(QIcon(str(icon_path)))
         _no_roblox_msg.exec()
-
-    # Initialize config manager
-    config_manager = ConfigManager()
 
     # Start tracking time wasted from the stored total
     time_tracker.init(config_manager.time_wasted_seconds)
@@ -690,9 +696,11 @@ def main():
         except Exception:
             pass
 
-    # Start proxy only if we have admin rights
+    # Start proxy only if enabled and we have admin rights
     if start_proxy:
         proxy_master.start()
+    elif not config_manager.proxy_features_enabled:
+        log_buffer.log('Proxy', 'Proxy features disabled in settings: proxy not started')
     else:
         log_buffer.log('Proxy', 'Read-only mode: proxy not started (no admin rights)')
 

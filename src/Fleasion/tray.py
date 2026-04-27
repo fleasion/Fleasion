@@ -315,6 +315,38 @@ class SystemTray:
     def _toggle_cache_scraper(self, checked: bool):
         self._set_cache_scraper_enabled(checked)
 
+    def set_proxy_features_enabled(self, enabled: bool):
+        """Persist and apply the top-level proxy feature toggle."""
+        self.config_manager.proxy_features_enabled = enabled
+
+        if enabled:
+            is_admin = bool(ctypes.windll.shell32.IsUserAnAdmin()) if hasattr(ctypes, 'windll') else False
+            if is_admin:
+                self.proxy_master.start()
+            else:
+                from .utils import log_buffer
+                from .app import _relaunch_as_admin
+
+                log_buffer.log('Proxy', 'Proxy features enabled: requesting administrator relaunch')
+                if _relaunch_as_admin():
+                    self._exiting = True
+                    self.app.quit()
+                    return
+
+                self.config_manager.proxy_features_enabled = False
+                log_buffer.log('Proxy', 'Administrator relaunch was cancelled; proxy features remain disabled')
+                enabled = False
+        else:
+            try:
+                run_in_thread(self.proxy_master.stop)()
+            except Exception:
+                self.proxy_master.stop()
+
+        self.update_status()
+        if self.dashboard_window and hasattr(self.dashboard_window, 'set_proxy_features_enabled'):
+            self.dashboard_window.set_proxy_features_enabled(enabled)
+        self._refresh_settings_tab()
+
     def _set_theme(self, theme: str):
         """Set the application theme."""
         # Update checkmarks

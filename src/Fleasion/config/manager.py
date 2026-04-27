@@ -207,6 +207,17 @@ class ConfigManager:
         self._save_settings()
 
     @property
+    def proxy_features_enabled(self) -> bool:
+        """Get proxy feature toggle."""
+        return self.settings.get('proxy_features_enabled', True)
+
+    @proxy_features_enabled.setter
+    def proxy_features_enabled(self, value: bool):
+        """Set proxy feature toggle."""
+        self.settings['proxy_features_enabled'] = value
+        self._save_settings()
+
+    @property
     def run_on_boot(self) -> bool:
         return self.settings.get('run_on_boot', False)
 

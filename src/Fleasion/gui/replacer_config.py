@@ -34,6 +34,7 @@ from PyQt6.QtWidgets import (
 
 from ..utils import APP_NAME, CONFIGS_FOLDER, PREJSONS_DIR, get_icon_path, log_buffer, open_folder
 from .json_viewer import JsonTreeViewer
+from .proxy_gate import ProxyGate
 
 
 class UndoManager:
@@ -90,6 +91,7 @@ class ReplacerConfigWindow(QDialog):
         self._asset_types_popup_last_closed = 0.0
         self._dialog_asset_types_popup_last_closed = 0.0
         self._prejsons_dialog: QDialog | None = None
+        self._proxy_gates: list[ProxyGate] = []
 
         self.setWindowTitle(f'{APP_NAME} - Dashboard')
         self.resize(900, 750)
@@ -146,12 +148,12 @@ class ReplacerConfigWindow(QDialog):
         self.tab_widget = QTabWidget()
 
         # Create Replacer tab
-        replacer_tab = self._create_replacer_tab()
+        replacer_tab = self._proxy_required(self._create_replacer_tab())
         self.tab_widget.addTab(replacer_tab, 'Replacer')
 
         # Create Cache tab if proxy_master is available
         if self.proxy_master and hasattr(self.proxy_master, 'cache_manager'):
-            cache_tab = self._create_cache_tab()
+            cache_tab = self._proxy_required(self._create_cache_tab())
             self.tab_widget.addTab(cache_tab, 'Scraper')
 
         # Create Modifications tab
@@ -168,7 +170,7 @@ class ReplacerConfigWindow(QDialog):
         from .subplace_joiner_tab import SubplaceJoinerTab
         self._subplace_tab = SubplaceJoinerTab(rando_tab=self._rando_stuff_tab)
         self._rando_stuff_tab.selected_account_changed.connect(self._subplace_tab.set_selected_account)
-        self.tab_widget.addTab(self._subplace_tab, 'Subplace Joiner')
+        self.tab_widget.addTab(self._proxy_required(self._subplace_tab), 'Subplace Joiner')
         if self.proxy_master is not None:
             self.proxy_master.register_module_interceptor(self._subplace_tab)
 
@@ -184,6 +186,7 @@ class ReplacerConfigWindow(QDialog):
         main_layout.addWidget(self.tab_widget)
 
         self.setLayout(main_layout)
+        self.set_proxy_features_enabled(self.config_manager.proxy_features_enabled)
 
         # Setup keyboard shortcuts
         from PyQt6.QtGui import QKeySequence, QShortcut
@@ -199,6 +202,17 @@ class ReplacerConfigWindow(QDialog):
 
         escape_shortcut = QShortcut(QKeySequence('Escape'), self)
         escape_shortcut.activated.connect(self.close)
+
+    def _proxy_required(self, widget: QWidget) -> ProxyGate:
+        gate = ProxyGate(widget)
+        self._proxy_gates.append(gate)
+        return gate
+
+    def set_proxy_features_enabled(self, enabled: bool):
+        for gate in self._proxy_gates:
+            gate.set_proxy_enabled(enabled)
+        if hasattr(self, '_rando_stuff_tab') and hasattr(self._rando_stuff_tab, 'set_proxy_features_enabled'):
+            self._rando_stuff_tab.set_proxy_features_enabled(enabled)
 
     def _create_replacer_tab(self):
         """Create the replacer configuration tab."""

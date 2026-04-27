@@ -58,6 +58,7 @@ class SettingsTab(QWidget):
         self._container_layout.setContentsMargins(10, 10, 10, 10)
 
         self._container_layout.addWidget(self._build_appearance_section())
+        self._container_layout.addWidget(self._build_proxy_section())
         self._container_layout.addWidget(self._build_convenience_section())
         self._container_layout.addWidget(self._build_scraper_section())
         self._container_layout.addWidget(self._build_scraped_games_section())
@@ -113,6 +114,18 @@ class SettingsTab(QWidget):
         row_widget = QWidget()
         row_widget.setLayout(theme_row)
         section.add_widget(row_widget)
+
+        return section
+
+    # Proxy
+
+    def _build_proxy_section(self) -> CollapsibleSection:
+        section = CollapsibleSection('Proxy', expanded=True)
+
+        self._proxy_features_chk = QCheckBox("⚠ Enable Proxy Features")
+        self._proxy_features_chk.setChecked(self._config.proxy_features_enabled)
+        self._proxy_features_chk.toggled.connect(self._on_proxy_features_toggled)
+        section.add_widget(self._proxy_features_chk)
 
         return section
 
@@ -247,6 +260,7 @@ class SettingsTab(QWidget):
 
         for chk, value in [
             (self._open_dashboard_chk, self._config.open_dashboard_on_launch),
+            (self._proxy_features_chk, self._config.proxy_features_enabled),
             (self._auto_clear_cache_chk, self._config.auto_delete_cache_on_exit),
             (self._clear_cache_launch_chk, self._config.clear_cache_on_launch),
             (self._run_on_boot_chk, self._config.run_on_boot),
@@ -290,6 +304,28 @@ class SettingsTab(QWidget):
         self._config.open_dashboard_on_launch = checked
         if self._tray and hasattr(self._tray, 'open_dashboard_action'):
             self._tray.open_dashboard_action.setChecked(checked)
+
+    def _on_proxy_features_toggled(self, checked: bool):
+        if not checked:
+            result = QMessageBox.warning(
+                self,
+                'Disable Proxy Features?',
+                'Turning off proxy features will stop the Replacer, Scraper, '
+                'Subplace Joiner, Reserved Server Rejoin, and Subplace Blacklist '
+                'because they rely on the local proxy. Continue?',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if result != QMessageBox.StandardButton.Yes:
+                self._proxy_features_chk.blockSignals(True)
+                self._proxy_features_chk.setChecked(True)
+                self._proxy_features_chk.blockSignals(False)
+                return
+
+        if self._tray and hasattr(self._tray, 'set_proxy_features_enabled'):
+            self._tray.set_proxy_features_enabled(checked)
+        else:
+            self._config.proxy_features_enabled = checked
 
     def _on_run_on_boot_toggled(self, checked: bool):
         if not _is_admin():
