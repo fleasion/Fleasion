@@ -1,6 +1,7 @@
 """Application paths and constants."""
 
 import sys
+import os
 from pathlib import Path
 
 # Application metadata
@@ -22,8 +23,26 @@ STRIPPABLE_ASSET_TYPES = {'TexturePack'}
 # Icon
 ICON_FILENAME = 'fleasionlogoHR.ico'
 
+_LOCAL_APPDATA_OVERRIDE_ARG = '--fleasion-user-localappdata='
+
+
+def _get_local_appdata() -> Path:
+    """Return the intended interactive user's LocalAppData directory."""
+    for arg in sys.argv[1:]:
+        if arg.startswith(_LOCAL_APPDATA_OVERRIDE_ARG):
+            value = arg.split('=', 1)[1].strip().strip('"')
+            if value:
+                return Path(os.path.expandvars(value))
+
+    local_appdata = os.environ.get('LOCALAPPDATA')
+    if local_appdata:
+        return Path(local_appdata)
+
+    return Path.home() / 'AppData' / 'Local'
+
+
 # Windows paths
-LOCAL_APPDATA = Path.home() / 'AppData' / 'Local'
+LOCAL_APPDATA = _get_local_appdata()
 STORAGE_DB = LOCAL_APPDATA / 'Roblox' / 'rbx-storage.db'
 # Microsoft Store (GDK) version of Roblox stores its DB here
 STORAGE_DB_GDK = LOCAL_APPDATA / 'RobloxPCGDK' / 'rbx-storage.db'

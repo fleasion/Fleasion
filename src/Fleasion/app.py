@@ -2,7 +2,9 @@
 
 import atexit
 import html
+import os
 import platform
+import subprocess
 import sys
 import time
 
@@ -40,18 +42,23 @@ def _relaunch_as_admin(extra_args: str = '') -> bool:
     """
     import ctypes
 
+    existing_args = sys.argv[1:]
+    if not any(arg.startswith('--fleasion-user-localappdata=') for arg in existing_args):
+        local_appdata = os.environ.get('LOCALAPPDATA') or str(CONFIG_DIR.parent)
+        existing_args.append(f'--fleasion-user-localappdata={local_appdata}')
+    if extra_args.strip():
+        existing_args.extend(extra_args.strip().split())
+
     if getattr(sys, 'frozen', False):
         # Compiled .exe — sys.executable is the .exe itself
         exe = sys.executable
-        existing = ' '.join(f'"{a}"' for a in sys.argv[1:]) if len(sys.argv) > 1 else ''
-        combined = (existing + (' ' + extra_args.strip() if extra_args.strip() else '')).strip()
-        params = combined if combined else None
+        params = subprocess.list2cmdline(existing_args) if existing_args else None
     else:
         # Dev / uv run — locate the uv executable and replay the original
         # invocation through it.  Running the Python interpreter directly in
         # the elevated process would miss the uv-managed virtualenv entirely,
         # causing import failures and a silent crash.
-        import shutil, os
+        import shutil
         uv_exe = shutil.which('uv') or shutil.which('uv.exe')
         if uv_exe:
             # Reconstruct:  uv run fleasion  (the original entry-point)
@@ -67,13 +74,12 @@ def _relaunch_as_admin(extra_args: str = '') -> bool:
                 check = os.path.dirname(check)
             # ShellExecuteW doesn't let us set cwd directly for the child, but
             # we can pass --project to tell uv where to look.
-            params = (f'--project "{cwd}" run fleasion ' + extra_args.strip()).strip()
+            params = subprocess.list2cmdline(['--project', cwd, 'run', 'fleasion', *existing_args])
         else:
             # Fallback: plain interpreter (may fail if venv is not activated,
             # but it's the best we can do without uv)
             exe = sys.executable
-            combined = (' '.join(f'"{a}"' for a in sys.argv) + (' ' + extra_args.strip() if extra_args.strip() else '')).strip()
-            params = combined if combined else None
+            params = subprocess.list2cmdline([sys.argv[0], *existing_args])
 
     # Use ShellExecuteExW with SEE_MASK_NO_CONSOLE so the elevated process
     # (which may be uv.exe, a console app) never spawns a visible cmd window.
@@ -501,6 +507,7 @@ def main():
                          help='Suppress dashboard on launch (used by autostart task)')
     _parser.add_argument('--kill-others', action='store_true',
                          help='Kill other Fleasion instances on startup (used when relaunching elevated)')
+    _parser.add_argument('--fleasion-user-localappdata', help=_ap.SUPPRESS)
     _args, _ = _parser.parse_known_args()
     _suppress_dashboard = _args.no_dashboard
 

@@ -540,6 +540,11 @@ def _build_launch_command(target_str: str, prefer_direct_roblox_uri: bool = Fals
         return cmdline, None
 
     target_path = Path(target_str)
+    if target_path.is_dir():
+        system_root = Path(os.environ.get('SystemRoot', r'C:\Windows'))
+        explorer = system_root / 'explorer.exe'
+        return f'"{explorer}" "{target_str}"', str(target_path)
+
     cwd = str(target_path.parent) if target_path.exists() else None
     return f'"{target_str}"', cwd
 
@@ -754,6 +759,8 @@ def launch_as_standard_user(target: str | Path) -> bool:
 def open_folder(path: Path):
     """Open a folder in Windows Explorer."""
     path.mkdir(parents=True, exist_ok=True)
+    if _is_process_elevated() and launch_as_standard_user(path):
+        return
     os.startfile(path)
 
 

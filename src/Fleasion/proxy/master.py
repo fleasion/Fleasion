@@ -79,9 +79,9 @@ _PROXY_OWNER_PID_FILE = Path(os.environ.get('TEMP', r'C:\Windows\Temp')) / 'flea
 # Task-Scheduler watchdog (force-kill guard)
 # ---------------------------------------------------------------------------
 # When the proxy is running, we maintain a Windows Task Scheduler task that
-# fires ~5 seconds into the future.  A background thread refreshes the task
-# every 3 seconds so it never actually fires during normal operation.  If the
-# process is force-killed (Task Manager, etc.) the task fires within 5 s and
+# fires a short time into the future.  A background thread refreshes the task
+# before that deadline so it never actually fires during normal operation.  If the
+# process is force-killed (Task Manager, etc.) the task fires soon after and
 # restores the hosts file.
 #
 # StartWhenAvailable is set to FALSE in the task XML.  This means if the
@@ -92,9 +92,11 @@ _PROXY_OWNER_PID_FILE = Path(os.environ.get('TEMP', r'C:\Windows\Temp')) / 'flea
 # ---------------------------------------------------------------------------
 
 _WATCHDOG_TASK_NAME = 'Fleasion-HostsWatchdog'
-_WATCHDOG_LOOKAHEAD = 15  # seconds ahead the task is scheduled
-_WATCHDOG_INTERVAL  = 3   # seconds between watchdog refreshes
+_WATCHDOG_LOOKAHEAD = 30  # seconds ahead the task is scheduled
+_WATCHDOG_INTERVAL  = 10  # seconds between watchdog refreshes
+_WATCHDOG_SCHTASKS_TIMEOUT = 20
 _WATCHDOG_TASK_XML  = Path(os.environ.get('TEMP', r'C:\Windows\Temp')) / 'fleasion_watchdog_task.xml'
+_SCHTASKS_EXE = str(Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32' / 'schtasks.exe')
 
 # PowerShell command that strips Fleasion entries from the hosts file and
 # flushes DNS.  Encoded as UTF-16-LE base64 to avoid XML/shell-escaping pain.
@@ -168,16 +170,26 @@ def _upsert_watchdog_task() -> None:
         run_at = datetime.now() + timedelta(seconds=_WATCHDOG_LOOKAHEAD)
         xml = _build_watchdog_xml(run_at)
         _WATCHDOG_TASK_XML.write_text(xml, encoding='utf-16')
+        cmd = [
+            _SCHTASKS_EXE, '/create', '/TN', _WATCHDOG_TASK_NAME,
+            '/XML', str(_WATCHDOG_TASK_XML), '/RU', 'SYSTEM', '/F',
+        ]
         result = subprocess.run(
-            ['schtasks', '/create', '/TN', _WATCHDOG_TASK_NAME,
-             '/XML', str(_WATCHDOG_TASK_XML), '/RU', 'SYSTEM', '/F'],
+            cmd,
             capture_output=True,
             creationflags=subprocess.CREATE_NO_WINDOW,
-            timeout=5,
+            timeout=_WATCHDOG_SCHTASKS_TIMEOUT,
         )
         if result.returncode != 0:
             err = (result.stderr or result.stdout or b'').decode('utf-8', errors='replace').strip()
             log_buffer.log('Watchdog', f'schtasks returned non-zero ({result.returncode}): {err}')
+    except subprocess.TimeoutExpired:
+        log_buffer.log(
+            'Watchdog',
+            f'schtasks timed out after {_WATCHDOG_SCHTASKS_TIMEOUT}s while creating '
+            f'{_WATCHDOG_TASK_NAME}; Task Scheduler or security software may be slow/blocking it. '
+            f'XML: {_WATCHDOG_TASK_XML}',
+        )
     except Exception as exc:
         log_buffer.log('Watchdog', f'Could not upsert watchdog task (non-fatal): {exc}')
 
@@ -186,10 +198,10 @@ def _delete_watchdog_task() -> None:
     """Delete the watchdog task if it exists.  Safe to call even if absent."""
     try:
         result = subprocess.run(
-            ['schtasks', '/delete', '/TN', _WATCHDOG_TASK_NAME, '/F'],
+            [_SCHTASKS_EXE, '/delete', '/TN', _WATCHDOG_TASK_NAME, '/F'],
             capture_output=True,
             creationflags=subprocess.CREATE_NO_WINDOW,
-            timeout=5,
+            timeout=_WATCHDOG_SCHTASKS_TIMEOUT,
         )
         if result.returncode == 0:
             log_buffer.log('Watchdog', 'Task deleted (clean exit)')

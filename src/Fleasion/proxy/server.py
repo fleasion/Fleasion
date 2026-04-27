@@ -440,19 +440,29 @@ class FleasionProxy:
 
 
 
-        real_ips = self._upstream_ips.get(host, [])
-        upstream_target = real_ips[0] if real_ips else host
-        try:
-            up_reader, up_writer = await asyncio.wait_for(
-                asyncio.open_connection(
-                    upstream_target, 443,
-                    ssl=self._upstream_ssl_ctx,
-                    server_hostname=host,
-                ),
-                timeout=10.0,
+        upstream_targets = self._upstream_ips.get(host, []) or [host]
+        up_reader = None
+        up_writer = None
+        failures: List[str] = []
+        for upstream_target in upstream_targets:
+            try:
+                up_reader, up_writer = await asyncio.wait_for(
+                    asyncio.open_connection(
+                        upstream_target, 443,
+                        ssl=self._upstream_ssl_ctx,
+                        server_hostname=host,
+                    ),
+                    timeout=10.0,
+                )
+                break
+            except Exception as exc:
+                detail = f'{type(exc).__name__}: {exc!s}' if str(exc) else type(exc).__name__
+                failures.append(f'{upstream_target}={detail}')
+        if up_reader is None or up_writer is None:
+            log_buffer.log(
+                'Proxy',
+                f'Upstream connect failed for {host}; tried {", ".join(failures)}',
             )
-        except Exception as exc:
-            log_buffer.log('Proxy', f'Upstream connect failed for {host} ({upstream_target}): {exc}')
             writer.close()
             return
 
