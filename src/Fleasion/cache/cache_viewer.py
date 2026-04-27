@@ -1929,7 +1929,7 @@ class CacheViewerTab(QWidget):
         delete_db_btn.clicked.connect(self._clear_cache)
         actions_layout.addWidget(delete_db_btn)
 
-        delete_cache_btn = QPushButton('Delete Cache')
+        delete_cache_btn = QPushButton('Clear Cache')
         delete_cache_btn.clicked.connect(self._delete_roblox_cache)
         actions_layout.addWidget(delete_cache_btn)
 

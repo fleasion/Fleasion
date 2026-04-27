@@ -17,7 +17,7 @@ class DeleteCacheWindow(QDialog):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f'{APP_NAME} - Delete Cache')
+        self.setWindowTitle(f'{APP_NAME} - Clear Cache')
         self.setFixedSize(400, 200)
 
         # Set window flags to allow minimize

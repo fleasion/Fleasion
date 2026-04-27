@@ -86,7 +86,7 @@ class SystemTray:
         self.menu.addSeparator()
 
         # Windows
-        cache_action = QAction('Delete Cache', self.menu)
+        cache_action = QAction('Clear Cache', self.menu)
         cache_action.triggered.connect(self._show_delete_cache)
         self.menu.addAction(cache_action)
 
