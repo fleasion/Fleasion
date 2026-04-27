@@ -988,7 +988,7 @@ class PreJsonsDialog(QDialog):
 
     def _fetch_and_open(self, url: str):
         cfg = getattr(self.parent(), 'config_manager', None)
-        if cfg is None or cfg.close_scraped_games_on_open:
+        if cfg is None or cfg.close_scraped_games_menu_on_open:
             self.close()
 
         # Local file path - read directly

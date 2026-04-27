@@ -140,6 +140,13 @@ class SystemTray:
         """Create the Settings submenu."""
         settings_menu = QMenu('Settings', self.menu)
 
+        self.cache_scraper_action = QAction('Enable Cache Scraper', settings_menu)
+        self.cache_scraper_action.setCheckable(True)
+        self.cache_scraper_action.setChecked(self._is_cache_scraper_enabled())
+        self.cache_scraper_action.triggered.connect(self._toggle_cache_scraper)
+        settings_menu.addAction(self.cache_scraper_action)
+        settings_menu.addSeparator()
+
         # Theme submenu
         theme_menu = QMenu('Theme', settings_menu)
 
@@ -264,6 +271,11 @@ class SystemTray:
         self.close_viewer_on_replace_action.setChecked(self.config_manager.close_viewer_on_replace)
         self.close_viewer_on_replace_action.triggered.connect(self._toggle_close_viewer_on_replace)
         scraped_games_menu.addAction(self.close_viewer_on_replace_action)
+        self.close_scraped_games_menu_on_open_action = QAction('Close Scraped Games Menu on Open', scraped_games_menu)
+        self.close_scraped_games_menu_on_open_action.setCheckable(True)
+        self.close_scraped_games_menu_on_open_action.setChecked(self.config_manager.close_scraped_games_menu_on_open)
+        self.close_scraped_games_menu_on_open_action.triggered.connect(self._toggle_close_scraped_games_menu_on_open)
+        scraped_games_menu.addAction(self.close_scraped_games_menu_on_open_action)
         settings_menu.addMenu(scraped_games_menu)
 
         self.menu.addMenu(settings_menu)
@@ -273,6 +285,35 @@ class SystemTray:
         """Push current config state to the Settings tab if the dashboard is open."""
         if self.dashboard_window and hasattr(self.dashboard_window, '_settings_tab'):
             self.dashboard_window._settings_tab.refresh_from_config()
+
+    def _cache_scraper(self):
+        return getattr(self.proxy_master, 'cache_scraper', None)
+
+    def _is_cache_scraper_enabled(self) -> bool:
+        scraper = self._cache_scraper()
+        return bool(getattr(scraper, 'enabled', False))
+
+    def _set_cache_scraper_enabled(self, enabled: bool):
+        scraper = self._cache_scraper()
+        if scraper is not None:
+            scraper.set_enabled(enabled)
+
+        if hasattr(self, 'cache_scraper_action'):
+            self.cache_scraper_action.blockSignals(True)
+            self.cache_scraper_action.setChecked(enabled)
+            self.cache_scraper_action.blockSignals(False)
+
+        if self.dashboard_window:
+            tab = getattr(self.dashboard_window, '_cache_viewer_tab', None)
+            if tab is not None and hasattr(tab, 'set_cache_scraper_enabled'):
+                tab.set_cache_scraper_enabled(enabled)
+
+            settings_tab = getattr(self.dashboard_window, '_settings_tab', None)
+            if settings_tab is not None and hasattr(settings_tab, 'set_cache_scraper_enabled'):
+                settings_tab.set_cache_scraper_enabled(enabled)
+
+    def _toggle_cache_scraper(self, checked: bool):
+        self._set_cache_scraper_enabled(checked)
 
     def _set_theme(self, theme: str):
         """Set the application theme."""
@@ -378,6 +419,13 @@ class SystemTray:
         new_state = not self.config_manager.close_viewer_on_replace
         self.config_manager.close_viewer_on_replace = new_state
         self.close_viewer_on_replace_action.setChecked(new_state)
+        self._refresh_settings_tab()
+
+    def _toggle_close_scraped_games_menu_on_open(self):
+        """Toggle close Scraped Games menu on JSON open setting."""
+        new_state = not self.config_manager.close_scraped_games_menu_on_open
+        self.config_manager.close_scraped_games_menu_on_open = new_state
+        self.close_scraped_games_menu_on_open_action.setChecked(new_state)
         self._refresh_settings_tab()
 
     def _toggle_show_replacer_notifications(self):

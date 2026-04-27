@@ -1512,7 +1512,7 @@ class CacheViewerTab(QWidget):
     def _setup_ui(self):
         """Setup the UI."""
         layout = QVBoxLayout()
-        layout.setContentsMargins(10, 10, 10, 4)
+        layout.setContentsMargins(0, 0, 0, 0)
 
         # Filters (includes scraper toggle and stats)
         self._create_filters(layout)
@@ -2248,9 +2248,20 @@ class CacheViewerTab(QWidget):
 
     def _toggle_scraper(self, state):
         """Toggle cache scraper on/off."""
+        enabled = bool(state)
+        tray = getattr(self.parent(), '_system_tray', None)
+        if tray is not None and hasattr(tray, '_set_cache_scraper_enabled'):
+            tray._set_cache_scraper_enabled(enabled)
+            return
         if self.cache_scraper:
-            enabled = bool(state)
             self.cache_scraper.set_enabled(enabled)
+
+    def set_cache_scraper_enabled(self, enabled: bool):
+        """Update the scraper toggle without re-emitting the toggle signal."""
+        if hasattr(self, 'scraper_toggle'):
+            self.scraper_toggle.blockSignals(True)
+            self.scraper_toggle.setChecked(enabled)
+            self.scraper_toggle.blockSignals(False)
 
     def _on_search_text_changed(self):
         '''Handle search text change - debounce to avoid too many searches.'''

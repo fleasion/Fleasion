@@ -165,6 +165,11 @@ class SettingsTab(QWidget):
     def _build_scraper_section(self) -> CollapsibleSection:
         section = CollapsibleSection('Scraper', expanded=True)
 
+        self._cache_scraper_chk = QCheckBox("Enable Cache Scraper")
+        self._cache_scraper_chk.setChecked(self._is_cache_scraper_enabled())
+        self._cache_scraper_chk.toggled.connect(self._on_cache_scraper_toggled)
+        section.add_widget(self._cache_scraper_chk)
+
         self._show_names_chk = QCheckBox("Show Names")
         self._show_names_chk.setChecked(self._config.show_names)
         self._show_names_chk.toggled.connect(self._on_show_names_toggled)
@@ -211,6 +216,11 @@ class SettingsTab(QWidget):
         self._close_viewer_on_replace_chk.toggled.connect(self._on_close_viewer_on_replace_toggled)
         section.add_widget(self._close_viewer_on_replace_chk)
 
+        self._close_scraped_games_menu_on_open_chk = QCheckBox("Close Scraped Games Menu on Open")
+        self._close_scraped_games_menu_on_open_chk.setChecked(self._config.close_scraped_games_menu_on_open)
+        self._close_scraped_games_menu_on_open_chk.toggled.connect(self._on_close_scraped_games_menu_on_open_toggled)
+        section.add_widget(self._close_scraped_games_menu_on_open_chk)
+
         return section
 
     def _update_container_bg(self):
@@ -248,12 +258,15 @@ class SettingsTab(QWidget):
             (self._always_on_top_chk, self._config.always_on_top),
             (self._show_replacer_notifications_chk, self._config.show_replacer_notifications),
             (self._close_viewer_on_replace_chk, self._config.close_viewer_on_replace),
+            (self._close_scraped_games_menu_on_open_chk, self._config.close_scraped_games_menu_on_open),
             (self._show_names_chk, self._config.show_names),
             (self._show_creator_id_chk, self._config.show_creator_id),
         ]:
             chk.blockSignals(True)
             chk.setChecked(value)
             chk.blockSignals(False)
+
+        self.set_cache_scraper_enabled(self._is_cache_scraper_enabled())
 
         for option, chk in self._export_chks.items():
             chk.blockSignals(True)
@@ -345,6 +358,11 @@ class SettingsTab(QWidget):
         if self._tray and hasattr(self._tray, 'close_viewer_on_replace_action'):
             self._tray.close_viewer_on_replace_action.setChecked(checked)
 
+    def _on_close_scraped_games_menu_on_open_toggled(self, checked: bool):
+        self._config.close_scraped_games_menu_on_open = checked
+        if self._tray and hasattr(self._tray, 'close_scraped_games_menu_on_open_action'):
+            self._tray.close_scraped_games_menu_on_open_action.setChecked(checked)
+
     def _on_show_replacer_notifications_toggled(self, checked: bool):
         self._config.show_replacer_notifications = checked
         if self._tray and hasattr(self._tray, 'show_replacer_notifications_action'):
@@ -370,6 +388,20 @@ class SettingsTab(QWidget):
                     tab._on_show_names_toggled(value)
                 elif setting == 'show_creator_id':
                     tab._on_show_creator_id_toggled(value)
+
+    def _is_cache_scraper_enabled(self) -> bool:
+        if self._tray and hasattr(self._tray, '_is_cache_scraper_enabled'):
+            return self._tray._is_cache_scraper_enabled()
+        return False
+
+    def set_cache_scraper_enabled(self, enabled: bool):
+        self._cache_scraper_chk.blockSignals(True)
+        self._cache_scraper_chk.setChecked(enabled)
+        self._cache_scraper_chk.blockSignals(False)
+
+    def _on_cache_scraper_toggled(self, checked: bool):
+        if self._tray and hasattr(self._tray, '_set_cache_scraper_enabled'):
+            self._tray._set_cache_scraper_enabled(checked)
 
     def _on_export_naming_toggled(self, checked: bool, option: str):
         current = self._config.is_export_naming_enabled(option)
