@@ -1553,6 +1553,7 @@ class CacheViewerTab(QWidget):
     def _create_filters(self, parent_layout):
         """Create filter controls."""
         filter_group = QGroupBox('Filters')
+        filter_group.setStyleSheet('QGroupBox::title { padding-left: 5px; }')
         filter_layout = QHBoxLayout()
 
         # Search box first
