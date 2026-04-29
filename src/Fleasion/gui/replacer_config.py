@@ -121,6 +121,7 @@ class ReplacerConfigWindow(QDialog):
     def closeEvent(self, event):
         """Save window geometry on close."""
         self.config_manager.window_geometry = self.saveGeometry().toHex().data().decode('utf-8')
+        self._unregister_module_interceptors()
         if (
             self._system_tray is not None
             and self._system_tray.config_manager.close_to_tray
@@ -131,6 +132,16 @@ class ReplacerConfigWindow(QDialog):
             except Exception:
                 pass
         super().closeEvent(event)
+
+    def _unregister_module_interceptors(self):
+        if self.proxy_master is None:
+            return
+        for module in getattr(self, '_registered_module_interceptors', ()):
+            try:
+                self.proxy_master.unregister_module_interceptor(module)
+            except Exception as exc:
+                log_buffer.log('Proxy', f'Failed to unregister dashboard interceptor: {exc}')
+        self._registered_module_interceptors = []
 
     def _set_icon(self):
         """Set window icon."""
@@ -165,6 +176,7 @@ class ReplacerConfigWindow(QDialog):
         # Create Rando Stuff tab
         from .rando_stuff_tab import RandoStuffTab
         self._rando_stuff_tab = RandoStuffTab(config_manager=self.config_manager)
+        self._registered_module_interceptors = []
 
         # Create Subplace Joiner tab
         from .subplace_joiner_tab import SubplaceJoinerTab
@@ -173,10 +185,12 @@ class ReplacerConfigWindow(QDialog):
         self.tab_widget.addTab(self._proxy_required(self._subplace_tab), 'Subplace Joiner')
         if self.proxy_master is not None:
             self.proxy_master.register_module_interceptor(self._subplace_tab)
+            self._registered_module_interceptors.append(self._subplace_tab)
 
         self.tab_widget.addTab(self._rando_stuff_tab, 'Miscellaneous')
         if self.proxy_master is not None:
             self.proxy_master.register_module_interceptor(self._rando_stuff_tab)
+            self._registered_module_interceptors.append(self._rando_stuff_tab)
 
         # Create Settings tab
         from .settings_tab import SettingsTab

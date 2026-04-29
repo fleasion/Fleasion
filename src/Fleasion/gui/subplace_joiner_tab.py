@@ -492,6 +492,8 @@ class SubplaceJoinerTab(QWidget):
     def __init__(self, parent=None, rando_tab=None):
         super().__init__(parent)
         self._rando_tab = rando_tab
+        self._qt_destroyed = False
+        self.destroyed.connect(self._on_qt_destroyed)
         self._invoker = _Invoker(self)
         self._cards: list[SubplaceGameCard] = []
         self._card_by_place_id: dict[int, SubplaceGameCard] = {}
@@ -518,6 +520,9 @@ class SubplaceJoinerTab(QWidget):
         self._update_favorite_btn()
         threading.Thread(target=self._resolve_current_user, daemon=True).start()
 
+    def _on_qt_destroyed(self, *_):
+        self._qt_destroyed = True
+
     def _resolve_current_user(self):
         """Background thread: read the active Roblox cookie and resolve the username."""
         cookie = _get_roblosecurity()
@@ -537,7 +542,7 @@ class SubplaceJoinerTab(QWidget):
                 if username:
                     def _update(u=username):
                         self.set_selected_account(u)
-                    self._invoker.call.emit(_update)
+                    self._on_main(_update)
         except Exception:
             pass
 
@@ -1356,14 +1361,24 @@ class SubplaceJoinerTab(QWidget):
         return r
 
     def _on_main(self, fn):
-        self._invoker.call.emit(fn)
+        if self._qt_destroyed:
+            return False
+        invoker = getattr(self, '_invoker', None)
+        if invoker is None:
+            return False
+        try:
+            invoker.call.emit(fn)
+            return True
+        except RuntimeError:
+            self._qt_destroyed = True
+            return False
 
     def _on_main_guarded(self, fn, cancel_event: threading.Event):
         """Post fn to the main thread, but skip execution if cancel_event is set by then."""
         def wrapped():
             if not cancel_event.is_set():
                 fn()
-        self._invoker.call.emit(wrapped)
+        self._on_main(wrapped)
 
     # Proxy interceptor hooks (called by ProxyMaster on gamejoin traffic)
 

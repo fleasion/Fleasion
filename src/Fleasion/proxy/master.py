@@ -1430,10 +1430,26 @@ class ProxyMaster:
 
     def register_module_interceptor(self, module) -> None:
         """Register a module whose request()/response() methods are called for gamejoin traffic."""
-        if module not in self._module_interceptors:
-            self._module_interceptors.append(module)
+        with self._lock:
+            if module not in self._module_interceptors:
+                self._module_interceptors.append(module)
+            interceptors = list(self._module_interceptors)
         if self._proxy is not None:
-            self._proxy.set_module_interceptors(self._module_interceptors)
+            self._proxy.set_module_interceptors(interceptors)
+
+    def unregister_module_interceptor(self, module) -> None:
+        """Unregister a gamejoin traffic interceptor when its owning UI is destroyed."""
+        with self._lock:
+            before = len(self._module_interceptors)
+            self._module_interceptors = [
+                interceptor for interceptor in self._module_interceptors
+                if interceptor is not module
+            ]
+            if len(self._module_interceptors) == before:
+                return
+            interceptors = list(self._module_interceptors)
+        if self._proxy is not None:
+            self._proxy.set_module_interceptors(interceptors)
 
     def _emit_proxy_start_error(self, code: str, details: dict) -> None:
         """Forward startup failures to the app layer for user-facing dialogs."""
@@ -1708,7 +1724,9 @@ class ProxyMaster:
             upstream_ips=real_ips,
             port=PROXY_PORT,
         )
-        self._proxy.set_module_interceptors(self._module_interceptors)
+        with self._lock:
+            interceptors = list(self._module_interceptors)
+        self._proxy.set_module_interceptors(interceptors)
         try:
             await self._proxy.start()
         except OSError as exc:

@@ -406,7 +406,7 @@ class FleasionProxy:
 
     def set_module_interceptors(self, interceptors: List) -> None:
         """Set the list of module interceptors for gamejoin traffic hooks."""
-        self._module_interceptors = interceptors
+        self._module_interceptors = list(interceptors)
 
     async def stop(self) -> None:
         if self._server:

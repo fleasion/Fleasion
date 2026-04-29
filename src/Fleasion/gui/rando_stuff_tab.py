@@ -405,6 +405,8 @@ class RandoStuffTab(QWidget):
     def __init__(self, parent=None, config_manager=None):
         super().__init__(parent)
         self._config = config_manager
+        self._qt_destroyed = False
+        self.destroyed.connect(self._on_qt_destroyed)
         self._invoker = _Invoker(self)
 
         self._last_place_id = None
@@ -447,10 +449,27 @@ class RandoStuffTab(QWidget):
                 self._on_multi_instance_toggled(True, persist=False)
         threading.Thread(target=self._check_cookies_on_boot, daemon=True).start()
         threading.Thread(target=self._resolve_current_user, daemon=True).start()
-
         if self._subplace_blacklisted_ids:
             count = len(self._subplace_blacklisted_ids)
             log_buffer.log('subplace', f'Loaded subplace blacklist: {count} ID(s) active')
+
+    def _on_qt_destroyed(self, *_):
+        self._qt_destroyed = True
+
+    def _on_main(self, fn) -> bool:
+        if self._qt_destroyed:
+            return False
+        invoker = getattr(self, '_invoker', None)
+        if invoker is None:
+            return False
+        try:
+            invoker.call.emit(fn)
+            return True
+        except RuntimeError as exc:
+            if 'has been deleted' not in str(exc):
+                log_buffer.log("randostuff", f"invoker emit error: {exc}")
+            self._qt_destroyed = True
+            return False
 
     @staticmethod
     def _normalize_numeric_id(value) -> str | None:
@@ -766,7 +785,7 @@ class RandoStuffTab(QWidget):
             self._rejoin_timer_secs = 300
             self._lbl_timer.setText("Timer: 5:00")
             self._rejoin_timer.start()
-        self._invoker.call.emit(_do)
+        self._on_main(_do)
 
     def _tick_rejoin_timer(self):
         self._rejoin_timer_secs -= 1
@@ -1120,7 +1139,7 @@ class RandoStuffTab(QWidget):
                 if username:
                     def _update(u=username):
                         self._set_selected_account(u)
-                    self._invoker.call.emit(_update)
+                    self._on_main(_update)
         except Exception:
             pass
 
@@ -1150,7 +1169,7 @@ class RandoStuffTab(QWidget):
                     item = self._account_list.item(i)
                     if item:
                         item.setText("Expired! Right click to update.")
-                self._invoker.call.emit(_mark)
+                self._on_main(_mark)
 
     def _populate_account_list(self):
         self._account_list.clear()
@@ -1261,7 +1280,7 @@ class RandoStuffTab(QWidget):
                             "private server link (with privateServerLinkCode=…). "
                             "Copy that URL and paste it here instead.",
                         )
-                self._invoker.call.emit(_done)
+                self._on_main(_done)
             threading.Thread(target=_resolve_thread, daemon=True).start()
             return
 
@@ -1714,7 +1733,7 @@ class RandoStuffTab(QWidget):
                             if not self._job_id_input.text().strip():
                                 self._job_id_input.setText(jid)
                                 self._auto_filled_for_place = pid
-                        self._invoker.call.emit(_update_ui)
+                        self._on_main(_update_ui)
                         log_buffer.log("accounts", f"Captured jobId={job_id} for placeId={capture_place_id}")
                 except Exception as exc:
                     log_buffer.log("accounts", f"Failed to capture jobId from response: {exc}")
