@@ -13,7 +13,12 @@ from typing import Tuple
 logger = logging.getLogger(__name__)
 
 # Hosts we intercept - certs are pre-generated for these at startup
-INTERCEPTED_HOSTS = ('assetdelivery.roblox.com', 'fts.rbxcdn.com', 'gamejoin.roblox.com')
+INTERCEPTED_HOSTS = (
+    'assetdelivery.roblox.com',
+    'fts.rbxcdn.com',
+    'contentdelivery.roblox.com',
+    'gamejoin.roblox.com',
+)
 
 # Regenerate certs slightly before hard expiry so users do not hit sudden TLS failures.
 CA_MIN_REMAINING_DAYS = 30

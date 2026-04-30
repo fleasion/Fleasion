@@ -4,7 +4,6 @@ import base64
 import ctypes
 import ctypes.wintypes as wintypes
 import json
-import os
 import random
 import re
 import uuid
@@ -46,6 +45,7 @@ except Exception:
     win32crypt = None
 
 from ..utils.paths import CONFIG_DIR
+from ..utils.roblox_auth import ROBLOX_COOKIES_PATH, set_roblosecurity
 from ..utils.logging import log_buffer
 from ..utils.windows import launch_as_standard_user, resolve_roblox_player_exe_for_launch
 from .proxy_gate import ProxyGate
@@ -591,12 +591,24 @@ class RandoStuffTab(QWidget):
         btn_row.addStretch()
         rjl.addLayout(btn_row)
 
-        self._lbl_place = QLabel("Last placeID = ")
-        self._lbl_place.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self._lbl_access = QLabel("Last accessCode = ")
-        self._lbl_access.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        rjl.addWidget(self._lbl_place)
-        rjl.addWidget(self._lbl_access)
+        place_row = QHBoxLayout()
+        place_lbl = QLabel("placeID:")
+        place_row.addWidget(place_lbl)
+        self._place_id_input = QLineEdit()
+        self._place_id_input.setPlaceholderText("Reserved server placeID")
+        self._place_id_input.textChanged.connect(self._on_reserved_fields_changed)
+        place_row.addWidget(self._place_id_input, 1)
+        rjl.addLayout(place_row)
+
+        access_row = QHBoxLayout()
+        access_lbl = QLabel("accessCode:")
+        access_lbl.setMinimumWidth(place_lbl.sizeHint().width())
+        access_row.addWidget(access_lbl)
+        self._access_code_input = QLineEdit()
+        self._access_code_input.setPlaceholderText("Reserved server accessCode")
+        self._access_code_input.textChanged.connect(self._on_reserved_fields_changed)
+        access_row.addWidget(self._access_code_input, 1)
+        rjl.addLayout(access_row)
 
         self._lbl_timer = QLabel("Timer: —")
         rjl.addWidget(self._lbl_timer)
@@ -768,20 +780,31 @@ class RandoStuffTab(QWidget):
 
     # Rejoin
 
-    def _on_rejoin_clicked(self):
+    def _on_reserved_fields_changed(self, *_):
+        place_id = self._place_id_input.text().strip()
+        access_code = self._access_code_input.text().strip()
         with self._lock:
-            if self._last_place_id is None or self._last_access_code is None:
-                log_buffer.log("randostuff", "No reserved server logged yet — join one first.")
+            self._last_place_id = place_id or None
+            self._last_access_code = access_code or None
+
+    def _on_rejoin_clicked(self):
+        place_id = self._place_id_input.text().strip()
+        access_code = self._access_code_input.text().strip()
+        with self._lock:
+            if not place_id or not access_code:
+                log_buffer.log("randostuff", "No reserved server placeID/accessCode set yet - join one first or enter them manually.")
                 return
+            self._last_place_id = place_id
+            self._last_access_code = access_code
             self._doing_rejoin = True
-        log_buffer.log("randostuff", f"Rejoin triggered — placeId={self._last_place_id}")
-        if not launch_as_standard_user(f"roblox://placeId={self._last_place_id}"):
+        log_buffer.log("randostuff", f"Rejoin triggered - placeId={place_id}")
+        if not launch_as_standard_user(f"roblox://placeId={place_id}"):
             log_buffer.log("randostuff", "Failed to launch Roblox without elevation")
 
     def _update_labels(self, place_id, access_code):
         def _do():
-            self._lbl_place.setText(f"Last placeID = {place_id}")
-            self._lbl_access.setText(f"Last accessCode = {access_code.replace('&', '&&')}")
+            self._place_id_input.setText(str(place_id))
+            self._access_code_input.setText(str(access_code))
             self._rejoin_timer_secs = 300
             self._lbl_timer.setText("Timer: 5:00")
             self._rejoin_timer.start()
@@ -1439,31 +1462,12 @@ class RandoStuffTab(QWidget):
 
     def _write_cookie_to_dat(self, cookie: str):
         """Replace the .ROBLOSECURITY value in RobloxCookies.dat and re-encrypt."""
-        if not win32crypt:
-            log_buffer.log("accounts", "win32crypt unavailable — cannot update cookie file")
+        if not ROBLOX_COOKIES_PATH.exists():
+            log_buffer.log("accounts", "RobloxCookies.dat not found - launch Roblox once first")
             return
-        path = os.path.expandvars(r"%LocalAppData%\Roblox\LocalStorage\RobloxCookies.dat")
-        if not os.path.exists(path):
-            log_buffer.log("accounts", "RobloxCookies.dat not found — launch Roblox once first")
+        if not set_roblosecurity(cookie):
+            log_buffer.log("accounts", f"Failed to update RobloxCookies.dat at {ROBLOX_COOKIES_PATH}")
             return
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        cookies_b64 = data.get("CookiesData", "")
-        if not cookies_b64:
-            return
-        enc = base64.b64decode(cookies_b64)
-        dec_bytes = win32crypt.CryptUnprotectData(enc, None, None, None, 0)[1]
-        # Use latin-1 for a lossless decode/encode round-trip (preserves all byte values)
-        dec_str = dec_bytes.decode("latin-1")
-        # Replace the existing .ROBLOSECURITY value (use lambda to avoid regex injection)
-        new_str, n = re.subn(r'(\.ROBLOSECURITY\s+)[^\s;]+', lambda m: m.group(1) + cookie, dec_str)
-        if n == 0:
-            # Value wasn't found - append it (unusual but safe fallback)
-            new_str = dec_str.rstrip() + f"\n.ROBLOSECURITY\t{cookie}"
-        new_enc = win32crypt.CryptProtectData(new_str.encode("latin-1"), None, None, None, None, 0)
-        data["CookiesData"] = base64.b64encode(new_enc).decode("ascii")
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f)
         self._account_switched = True
 
     def is_multi_instance_enabled(self) -> bool:

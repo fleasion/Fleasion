@@ -1048,7 +1048,7 @@ class TextureStripper:
                     log_buffer.log('SolidModel', f'Will inject OBJ for {base_loc[:60]}...')
 
     # ------------------------------------------------------------------
-    # CDN request check (called from server MITM thread for fts.rbxcdn.com)
+    # CDN request check (called from server MITM thread for Roblox CDN hosts)
     # ------------------------------------------------------------------
 
     def check_cdn_request(self, host: str, path: str) -> Optional[Tuple[str, str]]:

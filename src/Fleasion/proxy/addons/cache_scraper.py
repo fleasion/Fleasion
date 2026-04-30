@@ -31,7 +31,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 ASSET_DELIVERY_HOST = 'assetdelivery.roblox.com'
-CDN_HOST = 'fts.rbxcdn.com'
+CDN_HOSTS = frozenset({'fts.rbxcdn.com', 'contentdelivery.roblox.com'})
 DELIVERY_ENDPOINT = '/v1/assets/batch'
 
 
@@ -189,7 +189,7 @@ class CacheScraper:
             log_buffer.log('Cache', f'Tracking {tracked} asset(s) for caching')
 
     # ------------------------------------------------------------------
-    # Called from server MITM thread for fts.rbxcdn.com responses
+    # Called from server MITM thread for Roblox CDN responses
     # ------------------------------------------------------------------
 
     def process_cdn_response(self, full_url: str, path: str, body: bytes, content_type: str) -> None:
@@ -914,7 +914,7 @@ class CacheScraper:
         )
 
         if is_redirect:
-            # The CDN URL in Location: will be fetched next as an fts.rbxcdn.com
+            # The CDN URL in Location: will be fetched next as a Roblox CDN
             # request, but it WON'T be in _url_to_asset so process_cdn_response
             # will silently drop it. Log only a non-sensitive CDN id.
             _cdn_id = str(location).split('?', 1)[0].rsplit('/', 1)[-1]

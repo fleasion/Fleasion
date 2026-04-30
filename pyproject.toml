@@ -26,7 +26,7 @@ dependencies = [
 # mitmproxy - replaced by custom asyncio proxy (proxy/server.py)
 #   Reason: mitmproxy local: mode uses WinDivert (breaks VPNs, adds overhead on
 #   ALL Roblox traffic). Our custom proxy uses WinINet PAC file - only routes
-#   assetdelivery.roblox.com and fts.rbxcdn.com through the proxy, everything
+#   assetdelivery.roblox.com and Roblox CDN hosts through the proxy, everything
 #   else goes DIRECT. Compatible with VPNs (loopback is never VPN-routed).
 
 [project.scripts]

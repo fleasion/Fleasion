@@ -1,7 +1,7 @@
 """Core asyncio TLS proxy server for Fleasion.
 
 Architecture:
-  - Hosts file redirects assetdelivery.roblox.com + fts.rbxcdn.com -> 127.0.0.1.
+  - Hosts file redirects assetdelivery.roblox.com + Roblox CDN hosts -> 127.0.0.1.
   - We listen on 127.0.0.1:443 as a direct TLS server (NOT a CONNECT proxy).
   - Upstream connections use the REAL CDN IPs (resolved before hosts file is written).
   - SNI callback handles cert selection only; host is read from the HTTP Host: header.
@@ -35,7 +35,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-INTERCEPT_HOSTS: frozenset = frozenset({'assetdelivery.roblox.com', 'fts.rbxcdn.com', 'gamejoin.roblox.com'})
+ASSET_DELIVERY_HOST = 'assetdelivery.roblox.com'
+GAMEJOIN_HOST = 'gamejoin.roblox.com'
+CDN_HOSTS: frozenset = frozenset({'fts.rbxcdn.com', 'contentdelivery.roblox.com'})
+INTERCEPT_HOSTS: frozenset = frozenset({ASSET_DELIVERY_HOST, GAMEJOIN_HOST, *CDN_HOSTS})
 
 _ZSTD_MAGIC = b'\x28\xb5\x2f\xfd'
 _GZIP_MAGIC  = b'\x1f\x8b'
@@ -510,12 +513,12 @@ class FleasionProxy:
 
             parts = req_first.split(b' ', 2)
             path = parts[1].decode('ascii', errors='replace') if len(parts) > 1 else '/'
-            is_batch = (host == 'assetdelivery.roblox.com' and b'/v1/assets/batch' in req_first)
+            is_batch = (host == ASSET_DELIVERY_HOST and b'/v1/assets/batch' in req_first)
             _gamejoin_flow: Optional[ProxyFlow] = None
 
             # ── TextureStripper: CDN short-circuit (replace before upstream) ──
             # Race condition fix: the batch-request coroutine (on the assetdelivery
-            # connection) and this CDN coroutine (on fts.rbxcdn.com) run concurrently.
+            # connection) and this CDN coroutine run concurrently.
             # The CDN request may arrive before the batch response has been processed
             # and its CDN URL registered in _solidmodel_injections / _local_redirects.
             # If there are pending req_ids in flight, yield briefly to the event loop
@@ -523,7 +526,7 @@ class FleasionProxy:
             # Without this, unreplaced assets pass through and Roblox caches them,
             # requiring multiple rejoins to achieve full replacement coverage.
             short_circuit = None
-            if host == 'fts.rbxcdn.com':
+            if host in CDN_HOSTS:
                 short_circuit = self.texture_stripper.check_cdn_request(host, path)
                 if short_circuit is None and self.texture_stripper.has_pending():
                     # Yield to event loop in short increments, retrying up to ~600ms.
@@ -587,7 +590,7 @@ class FleasionProxy:
                     req_body_plain, req_headers, replacements_tuple, batch_id,
                 )
                 up_writer.write(_build_modified_request(req_first, req_headers, req_body_modified))
-            elif host == 'gamejoin.roblox.com':
+            elif host == GAMEJOIN_HOST:
                 # Module interceptors: allow request body/URL modification for gamejoin traffic
                 _req_body_plain = _decompress_body(req_body_raw, req_headers)
                 if self._module_interceptors:
@@ -658,7 +661,7 @@ class FleasionProxy:
                         resp_body_plain,
                     )
 
-            elif host == 'assetdelivery.roblox.com' and not is_batch:
+            elif host == ASSET_DELIVERY_HOST and not is_batch:
                 # Non-batch assetdelivery response (confirmed rare/non-existent
                 # in practice for TexturePack sub-assets after dedup fix).
                 # Still wire up the scraper hook as a fallback.
@@ -672,7 +675,7 @@ class FleasionProxy:
                             resp_headers.get(b'content-type', b'').decode('ascii', errors='replace'),
                         )
 
-            elif host == 'fts.rbxcdn.com':
+            elif host in CDN_HOSTS:
                 full_url = f'https://{host}{path}'
 
                 if short_circuit is not None and short_circuit[0] in ('solid', 'solid_v3'):
@@ -753,7 +756,7 @@ class FleasionProxy:
                     ct = resp_headers.get(b'content-type', b'').decode('ascii', errors='replace')
                     self.cache_scraper.process_cdn_response(full_url, path, resp_body_for_cache, ct)
 
-            if host == 'gamejoin.roblox.com' and _gamejoin_flow is not None and self._module_interceptors:
+            if host == GAMEJOIN_HOST and _gamejoin_flow is not None and self._module_interceptors:
                 _resp_body_plain = _decompress_body(resp_body_raw, resp_headers)
                 _gamejoin_flow.response = _FlowResponse(resp_first, _resp_body_plain)
                 for _interceptor in list(self._module_interceptors):

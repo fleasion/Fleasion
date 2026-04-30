@@ -2,7 +2,7 @@
 
 Interception strategy:
   1. Write hosts file entries pointing assetdelivery.roblox.com and
-     fts.rbxcdn.com at 127.0.0.1.  Roblox uses libcurl which honours
+     Roblox CDN hosts at 127.0.0.1.  Roblox uses libcurl which honours
      the OS hosts file unconditionally (unlike WinINet PAC files).
   2. Run a direct TLS server on 127.0.0.1:443.  Roblox connects directly
      (no HTTP CONNECT tunnel needed) and we present a leaf cert signed by
