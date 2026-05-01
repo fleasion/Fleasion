@@ -54,8 +54,13 @@ from ..utils import (
     delete_cache,
     run_in_thread,
 )
-from .addons import CacheScraper, TextureStripper
-from .server import FleasionProxy, INTERCEPT_HOSTS
+from .addons import CacheScraper, TextureStripper, UsernameSpoofer
+from .server import (
+    BASE_INTERCEPT_HOSTS,
+    FleasionProxy,
+    INTERCEPT_HOSTS,
+    USERNAME_SPOOFER_INTERCEPT_HOSTS,
+)
 from ..cache.cache_manager import CacheManager
 from ..utils.certs import generate_ca, generate_host_cert, get_ca_pem
 from ..utils.roblox_dirs import load_saved_roblox_dirs
@@ -1411,6 +1416,7 @@ class ProxyMaster:
         
         # Wire scraper into cache_manager for private asset downloads
         self.cache_manager.set_scraper(self.cache_scraper)
+        self.username_spoofer = UsernameSpoofer(config_manager)
         
         self._texture_stripper: Optional[TextureStripper] = None
 
@@ -1420,9 +1426,11 @@ class ProxyMaster:
         self._running = False
         self._lock = threading.Lock()
         self._hosts_installed: bool = False
+        self._active_intercept_hosts: set[str] = set(BASE_INTERCEPT_HOSTS)
+        self._roblox_player_running: bool = False
         self._watchdog_stop: Optional[threading.Event] = None
         self._watchdog_thread: Optional[threading.Thread] = None
-        self._module_interceptors: list = []
+        self._module_interceptors: list = [self.username_spoofer]
 
     @property
     def is_running(self) -> bool:
@@ -1450,6 +1458,48 @@ class ProxyMaster:
             interceptors = list(self._module_interceptors)
         if self._proxy is not None:
             self._proxy.set_module_interceptors(interceptors)
+
+    def _desired_intercept_hosts(self) -> set[str]:
+        hosts = set(BASE_INTERCEPT_HOSTS)
+        spoofer = getattr(self, 'username_spoofer', None)
+        if self._roblox_player_running and spoofer is not None and spoofer.is_enabled():
+            hosts.update(USERNAME_SPOOFER_INTERCEPT_HOSTS)
+        return hosts
+
+    def set_roblox_player_running(self, running: bool) -> None:
+        with self._lock:
+            if self._roblox_player_running == running:
+                return
+            self._roblox_player_running = running
+        self.refresh_username_spoofer_interception()
+
+    def refresh_username_spoofer_interception(self) -> None:
+        """Add or remove the profile API hosts entry as the spoofer is enabled."""
+        desired_hosts = self._desired_intercept_hosts()
+        with self._lock:
+            if desired_hosts == self._active_intercept_hosts:
+                return
+            if not self._hosts_installed or self._proxy is None:
+                self._active_intercept_hosts = set(desired_hosts)
+                return
+
+            previous_hosts = set(self._active_intercept_hosts)
+            _remove_hosts_entries(set(INTERCEPT_HOSTS))
+            _flush_dns()
+            real_ips = _resolve_real_ips(desired_hosts)
+            if not _add_hosts_entries(desired_hosts):
+                log_buffer.log('Hosts', 'Failed to update username spoofer hosts entries')
+                _add_hosts_entries(previous_hosts)
+                _flush_dns()
+                return
+            _flush_dns()
+
+            self._active_intercept_hosts = set(desired_hosts)
+            self._proxy._upstream_ips = real_ips
+            scraper_ips = {host: ips[0] for host, ips in real_ips.items() if ips}
+            if scraper_ips:
+                self.cache_scraper.set_real_ips(scraper_ips)
+            log_buffer.log('Hosts', f'Active intercepts updated: {", ".join(sorted(desired_hosts))}')
 
     def _emit_proxy_start_error(self, code: str, details: dict) -> None:
         """Forward startup failures to the app layer for user-facing dialogs."""
@@ -1511,10 +1561,11 @@ class ProxyMaster:
         def _refresh_ips() -> None:
             if not self._hosts_installed:
                 return
+            active_hosts = self._desired_intercept_hosts()
             # Remove entries temporarily so getaddrinfo() sees real IPs again
             _remove_hosts_entries(set(INTERCEPT_HOSTS))
             _flush_dns()
-            new_ips = _resolve_real_ips(set(INTERCEPT_HOSTS))
+            new_ips = _resolve_real_ips(active_hosts)
             # Re-install entries pointing back to our proxy.
             # Acquire the lock before re-adding to guard against a race with
             # stop(): if stop() ran while we were resolving IPs it will have
@@ -1525,7 +1576,8 @@ class ProxyMaster:
                 if not self._hosts_installed:
                     # stop() already ran — do not re-add entries.
                     return
-                _add_hosts_entries(set(INTERCEPT_HOSTS))
+                _add_hosts_entries(active_hosts)
+                self._active_intercept_hosts = set(active_hosts)
                 
             _flush_dns()
             # Update running proxy and scraper with fresh upstream IPs
@@ -1694,7 +1746,9 @@ class ProxyMaster:
         # ── Resolve real CDN IPs BEFORE writing new hosts file entries ────
         # CRITICAL: must happen after removing stale entries (above) and before
         # writing new ones. This guarantees getaddrinfo() returns real IPs.
-        real_ips = _resolve_real_ips(set(INTERCEPT_HOSTS))
+        active_hosts = self._desired_intercept_hosts()
+        self._active_intercept_hosts = set(active_hosts)
+        real_ips = _resolve_real_ips(active_hosts)
 
         # ── Create addon instances ────────────────────────────────────────
         self._texture_stripper = TextureStripper(self.config_manager)
@@ -1767,7 +1821,7 @@ class ProxyMaster:
 
         # ── Write hosts file entries ──────────────────────────────────────
         hosts_error_details: dict = {}
-        if not _add_hosts_entries(set(INTERCEPT_HOSTS), error_details=hosts_error_details):
+        if not _add_hosts_entries(active_hosts, error_details=hosts_error_details):
             if hosts_error_details.get('notify_user'):
                 self._emit_proxy_start_error('hosts_write_exhausted', hosts_error_details)
             # Hosts write failed - stop the server and bail
@@ -1786,7 +1840,7 @@ class ProxyMaster:
 
         log_buffer.log('Info', '=' * 50)
         log_buffer.log('Info', 'Fleasion Proxy Active')
-        log_buffer.log('Info', f'Intercepting: {", ".join(sorted(INTERCEPT_HOSTS))}')
+        log_buffer.log('Info', f'Intercepting: {", ".join(sorted(active_hosts))}')
         log_buffer.log('Info', f'Port: {PROXY_PORT}')
         log_buffer.log('Info', 'Launch Roblox')
         log_buffer.log('Info', '=' * 50)

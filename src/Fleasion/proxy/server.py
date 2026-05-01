@@ -37,8 +37,12 @@ logger = logging.getLogger(__name__)
 
 ASSET_DELIVERY_HOST = 'assetdelivery.roblox.com'
 GAMEJOIN_HOST = 'gamejoin.roblox.com'
+PROFILE_API_HOST = 'apis.roblox.com'
+PROFILE_API_PATH_FRAGMENT = '/v1/user/profiles/get-profiles'
 CDN_HOSTS: frozenset = frozenset({'fts.rbxcdn.com', 'contentdelivery.roblox.com'})
-INTERCEPT_HOSTS: frozenset = frozenset({ASSET_DELIVERY_HOST, GAMEJOIN_HOST, *CDN_HOSTS})
+BASE_INTERCEPT_HOSTS: frozenset = frozenset({ASSET_DELIVERY_HOST, GAMEJOIN_HOST, *CDN_HOSTS})
+USERNAME_SPOOFER_INTERCEPT_HOSTS: frozenset = frozenset({PROFILE_API_HOST})
+INTERCEPT_HOSTS: frozenset = BASE_INTERCEPT_HOSTS | USERNAME_SPOOFER_INTERCEPT_HOSTS
 
 _ZSTD_MAGIC = b'\x28\xb5\x2f\xfd'
 _GZIP_MAGIC  = b'\x1f\x8b'
@@ -515,6 +519,7 @@ class FleasionProxy:
             path = parts[1].decode('ascii', errors='replace') if len(parts) > 1 else '/'
             is_batch = (host == ASSET_DELIVERY_HOST and b'/v1/assets/batch' in req_first)
             _gamejoin_flow: Optional[ProxyFlow] = None
+            _profile_flow: Optional[ProxyFlow] = None
 
             # ── TextureStripper: CDN short-circuit (replace before upstream) ──
             # Race condition fix: the batch-request coroutine (on the assetdelivery
@@ -619,6 +624,10 @@ class FleasionProxy:
                         up_writer.write(_reassemble_raw_response(req_first, req_headers, req_body_raw))
                 else:
                     up_writer.write(_reassemble_raw_response(req_first, req_headers, req_body_raw))
+            elif host == PROFILE_API_HOST and PROFILE_API_PATH_FRAGMENT in path and self._module_interceptors:
+                _req_body_plain = _decompress_body(req_body_raw, req_headers)
+                _profile_flow = ProxyFlow(req_first, req_headers, _req_body_plain, host)
+                up_writer.write(_reassemble_raw_response(req_first, req_headers, req_body_raw))
             else:
                 # Forward request as-is (raw bytes, original headers)
                 up_writer.write(_reassemble_raw_response(req_first, req_headers, req_body_raw))
@@ -764,6 +773,26 @@ class FleasionProxy:
                         _interceptor.response(_gamejoin_flow)
                     except Exception as _exc:
                         logger.debug('Module interceptor response error: %s', _exc)
+                if (
+                    _gamejoin_flow.response is not None
+                    and _gamejoin_flow.response.content != _resp_body_plain
+                ):
+                    resp_body_raw = _gamejoin_flow.response.content
+                    response_modified = True
+            elif host == PROFILE_API_HOST and _profile_flow is not None and self._module_interceptors:
+                _resp_body_plain = _decompress_body(resp_body_raw, resp_headers)
+                _profile_flow.response = _FlowResponse(resp_first, _resp_body_plain)
+                for _interceptor in list(self._module_interceptors):
+                    try:
+                        _interceptor.response(_profile_flow)
+                    except Exception as _exc:
+                        logger.debug('Module interceptor response error: %s', _exc)
+                if (
+                    _profile_flow.response is not None
+                    and _profile_flow.response.content != _resp_body_plain
+                ):
+                    resp_body_raw = _profile_flow.response.content
+                    response_modified = True
 
             # ── Forward response to Roblox ────────────────────────────────
             if response_modified:

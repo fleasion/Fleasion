@@ -402,9 +402,10 @@ class RandoStuffTab(QWidget):
         "/v1/join-game-instance",
     )
 
-    def __init__(self, parent=None, config_manager=None):
+    def __init__(self, parent=None, config_manager=None, proxy_master=None):
         super().__init__(parent)
         self._config = config_manager
+        self._proxy_master = proxy_master
         self._qt_destroyed = False
         self.destroyed.connect(self._on_qt_destroyed)
         self._invoker = _Invoker(self)
@@ -438,8 +439,12 @@ class RandoStuffTab(QWidget):
         self._account_manager_job_id: str = ""
         self._account_manager_capture_place_id: str | None = None
         self._auto_filled_for_place: str | None = None
+        self._username_spoofer_current_user_id: str | None = None
+        self._username_spoofer_current_username = ''
+        self._username_spoofer_state = self._load_username_spoofer_settings()
 
         self._setup_ui()
+        self._push_username_spoofer_runtime_state()
         if self._config is not None:
             enabled = self._config.multi_instance_launching
             self._multi_chk.blockSignals(True)
@@ -558,6 +563,87 @@ class RandoStuffTab(QWidget):
             self._subplace_unblock_until = time.time() + 5.0
         log_buffer.log('subplace', 'Subplace blacklist bypass enabled for 5 seconds')
 
+    @staticmethod
+    def _default_username_spoofer_state() -> dict:
+        return {
+            'save_settings': False,
+            'others_name': '',
+            'others_apply_ingame': False,
+            'others_verified': False,
+            'self_name': '',
+            'self_apply_ingame': False,
+            'self_verified': False,
+        }
+
+    def _load_username_spoofer_settings(self) -> dict:
+        state = self._default_username_spoofer_state()
+        if self._config is None:
+            return state
+        saved = getattr(self._config, 'username_spoofer', {})
+        if isinstance(saved, dict):
+            state.update(saved)
+        if not state.get('save_settings', False):
+            return self._default_username_spoofer_state()
+        return state
+
+    def _username_spoofer_state_from_widgets(self) -> dict:
+        return {
+            'save_settings': self._username_save_chk.isChecked(),
+            'others_name': self._username_others_input.text(),
+            'others_apply_ingame': self._username_others_apply_chk.isChecked(),
+            'others_verified': self._username_others_verified_chk.isChecked(),
+            'self_name': self._username_self_input.text(),
+            'self_apply_ingame': self._username_self_apply_chk.isChecked(),
+            'self_verified': self._username_self_verified_chk.isChecked(),
+        }
+
+    def _set_username_spoofer_state(self, state: dict):
+        with self._lock:
+            self._username_spoofer_state = {
+                'save_settings': bool(state.get('save_settings', False)),
+                'others_name': str(state.get('others_name', '')),
+                'others_apply_ingame': bool(state.get('others_apply_ingame', False)),
+                'others_verified': bool(state.get('others_verified', False)),
+                'self_name': str(state.get('self_name', '')),
+                'self_apply_ingame': bool(state.get('self_apply_ingame', False)),
+                'self_verified': bool(state.get('self_verified', False)),
+            }
+
+    def _persist_username_spoofer_state(self, state: dict):
+        if self._config is not None:
+            self._config.username_spoofer = state
+
+    def _push_username_spoofer_runtime_state(self):
+        spoofer = getattr(self._proxy_master, 'username_spoofer', None)
+        if spoofer is not None and hasattr(spoofer, 'set_runtime_state'):
+            spoofer.set_runtime_state(dict(self._username_spoofer_state))
+        if self._proxy_master is not None and hasattr(self._proxy_master, 'refresh_username_spoofer_interception'):
+            self._proxy_master.refresh_username_spoofer_interception()
+
+    def _push_username_spoofer_current_user(self):
+        spoofer = getattr(self._proxy_master, 'username_spoofer', None)
+        if spoofer is not None and hasattr(spoofer, 'set_current_user'):
+            spoofer.set_current_user(
+                self._username_spoofer_current_user_id,
+                self._username_spoofer_current_username,
+            )
+
+    def _on_username_spoofer_changed(self):
+        state = self._username_spoofer_state_from_widgets()
+        self._set_username_spoofer_state(state)
+        self._push_username_spoofer_runtime_state()
+        if state['save_settings']:
+            self._persist_username_spoofer_state(state)
+
+    def _on_username_spoofer_save_toggled(self, checked: bool):
+        state = self._username_spoofer_state_from_widgets()
+        self._set_username_spoofer_state(state)
+        self._push_username_spoofer_runtime_state()
+        if checked:
+            self._persist_username_spoofer_state(state)
+        else:
+            self._persist_username_spoofer_state(self._default_username_spoofer_state())
+
     # UI
 
     def _setup_ui(self):
@@ -669,6 +755,57 @@ class RandoStuffTab(QWidget):
 
         self._populate_account_list()
 
+        username_group = QGroupBox("Username Spoofer")
+        username_layout = QVBoxLayout(username_group)
+
+        self._username_save_chk = QCheckBox("Save Username Spoofer Settings")
+        self._username_save_chk.setChecked(bool(self._username_spoofer_state.get('save_settings', False)))
+        username_layout.addWidget(self._username_save_chk)
+
+        others_row = QHBoxLayout()
+        others_label = QLabel("Everyone Else")
+        others_label.setMinimumWidth(105)
+        self._username_others_input = QLineEdit()
+        self._username_others_input.setPlaceholderText("Spoofed username")
+        self._username_others_input.setText(str(self._username_spoofer_state.get('others_name', '')))
+        self._username_others_apply_chk = QCheckBox("Apply Ingame")
+        self._username_others_apply_chk.setChecked(
+            bool(self._username_spoofer_state.get('others_apply_ingame', False))
+        )
+        self._username_others_verified_chk = QCheckBox("Verified")
+        self._username_others_verified_chk.setToolTip("Force other profiles to show as verified")
+        self._username_others_verified_chk.setChecked(
+            bool(self._username_spoofer_state.get('others_verified', False))
+        )
+        others_row.addWidget(others_label)
+        others_row.addWidget(self._username_others_input, 1)
+        others_row.addWidget(self._username_others_apply_chk)
+        others_row.addWidget(self._username_others_verified_chk)
+        username_layout.addLayout(others_row)
+
+        self_row = QHBoxLayout()
+        self_label = QLabel("Your Username")
+        self_label.setMinimumWidth(105)
+        self._username_self_input = QLineEdit()
+        self._username_self_input.setPlaceholderText("Spoofed username")
+        self._username_self_input.setText(str(self._username_spoofer_state.get('self_name', '')))
+        self._username_self_apply_chk = QCheckBox("Apply Ingame")
+        self._username_self_apply_chk.setChecked(
+            bool(self._username_spoofer_state.get('self_apply_ingame', False))
+        )
+        self._username_self_verified_chk = QCheckBox("Verified")
+        self._username_self_verified_chk.setToolTip("Force your own profile to show as verified")
+        self._username_self_verified_chk.setChecked(
+            bool(self._username_spoofer_state.get('self_verified', False))
+        )
+        self_row.addWidget(self_label)
+        self_row.addWidget(self._username_self_input, 1)
+        self_row.addWidget(self._username_self_apply_chk)
+        self_row.addWidget(self._username_self_verified_chk)
+        username_layout.addLayout(self_row)
+
+        root.addWidget(username_group)
+
         ac_group = QGroupBox("R6 ↔ R15 Animation Converter")
         acl = QVBoxLayout(ac_group)
 
@@ -750,6 +887,13 @@ class RandoStuffTab(QWidget):
         self._update_container_bg()
         self._btn.clicked.connect(self._on_rejoin_clicked)
         self._multi_chk.toggled.connect(self._on_multi_instance_toggled)
+        self._username_save_chk.toggled.connect(self._on_username_spoofer_save_toggled)
+        self._username_others_input.textChanged.connect(lambda _text: self._on_username_spoofer_changed())
+        self._username_others_apply_chk.toggled.connect(lambda _checked: self._on_username_spoofer_changed())
+        self._username_others_verified_chk.toggled.connect(lambda _checked: self._on_username_spoofer_changed())
+        self._username_self_input.textChanged.connect(lambda _text: self._on_username_spoofer_changed())
+        self._username_self_apply_chk.toggled.connect(lambda _checked: self._on_username_spoofer_changed())
+        self._username_self_verified_chk.toggled.connect(lambda _checked: self._on_username_spoofer_changed())
 
     def changeEvent(self, a0: QEvent | None):
         super().changeEvent(a0)
@@ -1160,7 +1304,13 @@ class RandoStuffTab(QWidget):
                 sess.headers["Cookie"] = f".ROBLOSECURITY={cookie};"
             resp = sess.get("https://users.roblox.com/v1/users/authenticated", timeout=10)
             if resp.status_code == 200:
-                username = resp.json().get("name", "")
+                data = resp.json()
+                username = data.get("name", "")
+                user_id = data.get("id")
+                with self._lock:
+                    self._username_spoofer_current_user_id = str(user_id) if user_id is not None else None
+                    self._username_spoofer_current_username = str(username or '')
+                self._push_username_spoofer_current_user()
                 if username:
                     def _update(u=username):
                         self._set_selected_account(u)

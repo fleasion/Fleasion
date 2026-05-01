@@ -103,6 +103,15 @@ DEFAULT_SETTINGS = {
     'scraper_blacklist': [],
     'subplace_blacklist': [],
     'subplace_blacklist_mode': 'block',
+    'username_spoofer': {
+        'save_settings': False,
+        'others_name': '',
+        'others_apply_ingame': False,
+        'others_verified': False,
+        'self_name': '',
+        'self_apply_ingame': False,
+        'self_verified': False,
+    },
 }
 
 

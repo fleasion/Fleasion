@@ -344,6 +344,30 @@ class ConfigManager:
         self._save_settings()
 
     @property
+    def username_spoofer(self) -> dict:
+        default = deepcopy(DEFAULT_SETTINGS.get('username_spoofer', {}))
+        saved = self.settings.get('username_spoofer', {})
+        if isinstance(saved, dict):
+            default.update(saved)
+        return default
+
+    @username_spoofer.setter
+    def username_spoofer(self, value: dict):
+        base = deepcopy(DEFAULT_SETTINGS.get('username_spoofer', {}))
+        if isinstance(value, dict):
+            base.update({
+                'save_settings': bool(value.get('save_settings', base.get('save_settings', False))),
+                'others_name': str(value.get('others_name', base.get('others_name', ''))),
+                'others_apply_ingame': bool(value.get('others_apply_ingame', base.get('others_apply_ingame', False))),
+                'others_verified': bool(value.get('others_verified', base.get('others_verified', False))),
+                'self_name': str(value.get('self_name', base.get('self_name', ''))),
+                'self_apply_ingame': bool(value.get('self_apply_ingame', base.get('self_apply_ingame', False))),
+                'self_verified': bool(value.get('self_verified', base.get('self_verified', False))),
+            })
+        self.settings['username_spoofer'] = base
+        self._save_settings()
+
+    @property
     def show_names(self) -> bool:
         return self.settings.get('show_names', True)
 

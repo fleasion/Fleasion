@@ -316,6 +316,8 @@ class RobloxExitMonitor(QObject):
         # --- Roblox Player: player status changed signal ---
         if self._player_was_running != is_running:
             self.player_status_changed.emit(is_running)
+            if self._proxy_master is not None:
+                self._proxy_master.set_roblox_player_running(is_running)
 
         # --- Roblox Player: launch detection - check CA cert on new launch ---
         if not self._player_was_running and is_running:

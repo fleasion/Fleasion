@@ -18,6 +18,7 @@ INTERCEPTED_HOSTS = (
     'fts.rbxcdn.com',
     'contentdelivery.roblox.com',
     'gamejoin.roblox.com',
+    'apis.roblox.com',
 )
 
 # Regenerate certs slightly before hard expiry so users do not hit sudden TLS failures.
