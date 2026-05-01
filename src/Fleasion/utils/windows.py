@@ -4,6 +4,7 @@ import ctypes
 import ctypes.wintypes
 import os
 import re
+import stat
 import subprocess
 import time
 import winreg
@@ -163,12 +164,30 @@ def wait_for_roblox_exit(timeout: float = 10.0) -> bool:
     return False
 
 
+def _clear_read_only(path: Path) -> None:
+    """Clear the read-only attribute on an existing path."""
+    if not path.exists():
+        return
+    current_mode = path.stat().st_mode
+    if current_mode & stat.S_IWRITE:
+        return
+    path.chmod(current_mode | stat.S_IWRITE)
+
+
+def _rmtree_clear_readonly_retry(func, path: str, _exc_info) -> None:
+    """Allow shutil.rmtree() to retry after clearing a read-only attribute."""
+    target = Path(path)
+    _clear_read_only(target)
+    func(path)
+
+
 def _delete_db_file(db_path: Path, messages: list, label: str = 'Storage database') -> None:
     """Delete a single rbx-storage.db file, attempting win32 unlock on PermissionError."""
     if not db_path.exists():
         messages.append(f'{label} not found')
         return
     try:
+        _clear_read_only(db_path)
         db_path.unlink()
         messages.append(f'{label} deleted successfully')
     except PermissionError:
@@ -192,6 +211,7 @@ def _delete_db_file(db_path: Path, messages: list, label: str = 'Storage databas
             except pywintypes.error:
                 pass
 
+            _clear_read_only(db_path)
             db_path.unlink()
             messages.append(f'{label}: unlocked and deleted successfully')
         except ImportError:
@@ -229,7 +249,7 @@ def delete_cache() -> list[str]:
     storage_folder = STORAGE_DB.parent / 'rbx-storage'
     if storage_folder.exists():
         try:
-            shutil.rmtree(storage_folder)
+            shutil.rmtree(storage_folder, onerror=_rmtree_clear_readonly_retry)
             messages.append('Storage folder deleted successfully')
         except PermissionError:
             messages.append('Failed to delete storage folder: Permission denied')
@@ -247,8 +267,9 @@ def delete_cache() -> list[str]:
                 if child in _preserve_set:
                     continue
                 if child.is_dir():
-                    shutil.rmtree(child)
+                    shutil.rmtree(child, onerror=_rmtree_clear_readonly_retry)
                 else:
+                    _clear_read_only(child)
                     child.unlink()
             messages.append('Fleasion obj cache deleted successfully')
         except PermissionError:

@@ -594,9 +594,11 @@ class RandoStuffTab(QWidget):
         place_row = QHBoxLayout()
         place_lbl = QLabel("placeID:")
         place_row.addWidget(place_lbl)
+        # shift the reserved server placeID input box slightly to the right (only the input)
         self._place_id_input = QLineEdit()
         self._place_id_input.setPlaceholderText("Reserved server placeID")
         self._place_id_input.textChanged.connect(self._on_reserved_fields_changed)
+        place_row.addSpacing(23)
         place_row.addWidget(self._place_id_input, 1)
         rjl.addLayout(place_row)
 
