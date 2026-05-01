@@ -763,7 +763,7 @@ class RandoStuffTab(QWidget):
         username_layout.addWidget(self._username_save_chk)
 
         others_row = QHBoxLayout()
-        others_label = QLabel("Everyone Else")
+        others_label = QLabel("Everyone Else:")
         others_label.setMinimumWidth(105)
         self._username_others_input = QLineEdit()
         self._username_others_input.setPlaceholderText("Spoofed username")
@@ -784,7 +784,7 @@ class RandoStuffTab(QWidget):
         username_layout.addLayout(others_row)
 
         self_row = QHBoxLayout()
-        self_label = QLabel("Your Username")
+        self_label = QLabel("Your Username:")
         self_label.setMinimumWidth(105)
         self._username_self_input = QLineEdit()
         self._username_self_input.setPlaceholderText("Spoofed username")
