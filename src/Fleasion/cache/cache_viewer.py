@@ -2934,15 +2934,22 @@ class CacheViewerTab(QWidget):
         import os
         from pathlib import Path
 
-        paths = [Path(path) for path in exported_paths if path]
-        if not paths:
+        existing_paths = []
+        for path in exported_paths:
+            if not path:
+                continue
+            p = Path(path)
+            if p.exists():
+                existing_paths.append(p)
+
+        if not existing_paths:
             return self.cache_manager.export_dir, False
 
-        if len(paths) == 1:
-            path = paths[0]
+        if len(existing_paths) == 1:
+            path = existing_paths[0]
             return path, path.is_file()
 
-        containers = [path if path.is_dir() else path.parent for path in paths]
+        containers = [path if path.is_dir() else path.parent for path in existing_paths]
         if all(container == containers[0] for container in containers):
             return containers[0], False
 
@@ -2952,15 +2959,32 @@ class CacheViewerTab(QWidget):
     def _open_export_target(self, exported_paths):
         """Open exported output in Explorer, selecting a single exported file when possible."""
         import subprocess
+        from pathlib import Path
 
         target, select_file = self._get_export_open_target(exported_paths)
+        target = Path(target)
+
+        def _fallback_open_folder():
+            # Multi-tier fallback: parent of selected file -> computed target -> root export dir.
+            if select_file:
+                open_folder(target.parent)
+                return
+            open_folder(target if target.is_dir() else self.cache_manager.export_dir)
+
         try:
             if select_file:
-                subprocess.Popen(['explorer.exe', f'/select,{target}'])
+                if target.is_file():
+                    subprocess.Popen(['explorer.exe', '/select,', str(target.resolve())])
+                else:
+                    _fallback_open_folder()
             else:
-                open_folder(target)
+                open_folder(target if target.is_dir() else self.cache_manager.export_dir)
         except Exception as exc:
             log_buffer.log('Export', f'Could not open export target {target}: {exc}')
+            try:
+                _fallback_open_folder()
+            except Exception as fallback_exc:
+                log_buffer.log('Export', f'Fallback open failed for export target {target}: {fallback_exc}')
 
     def _show_export_complete_message(self, title: str, message: str, exported_paths):
         """Show an export completion dialog with a shortcut to the destination folder."""
