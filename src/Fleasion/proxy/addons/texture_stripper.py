@@ -16,18 +16,18 @@ from threading import Lock
 from typing import Dict, Optional, Tuple
 from urllib.parse import urlparse
 
-from ...utils import APP_CACHE_DIR, log_buffer
+from ...utils import APP_CACHE_DIR, format_count, log_buffer
 
 # Use orjson when available (2-3x faster JSON parse)
 try:
     import orjson
-    def _loads(s: bytes):
-        return orjson.loads(s)
+    def _loads(data: bytes):
+        return orjson.loads(data)
     def _dumps(obj) -> bytes:
         return orjson.dumps(obj)
 except ImportError:
-    def _loads(s: bytes):
-        return json.loads(s)
+    def _loads(data: bytes):
+        return json.loads(data)
     def _dumps(obj) -> bytes:
         return json.dumps(obj, separators=(',', ':')).encode()
 
@@ -89,7 +89,7 @@ def _inject_obj_into_solidmodel(bin_data: bytes, obj_path: Path, prefer_v3: bool
 
     if injected == 0:
         raise ValueError(f'No injectable root (roots: {[r.class_name for r in doc.roots]})')
-    log_buffer.log('SolidModel', f'Injected CSGMDL into {injected} root(s)')
+    log_buffer.log('SolidModel', f'Injected CSGMDL into {format_count(injected, "root")}')
     return write_rbxm(doc)
 
 
@@ -295,7 +295,7 @@ class TextureStripper:
         if not unique_targets:
             return
         self._precheck_pending.update(unique_targets)
-        log_buffer.log('Replacer', f'Pre-checking {len(unique_targets)} replacement asset(s)...')
+        log_buffer.log('Replacer', f'Pre-checking {format_count(unique_targets, "replacement asset")}...')
 
         self._PREDOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -502,7 +502,7 @@ class TextureStripper:
                 self._get_or_create_converted_curve(local_path, target_rig, data=data)
             converted += 1
 
-        log_buffer.log('AnimConv', f'Pre-conversion complete: {converted} animation(s) processed')
+        log_buffer.log('AnimConv', f'Pre-conversion complete: {format_count(converted, "animation")} processed')
 
     def _get_or_create_converted(self, local_path: str, target_rig: str,
                                   data: bytes | None = None) -> Optional[str]:
@@ -783,12 +783,12 @@ class TextureStripper:
                     local_replacements = dict(local_replacements)
                     for r in tp_slot_removals:
                         local_replacements[r] = blank
-                    log_buffer.log('TexPack', f'Routing {len(tp_slot_removals)} slot removal(s) to blank placeholder')
+                    log_buffer.log('TexPack', f'Routing {format_count(tp_slot_removals, "slot removal")} to blank placeholder')
 
         orig_len = len(data)
         data = [e for e in data if isinstance(e, dict) and not self._should_remove(e, removals)]
         if len(data) < orig_len:
-            log_buffer.log('Remover', f'Removed {orig_len - len(data)} asset(s)')
+            log_buffer.log('Remover', f'Removed {format_count(orig_len - len(data), "asset")}')
             modified = True
 
         # Pre-build ORM channel override index.
@@ -936,7 +936,7 @@ class TextureStripper:
                     _repl_local_path = local_replacements[local_key]
                     self._route_local(f'{batch_id}_{req_id}', aid, _repl_local_path, is_solidmodel, is_texpack)
                     # Tag animation replacements for upstream rig detection.
-                    # Determine required_rig from virtual type key(s), or 'any' for normal types.
+                    # Determine required_rig from virtual type keys, or 'any' for normal types.
                     if aid is not None and self._is_anim_entry(e):
                         if str(local_key) in self._VIRTUAL_ANIM_RIG:
                             # Collect all virtual keys in local_replacements pointing to the

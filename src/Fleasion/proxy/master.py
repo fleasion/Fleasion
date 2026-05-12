@@ -47,6 +47,7 @@ from ..utils import (
     ROBLOX_STUDIO_PROCESS,
     STORAGE_DB,
     STORAGE_DB_GDK,
+    format_count,
     log_buffer,
     terminate_roblox,
     wait_for_roblox_exit,
@@ -1318,7 +1319,7 @@ def _install_ca_into_roblox(ca_pem: str) -> None:
     if not dirs:
         log_buffer.log('Certificate', f'No Roblox installs found to patch (scanned in {elapsed_ms} ms)')
         return
-    log_buffer.log('Certificate', f'Found {len(dirs)} Roblox install(s) to patch (scanned in {elapsed_ms} ms)')
+    log_buffer.log('Certificate', f'Found {format_count(dirs, "Roblox install")} to patch (scanned in {elapsed_ms} ms)')
 
     for d in dirs:
         ssl_dir = d / 'ssl'

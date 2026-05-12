@@ -17,16 +17,16 @@ from urllib.parse import urlparse
 import requests
 
 from ...cache.cache_manager import CacheManager
-from ...utils import log_buffer
+from ...utils import format_count, log_buffer
 
 try:
     import orjson
-    def _loads(s):
-        return orjson.loads(s)
+    def _loads(data):
+        return orjson.loads(data)
 except ImportError:
     import json
-    def _loads(s):
-        return json.loads(s)
+    def _loads(data):
+        return json.loads(data)
 
 logger = logging.getLogger(__name__)
 
@@ -186,7 +186,7 @@ class CacheScraper:
                 log_buffer.log('Cache', f'Failed to submit copy task: {exc}')
 
         if tracked > 0:
-            log_buffer.log('Cache', f'Tracking {tracked} asset(s) for caching')
+            log_buffer.log('Cache', f'Tracking {format_count(tracked, "asset")} for caching')
 
     # ------------------------------------------------------------------
     # Called from server MITM thread for Roblox CDN responses
@@ -517,7 +517,7 @@ class CacheScraper:
 
             self._creator_place_cache[creator_id] = place_ids
             if place_ids:
-                log_buffer.log('Cache', f'Found {len(place_ids)} place(s) for creator {creator_id}')
+                log_buffer.log('Cache', f'Found {format_count(place_ids, "place")} for creator {creator_id}')
             else:
                 log_buffer.log('Cache', f'No games found for creator {creator_id}')
             return place_ids
@@ -750,7 +750,7 @@ class CacheScraper:
                         self._texpack_vslot_channel[(parent_id, virtual_slot)] = channel
                 virtual_slot += 1
             if added:
-                log_buffer.log('Cache', f'TexturePack {parent_id}: mapped {added} sub-asset(s)')
+                log_buffer.log('Cache', f'TexturePack {parent_id}: mapped {format_count(added, "sub-asset")}')
         except Exception as exc:
             log_buffer.log('Cache', f'TexturePack {parent_id} sub-asset parse error: {exc}')
 

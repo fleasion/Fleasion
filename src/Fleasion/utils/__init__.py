@@ -1,6 +1,7 @@
 """Utilities package."""
 
 from .logging import LogBuffer, log_buffer
+from .plural import format_count, pluralize
 from .time_tracker import TimeTracker, time_tracker
 from .paths import (
     APP_AUTHOR,
@@ -84,12 +85,14 @@ __all__ = [
     'time_tracker',
     'delete_cache',
     'get_icon_path',
+    'format_count',
     'get_roblox_player_exe_path',
     'get_roblox_studio_exe_path',
     'is_roblox_running',
     'is_studio_running',
     'log_buffer',
     'open_folder',
+    'pluralize',
     'run_in_thread',
     'start_update_check',
     'show_message_box',

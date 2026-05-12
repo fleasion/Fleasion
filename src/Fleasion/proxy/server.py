@@ -709,7 +709,7 @@ class FleasionProxy:
                         from ..utils.anim_converter import detect_rig, detect_player_rig, is_curve_animation
                         from ..utils import log_buffer as _lb
                         orig_rig = detect_rig(orig_bytes)
-                        # If this rule only targets specific rig type(s), skip if it doesn't match
+                        # If this rule only targets specific rig types, skip if it doesn't match
                         if required_rig != 'any' and orig_rig not in required_rig:
                             _lb.log('AnimConv', f'Skipping replacement: original rig={orig_rig}, required={required_rig}')
                             return orig_bytes

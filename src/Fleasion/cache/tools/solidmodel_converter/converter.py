@@ -71,7 +71,7 @@ def convert_file(
         if child_doc is not None:
             log.info('Extracted embedded ChildData document')
             doc = child_doc
-            # Inject the top-level MeshData into root PartOperation(s)
+            # Inject the top-level MeshData into root PartOperations
             if top_mesh_data is not None:
                 _inject_mesh_data(doc, top_mesh_data)
 

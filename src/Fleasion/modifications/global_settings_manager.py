@@ -12,7 +12,7 @@ import stat
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from ..utils import log_buffer
+from ..utils import format_count, log_buffer
 
 GLOBAL_SETTINGS_REL = Path('GlobalBasicSettings_13.xml')
 
@@ -181,7 +181,7 @@ class GlobalSettingsManager:
             if dst.exists():
                 self._write_framerate_cap(dst, framerate)
         
-        log_buffer.log('GlobalSettings', f'Wrote FramerateCap={framerate} to {len(self._user_roblox_dirs)} Roblox dir(s)')
+        log_buffer.log('GlobalSettings', f'Wrote FramerateCap={framerate} to {format_count(self._user_roblox_dirs, "Roblox dir")}')
 
     def restore(self) -> None:
         """Restore GlobalBasicSettings_13.xml in all user Roblox dirs from stash."""

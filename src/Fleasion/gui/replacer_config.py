@@ -33,7 +33,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ..utils import APP_NAME, CONFIGS_FOLDER, PREJSONS_DIR, get_icon_path, log_buffer, open_folder
+from ..utils import APP_NAME, CONFIGS_FOLDER, PREJSONS_DIR, format_count, get_icon_path, log_buffer, open_folder
 from .json_viewer import JsonTreeViewer
 from .proxy_gate import ProxyGate
 
@@ -571,7 +571,7 @@ class ReplacerConfigWindow(QDialog):
             '- Ctrl+Z — Undo last change<br>'
             '- Ctrl+Y — Redo last change<br>'
             '- Ctrl+A — Select all rows<br>'
-            '- Delete — Delete selected row(s)<br>'
+            '- Delete — Delete selected rows<br>'
             '<br>'
             '<b>Tips.</b><br>'
             '- Right-click a profile to delete, enable, or disable it'
@@ -799,7 +799,7 @@ class ReplacerConfigWindow(QDialog):
             replace_with = '-'
 
         id_count = len(rule.get('replace_ids', []))
-        values = ['On' if enabled else 'Off', self._entry_display_name(name, path), action, f'{id_count} ID(s)', replace_with]
+        values = ['On' if enabled else 'Off', self._entry_display_name(name, path), action, format_count(id_count, 'ID'), replace_with]
         sort_values = [1 if enabled else 0, name.lower(), action.lower(), id_count, replace_with.lower()]
         return values, sort_values
 
@@ -811,8 +811,8 @@ class ReplacerConfigWindow(QDialog):
                 status,
                 self._group_display_name(name, path),
                 'Group',
-                f'{id_count} ID(s)',
-                f'{profile_count} profile(s)',
+                format_count(id_count, 'ID'),
+                format_count(profile_count, 'profile'),
             ])
             item.setData(0, _ROLE_KIND, _KIND_GROUP)
             sort_values = [sort_enabled, name.lower(), 'group', id_count, profile_count]
@@ -1254,7 +1254,7 @@ class ReplacerConfigWindow(QDialog):
             self._save_with_undo(rules)
             self._refresh_tree()
             action = 'Enabled' if enabled else 'Disabled'
-            log_buffer.log('Config', f'{action} {changed} profile(s) in group: {group.get("name", "Group")}')
+            log_buffer.log('Config', f'{action} {format_count(changed, "profile")} in group: {group.get("name", "Group")}')
 
     def _create_group_from_selected(self):
         """Create a group from the currently selected profile rows."""
@@ -1296,7 +1296,7 @@ class ReplacerConfigWindow(QDialog):
 
         self._save_with_undo(rules)
         self._refresh_tree()
-        log_buffer.log('Config', f"Created group: {name.strip()} ({len(children)} profile(s))")
+        log_buffer.log('Config', f"Created group: {name.strip()} ({format_count(children, 'profile')})")
 
     def _edit_asset_ids(self, path: tuple[int, ...]):
         """Edit asset IDs for a profile."""
@@ -1322,7 +1322,7 @@ class ReplacerConfigWindow(QDialog):
         title.setStyleSheet('font-weight: bold;')
         layout.addWidget(title)
 
-        count_label = QLabel(f'Total: {len(ids)} asset ID(s)')
+        count_label = QLabel(f'Total: {format_count(ids, "asset ID")}')
         layout.addWidget(count_label)
 
         text_edit = QTextEdit()
@@ -1341,7 +1341,7 @@ class ReplacerConfigWindow(QDialog):
             rule_copy['replace_ids'] = new_ids
             self._save_with_undo(rules_copy)
             self._refresh_tree()
-            count_label.setText(f'Total: {len(new_ids)} asset ID(s)')
+            count_label.setText(f'Total: {format_count(new_ids, "asset ID")}')
 
         def copy_all():
             from PyQt6.QtWidgets import QApplication
@@ -1836,7 +1836,7 @@ class ReplacerConfigWindow(QDialog):
             reply = QMessageBox.question(
                 self,
                 'Delete Group',
-                'Delete selected group(s) and all nested contents?',
+                'Delete selected groups and all nested contents?',
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if reply != QMessageBox.StandardButton.Yes:
@@ -1853,7 +1853,7 @@ class ReplacerConfigWindow(QDialog):
         if deleted_names:
             self._save_with_undo(rules)
             self._refresh_tree()
-            log_buffer.log('Config', f"Deleted {len(deleted_names)} item(s): {', '.join(deleted_names)}")
+            log_buffer.log('Config', f"Deleted {format_count(deleted_names, 'item')}: {', '.join(deleted_names)}")
 
     def _enable_selected(self):
         """Enable selected rules."""
@@ -1872,7 +1872,7 @@ class ReplacerConfigWindow(QDialog):
         if enabled_count > 0:
             self._save_with_undo(rules)
             self._refresh_tree()
-            log_buffer.log('Config', f'Enabled {enabled_count} profile(s)')
+            log_buffer.log('Config', f'Enabled {format_count(enabled_count, "profile")}')
 
     def _disable_selected(self):
         """Disable selected rules."""
@@ -1891,7 +1891,7 @@ class ReplacerConfigWindow(QDialog):
         if disabled_count > 0:
             self._save_with_undo(rules)
             self._refresh_tree()
-            log_buffer.log('Config', f'Disabled {disabled_count} profile(s)')
+            log_buffer.log('Config', f'Disabled {format_count(disabled_count, "profile")}')
 
     def _iter_tree_items(self):
         def walk(item: QTreeWidgetItem):
@@ -2112,5 +2112,5 @@ class ReplacerConfigWindow(QDialog):
 
         self._save_with_undo(rules)
         self._refresh_tree()
-        log_buffer.log('Config', f'Moved {len(moving_entries)} item(s)')
+        log_buffer.log('Config', f'Moved {format_count(moving_entries, "item")}')
         return True

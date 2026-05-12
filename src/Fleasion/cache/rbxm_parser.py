@@ -287,8 +287,8 @@ def _parse_prop_values(data: bytes, type_id: int, count: int) -> List[Any]:
             if offset >= len(data):
                 values.append('')
                 continue
-            s, offset = read_string(data, offset)
-            values.append(s)
+            string_value, offset = read_string(data, offset)
+            values.append(string_value)
 
     elif type_id == 0x02:  # Bool
         for i in range(count):

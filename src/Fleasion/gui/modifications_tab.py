@@ -31,7 +31,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ..modifications.manager import ModificationManager
-from ..utils import log_buffer, open_folder
+from ..utils import format_count, log_buffer, open_folder
 from ..utils.threading import run_in_thread
 
 # ---------------------------------------------------------------------------
@@ -1609,7 +1609,7 @@ class ModificationsTab(QWidget):
         try:
             status_label.setText(
                 f'{applied} {noun} applied \u2022 '
-                f'{roblox_count} Roblox dir(s) detected'
+                f'{format_count(roblox_count, "Roblox dir")} detected'
             )
         except RuntimeError:
             return

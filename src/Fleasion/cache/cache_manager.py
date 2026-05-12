@@ -19,8 +19,8 @@ try:
         if kwargs.get('indent'):
             return orjson.dumps(obj, option=orjson.OPT_INDENT_2).decode('utf-8')
         return orjson.dumps(obj).decode('utf-8')
-    def json_loads(s):
-        return orjson.loads(s)
+    def json_loads(data):
+        return orjson.loads(data)
 except ImportError:
     import json
     json_dumps = json.dumps

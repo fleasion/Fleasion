@@ -36,6 +36,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ..utils.paths import CONFIG_DIR
+from ..utils.plural import format_count
 from ..utils.logging import log_buffer
 from ..utils.roblox_auth import get_roblosecurity as _get_roblosecurity
 from ..utils.windows import launch_as_standard_user
@@ -450,7 +451,7 @@ class JobIdDialog(QDialog):
         if next_cursor:
             self._status_label.setText(f"{total} servers loaded — more available")
         else:
-            self._status_label.setText(f"{total} server(s) found")
+            self._status_label.setText(f"{format_count(total, 'server')} found")
 
     def _apply_error(self, err):
         self._loading = False

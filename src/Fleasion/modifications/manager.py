@@ -18,7 +18,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
-from ..utils import CONFIG_DIR, LOCAL_APPDATA, ROBLOX_PROCESS, get_roblox_player_exe_path, log_buffer
+from ..utils import CONFIG_DIR, LOCAL_APPDATA, ROBLOX_PROCESS, format_count, get_roblox_player_exe_path, log_buffer
 from ..utils.roblox_dirs import load_saved_roblox_dirs, save_saved_roblox_dirs
 from ..utils.threading import run_in_thread
 from .fflag_manager import FastFlagManager
@@ -269,7 +269,7 @@ class ModificationManager(QObject):
         self._roblox_dirs: list[Path] = _find_roblox_dirs()
         self._stash_dir = MOD_ORIGINALS_DIR
 
-        log_buffer.log('Modifications', f'Discovered {len(self._roblox_dirs)} Roblox dir(s)')
+        log_buffer.log('Modifications', f'Discovered {format_count(self._roblox_dirs, "Roblox dir")}')
 
         # Ensure directories exist
         MOD_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -815,7 +815,7 @@ class ModificationManager(QObject):
         """Re-discover Roblox directories (e.g. after an update)."""
         self._roblox_dirs = _find_roblox_dirs()
         self.fflag_manager._roblox_dirs = self._roblox_dirs
-        log_buffer.log('Modifications', f'Refreshed: {len(self._roblox_dirs)} Roblox dir(s)')
+        log_buffer.log('Modifications', f'Refreshed: {format_count(self._roblox_dirs, "Roblox dir")}')
 
     def apply_pending_modifications(self) -> None:
         """Apply all pending modifications that were queued while Roblox was running."""

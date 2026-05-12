@@ -22,7 +22,7 @@ from .animation_viewer import AnimationViewerPanel
 from .cache_json_viewer import CacheJsonViewer
 from .font_viewer import FontViewerWidget
 from . import mesh_processing
-from ..utils import log_buffer, open_folder
+from ..utils import format_count, log_buffer, open_folder
 from ..utils.roblox_auth import get_roblosecurity as _get_roblosecurity
 import json
 
@@ -483,7 +483,7 @@ class AssetLoaderThread(QThread):
 
         # Phase 1: Batch-fetch asset metadata (name, type, creator) in groups of 50
         self.status_message.emit('Fetching asset info...')
-        log_buffer.log('Scraper', f'[Load Asset] Fetching info for {total} asset(s)')
+        log_buffer.log('Scraper', f'[Load Asset] Fetching info for {format_count(total, "asset")}')
 
         asset_metadata = {}  # asset_id_str -> {name, type, creator_id, creator_type}
         batch_size = 50
@@ -548,7 +548,7 @@ class AssetLoaderThread(QThread):
         creator_names = {}
         if creators_to_resolve:
             self.status_message.emit('Resolving creator names...')
-            log_buffer.log('Scraper', f'[Load Asset] Resolving {len(creators_to_resolve)} creator name(s)')
+            log_buffer.log('Scraper', f'[Load Asset] Resolving {format_count(creators_to_resolve, "creator name")}')
 
             # Batch-resolve users
             user_ids = [cid for cid, ctype in creators_to_resolve.items() if ctype == 1]
@@ -596,7 +596,7 @@ class AssetLoaderThread(QThread):
         # parallelize individual requests. 6 workers gives good throughput without
         # hitting rate limits too aggressively.
         self.status_message.emit('Downloading assets...')
-        log_buffer.log('Scraper', f'[Load Asset] Starting parallel download of {total} asset(s)')
+        log_buffer.log('Scraper', f'[Load Asset] Starting parallel download of {format_count(total, "asset")}')
 
         from concurrent.futures import ThreadPoolExecutor, as_completed
         import threading as _threading
@@ -1153,7 +1153,7 @@ class CacheViewerTab(QWidget):
         if config_manager is not None:
             self._blacklisted_ids: set[str] = set(config_manager.scraper_blacklist)
             if self._blacklisted_ids:
-                log_buffer.log('Scraper', f'Loaded blacklist: {len(self._blacklisted_ids)} ID(s) active — {", ".join(sorted(self._blacklisted_ids, key=lambda x: int(x) if x.isdigit() else 0))}')
+                log_buffer.log('Scraper', f'Loaded blacklist: {format_count(self._blacklisted_ids, "ID")} active — {", ".join(sorted(self._blacklisted_ids, key=lambda x: int(x) if x.isdigit() else 0))}')
         else:
             self._blacklisted_ids: set[str] = set()
 
@@ -2314,12 +2314,12 @@ class CacheViewerTab(QWidget):
         
         total = deleted_count + failed_count
         if failed_count == 0:
-            QMessageBox.information(self, 'Success', f'Deleted {deleted_count} asset(s)')
+            QMessageBox.information(self, 'Success', f'Deleted {format_count(deleted_count, "asset")}')
         else:
             QMessageBox.warning(
                 self,
                 'Partial Success',
-                f'Deleted {deleted_count}/{total} asset(s). {failed_count} asset(s) failed to delete.'
+                f'Deleted {deleted_count}/{format_count(total, "asset")}. {format_count(failed_count, "asset")} failed to delete.'
             )
         
         log_buffer.log('Scraper', f'Batch deletion completed: {deleted_count} deleted, {failed_count} failed')
@@ -2829,7 +2829,7 @@ class CacheViewerTab(QWidget):
                 if cid is not None and ctype is not None and cid not in creators_to_resolve:
                     creators_to_resolve[cid] = ctype
 
-            log_buffer.log('Scraper', f'[Name Resolver] Collected {len(creators_to_resolve)} unique creator ID(s) to resolve')
+            log_buffer.log('Scraper', f'[Name Resolver] Collected {format_count(creators_to_resolve, "unique creator ID")} to resolve')
 
             # Fetch creator display names
             creator_names: dict[int, str] = {}
@@ -2839,7 +2839,7 @@ class CacheViewerTab(QWidget):
                 except Exception as e:
                     log_buffer.log('Scraper', f'[Name Resolver] Creator fetch failed: {e}')
 
-            log_buffer.log('Scraper', f'[Name Resolver] Resolved {len(creator_names)} creator name(s)')
+            log_buffer.log('Scraper', f'[Name Resolver] Resolved {format_count(creator_names, "creator name")}')
 
             # Update cache and UI
             for asset_id, data in asset_data_map.items():
@@ -3042,7 +3042,7 @@ class CacheViewerTab(QWidget):
         reply = QMessageBox.question(
             self,
             'Export All',
-            f'Export {len(assets)} asset(s) to the export folder?',
+            f'Export {format_count(assets, "asset")} to the export folder?',
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
 
@@ -3067,15 +3067,15 @@ class CacheViewerTab(QWidget):
         location, _ = self._get_export_open_target(exported_paths)
         self._show_export_complete_message(
             'Export Complete',
-            f'Exported {exported_count} asset(s)\n\nLocation: {location}',
+            f'Exported {format_count(exported_count, "asset")}\n\nLocation: {location}',
             exported_paths,
         )
 
     def _delete_selected(self):
-        """Delete the selected asset(s) using background worker thread."""
+        """Delete the selected assets using background worker thread."""
         selected_rows = self.table.selectionModel().selectedRows()
         if not selected_rows:
-            QMessageBox.warning(self, 'No Selection', 'Please select asset(s) to delete')
+            QMessageBox.warning(self, 'No Selection', 'Please select assets to delete')
             return
 
         # Collect assets to delete
@@ -3096,7 +3096,7 @@ class CacheViewerTab(QWidget):
         reply = QMessageBox.question(
             self,
             'Delete Assets',
-            f"Delete {count} asset(s)?",
+            f"Delete {format_count(count, 'asset')}?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
 
@@ -3541,7 +3541,7 @@ class CacheViewerTab(QWidget):
         from pathlib import Path
         self._show_export_complete_message(
             'Export Complete',
-            f'Exported game dump with {total} asset(s) to:\n{path}',
+            f'Exported game dump with {format_count(total, "asset")} to:\n{path}',
             [Path(path)],
         )
 
@@ -3562,7 +3562,7 @@ class CacheViewerTab(QWidget):
             from PyQt6.QtWidgets import QApplication
             clipboard = QApplication.clipboard()
             clipboard.setText('\n'.join(values))
-            log_buffer.log('Scraper', f'Copied {len(values)} value(s) to clipboard')
+            log_buffer.log('Scraper', f'Copied {format_count(values, "value")} to clipboard')
 
     def _copy_creator_info(self, mode: str):
         """Copy creator name or creator ID for selected rows.
@@ -3597,10 +3597,11 @@ class CacheViewerTab(QWidget):
 
         if values:
             QApplication.clipboard().setText('\n'.join(values))
-            log_buffer.log('Scraper', f'Copied {len(values)} creator {mode}(s) to clipboard')
+            label = 'creator ID' if mode == 'id' else f'creator {mode}'
+            log_buffer.log('Scraper', f'Copied {format_count(values, label)} to clipboard')
 
     def _open_creator_in_browser(self):
-        """Open the creator (user or group) page(s) for the selected asset(s) in the default browser."""
+        """Open the creator pages for the selected assets in the default browser."""
         import webbrowser
 
         selected_rows = self.table.selectionModel().selectedRows()
@@ -3647,7 +3648,7 @@ class CacheViewerTab(QWidget):
                 log_buffer.log('Scraper', f'Failed to open creator {creator_id} in browser')
 
         if opened:
-            log_buffer.log('Scraper', f'Opened {opened} creator page(s) in browser')
+            log_buffer.log('Scraper', f'Opened {format_count(opened, "creator page")} in browser')
 
     def _copy_converted(self):
         """Copy converted files to clipboard as Windows file objects."""
@@ -3809,7 +3810,7 @@ class CacheViewerTab(QWidget):
         """Export multiple selected assets."""
         selected_rows = self.table.selectionModel().selectedRows()
         if not selected_rows:
-            QMessageBox.warning(self, 'No Selection', 'Please select asset(s) to export')
+            QMessageBox.warning(self, 'No Selection', 'Please select assets to export')
             return
 
         # Collect assets to export
@@ -3848,7 +3849,7 @@ class CacheViewerTab(QWidget):
         location, _ = self._get_export_open_target(exported_paths)
         self._show_export_complete_message(
             'Export Complete',
-            f'Exported {exported_count} asset(s) as {export_format}\n\nLocation: {location}',
+            f'Exported {format_count(exported_count, "asset")} as {export_format}\n\nLocation: {location}',
             exported_paths,
         )
 
@@ -3879,11 +3880,11 @@ class CacheViewerTab(QWidget):
                 new_text = ', '.join(asset_ids)
             replacer_window.replace_entry.setText(new_text)
 
-            log_buffer.log('Scraper', f'Added {len(asset_ids)} asset ID(s) to replacer')
+            log_buffer.log('Scraper', f'Added {format_count(asset_ids, "asset ID")} to replacer')
             QMessageBox.information(
                 self,
                 'Added to Replacer',
-                f'Added {len(asset_ids)} asset ID(s) to replacer:\n{", ".join(asset_ids[:5])}{"..." if len(asset_ids) > 5 else ""}'
+                f'Added {format_count(asset_ids, "asset ID")} to replacer:\n{", ".join(asset_ids[:5])}{"..." if len(asset_ids) > 5 else ""}'
             )
         else:
             # Fallback: copy to clipboard if not in replacer window
@@ -3891,11 +3892,11 @@ class CacheViewerTab(QWidget):
             clipboard = QApplication.clipboard()
             clipboard.setText(', '.join(asset_ids))
 
-            log_buffer.log('Scraper', f'Copied {len(asset_ids)} asset ID(s) to clipboard')
+            log_buffer.log('Scraper', f'Copied {format_count(asset_ids, "asset ID")} to clipboard')
             QMessageBox.information(
                 self,
                 'Copied to Clipboard',
-                f'Copied {len(asset_ids)} asset ID(s) to clipboard:\n{", ".join(asset_ids[:5])}{"..." if len(asset_ids) > 5 else ""}'
+                f'Copied {format_count(asset_ids, "asset ID")} to clipboard:\n{", ".join(asset_ids[:5])}{"..." if len(asset_ids) > 5 else ""}'
             )
 
     def _add_latest_as_replace_with(self):
@@ -4427,7 +4428,7 @@ class CacheViewerTab(QWidget):
             exported.append(dest_name)
         self._show_export_complete_message(
             'Export Complete',
-            f'Exported {len(exported)} slot KTX2 file(s) to:\n{dest_dir}\n\n' +
+            f'Exported {format_count(exported, "slot KTX2 file")} to:\n{dest_dir}\n\n' +
             '\n'.join(exported),
             [dest_dir / name for name in exported],
         )
@@ -4779,10 +4780,10 @@ class CacheViewerTab(QWidget):
                 asset_id = asset_data.get('id') if isinstance(asset_data, dict) else None
                 self.table.setRowHidden(row, asset_id in self._blacklisted_ids)
             count = len(self._blacklisted_ids)
-            status_label.setText(f'Blacklist applied: {count} ID(s).')
+            status_label.setText(f'Blacklist applied: {format_count(count, "ID")}.')
             status_label.setStyleSheet('color: #55cc55; font-size: 9pt;')
             if self._blacklisted_ids:
-                log_buffer.log('Scraper', f'Blacklist updated: {count} ID(s) active — {", ".join(sorted(self._blacklisted_ids, key=lambda x: int(x) if x.isdigit() else 0))}')
+                log_buffer.log('Scraper', f'Blacklist updated: {format_count(count, "ID")} active — {", ".join(sorted(self._blacklisted_ids, key=lambda x: int(x) if x.isdigit() else 0))}')
             else:
                 log_buffer.log('Scraper', 'Blacklist cleared')
 
@@ -4862,10 +4863,10 @@ class CacheViewerTab(QWidget):
             # Disable button while loading
             load_btn.setEnabled(False)
             text_edit.setReadOnly(True)
-            status_label.setText(f'Loading {len(asset_ids)} asset(s)...')
+            status_label.setText(f'Loading {format_count(asset_ids, "asset")}...')
             status_label.setStyleSheet('color: #888; font-size: 9pt;')
 
-            log_buffer.log('Scraper', f'[Load Asset] Starting load of {len(asset_ids)} asset ID(s)')
+            log_buffer.log('Scraper', f'[Load Asset] Starting load of {format_count(asset_ids, "asset ID")}')
 
             # Stop any existing loader
             if self._asset_loader is not None:
@@ -4953,7 +4954,7 @@ class CacheViewerTab(QWidget):
         text_edit.setReadOnly(False)
 
         if failed == 0:
-            status_label.setText(f'Done! Loaded {loaded} asset(s).')
+            status_label.setText(f'Done! Loaded {format_count(loaded, "asset")}.')
             status_label.setStyleSheet('color: #55cc66; font-size: 9pt;')
         else:
             status_label.setText(f'Done! Loaded {loaded}, failed {failed}.')

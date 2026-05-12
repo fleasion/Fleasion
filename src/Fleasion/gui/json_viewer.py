@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ..utils import get_icon_path
+from ..utils import format_count, get_icon_path
 
 
 class JsonSearchWorker(QThread):
@@ -524,7 +524,7 @@ class JsonTreeViewer(QDialog):
 
         btn_layout.addSpacing(8)
 
-        self.selection_label = QLabel('Selected: 0 value(s)')
+        self.selection_label = QLabel(f'Selected: {format_count(0, "value")}')
         self.selection_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         btn_layout.addWidget(self.selection_label)
 
@@ -631,7 +631,7 @@ class JsonTreeViewer(QDialog):
     def _on_selection_change(self):
         """Handle selection change and trigger asset preview."""
         vals = self._get_selected_values()
-        self.selection_label.setText(f'Selected: {len(vals)} value(s)')
+        self.selection_label.setText(f'Selected: {format_count(vals, "value")}')
 
         # Only preview when exactly one leaf value is selected
         if len(vals) == 1:
@@ -1565,10 +1565,10 @@ class JsonTreeViewer(QDialog):
         vals = self._get_selected_values()
         if vals:
             self.on_import_ids(vals)
-            value_label = 'asset ID(s)' if all(isinstance(v, int) for v in vals) else 'value(s)'
+            value_label = 'asset ID' if all(isinstance(v, int) for v in vals) else 'value'
             self._show_replacer_notification(
                 'Added to Replacer',
-                f'Added {len(vals)} {value_label} to replacer:\n'
+                f'Added {format_count(vals, value_label)} to replacer:\n'
                 f'{", ".join(str(v) for v in vals[:5])}{"..." if len(vals) > 5 else ""}',
             )
             self._maybe_close_after_replace()

@@ -4,7 +4,7 @@ import json
 import urllib.error
 import urllib.request
 
-from ..utils import CLOG_URL, ORIGINALS_DIR, REPLACEMENTS_DIR, log_buffer
+from ..utils import CLOG_URL, ORIGINALS_DIR, REPLACEMENTS_DIR, format_count, log_buffer
 
 
 def download_prejsons():
@@ -22,7 +22,7 @@ def download_prejsons():
             clog_data = json.loads(response.read().decode('utf-8'))
 
         games = clog_data.get('games', {})
-        log_buffer.log('PreJsons', f'Found {len(games)} game(s) to process')
+        log_buffer.log('PreJsons', f'Found {format_count(games, "game")} to process')
 
         for game_name, game_config in games.items():
             github_url = game_config.get('github')

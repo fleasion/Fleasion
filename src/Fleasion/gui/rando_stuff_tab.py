@@ -45,6 +45,7 @@ except Exception:
     win32crypt = None
 
 from ..utils.paths import CONFIG_DIR
+from ..utils.plural import format_count
 from ..utils.roblox_auth import ROBLOX_COOKIES_PATH, set_roblosecurity
 from ..utils.logging import log_buffer
 from ..utils.windows import launch_as_standard_user, resolve_roblox_player_exe_for_launch
@@ -456,7 +457,7 @@ class RandoStuffTab(QWidget):
         threading.Thread(target=self._resolve_current_user, daemon=True).start()
         if self._subplace_blacklisted_ids:
             count = len(self._subplace_blacklisted_ids)
-            log_buffer.log('subplace', f'Loaded subplace blacklist: {count} ID(s) active')
+            log_buffer.log('subplace', f'Loaded subplace blacklist: {format_count(count, "ID")} active')
 
     def _on_qt_destroyed(self, *_):
         self._qt_destroyed = True
@@ -1060,11 +1061,11 @@ class RandoStuffTab(QWidget):
             if self._config is not None:
                 self._config.subplace_blacklist = ids
             count = len(self._subplace_blacklisted_ids)
-            status_label.setText(f'Blacklist applied: {count} ID(s).')
+            status_label.setText(f'Blacklist applied: {format_count(count, "ID")}.')
             status_label.setStyleSheet('color: #55cc55; font-size: 9pt;')
             if self._subplace_blacklisted_ids:
                 ordered = ', '.join(sorted(self._subplace_blacklisted_ids, key=lambda x: int(x) if x.isdigit() else 0))
-                log_buffer.log('subplace', f'Subplace blacklist updated: {count} ID(s) active - {ordered}')
+                log_buffer.log('subplace', f'Subplace blacklist updated: {format_count(count, "ID")} active - {ordered}')
             else:
                 log_buffer.log('subplace', 'Subplace blacklist cleared')
 

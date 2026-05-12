@@ -10,7 +10,7 @@ import json
 import shutil
 from pathlib import Path
 
-from ..utils import log_buffer
+from ..utils import format_count, log_buffer
 
 # ---------------------------------------------------------------------------
 # Preset flag name mapping (mirrors Fishstrap PresetFlags)
@@ -143,7 +143,7 @@ class FastFlagManager:
             dst.parent.mkdir(parents=True, exist_ok=True)
             dst.write_bytes(content)
 
-        log_buffer.log('FastFlags', f'Wrote {len(flags)} flag(s) to {len(self._roblox_dirs)} Roblox dir(s)')
+        log_buffer.log('FastFlags', f'Wrote {format_count(flags, "flag")} to {format_count(self._roblox_dirs, "Roblox dir")}')
 
     def restore(self) -> None:
         """Restore (or delete) ``ClientAppSettings.json`` in every Roblox dir."""
