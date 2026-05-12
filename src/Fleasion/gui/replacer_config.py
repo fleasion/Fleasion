@@ -1924,7 +1924,7 @@ class ReplacerConfigWindow(QDialog):
     def _group_guide_x(self, group_path: tuple[int, ...]) -> int:
         name_left = self.tree.columnViewportPosition(_PROFILE_NAME_COLUMN)
         depth_offset = max(0, self._group_depth(group_path) - 1) * _GROUP_GUIDE_STEP_PX
-        return name_left + _GROUP_GUIDE_GUTTER_PX + depth_offset - 3
+        return name_left + _GROUP_GUIDE_GUTTER_PX + depth_offset + 1
 
     def _paint_group_guides(self, viewport):
         if not hasattr(self, 'tree') or not self._config_has_groups():
