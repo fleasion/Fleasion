@@ -21,6 +21,7 @@ from .audio_player import AudioPlayerWidget
 from .animation_viewer import AnimationViewerPanel
 from .cache_json_viewer import CacheJsonViewer
 from .font_viewer import FontViewerWidget
+from .rbxm_preview import RbxmPreviewWidget, is_rbx_model_data
 from . import mesh_processing
 from ..utils import format_count, log_buffer, open_folder
 from ..utils.roblox_auth import get_roblosecurity as _get_roblosecurity
@@ -1887,6 +1888,10 @@ class CacheViewerTab(QWidget):
         self.json_viewer = CacheJsonViewer()
         self.preview_container_layout.addWidget(self.json_viewer)
 
+        # RBXM/RBXMX structure viewer for Roblox model files
+        self.rbxm_viewer = RbxmPreviewWidget()
+        self.preview_container_layout.addWidget(self.rbxm_viewer)
+
         # Font viewer for font files
         self.font_wrapper = QWidget()
         font_wrapper_layout = QVBoxLayout()
@@ -1915,6 +1920,7 @@ class CacheViewerTab(QWidget):
         self.animation_viewer.hide()
         self.text_viewer.hide()
         self.json_viewer.hide()
+        self.rbxm_viewer.hide()
 
         self.preview_group.setLayout(preview_group_layout)
         preview_layout.addWidget(self.preview_group)
@@ -1939,6 +1945,11 @@ class CacheViewerTab(QWidget):
         self.stop_preview_btn.clicked.connect(self._stop_preview)
         self.stop_preview_btn.hide()
         actions_layout.addWidget(self.stop_preview_btn)
+
+        self.rbxm_view_btn = QPushButton('Swap to RBXM View')
+        self.rbxm_view_btn.clicked.connect(self._swap_to_rbxm_view)
+        self.rbxm_view_btn.hide()
+        actions_layout.addWidget(self.rbxm_view_btn)
 
         actions_layout.addStretch()
 
@@ -3187,7 +3198,9 @@ class CacheViewerTab(QWidget):
         self.animation_viewer.hide()
         self.text_viewer.hide()
         self.json_viewer.hide()
+        self.rbxm_viewer.hide()
         self.font_wrapper.hide()
+        self.rbxm_view_btn.hide()
 
         # Clean up texture pack widget
         if self.texturepack_widget is not None:
@@ -3235,6 +3248,8 @@ class CacheViewerTab(QWidget):
             if not data:
                 self._show_text_preview(f'Failed to load asset {asset_id}')
                 return
+            if asset_type in (24, 39) and is_rbx_model_data(data):
+                self.rbxm_view_btn.show()
 
             # Show loading for async previews
             if asset_type in [4, 39, 1, 13, 63]:  # Mesh, SolidModel, Image, Decal, TexturePack
@@ -3262,13 +3277,16 @@ class CacheViewerTab(QWidget):
             elif asset_type == 63:  # TexturePack
                 self._preview_texturepack(data, asset_id)
             else:
-                # Check if unknown asset is actually JSON
-                is_json, _ = self._is_json_data(data)
-                if is_json:
-                    self._preview_json(data, asset)
+                # Check if unknown/model-like asset is actually RBXM/RBXMX before JSON/text fallbacks.
+                if is_rbx_model_data(data):
+                    self._preview_rbxm(data, asset)
                 else:
-                    # Show as hex dump for other types
-                    self._preview_hex(data, asset)
+                    is_json, _ = self._is_json_data(data)
+                    if is_json:
+                        self._preview_json(data, asset)
+                    else:
+                        # Show as hex dump for other types
+                        self._preview_hex(data, asset)
 
         except Exception as e:
             self._show_text_preview(f'Error previewing asset: {e}')
@@ -3974,6 +3992,9 @@ class CacheViewerTab(QWidget):
         self.animation_viewer.clear()
         self.text_viewer.hide()
         self.text_viewer.clear()
+        self.rbxm_viewer.hide()
+        self.rbxm_viewer.clear()
+        self.rbxm_view_btn.hide()
 
         # Clean up texture pack widgets
         if self.texturepack_widget is not None:
@@ -4046,6 +4067,34 @@ class CacheViewerTab(QWidget):
         """Hide loading indicator."""
         self.loading_label.hide()
 
+    def _swap_to_rbxm_view(self):
+        """Switch the current Animation/SolidModel preview to raw RBXM structure."""
+        asset = self._get_selected_asset()
+        if not asset:
+            return
+        asset_type = asset.get('type')
+        if asset_type not in (24, 39):
+            return
+        asset_id = asset.get('id')
+        data = self.cache_manager.get_asset(asset_id, asset_type)
+        if not data or not is_rbx_model_data(data):
+            return
+
+        self._stop_all_loaders()
+        self.obj_viewer.hide()
+        self.image_label.hide()
+        self.loading_label.hide()
+        self.audio_wrapper.hide()
+        self.animation_viewer.hide()
+        self.animation_viewer.stop()
+        self.text_viewer.hide()
+        self.json_viewer.hide()
+        self.font_wrapper.hide()
+        self.rbxm_view_btn.hide()
+
+        title = 'Animation structure' if asset_type == 24 else 'SolidModel structure'
+        self._preview_rbxm(data, asset, title_prefix=title)
+
     def _preview_mesh(self, data: bytes, asset_id: str):
         """Preview a mesh asset in 3D using background thread."""
         # Track which asset this loader is for so we can ignore stale results
@@ -4076,8 +4125,24 @@ class CacheViewerTab(QWidget):
         self._mesh_loader_asset_id = asset_id
         self._mesh_loader = SolidModelLoaderThread(data, asset_id)
         self._mesh_loader.mesh_ready.connect(self._on_mesh_ready)
-        self._mesh_loader.error.connect(lambda e: self._show_text_preview(f'SolidModel error: {e}'))
+        self._mesh_loader.error.connect(
+            lambda e, d=data, aid=asset_id: self._on_solidmodel_preview_error(d, aid, e)
+        )
         self._mesh_loader.start()
+
+    def _on_solidmodel_preview_error(self, data: bytes, asset_id: str, error: str):
+        """Fallback from 3D SolidModel preview to the RBXM structure viewer."""
+        if getattr(self, '_selected_asset_id', None) != asset_id:
+            log_buffer.log('Preview', 'Stale SolidModel error ignored')
+            return
+        if is_rbx_model_data(data):
+            self._preview_rbxm(
+                data,
+                {'id': asset_id, 'type': 39, 'type_name': 'SolidModel'},
+                title_prefix='SolidModel structure',
+            )
+            return
+        self._show_text_preview(f'SolidModel error: {error}')
 
     def _preview_image(self, data: bytes):
         """Preview an image asset using background thread."""
@@ -4531,6 +4596,15 @@ class CacheViewerTab(QWidget):
                 self.stop_preview_btn.show()
                 return
 
+            if is_rbx_model_data(data):
+                asset_id = getattr(self, '_animation_loader_asset_id', '') or ''
+                self._preview_rbxm(
+                    data,
+                    {'id': asset_id, 'type': 24, 'type_name': 'Animation'},
+                    title_prefix='Animation structure',
+                )
+                return
+
             # Fallback: try to decode as XML for text display
             text = data.decode('utf-8', errors='replace')
 
@@ -4608,6 +4682,50 @@ class CacheViewerTab(QWidget):
                 continue
 
         return False, None
+
+    def _preview_rbxm(self, data: bytes, asset: dict, title_prefix: str = 'RBXM/RBXMX structure'):
+        """Display an RBXM/RBXMX instance/property structure preview."""
+        try:
+            asset_id = str(asset.get('id', ''))
+            asset_type = asset.get('type')
+            type_name = asset.get('type_name') or (
+                self.cache_manager.get_asset_type_name(asset_type)
+                if isinstance(asset_type, int) else 'RBXM/RBXMX'
+            )
+
+            self.rbxm_viewer.load_bytes(data, asset_label=f'{type_name} {asset_id}'.strip())
+
+            # Persist detected type only after a successful parse, matching JSON detection behavior.
+            try:
+                if (
+                    isinstance(asset_type, int)
+                    and self.cache_manager.get_asset_type_name(asset_type).startswith('Unknown')
+                ):
+                    self.cache_manager.set_detected_type(asset_id, asset_type, 'RBXM/RBXMX')
+                    current_row = self.table.currentRow()
+                    if current_row >= 0:
+                        type_item = self.table.item(current_row, 4)
+                        if type_item:
+                            type_item.setText('RBXM/RBXMX')
+            except Exception:
+                pass
+
+            self._hide_loading()
+            self.rbxm_viewer.show()
+            self.stop_preview_btn.show()
+            try:
+                self.preview_title_label.setText(f'{title_prefix}: {asset_id or type_name}')
+            except Exception:
+                pass
+        except Exception as e:
+            self._preview_hex(
+                data,
+                {
+                    'id': asset.get('id', ''),
+                    'type_name': asset.get('type_name', 'RBXM/RBXMX'),
+                },
+                reason=f'RBXM/RBXMX structure parse failed: {e}',
+            )
 
     def _preview_json(self, data: bytes, asset: dict):
         """Display JSON data in the JSON viewer."""
