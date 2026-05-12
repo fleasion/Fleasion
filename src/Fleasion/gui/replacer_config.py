@@ -1924,7 +1924,7 @@ class ReplacerConfigWindow(QDialog):
     def _group_guide_x(self, group_path: tuple[int, ...]) -> int:
         name_left = self.tree.columnViewportPosition(_PROFILE_NAME_COLUMN)
         depth_offset = max(0, self._group_depth(group_path) - 1) * _GROUP_GUIDE_STEP_PX
-        return name_left + _GROUP_GUIDE_GUTTER_PX + depth_offset - 2
+        return name_left + _GROUP_GUIDE_GUTTER_PX + depth_offset - 3
 
     def _paint_group_guides(self, viewport):
         if not hasattr(self, 'tree') or not self._config_has_groups():
@@ -1971,7 +1971,12 @@ class ReplacerConfigWindow(QDialog):
             if not isinstance(item_path, tuple):
                 continue
 
-            for depth in range(1, len(item_path) + 1):
+            max_depth = len(item_path)
+            item_entry = self._entry_at_path(self.config_manager.replacement_rules, item_path)
+            if self._is_group(item_entry):
+                max_depth -= 1
+
+            for depth in range(1, max_depth + 1):
                 ancestor_path = item_path[:depth]
                 ancestor = self._entry_at_path(self.config_manager.replacement_rules, ancestor_path)
                 if not self._is_group(ancestor):
