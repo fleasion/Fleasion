@@ -2251,7 +2251,10 @@ class CacheViewerTab(QWidget):
     def _toggle_scraper(self, state):
         """Toggle cache scraper on/off."""
         enabled = bool(state)
-        tray = getattr(self.parent(), '_system_tray', None)
+        owner = getattr(self, '_replacer_window_ref', None)
+        if owner is None:
+            owner = self.window()
+        tray = getattr(owner, '_system_tray', None)
         if tray is not None and hasattr(tray, '_set_cache_scraper_enabled'):
             tray._set_cache_scraper_enabled(enabled)
             return

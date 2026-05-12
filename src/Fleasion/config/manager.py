@@ -581,6 +581,15 @@ class ConfigManager:
         self._save_config(new_name, deepcopy(config))
         return True
 
+    @staticmethod
+    def _iter_replacement_rules(entries: list):
+        """Yield profile rules depth-first, skipping organizational groups."""
+        for entry in entries:
+            if isinstance(entry, dict) and entry.get('type') == 'group':
+                yield from ConfigManager._iter_replacement_rules(entry.get('children', []))
+            else:
+                yield entry
+
     def get_all_replacements(self) -> tuple[dict[int | str, int], set[int | str], dict[int | str, str], dict[int | str, str]]:
         """Get replacements from all enabled configs.
 
@@ -627,7 +636,9 @@ class ConfigManager:
         for config_name in self.enabled_configs:
             if config_name not in self.config_names:
                 continue
-            for rule in self.get_replacement_rules(config_name):
+            for rule in self._iter_replacement_rules(self.get_replacement_rules(config_name)):
+                if not isinstance(rule, dict):
+                    continue
                 # Skip disabled profiles
                 if not rule.get('enabled', True):
                     continue

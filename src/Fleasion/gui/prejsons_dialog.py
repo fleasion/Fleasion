@@ -543,6 +543,9 @@ class PreJsonsDialog(QDialog):
         self._cards: list[GameCard] = []
         self._workers: list[QThread] = []
         self._viewers: list[QDialog] = []
+        self._load_generation = 0
+        self._thumbs_pending = 0
+        self._thumbs_finished = 0
 
         self._search_timer = QTimer()
         self._search_timer.setSingleShot(True)
@@ -604,6 +607,9 @@ class PreJsonsDialog(QDialog):
     # Load
 
     def _start_load(self):
+        self._load_generation += 1
+        self._thumbs_pending = 0
+        self._thumbs_finished = 0
         self.refresh_btn.setEnabled(False)
         self.status_label.setText("Fetching game list…")
         worker = _ClogWorker()
@@ -619,6 +625,7 @@ class PreJsonsDialog(QDialog):
         )
         self.refresh_btn.setEnabled(True)
         self._populate(games)
+        self._update_thumbnail_status()
 
     def _on_clog_failed(self, err: str):
         self.status_label.setText(f"Failed to load: {err}")
@@ -686,10 +693,31 @@ class PreJsonsDialog(QDialog):
             if pix.loadFromData(_thumb_bytes_cache[place_id]):
                 card.set_thumbnail(pix)
         else:
+            self._thumbs_pending += 1
+            generation = self._load_generation
             thumb_w = _CardThumbWorker(place_id)
             thumb_w.thumb_ready.connect(card.set_thumbnail)
+            thumb_w.finished.connect(lambda g=generation: self._on_thumb_worker_finished(g))
             self._workers.append(thumb_w)
             thumb_w.start()
+
+    def _on_thumb_worker_finished(self, generation: int):
+        if generation != self._load_generation:
+            return
+        self._thumbs_finished += 1
+        self._update_thumbnail_status()
+
+    def _update_thumbnail_status(self):
+        total_games = len(self._cards)
+        if self._thumbs_pending <= 0:
+            self.status_label.setText(f"{total_games} game{'s' if total_games != 1 else ''}")
+            return
+        if self._thumbs_finished >= self._thumbs_pending:
+            self.status_label.setText(f"{total_games} game{'s' if total_games != 1 else ''}")
+            return
+        self.status_label.setText(
+            f"{total_games} game{'s' if total_games != 1 else ''} — fetching thumbnails…"
+        )
 
     # Grid layout helpers
 
