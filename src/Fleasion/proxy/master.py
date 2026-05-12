@@ -879,7 +879,7 @@ def _write_hosts_file(content: str) -> None:
     except OSError as exc:
         raise PermissionError(
             f'Cannot write hosts file — all strategies exhausted. '
-            f'If Webroot or another security product is installed, open its settings '
+            f'If Webroot, Kaspersky, or another security product is installed, open its settings '
             f'and try to disable any setting relating to protecting the hosts file. '
             f'Last direct-write error: {last_exc}; rename error: {exc}'
         ) from exc

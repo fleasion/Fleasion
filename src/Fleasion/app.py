@@ -237,7 +237,7 @@ def _show_hosts_write_exhausted_dialog(details: dict):
         msg.setInformativeText(
             'Most likely causes:<br>'
             'A) Antivirus/security software is protecting the hosts file '
-            '(for example Webroot).<br>'
+            '(for example Webroot or Kaspersky).<br>'
             'B) A restrictive Windows permission setting is blocking writes.<br><br>'
             + f'Hosts file path:<br>{html.escape(hosts_path)}<br><br>'
             + 'Quick fix:<br>'
