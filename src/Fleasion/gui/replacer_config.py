@@ -46,7 +46,7 @@ _KIND_GROUP = 'group'
 _MIXED_STATUS = '—'
 _DRAG_GROUP_COLORS = ('#2d6cdf', '#2f9e44', '#f08c00', '#ae3ec9', '#0ca678')
 _GROUP_ICON = '🗀'
-_TREE_INDENT_PX = 17
+_TREE_INDENT_PX = 9
 _GROUP_ROW_HEIGHT_PX = 24
 _GROUP_CONTENT_INDENT_SPACES = 5
 _PROFILE_NAME_COLUMN = 1
@@ -429,6 +429,7 @@ class ReplacerConfigWindow(QDialog):
         self.tree.customContextMenuRequested.connect(self._show_context_menu)
         self.tree.itemExpanded.connect(lambda item: self._set_group_expanded(item, True))
         self.tree.itemCollapsed.connect(lambda item: self._set_group_expanded(item, False))
+        self.tree.itemSelectionChanged.connect(self.tree.viewport().update)
         self.tree.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
         self.tree.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.tree.setDropIndicatorShown(True)
@@ -1932,21 +1933,34 @@ class ReplacerConfigWindow(QDialog):
         palette = self.tree.palette()
         is_dark = palette.window().color().lightness() < 128
         guide_color = QColor('#5f6368' if is_dark else '#c4c7c5')
-        selected_color = QColor('#d7dcff' if is_dark else '#5f6368')
+        selected_color = guide_color.lighter(175 if is_dark else 115)
 
         painter = QPainter(viewport)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
 
-        selected_group_paths = {
-            path
-            for path in self._selected_entry_paths()
-            if self._is_group(self._entry_at_path(self.config_manager.replacement_rules, path))
-        }
+        selected_group_paths: set[tuple[int, ...]] = set()
+        for path in self._selected_entry_paths():
+            entry = self._entry_at_path(self.config_manager.replacement_rules, path)
+            if self._is_group(entry):
+                selected_group_paths.add(path)
+                continue
+
+            parent_path = path[:-1]
+            if not parent_path:
+                continue
+
+            parent = self._entry_at_path(self.config_manager.replacement_rules, parent_path)
+            if self._is_group(parent):
+                selected_group_paths.add(parent_path)
 
         guide_pen = QPen(guide_color)
         guide_pen.setWidth(1)
+        guide_pen.setCosmetic(True)
         selected_pen = QPen(selected_color)
-        selected_pen.setWidth(2)
+        selected_pen.setWidth(1)
+        selected_pen.setCosmetic(True)
+
+        visible_spans: dict[tuple[int, ...], tuple[int, int]] = {}
 
         for item in self._iter_tree_items():
             rect = self.tree.visualItemRect(item)
@@ -1957,19 +1971,22 @@ class ReplacerConfigWindow(QDialog):
             if not isinstance(item_path, tuple):
                 continue
 
-            if item_path in selected_group_paths:
-                painter.setPen(selected_pen)
-                x = self._group_guide_x(item_path)
-                painter.drawLine(x, rect.top(), x, rect.bottom() + 1)
-
-            for depth in range(1, len(item_path)):
+            for depth in range(1, len(item_path) + 1):
                 ancestor_path = item_path[:depth]
                 ancestor = self._entry_at_path(self.config_manager.replacement_rules, ancestor_path)
                 if not self._is_group(ancestor):
                     continue
-                painter.setPen(selected_pen if ancestor_path in selected_group_paths else guide_pen)
-                x = self._group_guide_x(ancestor_path)
-                painter.drawLine(x, rect.top(), x, rect.bottom() + 1)
+
+                span = visible_spans.get(ancestor_path)
+                if span is None:
+                    visible_spans[ancestor_path] = (rect.top(), rect.bottom())
+                else:
+                    visible_spans[ancestor_path] = (min(span[0], rect.top()), max(span[1], rect.bottom()))
+
+        for group_path, (top, bottom) in visible_spans.items():
+            painter.setPen(selected_pen if group_path in selected_group_paths else guide_pen)
+            x = self._group_guide_x(group_path)
+            painter.drawLine(x, top, x, bottom)
 
         painter.end()
 
