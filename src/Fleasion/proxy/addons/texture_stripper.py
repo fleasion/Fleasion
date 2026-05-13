@@ -7,9 +7,7 @@ threading.Lock so it is safely shared across all MITM thread-pool workers.
 import gzip
 import io
 import json
-import urllib.request
 import hashlib
-import shutil
 import logging
 from pathlib import Path
 from threading import Lock
@@ -17,6 +15,7 @@ from typing import Dict, Optional, Tuple
 from urllib.parse import urlparse
 
 from ...utils import APP_CACHE_DIR, format_count, log_buffer
+from ...utils.http import http_download_to
 
 # Use orjson when available (2-3x faster JSON parse)
 try:
@@ -168,15 +167,13 @@ def _download_remote_file(url: str, dest: Path, label: str) -> bool:
         if dest.exists():
             return True
         log_buffer.log('Downloader', f'Downloading remote {label}: {url}')
-        req = urllib.request.Request(url, headers={
+        http_download_to(url, dest, timeout=30, headers={
             'User-Agent': (
                 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
                 'AppleWebKit/537.36 (KHTML, like Gecko) '
                 'Chrome/120.0.0.0 Safari/537.36'
             )
         })
-        with urllib.request.urlopen(req, timeout=30) as resp, open(dest, 'wb') as out:
-            shutil.copyfileobj(resp, out)
         log_buffer.log('Downloader', f'Saved {label}: {dest.name}')
         return True
     except Exception as exc:

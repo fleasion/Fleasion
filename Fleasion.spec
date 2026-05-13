@@ -44,6 +44,10 @@ hiddenimports += collect_submodules('zstandard')
 hiddenimports += collect_submodules('requests')
 hiddenimports += collect_submodules('urllib3')
 
+# certifi provides a bundled public CA store for urllib HTTPS fallbacks
+tmp_ret = collect_all('certifi')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+
 # win32 extensions (pywin32) - needed for .ROBLOSECURITY cookie decryption
 hiddenimports += [
     'win32crypt',

@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from ..cache.rbxm_preview import RbxmPreviewWidget, is_rbx_model_data
 from ..utils import format_count, get_icon_path
 
 
@@ -724,6 +725,10 @@ class JsonTreeViewer(QDialog):
         self.json_viewer = CacheJsonViewer()
         self.preview_container_layout.addWidget(self.json_viewer)
 
+        # RBXM/RBXMX structure viewer
+        self.rbxm_viewer = RbxmPreviewWidget()
+        self.preview_container_layout.addWidget(self.rbxm_viewer)
+
         # Font viewer container with centering wrapper
         self.font_wrapper = QWidget()
         font_wrapper_layout = QVBoxLayout()
@@ -744,11 +749,29 @@ class JsonTreeViewer(QDialog):
         self.animation_viewer.hide()
         self.text_viewer.hide()
         self.json_viewer.hide()
+        self.rbxm_viewer.hide()
         self.font_wrapper.hide()
 
         self.preview_container.setLayout(self.preview_container_layout)
         self.preview_scroll.setWidget(self.preview_container)
         preview_group_layout.addWidget(self.preview_scroll)
+
+        controls_layout = QHBoxLayout()
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(4)
+
+        self.stop_preview_btn = QPushButton('Stop Preview')
+        self.stop_preview_btn.clicked.connect(self._stop_preview)
+        self.stop_preview_btn.hide()
+        controls_layout.addWidget(self.stop_preview_btn)
+
+        self.rbxm_view_btn = QPushButton('Swap to RBXM View')
+        self.rbxm_view_btn.clicked.connect(self._swap_to_rbxm_view)
+        self.rbxm_view_btn.hide()
+        controls_layout.addWidget(self.rbxm_view_btn)
+
+        controls_layout.addStretch()
+        preview_group_layout.addLayout(controls_layout)
 
         self.preview_group.setLayout(preview_group_layout)
         preview_layout.addWidget(self.preview_group)
@@ -805,6 +828,8 @@ class JsonTreeViewer(QDialog):
         elif content_type == 'texturepack':
             self._preview_texturepack(data)
         elif content_type in ('rbxm', 'rbxmx'):
+            if is_rbx_model_data(data):
+                self.rbxm_view_btn.show()
             self._preview_animation(data)
         elif content_type == 'json':
             self._preview_json(data)
@@ -894,6 +919,7 @@ class JsonTreeViewer(QDialog):
         self._current_pixmap = pixmap
         self._scale_and_show_image(pixmap)
         self.image_label.show()
+        self.stop_preview_btn.show()
 
     def _scale_and_show_image(self, pixmap: QPixmap):
         container_w = self.preview_scroll.viewport().width() - 20
@@ -919,6 +945,7 @@ class JsonTreeViewer(QDialog):
         self._hide_loading()
         self.obj_viewer.load_obj(obj_content, '')
         self.obj_viewer.show()
+        self.stop_preview_btn.show()
 
     def _preview_audio(self, data: bytes):
         import tempfile
@@ -943,6 +970,7 @@ class JsonTreeViewer(QDialog):
             self.audio_container_layout.addWidget(self.audio_player)
             self._hide_loading()
             self.audio_wrapper.show()
+            self.stop_preview_btn.show()
 
             # Install global event filter to catch Space for play/pause while audio preview is active
             try:
@@ -978,6 +1006,7 @@ class JsonTreeViewer(QDialog):
             self.font_container_layout.addWidget(font_viewer)
             self._hide_loading()
             self.font_wrapper.show()
+            self.stop_preview_btn.show()
             
         except Exception as e:
             self._show_text_preview(f'Font error: {e}')
@@ -992,6 +1021,7 @@ class JsonTreeViewer(QDialog):
             if self.animation_viewer.load_animation(decompressed):
                 self._hide_loading()
                 self.animation_viewer.show()
+                self.stop_preview_btn.show()
                 return
 
             # Binary RBXM that isn't an animation — try SolidModel
@@ -1026,13 +1056,32 @@ class JsonTreeViewer(QDialog):
             self.json_viewer.load_json(parsed)
             self._hide_loading()
             self.json_viewer.show()
+            self.stop_preview_btn.show()
         except Exception as e:
             self._show_text_preview(f'JSON error: {e}')
 
-    def _preview_hex(self, data: bytes):
+    def _preview_rbxm(self, data: bytes, title_prefix: str = 'RBXM/RBXMX structure'):
+        """Preview raw RBXM/RBXMX structure in the shared RBXM viewer."""
+        try:
+            asset_label = '' if self._previewing_value is None else str(self._previewing_value).strip()
+            self.rbxm_viewer.load_bytes(data, asset_label=asset_label)
+            self._hide_loading()
+            self.rbxm_viewer.show()
+            self.stop_preview_btn.show()
+            display = str(self._previewing_value)
+            if len(display) > 60:
+                display = display[:57] + '...'
+            self.preview_title_label.setText(f'{title_prefix}: {display}' if display else title_prefix)
+        except Exception as e:
+            self._preview_hex(data, reason=f'RBXM/RBXMX structure parse failed: {e}')
+
+    def _preview_hex(self, data: bytes, reason: str | None = None):
         """Show a hex dump for unrecognised content."""
         preview_size = min(1024, len(data))
-        lines = [f'Size: {len(data)} bytes\n\nFirst {preview_size} bytes (hex dump):\n']
+        lines = [f'Size: {len(data)} bytes']
+        if reason:
+            lines.append(f'Why is this a Hex Dump?: {reason}')
+        lines.append(f'\nFirst {preview_size} bytes (hex dump):\n')
         for i in range(0, preview_size, 16):
             hex_part = ' '.join(f'{b:02x}' for b in data[i:i + 16])
             ascii_part = ''.join(chr(b) if 32 <= b < 127 else '.' for b in data[i:i + 16])
@@ -1040,6 +1089,15 @@ class JsonTreeViewer(QDialog):
         if len(data) > preview_size:
             lines.append(f'\n... ({len(data) - preview_size} more bytes)')
         self._show_text_preview('\n'.join(lines))
+
+    def _swap_to_rbxm_view(self):
+        """Switch the current animation/solidmodel preview to raw RBXM structure."""
+        if self._last_fetched_data is None or not is_rbx_model_data(self._last_fetched_data):
+            return
+
+        self._stop_all_loaders()
+        self._hide_all_preview_widgets()
+        self._preview_rbxm(self._last_fetched_data)
 
     def _preview_solidmodel(self, data: bytes):
         """Preview a SolidModel (CSG) asset in 3D using background thread."""
@@ -1115,6 +1173,7 @@ class JsonTreeViewer(QDialog):
             self.texturepack_widget.setLayout(tp_layout)
             self.preview_container_layout.addWidget(self.texturepack_widget)
             self.texturepack_widget.show()
+            self.stop_preview_btn.show()
 
             # Fetch each texture map via network
             self._tp_fetchers = []
@@ -1284,12 +1343,28 @@ class JsonTreeViewer(QDialog):
         self._hide_loading()
         self.text_viewer.setPlainText(text)
         self.text_viewer.show()
+        self.stop_preview_btn.show()
 
     def _show_loading(self):
         self.loading_label.show()
 
     def _hide_loading(self):
         self.loading_label.hide()
+
+    def _stop_preview(self):
+        """Stop the current preview and hide the preview panel controls."""
+        self._stop_all_loaders()
+        self._hide_all_preview_widgets()
+        try:
+            self.rbxm_viewer.clear()
+        except Exception:
+            pass
+        self.preview_panel.hide()
+        self._previewing_value = None
+        try:
+            self.preview_title_label.setText('Preview')
+        except Exception:
+            pass
 
     def _hide_all_preview_widgets(self):
         self.obj_viewer.hide()
@@ -1298,8 +1373,11 @@ class JsonTreeViewer(QDialog):
         self.animation_viewer.hide()
         self.text_viewer.hide()
         self.json_viewer.hide()
+        self.rbxm_viewer.hide()
         self.font_wrapper.hide()
         self.loading_label.hide()
+        self.stop_preview_btn.hide()
+        self.rbxm_view_btn.hide()
         self._current_pixmap = None
 
         # Clean up texture pack
@@ -1315,14 +1393,7 @@ class JsonTreeViewer(QDialog):
 
     def _clear_preview(self):
         """Hide the preview panel and stop all loaders."""
-        self._stop_all_loaders()
-        self._hide_all_preview_widgets()
-        self.preview_panel.hide()
-        self._previewing_value = None
-        try:
-            self.preview_title_label.setText('Preview')
-        except Exception:
-            pass
+        self._stop_preview()
 
     def _stop_all_loaders(self):
         for loader in (self._asset_fetcher, self._image_loader, self._mesh_loader,

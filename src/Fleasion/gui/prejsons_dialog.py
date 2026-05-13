@@ -4,7 +4,6 @@ import io
 import json
 import threading
 import uuid
-import urllib.request
 from pathlib import Path
 
 from PIL import Image, ImageDraw
@@ -30,8 +29,10 @@ from PyQt6.QtWidgets import (
 )
 
 from ..utils import CLOG_URL, PREJSONS_DIR, ORIGINALS_DIR, REPLACEMENTS_DIR, APP_NAME, get_icon_path
+from ..utils.http import http_get
 
 CUSTOM_DUMPS_DIR = PREJSONS_DIR / "custom_dumps"
+CLOG_CACHE_FILE = PREJSONS_DIR / "CLOG.json"
 
 _DEFAULT_THUMB_URL = (
     "https://static.wikia.nocookie.net/roblox/images/5/54/Default_Thumbnail_1_updated.png"
@@ -50,9 +51,7 @@ _thumb_bytes_cache: dict[int, bytes] = {}
 # HTTP helper
 
 def _http_get(url: str, timeout: int = 12) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": "FleasionNT/1.2.0"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read()
+    return http_get(url, timeout=timeout)
 
 
 def _fetch_or_read(url_or_path: str, timeout: int = 15) -> bytes:
@@ -223,6 +222,16 @@ class _ClogWorker(QThread):
     def run(self):
         try:
             raw = _http_get(CLOG_URL, timeout=15)
+            CLOG_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            CLOG_CACHE_FILE.write_bytes(raw)
+        except Exception as fetch_error:
+            try:
+                raw = CLOG_CACHE_FILE.read_bytes()
+            except Exception:
+                self.failed.emit(str(fetch_error))
+                return
+
+        try:
             data = json.loads(raw.decode("utf-8"))
             games = _normalize_games(data)
             self.done.emit(games)

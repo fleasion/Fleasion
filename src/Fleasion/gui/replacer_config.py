@@ -1,7 +1,6 @@
 """Replacer config window."""
 
 import json
-import urllib.request
 from copy import deepcopy
 from pathlib import Path
 import time
@@ -34,6 +33,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ..utils import APP_NAME, CONFIGS_FOLDER, PREJSONS_DIR, format_count, get_icon_path, log_buffer, open_folder
+from ..utils.http import http_head_status
 from .json_viewer import JsonTreeViewer
 from .proxy_gate import ProxyGate
 
@@ -1733,14 +1733,12 @@ class ReplacerConfigWindow(QDialog):
             cdn_url = extra['cdn_url']
             # Validate URL is accessible
             try:
-                req = urllib.request.Request(cdn_url, method='HEAD')
-                req.add_header('User-Agent', 'Mozilla/5.0')
-                with urllib.request.urlopen(req, timeout=5) as resp:
-                    if resp.status >= 400:
-                        QMessageBox.warning(
-                            self, 'Warning',
-                            f'CDN URL returned status {resp.status}. Adding anyway.'
-                        )
+                status = http_head_status(cdn_url, timeout=5, headers={'User-Agent': 'Mozilla/5.0'})
+                if status >= 400:
+                    QMessageBox.warning(
+                        self, 'Warning',
+                        f'CDN URL returned status {status}. Adding anyway.'
+                    )
             except URLError as e:
                 reply = QMessageBox.question(
                     self, 'URL Check Failed',

@@ -539,9 +539,9 @@ class ModificationManager(QObject):
     def _fetch_cdn_url(self, url: str) -> bytes:
         """Download a CDN URL, caching to ModCache."""
         import hashlib
-        import urllib.request
         from urllib.parse import urlparse
         from urllib.error import URLError
+        from ..utils.http import http_get
 
         MOD_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         url_hash = hashlib.sha256(url.encode()).hexdigest()[:16]
@@ -553,10 +553,7 @@ class ModificationManager(QObject):
             return cache_file.read_bytes()
 
         try:
-            req = urllib.request.Request(url)
-            req.add_header('User-Agent', 'Mozilla/5.0')
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                data: bytes = resp.read()
+            data = http_get(url, timeout=30, headers={'User-Agent': 'Mozilla/5.0'})
         except URLError as exc:
             raise RuntimeError(f'CDN download failed: {exc}') from exc
 
