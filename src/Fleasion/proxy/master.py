@@ -974,13 +974,29 @@ def _add_hosts_entries(hosts: Set[str], error_details: Optional[dict] = None) ->
         return False
 
 
-def _remove_hosts_entries(hosts: Set[str]) -> bool:
+def _remove_hosts_entries(hosts: Set[str], error_details: Optional[dict] = None) -> bool:
     """Remove any hosts file entries we previously added.
 
     Returns True if the hosts file is clean (entries removed or were already
     absent).  Returns False if the write failed — callers must NOT cancel the
     reboot guard in that case, so the next boot still cleans up automatically.
     """
+    def _record_error(exc: OSError) -> None:
+        if error_details is None:
+            return
+        err_text = str(exc)
+        all_attempts_exhausted = 'all strategies exhausted' in err_text.lower()
+        error_details.clear()
+        error_details.update(
+            {
+                'hosts_path': str(HOSTS_FILE),
+                'hosts_directory': str(HOSTS_FILE.parent),
+                'error': err_text,
+                'all_attempts_exhausted': all_attempts_exhausted,
+                'notify_user': isinstance(exc, PermissionError) or all_attempts_exhausted,
+            }
+        )
+
     try:
         existing = HOSTS_FILE.read_text(encoding='utf-8', errors='replace')
     except OSError:
@@ -1002,6 +1018,7 @@ def _remove_hosts_entries(hosts: Set[str]) -> bool:
         log_buffer.log('Hosts', 'Removed proxy hosts entries')
         return True
     except OSError as exc:
+        _record_error(exc)
         log_buffer.log('Hosts', f'Failed to clean hosts file: {exc}')
         return False
 
@@ -1732,12 +1749,15 @@ class ProxyMaster:
             # calling stop(), our entries may still be present.  getaddrinfo()
             # would return 127.0.0.1 instead of real CDN IPs, and upstream
             # connections would fail with WinError 1225.
-            if not _remove_hosts_entries(set(INTERCEPT_HOSTS)):
+            stale_hosts_error_details: dict = {}
+            if not _remove_hosts_entries(set(INTERCEPT_HOSTS), error_details=stale_hosts_error_details):
                 log_buffer.log('Error',
                     'Failed to remove stale proxy hosts entries — real CDN IPs '
                     'cannot be resolved safely.  Aborting proxy start. '
                     'If the problem persists, manually remove "# Fleasion proxy entry" '
                     'lines from %SystemRoot%\\System32\\drivers\\etc\\hosts and restart.')
+                if stale_hosts_error_details.get('notify_user'):
+                    self._emit_proxy_start_error('hosts_write_exhausted', stale_hosts_error_details)
                 self._running = False
                 return
             _flush_dns()
