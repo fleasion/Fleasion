@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -27,6 +28,9 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+
+_COPY_VALUE_ROLE = Qt.ItemDataRole.UserRole
 
 
 @dataclass
@@ -151,6 +155,9 @@ class RbxmPreviewWidget(QWidget):
         self.properties_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.properties_table.setWordWrap(False)
         self.properties_table.verticalHeader().hide()
+        self.copy_shortcut = QShortcut(QKeySequence(QKeySequence.StandardKey.Copy), self.properties_table)
+        self.copy_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self.copy_shortcut.activated.connect(self._copy_selected_value)
         self.properties_table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         header = self.properties_table.horizontalHeader()
         header.setStretchLastSection(False)
@@ -351,9 +358,11 @@ class RbxmPreviewWidget(QWidget):
         self.properties_table.setRowCount(len(rows))
         for row, prop in enumerate(rows):
             value_text, tooltip = self._format_value(prop.value, prop.type_name)
+            copy_text = self._copy_text_for_value(prop.value, prop.type_name)
             prop_item = QTableWidgetItem(prop.name)
             value_item = QTableWidgetItem(value_text)
             type_item = QTableWidgetItem(prop.type_name)
+            value_item.setData(_COPY_VALUE_ROLE, copy_text)
             for item in (prop_item, value_item, type_item):
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             if tooltip:
@@ -409,6 +418,41 @@ class RbxmPreviewWidget(QWidget):
         compact = _compact(text, 500)
         tooltip = text if len(text) > len(compact) else ''
         return compact, tooltip
+
+    def _copy_text_for_value(self, value: Any, type_name: str) -> str:
+        if isinstance(value, bytes):
+            if not value:
+                return ''
+            try:
+                decoded = value.decode('utf-8')
+            except UnicodeDecodeError:
+                return base64.b64encode(value).decode('ascii')
+            if decoded and all(ch.isprintable() or ch.isspace() for ch in decoded):
+                return html.unescape(decoded)
+            return base64.b64encode(value).decode('ascii')
+
+        if isinstance(value, dict):
+            if type_name == 'Ref':
+                target = self._resolve_ref(value)
+                if target:
+                    return target
+            compact_vector = _format_vector_like(value)
+            if compact_vector:
+                return compact_vector
+            return ', '.join(f'{k}={self._copy_text_for_value(v, "")}' for k, v in value.items())
+
+        if isinstance(value, list):
+            return '[' + ', '.join(self._copy_text_for_value(v, '') for v in value) + ']'
+
+        if isinstance(value, (bool, int, float)) or type_name.lower() in {'bool', 'int', 'int64', 'float', 'double'}:
+            return _format_scalar(value)
+
+        text = '' if value is None else str(value)
+        if type_name == 'Ref':
+            target = self._resolve_ref(text)
+            if target:
+                return target
+        return html.unescape(text)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -500,13 +544,13 @@ class RbxmPreviewWidget(QWidget):
             )
 
     def _copy_selected_value(self):
-        item = self.properties_table.currentItem()
-        if item is None:
+        row = self.properties_table.currentRow()
+        if row < 0:
             return
-        row = item.row()
         value_item = self.properties_table.item(row, 1)
         if value_item is not None:
-            QApplication.clipboard().setText(value_item.text())
+            copy_text = value_item.data(_COPY_VALUE_ROLE)
+            QApplication.clipboard().setText(str(copy_text if copy_text is not None else value_item.text()))
 
 
 def _compact(text: str, limit: int) -> str:
