@@ -142,33 +142,56 @@ class FastFlagManager:
         flags = self.build_json(settings)
         content = json.dumps(flags, indent=2).encode('utf-8') if flags else b'{}'
 
+        written = 0
+        failed = 0
+
         for roblox_dir in self._roblox_dirs:
             dst = roblox_dir / CLIENT_SETTINGS_REL
             stash = self._stash_dir / roblox_dir.name / CLIENT_SETTINGS_REL
 
-            # Stash original once
-            if dst.exists() and not stash.exists():
-                stash.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(dst, stash)
+            try:
+                # Stash original once
+                if dst.exists() and not stash.exists():
+                    stash.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(dst, stash)
 
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            _clear_read_only(dst)
-            dst.write_bytes(content)
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                _clear_read_only(dst)
+                dst.write_bytes(content)
+                written += 1
+            except PermissionError as exc:
+                failed += 1
+                log_buffer.log('FastFlags', f'Permission denied writing {dst}: {exc}')
 
-        log_buffer.log('FastFlags', f'Wrote {format_count(flags, "flag")} to {format_count(self._roblox_dirs, "Roblox dir")}')
+        message = f'Wrote {format_count(flags, "flag")} to {format_count(written, "Roblox dir")}'
+        if failed:
+            message += f'; skipped {format_count(failed, "Roblox dir")} due to permission errors'
+        log_buffer.log('FastFlags', message)
 
     def restore(self) -> None:
         """Restore (or delete) ``ClientAppSettings.json`` in every Roblox dir."""
+        restored = 0
+        failed = 0
+
         for roblox_dir in self._roblox_dirs:
             dst = roblox_dir / CLIENT_SETTINGS_REL
             stash = self._stash_dir / roblox_dir.name / CLIENT_SETTINGS_REL
-            if stash.exists():
-                _clear_read_only(dst)
-                shutil.copy2(stash, dst)
-                _clear_read_only(stash)
-                stash.unlink()
-            elif dst.exists():
-                _clear_read_only(dst)
-                dst.unlink()
+            try:
+                if stash.exists():
+                    _clear_read_only(dst)
+                    shutil.copy2(stash, dst)
+                    _clear_read_only(stash)
+                    stash.unlink()
+                    restored += 1
+                elif dst.exists():
+                    _clear_read_only(dst)
+                    dst.unlink()
+                    restored += 1
+            except PermissionError as exc:
+                failed += 1
+                log_buffer.log('FastFlags', f'Permission denied restoring {dst}: {exc}')
 
-        log_buffer.log('FastFlags', 'Restored ClientAppSettings.json')
+        message = 'Restored ClientAppSettings.json'
+        if failed:
+            message += f' in {format_count(restored, "Roblox dir")}; skipped {format_count(failed, "Roblox dir")} due to permission errors'
+        log_buffer.log('FastFlags', message)
