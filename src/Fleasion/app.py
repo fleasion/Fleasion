@@ -33,7 +33,7 @@ def _is_admin() -> bool:
         return False
 
 
-def _relaunch_as_admin(extra_args: str = '') -> bool:
+def _relaunch_as_admin(extra_args: str = '', parent_hwnd: int | None = None) -> bool:
     """Silently attempt to relaunch elevated via UAC.
 
     Shows only the standard Windows UAC prompt (no extra dialog).
@@ -110,21 +110,28 @@ def _relaunch_as_admin(extra_args: str = '') -> bool:
     sei = _SHELLEXECUTEINFOW()
     sei.cbSize       = ctypes.sizeof(_SHELLEXECUTEINFOW)
     sei.fMask        = SEE_MASK_NO_CONSOLE | SEE_MASK_NOCLOSEPROCESS
-    sei.hwnd         = None
+    sei.hwnd         = parent_hwnd
     sei.lpVerb       = 'runas'
     sei.lpFile       = exe
     sei.lpParameters = params
-    sei.lpDirectory  = None
+    sei.lpDirectory  = os.path.dirname(os.path.abspath(exe)) or None
     # SW_HIDE (0) for dev/uv mode: hides the uv.exe console wrapper.
     # SW_SHOWNORMAL (1) for compiled .exe: the exe IS the app, we need windows to show.
     sei.nShow        = 0 if not getattr(sys, 'frozen', False) else 1
     sei.hInstApp     = None
 
-    ok = ctypes.windll.shell32.ShellExecuteExW(ctypes.byref(sei))
+    shell32 = ctypes.WinDLL('shell32', use_last_error=True)
+    ok = shell32.ShellExecuteExW(ctypes.byref(sei))
+    if not ok:
+        err = ctypes.get_last_error()
+        if err == 1223:  # ERROR_CANCELLED: user declined UAC
+            log_buffer.log('UAC', 'Administrator relaunch was cancelled by the user')
+        else:
+            log_buffer.log('UAC', f'Administrator relaunch failed: WinError {err}: {ctypes.FormatError(err)}')
     return bool(ok)
 
 
-def _attempt_silent_elevation(extra_args: str = '') -> bool:
+def _attempt_silent_elevation(extra_args: str = '', parent_hwnd: int | None = None) -> bool:
     """Try to elevate silently on startup.
 
     If already admin, returns True immediately.
@@ -136,13 +143,53 @@ def _attempt_silent_elevation(extra_args: str = '') -> bool:
     if _is_admin():
         return True
 
-    success = _relaunch_as_admin(extra_args=extra_args)
+    success = _relaunch_as_admin(extra_args=extra_args, parent_hwnd=parent_hwnd)
     if success:
         # Elevated copy is now starting up — close this instance silently
         sys.exit(0)
 
     # User clicked "No" on UAC — stay open in read-only mode
     return False
+
+
+def _visible_parent_widget():
+    """Return the best visible Qt parent for startup dialogs."""
+    _top = QApplication.topLevelWidgets()
+    return next((w for w in _top if w.isVisible()), QApplication.activeWindow())
+
+
+def _window_handle(widget) -> int | None:
+    """Return a native window handle for ShellExecuteExW, if Qt has one."""
+    if widget is None:
+        return None
+    try:
+        return int(widget.winId())
+    except Exception:
+        return None
+
+
+def _show_admin_required_dialog(parent=None):
+    """Warn that the non-elevated instance cannot provide Fleasion's core behavior."""
+    _top = QApplication.topLevelWidgets()
+    _parent = parent or _visible_parent_widget()
+    _on_top = any(w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in _top)
+
+    msg = QMessageBox(_parent)
+    if _on_top:
+        msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
+    msg.setWindowTitle('Fleasion - Administrator Mode Required')
+    msg.setIcon(QMessageBox.Icon.Warning)
+    msg.setText("Fleasion won't work unless you're in admin mode.")
+    msg.setInformativeText(
+        'Windows did not start Fleasion with administrator rights.\n\n'
+        'Asset interception, scraping, replacement, hosts-file changes, and the local HTTPS proxy may not work.\n\n'
+        'Close Fleasion and run it as Administrator.'
+    )
+    msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+    if icon_path := get_icon_path():
+        from PyQt6.QtGui import QIcon
+        msg.setWindowIcon(QIcon(str(icon_path)))
+    msg.exec()
 
 
 def _show_proxy_bind_error_dialog(details: dict):
@@ -576,10 +623,10 @@ def main():
                 # Not admin — taskkill on an elevated process silently fails.
                 # A single "Elevate & Kill Others" relaunches as admin with
                 # --kill-others so the elevated copy handles it automatically.
-                kill_others_button = msg_box.addButton('Elevate && Kill Others', QMessageBox.ButtonRole.AcceptRole)
+                kill_others_button = msg_box.addButton('Elevate && Kill Others (Recommended)', QMessageBox.ButtonRole.AcceptRole)
                 _kill_requires_elevation = True
 
-            run_anyway_button = msg_box.addButton('Run Anyway', QMessageBox.ButtonRole.AcceptRole)
+            run_anyway_button = msg_box.addButton('Run Anyway (Bad)', QMessageBox.ButtonRole.AcceptRole)
             cancel_button = msg_box.addButton('Cancel', QMessageBox.ButtonRole.RejectRole)
             msg_box.setDefaultButton(cancel_button)
 
@@ -607,19 +654,15 @@ def main():
             # Note: shared_memory object will be garbage collected or go out of scope,
             # but since we didn't successfully create it, we don't hold the lock.
 
-    # Initialize config manager before elevation so a saved disabled proxy setting
-    # can avoid an unnecessary UAC prompt.
+    # Initialize config manager before the deferred elevation prompt so the
+    # non-elevated process can still build the GUI and show a fallback dialog.
     config_manager = ConfigManager()
 
-    # Silently attempt UAC elevation. Shows only the standard Windows UAC prompt.
-    # If the user accepts, this instance exits and the elevated copy takes over.
-    # If declined, we stay open in read-only mode with no extra dialogs.
-    start_proxy = config_manager.proxy_features_enabled and _attempt_silent_elevation()
-    if config_manager.proxy_features_enabled and not start_proxy and not _is_admin():
-        # Schedule a tray notification once the tray is ready (deferred so tray exists)
-        _show_readonly_notice = True
-    else:
-        _show_readonly_notice = False
+    # Defer UAC until after Qt has a visible UI. Some Windows setups suppress or
+    # lose ownerless prompts, so the startup prompt is fired from the GUI path
+    # with a native parent window and a guaranteed in-app fallback dialog.
+    _admin_prompt_needed = not _is_admin()
+    start_proxy = config_manager.proxy_features_enabled and not _admin_prompt_needed
 
     # Warn if no Roblox installations can be found (same scan used for cert injection)
     from .proxy.master import _find_roblox_dirs as _scan_roblox_dirs
@@ -711,28 +754,20 @@ def main():
 
     # Create system tray
     tray = SystemTray(app, config_manager, proxy_master, mod_manager, roblox_monitor)
-    if _show_readonly_notice:
-        def _show_readonly_dialog():
-            from PyQt6.QtWidgets import QMessageBox, QApplication
-            from PyQt6.QtGui import QIcon
-            _top = QApplication.topLevelWidgets()
-            _parent = next((w for w in _top if w.isVisible()), None)
-            _on_top = any(w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in _top)
-            msg = QMessageBox(_parent)
-            if _on_top:
-                msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
-            msg.setWindowTitle('Fleasion — Read-Only Mode')
-            msg.setIcon(QMessageBox.Icon.Warning)
-            msg.setText('Administrator rights were not granted.')
-            msg.setInformativeText(
-                'Asset interception, scraping, and replacement will not work.\n\n'
-                'Relaunch Fleasion as Administrator to enable the proxy.'
-            )
-            msg.setStandardButtons(QMessageBox.StandardButton.Ok)
-            if icon_path := get_icon_path():
-                msg.setWindowIcon(QIcon(str(icon_path)))
-            msg.exec()
-        QTimer.singleShot(1500, _show_readonly_dialog)
+    _admin_prompt_shown = False
+
+    def _request_admin_once():
+        nonlocal _admin_prompt_shown
+        if _admin_prompt_shown or _is_admin():
+            return
+        _admin_prompt_shown = True
+
+        parent = _visible_parent_widget()
+        log_buffer.log('UAC', 'Requesting administrator relaunch from GUI startup path')
+        if _relaunch_as_admin(parent_hwnd=_window_handle(parent)):
+            sys.exit(0)
+
+        _show_admin_required_dialog(parent)
 
     # Setup periodic status update
     status_timer = QTimer()
@@ -778,6 +813,9 @@ def main():
     elif not _suppress_dashboard and config_manager.open_dashboard_on_launch:
         # Open dashboard on launch if enabled (suppressed when started by autostart task)
         tray._show_replacer_config()
+
+    if _admin_prompt_needed:
+        QTimer.singleShot(500, _request_admin_once)
 
     # Run application
     sys.exit(app.exec())

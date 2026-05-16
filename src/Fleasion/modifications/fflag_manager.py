@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import stat
 from pathlib import Path
 
 from ..utils import format_count, log_buffer
@@ -46,6 +47,16 @@ EXTRA_FLAGS: dict[str, str] = {
 CLIENT_SETTINGS_REL = Path('ClientSettings') / 'ClientAppSettings.json'
 
 LOD_LEVELS = ('L0', 'L12', 'L23', 'L34')
+
+
+def _clear_read_only(path: Path) -> None:
+    """Clear the read-only attribute on an existing file."""
+    if not path.exists():
+        return
+    current_mode = path.stat().st_mode
+    if current_mode & stat.S_IWRITE:
+        return
+    path.chmod(current_mode | stat.S_IWRITE)
 
 
 class FastFlagManager:
@@ -141,6 +152,7 @@ class FastFlagManager:
                 shutil.copy2(dst, stash)
 
             dst.parent.mkdir(parents=True, exist_ok=True)
+            _clear_read_only(dst)
             dst.write_bytes(content)
 
         log_buffer.log('FastFlags', f'Wrote {format_count(flags, "flag")} to {format_count(self._roblox_dirs, "Roblox dir")}')
@@ -151,9 +163,12 @@ class FastFlagManager:
             dst = roblox_dir / CLIENT_SETTINGS_REL
             stash = self._stash_dir / roblox_dir.name / CLIENT_SETTINGS_REL
             if stash.exists():
+                _clear_read_only(dst)
                 shutil.copy2(stash, dst)
+                _clear_read_only(stash)
                 stash.unlink()
             elif dst.exists():
+                _clear_read_only(dst)
                 dst.unlink()
 
         log_buffer.log('FastFlags', 'Restored ClientAppSettings.json')
