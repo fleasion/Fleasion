@@ -103,7 +103,11 @@ def _iter_user_profile_cookie_candidates() -> list[tuple[str, Path]]:
     if home:
         _add_candidate(candidates, seen, 'Path.home', home / _ROBLOX_COOKIE_RELATIVE_PATH)
 
-    users_root = Path(os.environ.get('SystemDrive', 'C:')) / 'Users'
+    system_drive = (os.environ.get('SystemDrive') or 'C:').strip().rstrip('\\/')
+    if re.fullmatch(r'[A-Za-z]:', system_drive):
+        users_root = Path(f'{system_drive}/') / 'Users'
+    else:
+        users_root = Path(system_drive) / 'Users'
     try:
         with os.scandir(users_root) as entries:
             for entry in entries:

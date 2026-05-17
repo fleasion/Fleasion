@@ -1131,6 +1131,9 @@ class CacheViewerTab(QWidget):
         # OPTIMIZATION: Cache asset_id -> row mapping for O(1) lookups instead of O(n) linear search
         # Updated whenever table structure changes (populate, sort). Validates on read for thread-safety.
         self._asset_row_cache: dict[str, int] = {}
+        self._modified_rbxm_drafts: dict[tuple[str, object], dict] = {}
+        self._rbxm_preview_asset_key: tuple[str, object] | None = None
+        self._rbxm_preview_cached_at = ''
 
         # Worker threads for async preview loading
         self._image_loader: ImageLoaderThread | None = None
@@ -3170,6 +3173,7 @@ class CacheViewerTab(QWidget):
 
     def _on_selection_changed(self):
         """Handle table selection change to preview asset."""
+        self._remember_current_rbxm_draft()
         asset = self._get_selected_asset()
         if not asset:
             self._selected_asset_id = None
@@ -3328,6 +3332,19 @@ class CacheViewerTab(QWidget):
         if not available_formats:
             available_formats = {'raw', 'bin'}
 
+        modified_asset = None
+        if len(selected_rows) == 1:
+            row = selected_rows[0].row()
+            item = self.table.item(row, 1)
+            if item:
+                candidate = item.data(Qt.ItemDataRole.UserRole)
+                if candidate and self._get_modified_rbxm_draft(candidate) is not None:
+                    modified_asset = candidate
+                    available_formats = set(available_formats)
+                    available_formats.update(
+                        {'converted_modified_rbxm', 'converted_modified_rbxmx'}
+                    )
+
         # Add format options
         export_actions = {}
         format_labels = {
@@ -3335,6 +3352,8 @@ class CacheViewerTab(QWidget):
             'converted_rbxmx': 'Converted - KeyframeSequence (.rbxmx)',
             'converted_rbxmx_curve': 'Converted - CurveAnimation (.rbxmx)',
             'converted_rbxmx_model': 'Converted (.rbxmx)',
+            'converted_modified_rbxm': 'Converted (Modified .rbxm)',
+            'converted_modified_rbxmx': 'Converted (Modified .rbxmx)',
             'converted_png': 'Converted (.png)',
             'converted_audio': 'Converted (.ogg/.mp3)',
             'converted': 'Converted (.xml)',
@@ -3343,7 +3362,7 @@ class CacheViewerTab(QWidget):
             'bin': 'Binary (decompressed)',
             'raw': 'Raw (original cache)',
         }
-        for fmt in ['slot_ktx2', 'converted_obj', 'converted_rbxmx_model', 'converted_rbxmx', 'converted_rbxmx_curve', 'converted_png', 'converted_audio', 'converted', 'converted_images', 'bin', 'raw']:
+        for fmt in ['converted_modified_rbxm', 'converted_modified_rbxmx', 'slot_ktx2', 'converted_obj', 'converted_rbxmx_model', 'converted_rbxmx', 'converted_rbxmx_curve', 'converted_png', 'converted_audio', 'converted', 'converted_images', 'bin', 'raw']:
             if fmt in available_formats:
                 action = export_menu.addAction(format_labels[fmt])
                 export_actions[action] = fmt
@@ -3413,6 +3432,14 @@ class CacheViewerTab(QWidget):
                         _asset = _item.data(Qt.ItemDataRole.UserRole)
                         if _asset and _asset.get('type') == 63:
                             self._export_texpack_slot_ktx2(str(_asset['id']))
+            elif _fmt in {'converted_modified_rbxm', 'converted_modified_rbxmx'} and modified_asset:
+                path = self._export_modified_rbxm_asset(modified_asset, _fmt)
+                if path:
+                    self._show_export_complete_message(
+                        'Export Complete',
+                        f'Exported modified RBXM/RBXMX\n\nLocation: {path.parent}',
+                        [path],
+                    )
             else:
                 self._export_selected_multiple(export_format=_fmt)
         elif action == delete_action:
@@ -3871,6 +3898,79 @@ class CacheViewerTab(QWidget):
             exported_paths,
         )
 
+    @staticmethod
+    def _rbxm_asset_key(asset: dict) -> tuple[str, object]:
+        return (str(asset.get('id', '')), asset.get('type'))
+
+    @staticmethod
+    def _rbxm_asset_cached_at(asset: dict) -> str:
+        return str(asset.get('cached_at') or '')
+
+    def _remember_current_rbxm_draft(self) -> None:
+        key = getattr(self, '_rbxm_preview_asset_key', None)
+        if key is None or not hasattr(self, 'rbxm_viewer'):
+            return
+        document = getattr(self.rbxm_viewer, 'document', None)
+        if document is None or not self.rbxm_viewer.is_modified():
+            return
+        self._modified_rbxm_drafts[key] = {
+            'cached_at': getattr(self, '_rbxm_preview_cached_at', ''),
+            'document': document,
+        }
+
+    def _get_modified_rbxm_draft(self, asset: dict):
+        self._remember_current_rbxm_draft()
+        key = self._rbxm_asset_key(asset)
+        draft = self._modified_rbxm_drafts.get(key)
+        if not draft:
+            return None
+        cached_at = self._rbxm_asset_cached_at(asset)
+        if draft.get('cached_at', '') != cached_at:
+            self._modified_rbxm_drafts.pop(key, None)
+            if key == getattr(self, '_rbxm_preview_asset_key', None):
+                self._rbxm_preview_asset_key = None
+                self._rbxm_preview_cached_at = ''
+                try:
+                    self.rbxm_viewer._set_dirty(False)
+                except Exception:
+                    pass
+            return None
+        return draft.get('document')
+
+    def _export_modified_rbxm_asset(self, asset: dict, export_format: str):
+        try:
+            asset_id = str(asset.get('id', ''))
+            asset_type = asset.get('type')
+            draft_document = self._get_modified_rbxm_draft(asset)
+            if draft_document is None:
+                QMessageBox.warning(self, 'No Changes', 'The selected asset has no in-memory RBXM/RBXMX modifications.')
+                return None
+
+            type_name = self.cache_manager.get_asset_type_name(asset_type) if isinstance(asset_type, int) else 'RBXM'
+            export_dir = self.cache_manager.export_dir / 'converted' / type_name
+            export_dir.mkdir(parents=True, exist_ok=True)
+
+            resolved_name = None
+            if asset_id in self._asset_info:
+                resolved_name = self._asset_info[asset_id].get('resolved_name')
+            base_name = self._sanitize_filename(resolved_name) if resolved_name else asset_id
+            suffix = '_MODIFIED'
+
+            if export_format == 'converted_modified_rbxm':
+                data = self.rbxm_viewer.export_rbxm_bytes(draft_document)
+                output_path = export_dir / f'{base_name}{suffix}.rbxm'
+            else:
+                data = self.rbxm_viewer.export_rbxmx_bytes(draft_document)
+                output_path = export_dir / f'{base_name}{suffix}.rbxmx'
+
+            output_path.write_bytes(data)
+            log_buffer.log('Scraper', f'Exported modified RBXM/RBXMX to {output_path}')
+            return output_path
+        except Exception as e:
+            QMessageBox.warning(self, 'Export Error', f'Failed to export modified RBXM/RBXMX: {e}')
+            log_buffer.log('Scraper', f'Failed to export modified RBXM/RBXMX: {e}')
+            return None
+
     def _add_selected_to_replacer(self):
         """Add selected asset IDs to replacer."""
         selected_rows = self.table.selectionModel().selectedRows()
@@ -3960,6 +4060,8 @@ class CacheViewerTab(QWidget):
 
     def _clear_preview(self):
         """Clear all preview widgets and stop any running loaders."""
+        self._remember_current_rbxm_draft()
+
         # Stop all worker threads first
         self._stop_all_loaders()
 
@@ -3994,6 +4096,8 @@ class CacheViewerTab(QWidget):
         self.text_viewer.clear()
         self.rbxm_viewer.hide()
         self.rbxm_viewer.clear()
+        self._rbxm_preview_asset_key = None
+        self._rbxm_preview_cached_at = ''
         self.rbxm_view_btn.hide()
 
         # Clean up texture pack widgets
@@ -4692,8 +4796,23 @@ class CacheViewerTab(QWidget):
                 self.cache_manager.get_asset_type_name(asset_type)
                 if isinstance(asset_type, int) else 'RBXM/RBXMX'
             )
+            asset_label = f'{type_name} {asset_id}'.strip()
+            asset_key = self._rbxm_asset_key(asset)
+            cached_at = self._rbxm_asset_cached_at(asset)
+            if not cached_at:
+                selected_asset = self._get_selected_asset()
+                if selected_asset and self._rbxm_asset_key(selected_asset) == asset_key:
+                    cached_at = self._rbxm_asset_cached_at(selected_asset)
+                    asset = dict(asset)
+                    asset['cached_at'] = cached_at
 
-            self.rbxm_viewer.load_bytes(data, asset_label=f'{type_name} {asset_id}'.strip())
+            draft_document = self._get_modified_rbxm_draft(asset)
+            if draft_document is not None:
+                self.rbxm_viewer.load_document(draft_document, asset_label=asset_label, dirty=True)
+            else:
+                self.rbxm_viewer.load_bytes(data, asset_label=asset_label)
+            self._rbxm_preview_asset_key = asset_key
+            self._rbxm_preview_cached_at = cached_at
 
             # Persist detected type only after a successful parse, matching JSON detection behavior.
             try:
@@ -4714,7 +4833,7 @@ class CacheViewerTab(QWidget):
             self.rbxm_viewer.show()
             self.stop_preview_btn.show()
             try:
-                self.preview_title_label.setText(f'{title_prefix}: {asset_id or type_name}')
+                self.preview_title_label.setText(title_prefix)
             except Exception:
                 pass
         except Exception as e:

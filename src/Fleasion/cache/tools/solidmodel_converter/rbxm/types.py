@@ -37,6 +37,12 @@ class PropertyFormat(enum.IntEnum):
     COLOR3UINT8 = 26
     INT64 = 27
     SHARED_STRING = 28
+    BYTECODE = 29
+    OPTIONAL_CFRAME = 30
+    UNIQUE_ID = 31
+    FONT = 32
+    SECURITY_CAPABILITIES = 33
+    CONTENT = 34
 
 
 # Maps PropertyFormat to the XML tag name used in RBXMX files.
@@ -69,6 +75,12 @@ PROPERTY_FORMAT_TO_XML_TAG: dict[PropertyFormat, str] = {
     PropertyFormat.COLOR3UINT8: 'Color3uint8',
     PropertyFormat.INT64: 'int64',
     PropertyFormat.SHARED_STRING: 'SharedString',
+    PropertyFormat.BYTECODE: 'BinaryString',
+    PropertyFormat.OPTIONAL_CFRAME: 'OptionalCoordinateFrame',
+    PropertyFormat.UNIQUE_ID: 'UniqueId',
+    PropertyFormat.FONT: 'Font',
+    PropertyFormat.SECURITY_CAPABILITIES: 'SecurityCapabilities',
+    PropertyFormat.CONTENT: 'Content',
 }
 
 
@@ -110,6 +122,25 @@ class RbxTypeInfo:
 
 
 @dataclass
+class RbxRawPropertyChunk:
+    """Raw PROP payload for a property format this implementation cannot decode."""
+
+    class_name: str
+    prop_name: str
+    fmt_byte: int
+    value_data: bytes
+    instance_count: int
+
+
+@dataclass
+class RbxRawChunk:
+    """Decompressed data for an unrecognized non-END chunk."""
+
+    name: str
+    data: bytes
+
+
+@dataclass
 class RbxDocument:
     """A parsed Roblox binary model file."""
 
@@ -120,3 +151,7 @@ class RbxDocument:
     instances: dict[int, RbxInstance]  # id -> instance
     roots: list[RbxInstance]  # top-level instances (no parent)
     shared_strings: list[bytes] = field(default_factory=list[bytes])
+    raw_property_chunks: list[RbxRawPropertyChunk] = field(
+        default_factory=list[RbxRawPropertyChunk]
+    )
+    raw_chunks: list[RbxRawChunk] = field(default_factory=list[RbxRawChunk])

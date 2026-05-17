@@ -17,18 +17,21 @@ import lz4.block  # type: ignore[import-untyped]
 
 from .binary_writer import (
     encode_ids,
+    interleave_bytes,
     interleave_f32,
     interleave_i32,
     interleave_i64,
     interleave_u32,
+    interleave_u64,
     write_binary_string,
     write_f32,
     write_f64,
     write_string,
     write_u8,
+    write_u16,
     write_u32,
 )
-from .types import PropertyFormat, RbxDocument, RbxInstance, RbxProperty
+from .types import PropertyFormat, RbxDocument, RbxInstance, RbxRawPropertyChunk
 
 MAGIC_HEADER = b'<roblox!\x89\xff\x0d\x0a\x1a\x0a'
 FILE_VERSION = 0  # same version the deserializer reads
@@ -121,6 +124,12 @@ class RbxmSerializer:
                 prop_data = self._build_prop(type_idx, prop_name, instances)
                 if prop_data is not None:
                     chunks.extend(self._build_chunk('PROP', prop_data))
+
+        for prop_data in self._build_raw_props():
+            chunks.extend(self._build_chunk('PROP', prop_data))
+
+        for raw_chunk in self._doc.raw_chunks:
+            chunks.extend(self._build_chunk(raw_chunk.name, raw_chunk.data))
 
         chunks.extend(self._build_chunk('PRNT', self._build_prnt()))
         chunks.extend(self._build_chunk('END\x00', b'</roblox>'))
@@ -285,6 +294,7 @@ class RbxmSerializer:
                         'R00': 1.0, 'R01': 0.0, 'R02': 0.0,
                         'R10': 0.0, 'R11': 1.0, 'R12': 0.0,
                         'R20': 0.0, 'R21': 0.0, 'R22': 1.0}
+            case PropertyFormat.OPTIONAL_CFRAME:            return None
             case PropertyFormat.REF:                        return None
             case PropertyFormat.NUMBER_SEQUENCE:            return []
             case PropertyFormat.COLOR_SEQUENCE:             return []
@@ -294,6 +304,11 @@ class RbxmSerializer:
             case PropertyFormat.COLOR3UINT8:                return {'R': 0, 'G': 0, 'B': 0}
             case PropertyFormat.INT64:                      return 0
             case PropertyFormat.SHARED_STRING:              return b''
+            case PropertyFormat.BYTECODE:                   return b''
+            case PropertyFormat.UNIQUE_ID:                  return {'Index': 0, 'Time': 0, 'Random': 0}
+            case PropertyFormat.FONT:                       return {'Family': '', 'Weight': 400, 'Style': 0, 'CachedFaceId': ''}
+            case PropertyFormat.SECURITY_CAPABILITIES:      return 0
+            case PropertyFormat.CONTENT:                    return None
             case _:                                         return None
 
     def _encode_prop_values(self, fmt: PropertyFormat, values: list[Any]) -> bytes | None:
@@ -349,6 +364,8 @@ class RbxmSerializer:
                 )
             case PropertyFormat.CFRAME_MATRIX | PropertyFormat.CFRAME_QUAT:
                 return self._enc_cframes(values)
+            case PropertyFormat.OPTIONAL_CFRAME:
+                return self._enc_optional_cframes(values)
             case PropertyFormat.ENUM:
                 return interleave_u32([int(v) for v in values])
             case PropertyFormat.REF:
@@ -378,6 +395,16 @@ class RbxmSerializer:
                 return interleave_i64([int(v) for v in values])
             case PropertyFormat.SHARED_STRING:
                 return self._enc_shared_strings(values)
+            case PropertyFormat.BYTECODE:
+                return self._enc_bytecodes(values)
+            case PropertyFormat.UNIQUE_ID:
+                return self._enc_unique_ids(values)
+            case PropertyFormat.FONT:
+                return self._enc_fonts(values)
+            case PropertyFormat.SECURITY_CAPABILITIES:
+                return interleave_u64([int(v) for v in values])
+            case PropertyFormat.CONTENT:
+                return self._enc_contents(values)
             case _:
                 return None
 
@@ -455,13 +482,18 @@ class RbxmSerializer:
         for v in values:
             if v is None:
                 buf.extend(write_u8(0))
+            elif not v.get('CustomPhysics', True):
+                buf.extend(write_u8(2 if v.get('HasAcousticAbsorption') else 0))
             else:
-                buf.extend(write_u8(1))
+                has_acoustic_absorption = 'AcousticAbsorption' in v
+                buf.extend(write_u8(3 if has_acoustic_absorption else 1))
                 buf.extend(write_f32(float(v['Density'])))
                 buf.extend(write_f32(float(v['Friction'])))
                 buf.extend(write_f32(float(v['Elasticity'])))
                 buf.extend(write_f32(float(v['FrictionWeight'])))
                 buf.extend(write_f32(float(v['ElasticityWeight'])))
+                if has_acoustic_absorption:
+                    buf.extend(write_f32(float(v['AcousticAbsorption'])))
         return bytes(buf)
 
     def _enc_shared_strings(self, values: list[Any]) -> bytes:
@@ -473,6 +505,123 @@ class RbxmSerializer:
             else:
                 indices.append(0)
         return interleave_u32(indices)
+
+    @staticmethod
+    def _enc_bytecodes(values: list[Any]) -> bytes:
+        buf = bytearray()
+        for value in values:
+            if isinstance(value, bytes):
+                buf.extend(write_binary_string(value))
+            else:
+                buf.extend(write_binary_string(str(value).encode('utf-8')))
+        return bytes(buf)
+
+    @staticmethod
+    def _enc_optional_cframes(values: list[Any]) -> bytes:
+        default = RbxmSerializer._default_value(PropertyFormat.CFRAME_MATRIX)
+        cframes = [default if value is None else value for value in values]
+        present = [value is not None for value in values]
+        return (
+            write_u8(int(PropertyFormat.CFRAME_MATRIX))
+            + RbxmSerializer._enc_cframes(cframes)
+            + write_u8(int(PropertyFormat.BOOL))
+            + bytes([1 if value else 0 for value in present])
+        )
+
+    @staticmethod
+    def _enc_unique_ids(values: list[Any]) -> bytes:
+        records: list[bytes] = []
+        for value in values:
+            if isinstance(value, bytes):
+                records.append(value)
+                continue
+            records.append(
+                struct.pack(
+                    '>IIQ',
+                    int(value.get('Index', 0)) & 0xFFFF_FFFF,
+                    int(value.get('Time', 0)) & 0xFFFF_FFFF,
+                    int(value.get('Random', 0)) & 0xFFFF_FFFF_FFFF_FFFF,
+                )
+            )
+        return interleave_bytes(records, 16)
+
+    @staticmethod
+    def _enc_fonts(values: list[Any]) -> bytes:
+        style_names = {'Normal': 0, 'Italic': 1}
+        buf = bytearray()
+        for value in values:
+            family = str(value.get('Family', '')).encode('utf-8')
+            cached_face_id = str(value.get('CachedFaceId', '')).encode('utf-8')
+            style = value.get('Style', 0)
+            if isinstance(style, str):
+                style = style_names.get(style, 0)
+            buf.extend(write_binary_string(family))
+            buf.extend(write_u16(int(value.get('Weight', 400))))
+            buf.extend(write_u8(int(style)))
+            buf.extend(write_binary_string(cached_face_id))
+        return bytes(buf)
+
+    @staticmethod
+    def _enc_contents(values: list[Any]) -> bytes:
+        source_types: list[int] = []
+        uris: list[str] = []
+        object_refs: list[int] = []
+        external_object_refs: list[int] = []
+
+        for value in values:
+            if value is None:
+                source_types.append(0)
+            elif isinstance(value, str):
+                if value:
+                    source_types.append(1)
+                    uris.append(value)
+                else:
+                    source_types.append(0)
+            elif value.get('SourceType') == 'Uri':
+                source_types.append(1)
+                uris.append(str(value.get('Uri', '')))
+            elif value.get('SourceType') == 'Object':
+                source_types.append(2)
+                ref = -1 if value.get('Ref') is None else int(value['Ref'])
+                if value.get('External'):
+                    external_object_refs.append(ref)
+                else:
+                    object_refs.append(ref)
+            else:
+                source_types.append(int(value.get('SourceType', 0)))
+
+        buf = bytearray()
+        buf.extend(interleave_u32(source_types))
+        buf.extend(write_u32(len(uris)))
+        for uri in uris:
+            buf.extend(write_binary_string(uri.encode('utf-8')))
+        buf.extend(write_u32(len(object_refs)))
+        buf.extend(encode_ids(object_refs))
+        buf.extend(write_u32(len(external_object_refs)))
+        buf.extend(encode_ids(external_object_refs))
+        return bytes(buf)
+
+    def _build_raw_props(self) -> list[bytes]:
+        props: list[bytes] = []
+        for raw in self._doc.raw_property_chunks:
+            prop = self._build_raw_prop(raw)
+            if prop is not None:
+                props.append(prop)
+        return props
+
+    def _build_raw_prop(self, raw: RbxRawPropertyChunk) -> bytes | None:
+        type_idx = self._type_index.get(raw.class_name)
+        if type_idx is None:
+            return None
+        if len(self._type_instances[type_idx]) != raw.instance_count:
+            return None
+
+        buf = bytearray()
+        buf.extend(write_u32(type_idx))
+        buf.extend(write_string(raw.prop_name))
+        buf.extend(write_u8(raw.fmt_byte))
+        buf.extend(raw.value_data)
+        return bytes(buf)
 
     # ------------------------------------------------------------------
     # PRNT chunk

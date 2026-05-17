@@ -725,40 +725,15 @@ def main():
             # Note: shared_memory object will be garbage collected or go out of scope,
             # but since we didn't successfully create it, we don't hold the lock.
 
-    # Initialize config manager before the deferred elevation prompt so the
-    # non-elevated process can still build the GUI and show a fallback dialog.
+    # Initialize config manager before the elevation gate so the non-elevated
+    # process can still build the prompt UI and show a fallback dialog.
     config_manager = ConfigManager()
 
-    # Defer UAC until after Qt has a visible UI. Some Windows setups suppress or
-    # lose ownerless prompts, so the startup prompt is fired from the GUI path
-    # with a native parent window and a guaranteed in-app fallback dialog.
+    # Gate non-admin launches before opening the usable GUI. Some Windows setups
+    # show UAC as a taskbar item instead of foregrounding it, so startup must
+    # block here until UAC is accepted, denied, or fails.
     _admin_prompt_needed = not _is_admin()
     start_proxy = config_manager.proxy_features_enabled and not _admin_prompt_needed
-
-    # Warn if no Roblox installations can be found (same scan used for cert injection)
-    from .proxy.master import _find_roblox_dirs as _scan_roblox_dirs
-    if not _scan_roblox_dirs():
-        _top = QApplication.topLevelWidgets()
-        _parent = next((w for w in _top if w.isVisible()), None)
-        _on_top = any(w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in _top)
-        _no_roblox_msg = QMessageBox(_parent)
-        if _on_top:
-            _no_roblox_msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
-        _no_roblox_msg.setWindowTitle('Fleasion — Roblox Not Found')
-        _no_roblox_msg.setIcon(QMessageBox.Icon.Warning)
-        _no_roblox_msg.setText('Roblox does not appear to be installed.')
-        _no_roblox_msg.setInformativeText(
-            'Fleasion could not find any Roblox installations on this computer.\n\n'
-            'If this is incorrect, click OK and launch Roblox, Fleasion will attempt to detect it.\n\n'
-            'Please close Fleasion, install Roblox, and then relaunch Fleasion.\n\n'
-            'Without Roblox installed, the majority of Fleasion\'s features cannot be used.\n\n'
-            'Note: To fully close Fleasion, right click Fleasion in the system tray and click Exit.'
-        )
-        _no_roblox_msg.setStandardButtons(QMessageBox.StandardButton.Ok)
-        if icon_path := get_icon_path():
-            from PyQt6.QtGui import QIcon
-            _no_roblox_msg.setWindowIcon(QIcon(str(icon_path)))
-        _no_roblox_msg.exec()
 
     # Start tracking time wasted from the stored total
     time_tracker.init(config_manager.time_wasted_seconds)
@@ -833,12 +808,60 @@ def main():
             return
         _admin_prompt_shown = True
 
-        parent = _visible_parent_widget()
+        gate = QDialog(None)
+        gate.setModal(True)
+        gate.setWindowTitle('Fleasion - Administrator Permission Required')
+        gate.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
+        gate_layout = QVBoxLayout(gate)
+        gate_label = QLabel(
+            'Fleasion is waiting for Windows administrator permission.\n\n'
+            'If the UAC prompt is flashing on the taskbar, click it and choose Yes or No.'
+        )
+        gate_label.setWordWrap(True)
+        gate_layout.addWidget(gate_label)
+        if icon_path := get_icon_path():
+            from PyQt6.QtGui import QIcon
+            gate.setWindowIcon(QIcon(str(icon_path)))
+        gate.show()
+        gate.raise_()
+        gate.activateWindow()
+        QApplication.processEvents()
+
         log_buffer.log('UAC', 'Requesting administrator relaunch from GUI startup path')
-        if _relaunch_as_admin(parent_hwnd=_window_handle(parent)):
+        if _relaunch_as_admin(parent_hwnd=_window_handle(gate)):
+            gate.close()
             sys.exit(0)
 
-        _show_admin_required_dialog(parent)
+        gate.close()
+        _show_admin_required_dialog()
+
+    if _admin_prompt_needed:
+        _request_admin_once()
+
+    # Warn if no Roblox installations can be found (same scan used for cert injection)
+    from .proxy.master import _find_roblox_dirs as _scan_roblox_dirs
+    if not _scan_roblox_dirs():
+        _top = QApplication.topLevelWidgets()
+        _parent = next((w for w in _top if w.isVisible()), None)
+        _on_top = any(w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in _top)
+        _no_roblox_msg = QMessageBox(_parent)
+        if _on_top:
+            _no_roblox_msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
+        _no_roblox_msg.setWindowTitle('Fleasion — Roblox Not Found')
+        _no_roblox_msg.setIcon(QMessageBox.Icon.Warning)
+        _no_roblox_msg.setText('Roblox does not appear to be installed.')
+        _no_roblox_msg.setInformativeText(
+            'Fleasion could not find any Roblox installations on this computer.\n\n'
+            'If this is incorrect, click OK and launch Roblox, Fleasion will attempt to detect it.\n\n'
+            'Please close Fleasion, install Roblox, and then relaunch Fleasion.\n\n'
+            'Without Roblox installed, the majority of Fleasion\'s features cannot be used.\n\n'
+            'Note: To fully close Fleasion, right click Fleasion in the system tray and click Exit.'
+        )
+        _no_roblox_msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        if icon_path := get_icon_path():
+            from PyQt6.QtGui import QIcon
+            _no_roblox_msg.setWindowIcon(QIcon(str(icon_path)))
+        _no_roblox_msg.exec()
 
     # Setup periodic status update
     status_timer = QTimer()
@@ -902,8 +925,6 @@ def main():
         _auth_prompt_shown = True
         _show_auth_cookie_unavailable_dialog(details)
 
-    if _admin_prompt_needed:
-        QTimer.singleShot(500, _request_admin_once)
     QTimer.singleShot(1500, _check_auth_cookie_once)
 
     # Run application
