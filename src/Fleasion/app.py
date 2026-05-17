@@ -320,6 +320,77 @@ def _show_hosts_write_exhausted_dialog(details: dict):
         break
 
 
+def _show_auth_cookie_unavailable_dialog(details: dict):
+    """Show a user-facing popup when no readable Roblox auth cookie can be found."""
+    _top = QApplication.topLevelWidgets()
+    _parent = next((w for w in _top if w.isVisible()), None)
+    _on_top = any(w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in _top)
+
+    discord_url = APP_DISCORD
+    if not discord_url.startswith(('http://', 'https://')):
+        discord_url = f'https://{discord_url}'
+
+    attempted = details.get('attempted_paths') or []
+    existing = details.get('existing_paths') or []
+    if not isinstance(attempted, list):
+        attempted = []
+    if not isinstance(existing, list):
+        existing = []
+
+    existing_html = ''
+    if existing:
+        existing_html = (
+            'RobloxCookies.dat files were found here, but none could be used:<br>'
+            + '<br>'.join(html.escape(str(path)) for path in existing[:8])
+            + '<br><br>'
+        )
+
+    diagnostics_html = (
+        'Diagnostics:<br>'
+        f'Windows username: {html.escape(str(details.get("username") or "Unknown"))}<br>'
+        f'USERPROFILE: {html.escape(str(details.get("userprofile") or "Unknown"))}<br>'
+        f'Fleasion LocalAppData: {html.escape(str(details.get("local_appdata") or "Unknown"))}<br>'
+        f'Default cookie path: {html.escape(str(details.get("default_cookie_path") or "Unknown"))}<br>'
+        f'Candidate paths checked: {len(attempted)}<br><br>'
+    )
+
+    msg = QMessageBox(_parent)
+    if _on_top:
+        msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
+    msg.setWindowTitle('Fleasion - Roblox Token Not Readable')
+    msg.setIcon(QMessageBox.Icon.Warning)
+    msg.setText('Fleasion could not read a usable Roblox login token.')
+    msg.setTextFormat(Qt.TextFormat.RichText)
+    msg.setInformativeText(
+        'Authenticated Roblox asset downloads may fail until this is fixed.<br><br>'
+        'Most likely cause:<br>'
+        'Fleasion is running under a different Windows user account than Roblox, '
+        'or it inherited the wrong LocalAppData path during elevation/startup.<br><br>'
+        'Quick fix:<br>'
+        '1) Fully exit Fleasion from the system tray.<br>'
+        '2) Start Fleasion from the same Windows account that runs Roblox.<br>'
+        '3) If Windows shows a UAC prompt, do not approve it with a different admin account.<br>'
+        '4) Launch Roblox once, then restart Fleasion.<br><br>'
+        + existing_html
+        + diagnostics_html
+        + f'Need help? <a href="{html.escape(discord_url)}">{html.escape(APP_DISCORD)}</a>'
+    )
+    msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+
+    if icon_path := get_icon_path():
+        from PyQt6.QtGui import QIcon
+        msg.setWindowIcon(QIcon(str(icon_path)))
+
+    for label in msg.findChildren(QLabel):
+        label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextBrowserInteraction
+            | Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        label.setOpenExternalLinks(True)
+
+    msg.exec()
+
+
 class _ProxyErrorInvoker(QObject):
     """Main-thread bridge for proxy startup errors emitted from worker threads."""
 
@@ -814,8 +885,26 @@ def main():
         # Open dashboard on launch if enabled (suppressed when started by autostart task)
         tray._show_replacer_config()
 
+    _auth_prompt_shown = False
+
+    def _check_auth_cookie_once():
+        nonlocal _auth_prompt_shown
+        if _auth_prompt_shown:
+            return
+        try:
+            from .utils.roblox_auth import get_auth_failure_details, get_roblosecurity
+            if get_roblosecurity():
+                return
+            details = get_auth_failure_details()
+        except Exception as exc:
+            log_buffer.log('Auth', f'Unexpected error during startup auth check: {type(exc).__name__}: {exc}')
+            return
+        _auth_prompt_shown = True
+        _show_auth_cookie_unavailable_dialog(details)
+
     if _admin_prompt_needed:
         QTimer.singleShot(500, _request_admin_once)
+    QTimer.singleShot(1500, _check_auth_cookie_once)
 
     # Run application
     sys.exit(app.exec())

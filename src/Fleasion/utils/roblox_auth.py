@@ -2,6 +2,7 @@
 
 import base64
 import json
+import os
 import re
 from pathlib import Path
 
@@ -16,6 +17,9 @@ except Exception:
 
 ROBLOX_COOKIES_PATH = LOCAL_APPDATA / 'Roblox' / 'LocalStorage' / 'RobloxCookies.dat'
 _LOGGED_AUTH_FAILURES: set[str] = set()
+_ROBLOX_COOKIE_RELATIVE_PATH = Path('AppData') / 'Local' / 'Roblox' / 'LocalStorage' / 'RobloxCookies.dat'
+_SUCCESSFUL_COOKIE_PATH: Path | None = None
+_LAST_AUTH_FAILURE_DETAILS: dict[str, object] = {}
 
 
 def _log_auth_failure(key: str, message: str) -> None:
@@ -59,6 +63,65 @@ def _replace_roblosecurity(cookie_text: str, cookie: str) -> tuple[str, int]:
     return cookie_text.rstrip() + f"\n.ROBLOSECURITY\t{cookie}", 0
 
 
+def _safe_resolve(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except OSError:
+        return path
+
+
+def _normalise_key(path: Path) -> str:
+    return os.path.normcase(str(_safe_resolve(path)))
+
+
+def _path_exists(path: Path) -> bool:
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
+def _add_candidate(candidates: list[tuple[str, Path]], seen: set[str], source: str, path: Path) -> None:
+    key = _normalise_key(path)
+    if key in seen:
+        return
+    seen.add(key)
+    candidates.append((source, path))
+
+
+def _iter_user_profile_cookie_candidates() -> list[tuple[str, Path]]:
+    candidates: list[tuple[str, Path]] = []
+    seen: set[str] = set()
+
+    _add_candidate(candidates, seen, 'LOCALAPPDATA', ROBLOX_COOKIES_PATH)
+
+    userprofile = os.environ.get('USERPROFILE')
+    if userprofile:
+        _add_candidate(candidates, seen, 'USERPROFILE', Path(userprofile) / _ROBLOX_COOKIE_RELATIVE_PATH)
+
+    home = Path.home()
+    if home:
+        _add_candidate(candidates, seen, 'Path.home', home / _ROBLOX_COOKIE_RELATIVE_PATH)
+
+    users_root = Path(os.environ.get('SystemDrive', 'C:')) / 'Users'
+    try:
+        with os.scandir(users_root) as entries:
+            for entry in entries:
+                try:
+                    if not entry.is_dir(follow_symlinks=False):
+                        continue
+                except OSError:
+                    continue
+                _add_candidate(candidates, seen, 'all-users', Path(entry.path) / _ROBLOX_COOKIE_RELATIVE_PATH)
+    except OSError as exc:
+        _log_auth_failure(
+            f'user-scan:{users_root}:{type(exc).__name__}',
+            f'Could not scan Windows user profiles for RobloxCookies.dat: {type(exc).__name__}: {exc}',
+        )
+
+    return candidates
+
+
 def _read_cookie_payload(path: Path) -> tuple[dict, bytes] | None:
     if win32crypt is None:
         _log_auth_failure(
@@ -66,7 +129,7 @@ def _read_cookie_payload(path: Path) -> tuple[dict, bytes] | None:
             'Could not read Roblox auth cookie: pywin32/win32crypt is unavailable',
         )
         return None
-    if not path.exists():
+    if not _path_exists(path):
         _log_auth_failure(
             f'missing:{path}',
             f'RobloxCookies.dat not found at {path}',
@@ -112,13 +175,7 @@ def _read_cookie_payload(path: Path) -> tuple[dict, bytes] | None:
     return data, dec
 
 
-def get_roblosecurity(path: Path | None = None) -> str | None:
-    """Return the .ROBLOSECURITY cookie value from the local Roblox cookie store.
-
-    Uses Windows DPAPI (win32crypt) to decrypt the stored cookie data.
-    Returns None if the cookie is not found or cannot be decrypted.
-    """
-    cookie_path = Path(path) if path is not None else ROBLOX_COOKIES_PATH
+def _get_roblosecurity_from_path(cookie_path: Path) -> str | None:
     try:
         payload = _read_cookie_payload(cookie_path)
         if payload is None:
@@ -142,6 +199,71 @@ def get_roblosecurity(path: Path | None = None) -> str | None:
             f'unexpected-read:{cookie_path}:{type(exc).__name__}:{exc}',
             f'Unexpected error while reading Roblox auth cookie at {cookie_path}: {type(exc).__name__}: {exc}',
         )
+    return None
+
+
+def get_auth_failure_details() -> dict[str, object]:
+    """Return diagnostics for the most recent default cookie lookup failure."""
+    return dict(_LAST_AUTH_FAILURE_DETAILS)
+
+
+def get_roblosecurity(path: Path | None = None) -> str | None:
+    """Return the .ROBLOSECURITY cookie value from a Roblox cookie store.
+
+    Uses Windows DPAPI (win32crypt) to decrypt the stored cookie data.
+    When no explicit path is supplied, tries the configured LocalAppData path
+    first, then likely current-user paths, then exact cookie locations under
+    C:\\Users.
+    """
+    global _SUCCESSFUL_COOKIE_PATH, _LAST_AUTH_FAILURE_DETAILS
+
+    if path is not None:
+        return _get_roblosecurity_from_path(Path(path))
+
+    attempted: list[str] = []
+    existing: list[str] = []
+
+    if _SUCCESSFUL_COOKIE_PATH is not None:
+        attempted.append(str(_SUCCESSFUL_COOKIE_PATH))
+        cookie = _get_roblosecurity_from_path(_SUCCESSFUL_COOKIE_PATH)
+        if cookie:
+            return cookie
+        _SUCCESSFUL_COOKIE_PATH = None
+
+    for source, cookie_path in _iter_user_profile_cookie_candidates():
+        attempted.append(str(cookie_path))
+        if source == 'all-users' and not _path_exists(cookie_path):
+            continue
+        if _path_exists(cookie_path):
+            existing.append(str(cookie_path))
+
+        cookie = _get_roblosecurity_from_path(cookie_path)
+        if cookie:
+            _SUCCESSFUL_COOKIE_PATH = cookie_path
+            if cookie_path != ROBLOX_COOKIES_PATH:
+                _log_auth_failure(
+                    f'fallback-success:{cookie_path}',
+                    f'Using Roblox auth cookie discovered from {source}: {cookie_path}',
+                )
+            _LAST_AUTH_FAILURE_DETAILS = {}
+            return cookie
+
+    _LAST_AUTH_FAILURE_DETAILS = {
+        'local_appdata': str(LOCAL_APPDATA),
+        'default_cookie_path': str(ROBLOX_COOKIES_PATH),
+        'userprofile': os.environ.get('USERPROFILE') or '',
+        'username': os.environ.get('USERNAME') or '',
+        'home': str(Path.home()),
+        'attempted_paths': attempted,
+        'existing_paths': existing,
+    }
+    _log_auth_failure(
+        'all-cookie-candidates-failed',
+        (
+            'Could not find a usable Roblox auth cookie after checking '
+            f'{len(attempted)} candidate path(s); {len(existing)} RobloxCookies.dat file(s) existed'
+        ),
+    )
     return None
 
 
