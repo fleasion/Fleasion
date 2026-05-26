@@ -28,6 +28,8 @@ import json
 import logging
 import os
 import re
+import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -63,7 +65,7 @@ from .server import (
     USERNAME_SPOOFER_INTERCEPT_HOSTS,
 )
 from ..cache.cache_manager import CacheManager
-from ..utils.certs import generate_ca, generate_host_cert, get_ca_pem
+from ..utils.certs import generate_ca, generate_host_cert, generate_multi_host_cert, get_ca_pem
 from ..utils.roblox_dirs import load_saved_roblox_dirs
 from ..utils.windows import get_roblox_player_exe_path, get_roblox_studio_exe_path, launch_as_standard_user
 
@@ -415,6 +417,71 @@ def _resolve_real_ips(hosts: set) -> dict:
     return real_ips
 
 
+def _log_upstream_ip_coverage(hosts: set[str], real_ips: dict) -> None:
+    for host in sorted(hosts):
+        ips = real_ips.get(host) or []
+        if ips:
+            log_buffer.log('Proxy', f'Upstream IP coverage: {host} -> {", ".join(ips)}')
+        else:
+            log_buffer.log('Proxy', f'Upstream IP coverage: {host} -> NO ROUTABLE IPS')
+
+
+def _connect_tls_for_self_test(host: str | None, ca_cert_path: Path, port: int) -> dict:
+    ctx = ssl.create_default_context(cafile=str(ca_cert_path))
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    if host is None:
+        ctx.check_hostname = False
+    with socket.create_connection(('127.0.0.1', port), timeout=5.0) as raw_sock:
+        with ctx.wrap_socket(raw_sock, server_hostname=host) as tls_sock:
+            cert = tls_sock.getpeercert()
+            return cert if isinstance(cert, dict) else {}
+
+
+def _cert_dict_san_hosts(cert: dict) -> set[str]:
+    names: set[str] = set()
+    for kind, value in cert.get('subjectAltName', ()):
+        if kind in ('DNS', 'IP Address'):
+            names.add(str(value).lower())
+    return names
+
+
+def _run_tls_self_test_sync(hosts: set[str], ca_cert_path: Path, port: int) -> tuple[bool, list[str]]:
+    failures: list[str] = []
+    for host in sorted(hosts):
+        try:
+            _connect_tls_for_self_test(host, ca_cert_path, port)
+        except Exception as exc:
+            failures.append(f'{host}: {type(exc).__name__}: {exc}')
+
+    try:
+        default_cert = _connect_tls_for_self_test(None, ca_cert_path, port)
+        san_hosts = _cert_dict_san_hosts(default_cert)
+        missing = sorted(host for host in hosts if host.lower() not in san_hosts)
+        if missing:
+            failures.append(f'default cert missing SAN hosts: {", ".join(missing)}')
+    except Exception as exc:
+        failures.append(f'default cert without SNI: {type(exc).__name__}: {exc}')
+
+    return not failures, failures
+
+
+async def _run_tls_self_test(hosts: set[str], ca_cert_path: Path, port: int) -> bool:
+    loop = asyncio.get_running_loop()
+    ok, failures = await loop.run_in_executor(
+        None,
+        _run_tls_self_test_sync,
+        set(hosts),
+        ca_cert_path,
+        port,
+    )
+    if ok:
+        log_buffer.log('TLS', f'Startup TLS self-test passed for {format_count(hosts, "intercept host")}')
+        return True
+    for failure in failures:
+        log_buffer.log('TLS', f'Startup TLS self-test failed: {failure}')
+    return False
+
+
 
 def _flush_dns() -> None:
     """Flush Windows DNS client cache so the hosts file changes take effect immediately.
@@ -500,9 +567,7 @@ def _schedule_hosts_cleanup_on_reboot() -> None:
             original = ''
         clean_content = ''.join(
             line for line in original.splitlines(keepends=True)
-            if _HOSTS_MARKER not in line and not any(
-                f'127.0.0.1 {h}' in line for h in INTERCEPT_HOSTS
-            )
+            if _HOSTS_MARKER not in line and not _hosts_line_has_target_loopback(line, set(INTERCEPT_HOSTS))
         )
         _TEMP_CLEAN_HOSTS.write_text(clean_content, encoding='utf-8')
 
@@ -808,6 +873,107 @@ _HOSTS_WRITE_RETRIES = 8
 _HOSTS_WRITE_DELAY   = 0.25  # seconds between direct-write retries
 
 
+def _parse_active_hosts_entries(content: str) -> dict[str, list[dict]]:
+    """Parse active hosts-file mappings keyed by lowercase hostname."""
+    entries: dict[str, list[dict]] = {}
+    for line_no, raw_line in enumerate(content.splitlines(), start=1):
+        active = raw_line.split('#', 1)[0].strip()
+        if not active:
+            continue
+        parts = active.split()
+        if len(parts) < 2:
+            continue
+        ip = parts[0]
+        for hostname in parts[1:]:
+            host_key = hostname.strip().lower()
+            if not host_key:
+                continue
+            entries.setdefault(host_key, []).append(
+                {
+                    'ip': ip,
+                    'line_no': line_no,
+                    'line': raw_line.rstrip('\r\n'),
+                }
+            )
+    return entries
+
+
+def _hosts_conflicts(hosts: Set[str], entries: dict[str, list[dict]]) -> list[tuple[str, dict]]:
+    conflicts: list[tuple[str, dict]] = []
+    for host in sorted(hosts):
+        for entry in entries.get(host.lower(), []):
+            if entry.get('ip') != '127.0.0.1':
+                conflicts.append((host, entry))
+    return conflicts
+
+
+def _record_hosts_error(error_details: Optional[dict], exc_or_text) -> None:
+    if error_details is None:
+        return
+    err_text = str(exc_or_text)
+    all_attempts_exhausted = 'all strategies exhausted' in err_text.lower()
+    error_details.clear()
+    error_details.update(
+        {
+            'hosts_path': str(HOSTS_FILE),
+            'hosts_directory': str(HOSTS_FILE.parent),
+            'error': err_text,
+            'all_attempts_exhausted': all_attempts_exhausted,
+            'notify_user': isinstance(exc_or_text, PermissionError) or all_attempts_exhausted,
+        }
+    )
+
+
+def _log_hosts_conflicts(conflicts: list[tuple[str, dict]]) -> None:
+    for host, entry in conflicts:
+        log_buffer.log(
+            'Hosts',
+            f'Hosts conflict for {host}: line {entry["line_no"]}: {entry["line"]}',
+        )
+
+
+def _verify_hosts_entries(hosts: Set[str], error_details: Optional[dict] = None) -> bool:
+    """Verify exact active hosts mappings after a write and DNS flush."""
+    try:
+        existing = HOSTS_FILE.read_text(encoding='utf-8', errors='replace')
+    except OSError as exc:
+        log_buffer.log('Hosts', f'Hosts verification failed: cannot read hosts file: {exc}')
+        _record_hosts_error(error_details, exc)
+        return False
+
+    entries = _parse_active_hosts_entries(existing)
+    conflicts = _hosts_conflicts(hosts, entries)
+    if conflicts:
+        _log_hosts_conflicts(conflicts)
+        _record_hosts_error(error_details, 'active conflicting hosts mappings detected')
+        return False
+
+    missing = []
+    for host in sorted(hosts):
+        host_entries = entries.get(host.lower(), [])
+        if not any(entry.get('ip') == '127.0.0.1' for entry in host_entries):
+            missing.append(host)
+
+    if missing:
+        log_buffer.log('Hosts', f'Hosts verification failed: missing active mappings for {", ".join(missing)}')
+        _record_hosts_error(error_details, f'missing active hosts mappings for {", ".join(missing)}')
+        return False
+
+    log_buffer.log('Hosts', f'Hosts verification passed for: {", ".join(sorted(hosts))}')
+    return True
+
+
+def _hosts_line_has_target_loopback(raw_line: str, hosts: Set[str]) -> bool:
+    active = raw_line.split('#', 1)[0].strip()
+    if not active:
+        return False
+    parts = active.split()
+    if len(parts) < 2 or parts[0] != '127.0.0.1':
+        return False
+    target_hosts = {host.lower() for host in hosts}
+    return any(host.lower() in target_hosts for host in parts[1:])
+
+
 def _write_hosts_file(content: str) -> None:
     """Write *content* to the system hosts file, working around security
     software (e.g. Webroot SecureAnywhere / WRSVC) that intermittently or
@@ -893,22 +1059,6 @@ def _add_hosts_entries(hosts: Set[str], error_details: Optional[dict] = None) ->
     If *error_details* is provided and a write fails with PermissionError,
     it is populated with metadata for user-facing error notifications.
     """
-    def _record_error(exc: OSError) -> None:
-        if error_details is None:
-            return
-        err_text = str(exc)
-        all_attempts_exhausted = 'all strategies exhausted' in err_text.lower()
-        error_details.clear()
-        error_details.update(
-            {
-                'hosts_path': str(HOSTS_FILE),
-                'hosts_directory': str(HOSTS_FILE.parent),
-                'error': err_text,
-                'all_attempts_exhausted': all_attempts_exhausted,
-                'notify_user': isinstance(exc, PermissionError) or all_attempts_exhausted,
-            }
-        )
-
     try:
         existing = HOSTS_FILE.read_text(encoding='utf-8', errors='replace')
     except FileNotFoundError:
@@ -941,36 +1091,44 @@ def _add_hosts_entries(hosts: Set[str], error_details: Optional[dict] = None) ->
             log_buffer.log('Hosts', 'hosts file was missing — created new default hosts file')
         except OSError as exc:
             log_buffer.log('Hosts', f'Failed to create hosts file: {exc}')
-            _record_error(exc)
+            _record_hosts_error(error_details, exc)
             return False
     except OSError as exc:
         log_buffer.log('Hosts', f'Cannot read hosts file: {exc}')
-        _record_error(exc)
+        _record_hosts_error(error_details, exc)
+        return False
+
+    entries = _parse_active_hosts_entries(existing)
+    conflicts = _hosts_conflicts(hosts, entries)
+    if conflicts:
+        _log_hosts_conflicts(conflicts)
+        _record_hosts_error(error_details, 'active conflicting hosts mappings detected')
         return False
 
     lines_to_add = []
     for host in sorted(hosts):
         entry = f'127.0.0.1 {host} {_HOSTS_MARKER}'
-        if host not in existing:
+        if not any(e.get('ip') == '127.0.0.1' for e in entries.get(host.lower(), [])):
             lines_to_add.append(entry)
 
     if not lines_to_add:
-        log_buffer.log('Hosts', 'Hosts entries already present, skipping')
+        log_buffer.log('Hosts', 'Exact active hosts entries already present, skipping')
         return True
 
     new_content = existing.rstrip('\n') + '\n' + '\n'.join(lines_to_add) + '\n'
     try:
         _write_hosts_file(new_content)
-        for host in sorted(hosts):
+        for entry in lines_to_add:
+            host = entry.split()[1]
             log_buffer.log('Hosts', f'Added redirect: {host} -> 127.0.0.1')
         return True
     except PermissionError as exc:
         log_buffer.log('Hosts', f'Permission denied writing hosts file: {exc}')
-        _record_error(exc)
+        _record_hosts_error(error_details, exc)
         return False
     except OSError as exc:
         log_buffer.log('Hosts', f'Failed to write hosts file: {exc}')
-        _record_error(exc)
+        _record_hosts_error(error_details, exc)
         return False
 
 
@@ -1005,9 +1163,7 @@ def _remove_hosts_entries(hosts: Set[str], error_details: Optional[dict] = None)
     lines = existing.splitlines(keepends=True)
     filtered = [
         line for line in lines
-        if _HOSTS_MARKER not in line and not any(
-            f'127.0.0.1 {h}' in line for h in hosts
-        )
+        if _HOSTS_MARKER not in line and not _hosts_line_has_target_loopback(line, hosts)
     ]
 
     if len(filtered) == len(lines):
@@ -1301,6 +1457,34 @@ def _analyze_and_strip_fleasion_cas(pem_bundle: str, current_ca_pem: str) -> tup
     return ''.join(parts), fleasion_count, current_count
 
 
+def _log_cacert_health(ca_file: Path, ca_pem: str) -> None:
+    if not ca_file.exists():
+        log_buffer.log('Certificate', f'WARNING: CERTS FILE MISSING: {ca_file}')
+        log_buffer.log(
+            'Certificate',
+            f'cacert.pem health for {ca_file.parent.parent.name}: exists=no, size=0 bytes, '
+            'total certs=0, Fleasion certs=0, current Fleasion certs=0',
+        )
+        return
+
+    try:
+        existing = ca_file.read_text(encoding='utf-8', errors='replace')
+        size = ca_file.stat().st_size
+    except OSError as exc:
+        log_buffer.log('Certificate', f'Failed to inspect cacert.pem at {ca_file}: {exc}')
+        return
+
+    total_count = len(_PEM_CERT_BLOCK_RE.findall(_normalize_newlines(existing)))
+    _, fleasion_count, current_count = _analyze_and_strip_fleasion_cas(existing, ca_pem)
+    if total_count <= 1:
+        log_buffer.log(
+            'Certificate',
+            f'WARNING: cacert.pem looks incomplete for {ca_file.parent.parent.name}: '
+            f'exists=yes, size={size} bytes, total certs={total_count}, '
+            f'Fleasion certs={fleasion_count}, current Fleasion certs={current_count}',
+        )
+
+
 def _upsert_fleasion_ca_in_cacert(ca_file: Path, ca_pem: str) -> tuple[bool, int, int]:
     """Ensure exactly one current Fleasion CA exists in *ca_file*.
 
@@ -1343,6 +1527,7 @@ def _install_ca_into_roblox(ca_pem: str) -> None:
         ssl_dir.mkdir(exist_ok=True)
         ca_file = ssl_dir / 'cacert.pem'
         try:
+            _log_cacert_health(ca_file, ca_pem)
             changed, fleasion_count, current_count = _upsert_fleasion_ca_in_cacert(ca_file, ca_pem)
             already_current = fleasion_count == 1 and current_count == 1
 
@@ -1383,6 +1568,7 @@ def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
 
     try:
         ssl_dir.mkdir(exist_ok=True)
+        _log_cacert_health(ca_file, ca_pem)
         changed, fleasion_count, current_count = _upsert_fleasion_ca_in_cacert(ca_file, ca_pem)
     except (PermissionError, OSError) as exc:
         log_buffer.log('Certificate', f'Failed to inject CA into running Roblox instance: {exc}')
@@ -1505,12 +1691,20 @@ class ProxyMaster:
             _remove_hosts_entries(set(INTERCEPT_HOSTS))
             _flush_dns()
             real_ips = _resolve_real_ips(desired_hosts)
+            _log_upstream_ip_coverage(desired_hosts, real_ips)
             if not _add_hosts_entries(desired_hosts):
                 log_buffer.log('Hosts', 'Failed to update username spoofer hosts entries')
                 _add_hosts_entries(previous_hosts)
                 _flush_dns()
                 return
             _flush_dns()
+            if not _verify_hosts_entries(desired_hosts):
+                log_buffer.log('Hosts', 'Failed to verify username spoofer hosts entries')
+                _remove_hosts_entries(set(INTERCEPT_HOSTS))
+                _add_hosts_entries(previous_hosts)
+                _flush_dns()
+                _verify_hosts_entries(previous_hosts)
+                return
 
             self._active_intercept_hosts = set(desired_hosts)
             self._proxy._upstream_ips = real_ips
@@ -1584,6 +1778,7 @@ class ProxyMaster:
             _remove_hosts_entries(set(INTERCEPT_HOSTS))
             _flush_dns()
             new_ips = _resolve_real_ips(active_hosts)
+            _log_upstream_ip_coverage(active_hosts, new_ips)
             # Re-install entries pointing back to our proxy.
             # Acquire the lock before re-adding to guard against a race with
             # stop(): if stop() ran while we were resolving IPs it will have
@@ -1594,10 +1789,15 @@ class ProxyMaster:
                 if not self._hosts_installed:
                     # stop() already ran — do not re-add entries.
                     return
-                _add_hosts_entries(active_hosts)
+                if not _add_hosts_entries(active_hosts):
+                    log_buffer.log('Hosts', 'Failed to re-add hosts entries during Roblox cert refresh')
+                    return
                 self._active_intercept_hosts = set(active_hosts)
-                
+
             _flush_dns()
+            if not _verify_hosts_entries(active_hosts):
+                log_buffer.log('Hosts', 'Failed to verify hosts entries during Roblox cert refresh')
+                return
             # Update running proxy and scraper with fresh upstream IPs
             if self._proxy is not None and new_ips:
                 self._proxy._upstream_ips = new_ips
@@ -1732,6 +1932,19 @@ class ProxyMaster:
                 self._running = False
                 return
 
+        try:
+            default_cert = generate_multi_host_cert(
+                'intercept-default',
+                INTERCEPT_HOSTS,
+                ca_cert_path,
+                ca_key_path,
+                PROXY_CA_DIR,
+            )
+        except Exception as exc:
+            log_buffer.log('Certificate', f'Default multi-host cert failed: {exc}')
+            self._running = False
+            return
+
         elapsed_ms = (time.perf_counter() - t0) * 1000
         log_buffer.log('Certificate', f'Certificates ready in {elapsed_ms:.0f} ms')
 
@@ -1770,6 +1983,7 @@ class ProxyMaster:
         active_hosts = self._desired_intercept_hosts()
         self._active_intercept_hosts = set(active_hosts)
         real_ips = _resolve_real_ips(active_hosts)
+        _log_upstream_ip_coverage(active_hosts, real_ips)
 
         # ── Create addon instances ────────────────────────────────────────
         self._texture_stripper = TextureStripper(self.config_manager)
@@ -1797,11 +2011,13 @@ class ProxyMaster:
             cache_scraper=self.cache_scraper,
             host_certs=host_certs,
             upstream_ips=real_ips,
+            default_cert=default_cert,
             port=PROXY_PORT,
         )
         with self._lock:
             interceptors = list(self._module_interceptors)
         self._proxy.set_module_interceptors(interceptors)
+        await self._proxy.log_upstream_self_test(active_hosts)
         try:
             await self._proxy.start()
         except OSError as exc:
@@ -1840,6 +2056,15 @@ class ProxyMaster:
             self._running = False
             return
 
+        # ── TLS startup self-test ───────────────────────────────────────────
+        # Probe every intercepted host with SNI plus one no-SNI connection before
+        # the hosts file points Roblox at us. This catches certificate/SNI failures
+        # that otherwise happen before normal request logs exist.
+        if not await _run_tls_self_test(set(INTERCEPT_HOSTS), ca_cert_path, PROXY_PORT):
+            await self._proxy.stop()
+            self._running = False
+            return
+
         # ── Write hosts file entries ──────────────────────────────────────
         hosts_error_details: dict = {}
         if not _add_hosts_entries(active_hosts, error_details=hosts_error_details):
@@ -1851,6 +2076,13 @@ class ProxyMaster:
             return
         self._hosts_installed = True
         _flush_dns()  # Make the new entries take effect immediately
+        if not _verify_hosts_entries(active_hosts, error_details=hosts_error_details):
+            _remove_hosts_entries(set(INTERCEPT_HOSTS))
+            _flush_dns()
+            self._hosts_installed = False
+            await self._proxy.stop()
+            self._running = False
+            return
         try:
             _PROXY_OWNER_PID_FILE.write_text(str(os.getpid()))
         except OSError:
