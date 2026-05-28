@@ -6,12 +6,15 @@ from PyQt6.QtCore import QEvent, Qt
 from PyQt6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
     QSizePolicy,
+    QSpinBox,
     QScrollArea,
     QVBoxLayout,
     QWidget,
@@ -126,6 +129,111 @@ class SettingsTab(QWidget):
         self._proxy_features_chk.setChecked(self._config.proxy_features_enabled)
         self._proxy_features_chk.toggled.connect(self._on_proxy_features_toggled)
         section.add_widget(self._proxy_features_chk)
+
+        mode_row = QHBoxLayout()
+        mode_row.setContentsMargins(0, 0, 0, 0)
+        mode_row.addWidget(QLabel('Upstream Transport'))
+        self._upstream_mode_combo = QComboBox()
+        self._upstream_mode_combo.addItem('Auto', 'auto')
+        self._upstream_mode_combo.addItem('Direct IP', 'direct_ip')
+        self._upstream_mode_combo.addItem('System Proxy', 'system_proxy')
+        self._upstream_mode_combo.addItem('Manual HTTP CONNECT', 'http_connect')
+        self._upstream_mode_combo.addItem('Manual SOCKS5', 'socks5')
+        current_mode = self._config.upstream_transport_mode
+        idx = self._upstream_mode_combo.findData(current_mode)
+        self._upstream_mode_combo.setCurrentIndex(max(0, idx))
+        self._upstream_mode_combo.currentIndexChanged.connect(self._on_upstream_mode_changed)
+        mode_row.addWidget(self._upstream_mode_combo)
+        mode_row.addStretch()
+        mode_widget = QWidget()
+        mode_widget.setLayout(mode_row)
+        section.add_widget(mode_widget)
+
+        self._wire_preserving_chk = QCheckBox('Enable Wire-Preserving Passthrough')
+        self._wire_preserving_chk.setChecked(self._config.wire_preserving_passthrough)
+        self._wire_preserving_chk.toggled.connect(self._on_wire_preserving_toggled)
+        section.add_widget(self._wire_preserving_chk)
+
+        def _proxy_row(label: str, host_value: str, port_value: int):
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.addWidget(QLabel(label))
+            host = QLineEdit()
+            host.setText(host_value)
+            host.setPlaceholderText('Host')
+            port = QSpinBox()
+            port.setRange(0, 65535)
+            port.setValue(port_value)
+            port.setPrefix('Port ')
+            row.addWidget(host, 1)
+            row.addWidget(port)
+            widget = QWidget()
+            widget.setLayout(row)
+            section.add_widget(widget)
+            return host, port
+
+        self._http_proxy_host, self._http_proxy_port = _proxy_row(
+            'HTTP CONNECT',
+            self._config.upstream_http_connect_host,
+            self._config.upstream_http_connect_port,
+        )
+        self._http_proxy_host.editingFinished.connect(self._on_http_proxy_changed)
+        self._http_proxy_port.valueChanged.connect(self._on_http_proxy_changed)
+
+        self._socks5_host, self._socks5_port = _proxy_row(
+            'SOCKS5',
+            self._config.upstream_socks5_host,
+            self._config.upstream_socks5_port,
+        )
+        self._socks5_host.editingFinished.connect(self._on_socks5_proxy_changed)
+        self._socks5_port.valueChanged.connect(self._on_socks5_proxy_changed)
+
+        auth_row = QHBoxLayout()
+        auth_row.setContentsMargins(0, 0, 0, 0)
+        auth_row.addWidget(QLabel('Proxy Auth'))
+        self._http_proxy_user = QLineEdit()
+        self._http_proxy_user.setText(self._config.upstream_http_connect_username)
+        self._http_proxy_user.setPlaceholderText('HTTP user')
+        self._http_proxy_pass = QLineEdit()
+        self._http_proxy_pass.setText(self._config.upstream_http_connect_password)
+        self._http_proxy_pass.setPlaceholderText('HTTP password')
+        self._http_proxy_pass.setEchoMode(QLineEdit.EchoMode.Password)
+        self._socks5_user = QLineEdit()
+        self._socks5_user.setText(self._config.upstream_socks5_username)
+        self._socks5_user.setPlaceholderText('SOCKS user')
+        self._socks5_pass = QLineEdit()
+        self._socks5_pass.setText(self._config.upstream_socks5_password)
+        self._socks5_pass.setPlaceholderText('SOCKS password')
+        self._socks5_pass.setEchoMode(QLineEdit.EchoMode.Password)
+        for widget in (self._http_proxy_user, self._http_proxy_pass, self._socks5_user, self._socks5_pass):
+            auth_row.addWidget(widget)
+        auth_widget = QWidget()
+        auth_widget.setLayout(auth_row)
+        section.add_widget(auth_widget)
+        self._http_proxy_user.editingFinished.connect(self._on_http_proxy_auth_changed)
+        self._http_proxy_pass.editingFinished.connect(self._on_http_proxy_auth_changed)
+        self._socks5_user.editingFinished.connect(self._on_socks5_proxy_auth_changed)
+        self._socks5_pass.editingFinished.connect(self._on_socks5_proxy_auth_changed)
+
+        limits_row = QHBoxLayout()
+        limits_row.setContentsMargins(0, 0, 0, 0)
+        limits_row.addWidget(QLabel('VPN Connection Limits'))
+        self._asset_limit_spin = QSpinBox()
+        self._asset_limit_spin.setRange(1, 128)
+        self._asset_limit_spin.setValue(self._config.vpn_compat_max_assetdelivery_connections)
+        self._asset_limit_spin.setPrefix('Asset ')
+        self._cdn_limit_spin = QSpinBox()
+        self._cdn_limit_spin.setRange(1, 256)
+        self._cdn_limit_spin.setValue(self._config.vpn_compat_max_cdn_connections)
+        self._cdn_limit_spin.setPrefix('CDN ')
+        self._asset_limit_spin.valueChanged.connect(self._on_connection_limits_changed)
+        self._cdn_limit_spin.valueChanged.connect(self._on_connection_limits_changed)
+        limits_row.addWidget(self._asset_limit_spin)
+        limits_row.addWidget(self._cdn_limit_spin)
+        limits_row.addStretch()
+        limits_widget = QWidget()
+        limits_widget.setLayout(limits_row)
+        section.add_widget(limits_widget)
 
         return section
 
@@ -261,6 +369,7 @@ class SettingsTab(QWidget):
         for chk, value in [
             (self._open_dashboard_chk, self._config.open_dashboard_on_launch),
             (self._proxy_features_chk, self._config.proxy_features_enabled),
+            (self._wire_preserving_chk, self._config.wire_preserving_passthrough),
             (self._auto_clear_cache_chk, self._config.auto_delete_cache_on_exit),
             (self._clear_cache_launch_chk, self._config.clear_cache_on_launch),
             (self._run_on_boot_chk, self._config.run_on_boot),
@@ -276,6 +385,33 @@ class SettingsTab(QWidget):
             chk.blockSignals(True)
             chk.setChecked(value)
             chk.blockSignals(False)
+
+        idx = self._upstream_mode_combo.findData(self._config.upstream_transport_mode)
+        self._upstream_mode_combo.blockSignals(True)
+        self._upstream_mode_combo.setCurrentIndex(max(0, idx))
+        self._upstream_mode_combo.blockSignals(False)
+
+        for widget, value in [
+            (self._http_proxy_host, self._config.upstream_http_connect_host),
+            (self._http_proxy_user, self._config.upstream_http_connect_username),
+            (self._http_proxy_pass, self._config.upstream_http_connect_password),
+            (self._socks5_host, self._config.upstream_socks5_host),
+            (self._socks5_user, self._config.upstream_socks5_username),
+            (self._socks5_pass, self._config.upstream_socks5_password),
+        ]:
+            widget.blockSignals(True)
+            widget.setText(value)
+            widget.blockSignals(False)
+
+        for widget, value in [
+            (self._http_proxy_port, self._config.upstream_http_connect_port),
+            (self._socks5_port, self._config.upstream_socks5_port),
+            (self._asset_limit_spin, self._config.vpn_compat_max_assetdelivery_connections),
+            (self._cdn_limit_spin, self._config.vpn_compat_max_cdn_connections),
+        ]:
+            widget.blockSignals(True)
+            widget.setValue(value)
+            widget.blockSignals(False)
 
         self.set_cache_scraper_enabled(self._is_cache_scraper_enabled())
 
@@ -326,6 +462,32 @@ class SettingsTab(QWidget):
             self._tray.set_proxy_features_enabled(checked)
         else:
             self._config.proxy_features_enabled = checked
+
+    def _on_upstream_mode_changed(self, *_args):
+        self._config.upstream_transport_mode = self._upstream_mode_combo.currentData()
+
+    def _on_wire_preserving_toggled(self, checked: bool):
+        self._config.wire_preserving_passthrough = checked
+
+    def _on_http_proxy_changed(self, *_args):
+        self._config.upstream_http_connect_host = self._http_proxy_host.text()
+        self._config.upstream_http_connect_port = self._http_proxy_port.value()
+
+    def _on_http_proxy_auth_changed(self):
+        self._config.upstream_http_connect_username = self._http_proxy_user.text()
+        self._config.upstream_http_connect_password = self._http_proxy_pass.text()
+
+    def _on_socks5_proxy_changed(self, *_args):
+        self._config.upstream_socks5_host = self._socks5_host.text()
+        self._config.upstream_socks5_port = self._socks5_port.value()
+
+    def _on_socks5_proxy_auth_changed(self):
+        self._config.upstream_socks5_username = self._socks5_user.text()
+        self._config.upstream_socks5_password = self._socks5_pass.text()
+
+    def _on_connection_limits_changed(self, *_args):
+        self._config.vpn_compat_max_assetdelivery_connections = self._asset_limit_spin.value()
+        self._config.vpn_compat_max_cdn_connections = self._cdn_limit_spin.value()
 
     def _on_run_on_boot_toggled(self, checked: bool):
         if not _is_admin():

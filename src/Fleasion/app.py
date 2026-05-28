@@ -632,6 +632,8 @@ def main():
                          help='Suppress dashboard on launch (used by autostart task)')
     _parser.add_argument('--kill-others', action='store_true',
                          help='Kill other Fleasion instances on startup (used when relaunching elevated)')
+    _parser.add_argument('--proxy-debug', '-proxy-debug', action='store_true', help=_ap.SUPPRESS)
+    _parser.add_argument('--proxy-debug-mode', choices=['a', 'b', 'c', 'd', 'e', 'full'], help=_ap.SUPPRESS)
     _parser.add_argument('--fleasion-user-localappdata', help=_ap.SUPPRESS)
     _args, _ = _parser.parse_known_args()
     _suppress_dashboard = _args.no_dashboard
@@ -728,6 +730,8 @@ def main():
     # Initialize config manager before the elevation gate so the non-elevated
     # process can still build the prompt UI and show a fallback dialog.
     config_manager = ConfigManager()
+    config_manager.settings['_runtime_proxy_debug'] = bool(_args.proxy_debug)
+    config_manager.settings['_runtime_proxy_debug_mode'] = _args.proxy_debug_mode or 'full'
 
     # Gate non-admin launches before opening the usable GUI. Some Windows setups
     # show UAC as a taskbar item instead of foregrounding it, so startup must

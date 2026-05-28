@@ -22,6 +22,7 @@ VPN compatibility:
 
 import asyncio
 import base64
+import hashlib
 import csv
 import ctypes
 import json
@@ -36,10 +37,14 @@ import tempfile
 import threading
 import time
 import warnings
-import winreg
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable, Optional, Set
+
+try:
+    import winreg
+except ImportError:  # pragma: no cover - Windows-only module
+    winreg = None
 
 from ..utils import (
     LOCAL_APPDATA,
@@ -60,10 +65,15 @@ from ..utils import (
 from .addons import CacheScraper, TextureStripper, UsernameSpoofer
 from .server import (
     BASE_INTERCEPT_HOSTS,
+    ASSET_DELIVERY_HOST,
+    CDN_HOSTS,
     FleasionProxy,
+    GAMEJOIN_HOST,
     INTERCEPT_HOSTS,
     USERNAME_SPOOFER_INTERCEPT_HOSTS,
 )
+from .upstream import HttpProxyConfig, Socks5ProxyConfig, UpstreamEndpoint, UpstreamMode
+from .windows_proxy import WindowsProxyInfo, detect_windows_proxy, detected_http_proxy
 from ..cache.cache_manager import CacheManager
 from ..utils.certs import generate_ca, generate_host_cert, generate_multi_host_cert, get_ca_pem
 from ..utils.roblox_dirs import load_saved_roblox_dirs
@@ -223,7 +233,7 @@ def _delete_watchdog_task() -> None:
 
 
 def _is_routable_public_ip(ip: str) -> bool:
-    """Return True only if *ip* is a publicly routable IPv4 address.
+    """Return True only if *ip* is a publicly routable IP address.
 
     Rejects everything that cannot legitimately be a Roblox CDN address:
       - Loopback          127.0.0.0/8
@@ -235,7 +245,7 @@ def _is_routable_public_ip(ip: str) -> bool:
     """
     import ipaddress as _ipaddress
     try:
-        addr = _ipaddress.IPv4Address(ip)
+        addr = _ipaddress.ip_address(ip)
         return not (
             addr.is_loopback
             or addr.is_private
@@ -248,8 +258,8 @@ def _is_routable_public_ip(ip: str) -> bool:
         return False
 
 
-def _dns_query_udp(hostname: str, server: str, port: int = 53, timeout: float = 3.0) -> list:
-    """Send a raw DNS A-record query over UDP to *server*, bypassing the OS
+def _dns_query_udp(hostname: str, server: str, port: int = 53, timeout: float = 3.0, qtype: int = 1) -> list:
+    """Send a raw DNS A/AAAA-record query over UDP to *server*, bypassing the OS
     resolver stack entirely.
 
     This sidesteps both the Windows DNS Client service cache AND VPN client
@@ -279,8 +289,8 @@ def _dns_query_udp(hostname: str, server: str, port: int = 53, timeout: float = 
         labels += _struct.pack('B', len(part)) + part
     labels += b'\x00'  # root label
 
-    # QTYPE=A (1), QCLASS=IN (1)
-    question = labels + _struct.pack('!HH', 1, 1)
+    # QTYPE=A (1) or AAAA (28), QCLASS=IN (1)
+    question = labels + _struct.pack('!HH', qtype, 1)
     packet = header + question
 
     # --- Send and receive ---
@@ -316,7 +326,7 @@ def _dns_query_udp(hostname: str, server: str, port: int = 53, timeout: float = 
             pos += length
         pos += 4  # QTYPE + QCLASS
 
-    # Parse answer RRs — collect all A records
+    # Parse answer RRs — collect all A/AAAA records
     ips = []
     for _ in range(r_ancount):
         if pos >= len(response):
@@ -336,6 +346,13 @@ def _dns_query_udp(hostname: str, server: str, port: int = 53, timeout: float = 
             ip = '.'.join(str(b) for b in response[pos:pos + 4])
             if _is_routable_public_ip(ip):
                 ips.append(ip)
+        elif rtype == 28 and rdlength == 16:  # AAAA record
+            try:
+                ip = _socket.inet_ntop(_socket.AF_INET6, response[pos:pos + 16])
+            except OSError:
+                ip = ''
+            if ip and _is_routable_public_ip(ip):
+                ips.append(ip)
         pos += rdlength
 
     return ips
@@ -344,8 +361,8 @@ def _dns_query_udp(hostname: str, server: str, port: int = 53, timeout: float = 
 _DNS_FALLBACK_SERVERS = ['8.8.8.8', '1.1.1.1', '1.0.0.1']
 
 
-def _resolve_real_ips(hosts: set) -> dict:
-    """Resolve real IPs for each host BEFORE we write hosts file entries.
+def _resolve_real_endpoints(hosts: set[str]) -> dict[str, list[UpstreamEndpoint]]:
+    """Resolve real upstream endpoints before hosts entries point at localhost.
 
     We MUST do this first - once hosts file points them to 127.0.0.1, any
     subsequent socket.getaddrinfo() call would return 127.0.0.1, causing our
@@ -354,54 +371,60 @@ def _resolve_real_ips(hosts: set) -> dict:
     Primary strategy: socket.getaddrinfo() (uses OS resolver — fast, respects
     IPv6 and system network config).
 
-    Fallback strategy: raw UDP DNS query to well-known public resolvers,
-    bypassing the OS resolver stack and any VPN client caches (e.g. Cloudflare
-    WARP's WFP-level resolver) that may still hold stale 127.0.0.1 mappings
-    from a previous crashed Fleasion session even after the hosts file has been
-    cleaned and DnsFlushResolverCache() has been called.
+    Fallback strategy: raw UDP DNS query to well-known public resolvers, only
+    when the OS resolver produced no routable endpoints. Public DNS can select
+    a CDN edge that is wrong for VPN routing, so it is never preferred over the
+    OS/VPN resolver.
     """
     import socket
-    real_ips: dict = {}
+    real_endpoints: dict[str, list[UpstreamEndpoint]] = {}
     for host in sorted(hosts):
-        ips = []
+        endpoints: list[UpstreamEndpoint] = []
+        seen: set[tuple[int, str]] = set()
 
         # --- Primary: OS resolver ---
         try:
-            results = socket.getaddrinfo(host, 443, socket.AF_INET, socket.SOCK_STREAM)
-            ips = []
-            for result in results:
-                ip = result[4][0]
-                if isinstance(ip, str) and _is_routable_public_ip(ip):
-                    ips.append(ip)
+            results = socket.getaddrinfo(host, 443, socket.AF_UNSPEC, socket.SOCK_STREAM)
+            for family, _socktype, _proto, _canonname, sockaddr in results:
+                if family not in (socket.AF_INET, socket.AF_INET6):
+                    continue
+                ip = sockaddr[0]
+                key = (family, ip)
+                if (
+                    isinstance(ip, str)
+                    and key not in seen
+                    and _is_routable_public_ip(ip)
+                ):
+                    seen.add(key)
+                    endpoints.append(UpstreamEndpoint(host=host, ip=ip, family=family))
         except Exception as exc:
             log_buffer.log('Proxy', f'DNS resolve failed for {host} (OS resolver): {exc}')
 
-        if ips:
-            real_ips[host] = ips
-            log_buffer.log('Proxy', f'Resolved {host} -> {ips[0]}')
+        if endpoints:
+            real_endpoints[host] = endpoints
+            log_buffer.log('Proxy', f'Resolved {host} -> {endpoints[0].ip} (OS resolver)')
             continue
 
-        # --- Fallback: raw UDP DNS, bypassing OS resolver + VPN cache ---
-        # Fires when the OS resolver returns no publicly routable IPs — typically
-        # caused by a VPN (e.g. Cloudflare WARP) whose internal DNS cache holds
-        # stale loopback/private entries from a previous crashed Fleasion session,
-        # or a VPN that routes Roblox to its own private/CGNAT address space.
-        # DnsFlushResolverCache() does not flush the VPN client's own in-process
-        # cache; a direct UDP query to a public resolver bypasses it entirely.
+        # --- Fallback: raw UDP DNS, last resort only ---
         log_buffer.log(
             'Proxy',
-            f'OS resolver returned no routable IPs for {host} — '
-            'trying direct UDP DNS (VPN cache bypass)…',
+            f'OS resolver returned no routable endpoints for {host}; trying public DNS as a last resort.',
         )
         for dns_server in _DNS_FALLBACK_SERVERS:
             try:
-                fallback_ips = _dns_query_udp(host, dns_server)
-                if fallback_ips:
-                    real_ips[host] = fallback_ips
+                fallback: list[UpstreamEndpoint] = []
+                for family, qtype in ((socket.AF_INET6, 28), (socket.AF_INET, 1)):
+                    for ip in _dns_query_udp(host, dns_server, qtype=qtype):
+                        key = (family, ip)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        fallback.append(UpstreamEndpoint(host=host, ip=ip, family=family))
+                if fallback:
+                    real_endpoints[host] = fallback
                     log_buffer.log(
                         'Proxy',
-                        f'Resolved {host} -> {fallback_ips[0]} '
-                        f'(via direct UDP to {dns_server} — VPN cache bypass)',
+                        f'Public DNS fallback used for {host}. This may be incompatible with VPN routing.',
                     )
                     break
             except Exception as exc:
@@ -414,16 +437,77 @@ def _resolve_real_ips(hosts: set) -> dict:
                 'try temporarily disabling it before starting Fleasion.',
             )
 
-    return real_ips
+    return real_endpoints
 
 
-def _log_upstream_ip_coverage(hosts: set[str], real_ips: dict) -> None:
+def _resolve_real_ips(hosts: set[str]) -> dict[str, list[str]]:
+    """Compatibility wrapper for older code that expects string IP lists."""
+    endpoints = _resolve_real_endpoints(hosts)
+    return {
+        host: [ep.ip for ep in eps if ep.ip]
+        for host, eps in endpoints.items()
+    }
+
+
+def _log_upstream_ip_coverage(hosts: set[str], real_endpoints: dict) -> None:
     for host in sorted(hosts):
-        ips = real_ips.get(host) or []
+        endpoints = real_endpoints.get(host) or []
+        ips = [
+            (ep.ip if isinstance(ep, UpstreamEndpoint) else str(ep))
+            for ep in endpoints
+            if (ep.ip if isinstance(ep, UpstreamEndpoint) else str(ep))
+        ]
         if ips:
             log_buffer.log('Proxy', f'Upstream IP coverage: {host} -> {", ".join(ips)}')
         else:
             log_buffer.log('Proxy', f'Upstream IP coverage: {host} -> NO ROUTABLE IPS')
+
+
+def _first_endpoint_ips(real_endpoints: dict[str, list[UpstreamEndpoint]]) -> dict[str, str]:
+    return {
+        host: eps[0].ip
+        for host, eps in real_endpoints.items()
+        if eps and eps[0].ip
+    }
+
+
+def _log_windows_proxy_info(info: WindowsProxyInfo, system_proxy: Optional[HttpProxyConfig]) -> None:
+    wininet_enabled = 'yes' if info.wininet_enabled else 'no'
+    log_buffer.log(
+        'ProxyDiag',
+        f'WinINET proxy enabled: {wininet_enabled} server={info.wininet_proxy_server or "none"}',
+    )
+    log_buffer.log('ProxyDiag', f'WinHTTP proxy: {info.winhttp_proxy_server or "none"}')
+    if info.wininet_auto_config_url:
+        log_buffer.log(
+            'ProxyDiag',
+            f'PAC detected: {info.wininet_auto_config_url} unsupported for automatic upstream mode',
+        )
+    if system_proxy is not None:
+        log_buffer.log(
+            'ProxyDiag',
+            f'System HTTP CONNECT candidate: {system_proxy.host}:{system_proxy.port}',
+        )
+
+
+def _manual_http_proxy_from_settings(config_manager) -> Optional[HttpProxyConfig]:
+    host = str(getattr(config_manager, 'upstream_http_connect_host', '') or '').strip()
+    port = int(getattr(config_manager, 'upstream_http_connect_port', 0) or 0)
+    if not host or port <= 0:
+        return None
+    username = str(getattr(config_manager, 'upstream_http_connect_username', '') or '') or None
+    password = str(getattr(config_manager, 'upstream_http_connect_password', '') or '') or None
+    return HttpProxyConfig(host=host, port=port, username=username, password=password)
+
+
+def _manual_socks5_proxy_from_settings(config_manager) -> Optional[Socks5ProxyConfig]:
+    host = str(getattr(config_manager, 'upstream_socks5_host', '') or '').strip()
+    port = int(getattr(config_manager, 'upstream_socks5_port', 0) or 0)
+    if not host or port <= 0:
+        return None
+    username = str(getattr(config_manager, 'upstream_socks5_username', '') or '') or None
+    password = str(getattr(config_manager, 'upstream_socks5_password', '') or '') or None
+    return Socks5ProxyConfig(host=host, port=port, username=username, password=password)
 
 
 def _connect_tls_for_self_test(host: str | None, ca_cert_path: Path, port: int) -> dict:
@@ -1391,6 +1475,12 @@ _PEM_CERT_BLOCK_RE = re.compile(
     r'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----',
     re.DOTALL,
 )
+_CACERT_MIN_HEALTHY_CERTS = 2
+_CACERT_MIN_HEALTHY_SIZE_BYTES = 4096
+_CACERT_LAUNCH_SETTLE_SECONDS = 2.5
+_CACERT_LAUNCH_POLL_SECONDS = 10.0
+_CACERT_LAUNCH_POLL_INTERVAL_SECONDS = 0.5
+_CACERT_RESTART_DEDUP_SECONDS = 8.0
 
 
 def _normalize_newlines(text: str) -> str:
@@ -1457,32 +1547,98 @@ def _analyze_and_strip_fleasion_cas(pem_bundle: str, current_ca_pem: str) -> tup
     return ''.join(parts), fleasion_count, current_count
 
 
-def _log_cacert_health(ca_file: Path, ca_pem: str) -> None:
-    if not ca_file.exists():
-        log_buffer.log('Certificate', f'WARNING: CERTS FILE MISSING: {ca_file}')
-        log_buffer.log(
-            'Certificate',
-            f'cacert.pem health for {ca_file.parent.parent.name}: exists=no, size=0 bytes, '
-            'total certs=0, Fleasion certs=0, current Fleasion certs=0',
-        )
-        return
+def _describe_cacert_state(ca_file: Path, ca_pem: str) -> dict:
+    """Return a stable diagnostic snapshot for a Roblox cacert.pem bundle."""
+    state = {
+        'path': str(ca_file),
+        'install': ca_file.parent.parent.name if ca_file.parent.name == 'ssl' else ca_file.parent.name,
+        'exists': False,
+        'size': 0,
+        'mtime_ns': 0,
+        'sha256': '',
+        'total_certs': 0,
+        'fleasion_certs': 0,
+        'current_fleasion_certs': 0,
+        'healthy': False,
+        'error': '',
+    }
 
     try:
-        existing = ca_file.read_text(encoding='utf-8', errors='replace')
-        size = ca_file.stat().st_size
+        stat = ca_file.stat()
+    except FileNotFoundError:
+        return state
     except OSError as exc:
-        log_buffer.log('Certificate', f'Failed to inspect cacert.pem at {ca_file}: {exc}')
-        return
+        state['error'] = str(exc)
+        return state
 
-    total_count = len(_PEM_CERT_BLOCK_RE.findall(_normalize_newlines(existing)))
-    _, fleasion_count, current_count = _analyze_and_strip_fleasion_cas(existing, ca_pem)
-    if total_count <= 1:
-        log_buffer.log(
-            'Certificate',
-            f'WARNING: cacert.pem looks incomplete for {ca_file.parent.parent.name}: '
-            f'exists=yes, size={size} bytes, total certs={total_count}, '
-            f'Fleasion certs={fleasion_count}, current Fleasion certs={current_count}',
-        )
+    try:
+        raw = ca_file.read_bytes()
+    except OSError as exc:
+        state['error'] = str(exc)
+        return state
+
+    text = raw.decode('utf-8', errors='replace')
+    total_count = len(_PEM_CERT_BLOCK_RE.findall(_normalize_newlines(text)))
+    _, fleasion_count, current_count = _analyze_and_strip_fleasion_cas(text, ca_pem)
+
+    healthy = (
+        stat.st_size >= _CACERT_MIN_HEALTHY_SIZE_BYTES
+        and total_count >= _CACERT_MIN_HEALTHY_CERTS
+        and fleasion_count == 1
+        and current_count == 1
+    )
+
+    state.update({
+        'exists': True,
+        'size': stat.st_size,
+        'mtime_ns': stat.st_mtime_ns,
+        'sha256': hashlib.sha256(raw).hexdigest(),
+        'total_certs': total_count,
+        'fleasion_certs': fleasion_count,
+        'current_fleasion_certs': current_count,
+        'healthy': healthy,
+    })
+    return state
+
+
+def _format_cacert_state(state: dict) -> str:
+    sha = str(state.get('sha256') or '')
+    short_sha = sha[:12] if sha else 'none'
+    error = state.get('error') or ''
+    error_text = f', error={error}' if error else ''
+    return (
+        f"path={state.get('path')}, exists={'yes' if state.get('exists') else 'no'}, "
+        f"size={state.get('size')} bytes, mtime_ns={state.get('mtime_ns')}, "
+        f"sha256={short_sha}, total certs={state.get('total_certs')}, "
+        f"Fleasion certs={state.get('fleasion_certs')}, "
+        f"current Fleasion certs={state.get('current_fleasion_certs')}, "
+        f"healthy={'yes' if state.get('healthy') else 'no'}{error_text}"
+    )
+
+
+def _log_cacert_state(ca_file: Path, ca_pem: str, reason: str, *, log_healthy: bool = False) -> dict:
+    state = _describe_cacert_state(ca_file, ca_pem)
+    is_problem = (
+        not state.get('exists')
+        or bool(state.get('error'))
+        or not bool(state.get('healthy'))
+    )
+
+    if log_healthy or is_problem:
+        log_buffer.log('Certificate', f'{reason}: {_format_cacert_state(state)}')
+
+    if not state.get('exists'):
+        log_buffer.log('Certificate', f'WARNING: CERTS FILE MISSING: {ca_file}')
+    elif state.get('error'):
+        log_buffer.log('Certificate', f'Failed to inspect cacert.pem at {ca_file}: {state["error"]}')
+    elif not state.get('healthy'):
+        log_buffer.log('Certificate', f'WARNING: cacert.pem is not launch-healthy for {state.get("install")}: {_format_cacert_state(state)}')
+    return state
+
+
+def _log_cacert_health(ca_file: Path, ca_pem: str) -> None:
+    """Compatibility wrapper for existing startup patch call sites."""
+    _log_cacert_state(ca_file, ca_pem, f'cacert.pem health for {ca_file.parent.parent.name}')
 
 
 def _upsert_fleasion_ca_in_cacert(ca_file: Path, ca_pem: str) -> tuple[bool, int, int]:
@@ -1507,7 +1663,13 @@ def _upsert_fleasion_ca_in_cacert(ca_file: Path, ca_pem: str) -> tuple[bool, int
 
 
 def _cacert_has_only_current_fleasion_ca(cacert_text: str, current_ca_pem: str) -> bool:
-    """Return True when cacert contains exactly one Fleasion CA and it is current."""
+    """Return True when cacert contains exactly one Fleasion CA and it is current.
+
+    This intentionally remains a narrow PEM-content predicate for callers that
+    already own file-level health checks. Launch gating should use
+    _describe_cacert_state() so a one-cert or truncated bundle is not treated as
+    ready for Roblox.
+    """
     _, fleasion_count, current_count = _analyze_and_strip_fleasion_cas(cacert_text, current_ca_pem)
     return fleasion_count == 1 and current_count == 1
 
@@ -1529,7 +1691,12 @@ def _install_ca_into_roblox(ca_pem: str) -> None:
         try:
             _log_cacert_health(ca_file, ca_pem)
             changed, fleasion_count, current_count = _upsert_fleasion_ca_in_cacert(ca_file, ca_pem)
-            already_current = fleasion_count == 1 and current_count == 1
+            post_state = _log_cacert_state(ca_file, ca_pem, f'cacert.pem after startup patch for {d.name}')
+            already_current = (
+                fleasion_count == 1
+                and current_count == 1
+                and bool(post_state.get('healthy'))
+            )
 
             if changed and not already_current:
                 stale_count = max(fleasion_count - current_count, 0)
@@ -1551,11 +1718,11 @@ def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
     """Check if the currently running Roblox instance has our CA in its cacert.pem.
 
     Called when RobloxPlayerBeta.exe is detected launching at runtime.
-    If the cert chain is stale/missing it is normalized immediately and an alert
-    is logged.
+    If the cert chain is stale/missing/incomplete it is normalized immediately
+    and an alert is logged.
 
     Returns True if the cert bundle needed refresh (Roblox needs a restart).
-    Returns False if already patched or the CA has not been generated.
+    Returns False if already launch-healthy or the CA has not been generated.
     """
     ca_cert_path = PROXY_CA_DIR / 'ca.crt'
     if not ca_cert_path.exists():
@@ -1568,15 +1735,18 @@ def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
 
     try:
         ssl_dir.mkdir(exist_ok=True)
-        _log_cacert_health(ca_file, ca_pem)
+        pre_state = _log_cacert_state(ca_file, ca_pem, f'cacert.pem before running-instance patch for {roblox_dir.name}')
         changed, fleasion_count, current_count = _upsert_fleasion_ca_in_cacert(ca_file, ca_pem)
+        post_state = _log_cacert_state(ca_file, ca_pem, f'cacert.pem after running-instance patch for {roblox_dir.name}')
     except (PermissionError, OSError) as exc:
         log_buffer.log('Certificate', f'Failed to inject CA into running Roblox instance: {exc}')
         return False
 
-    already_current = fleasion_count == 1 and current_count == 1
+    was_launch_healthy = bool(pre_state.get('healthy'))
+    is_launch_healthy = bool(post_state.get('healthy'))
+    already_current = fleasion_count == 1 and current_count == 1 and was_launch_healthy
     if already_current:
-        log_buffer.log('Certificate', f'Roblox launch detected: cacert.pem already patched for {roblox_dir.name}')
+        log_buffer.log('Certificate', f'Roblox launch detected: cacert.pem already launch-healthy for {roblox_dir.name}')
         return False
 
     stale_count = max(fleasion_count - current_count, 0)
@@ -1595,11 +1765,17 @@ def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
             f'[ALERT] {exe_path.name} had stale/duplicate Fleasion CAs in cacert.pem '
             f'({removed_count} removed). You may need to relaunch it.',
         )
+    elif not was_launch_healthy or not is_launch_healthy:
+        log_buffer.log(
+            'Certificate',
+            f'[ALERT] {exe_path.name} has an incomplete or unstable cacert.pem bundle. '
+            'It has been normalized, you may need to relaunch it.',
+        )
 
     if changed:
         log_buffer.log('Certificate', f'CA injected into running Roblox instance: {roblox_dir.name}')
 
-    return True
+    return changed or not was_launch_healthy or not is_launch_healthy
 
 
 # ---------------------------------------------------------------------------
@@ -1635,10 +1811,29 @@ class ProxyMaster:
         self._watchdog_stop: Optional[threading.Event] = None
         self._watchdog_thread: Optional[threading.Thread] = None
         self._module_interceptors: list = [self.username_spoofer]
+        self._cert_refresh_lock = threading.Lock()
+        self._last_cert_refresh_by_exe: dict[Path, tuple[float, str]] = {}
 
     @property
     def is_running(self) -> bool:
         return self._running
+
+    def _proxy_debug_enabled(self) -> bool:
+        return bool(self.config_manager.settings.get('_runtime_proxy_debug', False))
+
+    def _proxy_debug_mode(self) -> str:
+        mode = str(self.config_manager.settings.get('_runtime_proxy_debug_mode', 'full') or 'full').lower()
+        return mode if mode in {'a', 'b', 'c', 'd', 'e', 'full'} else 'full'
+
+    def _effective_upstream_mode(self) -> str:
+        if self._proxy_debug_enabled() and self._proxy_debug_mode() == 'e':
+            return UpstreamMode.SYSTEM_PROXY.value
+        return self.config_manager.upstream_transport_mode
+
+    def _effective_wire_preserving_passthrough(self) -> bool:
+        if self._proxy_debug_enabled() and self._proxy_debug_mode() == 'd':
+            return True
+        return self.config_manager.wire_preserving_passthrough
 
     def register_module_interceptor(self, module) -> None:
         """Register a module whose request()/response() methods are called for gamejoin traffic."""
@@ -1664,7 +1859,18 @@ class ProxyMaster:
             self._proxy.set_module_interceptors(interceptors)
 
     def _desired_intercept_hosts(self) -> set[str]:
-        hosts = set(BASE_INTERCEPT_HOSTS)
+        if self._proxy_debug_enabled():
+            mode = self._proxy_debug_mode()
+            if mode == 'a':
+                hosts = {GAMEJOIN_HOST}
+            elif mode == 'b':
+                hosts = {GAMEJOIN_HOST, ASSET_DELIVERY_HOST}
+            elif mode == 'c':
+                hosts = {GAMEJOIN_HOST, ASSET_DELIVERY_HOST, *CDN_HOSTS}
+            else:
+                hosts = set(BASE_INTERCEPT_HOSTS)
+        else:
+            hosts = set(BASE_INTERCEPT_HOSTS)
         spoofer = getattr(self, 'username_spoofer', None)
         if self._roblox_player_running and spoofer is not None and spoofer.is_enabled():
             hosts.update(USERNAME_SPOOFER_INTERCEPT_HOSTS)
@@ -1690,8 +1896,8 @@ class ProxyMaster:
             previous_hosts = set(self._active_intercept_hosts)
             _remove_hosts_entries(set(INTERCEPT_HOSTS))
             _flush_dns()
-            real_ips = _resolve_real_ips(desired_hosts)
-            _log_upstream_ip_coverage(desired_hosts, real_ips)
+            real_endpoints = _resolve_real_endpoints(desired_hosts)
+            _log_upstream_ip_coverage(desired_hosts, real_endpoints)
             if not _add_hosts_entries(desired_hosts):
                 log_buffer.log('Hosts', 'Failed to update username spoofer hosts entries')
                 _add_hosts_entries(previous_hosts)
@@ -1707,8 +1913,8 @@ class ProxyMaster:
                 return
 
             self._active_intercept_hosts = set(desired_hosts)
-            self._proxy._upstream_ips = real_ips
-            scraper_ips = {host: ips[0] for host, ips in real_ips.items() if ips}
+            self._proxy.set_upstream_endpoints(real_endpoints)
+            scraper_ips = _first_endpoint_ips(real_endpoints)
             if scraper_ips:
                 self.cache_scraper.set_real_ips(scraper_ips)
             log_buffer.log('Hosts', f'Active intercepts updated: {", ".join(sorted(desired_hosts))}')
@@ -1744,77 +1950,60 @@ class ProxyMaster:
             self._watchdog_thread.join(timeout=2.0)
         _delete_watchdog_task()
 
-    def refresh_and_restart_roblox(self, exe_path: Path) -> None:
-        """Called when Roblox launches without our CA cert.
-
-        Runs cert injection and IP/hosts refresh in parallel (two threads), then
-        kills Roblox and restarts it so the new cert and fresh hosts entries take
-        effect immediately.
-        """
-        # Quick-check: cert already present → nothing to do
-        ca_cert_path = PROXY_CA_DIR / 'ca.crt'
-        if not ca_cert_path.exists():
+    def _refresh_proxy_ips_for_cert_repair(self) -> None:
+        if not self._hosts_installed:
             return
-        ca_pem = get_ca_pem(ca_cert_path)
-        ca_file = exe_path.parent / 'ssl' / 'cacert.pem'
-        try:
-            existing = ca_file.read_text(encoding='utf-8', errors='replace') if ca_file.exists() else ''
-        except OSError:
-            existing = ''
-        if _cacert_has_only_current_fleasion_ca(existing, ca_pem):
-            log_buffer.log('Certificate', f'Roblox launch detected: cacert.pem already patched for {exe_path.parent.name}')
-            return  # Already patched — no restart needed
+        active_hosts = self._desired_intercept_hosts()
+        # Remove entries temporarily so getaddrinfo() sees real IPs again.
+        _remove_hosts_entries(set(INTERCEPT_HOSTS))
+        _flush_dns()
+        new_endpoints = _resolve_real_endpoints(active_hosts)
+        _log_upstream_ip_coverage(active_hosts, new_endpoints)
+        # Re-install entries pointing back to our proxy.
+        # Acquire the lock before re-adding to guard against a race with stop():
+        # if stop() ran while we were resolving IPs it will have set
+        # _hosts_installed = False under this same lock, cancelled all cleanup
+        # guards, and returned. Adding entries at that point would leave the
+        # hosts file dirty with no mechanism to clean it up.
+        with self._lock:
+            if not self._hosts_installed:
+                return
+            if not _add_hosts_entries(active_hosts):
+                log_buffer.log('Hosts', 'Failed to re-add hosts entries during Roblox cert refresh')
+                return
+            self._active_intercept_hosts = set(active_hosts)
 
-        log_buffer.log('Certificate', 'Roblox missing CA cert — refreshing hosts and restarting...')
+        _flush_dns()
+        if not _verify_hosts_entries(active_hosts):
+            log_buffer.log('Hosts', 'Failed to verify hosts entries during Roblox cert refresh')
+            return
+        # Update running proxy and scraper with fresh upstream IPs.
+        if self._proxy is not None and new_endpoints:
+            self._proxy.set_upstream_endpoints(new_endpoints)
+        scraper_ips = _first_endpoint_ips(new_endpoints)
+        if scraper_ips:
+            self.cache_scraper.set_real_ips(scraper_ips)
+
+    def _repair_cert_refresh_ips_and_restart_roblox(self, exe_path: Path, ca_pem: str, ca_file: Path, reason: str) -> None:
+        log_buffer.log('Certificate', f'{reason} — refreshing hosts and restarting...')
 
         def _patch_cert() -> None:
             check_and_patch_running_roblox_ca(exe_path)
 
         def _refresh_ips() -> None:
-            if not self._hosts_installed:
-                return
-            active_hosts = self._desired_intercept_hosts()
-            # Remove entries temporarily so getaddrinfo() sees real IPs again
-            _remove_hosts_entries(set(INTERCEPT_HOSTS))
-            _flush_dns()
-            new_ips = _resolve_real_ips(active_hosts)
-            _log_upstream_ip_coverage(active_hosts, new_ips)
-            # Re-install entries pointing back to our proxy.
-            # Acquire the lock before re-adding to guard against a race with
-            # stop(): if stop() ran while we were resolving IPs it will have
-            # set _hosts_installed = False under this same lock, cancelled all
-            # cleanup guards, and returned.  Adding entries at that point would
-            # leave the hosts file dirty with no mechanism to clean it up.
-            with self._lock:
-                if not self._hosts_installed:
-                    # stop() already ran — do not re-add entries.
-                    return
-                if not _add_hosts_entries(active_hosts):
-                    log_buffer.log('Hosts', 'Failed to re-add hosts entries during Roblox cert refresh')
-                    return
-                self._active_intercept_hosts = set(active_hosts)
-
-            _flush_dns()
-            if not _verify_hosts_entries(active_hosts):
-                log_buffer.log('Hosts', 'Failed to verify hosts entries during Roblox cert refresh')
-                return
-            # Update running proxy and scraper with fresh upstream IPs
-            if self._proxy is not None and new_ips:
-                self._proxy._upstream_ips = new_ips
-            scraper_ips = {host: ips[0] for host, ips in new_ips.items() if ips}
-            if scraper_ips:
-                self.cache_scraper.set_real_ips(scraper_ips)
+            self._refresh_proxy_ips_for_cert_repair()
 
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=2, thread_name_prefix='fleasion-cert-refresh') as pool:
             f_cert = pool.submit(_patch_cert)
             f_ips = pool.submit(_refresh_ips)
-        # Both futures are done after the with block (shutdown waits for them)
+        # Both futures are done after the with block (shutdown waits for them).
 
         for label, fut in (('cert patch', f_cert), ('IP refresh', f_ips)):
             if fut.exception():
                 log_buffer.log('Certificate', f'Error during {label}: {fut.exception()}')
 
+        _log_cacert_state(ca_file, ca_pem, f'cacert.pem before Roblox restart for {exe_path.parent.name}')
         log_buffer.log('Certificate', 'Cert injected and IPs refreshed — waiting for Roblox to finish launching...')
         if not wait_for_roblox_window(timeout=60.0):
             log_buffer.log('Certificate', 'Warning: Roblox window did not appear within 60 s — restarting anyway')
@@ -1832,6 +2021,90 @@ class ProxyMaster:
             log_buffer.log('Certificate', f'Roblox restarted: {exe_path.name}')
         except OSError as exc:
             log_buffer.log('Certificate', f'Failed to restart Roblox: {exc}')
+
+    def refresh_and_restart_roblox(self, exe_path: Path) -> None:
+        """Validate launch-time Roblox CA state, repair it, and restart once if needed.
+
+        Roblox/Fishstrap can rewrite ssl/cacert.pem after the first process is
+        observed. A single immediate "already patched" check is therefore not
+        enough. This method records the initial state, waits briefly for launch
+        file churn to settle, then polls the active bundle. If the bundle is
+        overwritten or incomplete, it patches certs, refreshes hosts/upstream IPs,
+        and restarts Roblox exactly once for that launch window.
+        """
+        ca_cert_path = PROXY_CA_DIR / 'ca.crt'
+        if not ca_cert_path.exists():
+            return
+
+        exe_path = Path(exe_path)
+        ca_pem = get_ca_pem(ca_cert_path)
+        ca_file = exe_path.parent / 'ssl' / 'cacert.pem'
+
+        if not self._cert_refresh_lock.acquire(blocking=False):
+            log_buffer.log('Certificate', f'Roblox launch CA refresh already in progress for {exe_path.parent.name}; skipping duplicate trigger')
+            return
+
+        try:
+            initial_state = _log_cacert_state(ca_file, ca_pem, f'Roblox launch initial cacert.pem state for {exe_path.parent.name}')
+            now = time.monotonic()
+            last_refresh = self._last_cert_refresh_by_exe.get(exe_path)
+            initial_sha = str(initial_state.get('sha256') or '')
+            if last_refresh is not None:
+                last_time, last_sha = last_refresh
+                if now - last_time < _CACERT_RESTART_DEDUP_SECONDS and initial_sha == last_sha:
+                    log_buffer.log(
+                        'Certificate',
+                        f'Roblox launch CA repair recently ran for {exe_path.parent.name}; '
+                        'skipping duplicate restart because cacert.pem hash is unchanged',
+                    )
+                    return
+
+            time.sleep(_CACERT_LAUNCH_SETTLE_SECONDS)
+            stable_state = _log_cacert_state(ca_file, ca_pem, f'Roblox launch settled cacert.pem state for {exe_path.parent.name}')
+            if stable_state.get('sha256') != initial_state.get('sha256'):
+                log_buffer.log(
+                    'Certificate',
+                    f'cacert.pem changed during Roblox launch for {exe_path.parent.name}: '
+                    f'{str(initial_state.get("sha256") or "none")[:12]} -> '
+                    f'{str(stable_state.get("sha256") or "none")[:12]}',
+                )
+
+            deadline = time.monotonic() + _CACERT_LAUNCH_POLL_SECONDS
+            last_state = stable_state
+            last_sha = str(stable_state.get('sha256') or '')
+            stable_unhealthy_samples = 0
+            while time.monotonic() < deadline:
+                if bool(last_state.get('healthy')):
+                    log_buffer.log('Certificate', f'Roblox launch detected: stable patched cert confirmed for {exe_path.parent.name}')
+                    return
+
+                time.sleep(_CACERT_LAUNCH_POLL_INTERVAL_SECONDS)
+                next_state = _log_cacert_state(ca_file, ca_pem, f'Roblox launch polling cacert.pem state for {exe_path.parent.name}')
+                next_sha = str(next_state.get('sha256') or '')
+                if next_sha and next_sha != last_sha:
+                    log_buffer.log(
+                        'Certificate',
+                        f'cacert.pem overwritten after Roblox launch for {exe_path.parent.name}: '
+                        f'{last_sha[:12] if last_sha else "none"} -> {next_sha[:12]}',
+                    )
+                    stable_unhealthy_samples = 0
+                else:
+                    stable_unhealthy_samples += 1
+                    if stable_unhealthy_samples >= 2:
+                        break
+                last_state = next_state
+                last_sha = next_sha
+
+            self._last_cert_refresh_by_exe[exe_path] = (time.monotonic(), last_sha)
+            self._repair_cert_refresh_ips_and_restart_roblox(
+                exe_path,
+                ca_pem,
+                ca_file,
+                'Roblox missing or unstable CA cert',
+            )
+        finally:
+            self._cert_refresh_lock.release()
+
 
     def start(self) -> None:
         with self._lock:
@@ -1982,19 +2255,26 @@ class ProxyMaster:
         # writing new ones. This guarantees getaddrinfo() returns real IPs.
         active_hosts = self._desired_intercept_hosts()
         self._active_intercept_hosts = set(active_hosts)
-        real_ips = _resolve_real_ips(active_hosts)
-        _log_upstream_ip_coverage(active_hosts, real_ips)
+        if self._proxy_debug_enabled():
+            log_buffer.log(
+                'ProxyDiag',
+                f'Proxy debug mode active: {self._proxy_debug_mode()} hosts={", ".join(sorted(active_hosts))}',
+            )
+        real_endpoints = _resolve_real_endpoints(active_hosts)
+        _log_upstream_ip_coverage(active_hosts, real_endpoints)
+
+        windows_proxy_info = detect_windows_proxy()
+        system_http_proxy = detected_http_proxy(windows_proxy_info)
+        _log_windows_proxy_info(windows_proxy_info, system_http_proxy)
+        manual_http_proxy = _manual_http_proxy_from_settings(self.config_manager)
+        manual_socks5_proxy = _manual_socks5_proxy_from_settings(self.config_manager)
 
         # ── Create addon instances ────────────────────────────────────────
         self._texture_stripper = TextureStripper(self.config_manager)
         self._texture_stripper.set_cache_scraper(self.cache_scraper)
         # Give the scraper real IPs for ALL intercepted hosts so its API
         # calls bypass our hosts file redirect (including CDN redirects).
-        scraper_ips = {
-            host: ips[0]
-            for host, ips in real_ips.items()
-            if ips
-        }
+        scraper_ips = _first_endpoint_ips(real_endpoints)
         self.cache_scraper.set_real_ips(scraper_ips)
 
         # Wire the scraper into the json_viewer's AssetFetcherThread so the
@@ -2010,9 +2290,16 @@ class ProxyMaster:
             texture_stripper=self._texture_stripper,
             cache_scraper=self.cache_scraper,
             host_certs=host_certs,
-            upstream_ips=real_ips,
+            upstream_endpoints=real_endpoints,
             default_cert=default_cert,
             port=PROXY_PORT,
+            upstream_mode=self._effective_upstream_mode(),
+            system_http_proxy=system_http_proxy,
+            manual_http_proxy=manual_http_proxy,
+            manual_socks5_proxy=manual_socks5_proxy,
+            wire_preserving_passthrough=self._effective_wire_preserving_passthrough(),
+            vpn_compat_max_assetdelivery_connections=self.config_manager.vpn_compat_max_assetdelivery_connections,
+            vpn_compat_max_cdn_connections=self.config_manager.vpn_compat_max_cdn_connections,
         )
         with self._lock:
             interceptors = list(self._module_interceptors)

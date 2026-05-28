@@ -26,12 +26,29 @@ import gzip
 import logging
 import ssl
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple
 
 if TYPE_CHECKING:
     from .addons.cache_scraper import CacheScraper
     from .addons.texture_stripper import TextureStripper
+
+from .upstream import (
+    AutoConnector,
+    BaseUpstreamConnector,
+    DirectIpConnector,
+    HttpConnectConnector,
+    HttpProxyConfig,
+    Socks5Connector,
+    Socks5ProxyConfig,
+    UnavailableConnector,
+    UpstreamConnectResult,
+    UpstreamEndpoint,
+    UpstreamMode,
+    normalize_endpoints,
+    normalize_upstream_mode,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +63,20 @@ INTERCEPT_HOSTS: frozenset = BASE_INTERCEPT_HOSTS | USERNAME_SPOOFER_INTERCEPT_H
 
 _ZSTD_MAGIC = b'\x28\xb5\x2f\xfd'
 _GZIP_MAGIC  = b'\x1f\x8b'
+
+
+@dataclass
+class RawHeaders:
+    first_line: bytes
+    headers: Dict[bytes, bytes]
+    raw_header_block: bytes
+
+
+@dataclass
+class RawBody:
+    wire: bytes
+    payload: bytes
+    was_chunked: bool
 
 
 def _decompress_body(body: bytes, headers: Dict[bytes, bytes]) -> bytes:
@@ -105,6 +136,16 @@ def _parse_status_code(status_line: bytes) -> int:
         return 0
 
 
+def _body_log_snippet(body: bytes, limit: int = 256) -> str:
+    if not body:
+        return ''
+    text = body[:limit].decode('utf-8', errors='replace')
+    text = text.replace('\r', '\\r').replace('\n', '\\n')
+    if len(body) > limit:
+        text += '…'
+    return text
+
+
 def _make_proxy_error_response(status_code: int, message: str) -> bytes:
     reason_map = {
         400: 'Bad Request',
@@ -125,10 +166,10 @@ def _make_proxy_error_response(status_code: int, message: str) -> bytes:
     ).encode('ascii') + body
 
 
-async def _read_headers(reader: asyncio.StreamReader) -> Optional[Tuple[bytes, Dict[bytes, bytes]]]:
-    """Read one HTTP header block. Returns (first_line, lowercase_headers) or None."""
-    first_line: Optional[bytes] = None
-    headers: Dict[bytes, bytes] = {}
+async def _read_headers_raw(reader: asyncio.StreamReader) -> Optional[RawHeaders]:
+    """Read one HTTP header block, preserving the exact wire header bytes."""
+    raw = bytearray()
+
     while True:
         try:
             line = await asyncio.wait_for(reader.readline(), timeout=15.0)
@@ -136,26 +177,49 @@ async def _read_headers(reader: asyncio.StreamReader) -> Optional[Tuple[bytes, D
             return None
         if not line:
             return None
-        stripped = line.rstrip(b'\r\n')
-        if stripped == b'':
+
+        raw += line
+        if line in (b'\r\n', b'\n'):
             break
-        if first_line is None:
-            first_line = stripped
-        elif b':' in stripped:
-            k, _, v = stripped.partition(b':')
-            headers[k.strip().lower()] = v.strip()
-    if first_line is None:
+        if len(raw) > 1024 * 1024:
+            raise ValueError('HTTP header block too large')
+
+    lines = bytes(raw).splitlines()
+    if not lines:
         return None
-    return first_line, headers
+
+    first_line = lines[0].rstrip(b'\r\n')
+    headers: Dict[bytes, bytes] = {}
+    for line in lines[1:]:
+        stripped = line.rstrip(b'\r\n')
+        if not stripped or b':' not in stripped:
+            continue
+        k, _, v = stripped.partition(b':')
+        headers[k.strip().lower()] = v.strip()
+
+    return RawHeaders(
+        first_line=first_line,
+        headers=headers,
+        raw_header_block=bytes(raw),
+    )
 
 
-async def _read_body_raw(reader: asyncio.StreamReader, headers: Dict[bytes, bytes]) -> bytes:
-    """Read HTTP body, returning raw (still-compressed) bytes."""
+async def _read_headers(reader: asyncio.StreamReader) -> Optional[Tuple[bytes, Dict[bytes, bytes]]]:
+    """Compatibility wrapper returning (first_line, lowercase_headers)."""
+    raw = await _read_headers_raw(reader)
+    if raw is None:
+        return None
+    return raw.first_line, raw.headers
+
+
+async def _read_body_wire(reader: asyncio.StreamReader, headers: Dict[bytes, bytes]) -> RawBody:
+    """Read an HTTP body, preserving wire bytes and exposing dechunked payload."""
     te = headers.get(b'transfer-encoding', b'').lower()
     cl_raw = headers.get(b'content-length', b'')
 
     if b'chunked' in te:
-        body = bytearray()
+        wire = bytearray()
+        payload = bytearray()
         while True:
             try:
                 size_line = await reader.readline()
@@ -163,36 +227,54 @@ async def _read_body_raw(reader: asyncio.StreamReader, headers: Dict[bytes, byte
                 break
             if not size_line:
                 break
+            wire += size_line
             size_str = size_line.strip().split(b';')[0]
             try:
                 chunk_size = int(size_str, 16)
             except ValueError:
                 break
             if chunk_size == 0:
-                await reader.readline()
+                while True:
+                    trailer_line = await reader.readline()
+                    if not trailer_line:
+                        break
+                    wire += trailer_line
+                    if trailer_line in (b'\r\n', b'\n'):
+                        break
                 break
             try:
                 chunk = await reader.readexactly(chunk_size)
             except asyncio.IncompleteReadError as exc:
-                body += exc.partial
+                wire += exc.partial
+                payload += exc.partial
                 break
-            await reader.readline()  # CRLF after chunk data
-            body += chunk
-        return bytes(body)
+            try:
+                crlf = await reader.readexactly(2)
+            except asyncio.IncompleteReadError as exc:
+                crlf = exc.partial
+            wire += chunk + crlf
+            payload += chunk
+        return RawBody(wire=bytes(wire), payload=bytes(payload), was_chunked=True)
 
     if cl_raw:
         try:
             length = int(cl_raw)
         except ValueError:
-            return b''
+            return RawBody(wire=b'', payload=b'', was_chunked=False)
         if length <= 0:
-            return b''
+            return RawBody(wire=b'', payload=b'', was_chunked=False)
         try:
-            return await reader.readexactly(length)
+            body = await reader.readexactly(length)
         except asyncio.IncompleteReadError as exc:
-            return exc.partial
+            body = exc.partial
+        return RawBody(wire=body, payload=body, was_chunked=False)
 
-    return b''
+    return RawBody(wire=b'', payload=b'', was_chunked=False)
+
+
+async def _read_body_raw(reader: asyncio.StreamReader, headers: Dict[bytes, bytes]) -> bytes:
+    """Compatibility wrapper returning the dechunked, still-compressed payload."""
+    return (await _read_body_wire(reader, headers)).payload
 
 
 def _reassemble_raw_response(status_line: bytes, headers: Dict[bytes, bytes], body_raw: bytes) -> bytes:
@@ -422,19 +504,55 @@ class FleasionProxy:
         texture_stripper: 'TextureStripper',
         cache_scraper: 'CacheScraper',
         host_certs: Dict[str, Tuple[Path, Path]],
-        upstream_ips: Dict[str, List[str]],
-        default_cert: Tuple[Path, Path],
+        upstream_endpoints: Optional[Dict[str, Sequence[UpstreamEndpoint | str]]] = None,
+        default_cert: Optional[Tuple[Path, Path]] = None,
         port: int = 443,
         max_workers: int = 8,
+        upstream_ips: Optional[Dict[str, List[str]]] = None,
+        upstream_mode: str | UpstreamMode = UpstreamMode.AUTO,
+        system_http_proxy: Optional[HttpProxyConfig] = None,
+        manual_http_proxy: Optional[HttpProxyConfig] = None,
+        manual_socks5_proxy: Optional[Socks5ProxyConfig] = None,
+        wire_preserving_passthrough: bool = True,
+        vpn_compat_max_assetdelivery_connections: int = 16,
+        vpn_compat_max_cdn_connections: int = 32,
     ) -> None:
         self.texture_stripper = texture_stripper
         self.cache_scraper = cache_scraper
         self.port = port
         self._module_interceptors: List = []
-        self._upstream_ips = upstream_ips
+        if upstream_endpoints is None:
+            upstream_endpoints = upstream_ips or {}
+        self._upstream_endpoints = normalize_endpoints(upstream_endpoints)
         self._server: Optional[asyncio.Server] = None
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix='fleasion-cpu')
         self._sni_diagnostics_seen: set[str] = set()
+        self._fallback_diagnostics_seen: set[tuple[str, str]] = set()
+        self._wire_preserving_passthrough = bool(wire_preserving_passthrough)
+
+        asset_limit = max(1, int(vpn_compat_max_assetdelivery_connections or 16))
+        cdn_limit = max(1, int(vpn_compat_max_cdn_connections or 32))
+        self._upstream_host_limits = {
+            ASSET_DELIVERY_HOST: asyncio.Semaphore(asset_limit),
+            'contentdelivery.roblox.com': asyncio.Semaphore(asset_limit),
+            'fts.rbxcdn.com': asyncio.Semaphore(cdn_limit),
+        }
+
+        self._direct_connector = DirectIpConnector()
+        self._system_http_connector: Optional[BaseUpstreamConnector] = (
+            HttpConnectConnector(system_http_proxy, method='system_http_connect')
+            if system_http_proxy is not None else None
+        )
+        self._manual_http_connector: Optional[BaseUpstreamConnector] = (
+            HttpConnectConnector(manual_http_proxy)
+            if manual_http_proxy is not None else None
+        )
+        self._manual_socks5_connector: Optional[BaseUpstreamConnector] = (
+            Socks5Connector(manual_socks5_proxy)
+            if manual_socks5_proxy is not None else None
+        )
+        self._upstream_mode = normalize_upstream_mode(upstream_mode)
+        self._connector = self._build_connector()
 
         self._host_ssl_ctxs: Dict[str, ssl.SSLContext] = {}
         for host, (cert_path, key_path) in host_certs.items():
@@ -451,6 +569,8 @@ class FleasionProxy:
         self._upstream_ssl_ctx.verify_mode = ssl.CERT_NONE
         self._upstream_ssl_ctx.set_alpn_protocols(['http/1.1'])
 
+        if default_cert is None:
+            raise ValueError('default_cert is required')
         default_cert_path, default_key_path = default_cert
         self._server_ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         self._server_ssl_ctx.load_cert_chain(str(default_cert_path), str(default_key_path))
@@ -494,6 +614,34 @@ class FleasionProxy:
         """Set the list of module interceptors for gamejoin traffic hooks."""
         self._module_interceptors = list(interceptors)
 
+    def set_upstream_endpoints(self, endpoints: Dict[str, Sequence[UpstreamEndpoint | str]]) -> None:
+        self._upstream_endpoints = normalize_endpoints(endpoints)
+
+    def _build_connector(self) -> BaseUpstreamConnector:
+        if self._upstream_mode == UpstreamMode.DIRECT_IP:
+            return self._direct_connector
+        if self._upstream_mode == UpstreamMode.SYSTEM_PROXY:
+            return self._system_http_connector or UnavailableConnector(
+                'system_http_connect',
+                'no Windows system HTTP proxy detected',
+            )
+        if self._upstream_mode == UpstreamMode.HTTP_CONNECT:
+            return self._manual_http_connector or UnavailableConnector(
+                UpstreamMode.HTTP_CONNECT.value,
+                'manual HTTP CONNECT proxy is not configured',
+            )
+        if self._upstream_mode == UpstreamMode.SOCKS5:
+            return self._manual_socks5_connector or UnavailableConnector(
+                UpstreamMode.SOCKS5.value,
+                'manual SOCKS5 proxy is not configured',
+            )
+        return AutoConnector(
+            direct=self._direct_connector,
+            system_http_proxy=self._system_http_connector,
+            manual_http_proxy=self._manual_http_connector,
+            manual_socks5=self._manual_socks5_connector,
+        )
+
     async def stop(self) -> None:
         if self._server:
             self._server.close()
@@ -504,6 +652,30 @@ class FleasionProxy:
             self._server = None
         self._executor.shutdown(wait=False, cancel_futures=True)
 
+    def _endpoints_for_host(
+        self,
+        host: str,
+        max_targets: Optional[int] = None,
+    ) -> list[UpstreamEndpoint]:
+        endpoints = self._upstream_endpoints.get(host, []) or [UpstreamEndpoint(host=host)]
+        if max_targets is not None:
+            endpoints = endpoints[:max_targets]
+        return endpoints
+
+    async def _connect_upstream(
+        self,
+        host: str,
+        *,
+        timeout: float = 10.0,
+        max_targets: Optional[int] = None,
+    ) -> UpstreamConnectResult:
+        endpoints = self._endpoints_for_host(host, max_targets=max_targets)
+        sem = self._upstream_host_limits.get(host)
+        if sem is None:
+            return await self._connector.connect(host, endpoints, self._upstream_ssl_ctx, timeout)
+        async with sem:
+            return await self._connector.connect(host, endpoints, self._upstream_ssl_ctx, timeout)
+
     async def _open_upstream(
         self,
         host: str,
@@ -511,54 +683,64 @@ class FleasionProxy:
         timeout: float = 10.0,
         max_targets: Optional[int] = None,
     ) -> Tuple[Optional[asyncio.StreamReader], Optional[asyncio.StreamWriter], Optional[str], List[str]]:
-        targets = self._upstream_ips.get(host, []) or [host]
-        if max_targets is not None:
-            targets = targets[:max_targets]
-
-        failures: List[str] = []
-
-        for upstream_target in targets:
-            try:
-                up_reader, up_writer = await asyncio.wait_for(
-                    asyncio.open_connection(
-                        upstream_target,
-                        443,
-                        ssl=self._upstream_ssl_ctx,
-                        server_hostname=host,
-                    ),
-                    timeout=timeout,
-                )
-                return up_reader, up_writer, upstream_target, failures
-            except Exception as exc:
-                failures.append(f'{upstream_target}={_format_exc(exc)}')
-
-        return None, None, None, failures
+        result = await self._connect_upstream(host, timeout=timeout, max_targets=max_targets)
+        if result.writer is not None:
+            return result.reader, result.writer, result.endpoint, list(result.prior_errors)
+        return None, None, None, [result.error or 'upstream connect failed']
 
     async def log_upstream_self_test(self, hosts: Optional[set] = None) -> None:
         from ..utils import log_buffer
 
-        hosts_to_test = sorted(hosts or set(self._upstream_ips.keys()))
+        hosts_to_test = sorted(hosts or set(self._upstream_endpoints.keys()))
+
+        matrix: list[BaseUpstreamConnector] = [self._direct_connector]
+        if self._system_http_connector is not None:
+            matrix.append(self._system_http_connector)
+        if self._manual_http_connector is not None:
+            matrix.append(self._manual_http_connector)
+        if self._manual_socks5_connector is not None:
+            matrix.append(self._manual_socks5_connector)
 
         async def probe(host: str) -> None:
-            up_reader, up_writer, upstream_target, failures = await self._open_upstream(
-                host,
-                timeout=3.0,
-                max_targets=3,
-            )
+            endpoints = self._endpoints_for_host(host, max_targets=3)
+            first_ok_method: Optional[str] = None
+            direct_failed = False
 
-            if up_writer is not None:
-                log_buffer.log('Proxy', f'Upstream self-test OK: {host} via {upstream_target}')
-                try:
-                    up_writer.close()
-                except Exception:
-                    pass
-                return
+            for connector in matrix:
+                result = await connector.connect(host, endpoints, self._upstream_ssl_ctx, timeout=3.0)
+                if result.writer is not None:
+                    log_buffer.log(
+                        'ProxyDiag',
+                        f'{host} {result.method}: OK via {result.endpoint}',
+                    )
+                    if first_ok_method is None:
+                        first_ok_method = result.method
+                    try:
+                        result.writer.close()
+                    except Exception:
+                        pass
+                else:
+                    log_buffer.log(
+                        'ProxyDiag',
+                        f'{host} {result.method}: FAILED {result.error or "unknown error"}',
+                    )
+                    if result.method == UpstreamMode.DIRECT_IP.value:
+                        direct_failed = True
 
-            failure_text = ', '.join(failures) if failures else 'no targets attempted'
-            log_buffer.log(
-                'Proxy',
-                f'Upstream self-test FAILED: {host}; tried {failure_text}',
-            )
+            if first_ok_method is not None:
+                log_buffer.log('ProxyDiag', f'selected upstream mode for {host}: {first_ok_method}')
+                if (
+                    first_ok_method != UpstreamMode.DIRECT_IP.value
+                    and direct_failed
+                    and isinstance(self._connector, AutoConnector)
+                ):
+                    self._connector.prime_host(host, first_ok_method)
+            elif len(matrix) == 1:
+                log_buffer.log(
+                    'ProxyDiag',
+                    'No proxy-capable upstream transport is configured. '
+                    'VPN may not route Fleasion direct-IP sockets.',
+                )
 
         await asyncio.gather(*(probe(host) for host in hosts_to_test))
 
@@ -566,14 +748,14 @@ class FleasionProxy:
         from ..utils import log_buffer
 
         try:
-            result = await asyncio.wait_for(_read_headers(reader), timeout=15.0)
+            result = await asyncio.wait_for(_read_headers_raw(reader), timeout=15.0)
         except asyncio.TimeoutError:
             writer.close()
             return
         if result is None:
             writer.close()
             return
-        req_first, req_headers = result
+        req_first, req_headers = result.first_line, result.headers
 
         host_hdr = req_headers.get(b'host', b'').decode('ascii', errors='replace').lower()
         host = host_hdr.split(':')[0].strip()
@@ -583,7 +765,7 @@ class FleasionProxy:
             return
 
         try:
-            await self._http_session(req_first, req_headers, reader, writer, host)
+            await self._http_session(result, reader, writer, host)
         except (ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError):
             pass
         except Exception as exc:
@@ -596,8 +778,7 @@ class FleasionProxy:
 
     async def _http_session(
         self,
-        first_req_line: bytes,
-        first_req_headers: Dict[bytes, bytes],
+        first_req: RawHeaders,
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
         host: str,
@@ -605,7 +786,7 @@ class FleasionProxy:
         from ..utils import log_buffer
 
         replacements_tuple = self.texture_stripper.config_manager.get_all_replacements()
-        pending_req: Optional[Tuple[bytes, Dict]] = (first_req_line, first_req_headers)
+        pending_req: Optional[RawHeaders] = first_req
         up_reader: Optional[asyncio.StreamReader] = None
         up_writer: Optional[asyncio.StreamWriter] = None
         upstream_failure_hint_logged = False
@@ -616,12 +797,23 @@ class FleasionProxy:
             if up_reader is not None and up_writer is not None and not up_writer.is_closing():
                 return True
 
-            up_reader, up_writer, upstream_target, failures = await self._open_upstream(host)
+            connect_result = await self._connect_upstream(host)
+            up_reader = connect_result.reader
+            up_writer = connect_result.writer
 
             if up_reader is not None and up_writer is not None:
+                if connect_result.method != UpstreamMode.DIRECT_IP.value and connect_result.prior_errors:
+                    key = (host, connect_result.method)
+                    if key not in self._fallback_diagnostics_seen:
+                        self._fallback_diagnostics_seen.add(key)
+                        log_buffer.log(
+                            'Proxy',
+                            f'Upstream direct_ip failed for {host}; using '
+                            f'{connect_result.method} via {connect_result.endpoint}',
+                        )
                 return True
 
-            failure_text = ', '.join(failures) if failures else 'no targets attempted'
+            failure_text = connect_result.error or 'no targets attempted'
             log_buffer.log(
                 'Proxy',
                 f'Upstream connect failed for {host}{path_for_log[:180]}; tried {failure_text}',
@@ -650,16 +842,19 @@ class FleasionProxy:
             while True:
                 # ── Read request ─────────────────────────────────────────────
                 if pending_req is not None:
-                    req_first, req_headers = pending_req
+                    req_raw = pending_req
                     pending_req = None
                 else:
-                    result = await _read_headers(reader)
+                    result = await _read_headers_raw(reader)
                     if result is None:
                         break
-                    req_first, req_headers = result
+                    req_raw = result
 
-                # Read raw request body (may be compressed)
-                req_body_raw = await _read_body_raw(reader, req_headers)
+                req_first, req_headers = req_raw.first_line, req_raw.headers
+
+                # Read request body. payload is dechunked; wire preserves chunk framing.
+                req_body = await _read_body_wire(reader, req_headers)
+                req_body_raw = req_body.payload
 
                 parts = req_first.split(b' ', 2)
                 path = parts[1].decode('ascii', errors='replace') if len(parts) > 1 else '/'
@@ -771,22 +966,34 @@ class FleasionProxy:
                                 _new_first, _gamejoin_flow.request.headers.to_bytes_dict(), _new_body,
                             ))
                         else:
-                            up_writer.write(_reassemble_raw_request(req_first, req_headers, req_body_raw))
+                            if self._wire_preserving_passthrough:
+                                up_writer.write(req_raw.raw_header_block + req_body.wire)
+                            else:
+                                up_writer.write(_reassemble_raw_request(req_first, req_headers, req_body_raw))
                     else:
                         if not await ensure_upstream(path):
                             break
-                        up_writer.write(_reassemble_raw_request(req_first, req_headers, req_body_raw))
+                        if self._wire_preserving_passthrough:
+                            up_writer.write(req_raw.raw_header_block + req_body.wire)
+                        else:
+                            up_writer.write(_reassemble_raw_request(req_first, req_headers, req_body_raw))
                 elif host == PROFILE_API_HOST and PROFILE_API_PATH_FRAGMENT in path and self._module_interceptors:
                     _req_body_plain = _decompress_body(req_body_raw, req_headers)
                     if not await ensure_upstream(path):
                         break
                     _profile_flow = ProxyFlow(req_first, req_headers, _req_body_plain, host)
-                    up_writer.write(_reassemble_raw_request(req_first, req_headers, req_body_raw))
+                    if self._wire_preserving_passthrough:
+                        up_writer.write(req_raw.raw_header_block + req_body.wire)
+                    else:
+                        up_writer.write(_reassemble_raw_request(req_first, req_headers, req_body_raw))
                 else:
-                    # Forward request as-is (raw bytes, original headers)
+                    # Forward request as-is.
                     if not await ensure_upstream(path):
                         break
-                    up_writer.write(_reassemble_raw_request(req_first, req_headers, req_body_raw))
+                    if self._wire_preserving_passthrough:
+                        up_writer.write(req_raw.raw_header_block + req_body.wire)
+                    else:
+                        up_writer.write(_reassemble_raw_request(req_first, req_headers, req_body_raw))
 
                 try:
                     await up_writer.drain()
@@ -794,19 +1001,34 @@ class FleasionProxy:
                     break
 
                 # ── Read upstream response ────────────────────────────────────
-                resp_result = await _read_headers(up_reader)
+                resp_result = await _read_headers_raw(up_reader)
                 if resp_result is None:
                     break
-                resp_first, resp_headers = resp_result
-                resp_body_raw = await _read_body_raw(up_reader, resp_headers)
+                resp_raw = resp_result
+                resp_first, resp_headers = resp_raw.first_line, resp_raw.headers
+                resp_body = await _read_body_wire(up_reader, resp_headers)
+                resp_body_raw = resp_body.payload
 
                 status_code = _parse_status_code(resp_first)
-                if status_code >= 400 and host in {ASSET_DELIVERY_HOST, *CDN_HOSTS}:
+                if status_code in (400, 429) and host in {ASSET_DELIVERY_HOST, *CDN_HOSTS}:
                     ct = resp_headers.get(b'content-type', b'').decode('ascii', errors='replace')
+                    retry_after = resp_headers.get(b'retry-after', b'').decode('ascii', errors='replace')
+                    preview = resp_body_raw[:300].decode('utf-8', errors='replace')
+                    preview = preview.replace('\r', ' ').replace('\n', ' ')
                     log_buffer.log(
                         'Proxy',
                         f'Upstream HTTP {status_code} from {host}{path[:180]} '
-                        f'content-type={ct or "unknown"} body={len(resp_body_raw)} bytes',
+                        f'content-type={ct or "unknown"} body={len(resp_body_raw)} bytes '
+                        f'retry-after={retry_after or "none"} preview={preview!r}',
+                    )
+                elif status_code >= 400 and host in {ASSET_DELIVERY_HOST, GAMEJOIN_HOST, *CDN_HOSTS}:
+                    ct = resp_headers.get(b'content-type', b'').decode('ascii', errors='replace')
+                    snippet = _body_log_snippet(resp_body_raw)
+                    snippet_text = f' snippet={snippet}' if snippet else ''
+                    log_buffer.log(
+                        'Proxy',
+                        f'Upstream HTTP {status_code} from {host}{path[:180]} '
+                        f'content-type={ct or "unknown"} body={len(resp_body_raw)} bytes{snippet_text}',
                     )
 
                 # ── Determine if we need to modify the response body ──────────
@@ -964,8 +1186,10 @@ class FleasionProxy:
                     # We changed the bytes, send as uncompressed with new content-length
                     writer.write(_build_modified_response(resp_first, resp_headers, resp_body_raw))
                 else:
-                    # Raw passthrough - Roblox handles decompression itself
-                    writer.write(_reassemble_raw_response(resp_first, resp_headers, resp_body_raw))
+                    if self._wire_preserving_passthrough:
+                        writer.write(resp_raw.raw_header_block + resp_body.wire)
+                    else:
+                        writer.write(_reassemble_raw_response(resp_first, resp_headers, resp_body_raw))
 
                 try:
                     await writer.drain()

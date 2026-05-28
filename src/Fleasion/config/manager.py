@@ -218,6 +218,131 @@ class ConfigManager:
         self._save_settings()
 
     @property
+    def upstream_transport_mode(self) -> str:
+        mode = str(self.settings.get('upstream_transport_mode', 'auto') or 'auto').lower()
+        valid = {'auto', 'direct_ip', 'system_proxy', 'http_connect', 'socks5'}
+        return mode if mode in valid else 'auto'
+
+    @upstream_transport_mode.setter
+    def upstream_transport_mode(self, value: str):
+        value = str(value or 'auto').lower()
+        self.settings['upstream_transport_mode'] = value if value in {
+            'auto', 'direct_ip', 'system_proxy', 'http_connect', 'socks5'
+        } else 'auto'
+        self._save_settings()
+
+    @property
+    def wire_preserving_passthrough(self) -> bool:
+        return bool(self.settings.get('wire_preserving_passthrough', True))
+
+    @wire_preserving_passthrough.setter
+    def wire_preserving_passthrough(self, value: bool):
+        self.settings['wire_preserving_passthrough'] = bool(value)
+        self._save_settings()
+
+    @property
+    def upstream_http_connect_host(self) -> str:
+        return str(self.settings.get('upstream_http_connect_host', '') or '')
+
+    @upstream_http_connect_host.setter
+    def upstream_http_connect_host(self, value: str):
+        self.settings['upstream_http_connect_host'] = str(value or '').strip()
+        self._save_settings()
+
+    @property
+    def upstream_http_connect_port(self) -> int:
+        try:
+            return max(0, min(65535, int(self.settings.get('upstream_http_connect_port', 0) or 0)))
+        except (TypeError, ValueError):
+            return 0
+
+    @upstream_http_connect_port.setter
+    def upstream_http_connect_port(self, value: int):
+        self.settings['upstream_http_connect_port'] = max(0, min(65535, int(value or 0)))
+        self._save_settings()
+
+    @property
+    def upstream_http_connect_username(self) -> str:
+        return str(self.settings.get('upstream_http_connect_username', '') or '')
+
+    @upstream_http_connect_username.setter
+    def upstream_http_connect_username(self, value: str):
+        self.settings['upstream_http_connect_username'] = str(value or '')
+        self._save_settings()
+
+    @property
+    def upstream_http_connect_password(self) -> str:
+        return str(self.settings.get('upstream_http_connect_password', '') or '')
+
+    @upstream_http_connect_password.setter
+    def upstream_http_connect_password(self, value: str):
+        self.settings['upstream_http_connect_password'] = str(value or '')
+        self._save_settings()
+
+    @property
+    def upstream_socks5_host(self) -> str:
+        return str(self.settings.get('upstream_socks5_host', '') or '')
+
+    @upstream_socks5_host.setter
+    def upstream_socks5_host(self, value: str):
+        self.settings['upstream_socks5_host'] = str(value or '').strip()
+        self._save_settings()
+
+    @property
+    def upstream_socks5_port(self) -> int:
+        try:
+            return max(0, min(65535, int(self.settings.get('upstream_socks5_port', 0) or 0)))
+        except (TypeError, ValueError):
+            return 0
+
+    @upstream_socks5_port.setter
+    def upstream_socks5_port(self, value: int):
+        self.settings['upstream_socks5_port'] = max(0, min(65535, int(value or 0)))
+        self._save_settings()
+
+    @property
+    def upstream_socks5_username(self) -> str:
+        return str(self.settings.get('upstream_socks5_username', '') or '')
+
+    @upstream_socks5_username.setter
+    def upstream_socks5_username(self, value: str):
+        self.settings['upstream_socks5_username'] = str(value or '')
+        self._save_settings()
+
+    @property
+    def upstream_socks5_password(self) -> str:
+        return str(self.settings.get('upstream_socks5_password', '') or '')
+
+    @upstream_socks5_password.setter
+    def upstream_socks5_password(self, value: str):
+        self.settings['upstream_socks5_password'] = str(value or '')
+        self._save_settings()
+
+    @property
+    def vpn_compat_max_assetdelivery_connections(self) -> int:
+        try:
+            return max(1, min(128, int(self.settings.get('vpn_compat_max_assetdelivery_connections', 16) or 16)))
+        except (TypeError, ValueError):
+            return 16
+
+    @vpn_compat_max_assetdelivery_connections.setter
+    def vpn_compat_max_assetdelivery_connections(self, value: int):
+        self.settings['vpn_compat_max_assetdelivery_connections'] = max(1, min(128, int(value or 16)))
+        self._save_settings()
+
+    @property
+    def vpn_compat_max_cdn_connections(self) -> int:
+        try:
+            return max(1, min(256, int(self.settings.get('vpn_compat_max_cdn_connections', 32) or 32)))
+        except (TypeError, ValueError):
+            return 32
+
+    @vpn_compat_max_cdn_connections.setter
+    def vpn_compat_max_cdn_connections(self, value: int):
+        self.settings['vpn_compat_max_cdn_connections'] = max(1, min(256, int(value or 32)))
+        self._save_settings()
+
+    @property
     def run_on_boot(self) -> bool:
         return self.settings.get('run_on_boot', False)
 
