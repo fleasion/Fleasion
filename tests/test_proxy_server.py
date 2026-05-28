@@ -3,6 +3,7 @@ import unittest
 
 from Fleasion.proxy.server import (
     _build_modified_request,
+    _is_empty_json_array,
     _read_body_wire,
     _read_headers_raw,
 )
@@ -110,6 +111,11 @@ class ProxyServerRawHttpTests(unittest.TestCase):
         self.assertNotIn(b"content-length: 999", head)
         self.assertIn(b"content-length: 2", head)
         self.assertTrue(request.endswith(b"\r\n\r\n{}"))
+
+    def test_empty_json_array_detection_for_filtered_batches(self):
+        self.assertTrue(_is_empty_json_array(b" [] \r\n"))
+        self.assertFalse(_is_empty_json_array(b'[{"assetId":1}]'))
+        self.assertFalse(_is_empty_json_array(b""))
 
 
 if __name__ == "__main__":

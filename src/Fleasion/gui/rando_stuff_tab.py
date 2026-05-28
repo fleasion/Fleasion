@@ -756,7 +756,7 @@ class RandoStuffTab(QWidget):
 
         self._populate_account_list()
 
-        username_group = QGroupBox("Username Spoofer")
+        username_group = QGroupBox("Username Spoofer (CLIENT SIDED, ONLY YOU SEE IT)")
         username_layout = QVBoxLayout(username_group)
 
         self._username_save_chk = QCheckBox("Save Username Spoofer Settings")

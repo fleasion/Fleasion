@@ -146,6 +146,10 @@ def _body_log_snippet(body: bytes, limit: int = 256) -> str:
     return text
 
 
+def _is_empty_json_array(body: bytes) -> bool:
+    return body.strip() == b'[]'
+
+
 def _make_proxy_error_response(status_code: int, message: str) -> bytes:
     reason_map = {
         400: 'Bad Request',
@@ -935,6 +939,12 @@ class FleasionProxy:
                     req_body_modified, scraper_body = self.texture_stripper.process_batch_request(
                         req_body_plain, req_headers, replacements_tuple, batch_id,
                     )
+                    if _is_empty_json_array(req_body_modified) and not _is_empty_json_array(req_body_plain):
+                        writer.write(_make_local_response(200, b'[]'))
+                        await writer.drain()
+                        if not _keep_alive(req_first, req_headers):
+                            break
+                        continue
                     if not await ensure_upstream(path):
                         break
                     up_writer.write(_build_modified_request(req_first, req_headers, req_body_modified))
