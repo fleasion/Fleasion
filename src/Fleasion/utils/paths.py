@@ -123,6 +123,7 @@ DEFAULT_SETTINGS = {
         'self_name': '',
         'self_apply_ingame': False,
         'self_verified': False,
+        'self_game_creator': False,
     },
 }
 

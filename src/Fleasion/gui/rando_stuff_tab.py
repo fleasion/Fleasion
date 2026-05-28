@@ -574,6 +574,7 @@ class RandoStuffTab(QWidget):
             'self_name': '',
             'self_apply_ingame': False,
             'self_verified': False,
+            'self_game_creator': False,
         }
 
     def _load_username_spoofer_settings(self) -> dict:
@@ -596,6 +597,7 @@ class RandoStuffTab(QWidget):
             'self_name': self._username_self_input.text(),
             'self_apply_ingame': self._username_self_apply_chk.isChecked(),
             'self_verified': self._username_self_verified_chk.isChecked(),
+            'self_game_creator': self._username_self_game_creator_chk.isChecked(),
         }
 
     def _set_username_spoofer_state(self, state: dict):
@@ -608,6 +610,7 @@ class RandoStuffTab(QWidget):
                 'self_name': str(state.get('self_name', '')),
                 'self_apply_ingame': bool(state.get('self_apply_ingame', False)),
                 'self_verified': bool(state.get('self_verified', False)),
+                'self_game_creator': bool(state.get('self_game_creator', False)),
             }
 
     def _persist_username_spoofer_state(self, state: dict):
@@ -799,11 +802,17 @@ class RandoStuffTab(QWidget):
         self._username_self_verified_chk.setChecked(
             bool(self._username_spoofer_state.get('self_verified', False))
         )
+        self._username_self_game_creator_chk = QCheckBox("Make Yourself Game Creator")
+        self._username_self_game_creator_chk.setToolTip("Force gamejoin creator metadata to use your current Roblox user ID")
+        self._username_self_game_creator_chk.setChecked(
+            bool(self._username_spoofer_state.get('self_game_creator', False))
+        )
         self_row.addWidget(self_label)
         self_row.addWidget(self._username_self_input, 1)
         self_row.addWidget(self._username_self_apply_chk)
         self_row.addWidget(self._username_self_verified_chk)
         username_layout.addLayout(self_row)
+        username_layout.addWidget(self._username_self_game_creator_chk)
 
         root.addWidget(username_group)
 
@@ -895,6 +904,7 @@ class RandoStuffTab(QWidget):
         self._username_self_input.textChanged.connect(lambda _text: self._on_username_spoofer_changed())
         self._username_self_apply_chk.toggled.connect(lambda _checked: self._on_username_spoofer_changed())
         self._username_self_verified_chk.toggled.connect(lambda _checked: self._on_username_spoofer_changed())
+        self._username_self_game_creator_chk.toggled.connect(lambda _checked: self._on_username_spoofer_changed())
 
     def changeEvent(self, a0: QEvent | None):
         super().changeEvent(a0)

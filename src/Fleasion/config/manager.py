@@ -488,6 +488,7 @@ class ConfigManager:
                 'self_name': str(value.get('self_name', base.get('self_name', ''))),
                 'self_apply_ingame': bool(value.get('self_apply_ingame', base.get('self_apply_ingame', False))),
                 'self_verified': bool(value.get('self_verified', base.get('self_verified', False))),
+                'self_game_creator': bool(value.get('self_game_creator', base.get('self_game_creator', False))),
             })
         self.settings['username_spoofer'] = base
         self._save_settings()

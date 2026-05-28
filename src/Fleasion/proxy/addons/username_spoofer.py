@@ -1,11 +1,18 @@
-"""UsernameSpoofer: rewrites Roblox profile responses for in-game display names."""
+"""UsernameSpoofer: rewrites Roblox profile and gamejoin creator metadata."""
 
 import json
 import threading
 
+import requests
+
 from ...utils import log_buffer
 
 PROFILE_ENDPOINT_FRAGMENT = '/v1/user/profiles/get-profiles'
+GAMEJOIN_ENDPOINT_FRAGMENTS = (
+    '/v1/join-game',
+    '/v1/join-game-instance',
+    '/v1/join-reserved-game',
+)
 EMPTY_NAME_SENTINEL = '\u200b'
 NAME_KEYS = (
     'username',
@@ -38,6 +45,7 @@ class UsernameSpoofer:
             'self_name': '',
             'self_apply_ingame': False,
             'self_verified': False,
+            'self_game_creator': False,
         }
 
     def _load_state_from_config(self) -> dict:
@@ -62,6 +70,7 @@ class UsernameSpoofer:
                 'self_name': str(state.get('self_name', base['self_name'])),
                 'self_apply_ingame': bool(state.get('self_apply_ingame', base['self_apply_ingame'])),
                 'self_verified': bool(state.get('self_verified', base['self_verified'])),
+                'self_game_creator': bool(state.get('self_game_creator', base['self_game_creator'])),
             })
         return base
 
@@ -72,6 +81,7 @@ class UsernameSpoofer:
             or state.get('others_verified')
             or state.get('self_apply_ingame')
             or state.get('self_verified')
+            or state.get('self_game_creator')
         )
 
     def is_enabled(self) -> bool:
@@ -124,8 +134,113 @@ class UsernameSpoofer:
     def request(self, flow) -> None:
         return
 
+    @staticmethod
+    def _fetch_authenticated_user_id() -> int | None:
+        from ...utils.roblox_auth import get_roblosecurity
+
+        cookie = get_roblosecurity()
+        if not cookie:
+            return None
+        try:
+            sess = requests.Session()
+            sess.trust_env = False
+            sess.proxies = {}
+            try:
+                sess.cookies.set('.ROBLOSECURITY', cookie)
+            except Exception:
+                sess.headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
+            resp = sess.get('https://users.roblox.com/v1/users/authenticated', timeout=10)
+            if resp.status_code != 200:
+                return None
+            user_id = resp.json().get('id')
+            return int(user_id) if user_id is not None else None
+        except Exception as exc:
+            log_buffer.log('username-spoofer', f'Failed to fetch authenticated user id: {exc}')
+            return None
+
+    @staticmethod
+    def _game_creator_type_user_value(current_value, key: str):
+        if isinstance(current_value, str):
+            if current_value.startswith('Enum.CreatorType.'):
+                return 'Enum.CreatorType.User'
+            return 'User'
+        if isinstance(current_value, bool):
+            return 'User'
+        if isinstance(current_value, int):
+            # Engine Enum.CreatorType is User=0, Group=1; web API creatorType
+            # fields commonly use User=1, Group=2. The capital joinScript
+            # field maps to the engine value.
+            return 0 if key == 'CreatorType' else 1
+        return 'User'
+
+    @classmethod
+    def _set_creator_id_type_pair(cls, value: dict, creator_id_key: str, creator_type_key: str, user_id: int) -> int:
+        if creator_id_key not in value and creator_type_key not in value:
+            return 0
+
+        changed = 0
+        if creator_id_key in value and value.get(creator_id_key) != user_id:
+            value[creator_id_key] = user_id
+            changed += 1
+
+        if creator_type_key in value:
+            user_type = cls._game_creator_type_user_value(value.get(creator_type_key), creator_type_key)
+            if value.get(creator_type_key) != user_type:
+                value[creator_type_key] = user_type
+                changed += 1
+        return changed
+
+    @classmethod
+    def _set_game_creator_fields(cls, value, user_id: int) -> int:
+        if isinstance(value, list):
+            return sum(cls._set_game_creator_fields(item, user_id) for item in value)
+        if not isinstance(value, dict):
+            return 0
+
+        changed = 0
+        for creator_id_key, creator_type_key in (
+            ('CreatorId', 'CreatorType'),
+            ('CreatorId', 'CreatorTypeEnum'),
+            ('CreatorTargetId', 'CreatorType'),
+            ('CreatorTargetId', 'CreatorTypeEnum'),
+            ('creatorId', 'creatorType'),
+            ('creatorTargetId', 'creatorType'),
+        ):
+            changed += cls._set_creator_id_type_pair(value, creator_id_key, creator_type_key, user_id)
+
+        for child in value.values():
+            changed += cls._set_game_creator_fields(child, user_id)
+        return changed
+
+    def _modify_gamejoin_response(self, flow) -> bool:
+        if not any(fragment in flow.request.pretty_url for fragment in GAMEJOIN_ENDPOINT_FRAGMENTS):
+            return False
+        with self._lock:
+            enabled = bool(self._runtime_state.get('self_game_creator'))
+        if not enabled:
+            return False
+        try:
+            payload = json.loads(flow.response.content.decode('utf-8'))
+            user_id = self._fetch_authenticated_user_id()
+            if user_id is None:
+                return False
+            fields_changed = self._set_game_creator_fields(payload, user_id)
+            if fields_changed <= 0:
+                return False
+            flow.response.content = json.dumps(
+                payload,
+                separators=(',', ':'),
+                ensure_ascii=False,
+            ).encode('utf-8')
+            return True
+        except Exception as exc:
+            log_buffer.log('username-spoofer', f'Failed to modify gamejoin response: {exc}')
+            return False
+
     def response(self, flow) -> None:
         if flow.response is None or not flow.response.content:
+            return
+        if self._modify_gamejoin_response(flow):
             return
         if PROFILE_ENDPOINT_FRAGMENT not in flow.request.pretty_url:
             return
