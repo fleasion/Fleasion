@@ -130,6 +130,11 @@ class SettingsTab(QWidget):
         self._proxy_features_chk.toggled.connect(self._on_proxy_features_toggled)
         section.add_widget(self._proxy_features_chk)
 
+        # Warning shown under the proxy features checkbox
+        self._proxy_warning_label = QLabel('DO NOT TOUCH UNLESS YOU KNOW WHAT YOU ARE DOING')
+        self._proxy_warning_label.setStyleSheet('color: #e07a00; font-weight: bold;')
+        section.add_widget(self._proxy_warning_label)
+
         mode_row = QHBoxLayout()
         mode_row.setContentsMargins(0, 0, 0, 0)
         mode_row.addWidget(QLabel('Upstream Transport'))
