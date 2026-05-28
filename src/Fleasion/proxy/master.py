@@ -25,6 +25,7 @@ import base64
 import hashlib
 import csv
 import ctypes
+import hashlib
 import json
 import logging
 import os
@@ -115,6 +116,7 @@ _WATCHDOG_INTERVAL  = 10  # seconds between watchdog refreshes
 _WATCHDOG_SCHTASKS_TIMEOUT = 20
 _WATCHDOG_TASK_XML  = Path(os.environ.get('TEMP', r'C:\Windows\Temp')) / 'fleasion_watchdog_task.xml'
 _SCHTASKS_EXE = str(Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32' / 'schtasks.exe')
+_CERTUTIL_EXE = str(Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32' / 'certutil.exe')
 
 # PowerShell command that strips Fleasion entries from the hosts file and
 # flushes DNS.  Encoded as UTF-16-LE base64 to avoid XML/shell-escaping pain.
@@ -1714,6 +1716,132 @@ def _install_ca_into_roblox(ca_pem: str) -> None:
             log_buffer.log('Certificate', f'Failed to write CA for {d.name}: {exc}')
 
 
+def _ca_thumbprint_sha1(ca_pem: str) -> str:
+    body = ''.join(
+        line.strip()
+        for line in ca_pem.splitlines()
+        if line and not line.startswith('-----')
+    )
+    der = base64.b64decode(body)
+    return hashlib.sha1(der).hexdigest().upper()
+
+
+def _certutil_store_has_thumbprint(store_location: str, thumbprint: str) -> bool:
+    try:
+        result = subprocess.run(
+            [_CERTUTIL_EXE, '-store', store_location, thumbprint],
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            timeout=10,
+        )
+    except Exception as exc:
+        log_buffer.log('Certificate', f'Windows {store_location} trust-store check failed: {exc}')
+        return False
+    text = ((result.stdout or b'') + (result.stderr or b'')).decode('utf-8', errors='replace')
+    return result.returncode == 0 and thumbprint.lower() in text.replace(' ', '').lower()
+
+
+def _certutil_fleasion_root_thumbprints(store_location: str) -> list[str]:
+    try:
+        result = subprocess.run(
+            [_CERTUTIL_EXE, '-store', store_location],
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            timeout=20,
+        )
+    except Exception as exc:
+        log_buffer.log('Certificate', f'Windows {store_location} trust-store enumeration failed: {exc}')
+        return []
+    if result.returncode != 0:
+        err = ((result.stderr or result.stdout or b'').decode('utf-8', errors='replace').strip())
+        log_buffer.log('Certificate', f'Windows {store_location} trust-store enumeration failed: {err or result.returncode}')
+        return []
+
+    entries: list[tuple[str | None, str]] = []
+    current_hash: str | None = None
+    current_text: list[str] = []
+    for line in (result.stdout or b'').decode('utf-8', errors='replace').splitlines():
+        stripped = line.strip()
+        lower = stripped.lower()
+        if lower.startswith('cert hash(sha1):'):
+            if current_hash is not None:
+                entries.append((current_hash, '\n'.join(current_text)))
+            current_hash = stripped.split(':', 1)[1].strip().replace(' ', '').upper()
+            current_text = [stripped]
+        elif current_hash is not None:
+            current_text.append(stripped)
+    if current_hash is not None:
+        entries.append((current_hash, '\n'.join(current_text)))
+
+    return [
+        thumbprint
+        for thumbprint, text in entries
+        if thumbprint and 'fleasion proxy ca' in text.lower()
+    ]
+
+
+def _certutil_delete_from_store(store_location: str, thumbprint: str) -> bool:
+    try:
+        result = subprocess.run(
+            [_CERTUTIL_EXE, '-delstore', store_location, thumbprint],
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            timeout=20,
+        )
+    except Exception as exc:
+        log_buffer.log('Certificate', f'Failed to remove stale CA {thumbprint} from Windows {store_location} store: {exc}')
+        return False
+    if result.returncode == 0:
+        return True
+    err = ((result.stderr or result.stdout or b'').decode('utf-8', errors='replace').strip())
+    log_buffer.log('Certificate', f'Failed to remove stale CA {thumbprint} from Windows {store_location} store: {err or result.returncode}')
+    return False
+
+
+def _install_ca_into_windows_root(ca_cert_path: Path, ca_pem: str) -> None:
+    """Trust Fleasion's CA in the Windows machine root store for browsers/tools."""
+    thumbprint = _ca_thumbprint_sha1(ca_pem)
+    store_location = r'Root'
+    stale_thumbprints = [
+        stored_thumbprint
+        for stored_thumbprint in _certutil_fleasion_root_thumbprints(store_location)
+        if stored_thumbprint != thumbprint
+    ]
+    removed_count = sum(
+        1
+        for stored_thumbprint in stale_thumbprints
+        if _certutil_delete_from_store(store_location, stored_thumbprint)
+    )
+
+    if _certutil_store_has_thumbprint(store_location, thumbprint):
+        if removed_count:
+            log_buffer.log('Certificate', f'CA already trusted in Windows Root store (removed {removed_count} stale Fleasion CA entr{"y" if removed_count == 1 else "ies"})')
+        else:
+            log_buffer.log('Certificate', 'CA already trusted in Windows Root store')
+        return
+
+    try:
+        result = subprocess.run(
+            [_CERTUTIL_EXE, '-addstore', '-f', store_location, str(ca_cert_path)],
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            timeout=20,
+        )
+    except Exception as exc:
+        log_buffer.log('Certificate', f'Failed to install CA into Windows Root store: {exc}')
+        return
+
+    if result.returncode == 0:
+        if removed_count:
+            log_buffer.log('Certificate', f'Installed CA into Windows Root store (removed {removed_count} stale Fleasion CA entr{"y" if removed_count == 1 else "ies"})')
+        else:
+            log_buffer.log('Certificate', 'Installed CA into Windows Root store')
+        return
+
+    err = ((result.stderr or result.stdout or b'').decode('utf-8', errors='replace').strip())
+    log_buffer.log('Certificate', f'Failed to install CA into Windows Root store: {err or result.returncode}')
+
+
 def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
     """Check if the currently running Roblox instance has our CA in its cacert.pem.
 
@@ -2224,6 +2352,7 @@ class ProxyMaster:
         # Install CA into Roblox ssl dirs
         ca_pem = get_ca_pem(ca_cert_path)
         _install_ca_into_roblox(ca_pem)
+        _install_ca_into_windows_root(ca_cert_path, ca_pem)
 
         # ── Clean up stale state from a previous crash ───────────────────
         # Skip cleanup entirely if another elevated Fleasion instance already
