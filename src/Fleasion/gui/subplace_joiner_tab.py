@@ -142,6 +142,24 @@ class _JobIdEdit(QLineEdit):
         self.setText(job_id)
 
 
+class _CopyPlaceIdLabel(QLabel):
+    """Small clickable label that copies its card's placeId."""
+
+    def __init__(self, parent=None):
+        super().__init__("(Copy ID)", parent)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedHeight(12)
+        self.setStyleSheet("color: palette(placeholder-text); font-size: 7pt;")
+        self.setToolTip("Copy subplace ID")
+
+    def mousePressEvent(self, event):
+        card = self.parent()
+        place_id = getattr(card, "place_id", None)
+        if place_id is not None:
+            QApplication.clipboard().setText(str(place_id))
+        super().mousePressEvent(event)
+
+
 class SubplaceGameCard(QFrame):
     """Game card matching the PreJsons visual design, with subplace-joiner buttons."""
 
@@ -197,6 +215,9 @@ class SubplaceGameCard(QFrame):
         self.updated_label = QLabel("")
         self.updated_label.setStyleSheet("color: palette(placeholder-text); font-size: 8pt;")
         layout.addWidget(self.updated_label)
+
+        self.copy_id_label = _CopyPlaceIdLabel(self)
+        layout.addWidget(self.copy_id_label, 0, Qt.AlignmentFlag.AlignLeft)
 
         layout.addStretch()
 

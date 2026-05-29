@@ -345,7 +345,7 @@ class _JsonFetchWorker(QThread):
 # Card constants
 
 _CARD_W = 210
-_CARD_H = 292
+_CARD_H = 272
 _THUMB_W = 196
 _THUMB_H = 128
 
