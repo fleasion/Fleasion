@@ -205,6 +205,15 @@ def _parse_game_link(link: str) -> tuple[str | None, str | None]:
     return None, None
 
 
+def _parse_optional_place_id(raw: str) -> str | None:
+    """Parse an optional place/subplace ID field, accepting a plain ID or game URL."""
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    place_id, _link_code = _parse_game_link(raw)
+    return place_id
+
+
 def _is_share_link(link: str) -> bool:
     """Return True if link is a roblox.com/share?code=...&type=Server link."""
     if not link:
@@ -737,6 +746,11 @@ class RandoStuffTab(QWidget):
         )
         self._private_server_input.textChanged.connect(self._on_game_link_changed)
         aml.addWidget(self._private_server_input)
+
+        self._subplace_id_input = QLineEdit()
+        self._subplace_id_input.setPlaceholderText("Subplace ID: (Optional)")
+        self._subplace_id_input.textChanged.connect(self._on_subplace_id_changed)
+        aml.addWidget(self._subplace_id_input)
 
         self._job_id_input = QLineEdit()
         self._job_id_input.setPlaceholderText("JobId: (Optional)")
@@ -1273,6 +1287,12 @@ class RandoStuffTab(QWidget):
     # Account Manager
 
     def _on_game_link_changed(self, text: str):
+        if _parse_optional_place_id(self._subplace_id_input.text()):
+            if self._auto_filled_for_place is not None:
+                self._job_id_input.clear()
+                self._auto_filled_for_place = None
+            return
+
         place_id, link_code = _parse_game_link(text.strip())
         if place_id and not link_code:
             # Normal game link — auto-fill stored jobId if field is empty or was auto-filled
@@ -1290,6 +1310,14 @@ class RandoStuffTab(QWidget):
             if self._auto_filled_for_place is not None:
                 self._job_id_input.clear()
                 self._auto_filled_for_place = None
+
+    def _on_subplace_id_changed(self, text: str):
+        if _parse_optional_place_id(text):
+            if self._auto_filled_for_place is not None:
+                self._job_id_input.clear()
+                self._auto_filled_for_place = None
+            return
+        self._on_game_link_changed(self._private_server_input.text())
 
     def _set_selected_account(self, username: str):
         username = (username or '').strip()
@@ -1434,10 +1462,17 @@ class RandoStuffTab(QWidget):
             return
         username = acc.get("username", "(unknown)")
         link = self._private_server_input.text().strip()
+        subplace_raw = self._subplace_id_input.text().strip()
+        subplace_id = _parse_optional_place_id(subplace_raw)
+        if subplace_raw and not subplace_id:
+            log_buffer.log("accounts", f"Launch aborted: invalid subplace ID: {subplace_raw}")
+            QMessageBox.warning(self, "Invalid Subplace ID", "Enter a numeric subplace ID or Roblox game URL.")
+            return
         job_id = _extract_job_id(self._job_id_input.text())
         log_buffer.log(
             "accounts",
-            f"Launch request prepared for {username}: hasLink={'yes' if bool(link) else 'no'}, hasJobId={'yes' if bool(job_id) else 'no'}",
+            f"Launch request prepared for {username}: hasLink={'yes' if bool(link) else 'no'}, "
+            f"hasSubplace={'yes' if bool(subplace_id) else 'no'}, hasJobId={'yes' if bool(job_id) else 'no'}",
         )
 
         if _is_share_link(link):
@@ -1453,7 +1488,7 @@ class RandoStuffTab(QWidget):
                         self._private_server_input.setText(resolved)
                         threading.Thread(
                             target=self._launch_account_thread,
-                            args=(cookie, username, resolved, job_id),
+                            args=(cookie, username, resolved, job_id, subplace_id or ""),
                             daemon=True,
                         ).start()
                     else:
@@ -1472,7 +1507,7 @@ class RandoStuffTab(QWidget):
 
         threading.Thread(
             target=self._launch_account_thread,
-            args=(cookie, username, link, job_id),
+            args=(cookie, username, link, job_id, subplace_id or ""),
             daemon=True,
         ).start()
 
@@ -1495,7 +1530,14 @@ class RandoStuffTab(QWidget):
         except Exception as exc:
             QMessageBox.warning(self, "Error", f"Failed to write cookie: {exc}")
 
-    def _launch_account_thread(self, cookie: str, username: str, private_server_link: str = "", job_id: str = ""):
+    def _launch_account_thread(
+        self,
+        cookie: str,
+        username: str,
+        private_server_link: str = "",
+        job_id: str = "",
+        subplace_id: str = "",
+    ):
         try:
             self._write_cookie_to_dat(cookie)
         except Exception as exc:
@@ -1512,12 +1554,15 @@ class RandoStuffTab(QWidget):
         log_buffer.log("accounts", f"Resolved Roblox executable: {exe}")
 
         place_id, link_code = _parse_game_link(private_server_link)
+        launch_place_id = subplace_id or place_id
         log_buffer.log(
             "accounts",
-            f"Launch parse result: placeId={place_id or '(none)'}, linkCode={'present' if bool(link_code) else 'missing'}, jobId={'present' if bool(job_id) else 'missing'}",
+            f"Launch parse result: placeId={place_id or '(none)'}, "
+            f"subplaceId={subplace_id or '(none)'}, launchPlaceId={launch_place_id or '(none)'}, "
+            f"linkCode={'present' if bool(link_code) else 'missing'}, jobId={'present' if bool(job_id) else 'missing'}",
         )
         launch_ok = False
-        if place_id and link_code:
+        if place_id and link_code and launch_place_id:
             # Private server launch
             ticket = _get_auth_ticket(cookie)
             if ticket:
@@ -1527,7 +1572,7 @@ class RandoStuffTab(QWidget):
                     f"https://www.roblox.com/Game/PlaceLauncher.ashx"
                     f"?request=RequestPrivateGame"
                     f"&browserTrackerId={tracker_id}"
-                    f"&placeId={place_id}"
+                    f"&placeId={launch_place_id}"
                     f"&accessCode={access_code}"
                     f"&linkCode={link_code}"
                     f"&joinAttemptId={uuid.uuid4()}"
@@ -1539,24 +1584,24 @@ class RandoStuffTab(QWidget):
                     f"+browsertrackerid:{tracker_id}+robloxLocale:en_us+gameLocale:en_us"
                     f"+channel:+LaunchExp:InApp"
                 )
-                log_buffer.log("accounts", f"Launching Roblox URI to placeId={place_id} (private server)")
+                log_buffer.log("accounts", f"Launching Roblox URI to placeId={launch_place_id} (private server)")
                 launch_ok = launch_as_standard_user(roblox_player_uri)
                 if not launch_ok:
                     log_buffer.log("accounts", "Failed to launch Roblox URI without elevation")
             else:
                 log_buffer.log("accounts", "Failed to get auth ticket, falling back to deeplink")
-                deeplink = f"roblox://experiences/start?placeId={place_id}&linkCode={link_code}"
+                deeplink = f"roblox://experiences/start?placeId={launch_place_id}&linkCode={link_code}"
                 log_buffer.log("accounts", f"Launching Roblox executable fallback: {exe}")
                 exe_started = launch_as_standard_user(exe)
                 if not exe_started:
                     log_buffer.log("accounts", "Failed to launch RobloxPlayerBeta.exe without elevation")
                 time.sleep(3)
-                log_buffer.log("accounts", f"Launching Roblox deeplink to placeId={place_id} with linkCode")
+                log_buffer.log("accounts", f"Launching Roblox deeplink to placeId={launch_place_id} with linkCode")
                 deeplink_started = launch_as_standard_user(deeplink)
                 if not deeplink_started:
                     log_buffer.log("accounts", "Failed to launch Roblox deeplink without elevation")
                 launch_ok = exe_started and deeplink_started
-        elif place_id:
+        elif launch_place_id:
             # Normal game link — optionally join a specific job
             ticket = _get_auth_ticket(cookie)
             if ticket:
@@ -1568,12 +1613,12 @@ class RandoStuffTab(QWidget):
                     request_type = "RequestGame"
                     extra = ""
                     with self._lock:
-                        self._account_manager_capture_place_id = place_id
+                        self._account_manager_capture_place_id = launch_place_id
                 place_launcher_url = (
                     f"https://www.roblox.com/Game/PlaceLauncher.ashx"
                     f"?request={request_type}"
                     f"&browserTrackerId={tracker_id}"
-                    f"&placeId={place_id}"
+                    f"&placeId={launch_place_id}"
                     f"{extra}"
                     f"&joinAttemptId={uuid.uuid4()}"
                 )
@@ -1585,9 +1630,9 @@ class RandoStuffTab(QWidget):
                     f"+channel:+LaunchExp:InApp"
                 )
                 if job_id:
-                    log_buffer.log("accounts", f"Launching Roblox URI to placeId={place_id}, gameId={job_id}")
+                    log_buffer.log("accounts", f"Launching Roblox URI to placeId={launch_place_id}, gameId={job_id}")
                 else:
-                    log_buffer.log("accounts", f"Launching Roblox URI to placeId={place_id}")
+                    log_buffer.log("accounts", f"Launching Roblox URI to placeId={launch_place_id}")
                 launch_ok = launch_as_standard_user(roblox_player_uri)
                 if not launch_ok:
                     log_buffer.log("accounts", "Failed to launch Roblox URI without elevation")
@@ -1595,20 +1640,20 @@ class RandoStuffTab(QWidget):
                 log_buffer.log("accounts", "Failed to get auth ticket, falling back to deeplink")
                 if not job_id:
                     with self._lock:
-                        self._account_manager_capture_place_id = place_id
+                        self._account_manager_capture_place_id = launch_place_id
                     # Proxy intercept will handle jobId capture; set pending job ID to empty
                     with self._lock:
                         self._account_manager_job_id = ""
                 else:
                     with self._lock:
                         self._account_manager_job_id = job_id
-                deeplink = f"roblox://experiences/start?placeId={place_id}"
+                deeplink = f"roblox://experiences/start?placeId={launch_place_id}"
                 log_buffer.log("accounts", f"Launching Roblox executable fallback: {exe}")
                 exe_started = launch_as_standard_user(exe)
                 if not exe_started:
                     log_buffer.log("accounts", "Failed to launch RobloxPlayerBeta.exe without elevation")
                 time.sleep(3)
-                log_buffer.log("accounts", f"Launching Roblox deeplink to placeId={place_id}")
+                log_buffer.log("accounts", f"Launching Roblox deeplink to placeId={launch_place_id}")
                 deeplink_started = launch_as_standard_user(deeplink)
                 if not deeplink_started:
                     log_buffer.log("accounts", "Failed to launch Roblox deeplink without elevation")
