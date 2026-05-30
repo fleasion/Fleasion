@@ -880,30 +880,47 @@ class ReplacerConfigWindow(QDialog):
             self.tree.sortItems(sort_column, sort_order)
         finally:
             self._refreshing_tree = False
+        self._tree_config_name = self.config_manager.last_config
         has_groups = self._config_has_groups()
         self.tree.setDragEnabled(has_groups)
         self.tree.setAcceptDrops(has_groups)
         self.tree.viewport().setAcceptDrops(has_groups)
 
     def _refresh_combo(self):
-        """Refresh the config button text."""
-        # Keep one leading space plus a hair-space so icon and text are separated
-        self.config_menu_btn.setText(' \u200A' + self.config_manager.last_config)
-        self._rebuild_enabled_menu()
+        """Refresh config controls from the current files on disk."""
+        self._sync_config_state_from_disk()
+
+    def _sync_config_state_from_disk(self) -> bool:
+        """Refresh config settings from disk and update dependent UI."""
+        previous_config = self.config_manager.settings.get('last_config', 'Default')
+        previous_tree_config = getattr(self, '_tree_config_name', previous_config)
+        changed = self.config_manager.reconcile_configs()
+        current_config = self.config_manager.last_config
+        selected_config_changed = previous_config != current_config
+        tree_config_changed = previous_tree_config != current_config
+
+        self.config_menu_btn.setText(' \u200A' + current_config)
+        if hasattr(self, 'enabled_menu'):
+            self._rebuild_enabled_menu()
+        if (changed or selected_config_changed or tree_config_changed) and hasattr(self, 'tree'):
+            self.undo_manager.clear()
+            self.undo_manager.save_state(self.config_manager.replacement_rules)
+            self._refresh_tree()
+            if selected_config_changed or tree_config_changed:
+                self.tree.clearSelection()
+                if hasattr(self, 'name_entry'):
+                    self._clear_entries()
         try:
             self._update_editing_button_style()
         except Exception:
             pass
+        return changed or selected_config_changed or tree_config_changed
 
     def _rebuild_editing_menu(self):
         """Rebuild the editing config menu."""
         self.config_menu.clear()
+        self._sync_config_state_from_disk()
         current_configs = self.config_manager.config_names
-
-        # If current editing config was deleted, switch to first available
-        if self.config_manager.last_config not in current_configs and current_configs:
-            self.config_manager.last_config = current_configs[0]
-            self.config_menu_btn.setText(' \u200A' + current_configs[0])
 
         for name in current_configs:
             action = self.config_menu.addAction(name)
@@ -948,6 +965,9 @@ class ReplacerConfigWindow(QDialog):
 
     def _on_config_select(self, name: str):
         """Handle config selection from menu."""
+        self._sync_config_state_from_disk()
+        if name not in self.config_manager.config_names:
+            return
         if name != self.config_manager.last_config:
             self.config_manager.last_config = name
             # Keep a single space plus a hair-space between icon and text

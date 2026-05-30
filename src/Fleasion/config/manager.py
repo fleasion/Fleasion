@@ -6,7 +6,7 @@ import threading
 from copy import deepcopy
 from pathlib import Path
 
-from ..utils import CONFIG_DIR, CONFIG_FILE, CONFIGS_FOLDER, DEFAULT_SETTINGS
+from ..utils.paths import CONFIG_DIR, CONFIG_FILE, CONFIGS_FOLDER, DEFAULT_SETTINGS
 
 # Windows forbids these characters in file and folder names.
 _INVALID_FILENAME_CHARS = frozenset('\\/:*?"<>|')
@@ -19,17 +19,7 @@ class ConfigManager:
         self._lock = threading.Lock()
         self.settings = self._load_settings()
         self._ensure_default_config()
-        # Clean up enabled_configs to only include existing configs
-        self.settings['enabled_configs'] = [
-            c
-            for c in self.settings.get('enabled_configs', [])
-            if c in self.config_names
-        ]
-        # Ensure last_config is valid
-        if self.settings.get('last_config') not in self.config_names:
-            self.settings['last_config'] = (
-                self.config_names[0] if self.config_names else 'Default'
-            )
+        self.reconcile_configs(save=False)
 
     def _load_settings(self) -> dict:
         """Load settings from disk."""
@@ -541,7 +531,12 @@ class ConfigManager:
     @property
     def enabled_configs(self) -> list[str]:
         """Get list of enabled configs."""
-        return self.settings.get('enabled_configs', [])
+        current_configs = set(self.config_names)
+        return [
+            name
+            for name in self.settings.get('enabled_configs', [])
+            if name in current_configs
+        ]
 
     @enabled_configs.setter
     def enabled_configs(self, value: list[str]):
@@ -555,6 +550,9 @@ class ConfigManager:
 
     def toggle_config_enabled(self, name: str) -> bool:
         """Toggle a config's enabled state. Returns new state."""
+        if name not in self.config_names:
+            self.reconcile_configs()
+            return False
         configs = self.enabled_configs.copy()
         if name in configs:
             configs.remove(name)
@@ -567,6 +565,9 @@ class ConfigManager:
 
     def set_config_enabled(self, name: str, enabled: bool):
         """Set a config's enabled state."""
+        if name not in self.config_names:
+            self.reconcile_configs()
+            return
         configs = self.enabled_configs.copy()
         if enabled and name not in configs:
             configs.append(name)
@@ -574,19 +575,45 @@ class ConfigManager:
             configs.remove(name)
         self.enabled_configs = configs
 
+    def reconcile_configs(self, save: bool = True) -> bool:
+        """Synchronize settings with config files currently on disk.
+
+        Returns True when the active settings changed.
+        """
+        self._ensure_default_config()
+        current_configs = self.config_names
+        changed = False
+
+        enabled = self.settings.get('enabled_configs', [])
+        cleaned_enabled = [
+            name
+            for name in enabled
+            if name in current_configs
+        ]
+        if cleaned_enabled != enabled:
+            self.settings['enabled_configs'] = cleaned_enabled
+            changed = True
+
+        last_config = self.settings.get('last_config', 'Default')
+        if last_config not in current_configs:
+            self.settings['last_config'] = current_configs[0] if current_configs else 'Default'
+            changed = True
+
+        if changed and save:
+            self._save_settings()
+        return changed
+
     @property
     def last_config(self) -> str:
         """Get the last displayed config."""
-        name = self.settings.get('last_config', 'Default')
-        if name not in self.config_names:
-            name = self.config_names[0] if self.config_names else 'Default'
-            self.settings['last_config'] = name
-        return name
+        self.reconcile_configs()
+        return self.settings.get('last_config', 'Default')
 
     @last_config.setter
     def last_config(self, value: str):
         """Set the last displayed config."""
         self.settings['last_config'] = value
+        self.reconcile_configs(save=False)
         self._save_settings()
 
     @property
@@ -597,8 +624,7 @@ class ConfigManager:
 
     def refresh_config_names(self):
         """Refresh config names from disk (for external changes)."""
-        # config_names property already reads from disk, this is just for clarity
-        pass
+        self.reconcile_configs()
 
     def get_replacement_rules(self, config_name: str) -> list:
         """Get rules for a specific config."""
