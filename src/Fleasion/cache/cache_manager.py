@@ -10,6 +10,11 @@ from datetime import datetime
 from typing import Optional
 
 from ..utils import CONFIG_DIR, log_buffer
+from .roblox_document import (
+    export_roblox_document,
+    get_default_roblox_document_export_format,
+    get_roblox_document_export_formats,
+)
 
 # Use orjson if available (2-3x faster), fallback to json
 try:
@@ -430,6 +435,19 @@ class CacheManager:
 
         return formats
 
+    def get_available_export_formats_for_asset(self, asset_id: str, asset_type: int) -> list[str]:
+        """Get export formats for an asset, including payload-detected document formats."""
+        formats = self.get_available_export_formats(asset_type)
+        data = self.get_asset(asset_id, asset_type)
+        if not data:
+            return formats
+
+        document_formats = get_roblox_document_export_formats(data)
+        for fmt in reversed(document_formats):
+            if fmt not in formats:
+                formats.insert(0, fmt)
+        return formats
+
     def export_asset(self, asset_id: str, asset_type: int,
                     output_path: Optional[Path] = None, resolved_name: str = None,
                     export_format: str = 'converted') -> Optional[Path]:
@@ -487,10 +505,28 @@ class CacheManager:
                 filename = '_'.join(filename_parts)[:200]  # Limit total length
 
                 # Export based on format
+                if export_format == 'converted':
+                    document_format = get_default_roblox_document_export_format(data)
+                    if document_format is not None:
+                        export_data, ext = export_roblox_document(data, document_format)
+                        output_path = export_type_dir / f'{filename}{ext}'
+                        output_path.write_bytes(export_data)
+                        return output_path
+
                 if export_format == 'raw':
                     # Raw export - original cached data with .bin extension
                     output_path = export_type_dir / f'{filename}.bin'
                     output_path.write_bytes(data)
+                    return output_path
+
+                elif export_format in {
+                    'converted_document_rbxm',
+                    'converted_document_rbxmx',
+                    'converted_document_rbxl',
+                }:
+                    export_data, ext = export_roblox_document(data, export_format)
+                    output_path = export_type_dir / f'{filename}{ext}'
+                    output_path.write_bytes(export_data)
                     return output_path
 
                 elif export_format == 'bin':

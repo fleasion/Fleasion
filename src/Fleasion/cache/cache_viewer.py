@@ -3310,7 +3310,8 @@ class CacheViewerTab(QWidget):
         # Export submenu with format options
         export_menu = menu.addMenu('Export Selected')
 
-        # Get asset types from selection to determine available formats
+        # Get selected assets and types to determine available formats
+        selected_assets = []
         asset_types = set()
         for row_index in selected_rows:
             row = row_index.row()
@@ -3318,12 +3319,18 @@ class CacheViewerTab(QWidget):
             if item:
                 asset = item.data(Qt.ItemDataRole.UserRole)
                 if asset:
+                    selected_assets.append(asset)
                     asset_types.add(asset['type'])
 
         # Determine available formats (intersection of all selected types)
         available_formats = None
-        for asset_type in asset_types:
-            formats = set(self.cache_manager.get_available_export_formats(asset_type))
+        for asset in selected_assets:
+            formats = set(
+                self.cache_manager.get_available_export_formats_for_asset(
+                    asset['id'],
+                    asset['type'],
+                )
+            )
             if available_formats is None:
                 available_formats = formats
             else:
@@ -3352,6 +3359,9 @@ class CacheViewerTab(QWidget):
             'converted_rbxmx': 'Converted - KeyframeSequence (.rbxmx)',
             'converted_rbxmx_curve': 'Converted - CurveAnimation (.rbxmx)',
             'converted_rbxmx_model': 'Converted (.rbxmx)',
+            'converted_document_rbxm': 'Roblox Document (.rbxm)',
+            'converted_document_rbxmx': 'Roblox Document (.rbxmx)',
+            'converted_document_rbxl': 'Roblox Place (.rbxl)',
             'converted_modified_rbxm': 'Converted (Modified .rbxm)',
             'converted_modified_rbxmx': 'Converted (Modified .rbxmx)',
             'converted_png': 'Converted (.png)',
@@ -3362,7 +3372,7 @@ class CacheViewerTab(QWidget):
             'bin': 'Binary (decompressed)',
             'raw': 'Raw (original cache)',
         }
-        for fmt in ['converted_modified_rbxm', 'converted_modified_rbxmx', 'slot_ktx2', 'converted_obj', 'converted_rbxmx_model', 'converted_rbxmx', 'converted_rbxmx_curve', 'converted_png', 'converted_audio', 'converted', 'converted_images', 'bin', 'raw']:
+        for fmt in ['converted_modified_rbxm', 'converted_modified_rbxmx', 'converted_document_rbxl', 'converted_document_rbxm', 'converted_document_rbxmx', 'slot_ktx2', 'converted_obj', 'converted_rbxmx_model', 'converted_rbxmx', 'converted_rbxmx_curve', 'converted_png', 'converted_audio', 'converted', 'converted_images', 'bin', 'raw']:
             if fmt in available_formats:
                 action = export_menu.addAction(format_labels[fmt])
                 export_actions[action] = fmt
@@ -3838,6 +3848,25 @@ class CacheViewerTab(QWidget):
                             pass
                 except Exception as e:
                     QMessageBox.warning(self, 'Error', f'SolidModel conversion error: {e}')
+                    return
+
+            else:
+                try:
+                    from .roblox_document import export_roblox_document, get_roblox_document_export_formats
+
+                    document_formats = get_roblox_document_export_formats(data)
+                    if document_formats:
+                        export_format = (
+                            'converted_document_rbxl'
+                            if 'converted_document_rbxl' in document_formats
+                            else 'converted_document_rbxmx'
+                        )
+                        export_data, ext = export_roblox_document(data, export_format)
+                        filename = f'{safe_base}{ext}'
+                        temp_file = temp_dir / filename
+                        temp_file.write_bytes(export_data)
+                except Exception as e:
+                    QMessageBox.warning(self, 'Error', f'Roblox document save error: {e}')
                     return
 
             # Copy file to clipboard
