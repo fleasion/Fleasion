@@ -154,7 +154,7 @@ class SettingsTab(QWidget):
         mode_widget.setLayout(mode_row)
         section.add_widget(mode_widget)
 
-        self._wire_preserving_chk = QCheckBox('Enable Wire-Preserving Passthrough')
+        self._wire_preserving_chk = QCheckBox('Enable Wire-Preserving Passthrough (Requires your own custom proxy setup to function)')
         self._wire_preserving_chk.setChecked(self._config.wire_preserving_passthrough)
         self._wire_preserving_chk.toggled.connect(self._on_wire_preserving_toggled)
         section.add_widget(self._wire_preserving_chk)
