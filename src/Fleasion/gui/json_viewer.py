@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
 
 from ..cache.rbxm_preview import RbxmPreviewWidget, is_rbx_model_data
 from ..utils import format_count, get_icon_path
+from ..utils.clipboard import copy_pixmap_to_clipboard
 
 
 class JsonSearchWorker(QThread):
@@ -1297,14 +1298,12 @@ class JsonTreeViewer(QDialog):
         if self._current_pixmap is None or self._current_pixmap.isNull():
             return
 
-        from PyQt6.QtWidgets import QApplication
-
         menu = QMenu(self)
         copy_action = menu.addAction('Copy Image')
 
         action = menu.exec(self.image_label.mapToGlobal(pos))
         if action == copy_action:
-            QApplication.clipboard().setPixmap(self._current_pixmap)
+            copy_pixmap_to_clipboard(self._current_pixmap)
 
     def _show_texturepack_context_menu(self, pos, label: QLabel):
         """Show context menu for texturepack image."""
@@ -1327,7 +1326,7 @@ class JsonTreeViewer(QDialog):
         if action == copy_image_action:
             pixmap = self._tp_pixmaps.get(map_name)
             if pixmap and not pixmap.isNull():
-                QApplication.clipboard().setPixmap(pixmap)
+                copy_pixmap_to_clipboard(pixmap)
         elif action == copy_name_action:
             QApplication.clipboard().setText(map_name)
         elif action == copy_id_action:

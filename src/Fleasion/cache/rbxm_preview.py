@@ -36,6 +36,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from .roblox_document import classify_roblox_document
 from .roblox_class_names import ROBLOX_CLASS_NAME_SET, ROBLOX_CLASS_NAMES
 
 
@@ -131,13 +132,7 @@ class ClassNameDialog(QDialog):
 
 def is_rbx_model_data(data: bytes) -> bool:
     """Return True if bytes look like gzip-wrapped or plain RBXM/RBXMX."""
-    try:
-        data = _decompress_if_needed(data)
-    except Exception:
-        return False
-    if data.startswith(b'<roblox!'):
-        return True
-    return data.lstrip().startswith(b'<roblox')
+    return classify_roblox_document(data) in {'rbxm', 'rbxmx', 'rbxl'}
 
 
 def _decompress_if_needed(data: bytes) -> bytes:

@@ -24,6 +24,7 @@ from .font_viewer import FontViewerWidget
 from .rbxm_preview import RbxmPreviewWidget, is_rbx_model_data
 from . import mesh_processing
 from ..utils import format_count, log_buffer, open_folder
+from ..utils.clipboard import copy_pixmap_to_clipboard
 from ..utils.roblox_auth import get_roblosecurity as _get_roblosecurity
 import json
 
@@ -3252,8 +3253,12 @@ class CacheViewerTab(QWidget):
             if not data:
                 self._show_text_preview(f'Failed to load asset {asset_id}')
                 return
-            if asset_type in (24, 39) and is_rbx_model_data(data):
+            is_rbx_document = is_rbx_model_data(data)
+            if asset_type in (24, 39) and is_rbx_document:
                 self.rbxm_view_btn.show()
+            elif is_rbx_document:
+                self._preview_rbxm(data, asset)
+                return
 
             # Show loading for async previews
             if asset_type in [4, 39, 1, 13, 63]:  # Mesh, SolidModel, Image, Decal, TexturePack
@@ -4326,14 +4331,12 @@ class CacheViewerTab(QWidget):
         if self._current_pixmap is None or self._current_pixmap.isNull():
             return
 
-        from PyQt6.QtWidgets import QApplication
-
         menu = QMenu(self)
         copy_action = menu.addAction('Copy Image')
 
         action = menu.exec(self.image_label.mapToGlobal(pos))
         if action == copy_action:
-            QApplication.clipboard().setPixmap(self._current_pixmap)
+            copy_pixmap_to_clipboard(self._current_pixmap)
 
     def _preview_texturepack(self, data: bytes, asset_id: str):
         """Preview a texture pack by showing all texture maps."""
@@ -4569,7 +4572,7 @@ class CacheViewerTab(QWidget):
         if action == copy_image_action:
             pixmap = self._tp_pixmaps.get(map_name)
             if pixmap and not pixmap.isNull():
-                QApplication.clipboard().setPixmap(pixmap)
+                copy_pixmap_to_clipboard(pixmap)
         elif action == copy_name_action:
             QApplication.clipboard().setText(map_name)
         elif action == copy_id_action:
