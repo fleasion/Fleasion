@@ -1,6 +1,7 @@
 """Configuration management."""
 
 import json
+import locale
 import stat
 import threading
 from copy import deepcopy
@@ -10,6 +11,16 @@ from ..utils.paths import CONFIG_DIR, CONFIG_FILE, CONFIGS_FOLDER, DEFAULT_SETTI
 
 # Windows forbids these characters in file and folder names.
 _INVALID_FILENAME_CHARS = frozenset('\\/:*?"<>|')
+_FALLBACK_JSON_ENCODINGS = (
+    'utf-8-sig',
+    'utf-16',
+    'utf-16-le',
+    'utf-16-be',
+    'utf-32',
+    'utf-32-le',
+    'utf-32-be',
+    'cp1252',
+)
 
 
 class ConfigManager:
@@ -27,8 +38,7 @@ class ConfigManager:
         CONFIGS_FOLDER.mkdir(parents=True, exist_ok=True)
         if CONFIG_FILE.exists():
             try:
-                with Path(CONFIG_FILE).open(encoding='utf-8') as f:
-                    loaded = json.load(f)
+                loaded = self._load_json_file(Path(CONFIG_FILE))
                 if 'configs' in loaded:
                     self._migrate_old_format(loaded)
                     return {
@@ -43,7 +53,7 @@ class ConfigManager:
                     loaded['last_config'] = loaded['active_config']
                     del loaded['active_config']
                 return {**DEFAULT_SETTINGS, **loaded}
-            except (json.JSONDecodeError, OSError):
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError):
                 pass
         return deepcopy(DEFAULT_SETTINGS)
 
@@ -87,15 +97,55 @@ class ConfigManager:
         except OSError:
             pass
 
+    @staticmethod
+    def _fallback_json_encodings() -> tuple[str, ...]:
+        """Return legacy text encodings to try after strict JSON decoding fails."""
+        preferred = locale.getpreferredencoding(False)
+        encodings: list[str] = []
+        for encoding in (*_FALLBACK_JSON_ENCODINGS, preferred):
+            if encoding and encoding.lower() not in {e.lower() for e in encodings}:
+                encodings.append(encoding)
+        return tuple(encodings)
+
+    def _load_json_file(self, path: Path) -> dict:
+        """Load JSON and recover legacy non-UTF files when possible."""
+        raw = path.read_bytes()
+        decode_error: UnicodeDecodeError | None = None
+
+        try:
+            return json.loads(raw)
+        except UnicodeDecodeError as exc:
+            decode_error = exc
+
+        for encoding in self._fallback_json_encodings():
+            try:
+                text = raw.decode(encoding)
+                loaded = json.loads(text)
+            except (LookupError, UnicodeDecodeError, json.JSONDecodeError):
+                continue
+
+            # Normalize recovered configs back to UTF-8 JSON so future launches
+            # do not depend on locale-specific decoding.
+            try:
+                self._clear_read_only(path)
+                with path.open('w', encoding='utf-8') as f:
+                    json.dump(loaded, f, indent=2)
+            except OSError:
+                pass
+            return loaded
+
+        if decode_error is not None:
+            raise decode_error
+        return json.loads(raw)
+
     def _load_config(self, name: str) -> dict:
         """Load a config from disk."""
         path = self._get_config_path(name)
         if path.exists():
             try:
                 self._clear_read_only(path)
-                with Path(path).open(encoding='utf-8') as f:
-                    return json.load(f)
-            except (json.JSONDecodeError, OSError):
+                return self._load_json_file(Path(path))
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError):
                 pass
         return {'replacement_rules': []}
 
