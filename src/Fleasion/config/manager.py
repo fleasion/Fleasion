@@ -273,7 +273,10 @@ class ConfigManager:
 
     @property
     def wire_preserving_passthrough(self) -> bool:
-        return bool(self.settings.get('wire_preserving_passthrough', True))
+        value = self.settings.get('wire_preserving_passthrough', False)
+        if isinstance(value, str):
+            return value.strip().lower() in {'1', 'true', 'yes', 'on'}
+        return bool(value)
 
     @wire_preserving_passthrough.setter
     def wire_preserving_passthrough(self, value: bool):

@@ -89,7 +89,7 @@ DEFAULT_SETTINGS = {
     'upstream_socks5_port': 0,
     'upstream_socks5_username': '',
     'upstream_socks5_password': '',
-    'wire_preserving_passthrough': True,
+    'wire_preserving_passthrough': False,
     'vpn_compat_max_assetdelivery_connections': 16,
     'vpn_compat_max_cdn_connections': 32,
     'run_on_boot': True,

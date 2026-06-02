@@ -517,7 +517,7 @@ class FleasionProxy:
         system_http_proxy: Optional[HttpProxyConfig] = None,
         manual_http_proxy: Optional[HttpProxyConfig] = None,
         manual_socks5_proxy: Optional[Socks5ProxyConfig] = None,
-        wire_preserving_passthrough: bool = True,
+        wire_preserving_passthrough: bool = False,
         vpn_compat_max_assetdelivery_connections: int = 16,
         vpn_compat_max_cdn_connections: int = 32,
     ) -> None:

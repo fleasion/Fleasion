@@ -15,6 +15,7 @@ _DEFAULT_SETTINGS = {
     'enabled_configs': [],
     'last_config': 'Default',
     'theme': 'System',
+    'wire_preserving_passthrough': False,
 }
 
 
@@ -98,6 +99,19 @@ class ConfigManagerEncodingTests(unittest.TestCase):
             manager = config_manager_module.ConfigManager()
 
             self.assertEqual(manager.replacement_rules, [])
+
+    def test_wire_preserving_passthrough_defaults_off_and_rejects_string_trueish_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_manager_module = self._load_manager_for(Path(tmp))
+
+            manager = config_manager_module.ConfigManager()
+            self.assertFalse(manager.wire_preserving_passthrough)
+
+            manager.settings['wire_preserving_passthrough'] = 'false'
+            self.assertFalse(manager.wire_preserving_passthrough)
+
+            manager.settings['wire_preserving_passthrough'] = 'true'
+            self.assertTrue(manager.wire_preserving_passthrough)
 
 
 if __name__ == '__main__':
