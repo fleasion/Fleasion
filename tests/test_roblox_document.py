@@ -30,6 +30,16 @@ DECLARED_MODEL_XML = b"""<?xml version="1.0" encoding="utf-8"?>
 <Item class="Folder" referent="RBX0" />
 </roblox>"""
 
+TEXTUREPACK_XML = b"""<roblox>
+  <texturepack_version>2</texturepack_version>
+  <usage>1</usage>
+  <alphamode>2</alphamode>
+  <tiling>1</tiling>
+  <color>7547304577</color>
+  <normal>7547304785</normal>
+  <roughness>7547304892</roughness>
+</roblox>"""
+
 
 class RobloxDocumentTests(unittest.TestCase):
     def test_model_xml_exports_as_rbxm_or_rbxmx(self):
@@ -58,6 +68,11 @@ class RobloxDocumentTests(unittest.TestCase):
         )
         self.assertEqual(export_ext, ".rbxmx")
         self.assertTrue(export_data.startswith(b"<?xml"))
+
+    def test_texturepack_xml_is_not_classified_as_rbxmx(self):
+        self.assertIsNone(classify_roblox_document(TEXTUREPACK_XML))
+        self.assertEqual(get_roblox_document_export_formats(TEXTUREPACK_XML), [])
+        self.assertIsNone(get_default_roblox_document_export_format(TEXTUREPACK_XML))
 
     def test_datamodel_document_exports_only_as_rbxl(self):
         self.assertEqual(classify_roblox_document(PLACE_XML), "rbxl")

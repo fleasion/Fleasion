@@ -44,6 +44,8 @@ def classify_roblox_document(data: bytes) -> str | None:
 
     root = _parse_roblox_xml(data)
     if root is not None:
+        if not _xml_contains_item(root):
+            return None
         return 'rbxl' if _xml_contains_datamodel(root) else 'rbxmx'
 
     return None
@@ -159,6 +161,10 @@ def _xml_contains_datamodel(root: ET.Element) -> bool:
         _tag_name(elem) == 'Item' and elem.get('class') == 'DataModel'
         for elem in root.iter()
     )
+
+
+def _xml_contains_item(root: ET.Element) -> bool:
+    return any(_tag_name(elem) == 'Item' for elem in root.iter())
 
 
 def _parse_roblox_xml(data: bytes) -> ET.Element | None:

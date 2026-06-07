@@ -3254,6 +3254,10 @@ class CacheViewerTab(QWidget):
             if not data:
                 self._show_text_preview(f'Failed to load asset {asset_id}')
                 return
+            if asset_type == 63:  # TexturePack
+                self._show_loading()
+                self._preview_texturepack(data, asset_id)
+                return
             is_rbx_document = is_rbx_model_data(data)
             if asset_type in (24, 39) and is_rbx_document:
                 self.rbxm_view_btn.show()
@@ -3285,8 +3289,6 @@ class CacheViewerTab(QWidget):
                     self._preview_json(data, asset)
                 else:
                     self._show_text_preview('FontFamily data could not be parsed as JSON')
-            elif asset_type == 63:  # TexturePack
-                self._preview_texturepack(data, asset_id)
             else:
                 # Check if unknown/model-like asset is actually RBXM/RBXMX before JSON/text fallbacks.
                 if is_rbx_model_data(data):
