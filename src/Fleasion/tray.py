@@ -603,10 +603,12 @@ class SystemTray:
         """Keep the macOS dashboard visible when Fleasion loses focus."""
         if sys.platform != 'darwin':
             return
-        from .utils.platform_macos import set_application_foreground_mode
+        from .utils.platform_macos import set_application_foreground_mode, set_application_icon
 
         if not set_application_foreground_mode(enabled):
             log_buffer.log('App', 'macOS dashboard activation-policy update was rejected')
+        elif enabled and (icon_path := get_icon_path()):
+            set_application_icon(icon_path)
 
     def notify_dashboard_closed(self):
         """Show the tray notice that the app is still running."""

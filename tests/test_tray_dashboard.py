@@ -1,6 +1,9 @@
+from pathlib import Path
+
 from PyQt6.QtWidgets import QSystemTrayIcon
 
 from Fleasion import tray as tray_module
+from Fleasion.utils import platform_macos
 from Fleasion.tray import SystemTray
 
 
@@ -67,6 +70,29 @@ def test_macos_menu_bar_activation_does_not_hide_dashboard(monkeypatch):
     system_tray._on_tray_activated(QSystemTrayIcon.ActivationReason.Trigger)
 
     assert toggle_calls == []
+
+
+def test_macos_dashboard_foreground_mode_reapplies_dock_icon(monkeypatch):
+    system_tray = SystemTray.__new__(SystemTray)
+    calls = []
+    icon_path = Path('/tmp/fleasion-test-icon.ico')
+
+    monkeypatch.setattr(tray_module.sys, 'platform', 'darwin')
+    monkeypatch.setattr(tray_module, 'get_icon_path', lambda: icon_path)
+    monkeypatch.setattr(
+        platform_macos,
+        'set_application_foreground_mode',
+        lambda enabled: calls.append(('foreground', enabled)) or True,
+    )
+    monkeypatch.setattr(
+        platform_macos,
+        'set_application_icon',
+        lambda path: calls.append(('icon', path)) or True,
+    )
+
+    system_tray._set_dashboard_foreground_mode(True)
+
+    assert calls == [('foreground', True), ('icon', icon_path)]
 
 
 def test_windows_tray_activation_still_toggles_dashboard(monkeypatch):

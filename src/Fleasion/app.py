@@ -24,6 +24,27 @@ from .utils import APP_DISCORD, APP_NAME, CONFIG_DIR, LOG_FILE, delete_cache, ge
 
 
 
+class _FirstTimeSetupMessageBox(QMessageBox):
+    """Message box that must be acknowledged with OK."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._can_accept = False
+
+    def allow_accept(self):
+        self._can_accept = True
+
+    def accept(self):
+        if self._can_accept:
+            super().accept()
+
+    def reject(self):
+        return
+
+    def closeEvent(self, event):
+        event.ignore()
+
+
 # ---------------------------------------------------------------------------
 # UAC / elevation helpers
 # ---------------------------------------------------------------------------
@@ -792,6 +813,9 @@ def main():
     if icon_path := get_icon_path():
         from PyQt6.QtGui import QIcon
         app.setWindowIcon(QIcon(str(icon_path)))
+        if sys.platform == 'darwin':
+            from .utils.platform_macos import set_application_icon
+            set_application_icon(icon_path)
 
     if sys.platform == 'darwin' and _is_admin():
         QMessageBox.critical(
@@ -1103,31 +1127,59 @@ def main():
     roblox_check_timer.timeout.connect(roblox_monitor.check_roblox_status)
     roblox_check_timer.start(500)  # Check every 0.5 seconds
 
-    # Show first-time message if this is the first run
+    # Show first-time setup guide if this is the first run.
     if not _suppress_dashboard and not config_manager.first_time_setup_complete:
         _top = QApplication.topLevelWidgets()
         _parent = next((w for w in _top if w.isVisible()), None)
         _on_top = any(w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in _top)
-        welcome_box = QMessageBox(_parent)
+        welcome_box = _FirstTimeSetupMessageBox(_parent)
         if _on_top:
             welcome_box.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
         welcome_box.setWindowTitle('Welcome to Fleasion')
         welcome_box.setText(
             'Welcome to Fleasion!\n\n'
-            'Fleasion runs in your system tray (bottom-right corner of your screen).\n'
-            'Right-click the tray icon to access:\n'
-            '• Dashboard GUI - Configure asset replacements\n'
-            '• Settings - Customize behavior\n\n'
-            '• Logs - See useful logs for debugging\n\n'
-            'IMPORTANT:\n'
-            'After applying any changes in the dashboard, you must clear your Roblox cache '
-            '(or restart Roblox) so assets get re-downloaded through the proxy.\n\n'
-            'HOW IT WORKS:\n'
-            'Fleasion uses a local proxy to intercept network traffic between Roblox and its servers. '
-            'This allows you to modify assets (images, audio, etc.) before they reach your game.\n\n'
-            'The dashboard will open now to get you started.'
+            'Quick setup guide:\n\n'
+            '1. Use the Replacer tab to manage asset replacements. At the bottom, add IDs you want '
+            'to replace, then choose a replacement ID, URL, or local file.\n\n'
+            '2. To find asset IDs, click "Scraped games..." in the Replacer tab. Click an asset ID '
+            'to add it to Asset IDs, or click Replacement ID to use that asset as the replacement.\n\n'
+            '3. Click "Add new", then enable your config at the top next to "Enabled". For most '
+            'users this means turning on "Default".\n\n'
+            '4. Click "Clear Cache" before joining a game so Roblox downloads the '
+            'assets through Fleasion instead of using cached originals.\n\n'
+            '5. For assets that are not in Scraped games, open the Scraper tab, enable the cache '
+            'scraper, clear cache, and join the Roblox game. Every loaded asset will appear there. '
+            'Right-click assets to download them, Replace them, or Replace With them.\n\n'
+            'Other tabs are optional tools and settings and are self explanatory.\n\n'
+            'Fleasion is client-sided: only you see your changes. Roblox cannot ban you for local '
+            'asset replacement, and game developers cannot meaningfully detect it. Game moderators '
+            'can still ban users for any reason, so use your own judgment.'
         )
         welcome_box.setIcon(QMessageBox.Icon.Information)
+        welcome_box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        ok_button = welcome_box.button(QMessageBox.StandardButton.Ok)
+        wait_seconds = 15
+        remaining_seconds = wait_seconds
+        if ok_button is not None:
+            ok_button.setEnabled(False)
+            ok_button.setText(f'OK ({remaining_seconds}s)')
+
+            countdown_timer = QTimer(welcome_box)
+            countdown_timer.setInterval(1000)
+
+            def _update_welcome_countdown():
+                nonlocal remaining_seconds
+                remaining_seconds -= 1
+                if remaining_seconds <= 0:
+                    countdown_timer.stop()
+                    welcome_box.allow_accept()
+                    ok_button.setText('OK')
+                    ok_button.setEnabled(True)
+                else:
+                    ok_button.setText(f'OK ({remaining_seconds}s)')
+
+            countdown_timer.timeout.connect(_update_welcome_countdown)
+            countdown_timer.start()
         if icon_path := get_icon_path():
             from PyQt6.QtGui import QIcon
             welcome_box.setWindowIcon(QIcon(str(icon_path)))

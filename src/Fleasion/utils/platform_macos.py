@@ -28,6 +28,88 @@ _NS_APPLICATION_ACTIVATION_POLICY_REGULAR = 0
 _NS_APPLICATION_ACTIVATION_POLICY_ACCESSORY = 1
 
 
+def set_application_icon(icon_path: Path) -> bool:
+    """Set the Dock tile image from Fleasion's transparent runtime icon."""
+    try:
+        icon_path = Path(icon_path)
+        if not icon_path.is_file():
+            log_buffer.log('App', f'macOS application icon not found: {icon_path}')
+            return False
+
+        appkit_path = ctypes.util.find_library('AppKit') or '/System/Library/Frameworks/AppKit.framework/AppKit'
+        ctypes.CDLL(appkit_path)
+
+        objc_path = ctypes.util.find_library('objc') or '/usr/lib/libobjc.A.dylib'
+        objc = ctypes.CDLL(objc_path)
+        objc_get_class = objc.objc_getClass
+        objc_get_class.argtypes = [ctypes.c_char_p]
+        objc_get_class.restype = ctypes.c_void_p
+        sel_register_name = objc.sel_registerName
+        sel_register_name.argtypes = [ctypes.c_char_p]
+        sel_register_name.restype = ctypes.c_void_p
+
+        msg_send_object = ctypes.CFUNCTYPE(
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+        )(('objc_msgSend', objc))
+        msg_send_cstring = ctypes.CFUNCTYPE(
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+        )(('objc_msgSend', objc))
+        msg_send_object_arg = ctypes.CFUNCTYPE(
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+        )(('objc_msgSend', objc))
+        msg_send_void_object = ctypes.CFUNCTYPE(
+            None,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+        )(('objc_msgSend', objc))
+
+        ns_application = objc_get_class(b'NSApplication')
+        ns_string = objc_get_class(b'NSString')
+        ns_image = objc_get_class(b'NSImage')
+        shared_application = msg_send_object(
+            ns_application,
+            sel_register_name(b'sharedApplication'),
+        )
+
+        icon_path_string = msg_send_cstring(
+            ns_string,
+            sel_register_name(b'stringWithUTF8String:'),
+            str(icon_path).encode('utf-8'),
+        )
+        if not icon_path_string:
+            log_buffer.log('App', f'Failed to create NSString for macOS application icon: {icon_path}')
+            return False
+
+        image_alloc = msg_send_object(ns_image, sel_register_name(b'alloc'))
+        image = msg_send_object_arg(
+            image_alloc,
+            sel_register_name(b'initWithContentsOfFile:'),
+            icon_path_string,
+        )
+        if not image:
+            log_buffer.log('App', f'Failed to load macOS application icon image: {icon_path}')
+            return False
+
+        msg_send_void_object(
+            shared_application,
+            sel_register_name(b'setApplicationIconImage:'),
+            image,
+        )
+        return True
+    except Exception as exc:
+        log_buffer.log('App', f'Failed to update macOS application icon: {type(exc).__name__}: {exc}')
+        return False
+
+
 def set_application_foreground_mode(enabled: bool) -> bool:
     """Show normal app windows while active, or return to menu-bar-only mode."""
     try:
