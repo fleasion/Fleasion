@@ -9,8 +9,9 @@ try:
 except ImportError:
     winreg = None
 
-from PyQt6.QtGui import QAction, QIcon
-from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
+from PyQt6.QtCore import Qt, QTimer, QUrl
+from PyQt6.QtGui import QAction, QDesktopServices, QIcon
+from PyQt6.QtWidgets import QApplication, QDialog, QHBoxLayout, QLabel, QMenu, QPushButton, QSystemTrayIcon, QVBoxLayout
 
 from .gui import AboutWindow, DeleteCacheWindow, LogsWindow, ReplacerConfigWindow, ThemeManager
 from .utils import APP_DISCORD, APP_NAME, APP_VERSION, LOGS_DIR, get_icon_path, log_buffer, open_folder, run_in_thread
@@ -48,6 +49,7 @@ class SystemTray:
         self.dashboard_window = None
         self._exiting = False
         self._dashboard_close_notice_shown = False
+        self._mac_beta_warning_shown = False
         self._notification_app_id = None
 
         # Create tray icon
@@ -571,6 +573,7 @@ class SystemTray:
             self.dashboard_window.show()
             self.dashboard_window.raise_()
             self.dashboard_window.activateWindow()
+            QTimer.singleShot(0, self._show_macos_beta_warning)
             return
 
         from PyQt6.QtCore import Qt
@@ -581,6 +584,7 @@ class SystemTray:
         self.open_windows.append(window)
         # Note: ReplacerConfigWindow applies always_on_top in its __init__
         window.show()
+        QTimer.singleShot(0, self._show_macos_beta_warning)
 
     def _on_dashboard_destroyed(self):
         """Handle dashboard destruction."""
@@ -710,6 +714,65 @@ class SystemTray:
         """Remove window from tracking list."""
         if window in self.open_windows:
             self.open_windows.remove(window)
+
+    def _open_discord_server(self):
+        """Open the Discord server invite in the default browser."""
+        discord_url = APP_DISCORD if APP_DISCORD.startswith(('http://', 'https://')) else f'https://{APP_DISCORD}'
+        QDesktopServices.openUrl(QUrl(discord_url))
+
+    def _show_macos_beta_warning(self):
+        """Show the macOS early-beta warning once per app session."""
+        if self._mac_beta_warning_shown or sys.platform != 'darwin':
+            return
+        if self.dashboard_window is None or not self.dashboard_window.isVisible():
+            return
+
+        self._mac_beta_warning_shown = True
+
+        _top = QApplication.topLevelWidgets()
+        _parent = next((w for w in _top if w.isVisible()), self.dashboard_window)
+        _on_top = any(w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in _top)
+
+        dialog = QDialog(_parent)
+        if _on_top:
+            dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
+        dialog.setWindowTitle(f'{APP_NAME} - macOS Beta Warning')
+
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(12)
+
+        label = QLabel(
+            'macOS is in extremely early beta and does not support the AppleBlox bootstrapper yet.\n\n'
+            'Please report bugs in the Discord server.'
+        )
+        label.setWordWrap(True)
+        layout.addWidget(label)
+
+        button_row = QHBoxLayout()
+        discord_btn = QPushButton('Discord Server')
+        discord_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        discord_btn.setFlat(True)
+        discord_btn.setStyleSheet(
+            'QPushButton { border: none; padding: 0; background: transparent; color: #2f6feb; text-decoration: underline; }'
+            'QPushButton:hover { text-decoration: none; }'
+        )
+        ok_btn = QPushButton('OK')
+        ok_btn.setDefault(True)
+        ok_btn.setAutoDefault(True)
+        ok_btn.setFixedWidth(80)
+
+        button_row.addWidget(discord_btn)
+        button_row.addStretch()
+        button_row.addWidget(ok_btn)
+        layout.addLayout(button_row)
+
+        if icon_path := get_icon_path():
+            dialog.setWindowIcon(QIcon(str(icon_path)))
+
+        discord_btn.clicked.connect(self._open_discord_server)
+        ok_btn.clicked.connect(dialog.accept)
+
+        dialog.exec()
 
     def _copy_discord(self):
         """Copy Discord invite to clipboard."""
