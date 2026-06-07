@@ -92,9 +92,10 @@ class LogsWindow(QDialog):
         esc.activated.connect(self._clear_search)
 
     def _get_monospace_font(self):
-        from PyQt6.QtGui import QFont
-        font = QFont('Consolas', 10)
-        font.setStyleHint(QFont.StyleHint.Monospace)
+        from PyQt6.QtGui import QFontDatabase
+
+        font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+        font.setPointSize(10)
         return font
 
     def _focus_search(self):

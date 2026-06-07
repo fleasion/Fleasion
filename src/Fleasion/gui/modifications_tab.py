@@ -197,6 +197,12 @@ class _RichTextButton(QPushButton):
 class CollapsibleSection(QWidget):
     """A section with a clickable header that collapses/expands its content."""
 
+    _EXPANDED_ARROW = '\u25BC'
+    _COLLAPSED_ARROW = '\u25B6'
+    _DEFAULT_ARROW_STYLE = 'border: none;'
+    _WINDOWS_EXPANDED_ARROW_STYLE = 'font-size: 11px; border: none;'
+    _WINDOWS_COLLAPSED_ARROW_STYLE = 'font-size: 19px; border: none;'
+
     def __init__(self, title: str, parent=None, expanded: bool = True,
                  header_widgets: list[QWidget] | None = None):
         super().__init__(parent)
@@ -208,12 +214,10 @@ class CollapsibleSection(QWidget):
         header_layout = QHBoxLayout()
         header_layout.setContentsMargins(4, 4, 4, 4)
 
-        self._arrow = QPushButton('\u25BC' if expanded else '\u25B6')
+        self._arrow = QPushButton()
         self._arrow.setFixedSize(22, 22)
         self._arrow.setFlat(True)
-        self._arrow.setStyleSheet(
-            'font-size: 11px; border: none;' if expanded else 'font-size: 19px; border: none;'
-        )
+        self._set_arrow_state(expanded)
         self._arrow.clicked.connect(self.toggle)
         header_layout.addWidget(self._arrow)
 
@@ -276,14 +280,22 @@ class CollapsibleSection(QWidget):
     def add_widget(self, widget: QWidget):
         self._content_layout.addWidget(widget)
 
+    def _arrow_style(self, expanded: bool) -> str:
+        """Return platform-specific arrow styling for Unicode triangle glyphs."""
+        if os.name == 'nt':
+            return (
+                self._WINDOWS_EXPANDED_ARROW_STYLE if expanded
+                else self._WINDOWS_COLLAPSED_ARROW_STYLE
+            )
+        return self._DEFAULT_ARROW_STYLE
+
+    def _set_arrow_state(self, expanded: bool):
+        self._arrow.setText(self._EXPANDED_ARROW if expanded else self._COLLAPSED_ARROW)
+        self._arrow.setStyleSheet(self._arrow_style(expanded))
+
     def toggle(self):
         self._expanded = not self._expanded
-        if self._expanded:
-            self._arrow.setText('\u25BC')
-            self._arrow.setStyleSheet('font-size: 11px; border: none;')
-        else:
-            self._arrow.setText('\u25B6')
-            self._arrow.setStyleSheet('font-size: 19px; border: none;')
+        self._set_arrow_state(self._expanded)
 
         self._animation = QPropertyAnimation(self._content, b'maximumHeight')
         self._animation.setDuration(200)

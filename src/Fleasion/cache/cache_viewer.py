@@ -853,9 +853,43 @@ class CategoryFilterPopup(QMenu):
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
 
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setObjectName("FilterScrollArea")
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.scroll_area.setWidget(self.container)
+
+        self._natural_content_size = self.container.sizeHint()
+        self._set_popup_content_size(self._natural_content_size.height())
+
         action = QWidgetAction(self)
-        action.setDefaultWidget(self.container)
+        action.setDefaultWidget(self.scroll_area)
         self.addAction(action)
+
+    def _set_popup_content_size(self, max_height):
+        natural = self._natural_content_size
+        height = min(natural.height(), max(220, max_height))
+        width = natural.width()
+        if natural.height() > height:
+            width += self.scroll_area.verticalScrollBar().sizeHint().width()
+        self.scroll_area.setFixedSize(width, height)
+
+    def constrain_to_available_geometry(self, available_geometry, anchor_y=None):
+        """Bound the popup to the visible screen area and enable vertical scroll."""
+        if available_geometry is None:
+            return
+
+        if anchor_y is None:
+            available_height = available_geometry.height()
+        else:
+            space_below = available_geometry.bottom() - anchor_y
+            space_above = anchor_y - available_geometry.top()
+            available_height = max(space_below, space_above)
+
+        self._set_popup_content_size(max(220, available_height - 12))
+        self.adjustSize()
 
     def set_active_filters(self, active_filters):
         """Update the popup checks without rebuilding the widget."""
@@ -874,7 +908,7 @@ class CategoryFilterPopup(QMenu):
         if a0 is None:
             return
         action = self.actionAt(a0.pos())
-        if isinstance(action, QWidgetAction) and action.defaultWidget() == self.container:
+        if isinstance(action, QWidgetAction) and action.defaultWidget() == self.scroll_area:
             # We clicked inside the container area
             return
         super().mouseReleaseEvent(a0)
@@ -1649,6 +1683,7 @@ class CacheViewerTab(QWidget):
             return
 
         sg = screen.availableGeometry()
+        self.popup.constrain_to_available_geometry(sg, btn_bottom.y())
         ph = self.popup.sizeHint().height()
         pw = self.popup.sizeHint().width()
 

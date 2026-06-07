@@ -1420,6 +1420,7 @@ class ReplacerConfigWindow(QDialog):
             from ..cache.cache_viewer import CategoryFilterPopup
             from ..cache.cache_manager import CacheManager
             from PyQt6.QtCore import QPoint
+            from PyQt6.QtWidgets import QApplication
 
             if _time.monotonic() - self._dialog_asset_types_popup_last_closed < 0.25:
                 return
@@ -1460,6 +1461,9 @@ class ReplacerConfigWindow(QDialog):
 
             # Line up TOP LEFT of our popup menu with TOP LEFT of the Asset Types button
             pos = types_btn.mapToGlobal(types_btn.rect().topLeft())
+            screen = QApplication.screenAt(pos) or QApplication.primaryScreen()
+            if screen is not None:
+                popup.constrain_to_available_geometry(screen.availableGeometry(), pos.y())
             popup.popup(pos)
 
         types_btn.clicked.connect(show_dialog_types_popup)
@@ -1630,6 +1634,12 @@ class ReplacerConfigWindow(QDialog):
         popup.set_active_filters(active_filters)
 
         global_top_right = self.asset_types_btn.mapToGlobal(self.asset_types_btn.rect().topRight())
+        screen = QApplication.screenAt(global_top_right) or QApplication.primaryScreen()
+        if screen is None:
+            popup.popup(global_top_right)
+            return
+        avail = screen.availableGeometry()
+        popup.constrain_to_available_geometry(avail, global_top_right.y())
         popup_size = popup.sizeHint()
 
         # Ideal: bottom-right of popup aligns with top-right of button
@@ -1637,8 +1647,6 @@ class ReplacerConfigWindow(QDialog):
         ideal_y = global_top_right.y() - popup_size.height()
 
         # Clamp to the screen the button is on so it never teleports to another monitor
-        screen = QApplication.screenAt(global_top_right) or QApplication.primaryScreen()
-        avail = screen.availableGeometry()
         x = max(avail.left(), min(ideal_x, avail.right() - popup_size.width()))
         y = max(avail.top(), min(ideal_y, avail.bottom() - popup_size.height()))
 

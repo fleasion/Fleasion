@@ -63,10 +63,10 @@ class DeleteCacheWindow(QDialog):
 
     def _get_monospace_font(self):
         """Get a monospace font."""
-        from PyQt6.QtGui import QFont
+        from PyQt6.QtGui import QFontDatabase
 
-        font = QFont('Consolas', 9)
-        font.setStyleHint(QFont.StyleHint.Monospace)
+        font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+        font.setPointSize(9)
         return font
 
     def _append_log(self, message: str):
