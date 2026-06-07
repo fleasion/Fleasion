@@ -1,4 +1,4 @@
-"""Windows system proxy discovery for upstream CONNECT fallback."""
+"""System proxy discovery for upstream CONNECT fallback."""
 
 from __future__ import annotations
 
@@ -14,10 +14,15 @@ from .upstream import HttpProxyConfig
 
 @dataclass
 class WindowsProxyInfo:
-    wininet_enabled: bool
-    wininet_proxy_server: Optional[str]
-    wininet_auto_config_url: Optional[str]
-    winhttp_proxy_server: Optional[str]
+    wininet_enabled: bool = False
+    wininet_proxy_server: Optional[str] = None
+    wininet_auto_config_url: Optional[str] = None
+    winhttp_proxy_server: Optional[str] = None
+    macos_http_enabled: bool = False
+    macos_http_proxy_server: Optional[str] = None
+    macos_https_enabled: bool = False
+    macos_https_proxy_server: Optional[str] = None
+    macos_auto_config_url: Optional[str] = None
 
 
 def _query_reg_value(key, name: str):
@@ -80,7 +85,64 @@ def _read_winhttp_proxy() -> Optional[str]:
     return None
 
 
+def _proxy_target(host: Optional[str], port: object) -> Optional[str]:
+    host_text = str(host or "").strip()
+    if not host_text:
+        return None
+    try:
+        port_int = int(str(port).strip())
+    except (TypeError, ValueError):
+        return None
+    if port_int <= 0 or port_int > 65535:
+        return None
+    if ":" in host_text and not host_text.startswith("["):
+        host_text = f"[{host_text}]"
+    return f"{host_text}:{port_int}"
+
+
+def _parse_scutil_proxy_output(text: str) -> tuple[bool, Optional[str], bool, Optional[str], Optional[str]]:
+    values: dict[str, str] = {}
+    for line in (text or "").splitlines():
+        match = re.match(r"\s*([A-Za-z0-9]+)\s*:\s*(.*?)\s*$", line)
+        if match:
+            values[match.group(1)] = match.group(2)
+
+    http_enabled = values.get("HTTPEnable") == "1"
+    https_enabled = values.get("HTTPSEnable") == "1"
+    auto_config_url = values.get("ProxyAutoConfigURLString") if values.get("ProxyAutoConfigEnable") == "1" else None
+    http_proxy = _proxy_target(values.get("HTTPProxy"), values.get("HTTPPort")) if http_enabled else None
+    https_proxy = _proxy_target(values.get("HTTPSProxy"), values.get("HTTPSPort")) if https_enabled else None
+    return http_enabled, http_proxy, https_enabled, https_proxy, auto_config_url
+
+
+def _read_macos_proxies() -> tuple[bool, Optional[str], bool, Optional[str], Optional[str]]:
+    if platform.system() != "Darwin":
+        return False, None, False, None, None
+
+    try:
+        result = subprocess.run(
+            ["scutil", "--proxy"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return False, None, False, None, None
+
+    return _parse_scutil_proxy_output((result.stdout or "") + "\n" + (result.stderr or ""))
+
+
 def detect_windows_proxy() -> WindowsProxyInfo:
+    if platform.system() == "Darwin":
+        http_enabled, http_proxy, https_enabled, https_proxy, auto_url = _read_macos_proxies()
+        return WindowsProxyInfo(
+            macos_http_enabled=http_enabled,
+            macos_http_proxy_server=http_proxy,
+            macos_https_enabled=https_enabled,
+            macos_https_proxy_server=https_proxy,
+            macos_auto_config_url=auto_url,
+        )
+
     enabled, proxy_server, auto_config_url = _read_wininet()
     return WindowsProxyInfo(
         wininet_enabled=enabled,
@@ -152,6 +214,15 @@ def parse_static_http_proxy(proxy_server: Optional[str]) -> Optional[HttpProxyCo
 
 
 def detected_http_proxy(info: WindowsProxyInfo) -> Optional[HttpProxyConfig]:
+    if platform.system() == "Darwin":
+        if info.macos_https_enabled:
+            proxy = parse_static_http_proxy(info.macos_https_proxy_server)
+            if proxy is not None:
+                return proxy
+        if info.macos_http_enabled:
+            return parse_static_http_proxy(info.macos_http_proxy_server)
+        return None
+
     if info.wininet_enabled:
         proxy = parse_static_http_proxy(info.wininet_proxy_server)
         if proxy is not None:

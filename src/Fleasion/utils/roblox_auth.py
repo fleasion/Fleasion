@@ -4,10 +4,12 @@ import base64
 import json
 import os
 import re
+import sys
+import time
 from pathlib import Path
 
 from .logging import log_buffer
-from .paths import LOCAL_APPDATA
+from .paths import CONFIG_DIR, LOCAL_APPDATA, USER_HOME
 
 try:
     import win32crypt  # type: ignore
@@ -15,11 +17,24 @@ except Exception:
     win32crypt = None
 
 
-ROBLOX_COOKIES_PATH = LOCAL_APPDATA / 'Roblox' / 'LocalStorage' / 'RobloxCookies.dat'
+if sys.platform == 'darwin':
+    ROBLOX_COOKIES_PATH = USER_HOME / 'Library' / 'Roblox' / 'RobloxCookies.dat'
+else:
+    ROBLOX_COOKIES_PATH = LOCAL_APPDATA / 'Roblox' / 'LocalStorage' / 'RobloxCookies.dat'
 _LOGGED_AUTH_FAILURES: set[str] = set()
 _ROBLOX_COOKIE_RELATIVE_PATH = Path('AppData') / 'Local' / 'Roblox' / 'LocalStorage' / 'RobloxCookies.dat'
+_MACOS_COOKIE_CANDIDATES = (
+    Path('Library') / 'Roblox' / 'RobloxCookies.dat',
+    Path('Library') / 'Roblox' / 'LocalStorage' / 'RobloxCookies.dat',
+)
 _SUCCESSFUL_COOKIE_PATH: Path | None = None
 _LAST_AUTH_FAILURE_DETAILS: dict[str, object] = {}
+_BROWSER_COOKIE_CACHE: str | None = None
+_BROWSER_COOKIE_SOURCE = ''
+_BROWSER_AUTO_DISCOVERY_ATTEMPTED = False
+_BROWSER_AUTH_CACHE_FILE = CONFIG_DIR / 'browser_auth_cache.json'
+_BROWSER_AUTH_CACHE_KEY_FILE = CONFIG_DIR / 'browser_auth_cache.key'
+_PERSISTENT_BROWSER_AUTH_SOURCES = {'Chrome'}
 
 
 def _log_auth_failure(key: str, message: str) -> None:
@@ -95,6 +110,11 @@ def _iter_user_profile_cookie_candidates() -> list[tuple[str, Path]]:
 
     _add_candidate(candidates, seen, 'LOCALAPPDATA', ROBLOX_COOKIES_PATH)
 
+    if sys.platform == 'darwin':
+        for relative in _MACOS_COOKIE_CANDIDATES:
+            _add_candidate(candidates, seen, 'macOS-home', USER_HOME / relative)
+        return candidates
+
     userprofile = os.environ.get('USERPROFILE')
     if userprofile:
         _add_candidate(candidates, seen, 'USERPROFILE', Path(userprofile) / _ROBLOX_COOKIE_RELATIVE_PATH)
@@ -127,12 +147,6 @@ def _iter_user_profile_cookie_candidates() -> list[tuple[str, Path]]:
 
 
 def _read_cookie_payload(path: Path) -> tuple[dict, bytes] | None:
-    if win32crypt is None:
-        _log_auth_failure(
-            'win32crypt-unavailable',
-            'Could not read Roblox auth cookie: pywin32/win32crypt is unavailable',
-        )
-        return None
     if not _path_exists(path):
         _log_auth_failure(
             f'missing:{path}',
@@ -166,6 +180,19 @@ def _read_cookie_payload(path: Path) -> tuple[dict, bytes] | None:
             f'Failed to decode RobloxCookies.dat CookiesData at {path}: {type(exc).__name__}: {exc}',
         )
         return None
+
+    if win32crypt is None:
+        if sys.platform == 'darwin':
+            _log_auth_failure(
+                f'macos-cookie-unsupported:{path}',
+                f'RobloxCookies.dat at {path} is not decryptable with Windows DPAPI on macOS',
+            )
+        else:
+            _log_auth_failure(
+                'win32crypt-unavailable',
+                'Could not read Roblox auth cookie: pywin32/win32crypt is unavailable',
+            )
+        return data, enc
 
     try:
         dec = win32crypt.CryptUnprotectData(enc, None, None, None, 0)[1]
@@ -211,13 +238,242 @@ def get_auth_failure_details() -> dict[str, object]:
     return dict(_LAST_AUTH_FAILURE_DETAILS)
 
 
-def get_roblosecurity(path: Path | None = None) -> str | None:
+def _get_macos_browser_auth_cipher(create: bool = True):
+    if sys.platform != 'darwin':
+        return None
+    try:
+        from cryptography.fernet import Fernet
+    except Exception as exc:
+        _log_auth_failure(
+            f'browser-auth-cache-crypto:{type(exc).__name__}',
+            f'macOS browser auth cache encryption is unavailable: {type(exc).__name__}: {exc}',
+        )
+        return None
+
+    try:
+        key_path = _BROWSER_AUTH_CACHE_KEY_FILE
+        if not key_path.exists():
+            if not create:
+                return None
+            key_path.parent.mkdir(parents=True, exist_ok=True)
+            key = Fernet.generate_key()
+            flags = (
+                getattr(os, 'O_WRONLY', 1)
+                | getattr(os, 'O_CREAT', 64)
+                | getattr(os, 'O_EXCL', 128)
+            )
+            fd = os.open(key_path, flags, 0o600)
+            with os.fdopen(fd, 'wb') as f:
+                f.write(key)
+        else:
+            key = key_path.read_bytes().strip()
+        try:
+            os.chmod(key_path, 0o600)
+        except OSError:
+            pass
+        return Fernet(key)
+    except Exception as exc:
+        _log_auth_failure(
+            f'browser-auth-cache-key:{type(exc).__name__}:{exc}',
+            f'macOS browser auth cache key failed: {type(exc).__name__}: {exc}',
+        )
+        return None
+
+
+def _validate_roblosecurity(cookie: str) -> bool | None:
+    """Return True/False for validation, or None when validation is inconclusive."""
+    if not cookie:
+        return False
+    try:
+        import requests
+
+        sess = requests.Session()
+        sess.trust_env = False
+        sess.proxies = {}
+        try:
+            sess.cookies.set('.ROBLOSECURITY', cookie, domain='.roblox.com')
+        except Exception:
+            sess.headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
+        resp = sess.get('https://users.roblox.com/v1/users/authenticated', timeout=10)
+        if resp.status_code == 200:
+            return True
+        if resp.status_code in (401, 403):
+            return False
+        return None
+    except Exception as exc:
+        _log_auth_failure(
+            f'browser-auth-cache-validate:{type(exc).__name__}',
+            f'Could not validate cached Roblox browser login: {type(exc).__name__}: {exc}',
+        )
+        return None
+
+
+def _delete_cached_browser_roblosecurity() -> None:
+    try:
+        _BROWSER_AUTH_CACHE_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _read_cached_browser_roblosecurity() -> tuple[str | None, str]:
+    if sys.platform != 'darwin' or not _BROWSER_AUTH_CACHE_FILE.exists():
+        return None, ''
+
+    cipher = _get_macos_browser_auth_cipher(create=False)
+    if cipher is None:
+        return None, ''
+
+    try:
+        with _BROWSER_AUTH_CACHE_FILE.open('r', encoding='utf-8') as f:
+            payload = json.load(f)
+        source = str(payload.get('source') or '')
+        if source not in _PERSISTENT_BROWSER_AUTH_SOURCES:
+            _delete_cached_browser_roblosecurity()
+            return None, ''
+        encrypted = str(payload.get('cookie') or '')
+        cookie = cipher.decrypt(encrypted.encode('ascii')).decode('utf-8').strip()
+    except Exception as exc:
+        _delete_cached_browser_roblosecurity()
+        _log_auth_failure(
+            f'browser-auth-cache-read:{type(exc).__name__}:{exc}',
+            f'Could not read cached Roblox browser login: {type(exc).__name__}: {exc}',
+        )
+        return None, ''
+
+    validation = _validate_roblosecurity(cookie)
+    if validation is False:
+        _delete_cached_browser_roblosecurity()
+        log_buffer.log('Auth', 'Discarded cached Roblox browser login because it is no longer valid')
+        return None, ''
+
+    _LAST_AUTH_FAILURE_DETAILS.clear()
+    log_buffer.log('Auth', f'Using encrypted cached Roblox browser login from {source}')
+    return cookie, source
+
+
+def _write_cached_browser_roblosecurity(cookie: str, source: str) -> None:
+    if sys.platform != 'darwin' or source not in _PERSISTENT_BROWSER_AUTH_SOURCES:
+        return
+    cipher = _get_macos_browser_auth_cipher()
+    if cipher is None:
+        return
+    try:
+        _BROWSER_AUTH_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            'version': 1,
+            'source': source,
+            'cached_at': int(time.time()),
+            'cookie': cipher.encrypt(cookie.encode('utf-8')).decode('ascii'),
+        }
+        with _BROWSER_AUTH_CACHE_FILE.open('w', encoding='utf-8') as f:
+            json.dump(payload, f, indent=2)
+        try:
+            os.chmod(_BROWSER_AUTH_CACHE_FILE, 0o600)
+        except OSError:
+            pass
+    except Exception as exc:
+        _log_auth_failure(
+            f'browser-auth-cache-write:{type(exc).__name__}:{exc}',
+            f'Could not cache Roblox browser login: {type(exc).__name__}: {exc}',
+        )
+
+
+def _browser_cookie_loaders(include_keychain: bool):
+    import browser_cookie3
+
+    loaders = [('Firefox', browser_cookie3.firefox)]
+    if include_keychain:
+        # Check the most common macOS browser first so its Safe Storage prompt
+        # is useful instead of asking for less likely browser stores first.
+        loaders = [
+            ('Chrome', browser_cookie3.chrome),
+            ('Safari', browser_cookie3.safari),
+            ('Brave', browser_cookie3.brave),
+            ('Edge', browser_cookie3.edge),
+            ('Chromium', browser_cookie3.chromium),
+            ('Opera', browser_cookie3.opera),
+            ('Vivaldi', browser_cookie3.vivaldi),
+            *loaders,
+        ]
+    return loaders
+
+
+def discover_browser_roblosecurity(include_keychain: bool = False) -> tuple[str | None, str]:
+    """Discover the Roblox cookie from local browsers without logging its value.
+
+    Firefox discovery is prompt-free on macOS. Chrome-family browsers and
+    Safari are only queried when ``include_keychain`` is True because macOS may
+    ask the user to approve Safe Storage or browser-data access.
+    """
+    global _BROWSER_COOKIE_CACHE, _BROWSER_COOKIE_SOURCE, _BROWSER_AUTO_DISCOVERY_ATTEMPTED
+
+    if _BROWSER_COOKIE_CACHE:
+        return _BROWSER_COOKIE_CACHE, _BROWSER_COOKIE_SOURCE
+    cached_cookie, cached_source = _read_cached_browser_roblosecurity()
+    if cached_cookie:
+        _BROWSER_COOKIE_CACHE = cached_cookie
+        _BROWSER_COOKIE_SOURCE = cached_source
+        return cached_cookie, cached_source
+    if not include_keychain and _BROWSER_AUTO_DISCOVERY_ATTEMPTED:
+        return None, ''
+    if not include_keychain:
+        _BROWSER_AUTO_DISCOVERY_ATTEMPTED = True
+
+    try:
+        loaders = _browser_cookie_loaders(include_keychain)
+    except Exception as exc:
+        _log_auth_failure(
+            f'browser-cookie-library:{type(exc).__name__}',
+            f'Browser cookie discovery is unavailable: {type(exc).__name__}: {exc}',
+        )
+        return None, ''
+
+    now = time.time()
+    for source, loader in loaders:
+        try:
+            jar = loader(domain_name='roblox.com')
+            candidates = [
+                cookie
+                for cookie in jar
+                if cookie.name == '.ROBLOSECURITY'
+                and cookie.value
+                and 'roblox.com' in (cookie.domain or '').lower()
+                and (not cookie.expires or cookie.expires > now)
+            ]
+        except Exception as exc:
+            _log_auth_failure(
+                f'browser-cookie:{source}:{type(exc).__name__}:{exc}',
+                f'Could not read Roblox browser login from {source}: {type(exc).__name__}: {exc}',
+            )
+            continue
+
+        if not candidates:
+            continue
+        cookie = max(candidates, key=lambda item: item.expires or 0).value.strip()
+        if not cookie or any(char.isspace() for char in cookie):
+            continue
+        if source in _PERSISTENT_BROWSER_AUTH_SOURCES:
+            validation = _validate_roblosecurity(cookie)
+            if validation is False:
+                continue
+        _BROWSER_COOKIE_CACHE = cookie
+        _BROWSER_COOKIE_SOURCE = source
+        _LAST_AUTH_FAILURE_DETAILS.clear()
+        log_buffer.log('Auth', f'Using domain-scoped Roblox browser login discovered from {source}')
+        _write_cached_browser_roblosecurity(cookie, source)
+        return cookie, source
+
+    return None, ''
+
+
+def get_roblosecurity(path: Path | None = None, *, include_keychain_browsers: bool = False) -> str | None:
     """Return the .ROBLOSECURITY cookie value from a Roblox cookie store.
 
-    Uses Windows DPAPI (win32crypt) to decrypt the stored cookie data.
-    When no explicit path is supplied, tries the configured LocalAppData path
-    first, then likely current-user paths, then exact cookie locations under
-    C:\\Users.
+    On Windows, uses DPAPI (win32crypt) to decrypt the stored cookie data. On
+    macOS, tries known Roblox cookie-file locations if Roblox creates them; a
+    normal macOS install may only expose app-local account metadata, not the
+    browser-style .ROBLOSECURITY cookie. Set ``include_keychain_browsers`` for
+    an explicit user-facing macOS browser permission request.
     """
     global _SUCCESSFUL_COOKIE_PATH, _LAST_AUTH_FAILURE_DETAILS
 
@@ -252,14 +508,25 @@ def get_roblosecurity(path: Path | None = None) -> str | None:
             _LAST_AUTH_FAILURE_DETAILS = {}
             return cookie
 
+    if sys.platform == 'darwin':
+        browser_cookie, browser_source = discover_browser_roblosecurity(
+            include_keychain=include_keychain_browsers,
+        )
+        if browser_cookie:
+            _LAST_AUTH_FAILURE_DETAILS = {}
+            return browser_cookie
+    else:
+        browser_source = ''
+
     _LAST_AUTH_FAILURE_DETAILS = {
         'local_appdata': str(LOCAL_APPDATA),
         'default_cookie_path': str(ROBLOX_COOKIES_PATH),
         'userprofile': os.environ.get('USERPROFILE') or '',
         'username': os.environ.get('USERNAME') or '',
-        'home': str(Path.home()),
+        'home': str(USER_HOME),
         'attempted_paths': attempted,
         'existing_paths': existing,
+        'browser_source': browser_source,
     }
     _log_auth_failure(
         'all-cookie-candidates-failed',
@@ -282,6 +549,12 @@ def set_roblosecurity(cookie: str, path: Path | None = None) -> bool:
         data, dec = payload
         cookie_text = dec.decode('latin-1')
         new_text, _count = _replace_roblosecurity(cookie_text, cookie)
+        if win32crypt is None:
+            _log_auth_failure(
+                f'write-unsupported:{cookie_path}',
+                f'Cannot encrypt RobloxCookies.dat at {cookie_path} on this platform',
+            )
+            return False
         new_enc = win32crypt.CryptProtectData(new_text.encode('latin-1'), None, None, None, None, 0)
         data['CookiesData'] = base64.b64encode(new_enc).decode('ascii')
         with cookie_path.open('w', encoding='utf-8') as f:

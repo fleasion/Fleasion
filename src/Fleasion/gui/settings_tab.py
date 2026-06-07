@@ -1,6 +1,8 @@
 """Settings tab – mirrors all settings available in the system tray menu."""
 
 import ctypes
+import os
+import sys
 
 from PyQt6.QtCore import QEvent, Qt
 from PyQt6.QtWidgets import (
@@ -27,10 +29,16 @@ from ..utils import CONFIG_DIR
 
 
 def _is_admin() -> bool:
+    if sys.platform == 'darwin':
+        return hasattr(os, 'geteuid') and os.geteuid() == 0
     try:
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
     except Exception:
         return False
+
+
+def _run_on_boot_requires_admin() -> bool:
+    return sys.platform == 'win32'
 
 
 class SettingsTab(QWidget):
@@ -247,7 +255,7 @@ class SettingsTab(QWidget):
     def _build_convenience_section(self) -> CollapsibleSection:
         section = CollapsibleSection('Convenience', expanded=True)
 
-        admin = _is_admin()
+        boot_allowed = _is_admin() or not _run_on_boot_requires_admin()
 
         self._open_dashboard_chk = QCheckBox("Open Dashboard on Start")
         self._open_dashboard_chk.setChecked(self._config.open_dashboard_on_launch)
@@ -264,10 +272,10 @@ class SettingsTab(QWidget):
         self._clear_cache_launch_chk.toggled.connect(self._on_clear_cache_launch_toggled)
         section.add_widget(self._clear_cache_launch_chk)
 
-        boot_label = "Run on Boot" if admin else "Run on Boot  (requires administrator)"
+        boot_label = "Run on Boot" if boot_allowed else "Run on Boot  (requires administrator)"
         self._run_on_boot_chk = QCheckBox(boot_label)
         self._run_on_boot_chk.setChecked(self._config.run_on_boot)
-        self._run_on_boot_chk.setEnabled(admin)
+        self._run_on_boot_chk.setEnabled(boot_allowed)
         self._run_on_boot_chk.toggled.connect(self._on_run_on_boot_toggled)
         section.add_widget(self._run_on_boot_chk)
 
@@ -495,7 +503,7 @@ class SettingsTab(QWidget):
         self._config.vpn_compat_max_cdn_connections = self._cdn_limit_spin.value()
 
     def _on_run_on_boot_toggled(self, checked: bool):
-        if not _is_admin():
+        if _run_on_boot_requires_admin() and not _is_admin():
             self._run_on_boot_chk.blockSignals(True)
             self._run_on_boot_chk.setChecked(not checked)
             self._run_on_boot_chk.blockSignals(False)
@@ -515,7 +523,7 @@ class SettingsTab(QWidget):
                 'Run on Boot Failed',
                 'Failed to register the autostart task.\n'
                 'Check the application log for details.\n\n'
-                'Ensure Fleasion is running as Administrator.',
+                'On Windows, ensure Fleasion is running as Administrator.',
             )
 
     def _on_always_on_top_toggled(self, checked: bool):

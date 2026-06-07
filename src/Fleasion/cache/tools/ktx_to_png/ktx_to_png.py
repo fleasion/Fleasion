@@ -1,8 +1,9 @@
 """KTX/KTX2 -> PNG conversion pipeline.
 
 KTX1:  ETC1 / ETC2 / EAC decoded by a pure-Python numpy decoder.
-KTX2:  BasisU and UASTC super-compressed formats transcoded to raw RGBA32
-       via ktx.dll (libktx), then written to PNG via Pillow.
+KTX2:  Uncompressed RGBA8 textures are decoded locally. BasisU and UASTC
+       super-compressed formats are transcoded to raw RGBA32 via native libktx,
+       when available, then written to PNG via Pillow.
        Non-basis formats (raw BC7 etc.) return None so the caller can fall
        back to the Roblox API.
 
@@ -14,20 +15,21 @@ Credits
 The ETC1/ETC2/EAC decompression algorithm is a Python port of the C#
 implementation in BloxDump by EmK530:
   https://github.com/EmK530/BloxDump
-ktx.dll (libktx) is redistributed from the same project under its original
-license.
+ktx.dll (libktx) is redistributed on Windows from the same project under its
+original license.
 """
 
 import ctypes
 import io
 import logging
-import os
 import struct
 import sys
 from pathlib import Path
 
 import numpy as np
 from PIL import Image
+
+from ..rgba_ktx2 import read_rgba8_ktx2
 
 logger = logging.getLogger(__name__)
 
@@ -494,14 +496,14 @@ def _decode_etc_rgba(image_data: bytes, width: int, height: int) -> np.ndarray:
 
 
 # -------------------------------------------------------------------------------
-# KTX2 -- ctypes path using the bundled ktx.dll (libktx)
+# KTX2 -- local RGBA8 path plus optional native libktx path
 # -------------------------------------------------------------------------------
 # libktx constants (from Ktx.Enums.cs / libktx transcode_flags.h)
 _KTX_CREATE_LOAD_IMAGE_DATA = 0x01   # KtxTextureCreateFlagBits.LoadImageDataBit
 _KTX_TTF_RGBA32             = 13     # TranscodeFormat.Rgba32
 _KTX_SUCCESS                = 0      # KtxErrorCode.KtxSuccess
 
-# ktxTexture struct field offsets on 64-bit Windows (libktx 4.x, MSVC build).
+# ktxTexture struct field offsets on 64-bit Windows/macOS libktx 4.x builds.
 # Layout derived from DECLARE_KTXTEXTURE_PUBLIC expansion in ktx.h:
 #   classId(4) + pad(4) + vtbl(8) + vvtbl(8) + _protected(8)  -- 0-31
 #   isArray/isCubemap/isCompressed/generateMipmaps (4x1)        -- 32-35
@@ -520,29 +522,34 @@ _ktx_dll = None
 _ktx_dll_loaded = False
 
 
+def _ktx_library_names() -> tuple[str, ...]:
+    if sys.platform == 'darwin':
+        return ('libktx.4.dylib', 'libktx.dylib')
+    return ('ktx.dll',)
+
+
 def _find_ktx_dll() -> str | None:
-    """Locate ktx.dll in both frozen (PyInstaller) and development environments."""
-    # Development / installed: ktx.dll lives next to this Python file.
-    candidate = Path(__file__).with_name('ktx.dll')
-    if candidate.is_file():
-        return str(candidate)
+    """Locate native libktx in frozen and development environments."""
+    search_dirs = [Path(__file__).parent]
 
     # Frozen app: PyInstaller extracts binaries to _MEIPASS or next to the exe.
     if getattr(sys, 'frozen', False):
         meipass = getattr(sys, '_MEIPASS', None)
         if meipass:
-            candidate = os.path.join(meipass, 'ktx.dll')
-            if os.path.isfile(candidate):
-                return candidate
-        candidate = os.path.join(os.path.dirname(sys.executable), 'ktx.dll')
-        if os.path.isfile(candidate):
-            return candidate
+            search_dirs.append(Path(meipass))
+        search_dirs.append(Path(sys.executable).parent)
+
+    for directory in search_dirs:
+        for name in _ktx_library_names():
+            candidate = directory / name
+            if candidate.is_file():
+                return str(candidate)
 
     return None
 
 
 def _get_ktx_dll():
-    """Load and configure ktx.dll, returning the ctypes CDLL or None."""
+    """Load and configure native libktx, returning the ctypes CDLL or None."""
     global _ktx_dll, _ktx_dll_loaded
     if _ktx_dll_loaded:
         return _ktx_dll
@@ -550,13 +557,13 @@ def _get_ktx_dll():
 
     dll_path = _find_ktx_dll()
     if not dll_path:
-        logger.debug('ktx_to_png: ktx.dll not found, KTX2 will use API fallback')
+        logger.debug('ktx_to_png: native libktx not found, KTX2 will use API fallback')
         return None
 
     try:
         dll = ctypes.CDLL(dll_path)
     except Exception as exc:
-        logger.debug('ktx_to_png: failed to load ktx.dll: %s', exc)
+        logger.debug('ktx_to_png: failed to load native libktx: %s', exc)
         return None
 
     try:
@@ -578,11 +585,11 @@ def _get_ktx_dll():
         dll.ktxTexture2_Destroy.restype  = None
         dll.ktxTexture2_Destroy.argtypes = [ctypes.c_void_p]
     except Exception as exc:
-        logger.debug('ktx_to_png: ktx.dll symbol setup failed: %s', exc)
+        logger.debug('ktx_to_png: native libktx symbol setup failed: %s', exc)
         return None
 
     _ktx_dll = dll
-    logger.debug('ktx_to_png: ktx.dll loaded from %s', dll_path)
+    logger.debug('ktx_to_png: native libktx loaded from %s', dll_path)
     return dll
 
 
@@ -599,6 +606,14 @@ def _read_ptr(ptr_int: int, offset: int) -> int:
 
 
 def _convert_ktx2(data: bytes) -> bytes | None:
+    rgba8 = read_rgba8_ktx2(data)
+    if rgba8 is not None:
+        rgba, width, height = rgba8
+        img = Image.frombytes('RGBA', (width, height), rgba)
+        buf = io.BytesIO()
+        img.save(buf, format='PNG')
+        return buf.getvalue()
+
     dll = _get_ktx_dll()
     if dll is None:
         return None
@@ -654,5 +669,3 @@ def _convert_ktx2(data: bytes) -> bytes | None:
             dll.ktxTexture2_Destroy(tex_ptr)
         except Exception:
             pass
-
-

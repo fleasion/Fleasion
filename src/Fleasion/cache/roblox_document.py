@@ -49,9 +49,11 @@ def classify_roblox_document(data: bytes) -> str | None:
     return None
 
 
-def get_roblox_document_export_formats(data: bytes) -> list[str]:
+def get_roblox_document_export_formats(data: bytes, asset_type: int | None = None) -> list[str]:
     """Return converted export formats for a Roblox document payload."""
     kind = classify_roblox_document(data)
+    if asset_type == 9 and kind in {'rbxl', 'rbxm', 'rbxmx'}:
+        return ['converted_document_rbxl']
     if kind == 'rbxl':
         return ['converted_document_rbxl']
     if kind in {'rbxm', 'rbxmx'}:
@@ -59,9 +61,11 @@ def get_roblox_document_export_formats(data: bytes) -> list[str]:
     return []
 
 
-def get_default_roblox_document_export_format(data: bytes) -> str | None:
+def get_default_roblox_document_export_format(data: bytes, asset_type: int | None = None) -> str | None:
     """Return the best default converted export format for a Roblox document."""
     kind = classify_roblox_document(data)
+    if asset_type == 9 and kind in {'rbxl', 'rbxm', 'rbxmx'}:
+        return 'converted_document_rbxl'
     if kind == 'rbxl':
         return 'converted_document_rbxl'
     if kind == 'rbxmx':
@@ -71,7 +75,11 @@ def get_default_roblox_document_export_format(data: bytes) -> str | None:
     return None
 
 
-def export_roblox_document(data: bytes, export_format: str) -> tuple[bytes, str]:
+def export_roblox_document(
+    data: bytes,
+    export_format: str,
+    asset_type: int | None = None,
+) -> tuple[bytes, str]:
     """Convert a Roblox document payload to the requested export format."""
     data = decompress_if_needed(data)
     kind = classify_roblox_document(data)
@@ -79,17 +87,17 @@ def export_roblox_document(data: bytes, export_format: str) -> tuple[bytes, str]
         raise ValueError('Data is not an RBXM/RBXMX/RBXL document')
 
     if export_format == 'converted_document_rbxl':
-        if kind != 'rbxl':
+        if kind != 'rbxl' and asset_type != 9:
             raise ValueError('Only DataModel documents can be exported as RBXL')
         return _to_binary_document(data), '.rbxl'
 
     if export_format == 'converted_document_rbxm':
-        if kind == 'rbxl':
+        if kind == 'rbxl' or asset_type == 9:
             raise ValueError('RBXL documents must be exported as RBXL')
         return _to_binary_document(data), '.rbxm'
 
     if export_format == 'converted_document_rbxmx':
-        if kind == 'rbxl':
+        if kind == 'rbxl' or asset_type == 9:
             raise ValueError('RBXL documents must be exported as RBXL')
         if _parse_roblox_xml(data) is not None:
             return data, '.rbxmx'

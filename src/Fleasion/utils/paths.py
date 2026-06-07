@@ -14,44 +14,71 @@ APP_DISCORD = 'discord.gg/hXyhKehEZF'
 APP_REPO = 'https://github.com/fleasion/Fleasion'
 
 # Process and proxy configuration
-ROBLOX_PROCESS = 'RobloxPlayerBeta.exe'
-ROBLOX_STUDIO_PROCESS = 'RobloxStudioBeta.exe'
+if sys.platform == 'darwin':
+    ROBLOX_PROCESS = 'RobloxPlayer'
+    ROBLOX_STUDIO_PROCESS = 'RobloxStudio'
+else:
+    ROBLOX_PROCESS = 'RobloxPlayerBeta.exe'
+    ROBLOX_STUDIO_PROCESS = 'RobloxStudioBeta.exe'
 PROXY_TARGET_HOST = 'assetdelivery.roblox.com'
 PROXY_PORT = 443
+MACOS_PROXY_BACKEND_PORT = 58443
+MACOS_PROXY_HELPER_CONTROL_PORT = 58444
 STRIPPABLE_ASSET_TYPES = {'TexturePack'}
 
 # Icon
 ICON_FILENAME = 'fleasionlogoHR.ico'
 
 _LOCAL_APPDATA_OVERRIDE_ARG = '--fleasion-user-localappdata='
+_USER_HOME_ENV = 'FLEASION_USER_HOME'
+
+
+def _get_user_home() -> Path:
+    value = os.environ.get(_USER_HOME_ENV)
+    if value:
+        return Path(os.path.expandvars(value)).expanduser()
+    return Path.home()
 
 
 def _get_local_appdata() -> Path:
-    """Return the intended interactive user's LocalAppData directory."""
+    """Return the intended interactive user's local application-data directory."""
     for arg in sys.argv[1:]:
         if arg.startswith(_LOCAL_APPDATA_OVERRIDE_ARG):
             value = arg.split('=', 1)[1].strip().strip('"')
             if value:
                 return Path(os.path.expandvars(value))
 
+    if sys.platform == 'darwin':
+        return USER_HOME / 'Library' / 'Application Support'
+
     local_appdata = os.environ.get('LOCALAPPDATA')
     if local_appdata:
         return Path(local_appdata)
 
-    return Path.home() / 'AppData' / 'Local'
+    if sys.platform == 'win32':
+        return Path.home() / 'AppData' / 'Local'
+
+    return USER_HOME
 
 
-# Windows paths
+# Platform paths
+USER_HOME = _get_user_home()
 LOCAL_APPDATA = _get_local_appdata()
-STORAGE_DB = LOCAL_APPDATA / 'Roblox' / 'rbx-storage.db'
-# Microsoft Store (GDK) version of Roblox stores its DB here
-STORAGE_DB_GDK = LOCAL_APPDATA / 'RobloxPCGDK' / 'rbx-storage.db'
+if sys.platform == 'darwin':
+    STORAGE_DB = USER_HOME / 'Library' / 'Roblox' / 'rbx-storage.db'
+    STORAGE_DB_GDK = USER_HOME / 'Library' / 'RobloxPCGDK' / 'rbx-storage.db'
+else:
+    STORAGE_DB = LOCAL_APPDATA / 'Roblox' / 'rbx-storage.db'
+    # Microsoft Store (GDK) version of Roblox stores its DB here
+    STORAGE_DB_GDK = LOCAL_APPDATA / 'RobloxPCGDK' / 'rbx-storage.db'
 
 # Application directories
 CONFIG_DIR = LOCAL_APPDATA / 'FleasionNT'
 APP_CACHE_DIR = CONFIG_DIR / 'cache'
 CONFIG_FILE = CONFIG_DIR / 'settings.json'
 CONFIGS_FOLDER = CONFIG_DIR / 'configs'
+LOGS_DIR = CONFIG_DIR / 'logs'
+LOG_FILE = LOGS_DIR / 'fleasion.log'
 
 # Proxy CA cert directory (replaces MITMPROXY_DIR)
 PROXY_CA_DIR = CONFIG_DIR / 'proxy_ca'
@@ -98,6 +125,7 @@ DEFAULT_SETTINGS = {
     'close_viewer_on_replace': True,
     'show_replacer_notifications': True,
     'multi_instance_launching': False,
+    'export_naming': ['name', 'id'],
     # Scraper tab - column visibility
     'scraper_column_visibility': {
         'hash_name':  True,

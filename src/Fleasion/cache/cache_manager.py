@@ -442,7 +442,7 @@ class CacheManager:
         if not data:
             return formats
 
-        document_formats = get_roblox_document_export_formats(data)
+        document_formats = get_roblox_document_export_formats(data, asset_type=asset_type)
         for fmt in reversed(document_formats):
             if fmt not in formats:
                 formats.insert(0, fmt)
@@ -506,9 +506,9 @@ class CacheManager:
 
                 # Export based on format
                 if export_format == 'converted':
-                    document_format = get_default_roblox_document_export_format(data)
+                    document_format = get_default_roblox_document_export_format(data, asset_type=asset_type)
                     if document_format is not None:
-                        export_data, ext = export_roblox_document(data, document_format)
+                        export_data, ext = export_roblox_document(data, document_format, asset_type=asset_type)
                         output_path = export_type_dir / f'{filename}{ext}'
                         output_path.write_bytes(export_data)
                         return output_path
@@ -524,7 +524,7 @@ class CacheManager:
                     'converted_document_rbxmx',
                     'converted_document_rbxl',
                 }:
-                    export_data, ext = export_roblox_document(data, export_format)
+                    export_data, ext = export_roblox_document(data, export_format, asset_type=asset_type)
                     output_path = export_type_dir / f'{filename}{ext}'
                     output_path.write_bytes(export_data)
                     return output_path

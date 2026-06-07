@@ -4,6 +4,8 @@ import threading
 from datetime import datetime
 from typing import Any
 
+from .paths import LOG_FILE, LOGS_DIR
+
 
 class LogBuffer:
     """Thread-safe log buffer with batched callback notifications."""
@@ -15,14 +17,32 @@ class LogBuffer:
         # Batching state
         self._pending_notifications = False
         self._batch_timer = None
+        self._prepare_log_file()
+
+    def _prepare_log_file(self):
+        try:
+            LOGS_DIR.mkdir(parents=True, exist_ok=True)
+            if LOG_FILE.exists() and LOG_FILE.stat().st_size > 5 * 1024 * 1024:
+                rotated = LOG_FILE.with_suffix('.log.1')
+                rotated.unlink(missing_ok=True)
+                LOG_FILE.replace(rotated)
+        except OSError:
+            pass
 
     def log(self, category: str, message: str):
         """Add a log entry (callbacks are batched to reduce overhead)."""
-        timestamp = datetime.now().strftime('%H:%M:%S')
+        now = datetime.now()
+        timestamp = now.strftime('%H:%M:%S')
         entry = f'[{timestamp}] [{category}] {message}'
 
         with self._lock:
             self._buffer.append(entry)
+            try:
+                LOGS_DIR.mkdir(parents=True, exist_ok=True)
+                with LOG_FILE.open('a', encoding='utf-8') as handle:
+                    handle.write(f'{now:%Y-%m-%d} {entry}\n')
+            except OSError:
+                pass
 
             # Schedule batched callback notification
             if not self._pending_notifications:

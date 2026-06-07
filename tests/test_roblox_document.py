@@ -72,6 +72,26 @@ class RobloxDocumentTests(unittest.TestCase):
         self.assertTrue(rbxl_data.startswith(RBXM_MAGIC))
         self.assertEqual(classify_roblox_document(rbxl_data), "rbxl")
 
+    def test_place_asset_type_exports_only_as_rbxl_even_with_model_payload(self):
+        self.assertEqual(
+            get_roblox_document_export_formats(MODEL_XML, asset_type=9),
+            ["converted_document_rbxl"],
+        )
+        self.assertEqual(
+            get_default_roblox_document_export_format(MODEL_XML, asset_type=9),
+            "converted_document_rbxl",
+        )
+
+        rbxl_data, rbxl_ext = export_roblox_document(
+            MODEL_XML,
+            "converted_document_rbxl",
+            asset_type=9,
+        )
+        self.assertEqual(rbxl_ext, ".rbxl")
+        self.assertTrue(rbxl_data.startswith(RBXM_MAGIC))
+        with self.assertRaises(ValueError):
+            export_roblox_document(MODEL_XML, "converted_document_rbxm", asset_type=9)
+
 
 if __name__ == "__main__":
     unittest.main()

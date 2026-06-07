@@ -9,10 +9,11 @@ from __future__ import annotations
 import os
 import shutil
 import stat
+import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from ..utils import format_count, log_buffer
+from ..utils import USER_HOME, format_count, log_buffer
 
 GLOBAL_SETTINGS_REL = Path('GlobalBasicSettings_13.xml')
 
@@ -26,8 +27,16 @@ class GlobalSettingsManager:
 
     @staticmethod
     def _find_all_user_roblox_dirs() -> list[Path]:
-        """Scan C:\\Users\\* for AppData\\Local\\Roblox directories."""
+        """Find user Roblox data directories."""
         roblox_dirs: list[Path] = []
+        if sys.platform == 'darwin':
+            roblox_local = USER_HOME / 'Library' / 'Roblox'
+            if roblox_local.exists():
+                roblox_dirs.append(roblox_local)
+            else:
+                log_buffer.log('GlobalSettings', '~/Library/Roblox directory not found')
+            return roblox_dirs
+
         users_dir = Path('C:/Users')
         
         if not users_dir.exists():

@@ -3,6 +3,7 @@
 import json
 from copy import deepcopy
 from pathlib import Path
+import sys
 import time
 from typing import Union
 from urllib.error import URLError
@@ -34,6 +35,7 @@ from PyQt6.QtWidgets import (
 
 from ..utils import APP_NAME, CONFIGS_FOLDER, PREJSONS_DIR, format_count, get_icon_path, log_buffer, open_folder
 from ..utils.http import http_head_status
+from .file_drop import FileDropLineEdit
 from .json_viewer import JsonTreeViewer
 from .proxy_gate import ProxyGate
 
@@ -173,6 +175,8 @@ class ReplacerConfigWindow(QDialog):
         self.setWindowTitle(f'{APP_NAME} - Dashboard')
         self.resize(900, 750)
         self.setMinimumSize(800, 650)
+        if sys.platform == 'darwin':
+            self.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow, True)
 
         # Set window flags to allow minimize/maximize
         flags = (
@@ -491,7 +495,7 @@ class ReplacerConfigWindow(QDialog):
         label2 = QLabel('Replace With:')
         label2.setFixedWidth(85)
         replace_layout.addWidget(label2)
-        self.replacement_entry = QLineEdit()
+        self.replacement_entry = FileDropLineEdit()
         self.replacement_entry.setPlaceholderText('ID, URL (http://...), path (C:\\...), or empty to remove')
         replace_layout.addWidget(self.replacement_entry)
         browse_btn = QPushButton('Browse...')
@@ -1498,7 +1502,7 @@ class ReplacerConfigWindow(QDialog):
         label = QLabel('Replacement (ID, URL, file path, or empty to remove):')
         layout.addWidget(label)
 
-        line_edit = QLineEdit()
+        line_edit = FileDropLineEdit()
         line_edit.setText(old_value)
         layout.addWidget(line_edit)
 

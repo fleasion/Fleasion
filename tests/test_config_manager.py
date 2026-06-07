@@ -16,6 +16,8 @@ _DEFAULT_SETTINGS = {
     'last_config': 'Default',
     'theme': 'System',
     'wire_preserving_passthrough': False,
+    'run_on_boot': True,
+    'export_naming': ['name', 'id'],
 }
 
 
@@ -112,6 +114,15 @@ class ConfigManagerEncodingTests(unittest.TestCase):
 
             manager.settings['wire_preserving_passthrough'] = 'true'
             self.assertTrue(manager.wire_preserving_passthrough)
+
+    def test_requested_defaults_for_boot_and_export_naming(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_manager_module = self._load_manager_for(Path(tmp))
+
+            manager = config_manager_module.ConfigManager()
+
+            self.assertTrue(manager.run_on_boot)
+            self.assertEqual(manager.export_naming, ['name', 'id'])
 
 
 if __name__ == '__main__':

@@ -557,7 +557,7 @@ class ConfigManager:
     @property
     def export_naming(self) -> list[str]:
         """Get export naming options (name, id, hash)."""
-        return self.settings.get('export_naming', ['id'])
+        return self.settings.get('export_naming', ['name', 'id'])
 
     @export_naming.setter
     def export_naming(self, value: list[str]):

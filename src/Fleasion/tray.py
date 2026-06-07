@@ -2,17 +2,35 @@
 
 import ctypes
 import os
-import winreg
+import sys
+
+try:
+    import winreg
+except ImportError:
+    winreg = None
 
 from PyQt6.QtGui import QAction, QIcon
 from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from .gui import AboutWindow, DeleteCacheWindow, LogsWindow, ReplacerConfigWindow, ThemeManager
-from .utils import APP_DISCORD, APP_NAME, APP_VERSION, get_icon_path, run_in_thread
+from .utils import APP_DISCORD, APP_NAME, APP_VERSION, LOGS_DIR, get_icon_path, log_buffer, open_folder, run_in_thread
 
 APP_KOFI = 'ko-fi.com/fleasion'
 _NOTIFICATION_APP_ID = f'{APP_NAME}.Notifications'
 _TOAST_TEMPLATE = '<toast><visual><binding template="ToastGeneric"></binding></visual></toast>'
+
+
+def _is_admin() -> bool:
+    if sys.platform == 'darwin':
+        return hasattr(os, 'geteuid') and os.geteuid() == 0
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin()) if hasattr(ctypes, 'windll') else False
+    except Exception:
+        return False
+
+
+def _run_on_boot_requires_admin() -> bool:
+    return sys.platform == 'win32'
 
 
 class SystemTray:
@@ -50,6 +68,12 @@ class SystemTray:
 
         # Show tray icon
         self.tray.show()
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            log_buffer.log('Tray', 'No system tray/menu-bar host is available')
+        elif not self.tray.isVisible():
+            log_buffer.log('Tray', 'System tray/menu-bar icon did not become visible')
+        else:
+            log_buffer.log('Tray', 'System tray/menu-bar icon is visible')
 
     def _set_icon(self):
         """Set the tray icon."""
@@ -74,9 +98,9 @@ class SystemTray:
         self.menu.addSeparator()
 
         # Main action - Dashboard
-        config_action = QAction('Dashboard', self.menu)
-        config_action.triggered.connect(self._show_replacer_config)
-        self.menu.addAction(config_action)
+        self.dashboard_action = QAction('Dashboard', self.menu)
+        self.dashboard_action.triggered.connect(self._toggle_dashboard)
+        self.menu.addAction(self.dashboard_action)
 
         # Configs submenu
         self.configs_menu = QMenu('Configs', self.menu)
@@ -93,6 +117,10 @@ class SystemTray:
         logs_action = QAction('Logs', self.menu)
         logs_action.triggered.connect(self._show_logs)
         self.menu.addAction(logs_action)
+
+        open_logs_action = QAction('Open Log Folder', self.menu)
+        open_logs_action.triggered.connect(lambda: open_folder(LOGS_DIR))
+        self.menu.addAction(open_logs_action)
 
         about_action = QAction('About', self.menu)
         about_action.triggered.connect(self._show_about)
@@ -212,16 +240,16 @@ class SystemTray:
         self.clear_cache_action.triggered.connect(self._toggle_clear_cache_on_launch)
         convenience_menu.addAction(self.clear_cache_action)
 
-        # Run on Boot (Task Scheduler, admin required)
-        import ctypes
-        _admin = bool(ctypes.windll.shell32.IsUserAnAdmin()) if hasattr(ctypes, 'windll') else False
+        # Run on Boot
+        _admin = _is_admin()
+        _boot_enabled = _admin or not _run_on_boot_requires_admin()
         self.run_on_boot_action = QAction(
-            'Run on Boot' if _admin else 'Run on Boot (admin required)',
+            'Run on Boot' if _boot_enabled else 'Run on Boot (admin required)',
             convenience_menu,
         )
         self.run_on_boot_action.setCheckable(True)
         self.run_on_boot_action.setChecked(self.config_manager.run_on_boot)
-        self.run_on_boot_action.setEnabled(_admin)
+        self.run_on_boot_action.setEnabled(_boot_enabled)
         self.run_on_boot_action.triggered.connect(self._toggle_run_on_boot)
         convenience_menu.addAction(self.run_on_boot_action)
 
@@ -320,11 +348,22 @@ class SystemTray:
         self.config_manager.proxy_features_enabled = enabled
 
         if enabled:
-            is_admin = bool(ctypes.windll.shell32.IsUserAnAdmin()) if hasattr(ctypes, 'windll') else False
-            if is_admin:
+            if sys.platform == 'darwin':
+                from .utils.macos_proxy_helper import helper_is_ready, install_helper
+
+                if helper_is_ready():
+                    self.proxy_master.start()
+                else:
+                    ok, detail = install_helper()
+                    if ok:
+                        self.proxy_master.start()
+                    else:
+                        self.config_manager.proxy_features_enabled = False
+                        log_buffer.log('ProxyHelper', f'macOS proxy helper installation failed: {detail}')
+                        enabled = False
+            elif _is_admin():
                 self.proxy_master.start()
             else:
-                from .utils import log_buffer
                 from .app import _relaunch_as_admin
 
                 log_buffer.log('Proxy', 'Proxy features enabled: requesting administrator relaunch')
@@ -400,9 +439,8 @@ class SystemTray:
         self._refresh_settings_tab()
 
     def _toggle_run_on_boot(self):
-        """Toggle run-on-boot via Windows Task Scheduler (admin only)."""
-        import ctypes
-        if not (bool(ctypes.windll.shell32.IsUserAnAdmin()) if hasattr(ctypes, 'windll') else False):
+        """Toggle run-on-boot for the current platform."""
+        if _run_on_boot_requires_admin() and not _is_admin():
             self.run_on_boot_action.setChecked(not self.run_on_boot_action.isChecked())
             return
         from .utils.autostart import sync_autostart
@@ -424,9 +462,9 @@ class SystemTray:
             _warn.setWindowTitle('Run on Boot Failed')
             _warn.setIcon(QMessageBox.Icon.Warning)
             _warn.setText(
-                'Failed to register the autostart task.\n'
+                'Failed to register autostart.\n'
                 'Check the application log for details (autostart errors are logged at ERROR level).\n\n'
-                'Ensure Fleasion is running as Administrator.'
+                'On Windows, ensure Fleasion is running as Administrator.'
             )
             if _on_top:
                 _warn.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
@@ -528,6 +566,7 @@ class SystemTray:
 
     def _show_replacer_config(self):
         """Show Replacer Config window (Dashboard)."""
+        self._set_dashboard_foreground_mode(True)
         if self.dashboard_window:
             self.dashboard_window.show()
             self.dashboard_window.raise_()
@@ -545,6 +584,7 @@ class SystemTray:
 
     def _on_dashboard_destroyed(self):
         """Handle dashboard destruction."""
+        self._set_dashboard_foreground_mode(False)
         if self.dashboard_window in self.open_windows:
             self.open_windows.remove(self.dashboard_window)
         self.dashboard_window = None
@@ -555,8 +595,18 @@ class SystemTray:
         """Toggle dashboard visibility."""
         if self.dashboard_window and self.dashboard_window.isVisible():
             self.dashboard_window.hide()
+            self._set_dashboard_foreground_mode(False)
         else:
             self._show_replacer_config()
+
+    def _set_dashboard_foreground_mode(self, enabled: bool):
+        """Keep the macOS dashboard visible when Fleasion loses focus."""
+        if sys.platform != 'darwin':
+            return
+        from .utils.platform_macos import set_application_foreground_mode
+
+        if not set_application_foreground_mode(enabled):
+            log_buffer.log('App', 'macOS dashboard activation-policy update was rejected')
 
     def notify_dashboard_closed(self):
         """Show the tray notice that the app is still running."""
@@ -612,6 +662,8 @@ class SystemTray:
 
         if os.name != 'nt':
             return None
+        if winreg is None:
+            return None
 
         app_id = _NOTIFICATION_APP_ID
         icon_path = get_icon_path()
@@ -637,6 +689,11 @@ class SystemTray:
     def _on_tray_activated(self, reason):
         """Handle tray icon activation (e.g., click)."""
         if reason == QSystemTrayIcon.ActivationReason.Trigger:  # Trigger is usually left-click
+            # On macOS, clicking the menu-bar icon is how the user opens its
+            # menu. Treating that click as a dashboard toggle makes a visible
+            # dashboard disappear before the user can select a menu command.
+            if sys.platform == 'darwin':
+                return
             self._toggle_dashboard()
 
     def _show_delete_cache(self):

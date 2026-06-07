@@ -10,10 +10,9 @@ Interception strategy:
      into each Roblox version's ssl/cacert.pem.
   3. On stop, remove our hosts entries and stop the server.
 
-Admin requirement:
-  Writing to %SystemRoot%\\System32\\drivers\\etc\\hosts and binding port 443
-  both require administrator privileges. Fleasion will check for elevation
-  and log an error if it is missing.
+Privilege requirement:
+  Windows runs the proxy elevated. On macOS, a small root LaunchDaemon owns
+  port 443 and hosts-file writes while this proxy and the GUI stay unprivileged.
 
 VPN compatibility:
   Loopback (127.0.0.1) traffic is never routed through VPN adapters.
@@ -49,6 +48,7 @@ except ImportError:  # pragma: no cover - Windows-only module
 
 from ..utils import (
     LOCAL_APPDATA,
+    MACOS_PROXY_BACKEND_PORT,
     PROXY_CA_DIR,
     PROXY_PORT,
     ROBLOX_PROCESS,
@@ -77,22 +77,30 @@ from .upstream import HttpProxyConfig, Socks5ProxyConfig, UpstreamEndpoint, Upst
 from .windows_proxy import WindowsProxyInfo, detect_windows_proxy, detected_http_proxy
 from ..cache.cache_manager import CacheManager
 from ..utils.certs import generate_ca, generate_host_cert, generate_multi_host_cert, get_ca_pem
-from ..utils.roblox_dirs import load_saved_roblox_dirs
+from ..utils.roblox_dirs import load_saved_roblox_dirs, save_saved_roblox_dirs
 from ..utils.windows import get_roblox_player_exe_path, get_roblox_studio_exe_path, launch_as_standard_user
 
 logger = logging.getLogger(__name__)
 
-HOSTS_FILE = Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32' / 'drivers' / 'etc' / 'hosts'
+IS_WINDOWS = sys.platform == 'win32'
+IS_MACOS = sys.platform == 'darwin'
+
+if IS_MACOS:
+    HOSTS_FILE = Path('/etc/hosts')
+    _PLATFORM_TEMP_DIR = Path(tempfile.gettempdir())
+else:
+    HOSTS_FILE = Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32' / 'drivers' / 'etc' / 'hosts'
+    _PLATFORM_TEMP_DIR = Path(os.environ.get('TEMP', r'C:\Windows\Temp'))
 _HOSTS_MARKER = '# Fleasion proxy entry'
 
 # Registry key used by Windows to replace files on next reboot
 _PENDING_RENAME_KEY   = r'SYSTEM\CurrentControlSet\Control\Session Manager'
 _PENDING_RENAME_VALUE = 'PendingFileRenameOperations'
 # Temp file that will replace the hosts file on next boot after a crash
-_TEMP_CLEAN_HOSTS = Path(os.environ.get('TEMP', r'C:\Windows\Temp')) / 'fleasion_hosts_restore.txt'
+_TEMP_CLEAN_HOSTS = _PLATFORM_TEMP_DIR / 'fleasion_hosts_restore.txt'
 # Tracks which elevated Fleasion PID currently owns the proxy/hosts/watchdog.
 # Other instances check this on startup to avoid disturbing a live proxy.
-_PROXY_OWNER_PID_FILE = Path(os.environ.get('TEMP', r'C:\Windows\Temp')) / 'fleasion_proxy_owner.pid'
+_PROXY_OWNER_PID_FILE = _PLATFORM_TEMP_DIR / 'fleasion_proxy_owner.pid'
 
 # ---------------------------------------------------------------------------
 # Task-Scheduler watchdog (force-kill guard)
@@ -114,7 +122,7 @@ _WATCHDOG_TASK_NAME = 'Fleasion-HostsWatchdog'
 _WATCHDOG_LOOKAHEAD = 30  # seconds ahead the task is scheduled
 _WATCHDOG_INTERVAL  = 10  # seconds between watchdog refreshes
 _WATCHDOG_SCHTASKS_TIMEOUT = 20
-_WATCHDOG_TASK_XML  = Path(os.environ.get('TEMP', r'C:\Windows\Temp')) / 'fleasion_watchdog_task.xml'
+_WATCHDOG_TASK_XML  = _PLATFORM_TEMP_DIR / 'fleasion_watchdog_task.xml'
 _SCHTASKS_EXE = str(Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32' / 'schtasks.exe')
 _CERTUTIL_EXE = str(Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32' / 'certutil.exe')
 
@@ -186,6 +194,8 @@ def _build_watchdog_xml(run_at: datetime) -> str:
 
 def _upsert_watchdog_task() -> None:
     """Create (or replace) the watchdog task to fire _WATCHDOG_LOOKAHEAD seconds from now."""
+    if not IS_WINDOWS:
+        return
     try:
         run_at = datetime.now() + timedelta(seconds=_WATCHDOG_LOOKAHEAD)
         xml = _build_watchdog_xml(run_at)
@@ -216,6 +226,8 @@ def _upsert_watchdog_task() -> None:
 
 def _delete_watchdog_task() -> None:
     """Delete the watchdog task if it exists.  Safe to call even if absent."""
+    if not IS_WINDOWS:
+        return
     try:
         result = subprocess.run(
             [_SCHTASKS_EXE, '/delete', '/TN', _WATCHDOG_TASK_NAME, '/F'],
@@ -473,7 +485,30 @@ def _first_endpoint_ips(real_endpoints: dict[str, list[UpstreamEndpoint]]) -> di
     }
 
 
-def _log_windows_proxy_info(info: WindowsProxyInfo, system_proxy: Optional[HttpProxyConfig]) -> None:
+def _log_system_proxy_info(info: WindowsProxyInfo, system_proxy: Optional[HttpProxyConfig]) -> None:
+    if IS_MACOS:
+        http_enabled = 'yes' if info.macos_http_enabled else 'no'
+        https_enabled = 'yes' if info.macos_https_enabled else 'no'
+        log_buffer.log(
+            'ProxyDiag',
+            f'macOS HTTP proxy enabled: {http_enabled} server={info.macos_http_proxy_server or "none"}',
+        )
+        log_buffer.log(
+            'ProxyDiag',
+            f'macOS HTTPS proxy enabled: {https_enabled} server={info.macos_https_proxy_server or "none"}',
+        )
+        if info.macos_auto_config_url:
+            log_buffer.log(
+                'ProxyDiag',
+                f'PAC detected: {info.macos_auto_config_url} unsupported for automatic upstream mode',
+            )
+        if system_proxy is not None:
+            log_buffer.log(
+                'ProxyDiag',
+                f'System HTTP CONNECT candidate: {system_proxy.host}:{system_proxy.port}',
+            )
+        return
+
     wininet_enabled = 'yes' if info.wininet_enabled else 'no'
     log_buffer.log(
         'ProxyDiag',
@@ -570,7 +605,7 @@ async def _run_tls_self_test(hosts: set[str], ca_cert_path: Path, port: int) -> 
 
 
 def _flush_dns() -> None:
-    """Flush Windows DNS client cache so the hosts file changes take effect immediately.
+    """Flush the OS DNS cache so hosts-file changes take effect immediately.
 
     Calls ``DnsFlushResolverCache`` in *dnsapi.dll* directly via ctypes first.
     This is an in-process call — no subprocess is spawned — so security software
@@ -578,6 +613,22 @@ def _flush_dns() -> None:
     cannot interfere with it.  Falls back to ``ipconfig /flushdns`` only if the
     DLL call itself raises an exception (e.g. on a non-Windows build environment).
     """
+    if IS_MACOS:
+        if not _is_admin():
+            # The privileged macOS helper flushes DNS as part of every hosts
+            # apply/clear operation. Avoid a failing killall attempt here.
+            return
+        flushed = False
+        for cmd in (['dscacheutil', '-flushcache'], ['killall', '-HUP', 'mDNSResponder']):
+            try:
+                subprocess.run(cmd, capture_output=True, timeout=5)
+                flushed = True
+            except Exception as exc:
+                log_buffer.log('Hosts', f'DNS flush command failed ({cmd[0]}): {exc}')
+        if flushed:
+            log_buffer.log('Hosts', 'DNS cache flushed')
+        return
+
     # Primary: in-process DLL call — fast, no subprocess, immune to AV process blocks.
     try:
         ctypes.windll.LoadLibrary('dnsapi.dll').DnsFlushResolverCache()
@@ -605,6 +656,13 @@ def _flush_dns() -> None:
 
 def _pid_is_alive(pid: int) -> bool:
     """Return True if the process with *pid* is still running."""
+    if not IS_WINDOWS:
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
     STILL_ACTIVE = 259
     handle = ctypes.windll.kernel32.OpenProcess(
@@ -645,6 +703,8 @@ def _schedule_hosts_cleanup_on_reboot() -> None:
     before stop() can remove our hosts entries, they will be cleaned on the
     next reboot automatically — even before any user process starts.
     """
+    if not IS_WINDOWS:
+        return
     try:
         # Build a clean copy of the current hosts file (strip Fleasion lines)
         try:
@@ -700,6 +760,8 @@ def _cancel_hosts_cleanup_on_reboot() -> None:
     Called after a successful stop() so the boot-time cleanup does not run
     unnecessarily and cannot interfere with a subsequent Fleasion session.
     """
+    if not IS_WINDOWS:
+        return
     try:
         src = _nt_path(_TEMP_CLEAN_HOSTS)
         with winreg.OpenKey(
@@ -749,6 +811,8 @@ def _cancel_hosts_cleanup_on_reboot() -> None:
 # ---------------------------------------------------------------------------
 
 def _is_admin() -> bool:
+    if IS_MACOS:
+        return hasattr(os, 'geteuid') and os.geteuid() == 0
     try:
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
     except Exception:
@@ -925,9 +989,43 @@ def _list_port_listeners_netstat(port: int) -> list[dict]:
 
 def _list_port_listeners(port: int) -> list[dict]:
     """Return unique listener records for a TCP port."""
-    listeners = _list_port_listeners_powershell(port)
-    if not listeners:
-        listeners = _list_port_listeners_netstat(port)
+    if IS_MACOS:
+        try:
+            result = subprocess.run(
+                ['lsof', '-nP', f'-iTCP:{port}', '-sTCP:LISTEN'],
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                timeout=6,
+            )
+        except Exception:
+            result = None
+
+        listeners: list[dict] = []
+        if result is not None and result.returncode == 0:
+            for raw_line in result.stdout.splitlines()[1:]:
+                parts = raw_line.split()
+                if len(parts) < 9:
+                    continue
+                try:
+                    pid = int(parts[1])
+                except ValueError:
+                    continue
+                local_address = parts[8].rsplit('->', 1)[0]
+                if ':' in local_address:
+                    local_address = local_address.rsplit(':', 1)[0]
+                listeners.append(
+                    {
+                        'pid': pid,
+                        'process_name': parts[0],
+                        'local_address': local_address or '0.0.0.0',
+                    }
+                )
+    else:
+        listeners = _list_port_listeners_powershell(port)
+        if not listeners:
+            listeners = _list_port_listeners_netstat(port)
 
     unique: list[dict] = []
     seen: set[tuple[int, str, str]] = set()
@@ -1145,6 +1243,16 @@ def _add_hosts_entries(hosts: Set[str], error_details: Optional[dict] = None) ->
     If *error_details* is provided and a write fails with PermissionError,
     it is populated with metadata for user-facing error notifications.
     """
+    if IS_MACOS and not _is_admin():
+        from ..utils.macos_proxy_helper import helper_apply_hosts
+
+        if helper_apply_hosts(set(hosts)):
+            for host in sorted(hosts):
+                log_buffer.log('Hosts', f'Added redirect through macOS helper: {host} -> 127.0.0.1')
+            return True
+        _record_hosts_error(error_details, 'macOS proxy helper failed to apply hosts entries')
+        return False
+
     try:
         existing = HOSTS_FILE.read_text(encoding='utf-8', errors='replace')
     except FileNotFoundError:
@@ -1225,6 +1333,15 @@ def _remove_hosts_entries(hosts: Set[str], error_details: Optional[dict] = None)
     absent).  Returns False if the write failed — callers must NOT cancel the
     reboot guard in that case, so the next boot still cleans up automatically.
     """
+    if IS_MACOS and not _is_admin():
+        from ..utils.macos_proxy_helper import helper_clear_hosts
+
+        if helper_clear_hosts():
+            log_buffer.log('Hosts', 'Removed proxy hosts entries through macOS helper')
+            return True
+        _record_hosts_error(error_details, 'macOS proxy helper failed to clear hosts entries')
+        return False
+
     def _record_error(exc: OSError) -> None:
         if error_details is None:
             return
@@ -1281,6 +1398,27 @@ def _find_roblox_dirs() -> list:
       6. Active Studio   — HKCU\\...\\roblox-studio\\open\\command (Default)
       7. Running Process — currently running RobloxPlayerBeta/RobloxStudioBeta path
     """
+    if IS_MACOS:
+        from ..utils.platform_macos import find_roblox_resource_dirs
+
+        found: list[Path] = []
+        seen: set[str] = set()
+
+        def _add_macos(path: Path) -> bool:
+            key = str(path.resolve()).lower()
+            if key in seen:
+                return False
+            seen.add(key)
+            found.append(path)
+            return True
+
+        for roblox_dir in find_roblox_resource_dirs(include_studio=True):
+            _add_macos(roblox_dir)
+        for cached_dir in load_saved_roblox_dirs():
+            _add_macos(cached_dir)
+        save_saved_roblox_dirs(found)
+        return found
+
     import winreg
 
     found: list = []
@@ -1842,6 +1980,56 @@ def _install_ca_into_windows_root(ca_cert_path: Path, ca_pem: str) -> None:
     log_buffer.log('Certificate', f'Failed to install CA into Windows Root store: {err or result.returncode}')
 
 
+def _install_ca_into_macos_system_keychain(ca_cert_path: Path, ca_pem: str) -> None:
+    """Trust Fleasion's CA in the macOS system keychain for local TLS clients."""
+    thumbprint = _ca_thumbprint_sha1(ca_pem).lower()
+    keychain = '/Library/Keychains/System.keychain'
+
+    try:
+        result = subprocess.run(
+            ['security', 'find-certificate', '-a', '-Z', '-c', 'Fleasion Proxy CA', keychain],
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            timeout=10,
+        )
+        if result.returncode == 0 and thumbprint in (result.stdout or '').replace(' ', '').lower():
+            log_buffer.log('Certificate', 'CA already trusted in macOS System keychain')
+            return
+    except Exception as exc:
+        log_buffer.log('Certificate', f'macOS trust-store check failed: {exc}')
+
+    try:
+        result = subprocess.run(
+            [
+                'security',
+                'add-trusted-cert',
+                '-d',
+                '-r',
+                'trustRoot',
+                '-k',
+                keychain,
+                str(ca_cert_path),
+            ],
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            timeout=20,
+        )
+    except Exception as exc:
+        log_buffer.log('Certificate', f'Failed to install CA into macOS System keychain: {exc}')
+        return
+
+    if result.returncode == 0:
+        log_buffer.log('Certificate', 'Installed CA into macOS System keychain')
+        return
+
+    err = (result.stderr or result.stdout or '').strip()
+    log_buffer.log('Certificate', f'Failed to install CA into macOS System keychain: {err or result.returncode}')
+
+
 def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
     """Check if the currently running Roblox instance has our CA in its cacert.pem.
 
@@ -1857,7 +2045,12 @@ def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
         return False  # CA not generated yet – nothing to patch
 
     ca_pem = get_ca_pem(ca_cert_path)
-    roblox_dir = exe_path.parent
+    if IS_MACOS:
+        from ..utils.platform_macos import _resource_root_from_executable
+
+        roblox_dir = _resource_root_from_executable(exe_path) or exe_path.parent
+    else:
+        roblox_dir = exe_path.parent
     ssl_dir = roblox_dir / 'ssl'
     ca_file = ssl_dir / 'cacert.pem'
 
@@ -1961,6 +2154,10 @@ class ProxyMaster:
     def _effective_wire_preserving_passthrough(self) -> bool:
         if self._proxy_debug_enabled() and self._proxy_debug_mode() == 'd':
             return True
+        if IS_MACOS:
+            # Rebuilding otherwise-unmodified gamejoin requests has caused Roblox
+            # to reject the request with HTTP 529 on macOS.
+            return True
         return self.config_manager.wire_preserving_passthrough
 
     def register_module_interceptor(self, module) -> None:
@@ -2057,13 +2254,19 @@ class ProxyMaster:
             log_buffer.log('Error', f'Failed to dispatch proxy startup error callback: {exc}')
 
     def _start_watchdog(self) -> None:
-        """Start the background thread that keeps the watchdog task pushed ahead."""
+        """Start the platform crash guard/heartbeat thread."""
         self._watchdog_stop = threading.Event()
         stop_event = self._watchdog_stop
 
         def _loop() -> None:
             while not stop_event.wait(_WATCHDOG_INTERVAL):
-                _upsert_watchdog_task()
+                if IS_MACOS:
+                    from ..utils.macos_proxy_helper import helper_heartbeat
+
+                    if not helper_heartbeat():
+                        log_buffer.log('ProxyHelper', 'macOS proxy helper heartbeat failed')
+                else:
+                    _upsert_watchdog_task()
 
         self._watchdog_thread = threading.Thread(
             target=_loop, daemon=True, name='fleasion-watchdog'
@@ -2166,7 +2369,13 @@ class ProxyMaster:
 
         exe_path = Path(exe_path)
         ca_pem = get_ca_pem(ca_cert_path)
-        ca_file = exe_path.parent / 'ssl' / 'cacert.pem'
+        if IS_MACOS:
+            from ..utils.platform_macos import _resource_root_from_executable
+
+            roblox_dir = _resource_root_from_executable(exe_path) or exe_path.parent
+        else:
+            roblox_dir = exe_path.parent
+        ca_file = roblox_dir / 'ssl' / 'cacert.pem'
 
         if not self._cert_refresh_lock.acquire(blocking=False):
             log_buffer.log('Certificate', f'Roblox launch CA refresh already in progress for {exe_path.parent.name}; skipping duplicate trigger')
@@ -2288,8 +2497,16 @@ class ProxyMaster:
         self._running = True
         self._loop = asyncio.get_running_loop()
 
-        # ── Admin check ───────────────────────────────────────────────────
-        if not _is_admin():
+        # ── Privileged proxy endpoint check ───────────────────────────────
+        if IS_MACOS:
+            from ..utils.macos_proxy_helper import helper_is_ready
+
+            if not helper_is_ready():
+                log_buffer.log('Error', 'The macOS proxy helper is not installed or not running')
+                self._emit_proxy_start_error('macos_helper_unavailable', {})
+                self._running = False
+                return
+        elif not _is_admin():
             log_buffer.log('Error', (
                 'Fleasion requires administrator privileges to modify the hosts file '
                 'and bind port 443.  Please run as Administrator.'
@@ -2352,7 +2569,8 @@ class ProxyMaster:
         # Install CA into Roblox ssl dirs
         ca_pem = get_ca_pem(ca_cert_path)
         _install_ca_into_roblox(ca_pem)
-        _install_ca_into_windows_root(ca_cert_path, ca_pem)
+        if IS_WINDOWS:
+            _install_ca_into_windows_root(ca_cert_path, ca_pem)
 
         # ── Clean up stale state from a previous crash ───────────────────
         # Skip cleanup entirely if another elevated Fleasion instance already
@@ -2370,7 +2588,7 @@ class ProxyMaster:
                     'Failed to remove stale proxy hosts entries — real CDN IPs '
                     'cannot be resolved safely.  Aborting proxy start. '
                     'If the problem persists, manually remove "# Fleasion proxy entry" '
-                    'lines from %SystemRoot%\\System32\\drivers\\etc\\hosts and restart.')
+                    f'lines from {HOSTS_FILE} and restart.')
                 if stale_hosts_error_details.get('notify_user'):
                     self._emit_proxy_start_error('hosts_write_exhausted', stale_hosts_error_details)
                 self._running = False
@@ -2394,7 +2612,7 @@ class ProxyMaster:
 
         windows_proxy_info = detect_windows_proxy()
         system_http_proxy = detected_http_proxy(windows_proxy_info)
-        _log_windows_proxy_info(windows_proxy_info, system_http_proxy)
+        _log_system_proxy_info(windows_proxy_info, system_http_proxy)
         manual_http_proxy = _manual_http_proxy_from_settings(self.config_manager)
         manual_socks5_proxy = _manual_socks5_proxy_from_settings(self.config_manager)
 
@@ -2415,13 +2633,14 @@ class ProxyMaster:
             pass
 
         # ── Start TLS proxy server ────────────────────────────────────────
+        listen_port = MACOS_PROXY_BACKEND_PORT if IS_MACOS else PROXY_PORT
         self._proxy = FleasionProxy(
             texture_stripper=self._texture_stripper,
             cache_scraper=self.cache_scraper,
             host_certs=host_certs,
             upstream_endpoints=real_endpoints,
             default_cert=default_cert,
-            port=PROXY_PORT,
+            port=listen_port,
             upstream_mode=self._effective_upstream_mode(),
             system_http_proxy=system_http_proxy,
             manual_http_proxy=manual_http_proxy,
@@ -2443,23 +2662,22 @@ class ProxyMaster:
                 or 'access' in err_text
                 or 'address already in use' in err_text
                 or 'only one usage of each socket address' in err_text
-                or (str(PROXY_PORT) in err_text and 'bind' in err_text)
+                or (str(listen_port) in err_text and 'bind' in err_text)
             ):
-                owners = _list_port_listeners(PROXY_PORT)
+                owners = _list_port_listeners(listen_port)
                 log_buffer.log('Error', (
-                    f'Cannot bind port {PROXY_PORT}: another process is already listening. '
-                    'Ensure no other process is using this port and run as Administrator.'
+                    f'Cannot bind local proxy backend port {listen_port}: another process is already listening.'
                 ))
                 if owners:
                     owners_summary = '; '.join(
-                        f"{owner['process_name']} (PID {owner['pid']}) on {owner['local_address']}:{PROXY_PORT}"
+                        f"{owner['process_name']} (PID {owner['pid']}) on {owner['local_address']}:{listen_port}"
                         for owner in owners
                     )
-                    log_buffer.log('Error', f'Port {PROXY_PORT} listeners: {owners_summary}')
+                    log_buffer.log('Error', f'Port {listen_port} listeners: {owners_summary}')
                 self._emit_proxy_start_error(
                     'port_bind_failed',
                     {
-                        'port': PROXY_PORT,
+                        'port': listen_port,
                         'owners': owners,
                     },
                 )
@@ -2476,7 +2694,12 @@ class ProxyMaster:
         # Probe every intercepted host with SNI plus one no-SNI connection before
         # the hosts file points Roblox at us. This catches certificate/SNI failures
         # that otherwise happen before normal request logs exist.
-        if not await _run_tls_self_test(set(INTERCEPT_HOSTS), ca_cert_path, PROXY_PORT):
+        if not await _run_tls_self_test(set(INTERCEPT_HOSTS), ca_cert_path, listen_port):
+            await self._proxy.stop()
+            self._running = False
+            return
+        if IS_MACOS and not await _run_tls_self_test(set(INTERCEPT_HOSTS), ca_cert_path, PROXY_PORT):
+            log_buffer.log('ProxyHelper', 'Privileged port-443 relay TLS self-test failed')
             await self._proxy.stop()
             self._running = False
             return
@@ -2511,6 +2734,8 @@ class ProxyMaster:
         log_buffer.log('Info', 'Fleasion Proxy Active')
         log_buffer.log('Info', f'Intercepting: {", ".join(sorted(active_hosts))}')
         log_buffer.log('Info', f'Port: {PROXY_PORT}')
+        if IS_MACOS:
+            log_buffer.log('Info', f'Unprivileged backend port: {listen_port}')
         log_buffer.log('Info', 'Launch Roblox')
         log_buffer.log('Info', '=' * 50)
 

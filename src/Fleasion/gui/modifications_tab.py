@@ -33,6 +33,7 @@ from PyQt6.QtWidgets import (
 from ..modifications.manager import ModificationManager
 from ..utils import format_count, log_buffer, open_folder
 from ..utils.threading import run_in_thread
+from .file_drop import FileDropLineEdit
 
 # ---------------------------------------------------------------------------
 # Built-in entry definitions
@@ -419,7 +420,7 @@ class ModRowWidget(QWidget):
         layout.addWidget(self._status_label)
 
         # Source text field (expands to fill remaining row space)
-        self._source_edit = QLineEdit()
+        self._source_edit = FileDropLineEdit()
         self._source_edit.setPlaceholderText('ID, URL (http://...), path (C:\\...), or "remove" to remove')
         self._source_edit.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
@@ -493,11 +494,12 @@ class ModRowWidget(QWidget):
 
     def _check_for_orphaned_stash(self):
         """Show a warning if a stash file exists but Fleasion has no active record."""
-        from ..modifications.manager import MOD_ORIGINALS_DIR
+        from ..modifications.manager import MOD_ORIGINALS_DIR, normalise_target_path
         roblox_dirs = self._manager.roblox_dirs
         if not roblox_dirs:
             return
-        stash = MOD_ORIGINALS_DIR / roblox_dirs[0].name / self._target_path
+        target_path = normalise_target_path(self._target_path)
+        stash = MOD_ORIGINALS_DIR / roblox_dirs[0].name / target_path
         if stash.is_file():
             self._update_status('orphaned_stash')
             self._status_label.setToolTip(
@@ -901,14 +903,15 @@ class ModPreviewDialog(QDialog):
 
     def _load_data(self, mode: str) -> bytes | None:
         """Load file bytes for preview. mode='mod' or 'original'."""
-        from ..modifications.manager import MOD_ORIGINALS_DIR
+        from ..modifications.manager import MOD_ORIGINALS_DIR, normalise_target_path
         if not self._manager.roblox_dirs:
             return None
         roblox_dir = self._manager.roblox_dirs[0]
+        target_path = normalise_target_path(self._target_path)
 
         if mode == 'original':
             # Try stash first
-            stash = MOD_ORIGINALS_DIR / roblox_dir.name / self._target_path
+            stash = MOD_ORIGINALS_DIR / roblox_dir.name / target_path
             if stash.is_file():
                 return stash.read_bytes()
             mod_active = any(
@@ -917,11 +920,11 @@ class ModPreviewDialog(QDialog):
             )
             if mod_active:
                 return None
-            dst = roblox_dir / self._target_path
+            dst = roblox_dir / target_path
             return dst.read_bytes() if dst.is_file() else None
 
         # mode == 'mod' — read the current (modified) file from Roblox dir
-        dst = roblox_dir / self._target_path
+        dst = roblox_dir / target_path
         return dst.read_bytes() if dst.is_file() else None
 
     def _on_export(self):
@@ -1757,7 +1760,7 @@ class _CustomModDialog(QDialog):
         # Target path
         row2 = QHBoxLayout()
         row2.addWidget(QLabel('Target path:'))
-        self._target_edit = QLineEdit()
+        self._target_edit = FileDropLineEdit()
         self._target_edit.setPlaceholderText(r'content\sounds\oof.ogg')
         row2.addWidget(self._target_edit)
         self._browse_roblox_btn = QPushButton('Browse Roblox Dir\u2026')
@@ -1768,7 +1771,7 @@ class _CustomModDialog(QDialog):
         # Source
         row3 = QHBoxLayout()
         row3.addWidget(QLabel('Source:'))
-        self._source_edit = QLineEdit()
+        self._source_edit = FileDropLineEdit()
         self._source_edit.setPlaceholderText('ID, URL (http://...), path (C:\\...), or "remove" to remove')
         row3.addWidget(self._source_edit)
         browse_btn = QPushButton('Browse\u2026')

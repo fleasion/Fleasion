@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
-from ..utils import APP_NAME, get_icon_path, log_buffer, time_tracker
+from ..utils import APP_NAME, LOGS_DIR, get_icon_path, log_buffer, open_folder, time_tracker
 
 
 class LogsWindow(QDialog):
@@ -56,6 +56,13 @@ class LogsWindow(QDialog):
         copy_btn.setFixedSize(80, 22)
         copy_btn.clicked.connect(self._copy_all)
         bottom.addWidget(copy_btn)
+
+        bottom.addSpacing(6)
+
+        open_folder_btn = QPushButton("Open Log Folder")
+        open_folder_btn.setFixedSize(110, 22)
+        open_folder_btn.clicked.connect(lambda: open_folder(LOGS_DIR))
+        bottom.addWidget(open_folder_btn)
 
         bottom.addSpacing(6)
 

@@ -30,6 +30,7 @@ from PyQt6.QtWidgets import (
 
 from ..utils import CLOG_URL, PREJSONS_DIR, ORIGINALS_DIR, REPLACEMENTS_DIR, APP_NAME, get_icon_path
 from ..utils.http import http_get
+from .file_drop import FileDropLineEdit
 
 CUSTOM_DUMPS_DIR = PREJSONS_DIR / "custom_dumps"
 CLOG_CACHE_FILE = PREJSONS_DIR / "CLOG.json"
@@ -841,7 +842,7 @@ class PreJsonsDialog(QDialog):
 
         layout.addWidget(QLabel("Assets URL (github):"))
         assets_row = QHBoxLayout()
-        assets_edit = QLineEdit()
+        assets_edit = FileDropLineEdit()
         assets_edit.setPlaceholderText("https://raw.githubusercontent.com/.../assets.json")
         assets_row.addWidget(assets_edit)
         assets_browse = QPushButton("Browse…")
@@ -855,7 +856,7 @@ class PreJsonsDialog(QDialog):
 
         layout.addWidget(QLabel("Replacements URL (replacement):"))
         rep_row = QHBoxLayout()
-        rep_edit = QLineEdit()
+        rep_edit = FileDropLineEdit()
         rep_edit.setPlaceholderText("https://raw.githubusercontent.com/.../replacements.json")
         rep_row.addWidget(rep_edit)
         rep_browse = QPushButton("Browse…")
@@ -879,7 +880,7 @@ class PreJsonsDialog(QDialog):
         layout.addWidget(sep2)
         layout.addWidget(QLabel("OR import from URL / file:"))
 
-        url_edit = QLineEdit()
+        url_edit = FileDropLineEdit()
         url_edit.setPlaceholderText("https://raw.githubusercontent.com/.../dump.json")
         layout.addWidget(url_edit)
 

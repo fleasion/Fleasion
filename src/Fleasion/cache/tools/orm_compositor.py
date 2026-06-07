@@ -228,53 +228,11 @@ def _decode_bc_ktx2(data: bytes) -> tuple[np.ndarray, int, int]:
 
 def _write_ktx2(rgba: np.ndarray, width: int, height: int, out_path: Path) -> None:
     """Write a numpy RGBA32 array as an uncompressed VK_FORMAT_R8G8B8A8_UNORM KTX2."""
-    import ctypes
-    from .image_to_ktx2.converter import _get_ktx_dll, ktxTextureCreateInfo
-
-    dll = _get_ktx_dll()
-    if dll is None:
-        raise RuntimeError('ktx.dll not available — cannot write KTX2')
+    from .rgba_ktx2 import write_rgba8_ktx2
 
     rgba_bytes = rgba.tobytes()  # type: ignore[union-attr]
     expected = width * height * 4
     if len(rgba_bytes) != expected:
         raise ValueError(f'RGBA buffer size mismatch: {len(rgba_bytes)} != {expected}')
 
-    info = ktxTextureCreateInfo()
-    info.glInternalformat = 0
-    info.vkFormat         = 37      # VK_FORMAT_R8G8B8A8_UNORM
-    info.pDfd             = None
-    info.baseWidth        = width
-    info.baseHeight       = height
-    info.baseDepth        = 1
-    info.numDimensions    = 2
-    info.numLevels        = 1
-    info.numLayers        = 1
-    info.numFaces         = 1
-    info.isArray          = 0
-    info.generateMipmaps  = 0
-
-    texture = ctypes.c_void_p()
-    err = dll.ktxTexture2_Create(ctypes.byref(info), 1, ctypes.byref(texture))
-    if err != 0 or not texture.value:
-        raise RuntimeError(f'ktxTexture2_Create failed (err={err})')
-
-    tex_ptr = texture.value
-    try:
-        # pData pointer is at struct offset +112 (verified for libktx 4.x 64-bit Windows).
-        pdata_ptr = ctypes.c_uint64.from_address(tex_ptr + 112).value
-        if pdata_ptr == 0:
-            raise RuntimeError('ktxTexture2 pData is NULL')
-        ctypes.memmove(
-            (ctypes.c_uint8 * expected).from_address(pdata_ptr),
-            rgba_bytes,
-            expected,
-        )
-        err = dll.ktxTexture2_WriteToNamedFile(texture, str(out_path).encode('utf-8'))
-        if err != 0:
-            raise RuntimeError(f'ktxTexture2_WriteToNamedFile failed (err={err})')
-    finally:
-        try:
-            dll.ktxTexture2_Destroy(tex_ptr)
-        except Exception:
-            pass
+    write_rgba8_ktx2(rgba_bytes, width, height, out_path)

@@ -33,12 +33,49 @@ MODIFICATIONS_JSON = CONFIG_DIR / 'modifications.json'
 MOD_ORIGINALS_DIR = CONFIG_DIR / 'ModOriginals'
 MOD_CACHE_DIR = CONFIG_DIR / 'ModCache'
 
+
+def normalise_target_path(target_path: str | Path) -> Path:
+    """Return a target path using platform path separators.
+
+    Built-in modification entries are stored with Windows-style backslashes.
+    On POSIX, pathlib treats those as literal filename characters, so normalize
+    before joining with a Roblox resource directory or stash directory.
+    """
+    text = str(target_path or '').strip()
+    if not text:
+        return Path()
+    text = text.replace('\\', '/')
+    path = Path(text)
+    if path.is_absolute():
+        return path
+    return Path(*[part for part in text.split('/') if part and part != '.'])
+
 # ---------------------------------------------------------------------------
 # Roblox directory discovery  (mirrors proxy/master.py::_find_roblox_dirs)
 # ---------------------------------------------------------------------------
 
 def _find_roblox_dirs() -> list[Path]:
-    """Locate every RobloxPlayerBeta.exe installation directory."""
+    """Locate Roblox resource directories that can receive file modifications."""
+    if sys.platform == 'darwin':
+        from ..utils.platform_macos import find_roblox_resource_dirs
+
+        found: list[Path] = []
+        seen: set[str] = set()
+
+        def _add(path: Path) -> None:
+            key = str(path.resolve()).lower()
+            if key in seen:
+                return
+            seen.add(key)
+            found.append(path)
+
+        for roblox_dir in find_roblox_resource_dirs(include_studio=False):
+            _add(roblox_dir)
+        for cached_dir in load_saved_roblox_dirs():
+            _add(cached_dir)
+        save_saved_roblox_dirs(found)
+        return found
+
     import winreg
 
     found: list[Path] = []
@@ -174,7 +211,7 @@ def _find_roblox_dirs() -> list[Path]:
     for d in _scan_for_exe(local_versions, 1):
         _add(d)
 
-    # 6. Live running RobloxPlayerBeta.exe install directory
+    # 6. Live running Roblox Player install directory
     running_player = get_roblox_player_exe_path()
     if running_player is not None:
         _add(running_player.parent)
@@ -621,8 +658,9 @@ class ModificationManager(QObject):
         """Stash the original file and write the mod in every Roblox dir."""
         with self._fs_lock:
             for roblox_dir in self._roblox_dirs:
-                dst = roblox_dir / target_path_rel
-                stash = self._stash_dir / roblox_dir.name / target_path_rel
+                target_path = normalise_target_path(target_path_rel)
+                dst = roblox_dir / target_path
+                stash = self._stash_dir / roblox_dir.name / target_path
                 marker = stash.with_name(stash.name + self._NEW_FILE_MARKER_SUFFIX)
 
                 # Stash original ONCE (idempotent)
@@ -653,8 +691,9 @@ class ModificationManager(QObject):
 
         with self._fs_lock:
             for roblox_dir in self._roblox_dirs:
-                dst = roblox_dir / target
-                stash = self._stash_dir / roblox_dir.name / target
+                target_path = normalise_target_path(target)
+                dst = roblox_dir / target_path
+                stash = self._stash_dir / roblox_dir.name / target_path
                 marker = stash.with_name(stash.name + self._NEW_FILE_MARKER_SUFFIX)
                 if stash.exists():
                     shutil.copy2(stash, dst)
@@ -679,8 +718,9 @@ class ModificationManager(QObject):
         with self._fs_lock:
             restored = False
             for roblox_dir in self._roblox_dirs:
-                dst = roblox_dir / target_path
-                stash = self._stash_dir / roblox_dir.name / target_path
+                target_rel = normalise_target_path(target_path)
+                dst = roblox_dir / target_rel
+                stash = self._stash_dir / roblox_dir.name / target_rel
                 marker = stash.with_name(stash.name + self._NEW_FILE_MARKER_SUFFIX)
                 if stash.exists():
                     dst.parent.mkdir(parents=True, exist_ok=True)

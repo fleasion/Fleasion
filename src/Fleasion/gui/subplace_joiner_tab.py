@@ -13,8 +13,8 @@ from urllib.parse import urlparse, quote
 import requests
 import urllib3
 from dateutil import parser as _dateutil_parser
-from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal
-from PyQt6.QtGui import QPalette, QImage, QPixmap
+from PyQt6.QtCore import Qt, QTimer, QObject, QUrl, pyqtSignal
+from PyQt6.QtGui import QDesktopServices, QPalette, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -1165,8 +1165,8 @@ class SubplaceJoinerTab(QWidget):
 
             if pid is not None:
                 card.on_join(lambda _, c=card, place_id=pid, root_id=root: self._join_place(place_id, root_id, job_id=c.job_id_edit.get_job_id()))
-                card.on_open(lambda _, pid_val=pid: os.startfile(
-                    f"https://www.roblox.com/games/{pid_val}"))
+                card.on_open(lambda _, pid_val=pid: QDesktopServices.openUrl(
+                    QUrl(f"https://www.roblox.com/games/{pid_val}")))
                 card.on_fetch_jobs(lambda _, pid_val=pid, c=card: self._open_job_ids(pid_val, c))
             else:
                 card.join_btn.setEnabled(False)

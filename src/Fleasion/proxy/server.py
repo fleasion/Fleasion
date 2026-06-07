@@ -627,7 +627,7 @@ class FleasionProxy:
         if self._upstream_mode == UpstreamMode.SYSTEM_PROXY:
             return self._system_http_connector or UnavailableConnector(
                 'system_http_connect',
-                'no Windows system HTTP proxy detected',
+                'no system HTTP proxy detected',
             )
         if self._upstream_mode == UpstreamMode.HTTP_CONNECT:
             return self._manual_http_connector or UnavailableConnector(

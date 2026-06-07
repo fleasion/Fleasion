@@ -19,6 +19,10 @@ from .paths import (
     DEFAULT_SETTINGS,
     ICON_FILENAME,
     LOCAL_APPDATA,
+    LOG_FILE,
+    LOGS_DIR,
+    MACOS_PROXY_BACKEND_PORT,
+    MACOS_PROXY_HELPER_CONTROL_PORT,
     MOD_CACHE_DIR,
     MOD_ORIGINALS_DIR,
     MODIFICATIONS_JSON,
@@ -33,10 +37,10 @@ from .paths import (
     STORAGE_DB,
     STORAGE_DB_GDK,
     STRIPPABLE_ASSET_TYPES,
+    USER_HOME,
     get_icon_path,
 )
 from .threading import run_in_thread
-from .updater import start_update_check
 from .windows import (
     delete_cache,
     get_roblox_player_exe_path,
@@ -49,6 +53,12 @@ from .windows import (
     wait_for_roblox_exit,
     wait_for_roblox_window,
 )
+
+
+def start_update_check(*args, **kwargs):
+    from .updater import start_update_check as _start_update_check
+
+    return _start_update_check(*args, **kwargs)
 
 __all__ = [
     'APP_AUTHOR',
@@ -66,6 +76,10 @@ __all__ = [
     'DEFAULT_SETTINGS',
     'ICON_FILENAME',
     'LOCAL_APPDATA',
+    'LOG_FILE',
+    'LOGS_DIR',
+    'MACOS_PROXY_BACKEND_PORT',
+    'MACOS_PROXY_HELPER_CONTROL_PORT',
     'MOD_CACHE_DIR',
     'MOD_ORIGINALS_DIR',
     'MODIFICATIONS_JSON',
@@ -80,6 +94,7 @@ __all__ = [
     'STORAGE_DB',
     'STORAGE_DB_GDK',
     'STRIPPABLE_ASSET_TYPES',
+    'USER_HOME',
     'LogBuffer',
     'TimeTracker',
     'time_tracker',

@@ -7,7 +7,7 @@ from Fleasion.proxy.upstream import (
     _blocking_http_connect_socket,
     _blocking_socks5_connect_socket,
 )
-from Fleasion.proxy.windows_proxy import parse_static_http_proxy
+from Fleasion.proxy.windows_proxy import _parse_scutil_proxy_output, parse_static_http_proxy
 
 
 class _OneShotServer:
@@ -132,6 +132,28 @@ class UpstreamHandshakeTests(unittest.TestCase):
         self.assertIsNotNone(proxy)
         self.assertEqual(proxy.host, "127.0.0.1")
         self.assertEqual(proxy.port, 8888)
+
+    def test_macos_scutil_proxy_parsing_prefers_static_values(self):
+        http_enabled, http_proxy, https_enabled, https_proxy, auto_url = _parse_scutil_proxy_output(
+            """
+            <dictionary> {
+              HTTPEnable : 1
+              HTTPProxy : proxy.local
+              HTTPPort : 8080
+              HTTPSEnable : 1
+              HTTPSProxy : secure-proxy.local
+              HTTPSPort : 8443
+              ProxyAutoConfigEnable : 1
+              ProxyAutoConfigURLString : https://proxy.local/proxy.pac
+            }
+            """
+        )
+
+        self.assertTrue(http_enabled)
+        self.assertEqual(http_proxy, "proxy.local:8080")
+        self.assertTrue(https_enabled)
+        self.assertEqual(https_proxy, "secure-proxy.local:8443")
+        self.assertEqual(auto_url, "https://proxy.local/proxy.pac")
 
 
 if __name__ == "__main__":

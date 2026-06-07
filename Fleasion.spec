@@ -1,21 +1,23 @@
 # -*- mode: python ; coding: utf-8 -*-
-import re, pathlib
+import re, pathlib, sys
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 _paths_src = pathlib.Path('src/Fleasion/utils/paths.py').read_text()
 _version = re.search(r"APP_VERSION\s*=\s*['\"]([^'\"]+)['\"]", _paths_src).group(1)
 
 datas = [
-    ('src\\Fleasion\\fleasionlogoHR.ico', '.'),
-    ('src\\Fleasion\\cache\\tools\\animpreview', 'tools/animpreview'),
-    ('src\\Fleasion\\modifications\\bundled\\empty.mp3', 'Fleasion/modifications/bundled'),
-    ('src\\Fleasion\\modifications\\bundled\\empty.ogg', 'Fleasion/modifications/bundled'),
-    ('src\\Fleasion\\modifications\\bundled\\empty.mesh', 'Fleasion/modifications/bundled'),
-    ('src\\Fleasion\\modifications\\bundled\\empty.tex', 'Fleasion/modifications/bundled'),
+    ('src/Fleasion/fleasionlogoHR.ico', '.'),
+    ('src/Fleasion/fleasionlogoHR.icns', '.'),
+    ('src/Fleasion/macos_proxy_helper_daemon.py', '.'),
+    ('src/Fleasion/cache/tools/animpreview', 'tools/animpreview'),
+    ('src/Fleasion/modifications/bundled/empty.mp3', 'Fleasion/modifications/bundled'),
+    ('src/Fleasion/modifications/bundled/empty.ogg', 'Fleasion/modifications/bundled'),
+    ('src/Fleasion/modifications/bundled/empty.mesh', 'Fleasion/modifications/bundled'),
+    ('src/Fleasion/modifications/bundled/empty.tex', 'Fleasion/modifications/bundled'),
 ]
-binaries = [
-    ('src\\Fleasion\\cache\\tools\\ktx_to_png\\ktx.dll', '.'),
-]
+binaries = []
+if sys.platform == 'win32':
+    binaries.append(('src/Fleasion/cache/tools/ktx_to_png/ktx.dll', '.'))
 hiddenimports = []
 
 # cryptography has Rust/C binary extensions that must be collected explicitly
@@ -48,14 +50,20 @@ hiddenimports += collect_submodules('urllib3')
 tmp_ret = collect_all('certifi')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
-# win32 extensions (pywin32) - needed for .ROBLOSECURITY cookie decryption
-hiddenimports += [
-    'win32crypt',
-    'win32api',
-    'win32con',
-    'pywintypes',
-    'winreg',
-]
+if sys.platform == 'win32':
+    # win32 extensions (pywin32) - needed for .ROBLOSECURITY cookie decryption
+    hiddenimports += [
+        'win32crypt',
+        'win32api',
+        'win32con',
+        'pywintypes',
+        'winreg',
+    ]
+elif sys.platform == 'darwin':
+    tmp_ret = collect_all('browser_cookie3')
+    datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+    tmp_ret = collect_all('Cryptodome')
+    datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 a = Analysis(
     ['launcher.py'],
@@ -65,7 +73,7 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=['pyinstaller_hooks/rthook_harden_dll_search.py'],
+    runtime_hooks=['pyinstaller_hooks/rthook_harden_dll_search.py'] if sys.platform == 'win32' else [],
     excludes=[
         'PySide6',
         'PyQt5',
@@ -83,8 +91,8 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
+    [] if sys.platform == 'darwin' else a.binaries,
+    [] if sys.platform == 'darwin' else a.datas,
     [],
     name=f'Fleasion-v{_version}',
     debug=False,
@@ -98,6 +106,7 @@ exe = EXE(
     ],
     runtime_tmpdir=None,
     console=False,          # no console window for end users
+    exclude_binaries=sys.platform == 'darwin',
     # uac_admin is intentionally NOT set here.
     # We handle elevation at runtime in app.py so the user can choose
     # read-only mode if they decline UAC, rather than being blocked entirely.
@@ -106,5 +115,35 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['src\\Fleasion\\fleasionlogoHR.ico'],
+    icon=(
+        ['src/Fleasion/fleasionlogoHR.ico']
+        if sys.platform == 'win32'
+        else ['src/Fleasion/fleasionlogoHR.icns']
+        if sys.platform == 'darwin'
+        else None
+    ),
 )
+
+if sys.platform == 'darwin':
+    coll = COLLECT(
+        exe,
+        a.binaries,
+        a.datas,
+        strip=False,
+        upx=True,
+        name='Fleasion',
+    )
+    app = BUNDLE(
+        coll,
+        name='Fleasion.app',
+        icon='src/Fleasion/fleasionlogoHR.icns',
+        bundle_identifier='com.fleasion.app',
+        info_plist={
+            'CFBundleDisplayName': 'Fleasion',
+            'CFBundleName': 'Fleasion',
+            'CFBundleShortVersionString': _version,
+            'CFBundleVersion': _version,
+            'LSUIElement': True,
+            'NSHighResolutionCapable': True,
+        },
+    )

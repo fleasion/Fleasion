@@ -4,8 +4,10 @@ import base64
 import ctypes
 import ctypes.wintypes as wintypes
 import json
+import os
 import random
 import re
+import sys
 import uuid
 import threading
 import time
@@ -46,35 +48,79 @@ except Exception:
 
 from ..utils.paths import CONFIG_DIR
 from ..utils.plural import format_count
-from ..utils.roblox_auth import ROBLOX_COOKIES_PATH, set_roblosecurity
+from ..utils.roblox_auth import ROBLOX_COOKIES_PATH, discover_browser_roblosecurity, set_roblosecurity
 from ..utils.logging import log_buffer
 from ..utils.windows import launch_as_standard_user, resolve_roblox_player_exe_for_launch
 from .proxy_gate import ProxyGate
 
 ACCOUNTS_FILE = CONFIG_DIR / 'accounts.json'
+ACCOUNTS_KEY_FILE = CONFIG_DIR / 'accounts.key'
+IS_WINDOWS = sys.platform == 'win32'
+IS_MACOS = sys.platform == 'darwin'
 
 
 # Helpers
 
 
 def _encrypt_cookie(cookie: str) -> str:
-    """Encrypt a cookie string with DPAPI and return a base64 string for storage."""
+    """Encrypt a cookie string for storage."""
     raw = cookie.encode("utf-8")
     if win32crypt:
         enc = win32crypt.CryptProtectData(raw, None, None, None, None, 0)
         return base64.b64encode(enc).decode("ascii")
-    # Fallback: plain base64 (no encryption available)
+    if IS_MACOS:
+        cipher = _get_macos_cookie_cipher()
+        if cipher is not None:
+            return 'fernet:' + cipher.encrypt(raw).decode('ascii')
+    # Legacy fallback: plain base64 (kept for old configs and unsupported platforms).
     return base64.b64encode(raw).decode("ascii")
 
 
 def _decrypt_cookie(enc_b64: str) -> str | None:
     """Decrypt a stored cookie string. Returns plain cookie or None on failure."""
     try:
+        if enc_b64.startswith('fernet:'):
+            cipher = _get_macos_cookie_cipher(create=False)
+            if cipher is None:
+                return None
+            return cipher.decrypt(enc_b64[len('fernet:'):].encode('ascii')).decode('utf-8')
         enc = base64.b64decode(enc_b64)
         if win32crypt:
             return win32crypt.CryptUnprotectData(enc, None, None, None, 0)[1].decode("utf-8")
         return enc.decode("utf-8")
     except Exception:
+        return None
+
+
+def _get_macos_cookie_cipher(create: bool = True):
+    if not IS_MACOS:
+        return None
+    try:
+        from cryptography.fernet import Fernet
+    except Exception as exc:
+        log_buffer.log("accounts", f"macOS cookie encryption unavailable: {exc}")
+        return None
+
+    try:
+        key_path = ACCOUNTS_KEY_FILE
+        if not key_path.exists():
+            if not create:
+                return None
+            key_path.parent.mkdir(parents=True, exist_ok=True)
+            key = Fernet.generate_key()
+            flags = getattr(os, 'O_WRONLY', 1) | getattr(os, 'O_CREAT', 64) | getattr(os, 'O_EXCL', 128)
+            fd = os.open(key_path, flags, 0o600)
+            with os.fdopen(fd, 'wb') as f:
+                f.write(key)
+        else:
+            key = key_path.read_bytes().strip()
+        try:
+            os.chmod(key_path, 0o600)
+        except OSError:
+            pass
+        return Fernet(key)
+    except Exception as exc:
+        log_buffer.log("accounts", f"macOS cookie encryption failed: {exc}")
         return None
 
 
@@ -456,7 +502,7 @@ class RandoStuffTab(QWidget):
         self._setup_ui()
         self._push_username_spoofer_runtime_state()
         if self._config is not None:
-            enabled = self._config.multi_instance_launching
+            enabled = bool(self._config.multi_instance_launching) and IS_WINDOWS
             self._multi_chk.blockSignals(True)
             self._multi_chk.setChecked(enabled)
             self._multi_chk.blockSignals(False)
@@ -725,6 +771,10 @@ class RandoStuffTab(QWidget):
         mi_group = QGroupBox("Multi-Instance")
         mil = QVBoxLayout(mi_group)
         self._multi_chk = QCheckBox("Enable Multi-Instance launching")
+        if not IS_WINDOWS:
+            self._multi_chk.setChecked(False)
+            self._multi_chk.setEnabled(False)
+            self._multi_chk.setToolTip('Multi-instance launching depends on a Windows Roblox singleton event.')
         mil.addWidget(self._multi_chk)
         root.addWidget(mi_group)
 
@@ -759,11 +809,15 @@ class RandoStuffTab(QWidget):
         am_btns = QHBoxLayout()
         self._add_acct_btn = QPushButton("Add Account")
         self._add_acct_btn.clicked.connect(self._on_add_account)
+        self._import_browser_btn = QPushButton("Import Browser Login")
+        self._import_browser_btn.clicked.connect(self._on_import_browser_account)
+        self._import_browser_btn.setVisible(IS_MACOS)
         self._launch_acct_btn = QPushButton("Launch")
         self._launch_acct_btn.clicked.connect(self._on_launch_account)
         self._switch_acct_btn = QPushButton("Switch to selected")
         self._switch_acct_btn.clicked.connect(self._on_switch_account)
         am_btns.addWidget(self._add_acct_btn)
+        am_btns.addWidget(self._import_browser_btn)
         am_btns.addWidget(self._launch_acct_btn)
         am_btns.addWidget(self._switch_acct_btn)
         am_btns.addStretch()
@@ -1100,6 +1154,14 @@ class RandoStuffTab(QWidget):
     # Multi-instance
 
     def _on_multi_instance_toggled(self, checked, persist=True):
+        if checked and not IS_WINDOWS:
+            self._multi_chk.blockSignals(True)
+            self._multi_chk.setChecked(False)
+            self._multi_chk.blockSignals(False)
+            if persist and self._config is not None:
+                self._config.multi_instance_launching = False
+            log_buffer.log("multiinstance", "Multi-instance launching is only available on Windows")
+            return
         if persist and self._config is not None:
             self._config.multi_instance_launching = checked
         if checked:
@@ -1405,6 +1467,56 @@ class RandoStuffTab(QWidget):
         # Select the newly added entry
         self._account_list.setCurrentRow(len(self._accounts) - 1)
 
+    def _on_import_browser_account(self):
+        self._import_browser_btn.setEnabled(False)
+        self._import_browser_btn.setText("Importing...")
+
+        def _import():
+            cookie, source = discover_browser_roblosecurity(include_keychain=True)
+            if not cookie:
+                self._on_main(lambda: self._finish_browser_import(None, None, None))
+                return
+            try:
+                session = _requests.Session()
+                session.trust_env = False
+                session.cookies.set(".ROBLOSECURITY", cookie, domain=".roblox.com")
+                response = session.get("https://users.roblox.com/v1/users/authenticated", timeout=10)
+                username = str(response.json().get("name") or "") if response.status_code == 200 else ""
+            except Exception:
+                username = ""
+            self._on_main(lambda: self._finish_browser_import(username, cookie, source))
+
+        threading.Thread(target=_import, daemon=True, name='fleasion-browser-cookie-import').start()
+
+    def _finish_browser_import(self, username: str | None, cookie: str | None, source: str | None):
+        self._import_browser_btn.setEnabled(True)
+        self._import_browser_btn.setText("Import Browser Login")
+        if not username or not cookie:
+            QMessageBox.warning(
+                self,
+                "Browser Login Not Found",
+                "No usable Roblox login was found in Firefox or a Chrome-family browser.\n\n"
+                "Log in to roblox.com in a browser, then try again.",
+            )
+            return
+
+        existing_index = next(
+            (index for index, account in enumerate(self._accounts) if account.get("username") == username),
+            None,
+        )
+        account = {"username": username, "cookie": _encrypt_cookie(cookie)}
+        if existing_index is None:
+            self._accounts.append(account)
+            selected_index = len(self._accounts) - 1
+        else:
+            self._accounts[existing_index] = account
+            selected_index = existing_index
+        _save_accounts(self._accounts)
+        self._populate_account_list()
+        self._account_list.setCurrentRow(selected_index)
+        log_buffer.log("accounts", f"Imported Roblox browser login for {username} from {source}")
+        QMessageBox.information(self, "Browser Login Imported", f"Imported {username} from {source}.")
+
     def _on_account_ctx_menu(self, pos):
         item = self._account_list.itemAt(pos)
         if item is None:
@@ -1522,6 +1634,21 @@ class RandoStuffTab(QWidget):
             QMessageBox.warning(self, "Error", "Could not decrypt the stored cookie.")
             return
         username = acc.get("username", "(unknown)")
+        if not IS_WINDOWS:
+            self._last_switched_account = acc
+            self._set_selected_account(username)
+            log_buffer.log(
+                "accounts",
+                f"Selected account for Fleasion launches on macOS: {username} "
+                "(RobloxCookies.dat switching is Windows-only)",
+            )
+            QMessageBox.information(
+                self,
+                "Account Selected",
+                "This account will be used for Fleasion launches. macOS Roblox does not expose "
+                "the Windows RobloxCookies.dat file for local cookie switching.",
+            )
+            return
         try:
             self._write_cookie_to_dat(cookie)
             self._last_switched_account = acc
@@ -1538,17 +1665,20 @@ class RandoStuffTab(QWidget):
         job_id: str = "",
         subplace_id: str = "",
     ):
-        try:
-            self._write_cookie_to_dat(cookie)
-        except Exception as exc:
-            log_buffer.log("accounts", f"Failed to write cookie file: {exc}")
+        if IS_WINDOWS:
+            try:
+                self._write_cookie_to_dat(cookie)
+            except Exception as exc:
+                log_buffer.log("accounts", f"Failed to write cookie file: {exc}")
+        else:
+            log_buffer.log("accounts", "Skipping RobloxCookies.dat write on macOS; using auth-ticket launch")
 
         exe = _find_roblox_exe()
         if not exe:
             log_buffer.log("accounts", "Roblox executable resolution failed before launch")
             QTimer.singleShot(0, lambda: QMessageBox.warning(
                 self, "Roblox Not Found",
-                "Could not locate RobloxPlayerBeta.exe. Is Roblox installed?"
+                "Could not locate Roblox Player. Is Roblox installed?"
             ))
             return
         log_buffer.log("accounts", f"Resolved Roblox executable: {exe}")
@@ -1594,7 +1724,7 @@ class RandoStuffTab(QWidget):
                 log_buffer.log("accounts", f"Launching Roblox executable fallback: {exe}")
                 exe_started = launch_as_standard_user(exe)
                 if not exe_started:
-                    log_buffer.log("accounts", "Failed to launch RobloxPlayerBeta.exe without elevation")
+                    log_buffer.log("accounts", "Failed to launch Roblox Player without elevation")
                 time.sleep(3)
                 log_buffer.log("accounts", f"Launching Roblox deeplink to placeId={launch_place_id} with linkCode")
                 deeplink_started = launch_as_standard_user(deeplink)
@@ -1651,7 +1781,7 @@ class RandoStuffTab(QWidget):
                 log_buffer.log("accounts", f"Launching Roblox executable fallback: {exe}")
                 exe_started = launch_as_standard_user(exe)
                 if not exe_started:
-                    log_buffer.log("accounts", "Failed to launch RobloxPlayerBeta.exe without elevation")
+                    log_buffer.log("accounts", "Failed to launch Roblox Player without elevation")
                 time.sleep(3)
                 log_buffer.log("accounts", f"Launching Roblox deeplink to placeId={launch_place_id}")
                 deeplink_started = launch_as_standard_user(deeplink)
@@ -1662,7 +1792,7 @@ class RandoStuffTab(QWidget):
             log_buffer.log("accounts", f"Launching Roblox executable: {exe}")
             launch_ok = launch_as_standard_user(exe)
             if not launch_ok:
-                log_buffer.log("accounts", "Failed to launch RobloxPlayerBeta.exe without elevation")
+                log_buffer.log("accounts", "Failed to launch Roblox Player without elevation")
         if launch_ok:
             log_buffer.log("accounts", f"Launched Roblox for account: {username}")
         else:
@@ -1670,6 +1800,8 @@ class RandoStuffTab(QWidget):
 
     def _write_cookie_to_dat(self, cookie: str):
         """Replace the .ROBLOSECURITY value in RobloxCookies.dat and re-encrypt."""
+        if not IS_WINDOWS:
+            raise RuntimeError("RobloxCookies.dat switching is only supported on Windows")
         if not ROBLOX_COOKIES_PATH.exists():
             log_buffer.log("accounts", "RobloxCookies.dat not found - launch Roblox once first")
             return
@@ -1680,10 +1812,13 @@ class RandoStuffTab(QWidget):
 
     def is_multi_instance_enabled(self) -> bool:
         """Return True if the multi-instance checkbox is checked."""
-        return self._multi_chk.isChecked()
+        return IS_WINDOWS and self._multi_chk.isChecked()
 
     def close_singleton_event(self):
         """Close the Roblox singleton event to allow a new instance, then clear the switched flag."""
+        if not IS_WINDOWS:
+            self._account_switched = False
+            return
         try:
             self._close_singleton_event()
         except Exception as exc:
@@ -1691,7 +1826,7 @@ class RandoStuffTab(QWidget):
         self._account_switched = False
 
     def get_roblox_exe(self) -> str | None:
-        """Return the path to RobloxPlayerBeta.exe, or None if not found."""
+        """Return the path to the platform Roblox Player executable, or None if not found."""
         return _find_roblox_exe()
 
     # R6 <-> R15 Animation Converter

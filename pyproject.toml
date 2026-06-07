@@ -3,7 +3,7 @@ name = 'Fleasion'
 version = '2.0.1'
 description = 'Roblox asset interceptor and replacer with PyQt6 GUI'
 readme = 'README.md'
-requires-python = '>=3.14'
+requires-python = '>=3.12'
 dependencies = [
     'cryptography>=42.0.0',
     'certifi>=2024.7.4',
@@ -12,7 +12,7 @@ dependencies = [
     'DracoPy>=1.3.0',
     'pillow>=11.0.0',
     'numpy>=2.0.0',
-    'pywin32>=307',
+    'pywin32>=307; platform_system == "Windows"',
     'requests>=2.32.0',
     "sounddevice>=0.5.3",
     "soundfile>=0.13.1",
@@ -20,7 +20,8 @@ dependencies = [
     "orjson>=3.9.0",
     "zstandard>=0.21.0",
     "python-dateutil>=2.9.0",
-    "win11toast>=0.36.3",
+    "win11toast>=0.36.3; platform_system == 'Windows'",
+    "browser-cookie3>=0.20.1; platform_system == 'Darwin'",
 ]
 
 # Optional / removed:
@@ -40,4 +41,5 @@ build-backend = 'uv_build'
 [dependency-groups]
 dev = [
     "pyinstaller>=6.19.0",
+    "pytest>=9.0.0",
 ]

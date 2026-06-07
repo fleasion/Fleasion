@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import QWidgetAction
 from PyQt6.QtGui import QPixmap, QImage, QAction, QCursor, QFont, QFontDatabase, QPalette, QColor
 from PIL import Image
 import io
+import sys
 import threading
 import gzip as gzip_module
 
@@ -1259,7 +1260,7 @@ class CacheViewerTab(QWidget):
             largest_text = str(total_rows)
             text_w = fm.horizontalAdvance(largest_text)
             arrow_w = fm.horizontalAdvance('▼')
-            padding = 7
+            padding = 10 if sys.platform == 'darwin' else 7
             w = max(COL_TOGGLE_WIDTH, text_w + padding, arrow_w + padding)
             self._col_toggle_width = int(w)
             header = self.table.horizontalHeader()
@@ -3259,13 +3260,14 @@ class CacheViewerTab(QWidget):
             elif is_rbx_document:
                 self._preview_rbxm(data, asset)
                 return
+            is_mesh_payload = mesh_processing.is_mesh_data(data)
 
             # Show loading for async previews
-            if asset_type in [4, 39, 1, 13, 63]:  # Mesh, SolidModel, Image, Decal, TexturePack
+            if is_mesh_payload or asset_type in [4, 39, 1, 13, 63]:  # Mesh, SolidModel, Image, Decal, TexturePack
                 self._show_loading()
 
             # Preview based on type
-            if asset_type == 4:  # Mesh
+            if is_mesh_payload or asset_type == 4:  # Mesh
                 self._preview_mesh(data, asset_id)
             elif asset_type == 39:  # SolidModel
                 self._preview_solidmodel(data, asset_id)
@@ -3350,7 +3352,11 @@ class CacheViewerTab(QWidget):
             item = self.table.item(row, 1)
             if item:
                 candidate = item.data(Qt.ItemDataRole.UserRole)
-                if candidate and self._get_modified_rbxm_draft(candidate) is not None:
+                if (
+                    candidate
+                    and candidate.get('type') != 9
+                    and self._get_modified_rbxm_draft(candidate) is not None
+                ):
                     modified_asset = candidate
                     available_formats = set(available_formats)
                     available_formats.update(
@@ -3755,8 +3761,7 @@ class CacheViewerTab(QWidget):
             safe_base = self._sanitize_filename(base_name)
 
             # Convert based on type and save to temp file
-            if asset_type == 4:  # Mesh - save as OBJ file
-                from . import mesh_processing
+            if mesh_processing.is_mesh_data(data):  # Mesh payload - save as OBJ file
                 try:
                     obj_content = mesh_processing.convert(data)
                     if obj_content:
@@ -3859,14 +3864,14 @@ class CacheViewerTab(QWidget):
                 try:
                     from .roblox_document import export_roblox_document, get_roblox_document_export_formats
 
-                    document_formats = get_roblox_document_export_formats(data)
+                    document_formats = get_roblox_document_export_formats(data, asset_type=asset_type)
                     if document_formats:
                         export_format = (
                             'converted_document_rbxl'
                             if 'converted_document_rbxl' in document_formats
                             else 'converted_document_rbxmx'
                         )
-                        export_data, ext = export_roblox_document(data, export_format)
+                        export_data, ext = export_roblox_document(data, export_format, asset_type=asset_type)
                         filename = f'{safe_base}{ext}'
                         temp_file = temp_dir / filename
                         temp_file.write_bytes(export_data)
