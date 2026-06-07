@@ -8,13 +8,15 @@ import time
 from typing import Union
 from urllib.error import URLError
 
-from PyQt6.QtCore import Qt, QByteArray, QSize
+from PyQt6.QtCore import Qt, QByteArray, QSize, pyqtSignal
 from PyQt6.QtGui import QBrush, QPen, QPixmap, QPainter, QColor, QIcon
 from PyQt6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QComboBox,
     QDialog,
     QFileDialog,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -24,13 +26,17 @@ from PyQt6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
+    QStyle,
+    QStyleOptionMenuItem,
     QTabWidget,
     QTextEdit,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
+    QWidgetAction,
 )
 
 from ..utils import APP_NAME, CONFIGS_FOLDER, PREJSONS_DIR, format_count, get_icon_path, log_buffer, open_folder
@@ -54,6 +60,9 @@ _GROUP_CONTENT_INDENT_SPACES = 5
 _PROFILE_NAME_COLUMN = 1
 _GROUP_GUIDE_GUTTER_PX = 2
 _GROUP_GUIDE_STEP_PX = 15
+_CONFIG_MENU_ROW_HEIGHT_PX = 28
+_CONFIG_MENU_SCREEN_MARGIN_PX = 12
+_CONFIG_MENU_OPEN_RELEASE_GRACE_SEC = 0.25
 
 
 class UndoManager:
@@ -152,6 +161,277 @@ class ReplacerRulesTree(QTreeWidget):
     def paintEvent(self, event):  # noqa: N802
         super().paintEvent(event)
         self._owner._paint_group_guides(self.viewport())
+
+
+class _ConfigMenuRow(QWidget):
+    """Full-width row painted with the native QMenu item style."""
+
+    activated = pyqtSignal(str)
+    toggled = pyqtSignal(str, bool)
+
+    def __init__(
+        self,
+        name: str,
+        parent_menu,
+        *,
+        checkable: bool = False,
+        checked: bool = False,
+        icon: QIcon | None = None,
+    ):
+        super().__init__()
+        self._name = name
+        self._parent_menu = parent_menu
+        self._checkable = checkable
+        self._checked = checked
+        self._icon = icon or QIcon()
+        self._pressed = False
+        self._hovered = False
+        self.setMouseTracking(True)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        self.setFixedHeight(_CONFIG_MENU_ROW_HEIGHT_PX)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def sizeHint(self):  # noqa: N802
+        option = self._style_option()
+        return self.style().sizeFromContents(
+            QStyle.ContentsType.CT_MenuItem,
+            option,
+            QSize(0, _CONFIG_MENU_ROW_HEIGHT_PX),
+            self,
+        )
+
+    def isChecked(self) -> bool:  # noqa: N802
+        return self._checked
+
+    def setChecked(self, checked: bool):  # noqa: N802
+        if self._checked == checked:
+            return
+        self._checked = checked
+        self.update()
+
+    def click(self):
+        self._activate()
+
+    def _style_option(self) -> QStyleOptionMenuItem:
+        option = QStyleOptionMenuItem()
+        option.initFrom(self)
+        option.rect = self.rect()
+        option.menuItemType = QStyleOptionMenuItem.MenuItemType.Normal
+        option.checkType = (
+            QStyleOptionMenuItem.CheckType.NonExclusive
+            if self._checkable
+            else QStyleOptionMenuItem.CheckType.NotCheckable
+        )
+        option.checked = self._checked
+        option.menuHasCheckableItems = self._checkable
+        option.text = self._name
+        option.icon = self._icon
+        option.maxIconWidth = self._icon.actualSize(QSize(16, 16)).width() if not self._icon.isNull() else 0
+        option.reservedShortcutWidth = 0
+        if self._hovered:
+            option.state |= QStyle.StateFlag.State_Selected
+        else:
+            option.state &= ~QStyle.StateFlag.State_Selected
+        return option
+
+    def paintEvent(self, event):  # noqa: N802
+        painter = QPainter(self)
+        self.style().drawControl(QStyle.ControlElement.CE_MenuItem, self._style_option(), painter, self)
+
+    def enterEvent(self, event):  # noqa: N802
+        self._hovered = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):  # noqa: N802
+        self._hovered = False
+        self._pressed = False
+        self.update()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._pressed = True
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton and self._pressed:
+            self._pressed = False
+            if self.rect().contains(event.position().toPoint()):
+                self._activate()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def _activate(self):
+        if self._parent_menu._should_ignore_opening_release():
+            return
+        if self._checkable:
+            self._checked = not self._checked
+            self.update()
+            self.toggled.emit(self._name, self._checked)
+        else:
+            self.activated.emit(self._name)
+
+
+class _ScrollableConfigMenu(QMenu):
+    """Config picker popup that scrolls when the config list exceeds the screen."""
+
+    item_selected = pyqtSignal(str)
+    item_toggled = pyqtSignal(str, bool)
+
+    def __init__(self, parent=None, *, checkable: bool = False):
+        super().__init__(parent)
+        self._checkable = checkable
+        self._minimum_width = 0
+        self._natural_content_size = QSize(0, 0)
+        self._opening_release_deadline = 0.0
+        self.item_widgets: dict[str, QWidget] = {}
+
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setObjectName('ConfigMenuScrollArea')
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.scroll_area.installEventFilter(self)
+        self.scroll_area.viewport().installEventFilter(self)
+
+        action = QWidgetAction(self)
+        action.setDefaultWidget(self.scroll_area)
+        self.addAction(action)
+        self.aboutToShow.connect(self._guard_opening_mouse_release)
+
+    def set_entries(self, entries: list[dict], *, minimum_width: int = 0):
+        """Replace the displayed config rows."""
+        old_container = self.scroll_area.takeWidget()
+        if old_container is not None:
+            old_container.deleteLater()
+
+        self._minimum_width = max(0, minimum_width)
+        self.item_widgets.clear()
+
+        container = QWidget()
+        container.setObjectName('ConfigMenuContainer')
+        container.installEventFilter(self)
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        for entry in entries:
+            name = str(entry.get('name', ''))
+            row = _ConfigMenuRow(
+                name,
+                self,
+                checkable=self._checkable,
+                checked=bool(entry.get('checked', False)),
+                icon=entry.get('icon', QIcon()),
+            )
+            row.activated.connect(self._select_item)
+            row.toggled.connect(self.item_toggled)
+            row.installEventFilter(self)
+            layout.addWidget(row)
+            self.item_widgets[name] = row
+
+        if not entries:
+            row = QLabel('No configs')
+            row.setStyleSheet('padding: 5px 8px; color: palette(placeholder-text);')
+            row.setFixedHeight(_CONFIG_MENU_ROW_HEIGHT_PX)
+            row.installEventFilter(self)
+            layout.addWidget(row)
+
+        self.scroll_area.setWidget(container)
+        container.adjustSize()
+        self._natural_content_size = container.sizeHint()
+        self._set_popup_content_size(self._natural_content_size.height())
+
+    def constrain_to_button(self, button: QPushButton):
+        """Bound the popup to the screen containing the owning button."""
+        if button is None:
+            return
+        anchor = button.mapToGlobal(button.rect().bottomLeft())
+        screen = button.screen()
+        if screen is None:
+            app = QApplication.instance()
+            if app is not None:
+                screen = app.screenAt(anchor)
+        if screen is None:
+            return
+        self.constrain_to_available_geometry(screen.availableGeometry(), anchor.y())
+
+    def constrain_to_available_geometry(self, available_geometry, anchor_y=None):
+        """Limit height to visible screen space; the scroll bar appears as needed."""
+        if available_geometry is None:
+            return
+
+        if anchor_y is None:
+            available_height = available_geometry.height()
+        else:
+            space_below = available_geometry.bottom() - anchor_y
+            space_above = anchor_y - available_geometry.top()
+            available_height = max(space_below, space_above)
+
+        max_height = max(1, available_height - _CONFIG_MENU_SCREEN_MARGIN_PX)
+        max_width = max(1, available_geometry.width() - _CONFIG_MENU_SCREEN_MARGIN_PX)
+        self._set_popup_content_size(max_height, max_width=max_width)
+        self.adjustSize()
+
+    def _set_popup_content_size(self, max_height: int, *, max_width: int | None = None):
+        natural = self._natural_content_size
+        if natural.height() <= 0:
+            return
+
+        height = min(natural.height(), max(1, max_height))
+        scrollbar_width = self.scroll_area.verticalScrollBar().sizeHint().width()
+        needs_scrollbar = natural.height() > height
+        width = max(natural.width(), self._minimum_width)
+        if needs_scrollbar:
+            width += scrollbar_width
+        if max_width is not None:
+            width = min(width, max_width)
+
+        viewport_width = max(1, width - (scrollbar_width if needs_scrollbar else 0))
+        widget = self.scroll_area.widget()
+        if widget is not None:
+            widget.setMinimumWidth(viewport_width)
+        self.scroll_area.setFixedSize(max(1, width), height)
+
+    def _select_item(self, name: str):
+        self.item_selected.emit(name)
+        self.hide()
+
+    def _guard_opening_mouse_release(self):
+        self._opening_release_deadline = time.monotonic() + _CONFIG_MENU_OPEN_RELEASE_GRACE_SEC
+
+    def _should_ignore_opening_release(self) -> bool:
+        if not self._opening_release_deadline:
+            return False
+        if time.monotonic() <= self._opening_release_deadline:
+            self._opening_release_deadline = 0.0
+            return True
+        self._opening_release_deadline = 0.0
+        return False
+
+    def eventFilter(self, obj, event):
+        from PyQt6.QtCore import QEvent
+
+        if event.type() == QEvent.Type.MouseButtonPress:
+            self._opening_release_deadline = 0.0
+        elif event.type() == QEvent.Type.MouseButtonRelease and self._should_ignore_opening_release():
+            return True
+        return super().eventFilter(obj, event)
+
+    def mouseReleaseEvent(self, event):  # noqa: N802
+        if event is None:
+            return
+        if self._should_ignore_opening_release():
+            return
+        action = self.actionAt(event.pos())
+        if isinstance(action, QWidgetAction) and action.defaultWidget() == self.scroll_area:
+            return
+        super().mouseReleaseEvent(event)
 
 
 class ReplacerConfigWindow(QDialog):
@@ -365,8 +645,9 @@ class ReplacerConfigWindow(QDialog):
         # Use button with menu (same style as enabled configs)
         # Prepend a single space plus a tiny hair-space to give a subtle gap
         self.config_menu_btn = QPushButton(' \u200A' + self.config_manager.last_config)
-        self.config_menu = QMenu(self.config_menu_btn)
+        self.config_menu = _ScrollableConfigMenu(self.config_menu_btn)
         self.config_menu.aboutToShow.connect(self._rebuild_editing_menu)
+        self.config_menu.item_selected.connect(self._on_config_select)
         self.config_menu_btn.setMenu(self.config_menu)
         row1.addWidget(self.config_menu_btn)
 
@@ -379,10 +660,9 @@ class ReplacerConfigWindow(QDialog):
         row1.addWidget(enabled_label)
 
         self.enabled_menu_btn = QPushButton('Select...')
-        self.enabled_menu = QMenu(self.enabled_menu_btn)
-        # Install event filter to keep menu open on checkbox click
-        self.enabled_menu.installEventFilter(self)
+        self.enabled_menu = _ScrollableConfigMenu(self.enabled_menu_btn, checkable=True)
         self.enabled_menu.aboutToShow.connect(self._rebuild_enabled_menu)
+        self.enabled_menu.item_toggled.connect(self._on_config_toggle)
         self.enabled_menu_btn.setMenu(self.enabled_menu)
         row1.addWidget(self.enabled_menu_btn)
 
@@ -602,23 +882,8 @@ class ReplacerConfigWindow(QDialog):
         dialog.raise_()
         dialog.activateWindow()
 
-    def eventFilter(self, obj, event):
-        """Event filter to keep enabled menu open after clicking checkboxes."""
-        from PyQt6.QtCore import QEvent
-        if obj == self.enabled_menu and event.type() == QEvent.Type.MouseButtonRelease:
-            # Check if click was on a checkable action
-            action = self.enabled_menu.actionAt(event.pos())
-            if action and action.isCheckable():
-                # Toggle the action manually
-                action.setChecked(not action.isChecked())
-                action.triggered.emit(action.isChecked())
-                # Return True to prevent menu from closing
-                return True
-        return super().eventFilter(obj, event)
-
     def _rebuild_enabled_menu(self):
         """Rebuild the enabled configs menu."""
-        self.enabled_menu.clear()
         self.config_enabled_vars.clear()
 
         # Clean up enabled configs that no longer exist on disk
@@ -628,36 +893,20 @@ class ReplacerConfigWindow(QDialog):
             if name not in current_configs:
                 self.config_manager.set_config_enabled(name, False)
 
-        for name in current_configs:
-            action = self.enabled_menu.addAction(name)
-            action.setCheckable(True)
-            action.setChecked(self.config_manager.is_config_enabled(name))
-            action.triggered.connect(
-                lambda checked, n=name: self._on_config_toggle(n, checked)
-            )
-            self.config_enabled_vars[name] = action
+        self.enabled_menu.set_entries(
+            [
+                {
+                    'name': name,
+                    'checked': self.config_manager.is_config_enabled(name),
+                }
+                for name in current_configs
+            ],
+            minimum_width=self.enabled_menu_btn.width() if hasattr(self, 'enabled_menu_btn') else 0,
+        )
+        self.config_enabled_vars.update(self.enabled_menu.item_widgets)
 
         self._update_enabled_menu_text()
-        # Resize the enabled menu to fit its longest entry (account for checkboxes)
-        try:
-            from PyQt6.QtGui import QFontMetrics
-
-            fm = QFontMetrics(self.enabled_menu.font())
-            max_text_width = 0
-            for act in self.enabled_menu.actions():
-                text = act.text() or ''
-                w = fm.horizontalAdvance(text)
-                if w > max_text_width:
-                    max_text_width = w
-
-            icon_space = 28
-            padding = 30
-            target_width = max_text_width + icon_space + padding
-            if hasattr(self, 'enabled_menu_btn'):
-                target_width = max(target_width, self.enabled_menu_btn.width())
-            self.enabled_menu.setFixedWidth(target_width)
-        except Exception:
-            pass
+        self.enabled_menu.constrain_to_button(self.enabled_menu_btn)
 
     def _update_enabled_menu_text(self):
         """Update the enabled menu button text."""
@@ -922,50 +1171,33 @@ class ReplacerConfigWindow(QDialog):
 
     def _rebuild_editing_menu(self):
         """Rebuild the editing config menu."""
-        self.config_menu.clear()
         self._sync_config_state_from_disk()
         current_configs = self.config_manager.config_names
 
+        entries = []
         for name in current_configs:
-            action = self.config_menu.addAction(name)
-            action.triggered.connect(
-                lambda checked, n=name: self._on_config_select(n)
-            )
             # Add a small subtle red dot icon for profiles that are not enabled.
             try:
                 if not self.config_manager.is_config_enabled(name):
-                    action.setIcon(self._make_status_icon('#cc5555'))
+                    icon = self._make_status_icon('#cc5555')
                 else:
                     # Mark enabled profiles with a subtle green dot
-                    action.setIcon(self._make_status_icon('#55cc66'))
+                    icon = self._make_status_icon('#55cc66')
             except Exception:
                 # If querying config state fails, leave icon empty
-                action.setIcon(QIcon())
+                icon = QIcon()
+            entries.append({'name': name, 'icon': icon})
+
+        self.config_menu.set_entries(
+            entries,
+            minimum_width=self.config_menu_btn.width() if hasattr(self, 'config_menu_btn') else 0,
+        )
         # Ensure the Editing button reflects the enabled state after rebuild
         try:
             self._update_editing_button_style()
         except Exception:
             pass
-        # Resize the editing menu to fit the longest profile name (plus icon and padding)
-        try:
-            from PyQt6.QtGui import QFontMetrics
-
-            fm = QFontMetrics(self.config_menu.font())
-            max_text_width = 0
-            for act in self.config_menu.actions():
-                text = act.text() or ''
-                w = fm.horizontalAdvance(text)
-                if w > max_text_width:
-                    max_text_width = w
-
-            icon_space = 22
-            padding = 30
-            target_width = max_text_width + icon_space + padding
-            if hasattr(self, 'config_menu_btn'):
-                target_width = max(target_width, self.config_menu_btn.width())
-            self.config_menu.setFixedWidth(target_width)
-        except Exception:
-            pass
+        self.config_menu.constrain_to_button(self.config_menu_btn)
 
     def _on_config_select(self, name: str):
         """Handle config selection from menu."""
