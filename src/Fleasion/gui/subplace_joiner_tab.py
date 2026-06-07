@@ -46,6 +46,8 @@ _DEFAULT_THUMB_URL = (
     "https://static.wikia.nocookie.net/roblox/images/5/54/Default_Thumbnail_1_updated.png"
     "/revision/latest/scale-to-width-down/1000?cb=20250523160858"
 )
+_SETTINGS_FILE = "subplace_joiner_settings.json"
+_LEGACY_SETTINGS_FILE = "settings.json"
 _default_thumb_bytes_cache: list[bytes] = []  # single-element list so it's mutable
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -62,6 +64,14 @@ def _get_default_thumb_bytes() -> bytes | None:
         return resp.content
     except Exception:
         return None
+
+
+def _primary_settings_path() -> os.PathLike:
+    return CONFIG_DIR / _SETTINGS_FILE
+
+
+def _legacy_settings_path() -> os.PathLike:
+    return CONFIG_DIR / "subplace" / _LEGACY_SETTINGS_FILE
 
 
 
@@ -710,19 +720,26 @@ class SubplaceJoinerTab(QWidget):
     # Settings persistence
 
     def _settings_path(self) -> str:
-        folder = CONFIG_DIR / "subplace"
-        folder.mkdir(parents=True, exist_ok=True)
-        return str(folder / "settings.json")
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        return str(_primary_settings_path())
 
     def _load_settings(self):
-        path = self._settings_path()
+        primary_path = _primary_settings_path()
+        paths = (primary_path, _legacy_settings_path())
         try:
-            if os.path.exists(path):
+            loaded_from = None
+            for path in paths:
+                if not os.path.exists(path):
+                    continue
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
+                loaded_from = path
                 self.recent_ids = [str(x) for x in data.get("recent_ids", []) if str(x).strip()]
                 self.favorites = [str(x) for x in data.get("favorites", []) if str(x).strip()]
                 self._custom_names = {str(k): str(v) for k, v in data.get("custom_names", {}).items()}
+                break
+            if loaded_from and loaded_from != primary_path:
+                self._save_settings()
         except Exception as exc:
             log_buffer.log("subplace", f"Failed to load settings: {exc}")
             self.recent_ids = []

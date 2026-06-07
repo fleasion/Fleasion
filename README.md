@@ -60,14 +60,14 @@ After applying any changes in the Dashboard, you must **clear your Roblox cache*
 
 ## How It Works
 
-Fleasion runs a lightweight custom asyncio HTTPS proxy on `127.0.0.1:443`. On startup it redirects `assetdelivery.roblox.com` and `fts.rbxcdn.com` to localhost via the system hosts file, installs a locally-generated CA certificate into Roblox's SSL directory so the TLS handshake succeeds, and intercepts all asset traffic. When Roblox requests assets from its CDN, Fleasion can:
+Fleasion runs a lightweight custom asyncio HTTPS proxy on `127.0.0.1:443`. On startup it redirects `assetdelivery.roblox.com` and `fts.rbxcdn.com` to localhost via the system hosts file, installs a locally-generated CA certificate into Roblox's `ssl/cacert.pem` trust bundle so the TLS handshake succeeds, and intercepts all asset traffic. When Roblox requests assets from its CDN, Fleasion can:
 
 - **Replace** assets by ID &mdash; swap one asset for another (different texture, audio, etc.)
 - **Remove** assets &mdash; strip textures from the batch request entirely
 - **Redirect** to CDN URLs or local files &mdash; serve your own content
 - **Cache** original assets &mdash; browse, preview, and export everything Roblox downloads
 
-All interception happens locally on your machine. Windows runs Fleasion elevated. On macOS, Fleasion installs a small root-owned relay/hosts helper with one administrator approval; the dashboard and menu-bar app always run as the normal user.
+All interception happens locally on your machine. Windows runs Fleasion elevated. On macOS, Fleasion installs a small root-owned relay/hosts/CA-patching helper with one administrator approval; the dashboard and menu-bar app always run as the normal user.
 
 **VPN compatibility:** Because interception uses the system's hosts file (application layer), it should be compatible with most VPN software, as long as it respects the hosts file.
 
@@ -154,10 +154,17 @@ Every asset type Roblox uses &mdash; images, decals, audio, meshes, animations, 
 ### First Launch
 
 On first launch, Fleasion will:
-- Generate a local CA certificate and install it into Roblox's SSL directory
-- On macOS, offer to install the root-owned proxy helper with one administrator approval
+- Generate a local CA certificate and install it into Roblox's SSL trust bundle
+- On macOS, offer to install the root-owned proxy helper with one administrator approval. The helper owns local port 443, updates `/etc/hosts`, and patches Roblox `ssl/cacert.pem`.
 - Show a welcome dialog explaining how the proxy works
 - Open the Dashboard automatically
+
+### macOS Notes
+
+- AppleBlox is not supported by Fleasion's macOS release path. Use the normal Roblox app bundle.
+- Fleasion must verify the helper-patched Roblox `ssl/cacert.pem` before it writes hosts entries. If verification fails, the proxy will not start.
+- Account Manager selected-account launches use Roblox auth-ticket `roblox-player:` URIs on macOS. Place, private-server, job-id, and plain app launches are attempted, but Roblox may still reject some app-launch flows; opening Roblox normally can use the account already signed in to Roblox.
+- Browser login discovery runs on startup so account-aware features can work immediately. Fleasion reuses a valid encrypted Chrome-family cache when present; if cache recovery is ambiguous, startup preserves it and skips surprise repeat prompts. Use **Miscellaneous -> Account Manager -> Import Browser Login** to import or re-import a browser login explicitly.
 
 ### Run on Boot
 

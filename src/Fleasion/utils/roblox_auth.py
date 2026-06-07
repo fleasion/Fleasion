@@ -34,7 +34,9 @@ _BROWSER_COOKIE_SOURCE = ''
 _BROWSER_AUTO_DISCOVERY_ATTEMPTED = False
 _BROWSER_AUTH_CACHE_FILE = CONFIG_DIR / 'browser_auth_cache.json'
 _BROWSER_AUTH_CACHE_KEY_FILE = CONFIG_DIR / 'browser_auth_cache.key'
-_PERSISTENT_BROWSER_AUTH_SOURCES = {'Chrome'}
+_PERSISTENT_BROWSER_AUTH_SOURCES = {'Chrome', 'Brave', 'Edge', 'Chromium', 'Opera', 'Vivaldi'}
+_BROWSER_AUTH_CACHE_BLOCKS_AUTOMATIC_IMPORT = False
+_LAST_BROWSER_AUTH_VALIDATION_DETAIL = ''
 
 
 def _log_auth_failure(key: str, message: str) -> None:
@@ -282,7 +284,10 @@ def _get_macos_browser_auth_cipher(create: bool = True):
 
 def _validate_roblosecurity(cookie: str) -> bool | None:
     """Return True/False for validation, or None when validation is inconclusive."""
+    global _LAST_BROWSER_AUTH_VALIDATION_DETAIL
+
     if not cookie:
+        _LAST_BROWSER_AUTH_VALIDATION_DETAIL = 'empty-cookie'
         return False
     try:
         import requests
@@ -295,12 +300,14 @@ def _validate_roblosecurity(cookie: str) -> bool | None:
         except Exception:
             sess.headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
         resp = sess.get('https://users.roblox.com/v1/users/authenticated', timeout=10)
+        _LAST_BROWSER_AUTH_VALIDATION_DETAIL = f'HTTP {resp.status_code}'
         if resp.status_code == 200:
             return True
         if resp.status_code in (401, 403):
             return False
         return None
     except Exception as exc:
+        _LAST_BROWSER_AUTH_VALIDATION_DETAIL = f'{type(exc).__name__}: {exc}'
         _log_auth_failure(
             f'browser-auth-cache-validate:{type(exc).__name__}',
             f'Could not validate cached Roblox browser login: {type(exc).__name__}: {exc}',
@@ -315,39 +322,120 @@ def _delete_cached_browser_roblosecurity() -> None:
         pass
 
 
-def _read_cached_browser_roblosecurity() -> tuple[str | None, str]:
-    if sys.platform != 'darwin' or not _BROWSER_AUTH_CACHE_FILE.exists():
+def _log_browser_auth_cache_state(state: str, message: str, *, block_automatic_import: bool = False) -> None:
+    global _BROWSER_AUTH_CACHE_BLOCKS_AUTOMATIC_IMPORT
+
+    _BROWSER_AUTH_CACHE_BLOCKS_AUTOMATIC_IMPORT = block_automatic_import
+    _log_auth_failure(f'browser-auth-cache-state:{state}', f'Browser auth cache state: {message}')
+
+
+def _read_cached_browser_roblosecurity(*, delete_invalid: bool = True) -> tuple[str | None, str]:
+    global _BROWSER_AUTH_CACHE_BLOCKS_AUTOMATIC_IMPORT
+
+    if sys.platform != 'darwin':
+        return None, ''
+    if not _BROWSER_AUTH_CACHE_FILE.exists():
+        _log_browser_auth_cache_state('no-cache', 'no encrypted browser login cache exists')
+        return None, ''
+    if not _BROWSER_AUTH_CACHE_KEY_FILE.exists():
+        _log_browser_auth_cache_state(
+            'missing-key',
+            'encrypted browser login cache exists but its key file is missing; preserving cache',
+            block_automatic_import=True,
+        )
         return None, ''
 
     cipher = _get_macos_browser_auth_cipher(create=False)
     if cipher is None:
+        _log_browser_auth_cache_state(
+            'decrypt-failed',
+            'encrypted browser login cache key could not be loaded; preserving cache',
+            block_automatic_import=True,
+        )
         return None, ''
 
     try:
         with _BROWSER_AUTH_CACHE_FILE.open('r', encoding='utf-8') as f:
             payload = json.load(f)
+    except json.JSONDecodeError as exc:
+        _log_auth_failure(
+            f'browser-auth-cache-json:{type(exc).__name__}:{exc}',
+            f'Browser auth cache state: malformed JSON; preserving cache ({type(exc).__name__}: {exc})',
+        )
+        _log_browser_auth_cache_state(
+            'malformed-json',
+            'encrypted browser login cache is malformed; preserving cache and skipping automatic browser prompt',
+            block_automatic_import=True,
+        )
+        return None, ''
+    except OSError as exc:
+        _log_auth_failure(
+            f'browser-auth-cache-read-io:{type(exc).__name__}:{exc}',
+            f'Browser auth cache state: read failed; preserving cache ({type(exc).__name__}: {exc})',
+        )
+        _log_browser_auth_cache_state(
+            'read-failed',
+            'encrypted browser login cache could not be read; preserving cache and skipping automatic browser prompt',
+            block_automatic_import=True,
+        )
+        return None, ''
+
+    try:
         source = str(payload.get('source') or '')
         if source not in _PERSISTENT_BROWSER_AUTH_SOURCES:
-            _delete_cached_browser_roblosecurity()
+            _log_browser_auth_cache_state(
+                'validation-inconclusive',
+                f'cache source {source or "(missing)"} is not eligible for automatic reuse; preserving cache',
+                block_automatic_import=True,
+            )
             return None, ''
         encrypted = str(payload.get('cookie') or '')
+        if not encrypted:
+            _log_browser_auth_cache_state(
+                'validation-inconclusive',
+                'encrypted browser login cache has no cookie payload; preserving cache',
+                block_automatic_import=True,
+            )
+            return None, ''
         cookie = cipher.decrypt(encrypted.encode('ascii')).decode('utf-8').strip()
     except Exception as exc:
-        _delete_cached_browser_roblosecurity()
         _log_auth_failure(
-            f'browser-auth-cache-read:{type(exc).__name__}:{exc}',
-            f'Could not read cached Roblox browser login: {type(exc).__name__}: {exc}',
+            f'browser-auth-cache-decrypt:{type(exc).__name__}:{exc}',
+            f'Browser auth cache state: decrypt failed; preserving cache ({type(exc).__name__}: {exc})',
+        )
+        _log_browser_auth_cache_state(
+            'decrypt-failed',
+            'encrypted browser login cache decrypt failed; preserving cache and skipping automatic browser prompt',
+            block_automatic_import=True,
         )
         return None, ''
 
     validation = _validate_roblosecurity(cookie)
     if validation is False:
-        _delete_cached_browser_roblosecurity()
-        log_buffer.log('Auth', 'Discarded cached Roblox browser login because it is no longer valid')
+        detail = _LAST_BROWSER_AUTH_VALIDATION_DETAIL or 'invalid'
+        _BROWSER_AUTH_CACHE_BLOCKS_AUTOMATIC_IMPORT = False
+        if delete_invalid:
+            _delete_cached_browser_roblosecurity()
+            log_buffer.log(
+                'Auth',
+                f'Browser auth cache state: validation invalid ({detail}); deleted cached Roblox browser login',
+            )
+        else:
+            _log_browser_auth_cache_state(
+                'validation-invalid',
+                f'validation invalid ({detail}); preserving cache for startup or explicit import',
+            )
         return None, ''
+    if validation is None:
+        _BROWSER_AUTH_CACHE_BLOCKS_AUTOMATIC_IMPORT = False
+        detail = _LAST_BROWSER_AUTH_VALIDATION_DETAIL or 'inconclusive'
+        log_buffer.log('Auth', f'Browser auth cache state: validation inconclusive ({detail}); reusing encrypted cache from {source}')
+    else:
+        detail = _LAST_BROWSER_AUTH_VALIDATION_DETAIL or 'valid'
+        _BROWSER_AUTH_CACHE_BLOCKS_AUTOMATIC_IMPORT = False
+        log_buffer.log('Auth', f'Browser auth cache state: cache reused from {source} ({detail})')
 
     _LAST_AUTH_FAILURE_DETAILS.clear()
-    log_buffer.log('Auth', f'Using encrypted cached Roblox browser login from {source}')
     return cookie, source
 
 
@@ -398,7 +486,7 @@ def _browser_cookie_loaders(include_keychain: bool):
     return loaders
 
 
-def discover_browser_roblosecurity(include_keychain: bool = False) -> tuple[str | None, str]:
+def discover_browser_roblosecurity(include_keychain: bool = False, *, explicit_import: bool = False) -> tuple[str | None, str]:
     """Discover the Roblox cookie from local browsers without logging its value.
 
     Firefox discovery is prompt-free on macOS. Chrome-family browsers and
@@ -407,13 +495,20 @@ def discover_browser_roblosecurity(include_keychain: bool = False) -> tuple[str 
     """
     global _BROWSER_COOKIE_CACHE, _BROWSER_COOKIE_SOURCE, _BROWSER_AUTO_DISCOVERY_ATTEMPTED
 
-    if _BROWSER_COOKIE_CACHE:
+    if not explicit_import and _BROWSER_COOKIE_CACHE:
         return _BROWSER_COOKIE_CACHE, _BROWSER_COOKIE_SOURCE
-    cached_cookie, cached_source = _read_cached_browser_roblosecurity()
-    if cached_cookie:
-        _BROWSER_COOKIE_CACHE = cached_cookie
-        _BROWSER_COOKIE_SOURCE = cached_source
-        return cached_cookie, cached_source
+    if not explicit_import:
+        cached_cookie, cached_source = _read_cached_browser_roblosecurity(delete_invalid=include_keychain)
+        if cached_cookie:
+            _BROWSER_COOKIE_CACHE = cached_cookie
+            _BROWSER_COOKIE_SOURCE = cached_source
+            return cached_cookie, cached_source
+    if include_keychain and _BROWSER_AUTH_CACHE_BLOCKS_AUTOMATIC_IMPORT and not explicit_import:
+        log_buffer.log(
+            'Auth',
+            'Skipping automatic browser login prompt because encrypted cache recovery was inconclusive; use Import Browser Login to re-import explicitly',
+        )
+        return None, ''
     if not include_keychain and _BROWSER_AUTO_DISCOVERY_ATTEMPTED:
         return None, ''
     if not include_keychain:
@@ -455,6 +550,8 @@ def discover_browser_roblosecurity(include_keychain: bool = False) -> tuple[str 
         if source in _PERSISTENT_BROWSER_AUTH_SOURCES:
             validation = _validate_roblosecurity(cookie)
             if validation is False:
+                detail = _LAST_BROWSER_AUTH_VALIDATION_DETAIL or 'invalid'
+                log_buffer.log('Auth', f'Browser login discovered from {source} failed validation ({detail}); skipping')
                 continue
         _BROWSER_COOKIE_CACHE = cookie
         _BROWSER_COOKIE_SOURCE = source

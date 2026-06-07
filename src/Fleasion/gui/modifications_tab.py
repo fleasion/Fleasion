@@ -30,7 +30,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ..modifications.manager import ModificationManager
+from ..modifications.manager import ModificationManager, normalise_target_path
 from ..utils import format_count, log_buffer, open_folder
 from ..utils.threading import run_in_thread
 from .file_drop import FileDropLineEdit
@@ -510,7 +510,10 @@ class ModRowWidget(QWidget):
         roblox_dirs = self._manager.roblox_dirs
         if not roblox_dirs:
             return
-        target_path = normalise_target_path(self._target_path)
+        try:
+            target_path = normalise_target_path(self._target_path)
+        except ValueError:
+            return
         stash = MOD_ORIGINALS_DIR / roblox_dirs[0].name / target_path
         if stash.is_file():
             self._update_status('orphaned_stash')
@@ -919,7 +922,10 @@ class ModPreviewDialog(QDialog):
         if not self._manager.roblox_dirs:
             return None
         roblox_dir = self._manager.roblox_dirs[0]
-        target_path = normalise_target_path(self._target_path)
+        try:
+            target_path = normalise_target_path(self._target_path)
+        except ValueError:
+            return None
 
         if mode == 'original':
             # Try stash first
@@ -1746,6 +1752,25 @@ class ModificationsTab(QWidget):
 # Custom Modification Dialog
 # ═══════════════════════════════════════════════════════════════════
 
+def _relative_target_path_for_resource_file(path: str | Path, roblox_dirs: list[Path]) -> str | None:
+    """Return a safe relative Roblox resource path for a selected file, if possible."""
+    try:
+        selected = Path(path).expanduser()
+        selected_resolved = selected.resolve(strict=True)
+    except OSError:
+        return None
+
+    for raw_root in roblox_dirs:
+        try:
+            root = Path(raw_root).expanduser().resolve(strict=True)
+            rel = selected_resolved.relative_to(root)
+            normalized = normalise_target_path(rel.as_posix())
+        except (OSError, ValueError):
+            continue
+        return normalized.as_posix()
+    return None
+
+
 class _CustomModDialog(QDialog):
     """Dialog for adding a custom modification entry."""
 
@@ -1774,6 +1799,7 @@ class _CustomModDialog(QDialog):
         row2.addWidget(QLabel('Target path:'))
         self._target_edit = FileDropLineEdit()
         self._target_edit.setPlaceholderText(r'content\sounds\oof.ogg')
+        self._target_edit.fileDropped.connect(self._on_target_file_dropped)
         row2.addWidget(self._target_edit)
         self._browse_roblox_btn = QPushButton('Browse Roblox Dir\u2026')
         self._browse_roblox_btn.clicked.connect(self._browse_roblox)
@@ -1806,6 +1832,22 @@ class _CustomModDialog(QDialog):
 
         self.setLayout(layout)
 
+    def _warn_target_outside_roblox_dirs(self):
+        QMessageBox.warning(
+            self,
+            'Invalid Target',
+            'Target files must be inside a detected Roblox resource directory. '
+            'Use the Source field for external replacement files.',
+        )
+
+    def _on_target_file_dropped(self, path: str):
+        rel = _relative_target_path_for_resource_file(path, self._manager.roblox_dirs)
+        if rel is None:
+            self._target_edit.clear()
+            self._warn_target_outside_roblox_dirs()
+            return
+        self._target_edit.setText(rel)
+
     def _browse_roblox(self):
         """Open file dialog starting at the first Roblox directory."""
         start = ''
@@ -1814,16 +1856,12 @@ class _CustomModDialog(QDialog):
         path, _ = QFileDialog.getOpenFileName(
             self, 'Select target file in Roblox directory', start,
         )
-        if path and self._manager.roblox_dirs:
-            # Make relative to the Roblox dir
-            for rdir in self._manager.roblox_dirs:
-                try:
-                    rel = Path(path).relative_to(rdir)
-                    self._target_edit.setText(str(rel))
-                    return
-                except ValueError:
-                    continue
-            self._target_edit.setText(path)
+        if path:
+            rel = _relative_target_path_for_resource_file(path, self._manager.roblox_dirs)
+            if rel is None:
+                self._warn_target_outside_roblox_dirs()
+                return
+            self._target_edit.setText(rel)
 
     def _browse_source(self):
         # Try to open the dialog in the directory/path the user may have pasted
@@ -1854,6 +1892,11 @@ class _CustomModDialog(QDialog):
             return
         if not target:
             QMessageBox.warning(self, 'Missing', 'Please enter a target path.')
+            return
+        try:
+            target = normalise_target_path(target).as_posix()
+        except ValueError as exc:
+            QMessageBox.warning(self, 'Invalid Target', str(exc))
             return
         self.display_name = name
         self.target_path = target

@@ -9,6 +9,7 @@ stashed so they can be restored on exit / shutdown.
 from __future__ import annotations
 
 import json
+import ntpath
 import os
 import shutil
 import sys
@@ -35,7 +36,7 @@ MOD_CACHE_DIR = CONFIG_DIR / 'ModCache'
 
 
 def normalise_target_path(target_path: str | Path) -> Path:
-    """Return a target path using platform path separators.
+    """Return a safe relative target path using platform path separators.
 
     Built-in modification entries are stored with Windows-style backslashes.
     On POSIX, pathlib treats those as literal filename characters, so normalize
@@ -43,12 +44,17 @@ def normalise_target_path(target_path: str | Path) -> Path:
     """
     text = str(target_path or '').strip()
     if not text:
-        return Path()
+        raise ValueError('Target path is empty')
     text = text.replace('\\', '/')
-    path = Path(text)
-    if path.is_absolute():
-        return path
-    return Path(*[part for part in text.split('/') if part and part != '.'])
+    drive, _tail = ntpath.splitdrive(text)
+    if drive or text.startswith('/'):
+        raise ValueError('Target path must be relative to the Roblox resources directory')
+    parts = [part for part in text.split('/') if part and part != '.']
+    if not parts:
+        raise ValueError('Target path is empty')
+    if any(part == '..' for part in parts):
+        raise ValueError('Target path cannot contain ".." segments')
+    return Path(*parts)
 
 # ---------------------------------------------------------------------------
 # Roblox directory discovery  (mirrors proxy/master.py::_find_roblox_dirs)
@@ -689,9 +695,14 @@ class ModificationManager(QObject):
             restore_font_families(self._roblox_dirs, self._stash_dir)
             return
 
+        try:
+            target_path = normalise_target_path(target)
+        except ValueError as exc:
+            log_buffer.log('Modifications', f'Skipping restore for invalid target path {target!r}: {exc}')
+            return
+
         with self._fs_lock:
             for roblox_dir in self._roblox_dirs:
-                target_path = normalise_target_path(target)
                 dst = roblox_dir / target_path
                 stash = self._stash_dir / roblox_dir.name / target_path
                 marker = stash.with_name(stash.name + self._NEW_FILE_MARKER_SUFFIX)
@@ -715,10 +726,15 @@ class ModificationManager(QObject):
         the UI when a row detects a stash on disk (e.g. manual file edit, crash)
         but has no active modification entry to clear.
         """
+        try:
+            target_rel = normalise_target_path(target_path)
+        except ValueError as exc:
+            log_buffer.log('Modifications', f'Cannot restore orphaned stash for invalid target path {target_path!r}: {exc}')
+            return False
+
         with self._fs_lock:
             restored = False
             for roblox_dir in self._roblox_dirs:
-                target_rel = normalise_target_path(target_path)
                 dst = roblox_dir / target_rel
                 stash = self._stash_dir / roblox_dir.name / target_rel
                 marker = stash.with_name(stash.name + self._NEW_FILE_MARKER_SUFFIX)

@@ -84,6 +84,7 @@ logger = logging.getLogger(__name__)
 
 IS_WINDOWS = sys.platform == 'win32'
 IS_MACOS = sys.platform == 'darwin'
+_ACTIVE_PROXY_CA_DIR = PROXY_CA_DIR
 
 if IS_MACOS:
     HOSTS_FILE = Path('/etc/hosts')
@@ -601,6 +602,42 @@ async def _run_tls_self_test(hosts: set[str], ca_cert_path: Path, port: int) -> 
     for failure in failures:
         log_buffer.log('TLS', f'Startup TLS self-test failed: {failure}')
     return False
+
+
+def _directory_is_writable(path: Path) -> bool:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(prefix='.fleasion-write-test-', dir=str(path))
+        os.close(fd)
+        os.unlink(tmp_path)
+        return True
+    except OSError:
+        return False
+
+
+def _select_proxy_ca_dir() -> Path:
+    """Return the CA directory to use for this run, falling back if legacy ownership blocks writes."""
+    global _ACTIVE_PROXY_CA_DIR
+
+    if _directory_is_writable(PROXY_CA_DIR):
+        _ACTIVE_PROXY_CA_DIR = PROXY_CA_DIR
+        return _ACTIVE_PROXY_CA_DIR
+
+    fallback = PROXY_CA_DIR.with_name(f'{PROXY_CA_DIR.name}_user')
+    if _directory_is_writable(fallback):
+        log_buffer.log(
+            'Certificate',
+            f'Configured CA directory is not writable ({PROXY_CA_DIR}); using {fallback}',
+        )
+        _ACTIVE_PROXY_CA_DIR = fallback
+        return _ACTIVE_PROXY_CA_DIR
+
+    _ACTIVE_PROXY_CA_DIR = PROXY_CA_DIR
+    return _ACTIVE_PROXY_CA_DIR
+
+
+def _current_proxy_ca_dir() -> Path:
+    return _ACTIVE_PROXY_CA_DIR
 
 
 
@@ -1687,6 +1724,16 @@ def _analyze_and_strip_fleasion_cas(pem_bundle: str, current_ca_pem: str) -> tup
     return ''.join(parts), fleasion_count, current_count
 
 
+def _fleasion_ca_blocks(pem_bundle: str) -> list[str]:
+    """Return normalized Fleasion CA PEM blocks found in *pem_bundle*."""
+    blocks: list[str] = []
+    for match in _PEM_CERT_BLOCK_RE.finditer(_normalize_newlines(pem_bundle)):
+        block = match.group(0)
+        if _is_fleasion_ca_cert_block(block):
+            blocks.append(_normalize_pem_block(block))
+    return blocks
+
+
 def _describe_cacert_state(ca_file: Path, ca_pem: str) -> dict:
     """Return a stable diagnostic snapshot for a Roblox cacert.pem bundle."""
     state = {
@@ -1814,24 +1861,79 @@ def _cacert_has_only_current_fleasion_ca(cacert_text: str, current_ca_pem: str) 
     return fleasion_count == 1 and current_count == 1
 
 
-def _install_ca_into_roblox(ca_pem: str) -> None:
+def _install_ca_into_roblox_with_helper(ca_pem: str, dirs: list[Path]) -> tuple[bool, dict]:
+    from ..utils.macos_proxy_helper import helper_patch_ca
+
+    installs: list[dict] = []
+    for roblox_dir in dirs:
+        ca_file = roblox_dir / 'ssl' / 'cacert.pem'
+        try:
+            existing = ca_file.read_text(encoding='utf-8', errors='replace') if ca_file.exists() else ''
+        except OSError as exc:
+            log_buffer.log('Certificate', f'Could not pre-read cacert.pem for {roblox_dir.name}; helper will try root read/write: {exc}')
+            existing = ''
+        installs.append({
+            'resource_dir': str(roblox_dir),
+            'remove_pems': _fleasion_ca_blocks(existing),
+        })
+
+    response = helper_patch_ca(ca_pem, installs)
+    details = response or {
+        'patched': [],
+        'skipped': [],
+        'failed': [{'error': 'macOS proxy helper did not return a CA patch response'}],
+    }
+
+    for key, label in (('patched', 'patched'), ('skipped', 'already current'), ('failed', 'failed')):
+        for item in details.get(key) or []:
+            path = item.get('ca_file') or item.get('resource_dir') or '(unknown)'
+            if key == 'failed':
+                log_buffer.log('Certificate', f'macOS helper CA patch {label} for {path}: {item.get("error") or item.get("status") or "unknown error"}')
+            else:
+                changed = 'changed' if item.get('changed') else 'unchanged'
+                log_buffer.log('Certificate', f'macOS helper CA patch {label} for {path} ({changed})')
+
+    all_healthy = bool(response and response.get('ok'))
+    verified: list[dict] = []
+    for roblox_dir in dirs:
+        state = _log_cacert_state(
+            roblox_dir / 'ssl' / 'cacert.pem',
+            ca_pem,
+            f'cacert.pem after macOS helper patch for {roblox_dir.name}',
+            log_healthy=True,
+        )
+        verified.append(state)
+        all_healthy = all_healthy and bool(state.get('healthy'))
+
+    details['verified'] = verified
+    return all_healthy, details
+
+
+def _install_ca_into_roblox(ca_pem: str) -> tuple[bool, dict]:
     """Ensure each Roblox ssl/cacert.pem has exactly one current Fleasion CA cert."""
     t0 = time.perf_counter()
     dirs = _find_roblox_dirs()
     elapsed_ms = int((time.perf_counter() - t0) * 1000)
     if not dirs:
         log_buffer.log('Certificate', f'No Roblox installs found to patch (scanned in {elapsed_ms} ms)')
-        return
+        return False, {'error': 'no_roblox_installs', 'dirs': []}
     log_buffer.log('Certificate', f'Found {format_count(dirs, "Roblox install")} to patch (scanned in {elapsed_ms} ms)')
 
+    if IS_MACOS and not _is_admin():
+        return _install_ca_into_roblox_with_helper(ca_pem, dirs)
+
+    ok = True
+    details = {'patched': [], 'failed': [], 'verified': []}
     for d in dirs:
         ssl_dir = d / 'ssl'
-        ssl_dir.mkdir(exist_ok=True)
         ca_file = ssl_dir / 'cacert.pem'
         try:
+            ssl_dir.mkdir(exist_ok=True)
             _log_cacert_health(ca_file, ca_pem)
             changed, fleasion_count, current_count = _upsert_fleasion_ca_in_cacert(ca_file, ca_pem)
-            post_state = _log_cacert_state(ca_file, ca_pem, f'cacert.pem after startup patch for {d.name}')
+            post_state = _log_cacert_state(ca_file, ca_pem, f'cacert.pem after startup patch for {d.name}', log_healthy=True)
+            details['verified'].append(post_state)
+            ok = ok and bool(post_state.get('healthy'))
             already_current = (
                 fleasion_count == 1
                 and current_count == 1
@@ -1850,8 +1952,12 @@ def _install_ca_into_roblox(ca_pem: str) -> None:
                 log_buffer.log('Certificate', f'Normalized CA bundle formatting in {d.name}')
             else:
                 log_buffer.log('Certificate', f'CA already installed in {d.name}')
+            details['patched'].append({'resource_dir': str(d), 'ca_file': str(ca_file), 'changed': changed})
         except (PermissionError, OSError, UnicodeDecodeError) as exc:
             log_buffer.log('Certificate', f'Failed to write CA for {d.name}: {exc}')
+            details['failed'].append({'resource_dir': str(d), 'ca_file': str(ca_file), 'error': str(exc)})
+            ok = False
+    return ok, details
 
 
 def _ca_thumbprint_sha1(ca_pem: str) -> str:
@@ -2040,7 +2146,7 @@ def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
     Returns True if the cert bundle needed refresh (Roblox needs a restart).
     Returns False if already launch-healthy or the CA has not been generated.
     """
-    ca_cert_path = PROXY_CA_DIR / 'ca.crt'
+    ca_cert_path = _current_proxy_ca_dir() / 'ca.crt'
     if not ca_cert_path.exists():
         return False  # CA not generated yet – nothing to patch
 
@@ -2363,7 +2469,7 @@ class ProxyMaster:
         overwritten or incomplete, it patches certs, refreshes hosts/upstream IPs,
         and restarts Roblox exactly once for that launch window.
         """
-        ca_cert_path = PROXY_CA_DIR / 'ca.crt'
+        ca_cert_path = _current_proxy_ca_dir() / 'ca.crt'
         if not ca_cert_path.exists():
             return
 
@@ -2531,8 +2637,9 @@ class ProxyMaster:
         # ── Certificate setup ─────────────────────────────────────────────
         log_buffer.log('Certificate', 'Generating/loading CA certificates...')
         t0 = time.perf_counter()
+        proxy_ca_dir = _select_proxy_ca_dir()
         try:
-            ca_cert_path, ca_key_path = generate_ca(PROXY_CA_DIR)
+            ca_cert_path, ca_key_path = generate_ca(proxy_ca_dir)
         except Exception as exc:
             log_buffer.log('Certificate', f'CA generation failed: {exc}')
             self._running = False
@@ -2542,7 +2649,7 @@ class ProxyMaster:
         for host in INTERCEPT_HOSTS:
             try:
                 cert_path, key_path = generate_host_cert(
-                    host, ca_cert_path, ca_key_path, PROXY_CA_DIR,
+                    host, ca_cert_path, ca_key_path, proxy_ca_dir,
                 )
                 host_certs[host] = (cert_path, key_path)
             except Exception as exc:
@@ -2556,7 +2663,7 @@ class ProxyMaster:
                 INTERCEPT_HOSTS,
                 ca_cert_path,
                 ca_key_path,
-                PROXY_CA_DIR,
+                proxy_ca_dir,
             )
         except Exception as exc:
             log_buffer.log('Certificate', f'Default multi-host cert failed: {exc}')
@@ -2568,7 +2675,15 @@ class ProxyMaster:
 
         # Install CA into Roblox ssl dirs
         ca_pem = get_ca_pem(ca_cert_path)
-        _install_ca_into_roblox(ca_pem)
+        ca_patch_ok, ca_patch_details = _install_ca_into_roblox(ca_pem)
+        if IS_MACOS and not ca_patch_ok:
+            log_buffer.log(
+                'Certificate',
+                'macOS Roblox CA patch verification failed; proxy startup aborted before writing hosts entries',
+            )
+            self._emit_proxy_start_error('macos_ca_patch_failed', ca_patch_details)
+            self._running = False
+            return
         if IS_WINDOWS:
             _install_ca_into_windows_root(ca_cert_path, ca_pem)
 

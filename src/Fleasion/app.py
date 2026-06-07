@@ -249,14 +249,19 @@ def _show_admin_required_dialog(parent=None):
         msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
     msg.setWindowTitle('Fleasion - Administrator Mode Required')
     msg.setIcon(QMessageBox.Icon.Warning)
-    msg.setText("Fleasion won't work unless you're in admin mode.")
-    platform_name = 'macOS' if sys.platform == 'darwin' else 'Windows'
-    run_text = 'with administrator privileges' if sys.platform == 'darwin' else 'as Administrator'
-    msg.setInformativeText(
-        f'{platform_name} did not start Fleasion with administrator rights.\n\n'
-        'Asset interception, scraping, replacement, hosts-file changes, and the local HTTPS proxy may not work.\n\n'
-        f'Close Fleasion and run it {run_text}.'
-    )
+    if sys.platform == 'darwin':
+        msg.setText('Fleasion needs its macOS proxy helper before interception can start.')
+        msg.setInformativeText(
+            'Run Fleasion as your normal macOS user, then approve the proxy-helper install prompt. '
+            'The helper owns port 443, updates /etc/hosts, and patches Roblox SSL trust while the app stays unprivileged.'
+        )
+    else:
+        msg.setText("Fleasion won't work unless you're in admin mode.")
+        msg.setInformativeText(
+            'Windows did not start Fleasion with administrator rights.\n\n'
+            'Asset interception, scraping, replacement, hosts-file changes, and the local HTTPS proxy may not work.\n\n'
+            'Close Fleasion and run it as Administrator.'
+        )
     msg.setStandardButtons(QMessageBox.StandardButton.Ok)
     if icon_path := get_icon_path():
         from PyQt6.QtGui import QIcon
@@ -394,6 +399,65 @@ def _show_hosts_write_exhausted_dialog(details: dict):
         break
 
 
+def _show_macos_ca_patch_failed_dialog(details: dict):
+    """Show a user-facing popup when the helper cannot verify Roblox cacert.pem."""
+    _top = QApplication.topLevelWidgets()
+    _parent = next((w for w in _top if w.isVisible()), None)
+    _on_top = any(w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in _top)
+
+    failed = details.get('failed') or []
+    verified = details.get('verified') or []
+    failed_lines = []
+    if isinstance(failed, list):
+        for item in failed[:6]:
+            if isinstance(item, dict):
+                path = item.get('ca_file') or item.get('resource_dir') or '(unknown path)'
+                error = item.get('error') or item.get('status') or 'unknown error'
+                failed_lines.append(f'- {html.escape(str(path))}: {html.escape(str(error))}')
+
+    unhealthy_lines = []
+    if isinstance(verified, list):
+        for item in verified[:6]:
+            if isinstance(item, dict) and not item.get('healthy'):
+                path = item.get('path') or '(unknown path)'
+                error = item.get('error') or 'verification failed'
+                unhealthy_lines.append(f'- {html.escape(str(path))}: {html.escape(str(error))}')
+
+    diagnostics_html = ''
+    if failed_lines or unhealthy_lines:
+        diagnostics_html = (
+            '<br><br>Diagnostics:<br>'
+            + '<br>'.join(failed_lines + unhealthy_lines)
+        )
+
+    msg = QMessageBox(_parent)
+    if _on_top:
+        msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
+    msg.setWindowTitle('Fleasion - macOS Roblox CA Patch Failed')
+    msg.setIcon(QMessageBox.Icon.Warning)
+    msg.setText('Fleasion could not verify Roblox SSL trust patching, so the proxy was not started.')
+    msg.setTextFormat(Qt.TextFormat.RichText)
+    msg.setInformativeText(
+        'Roblox would reject Fleasion proxy certificates until its bundled '
+        '<code>ssl/cacert.pem</code> contains the Fleasion CA exactly once.<br><br>'
+        'Restart Fleasion and approve the helper install/upgrade if prompted. If this keeps happening, '
+        'repair or reinstall Roblox, then start Fleasion again.'
+        + diagnostics_html
+    )
+    msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+    if icon_path := get_icon_path():
+        from PyQt6.QtGui import QIcon
+        msg.setWindowIcon(QIcon(str(icon_path)))
+
+    for label in msg.findChildren(QLabel):
+        label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextBrowserInteraction
+            | Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+
+    msg.exec()
+
+
 def _show_auth_cookie_unavailable_dialog(details: dict):
     """Show a user-facing popup when no readable Roblox auth cookie can be found."""
     _top = QApplication.topLevelWidgets()
@@ -433,9 +497,9 @@ def _show_auth_cookie_unavailable_dialog(details: dict):
             'This token is required for authenticated asset downloads, account launches, '
             'private-server joins, and other account-aware features.<br><br>'
             'Sign in to roblox.com in Chrome, Safari, Firefox, Brave, Edge, Chromium, Opera, '
-            'or Vivaldi, then restart Fleasion. When macOS asks whether Fleasion may access '
-            'Chrome Safe Storage or browser data, choose Allow.<br><br>'
-            'You can also retry from Dashboard > Miscellaneous > Account Manager > '
+            'or Vivaldi, then try again. If macOS asks whether Fleasion may access Chrome '
+            'Safe Storage or browser data, choose Allow.<br><br>'
+            'You can retry from Dashboard > Miscellaneous > Account Manager > '
             'Import Browser Login.<br><br>'
         )
     else:
@@ -508,6 +572,8 @@ class _ProxyErrorInvoker(QObject):
             _show_proxy_bind_error_dialog(details)
         elif code == 'hosts_write_exhausted':
             _show_hosts_write_exhausted_dialog(details)
+        elif code == 'macos_ca_patch_failed':
+            _show_macos_ca_patch_failed_dialog(details)
 
 
 class _AuthCheckInvoker(QObject):
@@ -942,7 +1008,7 @@ def main():
     proxy_error_invoker.show_proxy_error.connect(proxy_error_invoker.handle_proxy_error)
 
     def _on_proxy_start_error(code: str, details: dict):
-        if code not in ('port_bind_failed', 'hosts_write_exhausted'):
+        if code not in ('port_bind_failed', 'hosts_write_exhausted', 'macos_ca_patch_failed'):
             return
         proxy_error_invoker.show_proxy_error.emit(code, dict(details))
 
@@ -1018,7 +1084,7 @@ def main():
         if sys.platform == 'darwin':
             gate_text = (
                 'Fleasion is waiting for macOS administrator permission.\n\n'
-                'Approve the system prompt to restart Fleasion with proxy privileges.'
+                'Approve the helper install prompt so the normal-user app can use proxy features.'
             )
         else:
             gate_text = (
@@ -1065,7 +1131,8 @@ def main():
         prompt.setIcon(QMessageBox.Icon.Information)
         prompt.setText('Install the Fleasion macOS proxy helper?')
         prompt.setInformativeText(
-            'macOS requires a small root service to own local port 443 and update /etc/hosts.\n\n'
+            'macOS requires a small root service to own local port 443, update /etc/hosts, '
+            "and patch Roblox's SSL trust bundle.\n\n"
             'This requires one administrator approval now. Fleasion itself will keep running as your normal user, '
             'and future launches and Run on Boot will not ask for an administrator password.'
         )
@@ -1207,10 +1274,7 @@ def main():
             from .utils.roblox_auth import get_auth_failure_details, get_roblosecurity
 
             if sys.platform == 'darwin':
-                log_buffer.log(
-                    'Auth',
-                    'Requesting supported browser access for Roblox login discovery',
-                )
+                log_buffer.log('Auth', 'Running startup Roblox login discovery')
             cookie = get_roblosecurity(include_keychain_browsers=sys.platform == 'darwin')
             details = get_auth_failure_details()
         except Exception as exc:

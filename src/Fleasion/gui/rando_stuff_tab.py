@@ -12,7 +12,7 @@ import uuid
 import threading
 import time
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs, quote
+from urllib.parse import urlparse, parse_qs, quote, urlencode
 
 import requests as _requests
 
@@ -342,6 +342,112 @@ def _find_roblox_exe() -> str | None:
     """Return best Roblox executable path using shared resolver fallbacks."""
     exe_path = resolve_roblox_player_exe_for_launch()
     return str(exe_path) if exe_path is not None else None
+
+
+def _build_roblox_player_uri(
+    ticket: str,
+    *,
+    launch_mode: str = "play",
+    place_launcher_url: str = "",
+    tracker_id: int | None = None,
+    launch_time_ms: int | None = None,
+) -> str:
+    """Build a roblox-player URI using an auth ticket."""
+    parts = [
+        "roblox-player:1",
+        f"launchmode:{launch_mode}",
+        f"gameinfo:{ticket}",
+        f"launchtime:{launch_time_ms if launch_time_ms is not None else int(time.time() * 1000)}",
+    ]
+    if place_launcher_url:
+        parts.append(f"placelauncherurl:{quote(place_launcher_url, safe='')}")
+    if tracker_id is not None:
+        parts.append(f"browsertrackerid:{tracker_id}")
+    parts.extend(["robloxLocale:en_us", "gameLocale:en_us", "channel:", "LaunchExp:InApp"])
+    return "+".join(parts)
+
+
+def _build_place_launcher_url(
+    place_id: str,
+    *,
+    request_type: str = "RequestGame",
+    tracker_id: int,
+    job_id: str = "",
+    access_code: str = "",
+    link_code: str = "",
+    join_attempt_id: str | None = None,
+) -> str:
+    params = {
+        "request": request_type,
+        "browserTrackerId": str(tracker_id),
+        "placeId": str(place_id),
+        "joinAttemptId": join_attempt_id or str(uuid.uuid4()),
+    }
+    if job_id:
+        params["gameId"] = job_id
+    if access_code:
+        params["accessCode"] = access_code
+    if link_code:
+        params["linkCode"] = link_code
+    return "https://www.roblox.com/Game/PlaceLauncher.ashx?" + urlencode(params)
+
+
+def _build_auth_ticket_app_uri(ticket: str, *, launch_time_ms: int | None = None) -> str:
+    return _build_roblox_player_uri(ticket, launch_mode="app", launch_time_ms=launch_time_ms)
+
+
+def _build_auth_ticket_place_uri(
+    ticket: str,
+    place_id: str,
+    *,
+    job_id: str = "",
+    tracker_id: int | None = None,
+    join_attempt_id: str | None = None,
+    launch_time_ms: int | None = None,
+) -> str:
+    tracker = tracker_id if tracker_id is not None else random.randint(10_000_000_000, 99_999_999_999)
+    launcher = _build_place_launcher_url(
+        place_id,
+        request_type="RequestGameJob" if job_id else "RequestGame",
+        tracker_id=tracker,
+        job_id=job_id,
+        join_attempt_id=join_attempt_id,
+    )
+    return _build_roblox_player_uri(
+        ticket,
+        launch_mode="play",
+        place_launcher_url=launcher,
+        tracker_id=tracker,
+        launch_time_ms=launch_time_ms,
+    )
+
+
+def _build_auth_ticket_private_server_uri(
+    ticket: str,
+    place_id: str,
+    *,
+    access_code: str,
+    link_code: str,
+    tracker_id: int | None = None,
+    join_attempt_id: str | None = None,
+    launch_time_ms: int | None = None,
+) -> str:
+    tracker = tracker_id if tracker_id is not None else random.randint(10_000_000_000, 99_999_999_999)
+    launcher = _build_place_launcher_url(
+        place_id,
+        request_type="RequestPrivateGame",
+        tracker_id=tracker,
+        access_code=access_code,
+        link_code=link_code,
+        join_attempt_id=join_attempt_id,
+    )
+    return _build_roblox_player_uri(
+        ticket,
+        launch_mode="play",
+        place_launcher_url=launcher,
+        tracker_id=tracker,
+        launch_time_ms=launch_time_ms,
+    )
 
 
 # Add / Change Cookie dialog
@@ -1472,7 +1578,7 @@ class RandoStuffTab(QWidget):
         self._import_browser_btn.setText("Importing...")
 
         def _import():
-            cookie, source = discover_browser_roblosecurity(include_keychain=True)
+            cookie, source = discover_browser_roblosecurity(include_keychain=True, explicit_import=True)
             if not cookie:
                 self._on_main(lambda: self._finish_browser_import(None, None, None))
                 return
@@ -1657,6 +1763,27 @@ class RandoStuffTab(QWidget):
         except Exception as exc:
             QMessageBox.warning(self, "Error", f"Failed to write cookie: {exc}")
 
+    def _show_selected_account_launch_failed(self, username: str, reason: str):
+        def _warn():
+            QMessageBox.warning(
+                self,
+                "Selected Account Launch Failed",
+                f"Fleasion could not launch Roblox as {username}.\n\n"
+                f"{reason}\n\n"
+                "Opening Roblox normally may use the account already signed in to Roblox instead.",
+            )
+
+        self._on_main(_warn)
+
+    def _get_launch_auth_ticket(self, cookie: str, mode: str) -> str | None:
+        log_buffer.log("accounts", f"Requesting auth ticket for {mode} launch")
+        ticket = _get_auth_ticket(cookie)
+        if ticket:
+            log_buffer.log("accounts", f"Auth-ticket retrieval succeeded for {mode} launch")
+        else:
+            log_buffer.log("accounts", f"Auth-ticket retrieval failed for {mode} launch")
+        return ticket
+
     def _launch_account_thread(
         self,
         cookie: str,
@@ -1694,31 +1821,28 @@ class RandoStuffTab(QWidget):
         launch_ok = False
         if place_id and link_code and launch_place_id:
             # Private server launch
-            ticket = _get_auth_ticket(cookie)
+            ticket = self._get_launch_auth_ticket(cookie, "private-server")
             if ticket:
                 access_code = _get_access_code(place_id, link_code, cookie) or link_code
-                tracker_id = random.randint(10_000_000_000, 99_999_999_999)
-                place_launcher_url = (
-                    f"https://www.roblox.com/Game/PlaceLauncher.ashx"
-                    f"?request=RequestPrivateGame"
-                    f"&browserTrackerId={tracker_id}"
-                    f"&placeId={launch_place_id}"
-                    f"&accessCode={access_code}"
-                    f"&linkCode={link_code}"
-                    f"&joinAttemptId={uuid.uuid4()}"
-                )
-                roblox_player_uri = (
-                    f"roblox-player:1+launchmode:play+gameinfo:{ticket}"
-                    f"+launchtime:{int(time.time() * 1000)}"
-                    f"+placelauncherurl:{quote(place_launcher_url, safe='')}"
-                    f"+browsertrackerid:{tracker_id}+robloxLocale:en_us+gameLocale:en_us"
-                    f"+channel:+LaunchExp:InApp"
+                roblox_player_uri = _build_auth_ticket_private_server_uri(
+                    ticket,
+                    launch_place_id,
+                    access_code=access_code,
+                    link_code=link_code,
                 )
                 log_buffer.log("accounts", f"Launching Roblox URI to placeId={launch_place_id} (private server)")
                 launch_ok = launch_as_standard_user(roblox_player_uri)
                 if not launch_ok:
                     log_buffer.log("accounts", "Failed to launch Roblox URI without elevation")
             else:
+                if IS_MACOS:
+                    self._show_selected_account_launch_failed(
+                        username,
+                        "Roblox did not issue an authentication ticket for the private-server launch.",
+                    )
+                    launch_ok = False
+                    log_buffer.log("accounts", f"Launch failed for account: {username}")
+                    return
                 log_buffer.log("accounts", "Failed to get auth ticket, falling back to deeplink")
                 deeplink = f"roblox://experiences/start?placeId={launch_place_id}&linkCode={link_code}"
                 log_buffer.log("accounts", f"Launching Roblox executable fallback: {exe}")
@@ -1733,31 +1857,15 @@ class RandoStuffTab(QWidget):
                 launch_ok = exe_started and deeplink_started
         elif launch_place_id:
             # Normal game link — optionally join a specific job
-            ticket = _get_auth_ticket(cookie)
+            ticket = self._get_launch_auth_ticket(cookie, "place" if not job_id else "job-id")
             if ticket:
-                tracker_id = random.randint(10_000_000_000, 99_999_999_999)
-                if job_id:
-                    request_type = "RequestGameJob"
-                    extra = f"&gameId={job_id}"
-                else:
-                    request_type = "RequestGame"
-                    extra = ""
+                if not job_id:
                     with self._lock:
                         self._account_manager_capture_place_id = launch_place_id
-                place_launcher_url = (
-                    f"https://www.roblox.com/Game/PlaceLauncher.ashx"
-                    f"?request={request_type}"
-                    f"&browserTrackerId={tracker_id}"
-                    f"&placeId={launch_place_id}"
-                    f"{extra}"
-                    f"&joinAttemptId={uuid.uuid4()}"
-                )
-                roblox_player_uri = (
-                    f"roblox-player:1+launchmode:play+gameinfo:{ticket}"
-                    f"+launchtime:{int(time.time() * 1000)}"
-                    f"+placelauncherurl:{quote(place_launcher_url, safe='')}"
-                    f"+browsertrackerid:{tracker_id}+robloxLocale:en_us+gameLocale:en_us"
-                    f"+channel:+LaunchExp:InApp"
+                roblox_player_uri = _build_auth_ticket_place_uri(
+                    ticket,
+                    launch_place_id,
+                    job_id=job_id,
                 )
                 if job_id:
                     log_buffer.log("accounts", f"Launching Roblox URI to placeId={launch_place_id}, gameId={job_id}")
@@ -1767,6 +1875,14 @@ class RandoStuffTab(QWidget):
                 if not launch_ok:
                     log_buffer.log("accounts", "Failed to launch Roblox URI without elevation")
             else:
+                if IS_MACOS:
+                    self._show_selected_account_launch_failed(
+                        username,
+                        "Roblox did not issue an authentication ticket for the selected-account place launch.",
+                    )
+                    launch_ok = False
+                    log_buffer.log("accounts", f"Launch failed for account: {username}")
+                    return
                 log_buffer.log("accounts", "Failed to get auth ticket, falling back to deeplink")
                 if not job_id:
                     with self._lock:
@@ -1789,10 +1905,28 @@ class RandoStuffTab(QWidget):
                     log_buffer.log("accounts", "Failed to launch Roblox deeplink without elevation")
                 launch_ok = exe_started and deeplink_started
         else:
-            log_buffer.log("accounts", f"Launching Roblox executable: {exe}")
-            launch_ok = launch_as_standard_user(exe)
-            if not launch_ok:
-                log_buffer.log("accounts", "Failed to launch Roblox Player without elevation")
+            if IS_MACOS:
+                ticket = self._get_launch_auth_ticket(cookie, "app")
+                if ticket:
+                    roblox_player_uri = _build_auth_ticket_app_uri(ticket)
+                    log_buffer.log("accounts", "Launching Roblox app URI for selected macOS account")
+                    launch_ok = launch_as_standard_user(roblox_player_uri)
+                    if not launch_ok:
+                        log_buffer.log("accounts", "Failed to launch Roblox app URI without elevation")
+                        self._show_selected_account_launch_failed(
+                            username,
+                            "Roblox accepted the account ticket request, but macOS did not open the Roblox app URI.",
+                        )
+                else:
+                    self._show_selected_account_launch_failed(
+                        username,
+                        "Roblox did not issue an authentication ticket for the app launch.",
+                    )
+            else:
+                log_buffer.log("accounts", f"Launching Roblox executable: {exe}")
+                launch_ok = launch_as_standard_user(exe)
+                if not launch_ok:
+                    log_buffer.log("accounts", "Failed to launch Roblox Player without elevation")
         if launch_ok:
             log_buffer.log("accounts", f"Launched Roblox for account: {username}")
         else:

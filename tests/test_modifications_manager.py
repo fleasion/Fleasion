@@ -1,6 +1,8 @@
 import json
 import threading
 
+import pytest
+
 from Fleasion.modifications.fflag_manager import FastFlagManager
 from Fleasion.modifications.manager import ModificationManager, normalise_target_path
 
@@ -9,6 +11,22 @@ def test_normalise_target_path_converts_windows_separators_on_posix():
     assert normalise_target_path(r"content\textures\MouseLockedCursor.png").as_posix() == (
         "content/textures/MouseLockedCursor.png"
     )
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "",
+        "/tmp/outside.bin",
+        r"C:\Windows\outside.bin",
+        "content/../outside.bin",
+        "../outside.bin",
+        ".",
+    ],
+)
+def test_normalise_target_path_rejects_escape_paths(target):
+    with pytest.raises(ValueError):
+        normalise_target_path(target)
 
 
 def test_stash_write_and_restore_use_normalised_target_paths(tmp_path):

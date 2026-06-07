@@ -27,7 +27,7 @@ MACOS_PROXY_HELPER_CONTROL_PORT = 58444
 STRIPPABLE_ASSET_TYPES = {'TexturePack'}
 
 # Icon
-ICON_FILENAME = 'fleasionlogoHR.ico'
+ICON_FILENAME = 'fleasionlogoHR.icns' if sys.platform == 'darwin' else 'fleasionlogoHR.ico'
 
 _LOCAL_APPDATA_OVERRIDE_ARG = '--fleasion-user-localappdata='
 _USER_HOME_ENV = 'FLEASION_USER_HOME'
@@ -158,5 +158,14 @@ DEFAULT_SETTINGS = {
 
 def get_icon_path() -> Path | None:
     """Get the path to the application icon file."""
-    path = Path(getattr(sys, '_MEIPASS', Path(__file__).parent.parent)) / ICON_FILENAME
-    return path if path.exists() else None
+    base = Path(getattr(sys, '_MEIPASS', Path(__file__).parent.parent))
+    candidates = (
+        ('fleasionlogoHR.icns', 'fleasionlogoHR.ico')
+        if sys.platform == 'darwin'
+        else ('fleasionlogoHR.ico', 'fleasionlogoHR.icns')
+    )
+    for filename in candidates:
+        path = base / filename
+        if path.exists():
+            return path
+    return None
