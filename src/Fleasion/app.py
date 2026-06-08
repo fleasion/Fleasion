@@ -15,6 +15,7 @@ from pathlib import Path
 from PyQt6.QtCore import Qt, QTimer, QSharedMemory, QObject, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import QApplication, QMessageBox, QPushButton, QDialog, QVBoxLayout, QHBoxLayout, QLabel
 
+from . import __version__
 from .config import ConfigManager
 from .modifications import ModificationManager
 from .prejsons import download_prejsons
@@ -859,6 +860,7 @@ def main():
     _parser.add_argument('--fleasion-user-localappdata', help=_ap.SUPPRESS)
     _args, _ = _parser.parse_known_args()
     _suppress_dashboard = _args.no_dashboard
+    log_buffer.log('App', f'Version {__version__}')
 
     current_platform = platform.system()
     if current_platform not in {'Windows', 'Darwin'}:
