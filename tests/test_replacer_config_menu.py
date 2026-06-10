@@ -84,6 +84,42 @@ def test_scrollable_config_menu_toggles_from_full_row_width():
     assert app is not None
 
 
+def test_scrollable_config_menu_recalculates_geometry_when_entries_change():
+    app = _qapp()
+    popup = _ScrollableConfigMenu(checkable=True)
+
+    popup.set_entries(
+        [{'name': 'Default', 'checked': True}, {'name': 'z', 'checked': False}],
+        minimum_width=160,
+    )
+    two_row_height = popup.sizeHint().height()
+
+    popup.set_entries(
+        [
+            {'name': 'Default', 'checked': True},
+            {'name': 'z', 'checked': False},
+            {'name': 'z copy', 'checked': False},
+            {'name': 'z copy 2', 'checked': False},
+        ],
+        minimum_width=160,
+    )
+    four_row_height = popup.sizeHint().height()
+
+    popup.set_entries(
+        [
+            {'name': 'Default', 'checked': True},
+            {'name': 'z', 'checked': False},
+            {'name': 'z copy', 'checked': False},
+        ],
+        minimum_width=160,
+    )
+    three_row_height = popup.sizeHint().height()
+
+    assert four_row_height > three_row_height > two_row_height
+    assert popup.scroll_area.height() == popup._natural_content_size.height()
+    assert app is not None
+
+
 def test_enabled_menu_button_press_loads_new_config_file_from_disk(tmp_path, monkeypatch):
     app = _qapp()
     config_dir = tmp_path / 'FleasionNT'
@@ -103,12 +139,14 @@ def test_enabled_menu_button_press_loads_new_config_file_from_disk(tmp_path, mon
             encoding='utf-8',
         )
 
-        window.enabled_menu_btn.pressed.emit()
+        window.enabled_menu_btn.click()
+        app.processEvents()
 
         assert 'z copy' in window.config_manager.config_names
         assert list(window.enabled_menu.item_widgets) == ['Default', 'z copy']
         assert not window.enabled_menu.item_widgets['z copy'].isChecked()
         assert window.enabled_menu_btn.text() == 'Default'
     finally:
+        window.enabled_menu.hide()
         window.close()
     assert app is not None

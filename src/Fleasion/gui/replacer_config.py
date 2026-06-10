@@ -299,9 +299,9 @@ class _ScrollableConfigMenu(QMenu):
         self.scroll_area.installEventFilter(self)
         self.scroll_area.viewport().installEventFilter(self)
 
-        action = QWidgetAction(self)
-        action.setDefaultWidget(self.scroll_area)
-        self.addAction(action)
+        self._content_action = QWidgetAction(self)
+        self._content_action.setDefaultWidget(self.scroll_area)
+        self.addAction(self._content_action)
         self.aboutToShow.connect(self._guard_opening_mouse_release)
 
     def set_entries(self, entries: list[dict], *, minimum_width: int = 0):
@@ -346,6 +346,7 @@ class _ScrollableConfigMenu(QMenu):
         container.adjustSize()
         self._natural_content_size = container.sizeHint()
         self._set_popup_content_size(self._natural_content_size.height())
+        self._reset_action_geometry()
 
     def constrain_to_button(self, button: QPushButton):
         """Bound the popup to the screen containing the owning button."""
@@ -396,7 +397,19 @@ class _ScrollableConfigMenu(QMenu):
         widget = self.scroll_area.widget()
         if widget is not None:
             widget.setMinimumWidth(viewport_width)
+            widget.setFixedWidth(viewport_width)
         self.scroll_area.setFixedSize(max(1, width), height)
+        self.scroll_area.updateGeometry()
+        self.updateGeometry()
+
+    def _reset_action_geometry(self):
+        """Invalidate QMenu/QWidgetAction cached geometry after row count changes."""
+        self.removeAction(self._content_action)
+        self.addAction(self._content_action)
+        self.adjustSize()
+        self.resize(self.sizeHint())
+        self.updateGeometry()
+        self.update()
 
     def _select_item(self, name: str):
         self.item_selected.emit(name)
