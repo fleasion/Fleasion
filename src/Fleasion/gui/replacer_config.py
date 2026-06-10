@@ -649,6 +649,7 @@ class ReplacerConfigWindow(QDialog):
         self.config_menu.aboutToShow.connect(self._rebuild_editing_menu)
         self.config_menu.item_selected.connect(self._on_config_select)
         self.config_menu_btn.setMenu(self.config_menu)
+        self.config_menu_btn.pressed.connect(self._rebuild_editing_menu)
         row1.addWidget(self.config_menu_btn)
 
         self._rebuild_editing_menu()
@@ -664,6 +665,7 @@ class ReplacerConfigWindow(QDialog):
         self.enabled_menu.aboutToShow.connect(self._rebuild_enabled_menu)
         self.enabled_menu.item_toggled.connect(self._on_config_toggle)
         self.enabled_menu_btn.setMenu(self.enabled_menu)
+        self.enabled_menu_btn.pressed.connect(self._rebuild_enabled_menu)
         row1.addWidget(self.enabled_menu_btn)
 
         self._rebuild_enabled_menu()
@@ -882,8 +884,11 @@ class ReplacerConfigWindow(QDialog):
         dialog.raise_()
         dialog.activateWindow()
 
-    def _rebuild_enabled_menu(self):
+    def _rebuild_enabled_menu(self, *, sync_from_disk: bool = True):
         """Rebuild the enabled configs menu."""
+        if sync_from_disk:
+            self._sync_config_state_from_disk(update_enabled_menu=False)
+
         self.config_enabled_vars.clear()
 
         # Clean up enabled configs that no longer exist on disk
@@ -1143,7 +1148,7 @@ class ReplacerConfigWindow(QDialog):
         """Refresh config controls from the current files on disk."""
         self._sync_config_state_from_disk()
 
-    def _sync_config_state_from_disk(self) -> bool:
+    def _sync_config_state_from_disk(self, *, update_enabled_menu: bool = True) -> bool:
         """Refresh config settings from disk and update dependent UI."""
         previous_config = self.config_manager.settings.get('last_config', 'Default')
         previous_tree_config = getattr(self, '_tree_config_name', previous_config)
@@ -1153,8 +1158,8 @@ class ReplacerConfigWindow(QDialog):
         tree_config_changed = previous_tree_config != current_config
 
         self.config_menu_btn.setText(' \u200A' + current_config)
-        if hasattr(self, 'enabled_menu'):
-            self._rebuild_enabled_menu()
+        if update_enabled_menu and hasattr(self, 'enabled_menu'):
+            self._rebuild_enabled_menu(sync_from_disk=False)
         if (changed or selected_config_changed or tree_config_changed) and hasattr(self, 'tree'):
             self.undo_manager.clear()
             self.undo_manager.save_state(self.config_manager.replacement_rules)

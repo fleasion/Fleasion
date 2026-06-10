@@ -55,6 +55,20 @@ _backend_port = 58443
 logger = logging.getLogger("fleasion-proxy-helper")
 
 
+def _default_hosts_content():
+    return (
+        "##\n"
+        "# Host Database\n"
+        "#\n"
+        "# localhost is used to configure the loopback interface\n"
+        "# when the system is booting.  Do not change this entry.\n"
+        "##\n"
+        "127.0.0.1\tlocalhost\n"
+        "255.255.255.255\tbroadcasthost\n"
+        "::1             localhost\n"
+    )
+
+
 def _configure_logging(log_path):
     logger.setLevel(logging.INFO)
     handler = RotatingFileHandler(log_path, maxBytes=2 * 1024 * 1024, backupCount=2)
@@ -101,6 +115,7 @@ def _flush_dns():
 def _set_hosts(hosts):
     global _active_hosts, _last_heartbeat
 
+    Path(HOSTS_FILE).parent.mkdir(exist_ok=True)
     requested = {str(host).strip().lower() for host in hosts}
     if not requested.issubset(ALLOWED_HOSTS):
         raise ValueError("request contains a host outside the Fleasion allowlist")
@@ -109,7 +124,7 @@ def _set_hosts(hosts):
         with open(HOSTS_FILE, "r", encoding="utf-8", errors="replace") as handle:
             existing = handle.read()
     except FileNotFoundError:
-        existing = ""
+        existing = _default_hosts_content()
 
     entries = _parse_entries(existing)
     for host in sorted(requested):

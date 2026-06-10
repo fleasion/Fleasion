@@ -40,6 +40,43 @@ def test_helper_only_manages_allowlisted_fleasion_hosts(tmp_path, monkeypatch):
         daemon._set_hosts({"example.com"})
 
 
+def test_helper_creates_missing_hosts_parent_directory(tmp_path, monkeypatch):
+    hosts_root = tmp_path / "system"
+    hosts_root.mkdir()
+    hosts_file = hosts_root / "etc" / "hosts"
+    token_file = tmp_path / "token"
+    token_file.write_text("x" * 48, encoding="utf-8")
+    monkeypatch.setattr(daemon, "HOSTS_FILE", str(hosts_file))
+    monkeypatch.setattr(daemon, "_token_file", str(token_file))
+    monkeypatch.setattr(daemon, "_flush_dns", lambda: None)
+    monkeypatch.setattr(daemon, "_active_hosts", set())
+    monkeypatch.setattr(daemon, "_last_heartbeat", 0.0)
+
+    daemon._set_hosts({"assetdelivery.roblox.com"})
+
+    assert hosts_file.parent.is_dir()
+    assert "127.0.0.1 assetdelivery.roblox.com # Fleasion proxy entry" in hosts_file.read_text(encoding="utf-8")
+
+
+def test_helper_recreates_missing_hosts_file_with_macos_defaults(tmp_path, monkeypatch):
+    hosts_file = tmp_path / "hosts"
+    token_file = tmp_path / "token"
+    token_file.write_text("x" * 48, encoding="utf-8")
+    monkeypatch.setattr(daemon, "HOSTS_FILE", str(hosts_file))
+    monkeypatch.setattr(daemon, "_token_file", str(token_file))
+    monkeypatch.setattr(daemon, "_flush_dns", lambda: None)
+    monkeypatch.setattr(daemon, "_active_hosts", set())
+    monkeypatch.setattr(daemon, "_last_heartbeat", 0.0)
+
+    daemon._set_hosts({"assetdelivery.roblox.com"})
+
+    content = hosts_file.read_text(encoding="utf-8")
+    assert "127.0.0.1\tlocalhost" in content
+    assert "255.255.255.255\tbroadcasthost" in content
+    assert "::1             localhost" in content
+    assert "127.0.0.1 assetdelivery.roblox.com # Fleasion proxy entry" in content
+
+
 def test_helper_rejects_conflicting_mapping(tmp_path, monkeypatch):
     hosts_file, _ = _reset_daemon_state(tmp_path, monkeypatch)
     hosts_file.write_text("203.0.113.1 assetdelivery.roblox.com\n", encoding="utf-8")

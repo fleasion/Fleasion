@@ -6,6 +6,8 @@ from typing import Any
 
 from .paths import LOG_FILE, LOGS_DIR
 
+MAX_LOG_FILE_BYTES = 1 * 1024 * 1024
+
 
 class LogBuffer:
     """Thread-safe log buffer with batched callback notifications."""
@@ -22,12 +24,18 @@ class LogBuffer:
     def _prepare_log_file(self):
         try:
             LOGS_DIR.mkdir(parents=True, exist_ok=True)
-            if LOG_FILE.exists() and LOG_FILE.stat().st_size > 5 * 1024 * 1024:
-                rotated = LOG_FILE.with_suffix('.log.1')
-                rotated.unlink(missing_ok=True)
-                LOG_FILE.replace(rotated)
+            self._rotate_log_file_if_needed()
         except OSError:
             pass
+
+    def _rotate_log_file_if_needed(self, incoming_bytes: int = 0):
+        if not LOG_FILE.exists():
+            return
+        if LOG_FILE.stat().st_size + incoming_bytes <= MAX_LOG_FILE_BYTES:
+            return
+        rotated = LOG_FILE.with_suffix('.log.1')
+        rotated.unlink(missing_ok=True)
+        LOG_FILE.replace(rotated)
 
     def log(self, category: str, message: str):
         """Add a log entry (callbacks are batched to reduce overhead)."""
@@ -39,8 +47,10 @@ class LogBuffer:
             self._buffer.append(entry)
             try:
                 LOGS_DIR.mkdir(parents=True, exist_ok=True)
+                line = f'{now:%Y-%m-%d} {entry}\n'
+                self._rotate_log_file_if_needed(len(line.encode('utf-8')))
                 with LOG_FILE.open('a', encoding='utf-8') as handle:
-                    handle.write(f'{now:%Y-%m-%d} {entry}\n')
+                    handle.write(line)
             except OSError:
                 pass
 

@@ -10,9 +10,11 @@ def test_proxy_ca_dir_falls_back_when_configured_dir_is_not_writable(tmp_path, m
     configured = tmp_path / "proxy_ca"
     fallback = tmp_path / "proxy_ca_user"
     checked = []
+    logs = []
 
     monkeypatch.setattr(proxy_master, "PROXY_CA_DIR", configured)
     monkeypatch.setattr(proxy_master, "_ACTIVE_PROXY_CA_DIR", configured)
+    monkeypatch.setattr(proxy_master, "log_buffer", SimpleNamespace(log=lambda category, message: logs.append((category, message))))
     monkeypatch.setattr(
         proxy_master,
         "_directory_is_writable",
@@ -24,6 +26,55 @@ def test_proxy_ca_dir_falls_back_when_configured_dir_is_not_writable(tmp_path, m
     assert selected == fallback
     assert proxy_master._current_proxy_ca_dir() == fallback
     assert checked == [configured, fallback]
+    assert logs == []
+
+
+def test_cacert_state_does_not_log_when_healthy(monkeypatch):
+    logs = []
+    healthy_state = {
+        "path": "/Applications/Roblox.app/Contents/Resources/ssl/cacert.pem",
+        "install": "Resources",
+        "exists": True,
+        "size": 229889,
+        "mtime_ns": 1,
+        "sha256": "a" * 64,
+        "total_certs": 148,
+        "fleasion_certs": 1,
+        "current_fleasion_certs": 1,
+        "healthy": True,
+        "error": "",
+    }
+
+    monkeypatch.setattr(proxy_master, "log_buffer", SimpleNamespace(log=lambda category, message: logs.append((category, message))))
+    monkeypatch.setattr(proxy_master, "_describe_cacert_state", lambda _path, _pem: healthy_state)
+
+    assert proxy_master._log_cacert_state(Path("/tmp/cacert.pem"), "ca", "healthy check") == healthy_state
+    assert logs == []
+
+
+def test_cacert_state_still_logs_when_unhealthy(monkeypatch):
+    logs = []
+    unhealthy_state = {
+        "path": "/Applications/Roblox.app/Contents/Resources/ssl/cacert.pem",
+        "install": "Resources",
+        "exists": True,
+        "size": 100,
+        "mtime_ns": 1,
+        "sha256": "b" * 64,
+        "total_certs": 1,
+        "fleasion_certs": 0,
+        "current_fleasion_certs": 0,
+        "healthy": False,
+        "error": "",
+    }
+
+    monkeypatch.setattr(proxy_master, "log_buffer", SimpleNamespace(log=lambda category, message: logs.append((category, message))))
+    monkeypatch.setattr(proxy_master, "_describe_cacert_state", lambda _path, _pem: unhealthy_state)
+
+    proxy_master._log_cacert_state(Path("/tmp/cacert.pem"), "ca", "unhealthy check")
+
+    assert any("unhealthy check" in message for _category, message in logs)
+    assert any("not launch-healthy" in message for _category, message in logs)
 
 
 def test_macos_proxy_start_blocks_when_ca_patch_verification_fails(tmp_path, monkeypatch):

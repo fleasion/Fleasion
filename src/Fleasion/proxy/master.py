@@ -1211,6 +1211,8 @@ def _write_hosts_file(content: str) -> None:
 
     Raises ``OSError`` if both strategies are exhausted.
     """
+    HOSTS_FILE.parent.mkdir(exist_ok=True)
+
     # --- Strategy 0: clear read-only attribute if present ---
     if HOSTS_FILE.exists():
         import stat
@@ -1900,7 +1902,6 @@ def _install_ca_into_roblox_with_helper(ca_pem: str, dirs: list[Path]) -> tuple[
             roblox_dir / 'ssl' / 'cacert.pem',
             ca_pem,
             f'cacert.pem after macOS helper patch for {roblox_dir.name}',
-            log_healthy=True,
         )
         verified.append(state)
         all_healthy = all_healthy and bool(state.get('healthy'))
@@ -1931,7 +1932,7 @@ def _install_ca_into_roblox(ca_pem: str) -> tuple[bool, dict]:
             ssl_dir.mkdir(exist_ok=True)
             _log_cacert_health(ca_file, ca_pem)
             changed, fleasion_count, current_count = _upsert_fleasion_ca_in_cacert(ca_file, ca_pem)
-            post_state = _log_cacert_state(ca_file, ca_pem, f'cacert.pem after startup patch for {d.name}', log_healthy=True)
+            post_state = _log_cacert_state(ca_file, ca_pem, f'cacert.pem after startup patch for {d.name}')
             details['verified'].append(post_state)
             ok = ok and bool(post_state.get('healthy'))
             already_current = (

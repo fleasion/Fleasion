@@ -1,3 +1,4 @@
+import json
 import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -6,7 +7,8 @@ from PyQt6.QtCore import QEvent, QPointF, QRect, Qt
 from PyQt6.QtGui import QMouseEvent
 from PyQt6.QtWidgets import QApplication
 
-from Fleasion.gui.replacer_config import _ScrollableConfigMenu
+from Fleasion.config import manager as manager_module
+from Fleasion.gui.replacer_config import ReplacerConfigWindow, _ScrollableConfigMenu
 
 
 def _qapp():
@@ -79,4 +81,34 @@ def test_scrollable_config_menu_toggles_from_full_row_width():
 
     assert row.isChecked()
     assert toggles == [('a', True)]
+    assert app is not None
+
+
+def test_enabled_menu_button_press_loads_new_config_file_from_disk(tmp_path, monkeypatch):
+    app = _qapp()
+    config_dir = tmp_path / 'FleasionNT'
+    configs_dir = config_dir / 'configs'
+    monkeypatch.setattr(manager_module, 'CONFIG_DIR', config_dir)
+    monkeypatch.setattr(manager_module, 'CONFIG_FILE', config_dir / 'settings.json')
+    monkeypatch.setattr(manager_module, 'CONFIGS_FOLDER', configs_dir)
+
+    config_manager = manager_module.ConfigManager()
+    config_manager.set_config_enabled('Default', True)
+    window = ReplacerConfigWindow(config_manager)
+    try:
+        assert list(window.enabled_menu.item_widgets) == ['Default']
+
+        (configs_dir / 'z copy.json').write_text(
+            json.dumps({'replacement_rules': []}),
+            encoding='utf-8',
+        )
+
+        window.enabled_menu_btn.pressed.emit()
+
+        assert 'z copy' in window.config_manager.config_names
+        assert list(window.enabled_menu.item_widgets) == ['Default', 'z copy']
+        assert not window.enabled_menu.item_widgets['z copy'].isChecked()
+        assert window.enabled_menu_btn.text() == 'Default'
+    finally:
+        window.close()
     assert app is not None
