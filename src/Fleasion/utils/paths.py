@@ -1,11 +1,12 @@
 """Application paths and constants."""
 
 import sys
+import os
 from pathlib import Path
 
 # Application metadata
 APP_NAME = 'Fleasion'
-APP_VERSION = '2.0.1'
+APP_VERSION = '2.1.0'
 APP_AUTHOR = '@8ar__, @dis_spencer, @1_v'
 APP_LOGIC = '@blockce, @0100152000022000, @Yeha., @emk530'
 APP_CONCEPT = '@cro.p'
@@ -13,26 +14,71 @@ APP_DISCORD = 'discord.gg/hXyhKehEZF'
 APP_REPO = 'https://github.com/fleasion/Fleasion'
 
 # Process and proxy configuration
-ROBLOX_PROCESS = 'RobloxPlayerBeta.exe'
-ROBLOX_STUDIO_PROCESS = 'RobloxStudioBeta.exe'
+if sys.platform == 'darwin':
+    ROBLOX_PROCESS = 'RobloxPlayer'
+    ROBLOX_STUDIO_PROCESS = 'RobloxStudio'
+else:
+    ROBLOX_PROCESS = 'RobloxPlayerBeta.exe'
+    ROBLOX_STUDIO_PROCESS = 'RobloxStudioBeta.exe'
 PROXY_TARGET_HOST = 'assetdelivery.roblox.com'
 PROXY_PORT = 443
+MACOS_PROXY_BACKEND_PORT = 58443
+MACOS_PROXY_HELPER_CONTROL_PORT = 58444
 STRIPPABLE_ASSET_TYPES = {'TexturePack'}
 
 # Icon
-ICON_FILENAME = 'fleasionlogoHR.ico'
+ICON_FILENAME = 'fleasionlogoHR.icns' if sys.platform == 'darwin' else 'fleasionlogoHR.ico'
 
-# Windows paths
-LOCAL_APPDATA = Path.home() / 'AppData' / 'Local'
-STORAGE_DB = LOCAL_APPDATA / 'Roblox' / 'rbx-storage.db'
-# Microsoft Store (GDK) version of Roblox stores its DB here
-STORAGE_DB_GDK = LOCAL_APPDATA / 'RobloxPCGDK' / 'rbx-storage.db'
+_LOCAL_APPDATA_OVERRIDE_ARG = '--fleasion-user-localappdata='
+_USER_HOME_ENV = 'FLEASION_USER_HOME'
+
+
+def _get_user_home() -> Path:
+    value = os.environ.get(_USER_HOME_ENV)
+    if value:
+        return Path(os.path.expandvars(value)).expanduser()
+    return Path.home()
+
+
+def _get_local_appdata() -> Path:
+    """Return the intended interactive user's local application-data directory."""
+    for arg in sys.argv[1:]:
+        if arg.startswith(_LOCAL_APPDATA_OVERRIDE_ARG):
+            value = arg.split('=', 1)[1].strip().strip('"')
+            if value:
+                return Path(os.path.expandvars(value))
+
+    if sys.platform == 'darwin':
+        return USER_HOME / 'Library' / 'Application Support'
+
+    local_appdata = os.environ.get('LOCALAPPDATA')
+    if local_appdata:
+        return Path(local_appdata)
+
+    if sys.platform == 'win32':
+        return Path.home() / 'AppData' / 'Local'
+
+    return USER_HOME
+
+
+# Platform paths
+USER_HOME = _get_user_home()
+LOCAL_APPDATA = _get_local_appdata()
+if sys.platform == 'darwin':
+    STORAGE_DB = USER_HOME / 'Library' / 'Roblox' / 'rbx-storage.db'
+    STORAGE_DB_GDK = USER_HOME / 'Library' / 'RobloxPCGDK' / 'rbx-storage.db'
+else:
+    STORAGE_DB = LOCAL_APPDATA / 'Roblox' / 'rbx-storage.db'
+    # Microsoft Store (GDK) version of Roblox stores its DB here
+    STORAGE_DB_GDK = LOCAL_APPDATA / 'RobloxPCGDK' / 'rbx-storage.db'
 
 # Application directories
 CONFIG_DIR = LOCAL_APPDATA / 'FleasionNT'
 APP_CACHE_DIR = CONFIG_DIR / 'cache'
 CONFIG_FILE = CONFIG_DIR / 'settings.json'
 CONFIGS_FOLDER = CONFIG_DIR / 'configs'
+LOGS_DIR = CONFIG_DIR / 'logs'
+LOG_FILE = LOGS_DIR / 'fleasion.log'
 
 # Proxy CA cert directory (replaces MITMPROXY_DIR)
 PROXY_CA_DIR = CONFIG_DIR / 'proxy_ca'
@@ -60,11 +106,26 @@ DEFAULT_SETTINGS = {
     'first_time_setup_complete': False,
     'auto_delete_cache_on_exit': True,
     'clear_cache_on_launch': True,
+    'proxy_features_enabled': True,
+    'upstream_transport_mode': 'auto',
+    'upstream_http_connect_host': '',
+    'upstream_http_connect_port': 0,
+    'upstream_http_connect_username': '',
+    'upstream_http_connect_password': '',
+    'upstream_socks5_host': '',
+    'upstream_socks5_port': 0,
+    'upstream_socks5_username': '',
+    'upstream_socks5_password': '',
+    'wire_preserving_passthrough': False,
+    'vpn_compat_max_assetdelivery_connections': 16,
+    'vpn_compat_max_cdn_connections': 32,
     'run_on_boot': True,
     'close_to_tray': True,
+    'close_scraped_games_menu_on_open': True,
     'close_viewer_on_replace': True,
     'show_replacer_notifications': True,
     'multi_instance_launching': False,
+    'export_naming': ['name', 'id'],
     # Scraper tab - column visibility
     'scraper_column_visibility': {
         'hash_name':  True,
@@ -82,10 +143,29 @@ DEFAULT_SETTINGS = {
     'scraper_blacklist': [],
     'subplace_blacklist': [],
     'subplace_blacklist_mode': 'block',
+    'username_spoofer': {
+        'save_settings': False,
+        'others_name': '',
+        'others_apply_ingame': False,
+        'others_verified': False,
+        'self_name': '',
+        'self_apply_ingame': False,
+        'self_verified': False,
+        'self_game_creator': False,
+    },
 }
 
 
 def get_icon_path() -> Path | None:
     """Get the path to the application icon file."""
-    path = Path(getattr(sys, '_MEIPASS', Path(__file__).parent.parent)) / ICON_FILENAME
-    return path if path.exists() else None
+    base = Path(getattr(sys, '_MEIPASS', Path(__file__).parent.parent))
+    candidates = (
+        ('fleasionlogoHR.icns', 'fleasionlogoHR.ico')
+        if sys.platform == 'darwin'
+        else ('fleasionlogoHR.ico', 'fleasionlogoHR.icns')
+    )
+    for filename in candidates:
+        path = base / filename
+        if path.exists():
+            return path
+    return None

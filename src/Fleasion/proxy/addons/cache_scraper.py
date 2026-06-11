@@ -17,22 +17,224 @@ from urllib.parse import urlparse
 import requests
 
 from ...cache.cache_manager import CacheManager
-from ...utils import log_buffer
+from ...utils import format_count, log_buffer
 
 try:
     import orjson
-    def _loads(s):
-        return orjson.loads(s)
+    def _loads(data):
+        return orjson.loads(data)
 except ImportError:
     import json
-    def _loads(s):
-        return json.loads(s)
+    def _loads(data):
+        return json.loads(data)
 
 logger = logging.getLogger(__name__)
 
 ASSET_DELIVERY_HOST = 'assetdelivery.roblox.com'
-CDN_HOST = 'fts.rbxcdn.com'
+CDN_HOSTS = frozenset({'fts.rbxcdn.com', 'contentdelivery.roblox.com'})
 DELIVERY_ENDPOINT = '/v1/assets/batch'
+
+
+def _b64decode_padded(value: str) -> bytes:
+    raw = str(value).encode('ascii', errors='ignore')
+    raw += b'=' * (-len(raw) % 4)
+    return base64.urlsafe_b64decode(raw)
+
+
+def _normalized_build_type(value):
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.isdigit():
+        try:
+            return int(text)
+        except ValueError:
+            pass
+    return ''.join(ch for ch in text.lower() if ch.isalnum())
+
+
+def _texpack_slot_from_build_type(value) -> int | None:
+    normalized = _normalized_build_type(value)
+    if isinstance(normalized, int):
+        return normalized if 0 <= normalized <= 2 else None
+    if not isinstance(normalized, str) or not normalized:
+        return None
+    if any(token in normalized for token in ('color', 'albedo', 'diffuse', 'basecolor')):
+        return 0
+    if any(token in normalized for token in ('normal', 'bump')):
+        return 1
+    if (
+        'metal' in normalized or 'rough' in normalized or 'emiss' in normalized
+        or 'height' in normalized or 'displace' in normalized or normalized == 'orm'
+    ):
+        return 2
+    return None
+
+
+def _texpack_slot_from_request(item: dict) -> int | None:
+    for key in (
+        'requestedBuildType', 'buildType', 'textureType',
+        'textureMap', 'mapType', 'contentType',
+    ):
+        slot = _texpack_slot_from_build_type(item.get(key))
+        if slot is not None:
+            return slot
+    return None
+
+
+def _texpack_build_key(item: dict):
+    for key in (
+        'requestedBuildType', 'buildType', 'textureType',
+        'textureMap', 'mapType', 'contentType',
+    ):
+        value = _normalized_build_type(item.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _normalize_asset_id(asset_id):
+    if isinstance(asset_id, bool):
+        return asset_id
+    if isinstance(asset_id, int):
+        return asset_id
+    if isinstance(asset_id, str) and asset_id.isdigit():
+        try:
+            return int(asset_id)
+        except ValueError:
+            return asset_id
+    return asset_id
+
+
+def _build_texpack_request_slot_map(req_json: list) -> dict[int, int]:
+    texpack_ids: set[int] = set()
+    asset_counts: dict[int, int] = {}
+    for item in req_json:
+        if not isinstance(item, dict):
+            continue
+        aid = _normalize_asset_id(item.get('assetId'))
+        if not isinstance(aid, int):
+            continue
+        asset_counts[aid] = asset_counts.get(aid, 0) + 1
+        asset_type = item.get('assetTypeId')
+        asset_type_name = str(item.get('assetType', '')).lower()
+        if asset_type == 63 or asset_type_name == 'texturepack':
+            texpack_ids.add(aid)
+
+    for item in req_json:
+        if not isinstance(item, dict):
+            continue
+        aid = _normalize_asset_id(item.get('assetId'))
+        if not isinstance(aid, int) or aid in texpack_ids:
+            continue
+        if asset_counts.get(aid, 0) > 1 and (
+            item.get('contentRepresentationPriorityList') is not None
+            or _texpack_build_key(item) is not None
+        ):
+            texpack_ids.add(aid)
+
+    result: dict[int, int] = {}
+    build_slots: dict[int, dict[object, int]] = {}
+    next_slot: dict[int, int] = {}
+    occurrence_slot: dict[int, int] = {}
+
+    for idx, item in enumerate(req_json):
+        if not isinstance(item, dict):
+            continue
+        aid = _normalize_asset_id(item.get('assetId'))
+        if not isinstance(aid, int) or aid not in texpack_ids:
+            continue
+        slot = _texpack_slot_from_request(item)
+        if slot is None:
+            build_key = _texpack_build_key(item)
+            if build_key is not None:
+                slots_for_asset = build_slots.setdefault(aid, {})
+                if build_key not in slots_for_asset:
+                    raw_slot = next_slot.get(aid, 0)
+                    slots_for_asset[build_key] = 2 if raw_slot >= 2 else raw_slot
+                    next_slot[aid] = raw_slot + 1
+                slot = slots_for_asset[build_key]
+            else:
+                raw_slot = occurrence_slot.get(aid, 0)
+                occurrence_slot[aid] = raw_slot + 1
+                slot = 2 if raw_slot >= 2 else raw_slot
+        result[idx] = slot
+
+    return result
+
+
+def _representation_matches_requested(representation: dict, requested) -> bool:
+    for key in (
+        'requestedBuildType', 'buildType', 'contentType',
+        'type', 'format', 'name', 'representationType',
+    ):
+        if _normalized_build_type(representation.get(key)) == requested:
+            return True
+    return False
+
+
+def _select_content_representation(item: dict) -> dict | None:
+    crpl = item.get('contentRepresentationPriorityList')
+    if not crpl:
+        return None
+    try:
+        decoded = _loads(_b64decode_padded(crpl))
+    except Exception:
+        return None
+    if not isinstance(decoded, list) or not decoded:
+        return None
+
+    requested = _normalized_build_type(item.get('requestedBuildType'))
+    if requested is not None:
+        for representation in decoded:
+            if isinstance(representation, dict) and _representation_matches_requested(representation, requested):
+                return representation
+        if isinstance(requested, int) and 0 <= requested < len(decoded):
+            representation = decoded[requested]
+            return representation if isinstance(representation, dict) else None
+
+    if len(decoded) == 1 and isinstance(decoded[0], dict):
+        return decoded[0]
+    return None
+
+
+def _decode_texpack_slot_quality(item: dict) -> tuple[int, int] | None:
+    request_slot = _texpack_slot_from_request(item)
+    if request_slot is not None:
+        return request_slot, 0
+    representation = _select_content_representation(item)
+    if not representation:
+        return None
+    fidelity_b64 = representation.get('fidelity')
+    if not fidelity_b64:
+        return None
+    try:
+        fb = _b64decode_padded(fidelity_b64)
+    except Exception:
+        return None
+    if not fb:
+        return None
+    return fb[0] & 0x3F, (fb[0] >> 6) & 0x3
+
+
+def _decode_selected_representation_slot_quality(item: dict) -> tuple[int, int] | None:
+    representation = item.get('contentRepresentationSpecifier')
+    if not isinstance(representation, dict):
+        return None
+    fidelity_b64 = representation.get('fidelity')
+    if not fidelity_b64:
+        return None
+    try:
+        fb = _b64decode_padded(fidelity_b64)
+    except Exception:
+        return None
+    if not fb:
+        return None
+    return fb[0] & 0x3F, (fb[0] >> 6) & 0x3
 
 
 class CacheScraper:
@@ -103,6 +305,7 @@ class CacheScraper:
         # cached sibling from a previous batch.  The Roblox client won't
         # re-fetch the CDN URL, so we must copy the content ourselves.
         to_copy: list[tuple] = []  # (source_id, dest_id, asset_type, url)
+        texpack_request_slots = _build_texpack_request_slot_map(req_json)
 
         with self._lock:
             for idx, item in enumerate(req_json):
@@ -156,25 +359,20 @@ class CacheScraper:
                 url_list.append(asset_id)
                 tracked += 1
 
-                # For TexturePack slots: decode fidelity byte to learn slot + quality
-                # so process_cdn_response can store each slot KTX2 separately.
+                # For TexturePack slots: decode the selected representation's
+                # fidelity byte to learn slot + quality so process_cdn_response
+                # can store each slot KTX2 separately.
                 if asset_type == 63 and base_url not in self._url_to_texpack_slot:
-                    crpl = item.get('contentRepresentationPriorityList', '')
-                    if crpl:
-                        try:
-                            import base64 as _fb64, json as _fj
-                            crpl_dec = _fj.loads(_fb64.b64decode(crpl))
-                            if crpl_dec:
-                                fid_b64 = crpl_dec[0].get('fidelity', '')
-                                if fid_b64:
-                                    fb = _fb64.b64decode(fid_b64)
-                                    if fb:
-                                        _slot = fb[0] & 0x3F
-                                        _qual = (fb[0] >> 6) & 0x3
-                                        self._url_to_texpack_slot[base_url] = (
-                                            int(asset_id), _slot, _qual)
-                        except Exception:
-                            pass
+                    request_slot = texpack_request_slots.get(idx)
+                    selected_quality = _decode_selected_representation_slot_quality(res_item)
+                    if request_slot is not None:
+                        slot_quality = (request_slot, selected_quality[1] if selected_quality else 0)
+                    else:
+                        slot_quality = selected_quality or _decode_texpack_slot_quality(item)
+                    if slot_quality is not None:
+                        _slot, _qual = slot_quality
+                        self._url_to_texpack_slot[base_url] = (
+                            int(asset_id), _slot, _qual)
 
         # Submit copy tasks outside the lock
         for source_id, dest_id, asset_type, url in to_copy:
@@ -186,10 +384,10 @@ class CacheScraper:
                 log_buffer.log('Cache', f'Failed to submit copy task: {exc}')
 
         if tracked > 0:
-            log_buffer.log('Cache', f'Tracking {tracked} asset(s) for caching')
+            log_buffer.log('Cache', f'Tracking {format_count(tracked, "asset")} for caching')
 
     # ------------------------------------------------------------------
-    # Called from server MITM thread for fts.rbxcdn.com responses
+    # Called from server MITM thread for Roblox CDN responses
     # ------------------------------------------------------------------
 
     def process_cdn_response(self, full_url: str, path: str, body: bytes, content_type: str) -> None:
@@ -517,7 +715,7 @@ class CacheScraper:
 
             self._creator_place_cache[creator_id] = place_ids
             if place_ids:
-                log_buffer.log('Cache', f'Found {len(place_ids)} place(s) for creator {creator_id}')
+                log_buffer.log('Cache', f'Found {format_count(place_ids, "place")} for creator {creator_id}')
             else:
                 log_buffer.log('Cache', f'No games found for creator {creator_id}')
             return place_ids
@@ -750,7 +948,7 @@ class CacheScraper:
                         self._texpack_vslot_channel[(parent_id, virtual_slot)] = channel
                 virtual_slot += 1
             if added:
-                log_buffer.log('Cache', f'TexturePack {parent_id}: mapped {added} sub-asset(s)')
+                log_buffer.log('Cache', f'TexturePack {parent_id}: mapped {format_count(added, "sub-asset")}')
         except Exception as exc:
             log_buffer.log('Cache', f'TexturePack {parent_id} sub-asset parse error: {exc}')
 
@@ -914,7 +1112,7 @@ class CacheScraper:
         )
 
         if is_redirect:
-            # The CDN URL in Location: will be fetched next as an fts.rbxcdn.com
+            # The CDN URL in Location: will be fetched next as a Roblox CDN
             # request, but it WON'T be in _url_to_asset so process_cdn_response
             # will silently drop it. Log only a non-sensitive CDN id.
             _cdn_id = str(location).split('?', 1)[0].rsplit('/', 1)[-1]

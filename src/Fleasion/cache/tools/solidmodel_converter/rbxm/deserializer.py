@@ -8,16 +8,18 @@ from __future__ import annotations
 
 import logging
 import struct
-from typing import Any, cast
+from typing import Any
 
 import lz4.block  # type: ignore[import-untyped]
 
 from .binary_reader import (
     decode_ids,
+    deinterleave_bytes,
     deinterleave_f32,
     deinterleave_i32,
     deinterleave_i64,
     deinterleave_u32,
+    deinterleave_u64,
     read_binary_string,
     read_bytes,
     read_f32,
@@ -32,6 +34,8 @@ from .types import (
     RbxInstance,
     RbxMetadata,
     RbxProperty,
+    RbxRawChunk,
+    RbxRawPropertyChunk,
     RbxTypeInfo,
 )
 
@@ -39,6 +43,23 @@ log = logging.getLogger(__name__)
 
 MAGIC_HEADER = b'<roblox!\x89\xff\x0d\x0a\x1a\x0a'
 FILE_HEADER_SIZE = 32  # 14 (magic+sig) + 2 (version) + 4 + 4 + 8 (reserved)
+ZSTD_MAGIC = b'\x28\xb5\x2f\xfd'
+
+
+def _decompress_chunk(raw: bytes, uncompressed_size: int) -> bytes:
+    if raw.startswith(ZSTD_MAGIC):
+        try:
+            import zstandard  # type: ignore[import-untyped]
+        except ImportError as exc:
+            msg = 'RBXM contains a ZSTD-compressed chunk; install zstandard to read it'
+            raise RuntimeError(msg) from exc
+        return zstandard.ZstdDecompressor().decompress(  # type: ignore[no-any-return]
+            raw, max_output_size=uncompressed_size
+        )
+
+    return lz4.block.decompress(  # type: ignore[no-any-return]
+        raw, uncompressed_size=uncompressed_size
+    )
 
 # 24 axis-aligned rotation matrices (orientation IDs 0..23).
 # Each is a 3x3 matrix stored row-major as 9 floats.
@@ -78,6 +99,8 @@ class RbxmDeserializer:
         self._instances: dict[int, RbxInstance] = {}
         self._metadata = RbxMetadata()
         self._shared_strings: list[bytes] = []
+        self._raw_property_chunks: list[RbxRawPropertyChunk] = []
+        self._raw_chunks: list[RbxRawChunk] = []
         self._version: int = 0
         self._type_count: int = 0
         self._object_count: int = 0
@@ -96,6 +119,8 @@ class RbxmDeserializer:
             instances=self._instances,
             roots=roots,
             shared_strings=self._shared_strings,
+            raw_property_chunks=self._raw_property_chunks,
+            raw_chunks=self._raw_chunks,
         )
 
     # --- Header ---
@@ -135,14 +160,8 @@ class RbxmDeserializer:
                 chunk_data = data[offset : offset + uncompressed_size]
                 offset += uncompressed_size
             else:
-                # LZ4-compressed chunk
                 raw = data[offset : offset + compressed_size]
-                chunk_data = cast(
-                    'bytes',
-                    lz4.block.decompress(  # type: ignore[reportUnknownMemberType]
-                        raw, uncompressed_size=uncompressed_size
-                    ),
-                )
+                chunk_data = _decompress_chunk(raw, uncompressed_size)
                 offset += compressed_size
 
             self._process_chunk(chunk_name, chunk_data)
@@ -166,6 +185,7 @@ class RbxmDeserializer:
         elif name == 'END\x00':
             log.debug('END chunk reached')
         else:
+            self._raw_chunks.append(RbxRawChunk(name=name, data=data))
             log.warning('Unknown chunk type: %r', name)
 
     # --- META ---
@@ -256,9 +276,7 @@ class RbxmDeserializer:
         try:
             fmt = PropertyFormat(fmt_byte)
         except ValueError:
-            log.warning(
-                'Unknown property format %d for %s, skipping', fmt_byte, prop_name
-            )
+            self._preserve_raw_property(type_index, prop_name, fmt_byte, data[offset:])
             return
 
         if type_index >= len(self._type_infos):
@@ -267,6 +285,9 @@ class RbxmDeserializer:
 
         info = self._type_infos[type_index]
         count = len(info.instance_ids)
+        if fmt == PropertyFormat.UNKNOWN:
+            self._preserve_raw_property(type_index, prop_name, fmt_byte, data[offset:])
+            return
 
         values = self._read_property_values(fmt, data, offset, count)
 
@@ -284,6 +305,28 @@ class RbxmDeserializer:
             prop_name,
             fmt.name,
             len(values),
+        )
+
+    def _preserve_raw_property(
+        self, type_index: int, prop_name: str, fmt_byte: int, value_data: bytes
+    ) -> None:
+        if type_index >= len(self._type_infos):
+            log.warning('PROP references unknown type index %d', type_index)
+            return
+        info = self._type_infos[type_index]
+        self._raw_property_chunks.append(
+            RbxRawPropertyChunk(
+                class_name=info.class_name,
+                prop_name=prop_name,
+                fmt_byte=fmt_byte,
+                value_data=value_data,
+                instance_count=len(info.instance_ids),
+            )
+        )
+        log.warning(
+            'Unknown property format %d for %s, preserving raw payload',
+            fmt_byte,
+            prop_name,
         )
 
     def _read_property_values(
@@ -349,6 +392,18 @@ class RbxmDeserializer:
                 return self._read_int64s(data, offset, count)
             case PropertyFormat.SHARED_STRING:
                 return self._read_shared_strings(data, offset, count)
+            case PropertyFormat.BYTECODE:
+                return self._read_bytecodes(data, offset, count)
+            case PropertyFormat.OPTIONAL_CFRAME:
+                return self._read_optional_cframes(data, offset, count)
+            case PropertyFormat.UNIQUE_ID:
+                return self._read_unique_ids(data, offset, count)
+            case PropertyFormat.FONT:
+                return self._read_fonts(data, offset, count)
+            case PropertyFormat.SECURITY_CAPABILITIES:
+                return self._read_security_capabilities(data, offset, count)
+            case PropertyFormat.CONTENT:
+                return self._read_contents(data, offset, count)
             case _:
                 log.warning('Unhandled property format: %s', fmt)
                 return [None] * count
@@ -482,6 +537,17 @@ class RbxmDeserializer:
         fmt: PropertyFormat,
     ) -> list[dict[str, float]]:
         """Read CFrame values (rotation + interleaved position)."""
+        results, _offset = self._read_cframes_with_offset(data, offset, count, fmt)
+        return results
+
+    def _read_cframes_with_offset(
+        self,
+        data: bytes,
+        offset: int,
+        count: int,
+        fmt: PropertyFormat,
+    ) -> tuple[list[dict[str, float]], int]:
+        """Read CFrame values and return the offset after their payload."""
         rotations: list[tuple[float, ...]] = []
 
         for _ in range(count):
@@ -512,6 +578,7 @@ class RbxmDeserializer:
         xs = deinterleave_f32(data, offset, count)
         ys = deinterleave_f32(data, offset + count * 4, count)
         zs = deinterleave_f32(data, offset + count * 8, count)
+        offset += count * 12
 
         results: list[dict[str, float]] = []
         for i in range(count):
@@ -532,7 +599,7 @@ class RbxmDeserializer:
                     'R22': r[8],
                 }
             )
-        return results
+        return results, offset
 
     def _read_enums(self, data: bytes, offset: int, count: int) -> list[int]:
         return deinterleave_u32(data, offset, count)
@@ -603,21 +670,32 @@ class RbxmDeserializer:
     ) -> list[dict[str, Any] | None]:
         results: list[dict[str, Any] | None] = []
         for _ in range(count):
-            custom, offset = read_u8(data, offset)
-            if custom != 0:
+            flags, offset = read_u8(data, offset)
+            custom = (flags & 0x01) != 0
+            has_acoustic_absorption = (flags & 0x02) != 0
+            if custom:
                 density, offset = read_f32(data, offset)
                 friction, offset = read_f32(data, offset)
                 elasticity, offset = read_f32(data, offset)
                 friction_weight, offset = read_f32(data, offset)
                 elasticity_weight, offset = read_f32(data, offset)
+                value: dict[str, Any] = {
+                    'CustomPhysics': True,
+                    'Density': density,
+                    'Friction': friction,
+                    'Elasticity': elasticity,
+                    'FrictionWeight': friction_weight,
+                    'ElasticityWeight': elasticity_weight,
+                }
+                if has_acoustic_absorption:
+                    acoustic_absorption, offset = read_f32(data, offset)
+                    value['AcousticAbsorption'] = acoustic_absorption
+                results.append(value)
+            elif has_acoustic_absorption:
                 results.append(
                     {
-                        'CustomPhysics': True,
-                        'Density': density,
-                        'Friction': friction,
-                        'Elasticity': elasticity,
-                        'FrictionWeight': friction_weight,
-                        'ElasticityWeight': elasticity_weight,
+                        'CustomPhysics': False,
+                        'HasAcousticAbsorption': True,
                     }
                 )
             else:
@@ -641,6 +719,115 @@ class RbxmDeserializer:
             self._shared_strings[idx] if idx < len(self._shared_strings) else b''
             for idx in indices
         ]
+
+    def _read_bytecodes(self, data: bytes, offset: int, count: int) -> list[bytes]:
+        results: list[bytes] = []
+        for _ in range(count):
+            raw, offset = read_binary_string(data, offset)
+            results.append(raw)
+        return results
+
+    def _read_optional_cframes(
+        self, data: bytes, offset: int, count: int
+    ) -> list[dict[str, float] | None]:
+        cframe_fmt_byte, offset = read_u8(data, offset)
+        if cframe_fmt_byte != int(PropertyFormat.CFRAME_MATRIX):
+            log.warning(
+                'OptionalCoordinateFrame contained unexpected value format %d',
+                cframe_fmt_byte,
+            )
+        cframes, offset = self._read_cframes_with_offset(
+            data, offset, count, PropertyFormat.CFRAME_MATRIX
+        )
+        bool_fmt_byte, offset = read_u8(data, offset)
+        if bool_fmt_byte != int(PropertyFormat.BOOL):
+            log.warning(
+                'OptionalCoordinateFrame contained unexpected presence format %d',
+                bool_fmt_byte,
+            )
+        present = self._read_bools(data, offset, count)
+        return [cframes[i] if present[i] else None for i in range(count)]
+
+    def _read_unique_ids(
+        self, data: bytes, offset: int, count: int
+    ) -> list[dict[str, int]]:
+        records = deinterleave_bytes(data, offset, count, 16)
+        results: list[dict[str, int]] = []
+        for record in records:
+            index, time, random = struct.unpack('>IIQ', record)
+            results.append({'Index': index, 'Time': time, 'Random': random})
+        return results
+
+    def _read_fonts(self, data: bytes, offset: int, count: int) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+        for _ in range(count):
+            family_raw, offset = read_binary_string(data, offset)
+            weight = struct.unpack_from('<H', data, offset)[0]
+            offset += 2
+            style, offset = read_u8(data, offset)
+            cached_face_raw, offset = read_binary_string(data, offset)
+            results.append(
+                {
+                    'Family': family_raw.decode('utf-8', errors='replace'),
+                    'Weight': weight,
+                    'Style': style,
+                    'CachedFaceId': cached_face_raw.decode('utf-8', errors='replace'),
+                }
+            )
+        return results
+
+    def _read_security_capabilities(
+        self, data: bytes, offset: int, count: int
+    ) -> list[int]:
+        return deinterleave_u64(data, offset, count)
+
+    def _read_contents(
+        self, data: bytes, offset: int, count: int
+    ) -> list[dict[str, Any] | None]:
+        source_types = deinterleave_u32(data, offset, count)
+        offset += count * 4
+
+        uri_count, offset = read_u32(data, offset)
+        uris: list[str] = []
+        for _ in range(uri_count):
+            raw, offset = read_binary_string(data, offset)
+            uris.append(raw.decode('utf-8', errors='replace'))
+
+        object_count, offset = read_u32(data, offset)
+        object_refs, offset = decode_ids(data, offset, object_count)
+
+        external_object_count, offset = read_u32(data, offset)
+        external_object_refs, offset = decode_ids(data, offset, external_object_count)
+
+        uri_index = 0
+        object_index = 0
+        external_object_index = 0
+        results: list[dict[str, Any] | None] = []
+        for source_type in source_types:
+            if source_type == 0:
+                results.append(None)
+            elif source_type == 1:
+                uri = uris[uri_index] if uri_index < len(uris) else ''
+                uri_index += 1
+                results.append({'SourceType': 'Uri', 'Uri': uri})
+            elif source_type == 2:
+                if object_index < len(object_refs):
+                    ref = object_refs[object_index]
+                    object_index += 1
+                    results.append({'SourceType': 'Object', 'Ref': ref})
+                else:
+                    ref = (
+                        external_object_refs[external_object_index]
+                        if external_object_index < len(external_object_refs)
+                        else None
+                    )
+                    external_object_index += 1
+                    results.append(
+                        {'SourceType': 'Object', 'Ref': ref, 'External': True}
+                    )
+            else:
+                results.append({'SourceType': source_type})
+        return results
 
     # --- PRNT ---
 

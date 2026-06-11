@@ -2,17 +2,36 @@
 
 import ctypes
 import os
-import winreg
+import sys
 
-from PyQt6.QtGui import QAction, QIcon
-from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
+try:
+    import winreg
+except ImportError:
+    winreg = None
+
+from PyQt6.QtCore import Qt, QTimer, QUrl
+from PyQt6.QtGui import QAction, QDesktopServices, QIcon
+from PyQt6.QtWidgets import QApplication, QDialog, QHBoxLayout, QLabel, QMenu, QPushButton, QSystemTrayIcon, QVBoxLayout
 
 from .gui import AboutWindow, DeleteCacheWindow, LogsWindow, ReplacerConfigWindow, ThemeManager
-from .utils import APP_DISCORD, APP_NAME, APP_VERSION, get_icon_path, run_in_thread
+from .utils import APP_DISCORD, APP_NAME, APP_VERSION, LOGS_DIR, get_icon_path, log_buffer, open_folder, run_in_thread
 
 APP_KOFI = 'ko-fi.com/fleasion'
 _NOTIFICATION_APP_ID = f'{APP_NAME}.Notifications'
 _TOAST_TEMPLATE = '<toast><visual><binding template="ToastGeneric"></binding></visual></toast>'
+
+
+def _is_admin() -> bool:
+    if sys.platform == 'darwin':
+        return hasattr(os, 'geteuid') and os.geteuid() == 0
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin()) if hasattr(ctypes, 'windll') else False
+    except Exception:
+        return False
+
+
+def _run_on_boot_requires_admin() -> bool:
+    return sys.platform == 'win32'
 
 
 class SystemTray:
@@ -30,6 +49,7 @@ class SystemTray:
         self.dashboard_window = None
         self._exiting = False
         self._dashboard_close_notice_shown = False
+        self._mac_beta_warning_shown = False
         self._notification_app_id = None
 
         # Create tray icon
@@ -50,6 +70,12 @@ class SystemTray:
 
         # Show tray icon
         self.tray.show()
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            log_buffer.log('Tray', 'No system tray/menu-bar host is available')
+        elif not self.tray.isVisible():
+            log_buffer.log('Tray', 'System tray/menu-bar icon did not become visible')
+        else:
+            log_buffer.log('Tray', 'System tray/menu-bar icon is visible')
 
     def _set_icon(self):
         """Set the tray icon."""
@@ -74,9 +100,9 @@ class SystemTray:
         self.menu.addSeparator()
 
         # Main action - Dashboard
-        config_action = QAction('Dashboard', self.menu)
-        config_action.triggered.connect(self._show_replacer_config)
-        self.menu.addAction(config_action)
+        self.dashboard_action = QAction('Dashboard', self.menu)
+        self.dashboard_action.triggered.connect(self._toggle_dashboard)
+        self.menu.addAction(self.dashboard_action)
 
         # Configs submenu
         self.configs_menu = QMenu('Configs', self.menu)
@@ -86,13 +112,17 @@ class SystemTray:
         self.menu.addSeparator()
 
         # Windows
-        cache_action = QAction('Delete Cache', self.menu)
+        cache_action = QAction('Clear Cache', self.menu)
         cache_action.triggered.connect(self._show_delete_cache)
         self.menu.addAction(cache_action)
 
         logs_action = QAction('Logs', self.menu)
         logs_action.triggered.connect(self._show_logs)
         self.menu.addAction(logs_action)
+
+        open_logs_action = QAction('Open Log Folder', self.menu)
+        open_logs_action.triggered.connect(lambda: open_folder(LOGS_DIR))
+        self.menu.addAction(open_logs_action)
 
         about_action = QAction('About', self.menu)
         about_action.triggered.connect(self._show_about)
@@ -139,6 +169,13 @@ class SystemTray:
     def _create_settings_menu(self):
         """Create the Settings submenu."""
         settings_menu = QMenu('Settings', self.menu)
+
+        self.cache_scraper_action = QAction('Enable Cache Scraper', settings_menu)
+        self.cache_scraper_action.setCheckable(True)
+        self.cache_scraper_action.setChecked(self._is_cache_scraper_enabled())
+        self.cache_scraper_action.triggered.connect(self._toggle_cache_scraper)
+        settings_menu.addAction(self.cache_scraper_action)
+        settings_menu.addSeparator()
 
         # Theme submenu
         theme_menu = QMenu('Theme', settings_menu)
@@ -205,16 +242,16 @@ class SystemTray:
         self.clear_cache_action.triggered.connect(self._toggle_clear_cache_on_launch)
         convenience_menu.addAction(self.clear_cache_action)
 
-        # Run on Boot (Task Scheduler, admin required)
-        import ctypes
-        _admin = bool(ctypes.windll.shell32.IsUserAnAdmin()) if hasattr(ctypes, 'windll') else False
+        # Run on Boot
+        _admin = _is_admin()
+        _boot_enabled = _admin or not _run_on_boot_requires_admin()
         self.run_on_boot_action = QAction(
-            'Run on Boot' if _admin else 'Run on Boot (admin required)',
+            'Run on Boot' if _boot_enabled else 'Run on Boot (admin required)',
             convenience_menu,
         )
         self.run_on_boot_action.setCheckable(True)
         self.run_on_boot_action.setChecked(self.config_manager.run_on_boot)
-        self.run_on_boot_action.setEnabled(_admin)
+        self.run_on_boot_action.setEnabled(_boot_enabled)
         self.run_on_boot_action.triggered.connect(self._toggle_run_on_boot)
         convenience_menu.addAction(self.run_on_boot_action)
 
@@ -264,6 +301,11 @@ class SystemTray:
         self.close_viewer_on_replace_action.setChecked(self.config_manager.close_viewer_on_replace)
         self.close_viewer_on_replace_action.triggered.connect(self._toggle_close_viewer_on_replace)
         scraped_games_menu.addAction(self.close_viewer_on_replace_action)
+        self.close_scraped_games_menu_on_open_action = QAction('Close Scraped Games Menu on Open', scraped_games_menu)
+        self.close_scraped_games_menu_on_open_action.setCheckable(True)
+        self.close_scraped_games_menu_on_open_action.setChecked(self.config_manager.close_scraped_games_menu_on_open)
+        self.close_scraped_games_menu_on_open_action.triggered.connect(self._toggle_close_scraped_games_menu_on_open)
+        scraped_games_menu.addAction(self.close_scraped_games_menu_on_open_action)
         settings_menu.addMenu(scraped_games_menu)
 
         self.menu.addMenu(settings_menu)
@@ -273,6 +315,78 @@ class SystemTray:
         """Push current config state to the Settings tab if the dashboard is open."""
         if self.dashboard_window and hasattr(self.dashboard_window, '_settings_tab'):
             self.dashboard_window._settings_tab.refresh_from_config()
+
+    def _cache_scraper(self):
+        return getattr(self.proxy_master, 'cache_scraper', None)
+
+    def _is_cache_scraper_enabled(self) -> bool:
+        scraper = self._cache_scraper()
+        return bool(getattr(scraper, 'enabled', False))
+
+    def _set_cache_scraper_enabled(self, enabled: bool):
+        scraper = self._cache_scraper()
+        if scraper is not None:
+            scraper.set_enabled(enabled)
+
+        if hasattr(self, 'cache_scraper_action'):
+            self.cache_scraper_action.blockSignals(True)
+            self.cache_scraper_action.setChecked(enabled)
+            self.cache_scraper_action.blockSignals(False)
+
+        if self.dashboard_window:
+            tab = getattr(self.dashboard_window, '_cache_viewer_tab', None)
+            if tab is not None and hasattr(tab, 'set_cache_scraper_enabled'):
+                tab.set_cache_scraper_enabled(enabled)
+
+            settings_tab = getattr(self.dashboard_window, '_settings_tab', None)
+            if settings_tab is not None and hasattr(settings_tab, 'set_cache_scraper_enabled'):
+                settings_tab.set_cache_scraper_enabled(enabled)
+
+    def _toggle_cache_scraper(self, checked: bool):
+        self._set_cache_scraper_enabled(checked)
+
+    def set_proxy_features_enabled(self, enabled: bool):
+        """Persist and apply the top-level proxy feature toggle."""
+        self.config_manager.proxy_features_enabled = enabled
+
+        if enabled:
+            if sys.platform == 'darwin':
+                from .utils.macos_proxy_helper import helper_is_ready, install_helper
+
+                if helper_is_ready():
+                    self.proxy_master.start()
+                else:
+                    ok, detail = install_helper()
+                    if ok:
+                        self.proxy_master.start()
+                    else:
+                        self.config_manager.proxy_features_enabled = False
+                        log_buffer.log('ProxyHelper', f'macOS proxy helper installation failed: {detail}')
+                        enabled = False
+            elif _is_admin():
+                self.proxy_master.start()
+            else:
+                from .app import _relaunch_as_admin
+
+                log_buffer.log('Proxy', 'Proxy features enabled: requesting administrator relaunch')
+                if _relaunch_as_admin():
+                    self._exiting = True
+                    self.app.quit()
+                    return
+
+                self.config_manager.proxy_features_enabled = False
+                log_buffer.log('Proxy', 'Administrator relaunch was cancelled; proxy features remain disabled')
+                enabled = False
+        else:
+            try:
+                run_in_thread(self.proxy_master.stop)()
+            except Exception:
+                self.proxy_master.stop()
+
+        self.update_status()
+        if self.dashboard_window and hasattr(self.dashboard_window, 'set_proxy_features_enabled'):
+            self.dashboard_window.set_proxy_features_enabled(enabled)
+        self._refresh_settings_tab()
 
     def _set_theme(self, theme: str):
         """Set the application theme."""
@@ -327,9 +441,8 @@ class SystemTray:
         self._refresh_settings_tab()
 
     def _toggle_run_on_boot(self):
-        """Toggle run-on-boot via Windows Task Scheduler (admin only)."""
-        import ctypes
-        if not (bool(ctypes.windll.shell32.IsUserAnAdmin()) if hasattr(ctypes, 'windll') else False):
+        """Toggle run-on-boot for the current platform."""
+        if _run_on_boot_requires_admin() and not _is_admin():
             self.run_on_boot_action.setChecked(not self.run_on_boot_action.isChecked())
             return
         from .utils.autostart import sync_autostart
@@ -351,9 +464,9 @@ class SystemTray:
             _warn.setWindowTitle('Run on Boot Failed')
             _warn.setIcon(QMessageBox.Icon.Warning)
             _warn.setText(
-                'Failed to register the autostart task.\n'
+                'Failed to register autostart.\n'
                 'Check the application log for details (autostart errors are logged at ERROR level).\n\n'
-                'Ensure Fleasion is running as Administrator.'
+                'On Windows, ensure Fleasion is running as Administrator.'
             )
             if _on_top:
                 _warn.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
@@ -378,6 +491,13 @@ class SystemTray:
         new_state = not self.config_manager.close_viewer_on_replace
         self.config_manager.close_viewer_on_replace = new_state
         self.close_viewer_on_replace_action.setChecked(new_state)
+        self._refresh_settings_tab()
+
+    def _toggle_close_scraped_games_menu_on_open(self):
+        """Toggle close Scraped Games menu on JSON open setting."""
+        new_state = not self.config_manager.close_scraped_games_menu_on_open
+        self.config_manager.close_scraped_games_menu_on_open = new_state
+        self.close_scraped_games_menu_on_open_action.setChecked(new_state)
         self._refresh_settings_tab()
 
     def _toggle_show_replacer_notifications(self):
@@ -448,10 +568,12 @@ class SystemTray:
 
     def _show_replacer_config(self):
         """Show Replacer Config window (Dashboard)."""
+        self._set_dashboard_foreground_mode(True)
         if self.dashboard_window:
             self.dashboard_window.show()
             self.dashboard_window.raise_()
             self.dashboard_window.activateWindow()
+            QTimer.singleShot(0, self._show_macos_beta_warning)
             return
 
         from PyQt6.QtCore import Qt
@@ -462,9 +584,11 @@ class SystemTray:
         self.open_windows.append(window)
         # Note: ReplacerConfigWindow applies always_on_top in its __init__
         window.show()
+        QTimer.singleShot(0, self._show_macos_beta_warning)
 
     def _on_dashboard_destroyed(self):
         """Handle dashboard destruction."""
+        self._set_dashboard_foreground_mode(False)
         if self.dashboard_window in self.open_windows:
             self.open_windows.remove(self.dashboard_window)
         self.dashboard_window = None
@@ -475,8 +599,20 @@ class SystemTray:
         """Toggle dashboard visibility."""
         if self.dashboard_window and self.dashboard_window.isVisible():
             self.dashboard_window.hide()
+            self._set_dashboard_foreground_mode(False)
         else:
             self._show_replacer_config()
+
+    def _set_dashboard_foreground_mode(self, enabled: bool):
+        """Keep the macOS dashboard visible when Fleasion loses focus."""
+        if sys.platform != 'darwin':
+            return
+        from .utils.platform_macos import set_application_foreground_mode, set_application_icon
+
+        if not set_application_foreground_mode(enabled):
+            log_buffer.log('App', 'macOS dashboard activation-policy update was rejected')
+        elif enabled and (icon_path := get_icon_path()):
+            set_application_icon(icon_path)
 
     def notify_dashboard_closed(self):
         """Show the tray notice that the app is still running."""
@@ -532,6 +668,8 @@ class SystemTray:
 
         if os.name != 'nt':
             return None
+        if winreg is None:
+            return None
 
         app_id = _NOTIFICATION_APP_ID
         icon_path = get_icon_path()
@@ -557,6 +695,11 @@ class SystemTray:
     def _on_tray_activated(self, reason):
         """Handle tray icon activation (e.g., click)."""
         if reason == QSystemTrayIcon.ActivationReason.Trigger:  # Trigger is usually left-click
+            # On macOS, clicking the menu-bar icon is how the user opens its
+            # menu. Treating that click as a dashboard toggle makes a visible
+            # dashboard disappear before the user can select a menu command.
+            if sys.platform == 'darwin':
+                return
             self._toggle_dashboard()
 
     def _show_delete_cache(self):
@@ -571,6 +714,65 @@ class SystemTray:
         """Remove window from tracking list."""
         if window in self.open_windows:
             self.open_windows.remove(window)
+
+    def _open_discord_server(self):
+        """Open the Discord server invite in the default browser."""
+        discord_url = APP_DISCORD if APP_DISCORD.startswith(('http://', 'https://')) else f'https://{APP_DISCORD}'
+        QDesktopServices.openUrl(QUrl(discord_url))
+
+    def _show_macos_beta_warning(self):
+        """Show the macOS early-beta warning once per app session."""
+        if self._mac_beta_warning_shown or sys.platform != 'darwin':
+            return
+        if self.dashboard_window is None or not self.dashboard_window.isVisible():
+            return
+
+        self._mac_beta_warning_shown = True
+
+        _top = QApplication.topLevelWidgets()
+        _parent = next((w for w in _top if w.isVisible()), self.dashboard_window)
+        _on_top = any(w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in _top)
+
+        dialog = QDialog(_parent)
+        if _on_top:
+            dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
+        dialog.setWindowTitle(f'{APP_NAME} - macOS Beta Warning')
+
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(12)
+
+        label = QLabel(
+            'macOS is in extremely early beta and does not support the AppleBlox bootstrapper yet.\n\n'
+            'Please report bugs in the Discord server.'
+        )
+        label.setWordWrap(True)
+        layout.addWidget(label)
+
+        button_row = QHBoxLayout()
+        discord_btn = QPushButton('Discord Server')
+        discord_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        discord_btn.setFlat(True)
+        discord_btn.setStyleSheet(
+            'QPushButton { border: none; padding: 0; background: transparent; color: #2f6feb; text-decoration: underline; }'
+            'QPushButton:hover { text-decoration: none; }'
+        )
+        ok_btn = QPushButton('OK')
+        ok_btn.setDefault(True)
+        ok_btn.setAutoDefault(True)
+        ok_btn.setFixedWidth(80)
+
+        button_row.addWidget(discord_btn)
+        button_row.addStretch()
+        button_row.addWidget(ok_btn)
+        layout.addLayout(button_row)
+
+        if icon_path := get_icon_path():
+            dialog.setWindowIcon(QIcon(str(icon_path)))
+
+        discord_btn.clicked.connect(self._open_discord_server)
+        ok_btn.clicked.connect(dialog.accept)
+
+        dialog.exec()
 
     def _copy_discord(self):
         """Copy Discord invite to clipboard."""

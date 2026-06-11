@@ -2,9 +2,9 @@
 
 import json
 import urllib.error
-import urllib.request
 
-from ..utils import CLOG_URL, ORIGINALS_DIR, REPLACEMENTS_DIR, log_buffer
+from ..utils import CLOG_URL, ORIGINALS_DIR, REPLACEMENTS_DIR, format_count, log_buffer
+from ..utils.http import http_get
 
 
 def download_prejsons():
@@ -15,24 +15,16 @@ def download_prejsons():
 
         log_buffer.log('PreJsons', 'Fetching game configurations...')
 
-        req = urllib.request.Request(
-            CLOG_URL, headers={'User-Agent': 'FleasionNT/1.2.0'}
-        )
-        with urllib.request.urlopen(req, timeout=15) as response:
-            clog_data = json.loads(response.read().decode('utf-8'))
+        clog_data = json.loads(http_get(CLOG_URL, timeout=15).decode('utf-8'))
 
         games = clog_data.get('games', {})
-        log_buffer.log('PreJsons', f'Found {len(games)} game(s) to process')
+        log_buffer.log('PreJsons', f'Found {format_count(games, "game")} to process')
 
         for game_name, game_config in games.items():
             github_url = game_config.get('github')
             if github_url:
                 try:
-                    req = urllib.request.Request(
-                        github_url, headers={'User-Agent': 'FleasionNT/1.2.0'}
-                    )
-                    with urllib.request.urlopen(req, timeout=15) as response:
-                        content = response.read()
+                    content = http_get(github_url, timeout=15)
                     filepath = ORIGINALS_DIR / f'{game_name}.json'
                     filepath.write_bytes(content)
                     log_buffer.log('PreJsons', f'Downloaded original: {game_name}')
@@ -44,11 +36,7 @@ def download_prejsons():
             )
             if replacement_url:
                 try:
-                    req = urllib.request.Request(
-                        replacement_url, headers={'User-Agent': 'FleasionNT/1.2.0'}
-                    )
-                    with urllib.request.urlopen(req, timeout=15) as response:
-                        content = response.read()
+                    content = http_get(replacement_url, timeout=15)
                     filepath = REPLACEMENTS_DIR / f'{game_name}.json'
                     filepath.write_bytes(content)
                     log_buffer.log('PreJsons', f'Downloaded replacement: {game_name}')

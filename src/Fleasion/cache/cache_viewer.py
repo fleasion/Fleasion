@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import QWidgetAction
 from PyQt6.QtGui import QPixmap, QImage, QAction, QCursor, QFont, QFontDatabase, QPalette, QColor
 from PIL import Image
 import io
+import sys
 import threading
 import gzip as gzip_module
 
@@ -21,8 +22,10 @@ from .audio_player import AudioPlayerWidget
 from .animation_viewer import AnimationViewerPanel
 from .cache_json_viewer import CacheJsonViewer
 from .font_viewer import FontViewerWidget
+from .rbxm_preview import RbxmPreviewWidget, is_rbx_model_data
 from . import mesh_processing
-from ..utils import log_buffer, open_folder
+from ..utils import format_count, log_buffer, open_folder
+from ..utils.clipboard import copy_pixmap_to_clipboard
 from ..utils.roblox_auth import get_roblosecurity as _get_roblosecurity
 import json
 
@@ -483,7 +486,7 @@ class AssetLoaderThread(QThread):
 
         # Phase 1: Batch-fetch asset metadata (name, type, creator) in groups of 50
         self.status_message.emit('Fetching asset info...')
-        log_buffer.log('Scraper', f'[Load Asset] Fetching info for {total} asset(s)')
+        log_buffer.log('Scraper', f'[Load Asset] Fetching info for {format_count(total, "asset")}')
 
         asset_metadata = {}  # asset_id_str -> {name, type, creator_id, creator_type}
         batch_size = 50
@@ -548,7 +551,7 @@ class AssetLoaderThread(QThread):
         creator_names = {}
         if creators_to_resolve:
             self.status_message.emit('Resolving creator names...')
-            log_buffer.log('Scraper', f'[Load Asset] Resolving {len(creators_to_resolve)} creator name(s)')
+            log_buffer.log('Scraper', f'[Load Asset] Resolving {format_count(creators_to_resolve, "creator name")}')
 
             # Batch-resolve users
             user_ids = [cid for cid, ctype in creators_to_resolve.items() if ctype == 1]
@@ -596,7 +599,7 @@ class AssetLoaderThread(QThread):
         # parallelize individual requests. 6 workers gives good throughput without
         # hitting rate limits too aggressively.
         self.status_message.emit('Downloading assets...')
-        log_buffer.log('Scraper', f'[Load Asset] Starting parallel download of {total} asset(s)')
+        log_buffer.log('Scraper', f'[Load Asset] Starting parallel download of {format_count(total, "asset")}')
 
         from concurrent.futures import ThreadPoolExecutor, as_completed
         import threading as _threading
@@ -850,9 +853,43 @@ class CategoryFilterPopup(QMenu):
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
 
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setObjectName("FilterScrollArea")
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.scroll_area.setWidget(self.container)
+
+        self._natural_content_size = self.container.sizeHint()
+        self._set_popup_content_size(self._natural_content_size.height())
+
         action = QWidgetAction(self)
-        action.setDefaultWidget(self.container)
+        action.setDefaultWidget(self.scroll_area)
         self.addAction(action)
+
+    def _set_popup_content_size(self, max_height):
+        natural = self._natural_content_size
+        height = min(natural.height(), max(220, max_height))
+        width = natural.width()
+        if natural.height() > height:
+            width += self.scroll_area.verticalScrollBar().sizeHint().width()
+        self.scroll_area.setFixedSize(width, height)
+
+    def constrain_to_available_geometry(self, available_geometry, anchor_y=None):
+        """Bound the popup to the visible screen area and enable vertical scroll."""
+        if available_geometry is None:
+            return
+
+        if anchor_y is None:
+            available_height = available_geometry.height()
+        else:
+            space_below = available_geometry.bottom() - anchor_y
+            space_above = anchor_y - available_geometry.top()
+            available_height = max(space_below, space_above)
+
+        self._set_popup_content_size(max(220, available_height - 12))
+        self.adjustSize()
 
     def set_active_filters(self, active_filters):
         """Update the popup checks without rebuilding the widget."""
@@ -871,7 +908,7 @@ class CategoryFilterPopup(QMenu):
         if a0 is None:
             return
         action = self.actionAt(a0.pos())
-        if isinstance(action, QWidgetAction) and action.defaultWidget() == self.container:
+        if isinstance(action, QWidgetAction) and action.defaultWidget() == self.scroll_area:
             # We clicked inside the container area
             return
         super().mouseReleaseEvent(a0)
@@ -1130,6 +1167,9 @@ class CacheViewerTab(QWidget):
         # OPTIMIZATION: Cache asset_id -> row mapping for O(1) lookups instead of O(n) linear search
         # Updated whenever table structure changes (populate, sort). Validates on read for thread-safety.
         self._asset_row_cache: dict[str, int] = {}
+        self._modified_rbxm_drafts: dict[tuple[str, object], dict] = {}
+        self._rbxm_preview_asset_key: tuple[str, object] | None = None
+        self._rbxm_preview_cached_at = ''
 
         # Worker threads for async preview loading
         self._image_loader: ImageLoaderThread | None = None
@@ -1153,7 +1193,7 @@ class CacheViewerTab(QWidget):
         if config_manager is not None:
             self._blacklisted_ids: set[str] = set(config_manager.scraper_blacklist)
             if self._blacklisted_ids:
-                log_buffer.log('Scraper', f'Loaded blacklist: {len(self._blacklisted_ids)} ID(s) active — {", ".join(sorted(self._blacklisted_ids, key=lambda x: int(x) if x.isdigit() else 0))}')
+                log_buffer.log('Scraper', f'Loaded blacklist: {format_count(self._blacklisted_ids, "ID")} active — {", ".join(sorted(self._blacklisted_ids, key=lambda x: int(x) if x.isdigit() else 0))}')
         else:
             self._blacklisted_ids: set[str] = set()
 
@@ -1254,7 +1294,7 @@ class CacheViewerTab(QWidget):
             largest_text = str(total_rows)
             text_w = fm.horizontalAdvance(largest_text)
             arrow_w = fm.horizontalAdvance('▼')
-            padding = 7
+            padding = 10 if sys.platform == 'darwin' else 7
             w = max(COL_TOGGLE_WIDTH, text_w + padding, arrow_w + padding)
             self._col_toggle_width = int(w)
             header = self.table.horizontalHeader()
@@ -1512,7 +1552,7 @@ class CacheViewerTab(QWidget):
     def _setup_ui(self):
         """Setup the UI."""
         layout = QVBoxLayout()
-        layout.setContentsMargins(10, 10, 10, 4)
+        layout.setContentsMargins(0, 0, 0, 0)
 
         # Filters (includes scraper toggle and stats)
         self._create_filters(layout)
@@ -1553,6 +1593,7 @@ class CacheViewerTab(QWidget):
     def _create_filters(self, parent_layout):
         """Create filter controls."""
         filter_group = QGroupBox('Filters')
+        filter_group.setStyleSheet('QGroupBox::title { padding-left: 5px; }')
         filter_layout = QHBoxLayout()
 
         # Search box first
@@ -1642,6 +1683,7 @@ class CacheViewerTab(QWidget):
             return
 
         sg = screen.availableGeometry()
+        self.popup.constrain_to_available_geometry(sg, btn_bottom.y())
         ph = self.popup.sizeHint().height()
         pw = self.popup.sizeHint().width()
 
@@ -1815,8 +1857,13 @@ class CacheViewerTab(QWidget):
         preview_layout = QVBoxLayout()
         preview_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.preview_group = QGroupBox('Preview')
+        self.preview_group = QWidget()
         preview_group_layout = QVBoxLayout()
+        preview_group_layout.setContentsMargins(0, 0, 0, 0)
+        preview_group_layout.setSpacing(4)
+
+        self.preview_title_label = QLabel('Preview')
+        preview_group_layout.addWidget(self.preview_title_label)
 
         # Scrollable container for all preview content
         self.preview_scroll = QScrollArea()
@@ -1881,6 +1928,10 @@ class CacheViewerTab(QWidget):
         self.json_viewer = CacheJsonViewer()
         self.preview_container_layout.addWidget(self.json_viewer)
 
+        # RBXM/RBXMX structure viewer for Roblox model files
+        self.rbxm_viewer = RbxmPreviewWidget()
+        self.preview_container_layout.addWidget(self.rbxm_viewer)
+
         # Font viewer for font files
         self.font_wrapper = QWidget()
         font_wrapper_layout = QVBoxLayout()
@@ -1909,6 +1960,7 @@ class CacheViewerTab(QWidget):
         self.animation_viewer.hide()
         self.text_viewer.hide()
         self.json_viewer.hide()
+        self.rbxm_viewer.hide()
 
         self.preview_group.setLayout(preview_group_layout)
         preview_layout.addWidget(self.preview_group)
@@ -1919,12 +1971,13 @@ class CacheViewerTab(QWidget):
     def _create_actions(self, parent_layout):
         """Create action buttons."""
         actions_layout = QHBoxLayout()
+        actions_layout.setContentsMargins(8, 4, 8, 4)
 
         delete_db_btn = QPushButton('Delete DB')
         delete_db_btn.clicked.connect(self._clear_cache)
         actions_layout.addWidget(delete_db_btn)
 
-        delete_cache_btn = QPushButton('Delete Cache')
+        delete_cache_btn = QPushButton('Clear Cache')
         delete_cache_btn.clicked.connect(self._delete_roblox_cache)
         actions_layout.addWidget(delete_cache_btn)
 
@@ -1932,6 +1985,11 @@ class CacheViewerTab(QWidget):
         self.stop_preview_btn.clicked.connect(self._stop_preview)
         self.stop_preview_btn.hide()
         actions_layout.addWidget(self.stop_preview_btn)
+
+        self.rbxm_view_btn = QPushButton('Swap to RBXM View')
+        self.rbxm_view_btn.clicked.connect(self._swap_to_rbxm_view)
+        self.rbxm_view_btn.hide()
+        actions_layout.addWidget(self.rbxm_view_btn)
 
         actions_layout.addStretch()
 
@@ -2243,9 +2301,23 @@ class CacheViewerTab(QWidget):
 
     def _toggle_scraper(self, state):
         """Toggle cache scraper on/off."""
+        enabled = bool(state)
+        owner = getattr(self, '_replacer_window_ref', None)
+        if owner is None:
+            owner = self.window()
+        tray = getattr(owner, '_system_tray', None)
+        if tray is not None and hasattr(tray, '_set_cache_scraper_enabled'):
+            tray._set_cache_scraper_enabled(enabled)
+            return
         if self.cache_scraper:
-            enabled = bool(state)
             self.cache_scraper.set_enabled(enabled)
+
+    def set_cache_scraper_enabled(self, enabled: bool):
+        """Update the scraper toggle without re-emitting the toggle signal."""
+        if hasattr(self, 'scraper_toggle'):
+            self.scraper_toggle.blockSignals(True)
+            self.scraper_toggle.setChecked(enabled)
+            self.scraper_toggle.blockSignals(False)
 
     def _on_search_text_changed(self):
         '''Handle search text change - debounce to avoid too many searches.'''
@@ -2293,12 +2365,12 @@ class CacheViewerTab(QWidget):
         
         total = deleted_count + failed_count
         if failed_count == 0:
-            QMessageBox.information(self, 'Success', f'Deleted {deleted_count} asset(s)')
+            QMessageBox.information(self, 'Success', f'Deleted {format_count(deleted_count, "asset")}')
         else:
             QMessageBox.warning(
                 self,
                 'Partial Success',
-                f'Deleted {deleted_count}/{total} asset(s). {failed_count} asset(s) failed to delete.'
+                f'Deleted {deleted_count}/{format_count(total, "asset")}. {format_count(failed_count, "asset")} failed to delete.'
             )
         
         log_buffer.log('Scraper', f'Batch deletion completed: {deleted_count} deleted, {failed_count} failed')
@@ -2808,7 +2880,7 @@ class CacheViewerTab(QWidget):
                 if cid is not None and ctype is not None and cid not in creators_to_resolve:
                     creators_to_resolve[cid] = ctype
 
-            log_buffer.log('Scraper', f'[Name Resolver] Collected {len(creators_to_resolve)} unique creator ID(s) to resolve')
+            log_buffer.log('Scraper', f'[Name Resolver] Collected {format_count(creators_to_resolve, "unique creator ID")} to resolve')
 
             # Fetch creator display names
             creator_names: dict[int, str] = {}
@@ -2818,7 +2890,7 @@ class CacheViewerTab(QWidget):
                 except Exception as e:
                     log_buffer.log('Scraper', f'[Name Resolver] Creator fetch failed: {e}')
 
-            log_buffer.log('Scraper', f'[Name Resolver] Resolved {len(creator_names)} creator name(s)')
+            log_buffer.log('Scraper', f'[Name Resolver] Resolved {format_count(creator_names, "creator name")}')
 
             # Update cache and UI
             for asset_id, data in asset_data_map.items():
@@ -2903,9 +2975,83 @@ class CacheViewerTab(QWidget):
 
         if export_path:
             log_buffer.log('Scraper', f"Exported asset {asset['id']} to {export_path}")
-            QMessageBox.information(self, 'Success', f'Asset exported to:\n{export_path}')
+            self._show_export_complete_message(
+                'Success',
+                f'Asset exported to:\n{export_path}',
+                [export_path],
+            )
         else:
             QMessageBox.critical(self, 'Error', 'Failed to export asset')
+
+    def _get_export_open_target(self, exported_paths):
+        """Return the Explorer target and whether it should be selected."""
+        import os
+        from pathlib import Path
+
+        existing_paths = []
+        for path in exported_paths:
+            if not path:
+                continue
+            p = Path(path)
+            if p.exists():
+                existing_paths.append(p)
+
+        if not existing_paths:
+            return self.cache_manager.export_dir, False
+
+        if len(existing_paths) == 1:
+            path = existing_paths[0]
+            return path, path.is_file()
+
+        containers = [path if path.is_dir() else path.parent for path in existing_paths]
+        if all(container == containers[0] for container in containers):
+            return containers[0], False
+
+        common_parent = Path(os.path.commonpath([str(container) for container in containers]))
+        return common_parent, False
+
+    def _open_export_target(self, exported_paths):
+        """Open exported output in Explorer, selecting a single exported file when possible."""
+        import subprocess
+        from pathlib import Path
+
+        target, select_file = self._get_export_open_target(exported_paths)
+        target = Path(target)
+
+        def _fallback_open_folder():
+            # Multi-tier fallback: parent of selected file -> computed target -> root export dir.
+            if select_file:
+                open_folder(target.parent)
+                return
+            open_folder(target if target.is_dir() else self.cache_manager.export_dir)
+
+        try:
+            if select_file:
+                if target.is_file():
+                    subprocess.Popen(['explorer.exe', '/select,', str(target.resolve())])
+                else:
+                    _fallback_open_folder()
+            else:
+                open_folder(target if target.is_dir() else self.cache_manager.export_dir)
+        except Exception as exc:
+            log_buffer.log('Export', f'Could not open export target {target}: {exc}')
+            try:
+                _fallback_open_folder()
+            except Exception as fallback_exc:
+                log_buffer.log('Export', f'Fallback open failed for export target {target}: {fallback_exc}')
+
+    def _show_export_complete_message(self, title: str, message: str, exported_paths):
+        """Show an export completion dialog with a shortcut to the destination folder."""
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Information)
+        msg.setWindowTitle(title)
+        msg.setText(message)
+        open_button = msg.addButton('Open in Explorer', QMessageBox.ButtonRole.ActionRole)
+        msg.addButton(QMessageBox.StandardButton.Ok)
+        msg.exec()
+
+        if msg.clickedButton() == open_button:
+            self._open_export_target(exported_paths)
 
     def _export_all(self):
         """Export all visible assets."""
@@ -2947,7 +3093,7 @@ class CacheViewerTab(QWidget):
         reply = QMessageBox.question(
             self,
             'Export All',
-            f'Export {len(assets)} asset(s) to the export folder?',
+            f'Export {format_count(assets, "asset")} to the export folder?',
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
 
@@ -2955,6 +3101,7 @@ class CacheViewerTab(QWidget):
             return
 
         exported_count = 0
+        exported_paths = []
         for asset in assets:
             asset_id = asset['id']
             resolved_name = None
@@ -2962,21 +3109,24 @@ class CacheViewerTab(QWidget):
                 resolved_name = self._asset_info[asset_id].get('resolved_name')
             safe_name = self._sanitize_filename(resolved_name) if resolved_name else None
 
-            if self.cache_manager.export_asset(asset['id'], asset['type'], resolved_name=safe_name):
+            export_path = self.cache_manager.export_asset(asset['id'], asset['type'], resolved_name=safe_name)
+            if export_path:
                 exported_count += 1
+                exported_paths.append(export_path)
 
         log_buffer.log('Scraper', f'Exported {exported_count}/{len(assets)} assets')
-        QMessageBox.information(
-            self,
+        location, _ = self._get_export_open_target(exported_paths)
+        self._show_export_complete_message(
             'Export Complete',
-            f'Exported {exported_count} asset(s)\n\nLocation: {self.cache_manager.export_dir}'
+            f'Exported {format_count(exported_count, "asset")}\n\nLocation: {location}',
+            exported_paths,
         )
 
     def _delete_selected(self):
-        """Delete the selected asset(s) using background worker thread."""
+        """Delete the selected assets using background worker thread."""
         selected_rows = self.table.selectionModel().selectedRows()
         if not selected_rows:
-            QMessageBox.warning(self, 'No Selection', 'Please select asset(s) to delete')
+            QMessageBox.warning(self, 'No Selection', 'Please select assets to delete')
             return
 
         # Collect assets to delete
@@ -2997,7 +3147,7 @@ class CacheViewerTab(QWidget):
         reply = QMessageBox.question(
             self,
             'Delete Assets',
-            f"Delete {count} asset(s)?",
+            f"Delete {format_count(count, 'asset')}?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
 
@@ -3060,6 +3210,7 @@ class CacheViewerTab(QWidget):
 
     def _on_selection_changed(self):
         """Handle table selection change to preview asset."""
+        self._remember_current_rbxm_draft()
         asset = self._get_selected_asset()
         if not asset:
             self._selected_asset_id = None
@@ -3088,7 +3239,9 @@ class CacheViewerTab(QWidget):
         self.animation_viewer.hide()
         self.text_viewer.hide()
         self.json_viewer.hide()
+        self.rbxm_viewer.hide()
         self.font_wrapper.hide()
+        self.rbxm_view_btn.hide()
 
         # Clean up texture pack widget
         if self.texturepack_widget is not None:
@@ -3123,10 +3276,10 @@ class CacheViewerTab(QWidget):
             # Trim long names/hashes to keep the UI tidy
             if len(display) > 60:
                 display = display[:57] + '...'
-            self.preview_group.setTitle(f'Preview: {display}')
+            self.preview_title_label.setText(f'Preview: {display}')
         except Exception:
             try:
-                self.preview_group.setTitle('Preview')
+                self.preview_title_label.setText('Preview')
             except Exception:
                 pass
 
@@ -3136,13 +3289,24 @@ class CacheViewerTab(QWidget):
             if not data:
                 self._show_text_preview(f'Failed to load asset {asset_id}')
                 return
+            if asset_type == 63:  # TexturePack
+                self._show_loading()
+                self._preview_texturepack(data, asset_id)
+                return
+            is_rbx_document = is_rbx_model_data(data)
+            if asset_type in (24, 39) and is_rbx_document:
+                self.rbxm_view_btn.show()
+            elif is_rbx_document:
+                self._preview_rbxm(data, asset)
+                return
+            is_mesh_payload = mesh_processing.is_mesh_data(data)
 
             # Show loading for async previews
-            if asset_type in [4, 39, 1, 13, 63]:  # Mesh, SolidModel, Image, Decal, TexturePack
+            if is_mesh_payload or asset_type in [4, 39, 1, 13, 63]:  # Mesh, SolidModel, Image, Decal, TexturePack
                 self._show_loading()
 
             # Preview based on type
-            if asset_type == 4:  # Mesh
+            if is_mesh_payload or asset_type == 4:  # Mesh
                 self._preview_mesh(data, asset_id)
             elif asset_type == 39:  # SolidModel
                 self._preview_solidmodel(data, asset_id)
@@ -3160,16 +3324,17 @@ class CacheViewerTab(QWidget):
                     self._preview_json(data, asset)
                 else:
                     self._show_text_preview('FontFamily data could not be parsed as JSON')
-            elif asset_type == 63:  # TexturePack
-                self._preview_texturepack(data, asset_id)
             else:
-                # Check if unknown asset is actually JSON
-                is_json, _ = self._is_json_data(data)
-                if is_json:
-                    self._preview_json(data, asset)
+                # Check if unknown/model-like asset is actually RBXM/RBXMX before JSON/text fallbacks.
+                if is_rbx_model_data(data):
+                    self._preview_rbxm(data, asset)
                 else:
-                    # Show as hex dump for other types
-                    self._preview_hex(data, asset)
+                    is_json, _ = self._is_json_data(data)
+                    if is_json:
+                        self._preview_json(data, asset)
+                    else:
+                        # Show as hex dump for other types
+                        self._preview_hex(data, asset)
 
         except Exception as e:
             self._show_text_preview(f'Error previewing asset: {e}')
@@ -3189,7 +3354,8 @@ class CacheViewerTab(QWidget):
         # Export submenu with format options
         export_menu = menu.addMenu('Export Selected')
 
-        # Get asset types from selection to determine available formats
+        # Get selected assets and types to determine available formats
+        selected_assets = []
         asset_types = set()
         for row_index in selected_rows:
             row = row_index.row()
@@ -3197,12 +3363,18 @@ class CacheViewerTab(QWidget):
             if item:
                 asset = item.data(Qt.ItemDataRole.UserRole)
                 if asset:
+                    selected_assets.append(asset)
                     asset_types.add(asset['type'])
 
         # Determine available formats (intersection of all selected types)
         available_formats = None
-        for asset_type in asset_types:
-            formats = set(self.cache_manager.get_available_export_formats(asset_type))
+        for asset in selected_assets:
+            formats = set(
+                self.cache_manager.get_available_export_formats_for_asset(
+                    asset['id'],
+                    asset['type'],
+                )
+            )
             if available_formats is None:
                 available_formats = formats
             else:
@@ -3211,6 +3383,23 @@ class CacheViewerTab(QWidget):
         if not available_formats:
             available_formats = {'raw', 'bin'}
 
+        modified_asset = None
+        if len(selected_rows) == 1:
+            row = selected_rows[0].row()
+            item = self.table.item(row, 1)
+            if item:
+                candidate = item.data(Qt.ItemDataRole.UserRole)
+                if (
+                    candidate
+                    and candidate.get('type') != 9
+                    and self._get_modified_rbxm_draft(candidate) is not None
+                ):
+                    modified_asset = candidate
+                    available_formats = set(available_formats)
+                    available_formats.update(
+                        {'converted_modified_rbxm', 'converted_modified_rbxmx'}
+                    )
+
         # Add format options
         export_actions = {}
         format_labels = {
@@ -3218,6 +3407,11 @@ class CacheViewerTab(QWidget):
             'converted_rbxmx': 'Converted - KeyframeSequence (.rbxmx)',
             'converted_rbxmx_curve': 'Converted - CurveAnimation (.rbxmx)',
             'converted_rbxmx_model': 'Converted (.rbxmx)',
+            'converted_document_rbxm': 'Roblox Document (.rbxm)',
+            'converted_document_rbxmx': 'Roblox Document (.rbxmx)',
+            'converted_document_rbxl': 'Roblox Place (.rbxl)',
+            'converted_modified_rbxm': 'Converted (Modified .rbxm)',
+            'converted_modified_rbxmx': 'Converted (Modified .rbxmx)',
             'converted_png': 'Converted (.png)',
             'converted_audio': 'Converted (.ogg/.mp3)',
             'converted': 'Converted (.xml)',
@@ -3226,7 +3420,7 @@ class CacheViewerTab(QWidget):
             'bin': 'Binary (decompressed)',
             'raw': 'Raw (original cache)',
         }
-        for fmt in ['slot_ktx2', 'converted_obj', 'converted_rbxmx_model', 'converted_rbxmx', 'converted_rbxmx_curve', 'converted_png', 'converted_audio', 'converted', 'converted_images', 'bin', 'raw']:
+        for fmt in ['converted_modified_rbxm', 'converted_modified_rbxmx', 'converted_document_rbxl', 'converted_document_rbxm', 'converted_document_rbxmx', 'slot_ktx2', 'converted_obj', 'converted_rbxmx_model', 'converted_rbxmx', 'converted_rbxmx_curve', 'converted_png', 'converted_audio', 'converted', 'converted_images', 'bin', 'raw']:
             if fmt in available_formats:
                 action = export_menu.addAction(format_labels[fmt])
                 export_actions[action] = fmt
@@ -3296,6 +3490,14 @@ class CacheViewerTab(QWidget):
                         _asset = _item.data(Qt.ItemDataRole.UserRole)
                         if _asset and _asset.get('type') == 63:
                             self._export_texpack_slot_ktx2(str(_asset['id']))
+            elif _fmt in {'converted_modified_rbxm', 'converted_modified_rbxmx'} and modified_asset:
+                path = self._export_modified_rbxm_asset(modified_asset, _fmt)
+                if path:
+                    self._show_export_complete_message(
+                        'Export Complete',
+                        f'Exported modified RBXM/RBXMX\n\nLocation: {path.parent}',
+                        [path],
+                    )
             else:
                 self._export_selected_multiple(export_format=_fmt)
         elif action == delete_action:
@@ -3439,6 +3641,12 @@ class CacheViewerTab(QWidget):
             f.write(json.dumps(result, indent=2))
         total = sum(len(v) for v in result.values())
         log_buffer.log('Scraper', f'Exported game dump ({total} assets) to {path}')
+        from pathlib import Path
+        self._show_export_complete_message(
+            'Export Complete',
+            f'Exported game dump with {format_count(total, "asset")} to:\n{path}',
+            [Path(path)],
+        )
 
     def _copy_column(self, column: int):
         """Copy column contents for selected rows."""
@@ -3457,7 +3665,7 @@ class CacheViewerTab(QWidget):
             from PyQt6.QtWidgets import QApplication
             clipboard = QApplication.clipboard()
             clipboard.setText('\n'.join(values))
-            log_buffer.log('Scraper', f'Copied {len(values)} value(s) to clipboard')
+            log_buffer.log('Scraper', f'Copied {format_count(values, "value")} to clipboard')
 
     def _copy_creator_info(self, mode: str):
         """Copy creator name or creator ID for selected rows.
@@ -3492,10 +3700,11 @@ class CacheViewerTab(QWidget):
 
         if values:
             QApplication.clipboard().setText('\n'.join(values))
-            log_buffer.log('Scraper', f'Copied {len(values)} creator {mode}(s) to clipboard')
+            label = 'creator ID' if mode == 'id' else f'creator {mode}'
+            log_buffer.log('Scraper', f'Copied {format_count(values, label)} to clipboard')
 
     def _open_creator_in_browser(self):
-        """Open the creator (user or group) page(s) for the selected asset(s) in the default browser."""
+        """Open the creator pages for the selected assets in the default browser."""
         import webbrowser
 
         selected_rows = self.table.selectionModel().selectedRows()
@@ -3542,7 +3751,7 @@ class CacheViewerTab(QWidget):
                 log_buffer.log('Scraper', f'Failed to open creator {creator_id} in browser')
 
         if opened:
-            log_buffer.log('Scraper', f'Opened {opened} creator page(s) in browser')
+            log_buffer.log('Scraper', f'Opened {format_count(opened, "creator page")} in browser')
 
     def _copy_converted(self):
         """Copy converted files to clipboard as Windows file objects."""
@@ -3589,8 +3798,7 @@ class CacheViewerTab(QWidget):
             safe_base = self._sanitize_filename(base_name)
 
             # Convert based on type and save to temp file
-            if asset_type == 4:  # Mesh - save as OBJ file
-                from . import mesh_processing
+            if mesh_processing.is_mesh_data(data):  # Mesh payload - save as OBJ file
                 try:
                     obj_content = mesh_processing.convert(data)
                     if obj_content:
@@ -3689,6 +3897,25 @@ class CacheViewerTab(QWidget):
                     QMessageBox.warning(self, 'Error', f'SolidModel conversion error: {e}')
                     return
 
+            else:
+                try:
+                    from .roblox_document import export_roblox_document, get_roblox_document_export_formats
+
+                    document_formats = get_roblox_document_export_formats(data, asset_type=asset_type)
+                    if document_formats:
+                        export_format = (
+                            'converted_document_rbxl'
+                            if 'converted_document_rbxl' in document_formats
+                            else 'converted_document_rbxmx'
+                        )
+                        export_data, ext = export_roblox_document(data, export_format, asset_type=asset_type)
+                        filename = f'{safe_base}{ext}'
+                        temp_file = temp_dir / filename
+                        temp_file.write_bytes(export_data)
+                except Exception as e:
+                    QMessageBox.warning(self, 'Error', f'Roblox document save error: {e}')
+                    return
+
             # Copy file to clipboard
             if temp_file and temp_file.exists():
                 mime_data = QMimeData()
@@ -3704,7 +3931,7 @@ class CacheViewerTab(QWidget):
         """Export multiple selected assets."""
         selected_rows = self.table.selectionModel().selectedRows()
         if not selected_rows:
-            QMessageBox.warning(self, 'No Selection', 'Please select asset(s) to export')
+            QMessageBox.warning(self, 'No Selection', 'Please select assets to export')
             return
 
         # Collect assets to export
@@ -3722,6 +3949,7 @@ class CacheViewerTab(QWidget):
 
         # Export all with sanitized resolved names
         exported_count = 0
+        exported_paths = []
         for asset in assets_to_export:
             asset_id = asset['id']
             resolved_name = None
@@ -3729,27 +3957,95 @@ class CacheViewerTab(QWidget):
                 resolved_name = self._asset_info[asset_id].get('resolved_name')
             safe_name = self._sanitize_filename(resolved_name) if resolved_name else None
 
-            if self.cache_manager.export_asset(
+            export_path = self.cache_manager.export_asset(
                 asset['id'], asset['type'],
                 resolved_name=safe_name,
                 export_format=export_format
-            ):
+            )
+            if export_path:
                 exported_count += 1
-
-        # Determine export location based on format (matching cache_manager logic)
-        if export_format == 'raw':
-            format_dir = self.cache_manager.export_dir / 'raw'
-        elif export_format == 'bin':
-            format_dir = self.cache_manager.export_dir / 'bin'
-        else:  # All 'converted*' formats go to 'converted' directory
-            format_dir = self.cache_manager.export_dir / 'converted'
+                exported_paths.append(export_path)
         
         log_buffer.log('Scraper', f'Exported {exported_count}/{len(assets_to_export)} assets as {export_format}')
-        QMessageBox.information(
-            self,
+        location, _ = self._get_export_open_target(exported_paths)
+        self._show_export_complete_message(
             'Export Complete',
-            f'Exported {exported_count} asset(s) as {export_format}\n\nLocation: {format_dir}'
+            f'Exported {format_count(exported_count, "asset")} as {export_format}\n\nLocation: {location}',
+            exported_paths,
         )
+
+    @staticmethod
+    def _rbxm_asset_key(asset: dict) -> tuple[str, object]:
+        return (str(asset.get('id', '')), asset.get('type'))
+
+    @staticmethod
+    def _rbxm_asset_cached_at(asset: dict) -> str:
+        return str(asset.get('cached_at') or '')
+
+    def _remember_current_rbxm_draft(self) -> None:
+        key = getattr(self, '_rbxm_preview_asset_key', None)
+        if key is None or not hasattr(self, 'rbxm_viewer'):
+            return
+        document = getattr(self.rbxm_viewer, 'document', None)
+        if document is None or not self.rbxm_viewer.is_modified():
+            return
+        self._modified_rbxm_drafts[key] = {
+            'cached_at': getattr(self, '_rbxm_preview_cached_at', ''),
+            'document': document,
+        }
+
+    def _get_modified_rbxm_draft(self, asset: dict):
+        self._remember_current_rbxm_draft()
+        key = self._rbxm_asset_key(asset)
+        draft = self._modified_rbxm_drafts.get(key)
+        if not draft:
+            return None
+        cached_at = self._rbxm_asset_cached_at(asset)
+        if draft.get('cached_at', '') != cached_at:
+            self._modified_rbxm_drafts.pop(key, None)
+            if key == getattr(self, '_rbxm_preview_asset_key', None):
+                self._rbxm_preview_asset_key = None
+                self._rbxm_preview_cached_at = ''
+                try:
+                    self.rbxm_viewer._set_dirty(False)
+                except Exception:
+                    pass
+            return None
+        return draft.get('document')
+
+    def _export_modified_rbxm_asset(self, asset: dict, export_format: str):
+        try:
+            asset_id = str(asset.get('id', ''))
+            asset_type = asset.get('type')
+            draft_document = self._get_modified_rbxm_draft(asset)
+            if draft_document is None:
+                QMessageBox.warning(self, 'No Changes', 'The selected asset has no in-memory RBXM/RBXMX modifications.')
+                return None
+
+            type_name = self.cache_manager.get_asset_type_name(asset_type) if isinstance(asset_type, int) else 'RBXM'
+            export_dir = self.cache_manager.export_dir / 'converted' / type_name
+            export_dir.mkdir(parents=True, exist_ok=True)
+
+            resolved_name = None
+            if asset_id in self._asset_info:
+                resolved_name = self._asset_info[asset_id].get('resolved_name')
+            base_name = self._sanitize_filename(resolved_name) if resolved_name else asset_id
+            suffix = '_MODIFIED'
+
+            if export_format == 'converted_modified_rbxm':
+                data = self.rbxm_viewer.export_rbxm_bytes(draft_document)
+                output_path = export_dir / f'{base_name}{suffix}.rbxm'
+            else:
+                data = self.rbxm_viewer.export_rbxmx_bytes(draft_document)
+                output_path = export_dir / f'{base_name}{suffix}.rbxmx'
+
+            output_path.write_bytes(data)
+            log_buffer.log('Scraper', f'Exported modified RBXM/RBXMX to {output_path}')
+            return output_path
+        except Exception as e:
+            QMessageBox.warning(self, 'Export Error', f'Failed to export modified RBXM/RBXMX: {e}')
+            log_buffer.log('Scraper', f'Failed to export modified RBXM/RBXMX: {e}')
+            return None
 
     def _add_selected_to_replacer(self):
         """Add selected asset IDs to replacer."""
@@ -3778,11 +4074,11 @@ class CacheViewerTab(QWidget):
                 new_text = ', '.join(asset_ids)
             replacer_window.replace_entry.setText(new_text)
 
-            log_buffer.log('Scraper', f'Added {len(asset_ids)} asset ID(s) to replacer')
+            log_buffer.log('Scraper', f'Added {format_count(asset_ids, "asset ID")} to replacer')
             QMessageBox.information(
                 self,
                 'Added to Replacer',
-                f'Added {len(asset_ids)} asset ID(s) to replacer:\n{", ".join(asset_ids[:5])}{"..." if len(asset_ids) > 5 else ""}'
+                f'Added {format_count(asset_ids, "asset ID")} to replacer:\n{", ".join(asset_ids[:5])}{"..." if len(asset_ids) > 5 else ""}'
             )
         else:
             # Fallback: copy to clipboard if not in replacer window
@@ -3790,11 +4086,11 @@ class CacheViewerTab(QWidget):
             clipboard = QApplication.clipboard()
             clipboard.setText(', '.join(asset_ids))
 
-            log_buffer.log('Scraper', f'Copied {len(asset_ids)} asset ID(s) to clipboard')
+            log_buffer.log('Scraper', f'Copied {format_count(asset_ids, "asset ID")} to clipboard')
             QMessageBox.information(
                 self,
                 'Copied to Clipboard',
-                f'Copied {len(asset_ids)} asset ID(s) to clipboard:\n{", ".join(asset_ids[:5])}{"..." if len(asset_ids) > 5 else ""}'
+                f'Copied {format_count(asset_ids, "asset ID")} to clipboard:\n{", ".join(asset_ids[:5])}{"..." if len(asset_ids) > 5 else ""}'
             )
 
     def _add_latest_as_replace_with(self):
@@ -3840,6 +4136,8 @@ class CacheViewerTab(QWidget):
 
     def _clear_preview(self):
         """Clear all preview widgets and stop any running loaders."""
+        self._remember_current_rbxm_draft()
+
         # Stop all worker threads first
         self._stop_all_loaders()
 
@@ -3853,7 +4151,7 @@ class CacheViewerTab(QWidget):
         # Reset preview group title back to default
         try:
             if hasattr(self, 'preview_group'):
-                self.preview_group.setTitle('Preview')
+                self.preview_title_label.setText('Preview')
         except Exception:
             pass
         
@@ -3872,6 +4170,11 @@ class CacheViewerTab(QWidget):
         self.animation_viewer.clear()
         self.text_viewer.hide()
         self.text_viewer.clear()
+        self.rbxm_viewer.hide()
+        self.rbxm_viewer.clear()
+        self._rbxm_preview_asset_key = None
+        self._rbxm_preview_cached_at = ''
+        self.rbxm_view_btn.hide()
 
         # Clean up texture pack widgets
         if self.texturepack_widget is not None:
@@ -3944,6 +4247,34 @@ class CacheViewerTab(QWidget):
         """Hide loading indicator."""
         self.loading_label.hide()
 
+    def _swap_to_rbxm_view(self):
+        """Switch the current Animation/SolidModel preview to raw RBXM structure."""
+        asset = self._get_selected_asset()
+        if not asset:
+            return
+        asset_type = asset.get('type')
+        if asset_type not in (24, 39):
+            return
+        asset_id = asset.get('id')
+        data = self.cache_manager.get_asset(asset_id, asset_type)
+        if not data or not is_rbx_model_data(data):
+            return
+
+        self._stop_all_loaders()
+        self.obj_viewer.hide()
+        self.image_label.hide()
+        self.loading_label.hide()
+        self.audio_wrapper.hide()
+        self.animation_viewer.hide()
+        self.animation_viewer.stop()
+        self.text_viewer.hide()
+        self.json_viewer.hide()
+        self.font_wrapper.hide()
+        self.rbxm_view_btn.hide()
+
+        title = 'Animation structure' if asset_type == 24 else 'SolidModel structure'
+        self._preview_rbxm(data, asset, title_prefix=title)
+
     def _preview_mesh(self, data: bytes, asset_id: str):
         """Preview a mesh asset in 3D using background thread."""
         # Track which asset this loader is for so we can ignore stale results
@@ -3974,8 +4305,24 @@ class CacheViewerTab(QWidget):
         self._mesh_loader_asset_id = asset_id
         self._mesh_loader = SolidModelLoaderThread(data, asset_id)
         self._mesh_loader.mesh_ready.connect(self._on_mesh_ready)
-        self._mesh_loader.error.connect(lambda e: self._show_text_preview(f'SolidModel error: {e}'))
+        self._mesh_loader.error.connect(
+            lambda e, d=data, aid=asset_id: self._on_solidmodel_preview_error(d, aid, e)
+        )
         self._mesh_loader.start()
+
+    def _on_solidmodel_preview_error(self, data: bytes, asset_id: str, error: str):
+        """Fallback from 3D SolidModel preview to the RBXM structure viewer."""
+        if getattr(self, '_selected_asset_id', None) != asset_id:
+            log_buffer.log('Preview', 'Stale SolidModel error ignored')
+            return
+        if is_rbx_model_data(data):
+            self._preview_rbxm(
+                data,
+                {'id': asset_id, 'type': 39, 'type_name': 'SolidModel'},
+                title_prefix='SolidModel structure',
+            )
+            return
+        self._show_text_preview(f'SolidModel error: {error}')
 
     def _preview_image(self, data: bytes):
         """Preview an image asset using background thread."""
@@ -4026,14 +4373,12 @@ class CacheViewerTab(QWidget):
         if self._current_pixmap is None or self._current_pixmap.isNull():
             return
 
-        from PyQt6.QtWidgets import QApplication
-
         menu = QMenu(self)
         copy_action = menu.addAction('Copy Image')
 
         action = menu.exec(self.image_label.mapToGlobal(pos))
         if action == copy_action:
-            QApplication.clipboard().setPixmap(self._current_pixmap)
+            copy_pixmap_to_clipboard(self._current_pixmap)
 
     def _preview_texturepack(self, data: bytes, asset_id: str):
         """Preview a texture pack by showing all texture maps."""
@@ -4269,7 +4614,7 @@ class CacheViewerTab(QWidget):
         if action == copy_image_action:
             pixmap = self._tp_pixmaps.get(map_name)
             if pixmap and not pixmap.isNull():
-                QApplication.clipboard().setPixmap(pixmap)
+                copy_pixmap_to_clipboard(pixmap)
         elif action == copy_name_action:
             QApplication.clipboard().setText(map_name)
         elif action == copy_id_action:
@@ -4324,11 +4669,11 @@ class CacheViewerTab(QWidget):
             import shutil
             shutil.copy2(str(src), str(dst))
             exported.append(dest_name)
-        from PyQt6.QtWidgets import QMessageBox
-        QMessageBox.information(
-            self, 'Export Complete',
-            f'Exported {len(exported)} slot KTX2 file(s) to:\n{dest_dir}\n\n' +
+        self._show_export_complete_message(
+            'Export Complete',
+            f'Exported {format_count(exported, "slot KTX2 file")} to:\n{dest_dir}\n\n' +
             '\n'.join(exported),
+            [dest_dir / name for name in exported],
         )
 
     def _preview_audio(self, data: bytes, asset_id: str):
@@ -4429,6 +4774,15 @@ class CacheViewerTab(QWidget):
                 self.stop_preview_btn.show()
                 return
 
+            if is_rbx_model_data(data):
+                asset_id = getattr(self, '_animation_loader_asset_id', '') or ''
+                self._preview_rbxm(
+                    data,
+                    {'id': asset_id, 'type': 24, 'type_name': 'Animation'},
+                    title_prefix='Animation structure',
+                )
+                return
+
             # Fallback: try to decode as XML for text display
             text = data.decode('utf-8', errors='replace')
 
@@ -4506,6 +4860,65 @@ class CacheViewerTab(QWidget):
                 continue
 
         return False, None
+
+    def _preview_rbxm(self, data: bytes, asset: dict, title_prefix: str = 'RBXM/RBXMX structure'):
+        """Display an RBXM/RBXMX instance/property structure preview."""
+        try:
+            asset_id = str(asset.get('id', ''))
+            asset_type = asset.get('type')
+            type_name = asset.get('type_name') or (
+                self.cache_manager.get_asset_type_name(asset_type)
+                if isinstance(asset_type, int) else 'RBXM/RBXMX'
+            )
+            asset_label = f'{type_name} {asset_id}'.strip()
+            asset_key = self._rbxm_asset_key(asset)
+            cached_at = self._rbxm_asset_cached_at(asset)
+            if not cached_at:
+                selected_asset = self._get_selected_asset()
+                if selected_asset and self._rbxm_asset_key(selected_asset) == asset_key:
+                    cached_at = self._rbxm_asset_cached_at(selected_asset)
+                    asset = dict(asset)
+                    asset['cached_at'] = cached_at
+
+            draft_document = self._get_modified_rbxm_draft(asset)
+            if draft_document is not None:
+                self.rbxm_viewer.load_document(draft_document, asset_label=asset_label, dirty=True)
+            else:
+                self.rbxm_viewer.load_bytes(data, asset_label=asset_label)
+            self._rbxm_preview_asset_key = asset_key
+            self._rbxm_preview_cached_at = cached_at
+
+            # Persist detected type only after a successful parse, matching JSON detection behavior.
+            try:
+                if (
+                    isinstance(asset_type, int)
+                    and self.cache_manager.get_asset_type_name(asset_type).startswith('Unknown')
+                ):
+                    self.cache_manager.set_detected_type(asset_id, asset_type, 'RBXM/RBXMX')
+                    current_row = self.table.currentRow()
+                    if current_row >= 0:
+                        type_item = self.table.item(current_row, 4)
+                        if type_item:
+                            type_item.setText('RBXM/RBXMX')
+            except Exception:
+                pass
+
+            self._hide_loading()
+            self.rbxm_viewer.show()
+            self.stop_preview_btn.show()
+            try:
+                self.preview_title_label.setText(title_prefix)
+            except Exception:
+                pass
+        except Exception as e:
+            self._preview_hex(
+                data,
+                {
+                    'id': asset.get('id', ''),
+                    'type_name': asset.get('type_name', 'RBXM/RBXMX'),
+                },
+                reason=f'RBXM/RBXMX structure parse failed: {e}',
+            )
 
     def _preview_json(self, data: bytes, asset: dict):
         """Display JSON data in the JSON viewer."""
@@ -4678,10 +5091,10 @@ class CacheViewerTab(QWidget):
                 asset_id = asset_data.get('id') if isinstance(asset_data, dict) else None
                 self.table.setRowHidden(row, asset_id in self._blacklisted_ids)
             count = len(self._blacklisted_ids)
-            status_label.setText(f'Blacklist applied: {count} ID(s).')
+            status_label.setText(f'Blacklist applied: {format_count(count, "ID")}.')
             status_label.setStyleSheet('color: #55cc55; font-size: 9pt;')
             if self._blacklisted_ids:
-                log_buffer.log('Scraper', f'Blacklist updated: {count} ID(s) active — {", ".join(sorted(self._blacklisted_ids, key=lambda x: int(x) if x.isdigit() else 0))}')
+                log_buffer.log('Scraper', f'Blacklist updated: {format_count(count, "ID")} active — {", ".join(sorted(self._blacklisted_ids, key=lambda x: int(x) if x.isdigit() else 0))}')
             else:
                 log_buffer.log('Scraper', 'Blacklist cleared')
 
@@ -4761,10 +5174,10 @@ class CacheViewerTab(QWidget):
             # Disable button while loading
             load_btn.setEnabled(False)
             text_edit.setReadOnly(True)
-            status_label.setText(f'Loading {len(asset_ids)} asset(s)...')
+            status_label.setText(f'Loading {format_count(asset_ids, "asset")}...')
             status_label.setStyleSheet('color: #888; font-size: 9pt;')
 
-            log_buffer.log('Scraper', f'[Load Asset] Starting load of {len(asset_ids)} asset ID(s)')
+            log_buffer.log('Scraper', f'[Load Asset] Starting load of {format_count(asset_ids, "asset ID")}')
 
             # Stop any existing loader
             if self._asset_loader is not None:
@@ -4852,7 +5265,7 @@ class CacheViewerTab(QWidget):
         text_edit.setReadOnly(False)
 
         if failed == 0:
-            status_label.setText(f'Done! Loaded {loaded} asset(s).')
+            status_label.setText(f'Done! Loaded {format_count(loaded, "asset")}.')
             status_label.setStyleSheet('color: #55cc66; font-size: 9pt;')
         else:
             status_label.setText(f'Done! Loaded {loaded}, failed {failed}.')

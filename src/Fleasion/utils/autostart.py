@@ -1,16 +1,20 @@
-"""Task Scheduler-based autostart for Fleasion.
+"""Autostart integration for Fleasion.
 
-Creates a scheduled task that runs Fleasion at user logon with highest privileges
-(no UAC prompt).  Detects whether we're running as a compiled .exe or via uv run
-and updates the task when the launch method changes.
+Creates a Windows Task Scheduler task or macOS LaunchAgent that runs Fleasion at
+user logon. Detects whether we're running as a compiled executable or from a
+development checkout and updates the launch method when it changes.
 """
 
 import os
 import sys
+import base64
 import json
 import logging
+import plistlib
 import subprocess
 from pathlib import Path
+
+from .paths import USER_HOME
 
 logger = logging.getLogger(__name__)
 
@@ -23,19 +27,36 @@ def _log(msg: str) -> None:
         logger.info(msg)
 
 TASK_NAME = 'Fleasion_Autostart'
+LAUNCH_AGENT_ID = 'com.fleasion.autostart'
+LAUNCH_AGENT_PATH = USER_HOME / 'Library' / 'LaunchAgents' / f'{LAUNCH_AGENT_ID}.plist'
 
 
 # Bump this whenever the task XML format changes to force recreation on next launch.
-_TASK_FORMAT_VERSION = 4
+_TASK_FORMAT_VERSION = 7
+
+
+def _ps_single_quote(value: str) -> str:
+    """Return *value* as a PowerShell single-quoted string literal."""
+    return "'" + value.replace("'", "''") + "'"
+
 
 def _get_launch_info() -> dict:
     """Return a dict describing how to launch the current instance."""
     if getattr(sys, 'frozen', False):
         return {'mode': 'exe', 'path': sys.executable, '_fmt': _TASK_FORMAT_VERSION}
 
+    if sys.platform == 'darwin':
+        check = Path(__file__).resolve().parent
+        for _ in range(8):
+            if (check / 'pyproject.toml').exists():
+                break
+            check = check.parent
+        return {'mode': 'python', 'path': sys.executable, 'project': str(check), '_fmt': _TASK_FORMAT_VERSION}
+
     # Dev / uv run
     import shutil
-    uv = shutil.which('uv') or shutil.which('uv.exe') or 'uv'
+    found_uv = shutil.which('uv') or shutil.which('uv.exe')
+    uv = str(Path(found_uv).resolve()) if found_uv else 'uv'
     # Find project root (dir containing pyproject.toml)
     check = Path(sys.argv[0]).resolve().parent
     for _ in range(8):
@@ -46,6 +67,8 @@ def _get_launch_info() -> dict:
 
 
 def _task_exists() -> bool:
+    if sys.platform == 'darwin':
+        return LAUNCH_AGENT_PATH.exists()
     try:
         r = subprocess.run(
             ['schtasks', '/Query', '/TN', TASK_NAME],
@@ -57,6 +80,16 @@ def _task_exists() -> bool:
 
 
 def _delete_task() -> None:
+    if sys.platform == 'darwin':
+        try:
+            subprocess.run(['launchctl', 'unload', str(LAUNCH_AGENT_PATH)], capture_output=True, timeout=10)
+        except Exception:
+            pass
+        try:
+            LAUNCH_AGENT_PATH.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return
     try:
         subprocess.run(
             ['schtasks', '/Delete', '/TN', TASK_NAME, '/F'],
@@ -68,6 +101,42 @@ def _delete_task() -> None:
 
 def _create_task(launch_info: dict) -> bool:
     """Create the scheduled task with highest privileges (no UAC on logon)."""
+    if sys.platform == 'darwin':
+        try:
+            if launch_info['mode'] == 'exe':
+                args = [launch_info['path'], '--no-dashboard']
+                working_dir = str(Path(launch_info['path']).parent)
+                env = {}
+            else:
+                project = Path(launch_info['project'])
+                args = [launch_info['path'], str(project / 'launcher.py'), '--no-dashboard']
+                working_dir = str(project)
+                env = {'PYTHONPATH': str(project / 'src')}
+
+            plist = {
+                'Label': LAUNCH_AGENT_ID,
+                'ProgramArguments': args,
+                'RunAtLoad': True,
+                'WorkingDirectory': working_dir,
+                'StandardOutPath': str(USER_HOME / 'Library' / 'Logs' / 'Fleasion.autostart.out.log'),
+                'StandardErrorPath': str(USER_HOME / 'Library' / 'Logs' / 'Fleasion.autostart.err.log'),
+            }
+            if env:
+                plist['EnvironmentVariables'] = env
+
+            LAUNCH_AGENT_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with LAUNCH_AGENT_PATH.open('wb') as f:
+                plistlib.dump(plist, f)
+            # Do not load the agent in the current login session. RunAtLoad
+            # would immediately launch a second Fleasion instance while the
+            # first one is still completing startup. macOS discovers the plist
+            # automatically on the next login.
+            _log('LaunchAgent updated; it will take effect at the next login')
+            return True
+        except Exception as e:
+            _log(f'Failed to create LaunchAgent: {e}')
+            return False
+
     import tempfile, textwrap, html as _html
 
     # Resolve the current user so the task is scoped to them specifically.
@@ -85,11 +154,26 @@ def _create_task(launch_info: dict) -> bool:
         # console window that uv.exe would otherwise show at logon.
         uv_path   = launch_info['path']
         proj_path = launch_info['project']
-        # PowerShell command: use single-quotes around paths (PS native quoting)
+        uv_args = subprocess.list2cmdline(['--project', proj_path, 'run', 'fleasion', '--no-dashboard'])
+        log_path = launch_info.get('log')
+        ps_script = (
+            "try{"
+            f"Start-Process -FilePath {_ps_single_quote(uv_path)} "
+            f"-ArgumentList {_ps_single_quote(uv_args)} "
+            "-WindowStyle Hidden -ErrorAction Stop"
+            "}catch{"
+        )
+        if log_path:
+            ps_script += (
+                f"New-Item -ItemType Directory -Force -Path {_ps_single_quote(str(Path(log_path).parent))}|Out-Null;"
+                f"Add-Content -LiteralPath {_ps_single_quote(log_path)} "
+                "-Value ((Get-Date -Format o)+' '+($_|Out-String));"
+            )
+        ps_script += "exit 1}"
+        ps_encoded = base64.b64encode(ps_script.encode('utf-16-le')).decode('ascii')
         ps_cmd = (
-            f"-WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -Command "
-            f"& '{uv_path}' --project '{proj_path}' "
-            f"run fleasion --no-dashboard"
+            f"-WindowStyle Hidden -NoProfile -NonInteractive "
+            f"-ExecutionPolicy Bypass -EncodedCommand {ps_encoded}"
         )
         command = 'powershell.exe'
         args = _html.escape(ps_cmd)
@@ -183,6 +267,8 @@ def sync_autostart(enabled: bool, config_dir: Path) -> bool:
         return True
 
     current = _get_launch_info()
+    if current.get('mode') == 'uv':
+        current['log'] = str(config_dir / 'autostart_launch_error.log')
     stored = _get_stored_launch_info(config_dir)
 
     # Recreate if: task missing, or launch method changed since last save.

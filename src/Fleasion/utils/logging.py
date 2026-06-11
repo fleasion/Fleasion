@@ -4,6 +4,10 @@ import threading
 from datetime import datetime
 from typing import Any
 
+from .paths import LOG_FILE, LOGS_DIR
+
+MAX_LOG_FILE_BYTES = 1 * 1024 * 1024
+
 
 class LogBuffer:
     """Thread-safe log buffer with batched callback notifications."""
@@ -15,14 +19,40 @@ class LogBuffer:
         # Batching state
         self._pending_notifications = False
         self._batch_timer = None
+        self._prepare_log_file()
+
+    def _prepare_log_file(self):
+        try:
+            LOGS_DIR.mkdir(parents=True, exist_ok=True)
+            self._rotate_log_file_if_needed()
+        except OSError:
+            pass
+
+    def _rotate_log_file_if_needed(self, incoming_bytes: int = 0):
+        if not LOG_FILE.exists():
+            return
+        if LOG_FILE.stat().st_size + incoming_bytes <= MAX_LOG_FILE_BYTES:
+            return
+        rotated = LOG_FILE.with_suffix('.log.1')
+        rotated.unlink(missing_ok=True)
+        LOG_FILE.replace(rotated)
 
     def log(self, category: str, message: str):
         """Add a log entry (callbacks are batched to reduce overhead)."""
-        timestamp = datetime.now().strftime('%H:%M:%S')
+        now = datetime.now()
+        timestamp = now.strftime('%H:%M:%S')
         entry = f'[{timestamp}] [{category}] {message}'
 
         with self._lock:
             self._buffer.append(entry)
+            try:
+                LOGS_DIR.mkdir(parents=True, exist_ok=True)
+                line = f'{now:%Y-%m-%d} {entry}\n'
+                self._rotate_log_file_if_needed(len(line.encode('utf-8')))
+                with LOG_FILE.open('a', encoding='utf-8') as handle:
+                    handle.write(line)
+            except OSError:
+                pass
 
             # Schedule batched callback notification
             if not self._pending_notifications:

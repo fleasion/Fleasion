@@ -118,6 +118,30 @@ def interleave_i64(values: list[int]) -> bytes:
     return bytes(out)
 
 
+def interleave_u64(values: list[int]) -> bytes:
+    """Byte-interleave unsigned 64-bit integers."""
+    count = len(values)
+    out = bytearray(count * 8)
+    for i, v in enumerate(values):
+        v &= 0xFFFF_FFFF_FFFF_FFFF
+        for byte_idx in range(8):
+            out[byte_idx * count + i] = (v >> (56 - byte_idx * 8)) & 0xFF
+    return bytes(out)
+
+
+def interleave_bytes(values: list[bytes], width: int) -> bytes:
+    """Byte-interleave fixed-width records."""
+    count = len(values)
+    out = bytearray(count * width)
+    for i, value in enumerate(values):
+        if len(value) != width:
+            msg = f'Expected {width}-byte record, got {len(value)} bytes'
+            raise ValueError(msg)
+        for byte_idx, byte in enumerate(value):
+            out[byte_idx * count + i] = byte
+    return bytes(out)
+
+
 def encode_ids(ids: list[int]) -> bytes:
     """Delta-encode then zigzag-interleave a list of instance IDs.
 

@@ -1,7 +1,7 @@
 """Core asyncio TLS proxy server for Fleasion.
 
 Architecture:
-  - Hosts file redirects assetdelivery.roblox.com + fts.rbxcdn.com -> 127.0.0.1.
+  - Hosts file redirects assetdelivery.roblox.com + Roblox CDN hosts -> 127.0.0.1.
   - We listen on 127.0.0.1:443 as a direct TLS server (NOT a CONNECT proxy).
   - Upstream connections use the REAL CDN IPs (resolved before hosts file is written).
   - SNI callback handles cert selection only; host is read from the HTTP Host: header.
@@ -26,19 +26,57 @@ import gzip
 import logging
 import ssl
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple
 
 if TYPE_CHECKING:
     from .addons.cache_scraper import CacheScraper
     from .addons.texture_stripper import TextureStripper
 
+from .upstream import (
+    AutoConnector,
+    BaseUpstreamConnector,
+    DirectIpConnector,
+    HttpConnectConnector,
+    HttpProxyConfig,
+    Socks5Connector,
+    Socks5ProxyConfig,
+    UnavailableConnector,
+    UpstreamConnectResult,
+    UpstreamEndpoint,
+    UpstreamMode,
+    normalize_endpoints,
+    normalize_upstream_mode,
+)
+
 logger = logging.getLogger(__name__)
 
-INTERCEPT_HOSTS: frozenset = frozenset({'assetdelivery.roblox.com', 'fts.rbxcdn.com', 'gamejoin.roblox.com'})
+ASSET_DELIVERY_HOST = 'assetdelivery.roblox.com'
+GAMEJOIN_HOST = 'gamejoin.roblox.com'
+PROFILE_API_HOST = 'apis.roblox.com'
+PROFILE_API_PATH_FRAGMENT = '/v1/user/profiles/get-profiles'
+CDN_HOSTS: frozenset = frozenset({'fts.rbxcdn.com', 'contentdelivery.roblox.com'})
+BASE_INTERCEPT_HOSTS: frozenset = frozenset({ASSET_DELIVERY_HOST, GAMEJOIN_HOST, *CDN_HOSTS})
+USERNAME_SPOOFER_INTERCEPT_HOSTS: frozenset = frozenset({PROFILE_API_HOST})
+INTERCEPT_HOSTS: frozenset = BASE_INTERCEPT_HOSTS | USERNAME_SPOOFER_INTERCEPT_HOSTS
 
 _ZSTD_MAGIC = b'\x28\xb5\x2f\xfd'
 _GZIP_MAGIC  = b'\x1f\x8b'
+
+
+@dataclass
+class RawHeaders:
+    first_line: bytes
+    headers: Dict[bytes, bytes]
+    raw_header_block: bytes
+
+
+@dataclass
+class RawBody:
+    wire: bytes
+    payload: bytes
+    was_chunked: bool
 
 
 def _decompress_body(body: bytes, headers: Dict[bytes, bytes]) -> bytes:
@@ -86,10 +124,56 @@ def _build_modified_request(req_line: bytes, headers: Dict[bytes, bytes], body: 
     return b'\r\n'.join(lines) + b'\r\n\r\n' + body
 
 
-async def _read_headers(reader: asyncio.StreamReader) -> Optional[Tuple[bytes, Dict[bytes, bytes]]]:
-    """Read one HTTP header block. Returns (first_line, lowercase_headers) or None."""
-    first_line: Optional[bytes] = None
-    headers: Dict[bytes, bytes] = {}
+def _format_exc(exc: Exception) -> str:
+    text = str(exc)
+    return f'{type(exc).__name__}: {text}' if text else type(exc).__name__
+
+
+def _parse_status_code(status_line: bytes) -> int:
+    try:
+        return int(status_line.split(b' ', 2)[1])
+    except Exception:
+        return 0
+
+
+def _body_log_snippet(body: bytes, limit: int = 256) -> str:
+    if not body:
+        return ''
+    text = body[:limit].decode('utf-8', errors='replace')
+    text = text.replace('\r', '\\r').replace('\n', '\\n')
+    if len(body) > limit:
+        text += '…'
+    return text
+
+
+def _is_empty_json_array(body: bytes) -> bool:
+    return body.strip() == b'[]'
+
+
+def _make_proxy_error_response(status_code: int, message: str) -> bytes:
+    reason_map = {
+        400: 'Bad Request',
+        403: 'Forbidden',
+        404: 'Not Found',
+        502: 'Bad Gateway',
+        503: 'Service Unavailable',
+        504: 'Gateway Timeout',
+    }
+    reason = reason_map.get(status_code, 'Proxy Error')
+    body = message.encode('utf-8', errors='replace')
+    return (
+        f'HTTP/1.1 {status_code} {reason}\r\n'
+        'Content-Type: text/plain; charset=utf-8\r\n'
+        f'Content-Length: {len(body)}\r\n'
+        'Connection: close\r\n'
+        '\r\n'
+    ).encode('ascii') + body
+
+
+async def _read_headers_raw(reader: asyncio.StreamReader) -> Optional[RawHeaders]:
+    """Read one HTTP header block, preserving the exact wire header bytes."""
+    raw = bytearray()
+
     while True:
         try:
             line = await asyncio.wait_for(reader.readline(), timeout=15.0)
@@ -97,26 +181,49 @@ async def _read_headers(reader: asyncio.StreamReader) -> Optional[Tuple[bytes, D
             return None
         if not line:
             return None
-        stripped = line.rstrip(b'\r\n')
-        if stripped == b'':
+
+        raw += line
+        if line in (b'\r\n', b'\n'):
             break
-        if first_line is None:
-            first_line = stripped
-        elif b':' in stripped:
-            k, _, v = stripped.partition(b':')
-            headers[k.strip().lower()] = v.strip()
-    if first_line is None:
+        if len(raw) > 1024 * 1024:
+            raise ValueError('HTTP header block too large')
+
+    lines = bytes(raw).splitlines()
+    if not lines:
         return None
-    return first_line, headers
+
+    first_line = lines[0].rstrip(b'\r\n')
+    headers: Dict[bytes, bytes] = {}
+    for line in lines[1:]:
+        stripped = line.rstrip(b'\r\n')
+        if not stripped or b':' not in stripped:
+            continue
+        k, _, v = stripped.partition(b':')
+        headers[k.strip().lower()] = v.strip()
+
+    return RawHeaders(
+        first_line=first_line,
+        headers=headers,
+        raw_header_block=bytes(raw),
+    )
 
 
-async def _read_body_raw(reader: asyncio.StreamReader, headers: Dict[bytes, bytes]) -> bytes:
-    """Read HTTP body, returning raw (still-compressed) bytes."""
+async def _read_headers(reader: asyncio.StreamReader) -> Optional[Tuple[bytes, Dict[bytes, bytes]]]:
+    """Compatibility wrapper returning (first_line, lowercase_headers)."""
+    raw = await _read_headers_raw(reader)
+    if raw is None:
+        return None
+    return raw.first_line, raw.headers
+
+
+async def _read_body_wire(reader: asyncio.StreamReader, headers: Dict[bytes, bytes]) -> RawBody:
+    """Read an HTTP body, preserving wire bytes and exposing dechunked payload."""
     te = headers.get(b'transfer-encoding', b'').lower()
     cl_raw = headers.get(b'content-length', b'')
 
     if b'chunked' in te:
-        body = bytearray()
+        wire = bytearray()
+        payload = bytearray()
         while True:
             try:
                 size_line = await reader.readline()
@@ -124,36 +231,54 @@ async def _read_body_raw(reader: asyncio.StreamReader, headers: Dict[bytes, byte
                 break
             if not size_line:
                 break
+            wire += size_line
             size_str = size_line.strip().split(b';')[0]
             try:
                 chunk_size = int(size_str, 16)
             except ValueError:
                 break
             if chunk_size == 0:
-                await reader.readline()
+                while True:
+                    trailer_line = await reader.readline()
+                    if not trailer_line:
+                        break
+                    wire += trailer_line
+                    if trailer_line in (b'\r\n', b'\n'):
+                        break
                 break
             try:
                 chunk = await reader.readexactly(chunk_size)
             except asyncio.IncompleteReadError as exc:
-                body += exc.partial
+                wire += exc.partial
+                payload += exc.partial
                 break
-            await reader.readline()  # CRLF after chunk data
-            body += chunk
-        return bytes(body)
+            try:
+                crlf = await reader.readexactly(2)
+            except asyncio.IncompleteReadError as exc:
+                crlf = exc.partial
+            wire += chunk + crlf
+            payload += chunk
+        return RawBody(wire=bytes(wire), payload=bytes(payload), was_chunked=True)
 
     if cl_raw:
         try:
             length = int(cl_raw)
         except ValueError:
-            return b''
+            return RawBody(wire=b'', payload=b'', was_chunked=False)
         if length <= 0:
-            return b''
+            return RawBody(wire=b'', payload=b'', was_chunked=False)
         try:
-            return await reader.readexactly(length)
+            body = await reader.readexactly(length)
         except asyncio.IncompleteReadError as exc:
-            return exc.partial
+            body = exc.partial
+        return RawBody(wire=body, payload=body, was_chunked=False)
 
-    return b''
+    return RawBody(wire=b'', payload=b'', was_chunked=False)
+
+
+async def _read_body_raw(reader: asyncio.StreamReader, headers: Dict[bytes, bytes]) -> bytes:
+    """Compatibility wrapper returning the dechunked, still-compressed payload."""
+    return (await _read_body_wire(reader, headers)).payload
 
 
 def _reassemble_raw_response(status_line: bytes, headers: Dict[bytes, bytes], body_raw: bytes) -> bytes:
@@ -169,6 +294,37 @@ def _reassemble_raw_response(status_line: bytes, headers: Dict[bytes, bytes], bo
     # Replace/add content-length (body_raw is already dechunked)
     if b'content-length' not in headers:
         lines.append(b'content-length: ' + str(len(body_raw)).encode())
+    return b'\r\n'.join(lines) + b'\r\n\r\n' + body_raw
+
+
+def _reassemble_raw_request(req_line: bytes, headers: Dict[bytes, bytes], body_raw: bytes) -> bytes:
+    """Reconstruct an HTTP request after reading/dechunking its body.
+
+    For bodyless requests, do not inject Content-Length: 0 unless the client
+    originally sent a body framing header. Roblox/libcurl is usually fine either
+    way, but preserving request shape reduces edge-case behavior.
+    """
+    lines = [req_line]
+
+    hop_by_hop = {
+        b'proxy-connection',
+        b'proxy-authenticate',
+        b'proxy-authorization',
+        b'transfer-encoding',
+    }
+
+    had_body_framing = b'content-length' in headers or b'transfer-encoding' in headers
+
+    for k, v in headers.items():
+        if k in hop_by_hop:
+            continue
+        if k == b'content-length':
+            continue
+        lines.append(k + b': ' + v)
+
+    if body_raw or had_body_framing:
+        lines.append(b'content-length: ' + str(len(body_raw)).encode())
+
     return b'\r\n'.join(lines) + b'\r\n\r\n' + body_raw
 
 
@@ -352,17 +508,55 @@ class FleasionProxy:
         texture_stripper: 'TextureStripper',
         cache_scraper: 'CacheScraper',
         host_certs: Dict[str, Tuple[Path, Path]],
-        upstream_ips: Dict[str, List[str]],
+        upstream_endpoints: Optional[Dict[str, Sequence[UpstreamEndpoint | str]]] = None,
+        default_cert: Optional[Tuple[Path, Path]] = None,
         port: int = 443,
         max_workers: int = 8,
+        upstream_ips: Optional[Dict[str, List[str]]] = None,
+        upstream_mode: str | UpstreamMode = UpstreamMode.AUTO,
+        system_http_proxy: Optional[HttpProxyConfig] = None,
+        manual_http_proxy: Optional[HttpProxyConfig] = None,
+        manual_socks5_proxy: Optional[Socks5ProxyConfig] = None,
+        wire_preserving_passthrough: bool = False,
+        vpn_compat_max_assetdelivery_connections: int = 16,
+        vpn_compat_max_cdn_connections: int = 32,
     ) -> None:
         self.texture_stripper = texture_stripper
         self.cache_scraper = cache_scraper
         self.port = port
         self._module_interceptors: List = []
-        self._upstream_ips = upstream_ips
+        if upstream_endpoints is None:
+            upstream_endpoints = upstream_ips or {}
+        self._upstream_endpoints = normalize_endpoints(upstream_endpoints)
         self._server: Optional[asyncio.Server] = None
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix='fleasion-cpu')
+        self._sni_diagnostics_seen: set[str] = set()
+        self._fallback_diagnostics_seen: set[tuple[str, str]] = set()
+        self._wire_preserving_passthrough = bool(wire_preserving_passthrough)
+
+        asset_limit = max(1, int(vpn_compat_max_assetdelivery_connections or 16))
+        cdn_limit = max(1, int(vpn_compat_max_cdn_connections or 32))
+        self._upstream_host_limits = {
+            ASSET_DELIVERY_HOST: asyncio.Semaphore(asset_limit),
+            'contentdelivery.roblox.com': asyncio.Semaphore(asset_limit),
+            'fts.rbxcdn.com': asyncio.Semaphore(cdn_limit),
+        }
+
+        self._direct_connector = DirectIpConnector()
+        self._system_http_connector: Optional[BaseUpstreamConnector] = (
+            HttpConnectConnector(system_http_proxy, method='system_http_connect')
+            if system_http_proxy is not None else None
+        )
+        self._manual_http_connector: Optional[BaseUpstreamConnector] = (
+            HttpConnectConnector(manual_http_proxy)
+            if manual_http_proxy is not None else None
+        )
+        self._manual_socks5_connector: Optional[BaseUpstreamConnector] = (
+            Socks5Connector(manual_socks5_proxy)
+            if manual_socks5_proxy is not None else None
+        )
+        self._upstream_mode = normalize_upstream_mode(upstream_mode)
+        self._connector = self._build_connector()
 
         self._host_ssl_ctxs: Dict[str, ssl.SSLContext] = {}
         for host, (cert_path, key_path) in host_certs.items():
@@ -379,19 +573,35 @@ class FleasionProxy:
         self._upstream_ssl_ctx.verify_mode = ssl.CERT_NONE
         self._upstream_ssl_ctx.set_alpn_protocols(['http/1.1'])
 
-        first_host = next(iter(host_certs))
-        first_cert, first_key = host_certs[first_host]
+        if default_cert is None:
+            raise ValueError('default_cert is required')
+        default_cert_path, default_key_path = default_cert
         self._server_ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        self._server_ssl_ctx.load_cert_chain(str(first_cert), str(first_key))
+        self._server_ssl_ctx.load_cert_chain(str(default_cert_path), str(default_key_path))
         self._server_ssl_ctx.verify_mode = ssl.CERT_NONE
         self._server_ssl_ctx.minimum_version = ssl.TLSVersion.TLSv1_2
         self._server_ssl_ctx.set_alpn_protocols(['http/1.1'])
         self._server_ssl_ctx.set_servername_callback(self._sni_callback)
 
+    def _log_sni_once(self, key: str, message: str) -> None:
+        if key in self._sni_diagnostics_seen:
+            return
+        self._sni_diagnostics_seen.add(key)
+        try:
+            from ..utils import log_buffer
+            log_buffer.log('TLS', message)
+        except Exception:
+            logger.debug(message)
+
     def _sni_callback(self, ssl_obj, server_name: Optional[str], initial_ctx: ssl.SSLContext) -> None:
         name = (server_name or '').lower()
         if name in self._host_ssl_ctxs:
             ssl_obj.context = self._host_ssl_ctxs[name]
+            self._log_sni_once(f'known:{name}', f'SNI matched {name}; using host-specific certificate')
+        elif name:
+            self._log_sni_once(f'unknown:{name}', f'SNI {name} is not intercepted; using default multi-host certificate')
+        else:
+            self._log_sni_once('missing', 'Client connected without SNI; using default multi-host certificate')
 
     async def start(self) -> None:
         self._server = await asyncio.start_server(
@@ -406,7 +616,35 @@ class FleasionProxy:
 
     def set_module_interceptors(self, interceptors: List) -> None:
         """Set the list of module interceptors for gamejoin traffic hooks."""
-        self._module_interceptors = interceptors
+        self._module_interceptors = list(interceptors)
+
+    def set_upstream_endpoints(self, endpoints: Dict[str, Sequence[UpstreamEndpoint | str]]) -> None:
+        self._upstream_endpoints = normalize_endpoints(endpoints)
+
+    def _build_connector(self) -> BaseUpstreamConnector:
+        if self._upstream_mode == UpstreamMode.DIRECT_IP:
+            return self._direct_connector
+        if self._upstream_mode == UpstreamMode.SYSTEM_PROXY:
+            return self._system_http_connector or UnavailableConnector(
+                'system_http_connect',
+                'no system HTTP proxy detected',
+            )
+        if self._upstream_mode == UpstreamMode.HTTP_CONNECT:
+            return self._manual_http_connector or UnavailableConnector(
+                UpstreamMode.HTTP_CONNECT.value,
+                'manual HTTP CONNECT proxy is not configured',
+            )
+        if self._upstream_mode == UpstreamMode.SOCKS5:
+            return self._manual_socks5_connector or UnavailableConnector(
+                UpstreamMode.SOCKS5.value,
+                'manual SOCKS5 proxy is not configured',
+            )
+        return AutoConnector(
+            direct=self._direct_connector,
+            system_http_proxy=self._system_http_connector,
+            manual_http_proxy=self._manual_http_connector,
+            manual_socks5=self._manual_socks5_connector,
+        )
 
     async def stop(self) -> None:
         if self._server:
@@ -418,18 +656,110 @@ class FleasionProxy:
             self._server = None
         self._executor.shutdown(wait=False, cancel_futures=True)
 
+    def _endpoints_for_host(
+        self,
+        host: str,
+        max_targets: Optional[int] = None,
+    ) -> list[UpstreamEndpoint]:
+        endpoints = self._upstream_endpoints.get(host, []) or [UpstreamEndpoint(host=host)]
+        if max_targets is not None:
+            endpoints = endpoints[:max_targets]
+        return endpoints
+
+    async def _connect_upstream(
+        self,
+        host: str,
+        *,
+        timeout: float = 10.0,
+        max_targets: Optional[int] = None,
+    ) -> UpstreamConnectResult:
+        endpoints = self._endpoints_for_host(host, max_targets=max_targets)
+        sem = self._upstream_host_limits.get(host)
+        if sem is None:
+            return await self._connector.connect(host, endpoints, self._upstream_ssl_ctx, timeout)
+        async with sem:
+            return await self._connector.connect(host, endpoints, self._upstream_ssl_ctx, timeout)
+
+    async def _open_upstream(
+        self,
+        host: str,
+        *,
+        timeout: float = 10.0,
+        max_targets: Optional[int] = None,
+    ) -> Tuple[Optional[asyncio.StreamReader], Optional[asyncio.StreamWriter], Optional[str], List[str]]:
+        result = await self._connect_upstream(host, timeout=timeout, max_targets=max_targets)
+        if result.writer is not None:
+            return result.reader, result.writer, result.endpoint, list(result.prior_errors)
+        return None, None, None, [result.error or 'upstream connect failed']
+
+    async def log_upstream_self_test(self, hosts: Optional[set] = None) -> None:
+        from ..utils import log_buffer
+
+        hosts_to_test = sorted(hosts or set(self._upstream_endpoints.keys()))
+
+        matrix: list[BaseUpstreamConnector] = [self._direct_connector]
+        if self._system_http_connector is not None:
+            matrix.append(self._system_http_connector)
+        if self._manual_http_connector is not None:
+            matrix.append(self._manual_http_connector)
+        if self._manual_socks5_connector is not None:
+            matrix.append(self._manual_socks5_connector)
+
+        async def probe(host: str) -> None:
+            endpoints = self._endpoints_for_host(host, max_targets=3)
+            first_ok_method: Optional[str] = None
+            direct_failed = False
+
+            for connector in matrix:
+                result = await connector.connect(host, endpoints, self._upstream_ssl_ctx, timeout=3.0)
+                if result.writer is not None:
+                    log_buffer.log(
+                        'ProxyDiag',
+                        f'{host} {result.method}: OK via {result.endpoint}',
+                    )
+                    if first_ok_method is None:
+                        first_ok_method = result.method
+                    try:
+                        result.writer.close()
+                    except Exception:
+                        pass
+                else:
+                    log_buffer.log(
+                        'ProxyDiag',
+                        f'{host} {result.method}: FAILED {result.error or "unknown error"}',
+                    )
+                    if result.method == UpstreamMode.DIRECT_IP.value:
+                        direct_failed = True
+
+            if first_ok_method is not None:
+                log_buffer.log('ProxyDiag', f'selected upstream mode for {host}: {first_ok_method}')
+                if (
+                    first_ok_method != UpstreamMode.DIRECT_IP.value
+                    and direct_failed
+                    and isinstance(self._connector, AutoConnector)
+                ):
+                    self._connector.prime_host(host, first_ok_method)
+            elif len(matrix) == 1:
+                log_buffer.log(
+                    'ProxyDiag',
+                    'No proxy-capable upstream transport is configured. '
+                    'VPN may not route Fleasion direct-IP sockets.',
+                )
+
+        await asyncio.gather(*(probe(host) for host in hosts_to_test))
+
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         from ..utils import log_buffer
 
         try:
-            result = await asyncio.wait_for(_read_headers(reader), timeout=15.0)
+            result = await asyncio.wait_for(_read_headers_raw(reader), timeout=15.0)
         except asyncio.TimeoutError:
             writer.close()
             return
         if result is None:
             writer.close()
             return
-        req_first, req_headers = result
+        req_first, req_headers = result.first_line, result.headers
 
         host_hdr = req_headers.get(b'host', b'').decode('ascii', errors='replace').lower()
         host = host_hdr.split(':')[0].strip()
@@ -438,332 +768,449 @@ class FleasionProxy:
             writer.close()
             return
 
-
-
-        real_ips = self._upstream_ips.get(host, [])
-        upstream_target = real_ips[0] if real_ips else host
         try:
-            up_reader, up_writer = await asyncio.wait_for(
-                asyncio.open_connection(
-                    upstream_target, 443,
-                    ssl=self._upstream_ssl_ctx,
-                    server_hostname=host,
-                ),
-                timeout=10.0,
-            )
-        except Exception as exc:
-            log_buffer.log('Proxy', f'Upstream connect failed for {host} ({upstream_target}): {exc}')
-            writer.close()
-            return
-
-        try:
-            await self._http_session(req_first, req_headers, reader, writer, up_reader, up_writer, host)
+            await self._http_session(result, reader, writer, host)
         except (ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError):
             pass
         except Exception as exc:
             log_buffer.log('Proxy', f'Session error for {host}: {exc}')
         finally:
-            for w in (up_writer, writer):
-                try:
-                    w.close()
-                except Exception:
-                    pass
+            try:
+                writer.close()
+            except Exception:
+                pass
 
     async def _http_session(
         self,
-        first_req_line: bytes,
-        first_req_headers: Dict[bytes, bytes],
+        first_req: RawHeaders,
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
-        up_reader: asyncio.StreamReader,
-        up_writer: asyncio.StreamWriter,
         host: str,
     ) -> None:
         from ..utils import log_buffer
 
         replacements_tuple = self.texture_stripper.config_manager.get_all_replacements()
-        pending_req: Optional[Tuple[bytes, Dict]] = (first_req_line, first_req_headers)
+        pending_req: Optional[RawHeaders] = first_req
+        up_reader: Optional[asyncio.StreamReader] = None
+        up_writer: Optional[asyncio.StreamWriter] = None
+        upstream_failure_hint_logged = False
 
-        while True:
-            # ── Read request ─────────────────────────────────────────────
-            if pending_req is not None:
-                req_first, req_headers = pending_req
-                pending_req = None
-            else:
-                result = await _read_headers(reader)
-                if result is None:
-                    break
-                req_first, req_headers = result
+        async def ensure_upstream(path_for_log: str) -> bool:
+            nonlocal up_reader, up_writer, upstream_failure_hint_logged
 
-            # Read raw request body (may be compressed)
-            req_body_raw = await _read_body_raw(reader, req_headers)
+            if up_reader is not None and up_writer is not None and not up_writer.is_closing():
+                return True
 
-            parts = req_first.split(b' ', 2)
-            path = parts[1].decode('ascii', errors='replace') if len(parts) > 1 else '/'
-            is_batch = (host == 'assetdelivery.roblox.com' and b'/v1/assets/batch' in req_first)
-            _gamejoin_flow: Optional[ProxyFlow] = None
+            connect_result = await self._connect_upstream(host)
+            up_reader = connect_result.reader
+            up_writer = connect_result.writer
 
-            # ── TextureStripper: CDN short-circuit (replace before upstream) ──
-            # Race condition fix: the batch-request coroutine (on the assetdelivery
-            # connection) and this CDN coroutine (on fts.rbxcdn.com) run concurrently.
-            # The CDN request may arrive before the batch response has been processed
-            # and its CDN URL registered in _solidmodel_injections / _local_redirects.
-            # If there are pending req_ids in flight, yield briefly to the event loop
-            # so the batch-response coroutine can complete its registration, then retry.
-            # Without this, unreplaced assets pass through and Roblox caches them,
-            # requiring multiple rejoins to achieve full replacement coverage.
-            short_circuit = None
-            if host == 'fts.rbxcdn.com':
-                short_circuit = self.texture_stripper.check_cdn_request(host, path)
-                if short_circuit is None and self.texture_stripper.has_pending():
-                    # Yield to event loop in short increments, retrying up to ~600ms.
-                    # 600ms is generous: batch req→resp RTT is typically <100ms.
-                    for _wait_i in range(12):
-                        await asyncio.sleep(0.05)  # 50ms per retry
-                        short_circuit = self.texture_stripper.check_cdn_request(host, path)
-                        if short_circuit is not None:
-                            break
-                        if not self.texture_stripper.has_pending():
-                            break  # all pending resolved, this URL just isn't ours
-
-                if short_circuit is not None:
-                    action, value = short_circuit
-                    if action == 'local':
-                        response = await asyncio.get_event_loop().run_in_executor(
-                            self._executor, _serve_local_file, value)
-                        writer.write(response)
-                        await writer.drain()
-                        # Cache our own served file so it appears in the scraper viewer
-                        if self.cache_scraper.enabled:
-                            try:
-                                _file_bytes = await asyncio.get_event_loop().run_in_executor(
-                                    self._executor, _read_local_bytes, value)
-                                if _file_bytes:
-                                    full_url = f'https://{host}{path}'
-                                    _cache_hash = path.rsplit('/', 1)[-1].split('?')[0]
-                                    self.cache_scraper.process_cdn_response(
-                                        full_url, path, _file_bytes, 'application/octet-stream',
-                                    )
-                            except Exception:
-                                pass
-                        if not _keep_alive(req_first, req_headers):
-                            break
-                        continue
-                    elif action == 'cdn':
-                        writer.write(_make_redirect(value))
-                        await writer.drain()
-                        if not _keep_alive(req_first, req_headers):
-                            break
-                        continue
-                    # 'solid', 'solid_v3', and 'anim_rig' fall through - need upstream response
-
-            # ── Modify batch request body if needed ───────────────────────
-            if is_batch:
-                # Decompress for reading/modifying, send uncompressed to upstream
-                req_body_plain = _decompress_body(req_body_raw, req_headers)
-                # Unique ID for this specific batch request/response pair.
-                # Keyed into _pending as f'{batch_id}_{req_id}' so parallel
-                # connections using the same req_id integers don't collide —
-                # the same root cause mitmproxy solved with its flow_id prefix.
-                import uuid as _uuid
-                batch_id = _uuid.uuid4().hex
-                # Run synchronously — process_batch_request is pure Python (JSON parse +
-                # dict ops), not I/O bound. Using run_in_executor here introduced a gap:
-                # the await released the event loop, the CDN coroutine ran, saw empty
-                # _pending, skipped the wait, and forwarded unreplaced assets. Running
-                # synchronously ensures _pending is populated before any CDN coroutine
-                # can check has_pending().
-                req_body_modified, scraper_body = self.texture_stripper.process_batch_request(
-                    req_body_plain, req_headers, replacements_tuple, batch_id,
-                )
-                up_writer.write(_build_modified_request(req_first, req_headers, req_body_modified))
-            elif host == 'gamejoin.roblox.com':
-                # Module interceptors: allow request body/URL modification for gamejoin traffic
-                _req_body_plain = _decompress_body(req_body_raw, req_headers)
-                if self._module_interceptors:
-                    _gamejoin_flow = ProxyFlow(req_first, req_headers, _req_body_plain, host)
-                    for _interceptor in list(self._module_interceptors):
-                        try:
-                            _interceptor.request(_gamejoin_flow)
-                        except Exception as _exc:
-                            logger.debug('Module interceptor request error: %s', _exc)
-                    if _gamejoin_flow.drop_request:
-                        _drop_body = _gamejoin_flow.drop_body
-                        if isinstance(_drop_body, str):
-                            _drop_body = _drop_body.encode('utf-8', errors='replace')
-                        writer.write(_make_local_response(_gamejoin_flow.drop_status_code, _drop_body))
-                        await writer.drain()
-                        if not _keep_alive(req_first, req_headers):
-                            break
-                        continue
-                    _new_first = _gamejoin_flow.request._get_modified_first_line(req_first)
-                    _new_body = _gamejoin_flow.request.raw_content
-                    if _new_first != req_first or _new_body != _req_body_plain:
-                        up_writer.write(_build_modified_request(
-                            _new_first, _gamejoin_flow.request.headers.to_bytes_dict(), _new_body,
-                        ))
-                    else:
-                        up_writer.write(_reassemble_raw_response(req_first, req_headers, req_body_raw))
-                else:
-                    up_writer.write(_reassemble_raw_response(req_first, req_headers, req_body_raw))
-            else:
-                # Forward request as-is (raw bytes, original headers)
-                up_writer.write(_reassemble_raw_response(req_first, req_headers, req_body_raw))
-
-            try:
-                await up_writer.drain()
-            except (ConnectionResetError, BrokenPipeError, OSError):
-                break
-
-            # ── Read upstream response ────────────────────────────────────
-            resp_result = await _read_headers(up_reader)
-            if resp_result is None:
-                break
-            resp_first, resp_headers = resp_result
-            resp_body_raw = await _read_body_raw(up_reader, resp_headers)
-
-            # ── Determine if we need to modify the response body ──────────
-            # We only modify if: solidmodel injection is requested.
-            # All other responses are forwarded raw (preserving content-encoding).
-            response_modified = False
-
-            if is_batch:
-                # Batch response: forward raw to Roblox, decompress only for addon hooks
-                resp_body_plain = _decompress_body(resp_body_raw, resp_headers)
-                # Addon hooks must use req_body_modified (what we actually sent to
-                # upstream), NOT req_body_raw. The upstream response is index-aligned
-                # with the modified request. If assets were removed by process_batch_request
-                # (strip_textures, removal rules), using req_body_raw causes every index
-                # after a removed item to map to the wrong response item, producing wrong
-                # assetTypeId values (the root cause of SolidModel/Mesh being typed as Image).
-                self.texture_stripper.process_batch_response(
-                    req_body_modified,
-                    resp_body_plain,
-                    req_headers,
-                    batch_id,
-                )
-                if self.cache_scraper.enabled:
-                    self.cache_scraper.process_batch_response(
-                        scraper_body,
-                        resp_body_plain,
-                    )
-
-            elif host == 'assetdelivery.roblox.com' and not is_batch:
-                # Non-batch assetdelivery response (confirmed rare/non-existent
-                # in practice for TexturePack sub-assets after dedup fix).
-                # Still wire up the scraper hook as a fallback.
-                if self.cache_scraper.enabled:
-                    resp_body_plain_nb = _decompress_body(resp_body_raw, resp_headers)
-                    resp_status_code = int(resp_first.split(b' ', 2)[1]) if resp_first else 0
-                    resp_location = resp_headers.get(b'location', b'').decode('ascii', errors='replace')
-                    if resp_body_plain_nb:
-                        self.cache_scraper.process_direct_asset_response(
-                            path, resp_status_code, resp_location, resp_body_plain_nb,
-                            resp_headers.get(b'content-type', b'').decode('ascii', errors='replace'),
+            if up_reader is not None and up_writer is not None:
+                if connect_result.method != UpstreamMode.DIRECT_IP.value and connect_result.prior_errors:
+                    key = (host, connect_result.method)
+                    if key not in self._fallback_diagnostics_seen:
+                        self._fallback_diagnostics_seen.add(key)
+                        log_buffer.log(
+                            'Proxy',
+                            f'Upstream direct_ip failed for {host}; using '
+                            f'{connect_result.method} via {connect_result.endpoint}',
                         )
+                return True
 
-            elif host == 'fts.rbxcdn.com':
-                full_url = f'https://{host}{path}'
+            failure_text = connect_result.error or 'no targets attempted'
+            log_buffer.log(
+                'Proxy',
+                f'Upstream connect failed for {host}{path_for_log[:180]}; tried {failure_text}',
+            )
 
-                if short_circuit is not None and short_circuit[0] in ('solid', 'solid_v3'):
-                    # SolidModel injection - we MUST modify the body
-                    resp_body_plain = _decompress_body(resp_body_raw, resp_headers)
-                    _cdn_base_url = full_url.split('?')[0]
-                    _prefer_v3 = (short_circuit[0] == 'solid_v3')
-                    resp_body_raw = await asyncio.get_event_loop().run_in_executor(
-                        self._executor,
-                        self.texture_stripper.process_solidmodel_response,
-                        resp_body_plain, short_circuit[1], _cdn_base_url, _prefer_v3,
-                    )
-                    response_modified = True
+            if host in {ASSET_DELIVERY_HOST, *CDN_HOSTS} and not upstream_failure_hint_logged:
+                upstream_failure_hint_logged = True
+                log_buffer.log(
+                    'Proxy',
+                    f'Asset delivery path is blocked: Fleasion cannot open outbound TLS to {host}. '
+                    'Hosts/TLS interception may be working locally, but firewall, AV, VPN, or WFP filtering '
+                    'may be blocking Fleasion.exe/Python outbound traffic.',
+                )
 
-                elif short_circuit is not None and short_circuit[0] == 'anim_rig':
-                    # Auto-convert rig: read the original CDN bytes to detect the rig,
-                    # then serve the rig-matched local replacement (or a converted copy).
-                    _anim_repl_path, _required_rig = short_circuit[1]
-                    _orig_bytes = _decompress_body(resp_body_raw, resp_headers)
-
-                    def _pick_rig_matched_file(orig_bytes: bytes, repl_path: str, required_rig: str = 'any') -> bytes:
-                        from ..utils.anim_converter import detect_rig, detect_player_rig, is_curve_animation
-                        from ..utils import log_buffer as _lb
-                        orig_rig = detect_rig(orig_bytes)
-                        # If this rule only targets specific rig type(s), skip if it doesn't match
-                        if required_rig != 'any' and orig_rig not in required_rig:
-                            _lb.log('AnimConv', f'Skipping replacement: original rig={orig_rig}, required={required_rig}')
-                            return orig_bytes
-                        if is_curve_animation(orig_bytes):
-                            # Must serve back a CurveAnimation regardless of replacement format.
-                            # For non-player animations (unknown rig) use the replacement's own
-                            # rig so no unwanted rig conversion is applied.
-                            if orig_rig == 'unknown':
-                                target_rig = self.texture_stripper._detect_repl_rig(repl_path)
-                                if target_rig == 'unknown':
-                                    target_rig = 'R15'  # last resort default
-                            else:
-                                target_rig = orig_rig
-                            repl_p = Path(repl_path)
-                            if not repl_p.exists():
-                                _lb.log('AnimConv', f'Replacement file not found: {repl_p.name}')
-                                return orig_bytes
-                            conv_path = self.texture_stripper._get_or_create_converted_curve(repl_path, target_rig)
-                            if conv_path:
-                                _lb.log('AnimConv', f'Serving {target_rig} CurveAnimation replacement ({Path(conv_path).name})')
-                                return Path(conv_path).read_bytes()
-                            _lb.log('AnimConv', f'CurveAnimation conversion failed for {repl_p.name} → {target_rig}')
-                            return orig_bytes
-                        # KeyframeSequence path: serve rig-matched replacement.
-                        final_path = repl_path
-                        # For non-player / mixed animations orig_rig is 'unknown' —
-                        # use detect_player_rig to find which player rig they target
-                        # (e.g. gun anim that moves Left Arm → R6) so we can still
-                        # serve the right converted version of the replacement.
-                        conv_rig = orig_rig if orig_rig != 'unknown' else (
-                            detect_player_rig(orig_bytes)
-                        )
-                        if conv_rig != 'unknown':
-                            repl_rig = self.texture_stripper._detect_repl_rig(repl_path)
-                            if repl_rig == 'unknown':
-                                _lb.log('AnimConv', f'Rig detection unknown for replacement: {Path(repl_path).name}')
-                            elif repl_rig != conv_rig:
-                                conv = self.texture_stripper._get_or_create_converted(repl_path, conv_rig)
-                                if conv:
-                                    final_path = conv
-                        p = Path(final_path)
-                        return p.read_bytes() if p.exists() else orig_bytes
-
-                    resp_body_raw = await asyncio.get_event_loop().run_in_executor(
-                        self._executor, _pick_rig_matched_file, _orig_bytes, _anim_repl_path, _required_rig,
-                    )
-                    response_modified = True
-
-                if self.cache_scraper.enabled:
-                    # Cache the decompressed bytes for storage
-                    resp_body_for_cache = _decompress_body(resp_body_raw, resp_headers) \
-                        if not response_modified else resp_body_raw
-                    ct = resp_headers.get(b'content-type', b'').decode('ascii', errors='replace')
-                    self.cache_scraper.process_cdn_response(full_url, path, resp_body_for_cache, ct)
-
-            if host == 'gamejoin.roblox.com' and _gamejoin_flow is not None and self._module_interceptors:
-                _resp_body_plain = _decompress_body(resp_body_raw, resp_headers)
-                _gamejoin_flow.response = _FlowResponse(resp_first, _resp_body_plain)
-                for _interceptor in list(self._module_interceptors):
-                    try:
-                        _interceptor.response(_gamejoin_flow)
-                    except Exception as _exc:
-                        logger.debug('Module interceptor response error: %s', _exc)
-
-            # ── Forward response to Roblox ────────────────────────────────
-            if response_modified:
-                # We changed the bytes, send as uncompressed with new content-length
-                writer.write(_build_modified_response(resp_first, resp_headers, resp_body_raw))
-            else:
-                # Raw passthrough - Roblox handles decompression itself
-                writer.write(_reassemble_raw_response(resp_first, resp_headers, resp_body_raw))
-
+            writer.write(_make_proxy_error_response(
+                502,
+                f'Fleasion could not connect upstream to {host}. See Fleasion logs for details.',
+            ))
             try:
                 await writer.drain()
-            except (ConnectionResetError, BrokenPipeError, OSError):
-                break
+            except Exception:
+                pass
+            return False
 
-            if not _keep_alive(req_first, req_headers) or not _keep_alive(resp_first, resp_headers):
-                break
+        try:
+            while True:
+                # ── Read request ─────────────────────────────────────────────
+                if pending_req is not None:
+                    req_raw = pending_req
+                    pending_req = None
+                else:
+                    result = await _read_headers_raw(reader)
+                    if result is None:
+                        break
+                    req_raw = result
+
+                req_first, req_headers = req_raw.first_line, req_raw.headers
+
+                # Read request body. payload is dechunked; wire preserves chunk framing.
+                req_body = await _read_body_wire(reader, req_headers)
+                req_body_raw = req_body.payload
+
+                parts = req_first.split(b' ', 2)
+                path = parts[1].decode('ascii', errors='replace') if len(parts) > 1 else '/'
+                is_batch = (host == ASSET_DELIVERY_HOST and b'/v1/assets/batch' in req_first)
+                _gamejoin_flow: Optional[ProxyFlow] = None
+                _profile_flow: Optional[ProxyFlow] = None
+
+                # ── TextureStripper: CDN short-circuit (replace before upstream) ──
+                # Race condition fix: the batch-request coroutine (on the assetdelivery
+                # connection) and this CDN coroutine run concurrently.
+                # The CDN request may arrive before the batch response has been processed
+                # and its CDN URL registered in _solidmodel_injections / _local_redirects.
+                # If there are pending req_ids in flight, yield briefly to the event loop
+                # so the batch-response coroutine can complete its registration, then retry.
+                # Without this, unreplaced assets pass through and Roblox caches them,
+                # requiring multiple rejoins to achieve full replacement coverage.
+                short_circuit = None
+                if host in CDN_HOSTS:
+                    short_circuit = self.texture_stripper.check_cdn_request(host, path)
+                    if short_circuit is None and self.texture_stripper.has_pending():
+                        # Yield to event loop in short increments, retrying up to ~600ms.
+                        # 600ms is generous: batch req→resp RTT is typically <100ms.
+                        for _wait_i in range(12):
+                            await asyncio.sleep(0.05)  # 50ms per retry
+                            short_circuit = self.texture_stripper.check_cdn_request(host, path)
+                            if short_circuit is not None:
+                                break
+                            if not self.texture_stripper.has_pending():
+                                break  # all pending resolved, this URL just isn't ours
+
+                    if short_circuit is not None:
+                        action, value = short_circuit
+                        if action == 'local':
+                            response = await asyncio.get_event_loop().run_in_executor(
+                                self._executor, _serve_local_file, value)
+                            writer.write(response)
+                            await writer.drain()
+                            # Cache our own served file so it appears in the scraper viewer
+                            if self.cache_scraper.enabled:
+                                try:
+                                    _file_bytes = await asyncio.get_event_loop().run_in_executor(
+                                        self._executor, _read_local_bytes, value)
+                                    if _file_bytes:
+                                        full_url = f'https://{host}{path}'
+                                        _cache_hash = path.rsplit('/', 1)[-1].split('?')[0]
+                                        self.cache_scraper.process_cdn_response(
+                                            full_url, path, _file_bytes, 'application/octet-stream',
+                                        )
+                                except Exception:
+                                    pass
+                            if not _keep_alive(req_first, req_headers):
+                                break
+                            continue
+                        elif action == 'cdn':
+                            writer.write(_make_redirect(value))
+                            await writer.drain()
+                            if not _keep_alive(req_first, req_headers):
+                                break
+                            continue
+                        # 'solid', 'solid_v3', and 'anim_rig' fall through - need upstream response
+
+                # ── Modify batch request body if needed ───────────────────────
+                if is_batch:
+                    # Decompress for reading/modifying, send uncompressed to upstream
+                    req_body_plain = _decompress_body(req_body_raw, req_headers)
+                    # Unique ID for this specific batch request/response pair.
+                    # Keyed into _pending as f'{batch_id}_{req_id}' so parallel
+                    # connections using the same req_id integers don't collide —
+                    # the same root cause mitmproxy solved with its flow_id prefix.
+                    import uuid as _uuid
+                    batch_id = _uuid.uuid4().hex
+                    # Run synchronously — process_batch_request is pure Python (JSON parse +
+                    # dict ops), not I/O bound. Using run_in_executor here introduced a gap:
+                    # the await released the event loop, the CDN coroutine ran, saw empty
+                    # _pending, skipped the wait, and forwarded unreplaced assets. Running
+                    # synchronously ensures _pending is populated before any CDN coroutine
+                    # can check has_pending().
+                    req_body_modified, scraper_body = self.texture_stripper.process_batch_request(
+                        req_body_plain, req_headers, replacements_tuple, batch_id,
+                    )
+                    if _is_empty_json_array(req_body_modified) and not _is_empty_json_array(req_body_plain):
+                        writer.write(_make_local_response(200, b'[]'))
+                        await writer.drain()
+                        if not _keep_alive(req_first, req_headers):
+                            break
+                        continue
+                    if not await ensure_upstream(path):
+                        break
+                    up_writer.write(_build_modified_request(req_first, req_headers, req_body_modified))
+                elif host == GAMEJOIN_HOST:
+                    # Module interceptors: allow request body/URL modification for gamejoin traffic
+                    _req_body_plain = _decompress_body(req_body_raw, req_headers)
+                    if self._module_interceptors:
+                        _gamejoin_flow = ProxyFlow(req_first, req_headers, _req_body_plain, host)
+                        for _interceptor in list(self._module_interceptors):
+                            try:
+                                _interceptor.request(_gamejoin_flow)
+                            except Exception as _exc:
+                                logger.debug('Module interceptor request error: %s', _exc)
+                        if _gamejoin_flow.drop_request:
+                            _drop_body = _gamejoin_flow.drop_body
+                            if isinstance(_drop_body, str):
+                                _drop_body = _drop_body.encode('utf-8', errors='replace')
+                            writer.write(_make_local_response(_gamejoin_flow.drop_status_code, _drop_body))
+                            await writer.drain()
+                            if not _keep_alive(req_first, req_headers):
+                                break
+                            continue
+                        _new_first = _gamejoin_flow.request._get_modified_first_line(req_first)
+                        _new_body = _gamejoin_flow.request.raw_content
+                        if not await ensure_upstream(path):
+                            break
+                        if _new_first != req_first or _new_body != _req_body_plain:
+                            up_writer.write(_build_modified_request(
+                                _new_first, _gamejoin_flow.request.headers.to_bytes_dict(), _new_body,
+                            ))
+                        else:
+                            if self._wire_preserving_passthrough:
+                                up_writer.write(req_raw.raw_header_block + req_body.wire)
+                            else:
+                                up_writer.write(_reassemble_raw_request(req_first, req_headers, req_body_raw))
+                    else:
+                        if not await ensure_upstream(path):
+                            break
+                        if self._wire_preserving_passthrough:
+                            up_writer.write(req_raw.raw_header_block + req_body.wire)
+                        else:
+                            up_writer.write(_reassemble_raw_request(req_first, req_headers, req_body_raw))
+                elif host == PROFILE_API_HOST and PROFILE_API_PATH_FRAGMENT in path and self._module_interceptors:
+                    _req_body_plain = _decompress_body(req_body_raw, req_headers)
+                    if not await ensure_upstream(path):
+                        break
+                    _profile_flow = ProxyFlow(req_first, req_headers, _req_body_plain, host)
+                    if self._wire_preserving_passthrough:
+                        up_writer.write(req_raw.raw_header_block + req_body.wire)
+                    else:
+                        up_writer.write(_reassemble_raw_request(req_first, req_headers, req_body_raw))
+                else:
+                    # Forward request as-is.
+                    if not await ensure_upstream(path):
+                        break
+                    if self._wire_preserving_passthrough:
+                        up_writer.write(req_raw.raw_header_block + req_body.wire)
+                    else:
+                        up_writer.write(_reassemble_raw_request(req_first, req_headers, req_body_raw))
+
+                try:
+                    await up_writer.drain()
+                except (ConnectionResetError, BrokenPipeError, OSError):
+                    break
+
+                # ── Read upstream response ────────────────────────────────────
+                resp_result = await _read_headers_raw(up_reader)
+                if resp_result is None:
+                    break
+                resp_raw = resp_result
+                resp_first, resp_headers = resp_raw.first_line, resp_raw.headers
+                resp_body = await _read_body_wire(up_reader, resp_headers)
+                resp_body_raw = resp_body.payload
+
+                status_code = _parse_status_code(resp_first)
+                if status_code in (400, 429) and host in {ASSET_DELIVERY_HOST, *CDN_HOSTS}:
+                    ct = resp_headers.get(b'content-type', b'').decode('ascii', errors='replace')
+                    retry_after = resp_headers.get(b'retry-after', b'').decode('ascii', errors='replace')
+                    preview = resp_body_raw[:300].decode('utf-8', errors='replace')
+                    preview = preview.replace('\r', ' ').replace('\n', ' ')
+                    log_buffer.log(
+                        'Proxy',
+                        f'Upstream HTTP {status_code} from {host}{path[:180]} '
+                        f'content-type={ct or "unknown"} body={len(resp_body_raw)} bytes '
+                        f'retry-after={retry_after or "none"} preview={preview!r}',
+                    )
+                elif status_code >= 400 and host in {ASSET_DELIVERY_HOST, GAMEJOIN_HOST, *CDN_HOSTS}:
+                    ct = resp_headers.get(b'content-type', b'').decode('ascii', errors='replace')
+                    snippet = _body_log_snippet(resp_body_raw)
+                    snippet_text = f' snippet={snippet}' if snippet else ''
+                    log_buffer.log(
+                        'Proxy',
+                        f'Upstream HTTP {status_code} from {host}{path[:180]} '
+                        f'content-type={ct or "unknown"} body={len(resp_body_raw)} bytes{snippet_text}',
+                    )
+
+                # ── Determine if we need to modify the response body ──────────
+                # We only modify if: solidmodel injection is requested.
+                # All other responses are forwarded raw (preserving content-encoding).
+                response_modified = False
+
+                if is_batch:
+                    # Batch response: forward raw to Roblox, decompress only for addon hooks
+                    resp_body_plain = _decompress_body(resp_body_raw, resp_headers)
+                    # Addon hooks must use req_body_modified (what we actually sent to
+                    # upstream), NOT req_body_raw. The upstream response is index-aligned
+                    # with the modified request. If assets were removed by process_batch_request
+                    # (strip_textures, removal rules), using req_body_raw causes every index
+                    # after a removed item to map to the wrong response item, producing wrong
+                    # assetTypeId values (the root cause of SolidModel/Mesh being typed as Image).
+                    self.texture_stripper.process_batch_response(
+                        req_body_modified,
+                        resp_body_plain,
+                        req_headers,
+                        batch_id,
+                    )
+                    if self.cache_scraper.enabled:
+                        self.cache_scraper.process_batch_response(
+                            scraper_body,
+                            resp_body_plain,
+                        )
+
+                elif host == ASSET_DELIVERY_HOST and not is_batch:
+                    # Non-batch assetdelivery response (confirmed rare/non-existent
+                    # in practice for TexturePack sub-assets after dedup fix).
+                    # Still wire up the scraper hook as a fallback.
+                    if self.cache_scraper.enabled:
+                        resp_body_plain_nb = _decompress_body(resp_body_raw, resp_headers)
+                        resp_status_code = _parse_status_code(resp_first)
+                        resp_location = resp_headers.get(b'location', b'').decode('ascii', errors='replace')
+                        if resp_body_plain_nb:
+                            self.cache_scraper.process_direct_asset_response(
+                                path, resp_status_code, resp_location, resp_body_plain_nb,
+                                resp_headers.get(b'content-type', b'').decode('ascii', errors='replace'),
+                            )
+
+                elif host in CDN_HOSTS:
+                    full_url = f'https://{host}{path}'
+
+                    if short_circuit is not None and short_circuit[0] in ('solid', 'solid_v3'):
+                        # SolidModel injection - we MUST modify the body
+                        resp_body_plain = _decompress_body(resp_body_raw, resp_headers)
+                        _cdn_base_url = full_url.split('?')[0]
+                        _prefer_v3 = (short_circuit[0] == 'solid_v3')
+                        resp_body_raw = await asyncio.get_event_loop().run_in_executor(
+                            self._executor,
+                            self.texture_stripper.process_solidmodel_response,
+                            resp_body_plain, short_circuit[1], _cdn_base_url, _prefer_v3,
+                        )
+                        response_modified = True
+
+                    elif short_circuit is not None and short_circuit[0] == 'anim_rig':
+                        # Auto-convert rig: read the original CDN bytes to detect the rig,
+                        # then serve the rig-matched local replacement (or a converted copy).
+                        _anim_repl_path, _required_rig = short_circuit[1]
+                        _orig_bytes = _decompress_body(resp_body_raw, resp_headers)
+
+                        def _pick_rig_matched_file(orig_bytes: bytes, repl_path: str, required_rig: str = 'any') -> bytes:
+                            from ..utils.anim_converter import detect_rig, detect_player_rig, is_curve_animation
+                            from ..utils import log_buffer as _lb
+                            orig_rig = detect_rig(orig_bytes)
+                            # If this rule only targets specific rig types, skip if it doesn't match
+                            if required_rig != 'any' and orig_rig not in required_rig:
+                                _lb.log('AnimConv', f'Skipping replacement: original rig={orig_rig}, required={required_rig}')
+                                return orig_bytes
+                            if is_curve_animation(orig_bytes):
+                                # Must serve back a CurveAnimation regardless of replacement format.
+                                # For non-player animations (unknown rig) use the replacement's own
+                                # rig so no unwanted rig conversion is applied.
+                                if orig_rig == 'unknown':
+                                    target_rig = self.texture_stripper._detect_repl_rig(repl_path)
+                                    if target_rig == 'unknown':
+                                        target_rig = 'R15'  # last resort default
+                                else:
+                                    target_rig = orig_rig
+                                repl_p = Path(repl_path)
+                                if not repl_p.exists():
+                                    _lb.log('AnimConv', f'Replacement file not found: {repl_p.name}')
+                                    return orig_bytes
+                                conv_path = self.texture_stripper._get_or_create_converted_curve(repl_path, target_rig)
+                                if conv_path:
+                                    _lb.log('AnimConv', f'Serving {target_rig} CurveAnimation replacement ({Path(conv_path).name})')
+                                    return Path(conv_path).read_bytes()
+                                _lb.log('AnimConv', f'CurveAnimation conversion failed for {repl_p.name} → {target_rig}')
+                                return orig_bytes
+                            # KeyframeSequence path: serve rig-matched replacement.
+                            final_path = repl_path
+                            # For non-player / mixed animations orig_rig is 'unknown' —
+                            # use detect_player_rig to find which player rig they target
+                            # (e.g. gun anim that moves Left Arm → R6) so we can still
+                            # serve the right converted version of the replacement.
+                            conv_rig = orig_rig if orig_rig != 'unknown' else (
+                                detect_player_rig(orig_bytes)
+                            )
+                            if conv_rig != 'unknown':
+                                repl_rig = self.texture_stripper._detect_repl_rig(repl_path)
+                                if repl_rig == 'unknown':
+                                    _lb.log('AnimConv', f'Rig detection unknown for replacement: {Path(repl_path).name}')
+                                elif repl_rig != conv_rig:
+                                    conv = self.texture_stripper._get_or_create_converted(repl_path, conv_rig)
+                                    if conv:
+                                        final_path = conv
+                            p = Path(final_path)
+                            return p.read_bytes() if p.exists() else orig_bytes
+
+                        resp_body_raw = await asyncio.get_event_loop().run_in_executor(
+                            self._executor, _pick_rig_matched_file, _orig_bytes, _anim_repl_path, _required_rig,
+                        )
+                        response_modified = True
+
+                    if self.cache_scraper.enabled:
+                        # Cache the decompressed bytes for storage
+                        resp_body_for_cache = _decompress_body(resp_body_raw, resp_headers) \
+                            if not response_modified else resp_body_raw
+                        ct = resp_headers.get(b'content-type', b'').decode('ascii', errors='replace')
+                        self.cache_scraper.process_cdn_response(full_url, path, resp_body_for_cache, ct)
+
+                if host == GAMEJOIN_HOST and _gamejoin_flow is not None and self._module_interceptors:
+                    _resp_body_plain = _decompress_body(resp_body_raw, resp_headers)
+                    _gamejoin_flow.response = _FlowResponse(resp_first, _resp_body_plain)
+                    for _interceptor in list(self._module_interceptors):
+                        try:
+                            _interceptor.response(_gamejoin_flow)
+                        except Exception as _exc:
+                            logger.debug('Module interceptor response error: %s', _exc)
+                    if (
+                        _gamejoin_flow.response is not None
+                        and _gamejoin_flow.response.content != _resp_body_plain
+                    ):
+                        resp_body_raw = _gamejoin_flow.response.content
+                        response_modified = True
+                elif host == PROFILE_API_HOST and _profile_flow is not None and self._module_interceptors:
+                    _resp_body_plain = _decompress_body(resp_body_raw, resp_headers)
+                    _profile_flow.response = _FlowResponse(resp_first, _resp_body_plain)
+                    for _interceptor in list(self._module_interceptors):
+                        try:
+                            _interceptor.response(_profile_flow)
+                        except Exception as _exc:
+                            logger.debug('Module interceptor response error: %s', _exc)
+                    if (
+                        _profile_flow.response is not None
+                        and _profile_flow.response.content != _resp_body_plain
+                    ):
+                        resp_body_raw = _profile_flow.response.content
+                        response_modified = True
+
+                # ── Forward response to Roblox ────────────────────────────────
+                if response_modified:
+                    # We changed the bytes, send as uncompressed with new content-length
+                    writer.write(_build_modified_response(resp_first, resp_headers, resp_body_raw))
+                else:
+                    if self._wire_preserving_passthrough:
+                        writer.write(resp_raw.raw_header_block + resp_body.wire)
+                    else:
+                        writer.write(_reassemble_raw_response(resp_first, resp_headers, resp_body_raw))
+
+                try:
+                    await writer.drain()
+                except (ConnectionResetError, BrokenPipeError, OSError):
+                    break
+
+                if not _keep_alive(req_first, req_headers) or not _keep_alive(resp_first, resp_headers):
+                    break
+        finally:
+            if up_writer is not None:
+                try:
+                    up_writer.close()
+                except Exception:
+                    pass

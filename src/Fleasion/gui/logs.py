@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
-from ..utils import APP_NAME, get_icon_path, log_buffer, time_tracker
+from ..utils import APP_NAME, LOGS_DIR, get_icon_path, log_buffer, open_folder, time_tracker
 
 
 class LogsWindow(QDialog):
@@ -59,6 +59,13 @@ class LogsWindow(QDialog):
 
         bottom.addSpacing(6)
 
+        open_folder_btn = QPushButton("Open Log Folder")
+        open_folder_btn.setFixedSize(110, 22)
+        open_folder_btn.clicked.connect(lambda: open_folder(LOGS_DIR))
+        bottom.addWidget(open_folder_btn)
+
+        bottom.addSpacing(6)
+
         self._search_input = QLineEdit()
         self._search_input.setPlaceholderText("Search…")
         self._search_input.setFixedHeight(22)
@@ -85,9 +92,10 @@ class LogsWindow(QDialog):
         esc.activated.connect(self._clear_search)
 
     def _get_monospace_font(self):
-        from PyQt6.QtGui import QFont
-        font = QFont('Consolas', 10)
-        font.setStyleHint(QFont.StyleHint.Monospace)
+        from PyQt6.QtGui import QFontDatabase
+
+        font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+        font.setPointSize(10)
         return font
 
     def _focus_search(self):

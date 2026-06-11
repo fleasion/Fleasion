@@ -3,6 +3,7 @@
 # Handles all mesh formats including Draco-compressed v6/v7 meshes
 import struct
 import json
+import gzip
 import numpy as np
 from ..utils import log_buffer
 try:
@@ -290,10 +291,14 @@ def process_v2_to_v5(data: bytes, version_num: str) -> str:
             f"{fix_float(f'{v.r/255.0:.6f}')} {fix_float(f'{v.g/255.0:.6f}')} {fix_float(f'{v.b/255.0:.6f}')}"
             for v in verts
         ]
-        n_lines = [f"vn {fix_float(f'{v.nx:.6f}')} {fix_float(f'{v.ny:.6f}')} {
-            fix_float(f'{v.nz:.6f}')}" for v in verts]
-        t_lines = [f"vt {fix_float(f'{v.tu:.6f}')} {
-            fix_float(f'{v.tv:.6f}')} 0.0" for v in verts]
+        n_lines = [
+            f"vn {fix_float(f'{v.nx:.6f}')} {fix_float(f'{v.ny:.6f}')} {fix_float(f'{v.nz:.6f}')}"
+            for v in verts
+        ]
+        t_lines = [
+            f"vt {fix_float(f'{v.tu:.6f}')} {fix_float(f'{v.tv:.6f}')} 0.0"
+            for v in verts
+        ]
         f_lines = [
             f"f {f.a}/{f.a}/{f.a} {f.b}/{f.b}/{f.b} {f.c}/{f.c}/{f.c}" for f in faces]
 
@@ -504,6 +509,36 @@ def process_v6_v7(data: bytes) -> str:
         import traceback
         traceback.print_exc()
         return None
+SUPPORTED_MESH_HEADERS = (
+    "version 1.",
+    "version 2.00",
+    "version 3.00",
+    "version 3.01",
+    "version 4.00",
+    "version 4.01",
+    "version 5.00",
+    "version 6.00",
+    "version 7.00",
+)
+
+
+def _mesh_header(data: bytes) -> str:
+    if data.startswith(b'\x1f\x8b'):
+        try:
+            data = gzip.decompress(data)
+        except Exception:
+            return ''
+    return data[:12].decode('utf-8', errors='ignore').strip()
+
+
+def is_mesh_data(data: bytes) -> bool:
+    """Return True when bytes look like a Roblox mesh payload."""
+    if not data or len(data) < 12:
+        return False
+    header = _mesh_header(data)
+    return any(header.startswith(prefix) for prefix in SUPPORTED_MESH_HEADERS)
+
+
 # Main Conversion Function
 def convert(data: bytes, output_path: str = None) -> str:
     """
@@ -517,8 +552,14 @@ def convert(data: bytes, output_path: str = None) -> str:
     if not data or len(data) < 12:
         log_buffer.log('Mesh',"Invalid mesh data: file too small")
         return None
+    if data.startswith(b'\x1f\x8b'):
+        try:
+            data = gzip.decompress(data)
+        except Exception as e:
+            log_buffer.log('Mesh', f"Failed to decompress gzip mesh data: {e}")
+            return None
     # Detect version from header
-    header = data[:12].decode('utf-8', errors='ignore').strip()
+    header = _mesh_header(data)
     log_buffer.log('Mesh',f"Detected mesh version: {header}")
     obj_content = None
     # Route to appropriate processor

@@ -4,7 +4,6 @@ import io
 import json
 import threading
 import uuid
-import urllib.request
 from pathlib import Path
 
 from PIL import Image, ImageDraw
@@ -30,8 +29,11 @@ from PyQt6.QtWidgets import (
 )
 
 from ..utils import CLOG_URL, PREJSONS_DIR, ORIGINALS_DIR, REPLACEMENTS_DIR, APP_NAME, get_icon_path
+from ..utils.http import http_get
+from .file_drop import FileDropLineEdit
 
 CUSTOM_DUMPS_DIR = PREJSONS_DIR / "custom_dumps"
+CLOG_CACHE_FILE = PREJSONS_DIR / "CLOG.json"
 
 _DEFAULT_THUMB_URL = (
     "https://static.wikia.nocookie.net/roblox/images/5/54/Default_Thumbnail_1_updated.png"
@@ -50,9 +52,7 @@ _thumb_bytes_cache: dict[int, bytes] = {}
 # HTTP helper
 
 def _http_get(url: str, timeout: int = 12) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": "FleasionNT/1.2.0"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read()
+    return http_get(url, timeout=timeout)
 
 
 def _fetch_or_read(url_or_path: str, timeout: int = 15) -> bytes:
@@ -223,6 +223,16 @@ class _ClogWorker(QThread):
     def run(self):
         try:
             raw = _http_get(CLOG_URL, timeout=15)
+            CLOG_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            CLOG_CACHE_FILE.write_bytes(raw)
+        except Exception as fetch_error:
+            try:
+                raw = CLOG_CACHE_FILE.read_bytes()
+            except Exception:
+                self.failed.emit(str(fetch_error))
+                return
+
+        try:
             data = json.loads(raw.decode("utf-8"))
             games = _normalize_games(data)
             self.done.emit(games)
@@ -336,7 +346,7 @@ class _JsonFetchWorker(QThread):
 # Card constants
 
 _CARD_W = 210
-_CARD_H = 292
+_CARD_H = 272
 _THUMB_W = 196
 _THUMB_H = 128
 
@@ -543,6 +553,9 @@ class PreJsonsDialog(QDialog):
         self._cards: list[GameCard] = []
         self._workers: list[QThread] = []
         self._viewers: list[QDialog] = []
+        self._load_generation = 0
+        self._thumbs_pending = 0
+        self._thumbs_finished = 0
 
         self._search_timer = QTimer()
         self._search_timer.setSingleShot(True)
@@ -604,6 +617,9 @@ class PreJsonsDialog(QDialog):
     # Load
 
     def _start_load(self):
+        self._load_generation += 1
+        self._thumbs_pending = 0
+        self._thumbs_finished = 0
         self.refresh_btn.setEnabled(False)
         self.status_label.setText("Fetching game list…")
         worker = _ClogWorker()
@@ -619,6 +635,7 @@ class PreJsonsDialog(QDialog):
         )
         self.refresh_btn.setEnabled(True)
         self._populate(games)
+        self._update_thumbnail_status()
 
     def _on_clog_failed(self, err: str):
         self.status_label.setText(f"Failed to load: {err}")
@@ -686,10 +703,31 @@ class PreJsonsDialog(QDialog):
             if pix.loadFromData(_thumb_bytes_cache[place_id]):
                 card.set_thumbnail(pix)
         else:
+            self._thumbs_pending += 1
+            generation = self._load_generation
             thumb_w = _CardThumbWorker(place_id)
             thumb_w.thumb_ready.connect(card.set_thumbnail)
+            thumb_w.finished.connect(lambda g=generation: self._on_thumb_worker_finished(g))
             self._workers.append(thumb_w)
             thumb_w.start()
+
+    def _on_thumb_worker_finished(self, generation: int):
+        if generation != self._load_generation:
+            return
+        self._thumbs_finished += 1
+        self._update_thumbnail_status()
+
+    def _update_thumbnail_status(self):
+        total_games = len(self._cards)
+        if self._thumbs_pending <= 0:
+            self.status_label.setText(f"{total_games} game{'s' if total_games != 1 else ''}")
+            return
+        if self._thumbs_finished >= self._thumbs_pending:
+            self.status_label.setText(f"{total_games} game{'s' if total_games != 1 else ''}")
+            return
+        self.status_label.setText(
+            f"{total_games} game{'s' if total_games != 1 else ''} — fetching thumbnails…"
+        )
 
     # Grid layout helpers
 
@@ -804,7 +842,7 @@ class PreJsonsDialog(QDialog):
 
         layout.addWidget(QLabel("Assets URL (github):"))
         assets_row = QHBoxLayout()
-        assets_edit = QLineEdit()
+        assets_edit = FileDropLineEdit()
         assets_edit.setPlaceholderText("https://raw.githubusercontent.com/.../assets.json")
         assets_row.addWidget(assets_edit)
         assets_browse = QPushButton("Browse…")
@@ -818,7 +856,7 @@ class PreJsonsDialog(QDialog):
 
         layout.addWidget(QLabel("Replacements URL (replacement):"))
         rep_row = QHBoxLayout()
-        rep_edit = QLineEdit()
+        rep_edit = FileDropLineEdit()
         rep_edit.setPlaceholderText("https://raw.githubusercontent.com/.../replacements.json")
         rep_row.addWidget(rep_edit)
         rep_browse = QPushButton("Browse…")
@@ -842,7 +880,7 @@ class PreJsonsDialog(QDialog):
         layout.addWidget(sep2)
         layout.addWidget(QLabel("OR import from URL / file:"))
 
-        url_edit = QLineEdit()
+        url_edit = FileDropLineEdit()
         url_edit.setPlaceholderText("https://raw.githubusercontent.com/.../dump.json")
         layout.addWidget(url_edit)
 
@@ -988,7 +1026,7 @@ class PreJsonsDialog(QDialog):
 
     def _fetch_and_open(self, url: str):
         cfg = getattr(self.parent(), 'config_manager', None)
-        if cfg is None or cfg.close_scraped_games_on_open:
+        if cfg is None or cfg.close_scraped_games_menu_on_open:
             self.close()
 
         # Local file path - read directly

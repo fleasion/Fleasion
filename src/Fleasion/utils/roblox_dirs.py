@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Iterable
 
@@ -12,8 +13,25 @@ ROBLOX_DIRS_FILE = CONFIG_DIR / 'roblox_dirs.json'
 
 
 def _normalise_roblox_dir(value: str | Path) -> Path | None:
-    """Return a valid Roblox Player install directory, or None."""
+    """Return a valid Roblox install/resource directory, or None."""
     path = Path(value)
+    if sys.platform == 'darwin':
+        if path.name == ROBLOX_PROCESS:
+            resources = path.parent.parent / 'Resources'
+            return resources if resources.is_dir() else None
+        if path.suffix == '.app':
+            resources = path / 'Contents' / 'Resources'
+            exe = path / 'Contents' / 'MacOS' / ROBLOX_PROCESS
+            return resources if resources.is_dir() and exe.is_file() else None
+        if path.name == 'MacOS':
+            resources = path.parent / 'Resources'
+            return resources if resources.is_dir() else None
+        if path.name == 'Resources' and path.is_dir():
+            return path
+        if (path / 'ssl' / 'cacert.pem').is_file() or (path / 'content').is_dir():
+            return path if path.is_dir() else None
+        return None
+
     if path.name.lower() == ROBLOX_PROCESS.lower():
         path = path.parent
     if not path.is_dir():

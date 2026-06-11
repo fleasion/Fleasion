@@ -13,8 +13,8 @@ from urllib.parse import urlparse, quote
 import requests
 import urllib3
 from dateutil import parser as _dateutil_parser
-from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal
-from PyQt6.QtGui import QPalette, QImage, QPixmap
+from PyQt6.QtCore import Qt, QTimer, QObject, QUrl, pyqtSignal
+from PyQt6.QtGui import QDesktopServices, QPalette, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -36,6 +36,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ..utils.paths import CONFIG_DIR
+from ..utils.plural import format_count
 from ..utils.logging import log_buffer
 from ..utils.roblox_auth import get_roblosecurity as _get_roblosecurity
 from ..utils.windows import launch_as_standard_user
@@ -45,6 +46,8 @@ _DEFAULT_THUMB_URL = (
     "https://static.wikia.nocookie.net/roblox/images/5/54/Default_Thumbnail_1_updated.png"
     "/revision/latest/scale-to-width-down/1000?cb=20250523160858"
 )
+_SETTINGS_FILE = "subplace_joiner_settings.json"
+_LEGACY_SETTINGS_FILE = "settings.json"
 _default_thumb_bytes_cache: list[bytes] = []  # single-element list so it's mutable
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -61,6 +64,14 @@ def _get_default_thumb_bytes() -> bytes | None:
         return resp.content
     except Exception:
         return None
+
+
+def _primary_settings_path() -> os.PathLike:
+    return CONFIG_DIR / _SETTINGS_FILE
+
+
+def _legacy_settings_path() -> os.PathLike:
+    return CONFIG_DIR / "subplace" / _LEGACY_SETTINGS_FILE
 
 
 
@@ -141,6 +152,24 @@ class _JobIdEdit(QLineEdit):
         self.setText(job_id)
 
 
+class _CopyPlaceIdLabel(QLabel):
+    """Small clickable label that copies its card's placeId."""
+
+    def __init__(self, parent=None):
+        super().__init__("(Copy ID)", parent)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedHeight(12)
+        self.setStyleSheet("color: palette(placeholder-text); font-size: 7pt;")
+        self.setToolTip("Copy subplace ID")
+
+    def mousePressEvent(self, event):
+        card = self.parent()
+        place_id = getattr(card, "place_id", None)
+        if place_id is not None:
+            QApplication.clipboard().setText(str(place_id))
+        super().mousePressEvent(event)
+
+
 class SubplaceGameCard(QFrame):
     """Game card matching the PreJsons visual design, with subplace-joiner buttons."""
 
@@ -196,6 +225,9 @@ class SubplaceGameCard(QFrame):
         self.updated_label = QLabel("")
         self.updated_label.setStyleSheet("color: palette(placeholder-text); font-size: 8pt;")
         layout.addWidget(self.updated_label)
+
+        self.copy_id_label = _CopyPlaceIdLabel(self)
+        layout.addWidget(self.copy_id_label, 0, Qt.AlignmentFlag.AlignLeft)
 
         layout.addStretch()
 
@@ -450,7 +482,7 @@ class JobIdDialog(QDialog):
         if next_cursor:
             self._status_label.setText(f"{total} servers loaded — more available")
         else:
-            self._status_label.setText(f"{total} server(s) found")
+            self._status_label.setText(f"{format_count(total, 'server')} found")
 
     def _apply_error(self, err):
         self._loading = False
@@ -492,6 +524,8 @@ class SubplaceJoinerTab(QWidget):
     def __init__(self, parent=None, rando_tab=None):
         super().__init__(parent)
         self._rando_tab = rando_tab
+        self._qt_destroyed = False
+        self.destroyed.connect(self._on_qt_destroyed)
         self._invoker = _Invoker(self)
         self._cards: list[SubplaceGameCard] = []
         self._card_by_place_id: dict[int, SubplaceGameCard] = {}
@@ -518,6 +552,9 @@ class SubplaceJoinerTab(QWidget):
         self._update_favorite_btn()
         threading.Thread(target=self._resolve_current_user, daemon=True).start()
 
+    def _on_qt_destroyed(self, *_):
+        self._qt_destroyed = True
+
     def _resolve_current_user(self):
         """Background thread: read the active Roblox cookie and resolve the username."""
         cookie = _get_roblosecurity()
@@ -537,7 +574,7 @@ class SubplaceJoinerTab(QWidget):
                 if username:
                     def _update(u=username):
                         self.set_selected_account(u)
-                    self._invoker.call.emit(_update)
+                    self._on_main(_update)
         except Exception:
             pass
 
@@ -683,19 +720,26 @@ class SubplaceJoinerTab(QWidget):
     # Settings persistence
 
     def _settings_path(self) -> str:
-        folder = CONFIG_DIR / "subplace"
-        folder.mkdir(parents=True, exist_ok=True)
-        return str(folder / "settings.json")
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        return str(_primary_settings_path())
 
     def _load_settings(self):
-        path = self._settings_path()
+        primary_path = _primary_settings_path()
+        paths = (primary_path, _legacy_settings_path())
         try:
-            if os.path.exists(path):
+            loaded_from = None
+            for path in paths:
+                if not os.path.exists(path):
+                    continue
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
+                loaded_from = path
                 self.recent_ids = [str(x) for x in data.get("recent_ids", []) if str(x).strip()]
                 self.favorites = [str(x) for x in data.get("favorites", []) if str(x).strip()]
                 self._custom_names = {str(k): str(v) for k, v in data.get("custom_names", {}).items()}
+                break
+            if loaded_from and loaded_from != primary_path:
+                self._save_settings()
         except Exception as exc:
             log_buffer.log("subplace", f"Failed to load settings: {exc}")
             self.recent_ids = []
@@ -1138,8 +1182,8 @@ class SubplaceJoinerTab(QWidget):
 
             if pid is not None:
                 card.on_join(lambda _, c=card, place_id=pid, root_id=root: self._join_place(place_id, root_id, job_id=c.job_id_edit.get_job_id()))
-                card.on_open(lambda _, pid_val=pid: os.startfile(
-                    f"https://www.roblox.com/games/{pid_val}"))
+                card.on_open(lambda _, pid_val=pid: QDesktopServices.openUrl(
+                    QUrl(f"https://www.roblox.com/games/{pid_val}")))
                 card.on_fetch_jobs(lambda _, pid_val=pid, c=card: self._open_job_ids(pid_val, c))
             else:
                 card.join_btn.setEnabled(False)
@@ -1356,14 +1400,24 @@ class SubplaceJoinerTab(QWidget):
         return r
 
     def _on_main(self, fn):
-        self._invoker.call.emit(fn)
+        if self._qt_destroyed:
+            return False
+        invoker = getattr(self, '_invoker', None)
+        if invoker is None:
+            return False
+        try:
+            invoker.call.emit(fn)
+            return True
+        except RuntimeError:
+            self._qt_destroyed = True
+            return False
 
     def _on_main_guarded(self, fn, cancel_event: threading.Event):
         """Post fn to the main thread, but skip execution if cancel_event is set by then."""
         def wrapped():
             if not cancel_event.is_set():
                 fn()
-        self._invoker.call.emit(wrapped)
+        self._on_main(wrapped)
 
     # Proxy interceptor hooks (called by ProxyMaster on gamejoin traffic)
 

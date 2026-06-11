@@ -9,6 +9,7 @@ stashed so they can be restored on exit / shutdown.
 from __future__ import annotations
 
 import json
+import ntpath
 import os
 import shutil
 import sys
@@ -18,7 +19,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
-from ..utils import CONFIG_DIR, LOCAL_APPDATA, ROBLOX_PROCESS, get_roblox_player_exe_path, log_buffer
+from ..utils import CONFIG_DIR, LOCAL_APPDATA, ROBLOX_PROCESS, format_count, get_roblox_player_exe_path, log_buffer
 from ..utils.roblox_dirs import load_saved_roblox_dirs, save_saved_roblox_dirs
 from ..utils.threading import run_in_thread
 from .fflag_manager import FastFlagManager
@@ -33,12 +34,54 @@ MODIFICATIONS_JSON = CONFIG_DIR / 'modifications.json'
 MOD_ORIGINALS_DIR = CONFIG_DIR / 'ModOriginals'
 MOD_CACHE_DIR = CONFIG_DIR / 'ModCache'
 
+
+def normalise_target_path(target_path: str | Path) -> Path:
+    """Return a safe relative target path using platform path separators.
+
+    Built-in modification entries are stored with Windows-style backslashes.
+    On POSIX, pathlib treats those as literal filename characters, so normalize
+    before joining with a Roblox resource directory or stash directory.
+    """
+    text = str(target_path or '').strip()
+    if not text:
+        raise ValueError('Target path is empty')
+    text = text.replace('\\', '/')
+    drive, _tail = ntpath.splitdrive(text)
+    if drive or text.startswith('/'):
+        raise ValueError('Target path must be relative to the Roblox resources directory')
+    parts = [part for part in text.split('/') if part and part != '.']
+    if not parts:
+        raise ValueError('Target path is empty')
+    if any(part == '..' for part in parts):
+        raise ValueError('Target path cannot contain ".." segments')
+    return Path(*parts)
+
 # ---------------------------------------------------------------------------
 # Roblox directory discovery  (mirrors proxy/master.py::_find_roblox_dirs)
 # ---------------------------------------------------------------------------
 
 def _find_roblox_dirs() -> list[Path]:
-    """Locate every RobloxPlayerBeta.exe installation directory."""
+    """Locate Roblox resource directories that can receive file modifications."""
+    if sys.platform == 'darwin':
+        from ..utils.platform_macos import find_roblox_resource_dirs
+
+        found: list[Path] = []
+        seen: set[str] = set()
+
+        def _add(path: Path) -> None:
+            key = str(path.resolve()).lower()
+            if key in seen:
+                return
+            seen.add(key)
+            found.append(path)
+
+        for roblox_dir in find_roblox_resource_dirs(include_studio=False):
+            _add(roblox_dir)
+        for cached_dir in load_saved_roblox_dirs():
+            _add(cached_dir)
+        save_saved_roblox_dirs(found)
+        return found
+
     import winreg
 
     found: list[Path] = []
@@ -174,7 +217,7 @@ def _find_roblox_dirs() -> list[Path]:
     for d in _scan_for_exe(local_versions, 1):
         _add(d)
 
-    # 6. Live running RobloxPlayerBeta.exe install directory
+    # 6. Live running Roblox Player install directory
     running_player = get_roblox_player_exe_path()
     if running_player is not None:
         _add(running_player.parent)
@@ -269,7 +312,7 @@ class ModificationManager(QObject):
         self._roblox_dirs: list[Path] = _find_roblox_dirs()
         self._stash_dir = MOD_ORIGINALS_DIR
 
-        log_buffer.log('Modifications', f'Discovered {len(self._roblox_dirs)} Roblox dir(s)')
+        log_buffer.log('Modifications', f'Discovered {format_count(self._roblox_dirs, "Roblox dir")}')
 
         # Ensure directories exist
         MOD_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -539,9 +582,9 @@ class ModificationManager(QObject):
     def _fetch_cdn_url(self, url: str) -> bytes:
         """Download a CDN URL, caching to ModCache."""
         import hashlib
-        import urllib.request
         from urllib.parse import urlparse
         from urllib.error import URLError
+        from ..utils.http import http_get
 
         MOD_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         url_hash = hashlib.sha256(url.encode()).hexdigest()[:16]
@@ -553,10 +596,7 @@ class ModificationManager(QObject):
             return cache_file.read_bytes()
 
         try:
-            req = urllib.request.Request(url)
-            req.add_header('User-Agent', 'Mozilla/5.0')
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                data: bytes = resp.read()
+            data = http_get(url, timeout=30, headers={'User-Agent': 'Mozilla/5.0'})
         except URLError as exc:
             raise RuntimeError(f'CDN download failed: {exc}') from exc
 
@@ -624,8 +664,9 @@ class ModificationManager(QObject):
         """Stash the original file and write the mod in every Roblox dir."""
         with self._fs_lock:
             for roblox_dir in self._roblox_dirs:
-                dst = roblox_dir / target_path_rel
-                stash = self._stash_dir / roblox_dir.name / target_path_rel
+                target_path = normalise_target_path(target_path_rel)
+                dst = roblox_dir / target_path
+                stash = self._stash_dir / roblox_dir.name / target_path
                 marker = stash.with_name(stash.name + self._NEW_FILE_MARKER_SUFFIX)
 
                 # Stash original ONCE (idempotent)
@@ -654,10 +695,16 @@ class ModificationManager(QObject):
             restore_font_families(self._roblox_dirs, self._stash_dir)
             return
 
+        try:
+            target_path = normalise_target_path(target)
+        except ValueError as exc:
+            log_buffer.log('Modifications', f'Skipping restore for invalid target path {target!r}: {exc}')
+            return
+
         with self._fs_lock:
             for roblox_dir in self._roblox_dirs:
-                dst = roblox_dir / target
-                stash = self._stash_dir / roblox_dir.name / target
+                dst = roblox_dir / target_path
+                stash = self._stash_dir / roblox_dir.name / target_path
                 marker = stash.with_name(stash.name + self._NEW_FILE_MARKER_SUFFIX)
                 if stash.exists():
                     shutil.copy2(stash, dst)
@@ -679,11 +726,17 @@ class ModificationManager(QObject):
         the UI when a row detects a stash on disk (e.g. manual file edit, crash)
         but has no active modification entry to clear.
         """
+        try:
+            target_rel = normalise_target_path(target_path)
+        except ValueError as exc:
+            log_buffer.log('Modifications', f'Cannot restore orphaned stash for invalid target path {target_path!r}: {exc}')
+            return False
+
         with self._fs_lock:
             restored = False
             for roblox_dir in self._roblox_dirs:
-                dst = roblox_dir / target_path
-                stash = self._stash_dir / roblox_dir.name / target_path
+                dst = roblox_dir / target_rel
+                stash = self._stash_dir / roblox_dir.name / target_rel
                 marker = stash.with_name(stash.name + self._NEW_FILE_MARKER_SUFFIX)
                 if stash.exists():
                     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -815,7 +868,7 @@ class ModificationManager(QObject):
         """Re-discover Roblox directories (e.g. after an update)."""
         self._roblox_dirs = _find_roblox_dirs()
         self.fflag_manager._roblox_dirs = self._roblox_dirs
-        log_buffer.log('Modifications', f'Refreshed: {len(self._roblox_dirs)} Roblox dir(s)')
+        log_buffer.log('Modifications', f'Refreshed: {format_count(self._roblox_dirs, "Roblox dir")}')
 
     def apply_pending_modifications(self) -> None:
         """Apply all pending modifications that were queued while Roblox was running."""

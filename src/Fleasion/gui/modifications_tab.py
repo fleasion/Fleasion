@@ -30,9 +30,10 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ..modifications.manager import ModificationManager
-from ..utils import log_buffer
+from ..modifications.manager import ModificationManager, normalise_target_path
+from ..utils import format_count, log_buffer, open_folder
 from ..utils.threading import run_in_thread
+from .file_drop import FileDropLineEdit
 
 # ---------------------------------------------------------------------------
 # Built-in entry definitions
@@ -196,6 +197,12 @@ class _RichTextButton(QPushButton):
 class CollapsibleSection(QWidget):
     """A section with a clickable header that collapses/expands its content."""
 
+    _EXPANDED_ARROW = '\u25BC'
+    _COLLAPSED_ARROW = '\u25B6'
+    _DEFAULT_ARROW_STYLE = 'border: none;'
+    _WINDOWS_EXPANDED_ARROW_STYLE = 'font-size: 11px; border: none;'
+    _WINDOWS_COLLAPSED_ARROW_STYLE = 'font-size: 19px; border: none;'
+
     def __init__(self, title: str, parent=None, expanded: bool = True,
                  header_widgets: list[QWidget] | None = None):
         super().__init__(parent)
@@ -207,12 +214,10 @@ class CollapsibleSection(QWidget):
         header_layout = QHBoxLayout()
         header_layout.setContentsMargins(4, 4, 4, 4)
 
-        self._arrow = QPushButton('\u25BC' if expanded else '\u25B6')
+        self._arrow = QPushButton()
         self._arrow.setFixedSize(22, 22)
         self._arrow.setFlat(True)
-        self._arrow.setStyleSheet(
-            'font-size: 11px; border: none;' if expanded else 'font-size: 19px; border: none;'
-        )
+        self._set_arrow_state(expanded)
         self._arrow.clicked.connect(self.toggle)
         header_layout.addWidget(self._arrow)
 
@@ -275,14 +280,22 @@ class CollapsibleSection(QWidget):
     def add_widget(self, widget: QWidget):
         self._content_layout.addWidget(widget)
 
+    def _arrow_style(self, expanded: bool) -> str:
+        """Return platform-specific arrow styling for Unicode triangle glyphs."""
+        if os.name == 'nt':
+            return (
+                self._WINDOWS_EXPANDED_ARROW_STYLE if expanded
+                else self._WINDOWS_COLLAPSED_ARROW_STYLE
+            )
+        return self._DEFAULT_ARROW_STYLE
+
+    def _set_arrow_state(self, expanded: bool):
+        self._arrow.setText(self._EXPANDED_ARROW if expanded else self._COLLAPSED_ARROW)
+        self._arrow.setStyleSheet(self._arrow_style(expanded))
+
     def toggle(self):
         self._expanded = not self._expanded
-        if self._expanded:
-            self._arrow.setText('\u25BC')
-            self._arrow.setStyleSheet('font-size: 11px; border: none;')
-        else:
-            self._arrow.setText('\u25B6')
-            self._arrow.setStyleSheet('font-size: 19px; border: none;')
+        self._set_arrow_state(self._expanded)
 
         self._animation = QPropertyAnimation(self._content, b'maximumHeight')
         self._animation.setDuration(200)
@@ -419,7 +432,7 @@ class ModRowWidget(QWidget):
         layout.addWidget(self._status_label)
 
         # Source text field (expands to fill remaining row space)
-        self._source_edit = QLineEdit()
+        self._source_edit = FileDropLineEdit()
         self._source_edit.setPlaceholderText('ID, URL (http://...), path (C:\\...), or "remove" to remove')
         self._source_edit.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
@@ -493,11 +506,15 @@ class ModRowWidget(QWidget):
 
     def _check_for_orphaned_stash(self):
         """Show a warning if a stash file exists but Fleasion has no active record."""
-        from ..modifications.manager import MOD_ORIGINALS_DIR
+        from ..modifications.manager import MOD_ORIGINALS_DIR, normalise_target_path
         roblox_dirs = self._manager.roblox_dirs
         if not roblox_dirs:
             return
-        stash = MOD_ORIGINALS_DIR / roblox_dirs[0].name / self._target_path
+        try:
+            target_path = normalise_target_path(self._target_path)
+        except ValueError:
+            return
+        stash = MOD_ORIGINALS_DIR / roblox_dirs[0].name / target_path
         if stash.is_file():
             self._update_status('orphaned_stash')
             self._status_label.setToolTip(
@@ -901,14 +918,18 @@ class ModPreviewDialog(QDialog):
 
     def _load_data(self, mode: str) -> bytes | None:
         """Load file bytes for preview. mode='mod' or 'original'."""
-        from ..modifications.manager import MOD_ORIGINALS_DIR
+        from ..modifications.manager import MOD_ORIGINALS_DIR, normalise_target_path
         if not self._manager.roblox_dirs:
             return None
         roblox_dir = self._manager.roblox_dirs[0]
+        try:
+            target_path = normalise_target_path(self._target_path)
+        except ValueError:
+            return None
 
         if mode == 'original':
             # Try stash first
-            stash = MOD_ORIGINALS_DIR / roblox_dir.name / self._target_path
+            stash = MOD_ORIGINALS_DIR / roblox_dir.name / target_path
             if stash.is_file():
                 return stash.read_bytes()
             mod_active = any(
@@ -917,11 +938,11 @@ class ModPreviewDialog(QDialog):
             )
             if mod_active:
                 return None
-            dst = roblox_dir / self._target_path
+            dst = roblox_dir / target_path
             return dst.read_bytes() if dst.is_file() else None
 
         # mode == 'mod' — read the current (modified) file from Roblox dir
-        dst = roblox_dir / self._target_path
+        dst = roblox_dir / target_path
         return dst.read_bytes() if dst.is_file() else None
 
     def _on_export(self):
@@ -932,7 +953,13 @@ class ModPreviewDialog(QDialog):
         if path:
             data = self._load_data('mod')
             if data:
-                Path(path).write_bytes(data)
+                export_path = Path(path)
+                export_path.write_bytes(data)
+                self._show_export_complete_message(
+                    'Export Complete',
+                    f'File exported to:\n{export_path}',
+                    [export_path],
+                )
 
     def _on_export_converted(self):
         if not self._mod_converted_bytes:
@@ -943,7 +970,35 @@ class ModPreviewDialog(QDialog):
             self, 'Export Converted File', default_name,
         )
         if path:
-            Path(path).write_bytes(self._mod_converted_bytes)
+            export_path = Path(path)
+            export_path.write_bytes(self._mod_converted_bytes)
+            self._show_export_complete_message(
+                'Export Complete',
+                f'File exported to:\n{export_path}',
+                [export_path],
+            )
+
+    def _show_export_complete_message(self, title: str, message: str, exported_paths):
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Information)
+        msg.setWindowTitle(title)
+        msg.setText(message)
+        open_button = msg.addButton('Open in Explorer', QMessageBox.ButtonRole.ActionRole)
+        msg.addButton(QMessageBox.StandardButton.Ok)
+        msg.exec()
+
+        if msg.clickedButton() == open_button:
+            try:
+                import subprocess
+
+                paths = [Path(path) for path in exported_paths if path]
+                if len(paths) == 1 and paths[0].is_file():
+                    subprocess.Popen(['explorer.exe', '/select,', str(paths[0].resolve())])
+                elif paths:
+                    target = paths[0] if paths[0].is_dir() else paths[0].parent
+                    open_folder(target)
+            except Exception as exc:
+                log_buffer.log('Export', f'Could not open exported file location: {exc}')
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1555,9 +1610,6 @@ class ModificationsTab(QWidget):
         self._mod_container.setStyleSheet(
             f'QWidget#_FleasionModContainer {{ {bg} }}'
         )
-        footer_widget = getattr(self, '_footer_widget', None)
-        if footer_widget is not None:
-            footer_widget.setStyleSheet(bg)
 
     def _clear_roblox_cache(self):
         from .delete_cache import DeleteCacheWindow
@@ -1578,7 +1630,7 @@ class ModificationsTab(QWidget):
         try:
             status_label.setText(
                 f'{applied} {noun} applied \u2022 '
-                f'{roblox_count} Roblox dir(s) detected'
+                f'{format_count(roblox_count, "Roblox dir")} detected'
             )
         except RuntimeError:
             return
@@ -1700,6 +1752,25 @@ class ModificationsTab(QWidget):
 # Custom Modification Dialog
 # ═══════════════════════════════════════════════════════════════════
 
+def _relative_target_path_for_resource_file(path: str | Path, roblox_dirs: list[Path]) -> str | None:
+    """Return a safe relative Roblox resource path for a selected file, if possible."""
+    try:
+        selected = Path(path).expanduser()
+        selected_resolved = selected.resolve(strict=True)
+    except OSError:
+        return None
+
+    for raw_root in roblox_dirs:
+        try:
+            root = Path(raw_root).expanduser().resolve(strict=True)
+            rel = selected_resolved.relative_to(root)
+            normalized = normalise_target_path(rel.as_posix())
+        except (OSError, ValueError):
+            continue
+        return normalized.as_posix()
+    return None
+
+
 class _CustomModDialog(QDialog):
     """Dialog for adding a custom modification entry."""
 
@@ -1726,8 +1797,9 @@ class _CustomModDialog(QDialog):
         # Target path
         row2 = QHBoxLayout()
         row2.addWidget(QLabel('Target path:'))
-        self._target_edit = QLineEdit()
+        self._target_edit = FileDropLineEdit()
         self._target_edit.setPlaceholderText(r'content\sounds\oof.ogg')
+        self._target_edit.fileDropped.connect(self._on_target_file_dropped)
         row2.addWidget(self._target_edit)
         self._browse_roblox_btn = QPushButton('Browse Roblox Dir\u2026')
         self._browse_roblox_btn.clicked.connect(self._browse_roblox)
@@ -1737,7 +1809,7 @@ class _CustomModDialog(QDialog):
         # Source
         row3 = QHBoxLayout()
         row3.addWidget(QLabel('Source:'))
-        self._source_edit = QLineEdit()
+        self._source_edit = FileDropLineEdit()
         self._source_edit.setPlaceholderText('ID, URL (http://...), path (C:\\...), or "remove" to remove')
         row3.addWidget(self._source_edit)
         browse_btn = QPushButton('Browse\u2026')
@@ -1760,6 +1832,22 @@ class _CustomModDialog(QDialog):
 
         self.setLayout(layout)
 
+    def _warn_target_outside_roblox_dirs(self):
+        QMessageBox.warning(
+            self,
+            'Invalid Target',
+            'Target files must be inside a detected Roblox resource directory. '
+            'Use the Source field for external replacement files.',
+        )
+
+    def _on_target_file_dropped(self, path: str):
+        rel = _relative_target_path_for_resource_file(path, self._manager.roblox_dirs)
+        if rel is None:
+            self._target_edit.clear()
+            self._warn_target_outside_roblox_dirs()
+            return
+        self._target_edit.setText(rel)
+
     def _browse_roblox(self):
         """Open file dialog starting at the first Roblox directory."""
         start = ''
@@ -1768,16 +1856,12 @@ class _CustomModDialog(QDialog):
         path, _ = QFileDialog.getOpenFileName(
             self, 'Select target file in Roblox directory', start,
         )
-        if path and self._manager.roblox_dirs:
-            # Make relative to the Roblox dir
-            for rdir in self._manager.roblox_dirs:
-                try:
-                    rel = Path(path).relative_to(rdir)
-                    self._target_edit.setText(str(rel))
-                    return
-                except ValueError:
-                    continue
-            self._target_edit.setText(path)
+        if path:
+            rel = _relative_target_path_for_resource_file(path, self._manager.roblox_dirs)
+            if rel is None:
+                self._warn_target_outside_roblox_dirs()
+                return
+            self._target_edit.setText(rel)
 
     def _browse_source(self):
         # Try to open the dialog in the directory/path the user may have pasted
@@ -1808,6 +1892,11 @@ class _CustomModDialog(QDialog):
             return
         if not target:
             QMessageBox.warning(self, 'Missing', 'Please enter a target path.')
+            return
+        try:
+            target = normalise_target_path(target).as_posix()
+        except ValueError as exc:
+            QMessageBox.warning(self, 'Invalid Target', str(exc))
             return
         self.display_name = name
         self.target_path = target

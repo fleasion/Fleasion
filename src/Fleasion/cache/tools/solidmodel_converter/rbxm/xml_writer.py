@@ -139,6 +139,8 @@ def _write_property(
             _write_vector_int(props_el, 'Vector3int16', prop, ('X', 'Y', 'Z'))
         case PropertyFormat.CFRAME_MATRIX | PropertyFormat.CFRAME_QUAT:
             _write_cframe(props_el, prop)
+        case PropertyFormat.OPTIONAL_CFRAME:
+            _write_optional_cframe(props_el, prop)
         case PropertyFormat.REF:
             _write_ref(props_el, prop)
         case PropertyFormat.NUMBER_SEQUENCE:
@@ -157,6 +159,25 @@ def _write_property(
             el = SubElement(props_el, xml_tag)
             el.set('name', prop.name)
             el.text = str(prop.value)
+        case PropertyFormat.BYTECODE:
+            el = SubElement(props_el, xml_tag)
+            el.set('name', prop.name)
+            if isinstance(prop.value, bytes):
+                el.text = base64.b64encode(prop.value).decode('ascii')
+            else:
+                el.text = base64.b64encode(str(prop.value).encode('utf-8')).decode(
+                    'ascii'
+                )
+        case PropertyFormat.UNIQUE_ID:
+            _write_unique_id(props_el, prop)
+        case PropertyFormat.FONT:
+            _write_font(props_el, prop)
+        case PropertyFormat.SECURITY_CAPABILITIES:
+            el = SubElement(props_el, xml_tag)
+            el.set('name', prop.name)
+            el.text = str(prop.value)
+        case PropertyFormat.CONTENT:
+            _write_content(props_el, prop)
         case PropertyFormat.SHARED_STRING:
             _write_shared_string(props_el, prop)
         case _:
@@ -332,6 +353,25 @@ def _write_cframe(parent: Element, prop: RbxProperty) -> None:
             SubElement(el, key).text = _fmt_float(cf[key])
 
 
+def _write_cframe_fields(parent: Element, cf: dict[str, float]) -> None:
+    SubElement(parent, 'X').text = _fmt_float(cf['X'])
+    SubElement(parent, 'Y').text = _fmt_float(cf['Y'])
+    SubElement(parent, 'Z').text = _fmt_float(cf['Z'])
+    for row in range(3):
+        for col in range(3):
+            key = f'R{row}{col}'
+            SubElement(parent, key).text = _fmt_float(cf[key])
+
+
+def _write_optional_cframe(parent: Element, prop: RbxProperty) -> None:
+    el = SubElement(parent, 'OptionalCoordinateFrame')
+    el.set('name', prop.name)
+    if prop.value is None:
+        return
+    cf_el = SubElement(el, 'CFrame')
+    _write_cframe_fields(cf_el, prop.value)
+
+
 def _write_ref(parent: Element, prop: RbxProperty) -> None:
     el = SubElement(parent, 'Ref')
     el.set('name', prop.name)
@@ -385,7 +425,7 @@ def _write_rect2d(parent: Element, prop: RbxProperty) -> None:
 def _write_physical_properties(parent: Element, prop: RbxProperty) -> None:
     el = SubElement(parent, 'PhysicalProperties')
     el.set('name', prop.name)
-    if prop.value is None:
+    if prop.value is None or not prop.value.get('CustomPhysics', True):
         SubElement(el, 'CustomPhysics').text = 'false'
     else:
         SubElement(el, 'CustomPhysics').text = 'true'
@@ -395,6 +435,9 @@ def _write_physical_properties(parent: Element, prop: RbxProperty) -> None:
         SubElement(el, 'FrictionWeight').text = _fmt_float(prop.value['FrictionWeight'])
         SubElement(el, 'ElasticityWeight').text = _fmt_float(
             prop.value['ElasticityWeight']
+        )
+        SubElement(el, 'AcousticAbsorption').text = _fmt_float(
+            prop.value.get('AcousticAbsorption', 1.0)
         )
 
 
@@ -422,6 +465,61 @@ def _write_shared_string(parent: Element, prop: RbxProperty) -> None:
         el.text = md5_b64
     else:
         el.text = str(prop.value)
+
+
+def _write_unique_id(parent: Element, prop: RbxProperty) -> None:
+    el = SubElement(parent, 'UniqueId')
+    el.set('name', prop.name)
+    if isinstance(prop.value, bytes):
+        el.text = prop.value.hex()
+        return
+
+    random_bits = int(prop.value.get('Random', 0)) & 0xFFFF_FFFF_FFFF_FFFF
+    xml_random = ((random_bits << 1) & 0xFFFF_FFFF_FFFF_FFFF) | (random_bits >> 63)
+    time = int(prop.value.get('Time', 0)) & 0xFFFF_FFFF
+    index = int(prop.value.get('Index', 0)) & 0xFFFF_FFFF
+    el.text = f'{xml_random:016x}{time:08x}{index:08x}'
+
+
+def _write_font(parent: Element, prop: RbxProperty) -> None:
+    style_names = {0: 'Normal', 1: 'Italic'}
+    el = SubElement(parent, 'Font')
+    el.set('name', prop.name)
+    family = SubElement(el, 'Family')
+    _write_content_value(family, prop.value.get('Family', ''))
+    SubElement(el, 'Weight').text = str(prop.value.get('Weight', 400))
+    style = prop.value.get('Style', 0)
+    SubElement(el, 'Style').text = style_names.get(style, str(style))
+    cached_face_id = prop.value.get('CachedFaceId', '')
+    if cached_face_id:
+        cached = SubElement(el, 'CachedFaceId')
+        _write_content_value(cached, cached_face_id)
+
+
+def _write_content(parent: Element, prop: RbxProperty) -> None:
+    el = SubElement(parent, 'Content')
+    el.set('name', prop.name)
+    _write_content_value(el, prop.value)
+
+
+def _write_content_value(parent: Element, value: Any) -> None:
+    if value is None:
+        SubElement(parent, 'null')
+    elif isinstance(value, str):
+        if value:
+            uri = SubElement(parent, 'uri')
+            uri.text = value
+        else:
+            SubElement(parent, 'null')
+    elif value.get('SourceType') == 'Uri':
+        uri = SubElement(parent, 'uri')
+        uri.text = str(value.get('Uri', ''))
+    elif value.get('SourceType') == 'Object':
+        ref = SubElement(parent, 'Ref')
+        ref_value = value.get('Ref')
+        ref.text = 'null' if ref_value is None else f'RBX{int(ref_value):032X}'
+    else:
+        SubElement(parent, 'null')
 
 
 def _fmt_float(value: Any) -> str:

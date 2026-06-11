@@ -1,15 +1,26 @@
 """Configuration management."""
 
 import json
+import locale
 import stat
 import threading
 from copy import deepcopy
 from pathlib import Path
 
-from ..utils import CONFIG_DIR, CONFIG_FILE, CONFIGS_FOLDER, DEFAULT_SETTINGS
+from ..utils.paths import CONFIG_DIR, CONFIG_FILE, CONFIGS_FOLDER, DEFAULT_SETTINGS
 
 # Windows forbids these characters in file and folder names.
 _INVALID_FILENAME_CHARS = frozenset('\\/:*?"<>|')
+_FALLBACK_JSON_ENCODINGS = (
+    'utf-8-sig',
+    'utf-16',
+    'utf-16-le',
+    'utf-16-be',
+    'utf-32',
+    'utf-32-le',
+    'utf-32-be',
+    'cp1252',
+)
 
 
 class ConfigManager:
@@ -19,17 +30,7 @@ class ConfigManager:
         self._lock = threading.Lock()
         self.settings = self._load_settings()
         self._ensure_default_config()
-        # Clean up enabled_configs to only include existing configs
-        self.settings['enabled_configs'] = [
-            c
-            for c in self.settings.get('enabled_configs', [])
-            if c in self.config_names
-        ]
-        # Ensure last_config is valid
-        if self.settings.get('last_config') not in self.config_names:
-            self.settings['last_config'] = (
-                self.config_names[0] if self.config_names else 'Default'
-            )
+        self.reconcile_configs(save=False)
 
     def _load_settings(self) -> dict:
         """Load settings from disk."""
@@ -37,8 +38,7 @@ class ConfigManager:
         CONFIGS_FOLDER.mkdir(parents=True, exist_ok=True)
         if CONFIG_FILE.exists():
             try:
-                with Path(CONFIG_FILE).open(encoding='utf-8') as f:
-                    loaded = json.load(f)
+                loaded = self._load_json_file(Path(CONFIG_FILE))
                 if 'configs' in loaded:
                     self._migrate_old_format(loaded)
                     return {
@@ -53,7 +53,7 @@ class ConfigManager:
                     loaded['last_config'] = loaded['active_config']
                     del loaded['active_config']
                 return {**DEFAULT_SETTINGS, **loaded}
-            except (json.JSONDecodeError, OSError):
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError):
                 pass
         return deepcopy(DEFAULT_SETTINGS)
 
@@ -97,15 +97,55 @@ class ConfigManager:
         except OSError:
             pass
 
+    @staticmethod
+    def _fallback_json_encodings() -> tuple[str, ...]:
+        """Return legacy text encodings to try after strict JSON decoding fails."""
+        preferred = locale.getpreferredencoding(False)
+        encodings: list[str] = []
+        for encoding in (*_FALLBACK_JSON_ENCODINGS, preferred):
+            if encoding and encoding.lower() not in {e.lower() for e in encodings}:
+                encodings.append(encoding)
+        return tuple(encodings)
+
+    def _load_json_file(self, path: Path) -> dict:
+        """Load JSON and recover legacy non-UTF files when possible."""
+        raw = path.read_bytes()
+        decode_error: UnicodeDecodeError | None = None
+
+        try:
+            return json.loads(raw)
+        except UnicodeDecodeError as exc:
+            decode_error = exc
+
+        for encoding in self._fallback_json_encodings():
+            try:
+                text = raw.decode(encoding)
+                loaded = json.loads(text)
+            except (LookupError, UnicodeDecodeError, json.JSONDecodeError):
+                continue
+
+            # Normalize recovered configs back to UTF-8 JSON so future launches
+            # do not depend on locale-specific decoding.
+            try:
+                self._clear_read_only(path)
+                with path.open('w', encoding='utf-8') as f:
+                    json.dump(loaded, f, indent=2)
+            except OSError:
+                pass
+            return loaded
+
+        if decode_error is not None:
+            raise decode_error
+        return json.loads(raw)
+
     def _load_config(self, name: str) -> dict:
         """Load a config from disk."""
         path = self._get_config_path(name)
         if path.exists():
             try:
                 self._clear_read_only(path)
-                with Path(path).open(encoding='utf-8') as f:
-                    return json.load(f)
-            except (json.JSONDecodeError, OSError):
+                return self._load_json_file(Path(path))
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError):
                 pass
         return {'replacement_rules': []}
 
@@ -207,6 +247,145 @@ class ConfigManager:
         self._save_settings()
 
     @property
+    def proxy_features_enabled(self) -> bool:
+        """Get proxy feature toggle."""
+        return self.settings.get('proxy_features_enabled', True)
+
+    @proxy_features_enabled.setter
+    def proxy_features_enabled(self, value: bool):
+        """Set proxy feature toggle."""
+        self.settings['proxy_features_enabled'] = value
+        self._save_settings()
+
+    @property
+    def upstream_transport_mode(self) -> str:
+        mode = str(self.settings.get('upstream_transport_mode', 'auto') or 'auto').lower()
+        valid = {'auto', 'direct_ip', 'system_proxy', 'http_connect', 'socks5'}
+        return mode if mode in valid else 'auto'
+
+    @upstream_transport_mode.setter
+    def upstream_transport_mode(self, value: str):
+        value = str(value or 'auto').lower()
+        self.settings['upstream_transport_mode'] = value if value in {
+            'auto', 'direct_ip', 'system_proxy', 'http_connect', 'socks5'
+        } else 'auto'
+        self._save_settings()
+
+    @property
+    def wire_preserving_passthrough(self) -> bool:
+        value = self.settings.get('wire_preserving_passthrough', False)
+        if isinstance(value, str):
+            return value.strip().lower() in {'1', 'true', 'yes', 'on'}
+        return bool(value)
+
+    @wire_preserving_passthrough.setter
+    def wire_preserving_passthrough(self, value: bool):
+        self.settings['wire_preserving_passthrough'] = bool(value)
+        self._save_settings()
+
+    @property
+    def upstream_http_connect_host(self) -> str:
+        return str(self.settings.get('upstream_http_connect_host', '') or '')
+
+    @upstream_http_connect_host.setter
+    def upstream_http_connect_host(self, value: str):
+        self.settings['upstream_http_connect_host'] = str(value or '').strip()
+        self._save_settings()
+
+    @property
+    def upstream_http_connect_port(self) -> int:
+        try:
+            return max(0, min(65535, int(self.settings.get('upstream_http_connect_port', 0) or 0)))
+        except (TypeError, ValueError):
+            return 0
+
+    @upstream_http_connect_port.setter
+    def upstream_http_connect_port(self, value: int):
+        self.settings['upstream_http_connect_port'] = max(0, min(65535, int(value or 0)))
+        self._save_settings()
+
+    @property
+    def upstream_http_connect_username(self) -> str:
+        return str(self.settings.get('upstream_http_connect_username', '') or '')
+
+    @upstream_http_connect_username.setter
+    def upstream_http_connect_username(self, value: str):
+        self.settings['upstream_http_connect_username'] = str(value or '')
+        self._save_settings()
+
+    @property
+    def upstream_http_connect_password(self) -> str:
+        return str(self.settings.get('upstream_http_connect_password', '') or '')
+
+    @upstream_http_connect_password.setter
+    def upstream_http_connect_password(self, value: str):
+        self.settings['upstream_http_connect_password'] = str(value or '')
+        self._save_settings()
+
+    @property
+    def upstream_socks5_host(self) -> str:
+        return str(self.settings.get('upstream_socks5_host', '') or '')
+
+    @upstream_socks5_host.setter
+    def upstream_socks5_host(self, value: str):
+        self.settings['upstream_socks5_host'] = str(value or '').strip()
+        self._save_settings()
+
+    @property
+    def upstream_socks5_port(self) -> int:
+        try:
+            return max(0, min(65535, int(self.settings.get('upstream_socks5_port', 0) or 0)))
+        except (TypeError, ValueError):
+            return 0
+
+    @upstream_socks5_port.setter
+    def upstream_socks5_port(self, value: int):
+        self.settings['upstream_socks5_port'] = max(0, min(65535, int(value or 0)))
+        self._save_settings()
+
+    @property
+    def upstream_socks5_username(self) -> str:
+        return str(self.settings.get('upstream_socks5_username', '') or '')
+
+    @upstream_socks5_username.setter
+    def upstream_socks5_username(self, value: str):
+        self.settings['upstream_socks5_username'] = str(value or '')
+        self._save_settings()
+
+    @property
+    def upstream_socks5_password(self) -> str:
+        return str(self.settings.get('upstream_socks5_password', '') or '')
+
+    @upstream_socks5_password.setter
+    def upstream_socks5_password(self, value: str):
+        self.settings['upstream_socks5_password'] = str(value or '')
+        self._save_settings()
+
+    @property
+    def vpn_compat_max_assetdelivery_connections(self) -> int:
+        try:
+            return max(1, min(128, int(self.settings.get('vpn_compat_max_assetdelivery_connections', 16) or 16)))
+        except (TypeError, ValueError):
+            return 16
+
+    @vpn_compat_max_assetdelivery_connections.setter
+    def vpn_compat_max_assetdelivery_connections(self, value: int):
+        self.settings['vpn_compat_max_assetdelivery_connections'] = max(1, min(128, int(value or 16)))
+        self._save_settings()
+
+    @property
+    def vpn_compat_max_cdn_connections(self) -> int:
+        try:
+            return max(1, min(256, int(self.settings.get('vpn_compat_max_cdn_connections', 32) or 32)))
+        except (TypeError, ValueError):
+            return 32
+
+    @vpn_compat_max_cdn_connections.setter
+    def vpn_compat_max_cdn_connections(self, value: int):
+        self.settings['vpn_compat_max_cdn_connections'] = max(1, min(256, int(value or 32)))
+        self._save_settings()
+
+    @property
     def run_on_boot(self) -> bool:
         return self.settings.get('run_on_boot', False)
 
@@ -244,6 +423,15 @@ class ConfigManager:
     @close_scraped_games_on_open.setter
     def close_scraped_games_on_open(self, value: bool):
         self.settings['close_scraped_games_on_open'] = value
+        self._save_settings()
+
+    @property
+    def close_scraped_games_menu_on_open(self) -> bool:
+        return self.settings.get('close_scraped_games_menu_on_open', True)
+
+    @close_scraped_games_menu_on_open.setter
+    def close_scraped_games_menu_on_open(self, value: bool):
+        self.settings['close_scraped_games_menu_on_open'] = value
         self._save_settings()
 
     @property
@@ -324,6 +512,31 @@ class ConfigManager:
         self._save_settings()
 
     @property
+    def username_spoofer(self) -> dict:
+        default = deepcopy(DEFAULT_SETTINGS.get('username_spoofer', {}))
+        saved = self.settings.get('username_spoofer', {})
+        if isinstance(saved, dict):
+            default.update(saved)
+        return default
+
+    @username_spoofer.setter
+    def username_spoofer(self, value: dict):
+        base = deepcopy(DEFAULT_SETTINGS.get('username_spoofer', {}))
+        if isinstance(value, dict):
+            base.update({
+                'save_settings': bool(value.get('save_settings', base.get('save_settings', False))),
+                'others_name': str(value.get('others_name', base.get('others_name', ''))),
+                'others_apply_ingame': bool(value.get('others_apply_ingame', base.get('others_apply_ingame', False))),
+                'others_verified': bool(value.get('others_verified', base.get('others_verified', False))),
+                'self_name': str(value.get('self_name', base.get('self_name', ''))),
+                'self_apply_ingame': bool(value.get('self_apply_ingame', base.get('self_apply_ingame', False))),
+                'self_verified': bool(value.get('self_verified', base.get('self_verified', False))),
+                'self_game_creator': bool(value.get('self_game_creator', base.get('self_game_creator', False))),
+            })
+        self.settings['username_spoofer'] = base
+        self._save_settings()
+
+    @property
     def show_names(self) -> bool:
         return self.settings.get('show_names', True)
 
@@ -344,7 +557,7 @@ class ConfigManager:
     @property
     def export_naming(self) -> list[str]:
         """Get export naming options (name, id, hash)."""
-        return self.settings.get('export_naming', ['id'])
+        return self.settings.get('export_naming', ['name', 'id'])
 
     @export_naming.setter
     def export_naming(self, value: list[str]):
@@ -371,7 +584,12 @@ class ConfigManager:
     @property
     def enabled_configs(self) -> list[str]:
         """Get list of enabled configs."""
-        return self.settings.get('enabled_configs', [])
+        current_configs = set(self.config_names)
+        return [
+            name
+            for name in self.settings.get('enabled_configs', [])
+            if name in current_configs
+        ]
 
     @enabled_configs.setter
     def enabled_configs(self, value: list[str]):
@@ -385,6 +603,9 @@ class ConfigManager:
 
     def toggle_config_enabled(self, name: str) -> bool:
         """Toggle a config's enabled state. Returns new state."""
+        if name not in self.config_names:
+            self.reconcile_configs()
+            return False
         configs = self.enabled_configs.copy()
         if name in configs:
             configs.remove(name)
@@ -397,6 +618,9 @@ class ConfigManager:
 
     def set_config_enabled(self, name: str, enabled: bool):
         """Set a config's enabled state."""
+        if name not in self.config_names:
+            self.reconcile_configs()
+            return
         configs = self.enabled_configs.copy()
         if enabled and name not in configs:
             configs.append(name)
@@ -404,19 +628,45 @@ class ConfigManager:
             configs.remove(name)
         self.enabled_configs = configs
 
+    def reconcile_configs(self, save: bool = True) -> bool:
+        """Synchronize settings with config files currently on disk.
+
+        Returns True when the active settings changed.
+        """
+        self._ensure_default_config()
+        current_configs = self.config_names
+        changed = False
+
+        enabled = self.settings.get('enabled_configs', [])
+        cleaned_enabled = [
+            name
+            for name in enabled
+            if name in current_configs
+        ]
+        if cleaned_enabled != enabled:
+            self.settings['enabled_configs'] = cleaned_enabled
+            changed = True
+
+        last_config = self.settings.get('last_config', 'Default')
+        if last_config not in current_configs:
+            self.settings['last_config'] = current_configs[0] if current_configs else 'Default'
+            changed = True
+
+        if changed and save:
+            self._save_settings()
+        return changed
+
     @property
     def last_config(self) -> str:
         """Get the last displayed config."""
-        name = self.settings.get('last_config', 'Default')
-        if name not in self.config_names:
-            name = self.config_names[0] if self.config_names else 'Default'
-            self.settings['last_config'] = name
-        return name
+        self.reconcile_configs()
+        return self.settings.get('last_config', 'Default')
 
     @last_config.setter
     def last_config(self, value: str):
         """Set the last displayed config."""
         self.settings['last_config'] = value
+        self.reconcile_configs(save=False)
         self._save_settings()
 
     @property
@@ -427,8 +677,7 @@ class ConfigManager:
 
     def refresh_config_names(self):
         """Refresh config names from disk (for external changes)."""
-        # config_names property already reads from disk, this is just for clarity
-        pass
+        self.reconcile_configs()
 
     def get_replacement_rules(self, config_name: str) -> list:
         """Get rules for a specific config."""
@@ -537,6 +786,15 @@ class ConfigManager:
         self._save_config(new_name, deepcopy(config))
         return True
 
+    @staticmethod
+    def _iter_replacement_rules(entries: list):
+        """Yield profile rules depth-first, skipping organizational groups."""
+        for entry in entries:
+            if isinstance(entry, dict) and entry.get('type') == 'group':
+                yield from ConfigManager._iter_replacement_rules(entry.get('children', []))
+            else:
+                yield entry
+
     def get_all_replacements(self) -> tuple[dict[int | str, int], set[int | str], dict[int | str, str], dict[int | str, str]]:
         """Get replacements from all enabled configs.
 
@@ -583,7 +841,9 @@ class ConfigManager:
         for config_name in self.enabled_configs:
             if config_name not in self.config_names:
                 continue
-            for rule in self.get_replacement_rules(config_name):
+            for rule in self._iter_replacement_rules(self.get_replacement_rules(config_name)):
+                if not isinstance(rule, dict):
+                    continue
                 # Skip disabled profiles
                 if not rule.get('enabled', True):
                     continue
