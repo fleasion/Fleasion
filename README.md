@@ -38,6 +38,16 @@ uv run pyinstaller Fleasion.spec
 ./scripts/build_macos.sh
 ```
 
+On macOS, `./scripts/build_macos.sh` builds a universal release app by default. The output is copied to `dist/Fleasion-v{APP_VERSION}.app`, mirrored at `dist/Fleasion.app`, and zipped as `dist/Fleasion-v{APP_VERSION}-MacOS-Universal.zip`.
+
+On Apple Silicon, the script builds the arm64 slice with the normal `uv` environment, bootstraps an ignored x86_64 build environment under `.tools/`, builds the Intel slice under Rosetta, merges the app with `lipo`, signs it ad hoc, and verifies every Mach-O binary contains both `arm64` and `x86_64`. Rosetta must be installed for the Intel build:
+
+```bash
+softwareupdate --install-rosetta --agree-to-license
+```
+
+For local single-architecture builds, set `MACOS_TARGET_ARCH=arm64` or `MACOS_TARGET_ARCH=x86_64`.
+
 ## System Tray
 
 Fleasion runs in the background as a system tray application. Right-click the tray icon to access:

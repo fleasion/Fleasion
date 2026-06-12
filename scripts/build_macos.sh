@@ -6,8 +6,227 @@ if [ "$(uname -s)" != "Darwin" ]; then
     exit 1
 fi
 
-PYINSTALLER_CONFIG_DIR="${PYINSTALLER_CONFIG_DIR:-/tmp/fleasion-pyinstaller}" \
-UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/fleasion-uv-cache}" \
-    uv run pyinstaller --clean --noconfirm Fleasion.spec
+APP_VERSION="$(sed -n "s/^APP_VERSION = ['\"]\\([^'\"]*\\)['\"]$/\\1/p" src/Fleasion/utils/paths.py)"
+EXEC_NAME="Fleasion-v${APP_VERSION}"
+APP_PATH="dist/Fleasion.app"
+VERSIONED_APP_PATH="dist/${EXEC_NAME}.app"
+ZIP_PATH="dist/${EXEC_NAME}-MacOS-Universal.zip"
+EXEC_PATH="${APP_PATH}/Contents/MacOS/${EXEC_NAME}"
 
-echo "Built dist/Fleasion.app"
+MACOS_TARGET_ARCH="${MACOS_TARGET_ARCH:-universal2}"
+PYINSTALLER_CONFIG_DIR="${PYINSTALLER_CONFIG_DIR:-/tmp/fleasion-pyinstaller}"
+UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/fleasion-uv-cache}"
+UV_X86_CACHE_DIR="${UV_X86_CACHE_DIR:-/tmp/fleasion-uv-cache-x86}"
+UV_X86_PROJECT_ENVIRONMENT="${UV_X86_PROJECT_ENVIRONMENT:-.tools/venv-x86}"
+UV_X86_PYTHON_INSTALL_DIR="${UV_X86_PYTHON_INSTALL_DIR:-.tools/pythons-x86}"
+UV_X86_PYTHON="${UV_X86_PYTHON:-3.14}"
+UV_X86_VERSION="${UV_X86_VERSION:-$(uv --version 2>/dev/null | sed -n 's/^uv \([^ ]*\).*/\1/p')}"
+UV_X86_VERSION="${UV_X86_VERSION:-0.11.18}"
+UV_X86_DIR=".tools/uv-x86_64-apple-darwin"
+UV_X86_BIN="${UV_X86_DIR}/uv"
+
+export PYINSTALLER_CONFIG_DIR UV_CACHE_DIR
+
+require_archs() {
+    file_path="$1"
+    archs="$(lipo -archs "$file_path" 2>/dev/null || true)"
+    for required_arch in "$@"; do
+        if [ "$required_arch" = "$file_path" ]; then
+            continue
+        fi
+        case " $archs " in
+            *" $required_arch "*) ;;
+            *)
+                echo "$file_path is missing $required_arch slice; found '$archs'." >&2
+                exit 1
+                ;;
+        esac
+    done
+}
+
+verify_app_archs() {
+    app_path="$1"
+    require_archs "${app_path}/Contents/MacOS/${EXEC_NAME}" arm64 x86_64
+
+    missing_archs="$(mktemp /tmp/fleasion-missing-archs.XXXXXX)"
+    find "$app_path" -type f -print | while IFS= read -r file_path; do
+        archs="$(lipo -archs "$file_path" 2>/dev/null || true)"
+        [ -n "$archs" ] || continue
+        case " $archs " in *" arm64 "*) has_arm=1 ;; *) has_arm=0 ;; esac
+        case " $archs " in *" x86_64 "*) has_x86=1 ;; *) has_x86=0 ;; esac
+        if [ "$has_arm" -ne 1 ] || [ "$has_x86" -ne 1 ]; then
+            printf '%s: %s\n' "$file_path" "$archs" >> "$missing_archs"
+        fi
+    done
+
+    if [ -s "$missing_archs" ]; then
+        echo "Universal app still contains single-arch Mach-O files:" >&2
+        sed -n '1,40p' "$missing_archs" >&2
+        rm -f "$missing_archs"
+        exit 1
+    fi
+    rm -f "$missing_archs"
+}
+
+build_current_arch() {
+    target_arch="$1"
+    MACOS_TARGET_ARCH="$target_arch" uv run pyinstaller --clean --noconfirm Fleasion.spec
+
+    if [ ! -x "$EXEC_PATH" ]; then
+        echo "Build completed, but expected executable was not found: $EXEC_PATH" >&2
+        exit 1
+    fi
+    require_archs "$EXEC_PATH" "$target_arch"
+}
+
+ensure_x86_uv() {
+    if ! arch -x86_64 /usr/bin/true >/dev/null 2>&1; then
+        echo "Rosetta is required for the Intel build. Install it with:" >&2
+        echo "softwareupdate --install-rosetta --agree-to-license" >&2
+        exit 1
+    fi
+
+    if [ -x "$UV_X86_BIN" ]; then
+        return
+    fi
+
+    mkdir -p .tools
+    archive="/tmp/uv-x86_64-apple-darwin-${UV_X86_VERSION}.tar.gz"
+    url="https://github.com/astral-sh/uv/releases/download/${UV_X86_VERSION}/uv-x86_64-apple-darwin.tar.gz"
+    echo "Downloading x86_64 uv ${UV_X86_VERSION}..."
+    curl -L "$url" -o "$archive"
+    tar -xzf "$archive" -C .tools
+}
+
+build_x86_64() {
+    ensure_x86_uv
+
+    UV_CACHE_DIR="$UV_X86_CACHE_DIR" \
+    UV_PROJECT_ENVIRONMENT="$UV_X86_PROJECT_ENVIRONMENT" \
+    UV_PYTHON_INSTALL_DIR="$UV_X86_PYTHON_INSTALL_DIR" \
+    arch -x86_64 "$UV_X86_BIN" sync --python "$UV_X86_PYTHON" --group dev
+
+    UV_CACHE_DIR="$UV_X86_CACHE_DIR" \
+    UV_PROJECT_ENVIRONMENT="$UV_X86_PROJECT_ENVIRONMENT" \
+    UV_PYTHON_INSTALL_DIR="$UV_X86_PYTHON_INSTALL_DIR" \
+    MACOS_TARGET_ARCH=x86_64 \
+    arch -x86_64 "$UV_X86_BIN" run pyinstaller --clean --noconfirm Fleasion.spec
+
+    if [ ! -x "$EXEC_PATH" ]; then
+        echo "Intel build completed, but expected executable was not found: $EXEC_PATH" >&2
+        exit 1
+    fi
+    require_archs "$EXEC_PATH" x86_64
+}
+
+copy_app() {
+    src="$1"
+    dst="$2"
+    rm -rf "$dst"
+    cp -R "$src" "$dst"
+}
+
+merge_apps() {
+    arm_app="$1"
+    x86_app="$2"
+    universal_app="$3"
+
+    copy_app "$arm_app" "$universal_app"
+
+    find "$x86_app" -type f -print | while IFS= read -r x86_file; do
+        rel="${x86_file#${x86_app}/}"
+        arm_file="${universal_app}/${rel}"
+        [ -f "$arm_file" ] || continue
+
+        x86_archs="$(lipo -archs "$x86_file" 2>/dev/null || true)"
+        arm_archs="$(lipo -archs "$arm_file" 2>/dev/null || true)"
+        case " $x86_archs " in *" x86_64 "*) ;; *) continue ;; esac
+        case " $arm_archs " in *" arm64 "*) ;; *) continue ;; esac
+        case " $arm_archs " in *" x86_64 "*) continue ;; esac
+
+        tmp_file="${arm_file}.universal-tmp"
+        if lipo -create "$arm_file" "$x86_file" -output "$tmp_file"; then
+            chmod "$(stat -f %Lp "$arm_file")" "$tmp_file"
+            mv "$tmp_file" "$arm_file"
+        else
+            rm -f "$tmp_file"
+            echo "Failed to merge $rel" >&2
+            exit 1
+        fi
+    done
+
+    merge_soundfile_dylib "$arm_app" "$x86_app" "$universal_app"
+}
+
+merge_soundfile_dylib() {
+    arm_app="$1"
+    x86_app="$2"
+    universal_app="$3"
+    arm_dylib="${arm_app}/Contents/Frameworks/_soundfile_data/libsndfile_arm64.dylib"
+    x86_dylib="${x86_app}/Contents/Frameworks/_soundfile_data/libsndfile_x86_64.dylib"
+    universal_dir="${universal_app}/Contents/Frameworks/_soundfile_data"
+    resource_dir="${universal_app}/Contents/Resources/_soundfile_data"
+
+    if [ ! -f "$arm_dylib" ] || [ ! -f "$x86_dylib" ]; then
+        return
+    fi
+
+    mkdir -p "$universal_dir" "$resource_dir"
+    lipo -create "$arm_dylib" "$x86_dylib" -output "${universal_dir}/libsndfile_universal.dylib"
+    cp "${universal_dir}/libsndfile_universal.dylib" "${universal_dir}/libsndfile_arm64.dylib"
+    cp "${universal_dir}/libsndfile_universal.dylib" "${universal_dir}/libsndfile_x86_64.dylib"
+    rm -f "${resource_dir}/libsndfile_arm64.dylib" "${resource_dir}/libsndfile_x86_64.dylib"
+    ln -s ../../Frameworks/_soundfile_data/libsndfile_arm64.dylib "${resource_dir}/libsndfile_arm64.dylib"
+    ln -s ../../Frameworks/_soundfile_data/libsndfile_x86_64.dylib "${resource_dir}/libsndfile_x86_64.dylib"
+}
+
+finalize_app() {
+    app_path="$1"
+    app_arch="$2"
+
+    codesign --force --deep --sign - "$app_path"
+
+    if [ "$app_arch" = "universal2" ]; then
+        verify_app_archs "$app_path"
+        rm -f "$ZIP_PATH"
+        ditto -c -k --sequesterRsrc --keepParent "$app_path" "$ZIP_PATH"
+        echo "Built ${app_path} (${app_arch})"
+        echo "Built ${ZIP_PATH}"
+    else
+        require_archs "${app_path}/Contents/MacOS/${EXEC_NAME}" "$app_arch"
+        echo "Built ${app_path} (${app_arch})"
+    fi
+}
+
+case "$MACOS_TARGET_ARCH" in
+    arm64|x86_64)
+        if [ "$MACOS_TARGET_ARCH" = "x86_64" ]; then
+            build_x86_64
+        else
+            build_current_arch arm64
+        fi
+        copy_app "$APP_PATH" "$VERSIONED_APP_PATH"
+        finalize_app "$VERSIONED_APP_PATH" "$MACOS_TARGET_ARCH"
+        ;;
+    universal2)
+        ARM_APP="dist/Fleasion-arm64.app"
+        X86_APP="dist/Fleasion-x86_64.app"
+        UNIVERSAL_APP="dist/Fleasion-universal.app"
+
+        build_current_arch arm64
+        copy_app "$APP_PATH" "$ARM_APP"
+
+        build_x86_64
+        copy_app "$APP_PATH" "$X86_APP"
+
+        merge_apps "$ARM_APP" "$X86_APP" "$UNIVERSAL_APP"
+        copy_app "$UNIVERSAL_APP" "$VERSIONED_APP_PATH"
+        finalize_app "$VERSIONED_APP_PATH" universal2
+        copy_app "$VERSIONED_APP_PATH" "$APP_PATH"
+        ;;
+    *)
+        echo "Unsupported MACOS_TARGET_ARCH: $MACOS_TARGET_ARCH" >&2
+        echo "Expected one of: universal2, arm64, x86_64" >&2
+        exit 1
+        ;;
+esac

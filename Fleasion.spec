@@ -1,9 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
-import re, pathlib, sys
+import os, re, pathlib, sys
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 _paths_src = pathlib.Path('src/Fleasion/utils/paths.py').read_text()
 _version = re.search(r"APP_VERSION\s*=\s*['\"]([^'\"]+)['\"]", _paths_src).group(1)
+_macos_target_arch = os.environ.get('MACOS_TARGET_ARCH', 'universal2') if sys.platform == 'darwin' else None
 
 datas = [
     ('src/Fleasion/fleasionlogoHR.ico', '.'),
@@ -112,7 +113,7 @@ exe = EXE(
     # read-only mode if they decline UAC, rather than being blocked entirely.
     disable_windowed_traceback=False,
     argv_emulation=False,
-    target_arch=None,
+    target_arch=_macos_target_arch,
     codesign_identity=None,
     entitlements_file=None,
     icon=(
