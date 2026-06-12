@@ -12,6 +12,9 @@ APP_PATH="dist/Fleasion.app"
 VERSIONED_APP_PATH="dist/${EXEC_NAME}.app"
 ZIP_PATH="dist/${EXEC_NAME}-MacOS-Universal.zip"
 EXEC_PATH="${APP_PATH}/Contents/MacOS/${EXEC_NAME}"
+HELPER_EXEC_NAME="fleasion-proxy-helper"
+HELPER_DIST_PATH="dist/${HELPER_EXEC_NAME}"
+HELPER_APP_PATH="${APP_PATH}/Contents/Resources/${HELPER_EXEC_NAME}"
 
 MACOS_TARGET_ARCH="${MACOS_TARGET_ARCH:-universal2}"
 PYINSTALLER_CONFIG_DIR="${PYINSTALLER_CONFIG_DIR:-/tmp/fleasion-pyinstaller}"
@@ -47,6 +50,7 @@ require_archs() {
 verify_app_archs() {
     app_path="$1"
     require_archs "${app_path}/Contents/MacOS/${EXEC_NAME}" arm64 x86_64
+    require_archs "${app_path}/Contents/Resources/${HELPER_EXEC_NAME}" arm64 x86_64
 
     missing_archs="$(mktemp /tmp/fleasion-missing-archs.XXXXXX)"
     find "$app_path" -type f -print | while IFS= read -r file_path; do
@@ -70,13 +74,25 @@ verify_app_archs() {
 
 build_current_arch() {
     target_arch="$1"
+    MACOS_TARGET_ARCH="$target_arch" uv run pyinstaller --clean --noconfirm FleasionProxyHelper.spec
+    if [ ! -x "$HELPER_DIST_PATH" ]; then
+        echo "Helper build completed, but expected executable was not found: $HELPER_DIST_PATH" >&2
+        exit 1
+    fi
+    require_archs "$HELPER_DIST_PATH" "$target_arch"
+
     MACOS_TARGET_ARCH="$target_arch" uv run pyinstaller --clean --noconfirm Fleasion.spec
 
     if [ ! -x "$EXEC_PATH" ]; then
         echo "Build completed, but expected executable was not found: $EXEC_PATH" >&2
         exit 1
     fi
+    if [ ! -x "$HELPER_APP_PATH" ]; then
+        echo "Build completed, but bundled proxy helper was not found: $HELPER_APP_PATH" >&2
+        exit 1
+    fi
     require_archs "$EXEC_PATH" "$target_arch"
+    require_archs "$HELPER_APP_PATH" "$target_arch"
 }
 
 ensure_x86_uv() {
@@ -110,13 +126,30 @@ build_x86_64() {
     UV_PROJECT_ENVIRONMENT="$UV_X86_PROJECT_ENVIRONMENT" \
     UV_PYTHON_INSTALL_DIR="$UV_X86_PYTHON_INSTALL_DIR" \
     MACOS_TARGET_ARCH=x86_64 \
+    arch -x86_64 "$UV_X86_BIN" run pyinstaller --clean --noconfirm FleasionProxyHelper.spec
+
+    if [ ! -x "$HELPER_DIST_PATH" ]; then
+        echo "Intel helper build completed, but expected executable was not found: $HELPER_DIST_PATH" >&2
+        exit 1
+    fi
+    require_archs "$HELPER_DIST_PATH" x86_64
+
+    UV_CACHE_DIR="$UV_X86_CACHE_DIR" \
+    UV_PROJECT_ENVIRONMENT="$UV_X86_PROJECT_ENVIRONMENT" \
+    UV_PYTHON_INSTALL_DIR="$UV_X86_PYTHON_INSTALL_DIR" \
+    MACOS_TARGET_ARCH=x86_64 \
     arch -x86_64 "$UV_X86_BIN" run pyinstaller --clean --noconfirm Fleasion.spec
 
     if [ ! -x "$EXEC_PATH" ]; then
         echo "Intel build completed, but expected executable was not found: $EXEC_PATH" >&2
         exit 1
     fi
+    if [ ! -x "$HELPER_APP_PATH" ]; then
+        echo "Intel build completed, but bundled proxy helper was not found: $HELPER_APP_PATH" >&2
+        exit 1
+    fi
     require_archs "$EXEC_PATH" x86_64
+    require_archs "$HELPER_APP_PATH" x86_64
 }
 
 copy_app() {
@@ -194,6 +227,7 @@ finalize_app() {
         echo "Built ${ZIP_PATH}"
     else
         require_archs "${app_path}/Contents/MacOS/${EXEC_NAME}" "$app_arch"
+        require_archs "${app_path}/Contents/Resources/${HELPER_EXEC_NAME}" "$app_arch"
         echo "Built ${app_path} (${app_arch})"
     fi
 }

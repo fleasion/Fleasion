@@ -99,14 +99,27 @@ def test_installed_helper_plist_runs_root_owned_helper_copy():
     plist = macos_proxy_helper.plistlib.loads(macos_proxy_helper._build_plist())
     args = plist["ProgramArguments"]
 
-    assert args[0] == "/usr/bin/python3"
-    assert args[1] == str(macos_proxy_helper.HELPER_INSTALL_PATH)
-    assert "/Users/" not in args[1]
+    assert args[0] == str(macos_proxy_helper.HELPER_INSTALL_PATH)
+    assert "/usr/bin/python3" not in args
+    assert "/Users/" not in args[0]
     assert plist["RunAtLoad"] is True
     assert plist["KeepAlive"] is True
 
 
-def test_helper_installer_stages_source_before_privileged_install(tmp_path, monkeypatch):
+def test_frozen_helper_source_prefers_bundled_executable(tmp_path, monkeypatch):
+    frozen_root = tmp_path / "_MEIPASS"
+    frozen_root.mkdir()
+    bundled_executable = frozen_root / macos_proxy_helper.HELPER_BUNDLED_EXECUTABLE_NAME
+    bundled_source = frozen_root / "macos_proxy_helper_daemon.py"
+    bundled_executable.write_bytes(b"helper binary")
+    bundled_source.write_text("# source fallback\n", encoding="utf-8")
+
+    monkeypatch.setattr(macos_proxy_helper.sys, "_MEIPASS", str(frozen_root), raising=False)
+
+    assert macos_proxy_helper._source_helper_path() == bundled_executable
+
+
+def test_helper_installer_stages_helper_before_privileged_install(tmp_path, monkeypatch):
     source = tmp_path / "Documents" / "Fleasion" / "macos_proxy_helper_daemon.py"
     source.parent.mkdir(parents=True)
     source.write_text("# helper\n", encoding="utf-8")
@@ -128,6 +141,7 @@ def test_helper_installer_stages_source_before_privileged_install(tmp_path, monk
     assert ok is True, detail
     script = captured["script"]
     assert str(source) not in script
+    assert "/usr/bin/python3" not in script
     assert "launchctl bootout" in script
     assert script.index("launchctl bootout") < script.index("/usr/bin/install")
     assert "/usr/bin/xattr -c" in script

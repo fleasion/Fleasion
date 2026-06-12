@@ -26,7 +26,12 @@ def test_proxy_ca_dir_falls_back_when_configured_dir_is_not_writable(tmp_path, m
     assert selected == fallback
     assert proxy_master._current_proxy_ca_dir() == fallback
     assert checked == [configured, fallback]
-    assert logs == []
+    assert logs == [
+        (
+            "Certificate",
+            f"Configured CA directory is not writable ({configured}); using {fallback}",
+        )
+    ]
 
 
 def test_cacert_state_does_not_log_when_healthy(monkeypatch):
