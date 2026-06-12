@@ -20,6 +20,7 @@ from .paths import CONFIG_DIR, MACOS_PROXY_BACKEND_PORT, MACOS_PROXY_HELPER_CONT
 
 
 HELPER_ID = "com.fleasion.proxy-helper"
+HELPER_BUNDLED_EXECUTABLE_NAME = "fleasion-proxy-helper"
 HELPER_INSTALL_PATH = Path("/Library/PrivilegedHelperTools") / HELPER_ID
 HELPER_PLIST_PATH = Path("/Library/LaunchDaemons") / f"{HELPER_ID}.plist"
 HELPER_TOKEN_FILE = CONFIG_DIR / "proxy-helper.token"
@@ -156,9 +157,12 @@ def helper_patch_ca(ca_pem: str, installs: list[dict]) -> dict | None:
 def _source_helper_path() -> Path:
     frozen_root = Path(getattr(sys, "_MEIPASS", ""))
     if frozen_root:
-        bundled = frozen_root / "macos_proxy_helper_daemon.py"
-        if bundled.exists():
-            return bundled
+        bundled_executable = frozen_root / HELPER_BUNDLED_EXECUTABLE_NAME
+        if bundled_executable.exists():
+            return bundled_executable
+        bundled_source = frozen_root / "macos_proxy_helper_daemon.py"
+        if bundled_source.exists():
+            return bundled_source
     return Path(__file__).resolve().parents[1] / "macos_proxy_helper_daemon.py"
 
 
@@ -167,7 +171,6 @@ def _build_plist() -> bytes:
         {
             "Label": HELPER_ID,
             "ProgramArguments": [
-                "/usr/bin/python3",
                 str(HELPER_INSTALL_PATH),
                 "--token-file",
                 str(HELPER_TOKEN_FILE),
@@ -209,13 +212,11 @@ def install_helper() -> tuple[bool, str]:
     """Install/start the root helper with one macOS administrator approval."""
     if sys.platform != "darwin":
         return False, "The macOS proxy helper is only available on macOS."
-    if not Path("/usr/bin/python3").exists():
-        return False, "macOS system Python 3 is unavailable."
 
     _ensure_token()
     source = _source_helper_path()
     if not source.exists():
-        return False, f"Bundled helper source is missing: {source}"
+        return False, f"Bundled helper executable is missing: {source}"
 
     try:
         staging_dir, staging_helper, staging_plist = _stage_installer_payload(source)
