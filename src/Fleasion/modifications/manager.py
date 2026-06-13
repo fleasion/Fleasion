@@ -615,7 +615,7 @@ class ModificationManager(QObject):
             )
 
         extra_hdrs = {}
-        cookie = self._cache_scraper._get_roblosecurity()
+        cookie = self._cache_scraper._get_roblosecurity(wait=True)
         if cookie:
             extra_hdrs['Cookie'] = f'.ROBLOSECURITY={cookie};'
         data, status = self._cache_scraper._fetch_asset_with_place_id_retry(str(asset_id), extra_headers=extra_hdrs or None)

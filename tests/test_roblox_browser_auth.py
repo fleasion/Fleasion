@@ -1,7 +1,8 @@
 from http.cookiejar import Cookie, CookieJar
-import json
 import os
 import stat
+import threading
+import time
 
 from Fleasion.utils import roblox_auth
 
@@ -28,14 +29,12 @@ def _cookie(name, value, domain=".roblox.com", expires=None):
     )
 
 
-def _reset(monkeypatch, *, disable_persistent_cache=True):
-    monkeypatch.setattr(roblox_auth, "_BROWSER_COOKIE_CACHE", None)
-    monkeypatch.setattr(roblox_auth, "_BROWSER_COOKIE_SOURCE", "")
-    monkeypatch.setattr(roblox_auth, "_BROWSER_AUTO_DISCOVERY_ATTEMPTED", False)
-    monkeypatch.setattr(roblox_auth, "_BROWSER_AUTH_CACHE_BLOCKS_AUTOMATIC_IMPORT", False)
+def _reset(monkeypatch):
+    roblox_auth._BROWSER_COOKIE_CACHE = None
+    roblox_auth._BROWSER_COOKIE_SOURCE = ""
+    roblox_auth._BROWSER_AUTO_DISCOVERY_ATTEMPTED = False
+    roblox_auth._AUTH_READY_COOKIE = None
     roblox_auth._LOGGED_AUTH_FAILURES.clear()
-    if disable_persistent_cache:
-        monkeypatch.setattr(roblox_auth, "_read_cached_browser_roblosecurity", lambda **_: (None, ""))
 
 
 def test_browser_discovery_is_domain_and_name_scoped(monkeypatch):
@@ -46,7 +45,7 @@ def test_browser_discovery_is_domain_and_name_scoped(monkeypatch):
     jar.set_cookie(_cookie(".ROBLOSECURITY", "wrong-domain", domain=".example.com"))
     monkeypatch.setattr(roblox_auth, "_browser_cookie_loaders", lambda include_keychain: [("Firefox", lambda **_: jar)])
 
-    cookie, source = roblox_auth.discover_browser_roblosecurity()
+    cookie, source = roblox_auth.discover_browser_roblosecurity(explicit_import=True)
 
     assert cookie == "secret-cookie"
     assert source == "Firefox"
@@ -114,14 +113,17 @@ def test_macos_default_lookup_can_explicitly_request_keychain_browsers(monkeypat
 
     monkeypatch.setattr(roblox_auth.sys, "platform", "darwin")
     monkeypatch.setattr(roblox_auth, "_iter_user_profile_cookie_candidates", lambda: [])
+    monkeypatch.setattr(roblox_auth, "_get_configured_macos_auth_source", lambda: "Chrome")
     monkeypatch.setattr(
         roblox_auth,
         "discover_browser_roblosecurity",
-        lambda include_keychain=False: (calls.append(include_keychain) or ("chrome-secret", "Chrome")),
+        lambda include_keychain=False, **kwargs: (
+            calls.append((include_keychain, kwargs.get("browser"))) or ("chrome-secret", "Chrome")
+        ),
     )
 
     assert roblox_auth.get_roblosecurity(include_keychain_browsers=True) == "chrome-secret"
-    assert calls == [True]
+    assert calls == [(True, "Chrome")]
 
 
 def test_macos_default_lookup_is_prompt_free_by_default(monkeypatch):
@@ -130,10 +132,11 @@ def test_macos_default_lookup_is_prompt_free_by_default(monkeypatch):
 
     monkeypatch.setattr(roblox_auth.sys, "platform", "darwin")
     monkeypatch.setattr(roblox_auth, "_iter_user_profile_cookie_candidates", lambda: [])
+    monkeypatch.setattr(roblox_auth, "_get_configured_macos_auth_source", lambda: "")
     monkeypatch.setattr(
         roblox_auth,
         "discover_browser_roblosecurity",
-        lambda include_keychain=False: (calls.append(include_keychain) or (None, "")),
+        lambda include_keychain=False, **kwargs: (calls.append(include_keychain) or (None, "")),
     )
 
     assert roblox_auth.get_roblosecurity() is None
@@ -146,223 +149,125 @@ def test_macos_startup_lookup_can_request_keychain_browsers(monkeypatch):
 
     monkeypatch.setattr(roblox_auth.sys, "platform", "darwin")
     monkeypatch.setattr(roblox_auth, "_iter_user_profile_cookie_candidates", lambda: [])
+    monkeypatch.setattr(roblox_auth, "_get_configured_macos_auth_source", lambda: "Chrome")
     monkeypatch.setattr(
         roblox_auth,
         "discover_browser_roblosecurity",
-        lambda include_keychain=False: (calls.append(include_keychain) or ("chrome-secret", "Chrome")),
+        lambda include_keychain=False, **kwargs: (
+            calls.append((include_keychain, kwargs.get("browser"))) or ("chrome-secret", "Chrome")
+        ),
     )
 
     assert roblox_auth.get_roblosecurity(include_keychain_browsers=True) == "chrome-secret"
+    assert calls == [(True, "Chrome")]
+
+
+def test_browser_discovery_can_target_selected_browser(monkeypatch):
+    _reset(monkeypatch)
+    chrome_jar = CookieJar()
+    chrome_jar.set_cookie(_cookie(".ROBLOSECURITY", "chrome-secret"))
+    firefox_jar = CookieJar()
+    firefox_jar.set_cookie(_cookie(".ROBLOSECURITY", "firefox-secret"))
+    calls = []
+
+    def loaders(include_keychain):
+        calls.append(include_keychain)
+        return [
+            ("Chrome", lambda **_: chrome_jar),
+            ("Firefox", lambda **_: firefox_jar),
+        ]
+
+    monkeypatch.setattr(roblox_auth, "_browser_cookie_loaders", loaders)
+    monkeypatch.setattr(roblox_auth, "_validate_roblosecurity", lambda cookie: True)
+
+    assert roblox_auth.discover_browser_roblosecurity(include_keychain=True, browser="Firefox") == (
+        "firefox-secret",
+        "Firefox",
+    )
     assert calls == [True]
 
 
-def test_macos_chrome_cookie_is_cached_encrypted_and_reused(tmp_path, monkeypatch):
-    _reset(monkeypatch, disable_persistent_cache=False)
-    cache_path = tmp_path / "browser_auth_cache.json"
-    key_path = tmp_path / "browser_auth_cache.key"
+def test_browser_discovery_does_not_write_persistent_browser_cache(tmp_path, monkeypatch):
+    _reset(monkeypatch)
+    chrome_jar = CookieJar()
+    chrome_jar.set_cookie(_cookie(".ROBLOSECURITY", "chrome-secret"))
+    legacy_cache = tmp_path / "old_browser_login.json"
+
+    monkeypatch.setattr(roblox_auth.sys, "platform", "darwin")
+    monkeypatch.setattr(roblox_auth, "_browser_cookie_loaders", lambda include_keychain: [("Chrome", lambda **_: chrome_jar)])
+    monkeypatch.setattr(roblox_auth, "_validate_roblosecurity", lambda cookie: True)
+
+    assert roblox_auth.discover_browser_roblosecurity(include_keychain=True) == ("chrome-secret", "Chrome")
+    assert not legacy_cache.exists()
+
+
+def test_prompt_capable_browser_discovery_is_single_flight(monkeypatch):
+    _reset(monkeypatch)
     chrome_jar = CookieJar()
     chrome_jar.set_cookie(_cookie(".ROBLOSECURITY", "chrome-secret"))
     calls = []
 
     def loaders(include_keychain):
-        calls.append(include_keychain)
-        return [("Chrome", lambda **_: chrome_jar)]
+        def chrome_loader(**_kwargs):
+            calls.append(include_keychain)
+            time.sleep(0.02)
+            return chrome_jar
+        return [("Chrome", chrome_loader)]
 
-    monkeypatch.setattr(roblox_auth.sys, "platform", "darwin")
-    monkeypatch.setattr(roblox_auth, "_BROWSER_AUTH_CACHE_FILE", cache_path)
-    monkeypatch.setattr(roblox_auth, "_BROWSER_AUTH_CACHE_KEY_FILE", key_path)
     monkeypatch.setattr(roblox_auth, "_browser_cookie_loaders", loaders)
     monkeypatch.setattr(roblox_auth, "_validate_roblosecurity", lambda cookie: True)
 
-    assert roblox_auth.discover_browser_roblosecurity(include_keychain=True) == ("chrome-secret", "Chrome")
+    results = []
+    threads = [
+        threading.Thread(
+            target=lambda: results.append(
+                roblox_auth.discover_browser_roblosecurity(include_keychain=True, browser="Chrome")
+            )
+        )
+        for _ in range(5)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert results == [("chrome-secret", "Chrome")] * 5
     assert calls == [True]
-    assert cache_path.exists()
-    assert key_path.exists()
-    assert "chrome-secret" not in cache_path.read_text(encoding="utf-8")
-    assert json.loads(cache_path.read_text(encoding="utf-8"))["source"] == "Chrome"
+
+
+def test_manual_token_storage_is_encrypted_and_used_when_selected(tmp_path, monkeypatch):
+    _reset(monkeypatch)
+    token_path = tmp_path / "manual_auth_token.json"
+    key_path = tmp_path / "manual_auth_token.key"
+
+    monkeypatch.setattr(roblox_auth.sys, "platform", "darwin")
+    monkeypatch.setattr(roblox_auth, "_MANUAL_AUTH_TOKEN_FILE", token_path)
+    monkeypatch.setattr(roblox_auth, "_MANUAL_AUTH_TOKEN_KEY_FILE", key_path)
+    monkeypatch.setattr(roblox_auth, "_iter_user_profile_cookie_candidates", lambda: [])
+    monkeypatch.setattr(roblox_auth, "_get_configured_macos_auth_source", lambda: "manual")
+
+    assert roblox_auth.store_manual_roblosecurity("manual-secret")
+    assert "manual-secret" not in token_path.read_text(encoding="utf-8")
     assert stat.S_IMODE(os.stat(key_path).st_mode) == 0o600
-
-    _reset(monkeypatch, disable_persistent_cache=False)
-    calls.clear()
-    monkeypatch.setattr(
-        roblox_auth,
-        "_browser_cookie_loaders",
-        lambda include_keychain: calls.append(include_keychain) or [],
-    )
-
-    assert roblox_auth.discover_browser_roblosecurity(include_keychain=False) == ("chrome-secret", "Chrome")
-    assert calls == []
+    assert roblox_auth.get_roblosecurity(include_keychain_browsers=True) == "manual-secret"
 
 
-def test_macos_chrome_family_cookie_is_cached_encrypted_and_reused(tmp_path, monkeypatch):
-    _reset(monkeypatch, disable_persistent_cache=False)
-    cache_path = tmp_path / "browser_auth_cache.json"
-    key_path = tmp_path / "browser_auth_cache.key"
-    brave_jar = CookieJar()
-    brave_jar.set_cookie(_cookie(".ROBLOSECURITY", "brave-secret"))
+def test_macos_wait_for_token_retries_until_notified(monkeypatch):
+    _reset(monkeypatch)
     calls = []
 
-    monkeypatch.setattr(roblox_auth.sys, "platform", "darwin")
-    monkeypatch.setattr(roblox_auth, "_BROWSER_AUTH_CACHE_FILE", cache_path)
-    monkeypatch.setattr(roblox_auth, "_BROWSER_AUTH_CACHE_KEY_FILE", key_path)
-    monkeypatch.setattr(roblox_auth, "_browser_cookie_loaders", lambda include_keychain: calls.append(include_keychain) or [("Brave", lambda **_: brave_jar)])
-    monkeypatch.setattr(roblox_auth, "_validate_roblosecurity", lambda cookie: True)
-
-    assert roblox_auth.discover_browser_roblosecurity(include_keychain=True) == ("brave-secret", "Brave")
-    assert json.loads(cache_path.read_text(encoding="utf-8"))["source"] == "Brave"
-
-    _reset(monkeypatch, disable_persistent_cache=False)
-    calls.clear()
-    monkeypatch.setattr(roblox_auth, "_browser_cookie_loaders", lambda include_keychain: calls.append(include_keychain) or [])
-
-    assert roblox_auth.discover_browser_roblosecurity(include_keychain=False) == ("brave-secret", "Brave")
-    assert calls == []
-
-
-def test_macos_prompt_capable_cached_chrome_cookie_is_deleted_when_invalid(tmp_path, monkeypatch):
-    _reset(monkeypatch, disable_persistent_cache=False)
-    cache_path = tmp_path / "browser_auth_cache.json"
-    key_path = tmp_path / "browser_auth_cache.key"
+    def fake_lookup(include_keychain_browsers=True):
+        calls.append(include_keychain_browsers)
+        return "ready-secret" if len(calls) >= 2 else None
 
     monkeypatch.setattr(roblox_auth.sys, "platform", "darwin")
-    monkeypatch.setattr(roblox_auth, "_BROWSER_AUTH_CACHE_FILE", cache_path)
-    monkeypatch.setattr(roblox_auth, "_BROWSER_AUTH_CACHE_KEY_FILE", key_path)
-    monkeypatch.setattr(roblox_auth, "_validate_roblosecurity", lambda cookie: None)
-    roblox_auth._write_cached_browser_roblosecurity("chrome-secret", "Chrome")
-    assert cache_path.exists()
+    monkeypatch.setattr(roblox_auth, "get_roblosecurity", fake_lookup)
 
-    _reset(monkeypatch, disable_persistent_cache=False)
-    monkeypatch.setattr(roblox_auth, "_validate_roblosecurity", lambda cookie: False)
-    monkeypatch.setattr(roblox_auth, "_browser_cookie_loaders", lambda include_keychain: [])
+    def wake_later():
+        time.sleep(0.01)
+        roblox_auth.notify_auth_source_changed()
 
-    assert roblox_auth.discover_browser_roblosecurity(include_keychain=True) == (None, "")
-    assert not cache_path.exists()
+    threading.Thread(target=wake_later, daemon=True).start()
 
-
-def test_macos_prompt_free_invalid_cached_chrome_cookie_is_preserved(tmp_path, monkeypatch):
-    _reset(monkeypatch, disable_persistent_cache=False)
-    cache_path = tmp_path / "browser_auth_cache.json"
-    key_path = tmp_path / "browser_auth_cache.key"
-
-    monkeypatch.setattr(roblox_auth.sys, "platform", "darwin")
-    monkeypatch.setattr(roblox_auth, "_BROWSER_AUTH_CACHE_FILE", cache_path)
-    monkeypatch.setattr(roblox_auth, "_BROWSER_AUTH_CACHE_KEY_FILE", key_path)
-    monkeypatch.setattr(roblox_auth, "_validate_roblosecurity", lambda cookie: False)
-    roblox_auth._write_cached_browser_roblosecurity("chrome-secret", "Chrome")
-    assert cache_path.exists()
-
-    _reset(monkeypatch, disable_persistent_cache=False)
-    monkeypatch.setattr(roblox_auth, "_validate_roblosecurity", lambda cookie: False)
-    monkeypatch.setattr(roblox_auth, "_browser_cookie_loaders", lambda include_keychain: [])
-
-    assert roblox_auth.discover_browser_roblosecurity(include_keychain=False) == (None, "")
-    assert cache_path.exists()
-
-
-def test_macos_cached_browser_cookie_preserves_missing_key(tmp_path, monkeypatch):
-    _reset(monkeypatch, disable_persistent_cache=False)
-    cache_path = tmp_path / "browser_auth_cache.json"
-    key_path = tmp_path / "browser_auth_cache.key"
-    calls = []
-
-    cache_path.write_text('{"source":"Chrome","cookie":"encrypted"}', encoding="utf-8")
-    monkeypatch.setattr(roblox_auth.sys, "platform", "darwin")
-    monkeypatch.setattr(roblox_auth, "_BROWSER_AUTH_CACHE_FILE", cache_path)
-    monkeypatch.setattr(roblox_auth, "_BROWSER_AUTH_CACHE_KEY_FILE", key_path)
-    monkeypatch.setattr(roblox_auth, "_browser_cookie_loaders", lambda include_keychain: calls.append(include_keychain) or [])
-
-    assert roblox_auth.discover_browser_roblosecurity(include_keychain=False) == (None, "")
-    assert cache_path.exists()
-    assert not key_path.exists()
-    assert calls == [False]
-
-
-def test_macos_cached_browser_cookie_missing_key_blocks_automatic_prompt(tmp_path, monkeypatch):
-    _reset(monkeypatch, disable_persistent_cache=False)
-    cache_path = tmp_path / "browser_auth_cache.json"
-    key_path = tmp_path / "browser_auth_cache.key"
-    calls = []
-    chrome_jar = CookieJar()
-    chrome_jar.set_cookie(_cookie(".ROBLOSECURITY", "chrome-secret"))
-
-    cache_path.write_text('{"source":"Chrome","cookie":"encrypted"}', encoding="utf-8")
-    monkeypatch.setattr(roblox_auth.sys, "platform", "darwin")
-    monkeypatch.setattr(roblox_auth, "_BROWSER_AUTH_CACHE_FILE", cache_path)
-    monkeypatch.setattr(roblox_auth, "_BROWSER_AUTH_CACHE_KEY_FILE", key_path)
-    monkeypatch.setattr(roblox_auth, "_browser_cookie_loaders", lambda include_keychain: calls.append(include_keychain) or [("Chrome", lambda **_: chrome_jar)])
-
-    assert roblox_auth.discover_browser_roblosecurity(include_keychain=True) == (None, "")
-    assert calls == []
-    assert cache_path.exists()
-
-
-def test_explicit_browser_import_overrides_ambiguous_cache_block(tmp_path, monkeypatch):
-    _reset(monkeypatch, disable_persistent_cache=False)
-    cache_path = tmp_path / "browser_auth_cache.json"
-    key_path = tmp_path / "browser_auth_cache.key"
-    calls = []
-    chrome_jar = CookieJar()
-    chrome_jar.set_cookie(_cookie(".ROBLOSECURITY", "chrome-secret"))
-
-    cache_path.write_text('{"source":"Chrome","cookie":"encrypted"}', encoding="utf-8")
-    monkeypatch.setattr(roblox_auth.sys, "platform", "darwin")
-    monkeypatch.setattr(roblox_auth, "_BROWSER_AUTH_CACHE_FILE", cache_path)
-    monkeypatch.setattr(roblox_auth, "_BROWSER_AUTH_CACHE_KEY_FILE", key_path)
-    monkeypatch.setattr(roblox_auth, "_validate_roblosecurity", lambda cookie: True)
-    monkeypatch.setattr(roblox_auth, "_browser_cookie_loaders", lambda include_keychain: calls.append(include_keychain) or [("Chrome", lambda **_: chrome_jar)])
-
-    assert roblox_auth.discover_browser_roblosecurity(include_keychain=True, explicit_import=True) == ("chrome-secret", "Chrome")
-    assert calls == [True]
-
-
-def test_explicit_browser_import_bypasses_existing_valid_cache(tmp_path, monkeypatch):
-    _reset(monkeypatch, disable_persistent_cache=False)
-    cache_path = tmp_path / "browser_auth_cache.json"
-    key_path = tmp_path / "browser_auth_cache.key"
-    calls = []
-    chrome_jar = CookieJar()
-    chrome_jar.set_cookie(_cookie(".ROBLOSECURITY", "fresh-chrome-secret"))
-
-    monkeypatch.setattr(roblox_auth.sys, "platform", "darwin")
-    monkeypatch.setattr(roblox_auth, "_BROWSER_AUTH_CACHE_FILE", cache_path)
-    monkeypatch.setattr(roblox_auth, "_BROWSER_AUTH_CACHE_KEY_FILE", key_path)
-    monkeypatch.setattr(roblox_auth, "_validate_roblosecurity", lambda cookie: True)
-    roblox_auth._write_cached_browser_roblosecurity("stale-cache-secret", "Chrome")
-    monkeypatch.setattr(
-        roblox_auth,
-        "_browser_cookie_loaders",
-        lambda include_keychain: calls.append(include_keychain) or [("Chrome", lambda **_: chrome_jar)],
-    )
-
-    assert roblox_auth.discover_browser_roblosecurity(include_keychain=True, explicit_import=True) == (
-        "fresh-chrome-secret",
-        "Chrome",
-    )
-    assert calls == [True]
-
-    _reset(monkeypatch, disable_persistent_cache=False)
-    monkeypatch.setattr(roblox_auth, "_validate_roblosecurity", lambda cookie: True)
-    monkeypatch.setattr(roblox_auth, "_browser_cookie_loaders", lambda include_keychain: [])
-
-    assert roblox_auth.discover_browser_roblosecurity(include_keychain=False) == (
-        "fresh-chrome-secret",
-        "Chrome",
-    )
-
-
-def test_macos_cached_browser_cookie_preserves_malformed_json(tmp_path, monkeypatch):
-    _reset(monkeypatch, disable_persistent_cache=False)
-    cache_path = tmp_path / "browser_auth_cache.json"
-    key_path = tmp_path / "browser_auth_cache.key"
-    calls = []
-
-    monkeypatch.setattr(roblox_auth.sys, "platform", "darwin")
-    monkeypatch.setattr(roblox_auth, "_BROWSER_AUTH_CACHE_FILE", cache_path)
-    monkeypatch.setattr(roblox_auth, "_BROWSER_AUTH_CACHE_KEY_FILE", key_path)
-    assert roblox_auth._get_macos_browser_auth_cipher(create=True) is not None
-    cache_path.write_text("{not json", encoding="utf-8")
-    monkeypatch.setattr(roblox_auth, "_browser_cookie_loaders", lambda include_keychain: calls.append(include_keychain) or [])
-
-    assert roblox_auth.discover_browser_roblosecurity(include_keychain=False) == (None, "")
-    assert cache_path.exists()
-    assert calls == [False]
+    assert roblox_auth.wait_for_roblosecurity(retry_interval=5) == "ready-secret"
+    assert calls == [True, True]
