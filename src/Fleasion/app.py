@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QTimer, QSharedMemory, QObject, pyqtSignal, pyqtSlot
+from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWidgets import QApplication, QMessageBox, QPushButton, QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel
 
 from . import __version__
@@ -23,6 +24,9 @@ from .proxy import ProxyMaster, check_and_patch_running_roblox_ca
 from .tray import SystemTray
 from .utils import APP_DISCORD, APP_NAME, CONFIG_DIR, LOG_FILE, delete_cache, get_icon_path, get_roblox_player_exe_path, get_roblox_studio_exe_path, is_roblox_running, is_studio_running, log_buffer, open_folder, run_in_thread, start_update_check, time_tracker
 
+
+_SINGLE_INSTANCE_KEY = 'FleasionSingleInstance'
+_SINGLE_INSTANCE_CONTROL_SERVER = 'FleasionSingleInstanceControl'
 
 
 class _FirstTimeSetupMessageBox(QMessageBox):
@@ -916,11 +920,81 @@ def _other_fleasion_pids() -> list:
     return pids
 
 
+def _request_running_instance_exit(timeout_ms: int = 2000) -> bool:
+    """Ask the already-running Fleasion instance to exit through its Qt event loop."""
+    try:
+        socket = QLocalSocket()
+        socket.connectToServer(_SINGLE_INSTANCE_CONTROL_SERVER)
+        if not socket.waitForConnected(timeout_ms):
+            return False
+
+        socket.write(b'quit\n')
+        socket.waitForBytesWritten(1000)
+        socket.disconnectFromServer()
+        socket.waitForDisconnected(1000)
+        return True
+    except Exception:
+        return False
+
+
+def _wait_for_other_fleasion_instances_to_exit(timeout_seconds: float = 8.0) -> bool:
+    """Wait until no other Fleasion processes remain."""
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if not _other_fleasion_pids():
+            return True
+        time.sleep(0.1)
+    return not _other_fleasion_pids()
+
+
+def _request_other_fleasion_instances_exit(timeout_seconds: float = 8.0) -> bool:
+    """Return True if other instances were asked to exit and disappeared."""
+    if not _other_fleasion_pids():
+        return True
+    if not _request_running_instance_exit():
+        return False
+    return _wait_for_other_fleasion_instances_to_exit(timeout_seconds)
+
+
+def _handle_single_instance_command(socket: QLocalSocket, tray: SystemTray):
+    try:
+        command = bytes(socket.readAll()).decode('utf-8', errors='replace').strip().lower()
+        if command == 'quit':
+            tray._exit_app()
+    except Exception:
+        pass
+
+
+def _start_single_instance_control_server(app: QApplication, tray: SystemTray) -> QLocalServer | None:
+    """Start a local control endpoint for clean single-instance handoff."""
+    server = QLocalServer(app)
+
+    if not server.listen(_SINGLE_INSTANCE_CONTROL_SERVER):
+        QLocalServer.removeServer(_SINGLE_INSTANCE_CONTROL_SERVER)
+        if not server.listen(_SINGLE_INSTANCE_CONTROL_SERVER):
+            log_buffer.log('App', 'Single-instance control server could not start')
+            return None
+
+    def _handle_connection():
+        while server.hasPendingConnections():
+            socket = server.nextPendingConnection()
+            if socket is not None:
+                socket.readyRead.connect(lambda s=socket: _handle_single_instance_command(s, tray))
+                if socket.bytesAvailable() > 0:
+                    _handle_single_instance_command(socket, tray)
+
+    server.newConnection.connect(_handle_connection)
+    return server
+
+
 
 def kill_other_fleasion_instances():
     """Kill all other Fleasion instances except the current process."""
     import os
     import subprocess
+
+    if _request_other_fleasion_instances_exit():
+        return
 
     for pid in _other_fleasion_pids():
         try:
@@ -928,9 +1002,18 @@ def kill_other_fleasion_instances():
                 os.kill(pid, signal.SIGTERM)
             else:
                 subprocess.run(
+                    ['taskkill', '/PID', str(pid)],
+                    capture_output=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                    timeout=5,
+                )
+                if _wait_for_other_fleasion_instances_to_exit(2.0):
+                    continue
+                subprocess.run(
                     ['taskkill', '/F', '/PID', str(pid)],
                     capture_output=True,
-                    creationflags=subprocess.CREATE_NO_WINDOW
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                    timeout=5,
                 )
         except Exception:
             pass
@@ -996,11 +1079,11 @@ def main():
             kill_other_fleasion_instances()
             import time as _time
             _time.sleep(0.3)
-        _stale = QSharedMemory('FleasionSingleInstance')
+        _stale = QSharedMemory(_SINGLE_INSTANCE_KEY)
         if _stale.attach():
             _stale.detach()
 
-    shared_memory = QSharedMemory('FleasionSingleInstance')
+    shared_memory = QSharedMemory(_SINGLE_INSTANCE_KEY)
     _shared_memory_created = shared_memory.create(1)
     if (
         not _shared_memory_created
@@ -1010,10 +1093,10 @@ def main():
     ):
         # A hard termination can leave Qt's POSIX shared-memory segment behind.
         # Attach/detach removes it when no real Fleasion process still owns it.
-        _stale = QSharedMemory('FleasionSingleInstance')
+        _stale = QSharedMemory(_SINGLE_INSTANCE_KEY)
         if _stale.attach():
             _stale.detach()
-        shared_memory = QSharedMemory('FleasionSingleInstance')
+        shared_memory = QSharedMemory(_SINGLE_INSTANCE_KEY)
         _shared_memory_created = shared_memory.create(1)
 
     if not _shared_memory_created:
@@ -1159,6 +1242,8 @@ def main():
 
     # Create system tray
     tray = SystemTray(app, config_manager, proxy_master, mod_manager, roblox_monitor)
+    app.aboutToQuit.connect(tray.cleanup_tray_icon)
+    single_instance_control_server = _start_single_instance_control_server(app, tray)
     log_buffer.log('App', f'Persistent log file: {LOG_FILE}')
     _admin_prompt_shown = False
 
