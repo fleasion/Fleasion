@@ -586,19 +586,22 @@ class ModRowWidget(QWidget):
     def _on_reset(self):
         self._debounce.stop()
         if self._entry_id:
-            self._manager.clear_entry(self._entry_id)
+            if not self._manager.clear_entry(self._entry_id):
+                return
             # clear_entry deletes the entry from JSON; drop our reference
             # so _apply_source correctly calls add_entry next time.
             self._entry_id = None
         else:
             # Orphaned stash with no JSON entry at all — restore directly.
-            self._manager.restore_orphaned_stash(self._target_path)
+            if not self._manager.restore_orphaned_stash(self._target_path):
+                return
         self._set_source_text_silent('')
         self._update_status('not_set')
 
     def _on_delete(self):
         if self._entry_id:
-            self._manager.remove_entry(self._entry_id)
+            if not self._manager.remove_entry(self._entry_id):
+                return
         self.delete_requested.emit(self._entry_id or '')
 
     def _on_preview(self):

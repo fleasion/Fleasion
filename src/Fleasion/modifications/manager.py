@@ -427,22 +427,27 @@ class ModificationManager(QObject):
         run_in_thread(self._process_and_apply_entry)(entry)
         return entry_id
 
-    def remove_entry(self, entry_id: str) -> None:
+    def remove_entry(self, entry_id: str) -> bool:
         """Remove an entry and restore its original file."""
         entry = self._find_entry(entry_id)
         if entry is None:
-            return
-        self._restore_entry(entry)
+            return True
+        try:
+            self._restore_entry(entry)
+        except Exception as exc:
+            self._mark_restore_failed(entry, exc)
+            return False
         self._data['entries'] = [e for e in self.entries if e.get('id') != entry_id]
         self._save_json()
         # Notify the status bar that an entry was removed.
         self.restore_finished.emit()
+        return True
 
-    def update_entry(self, entry_id: str, **kwargs) -> None:
+    def update_entry(self, entry_id: str, **kwargs) -> bool:
         """Update an entry's source, restore old files, and re-apply."""
         entry = self._find_entry(entry_id)
         if entry is None:
-            return
+            return True
         # Invalidate any in-flight apply so its background thread discards
         # its result instead of overwriting the freshly-written new file.
         entry['_apply_gen'] = entry.get('_apply_gen', 0) + 1
@@ -452,14 +457,19 @@ class ModificationManager(QObject):
         # _restore_entry would incorrectly delete it via the "new file"
         # fallback branch.
         if entry.get('source_type') is not None:
-            self._restore_entry(entry)
+            try:
+                self._restore_entry(entry)
+            except Exception as exc:
+                self._mark_restore_failed(entry, exc)
+                return False
         entry.update(kwargs)
         entry['status'] = 'pending'
         entry['error_message'] = None
         self._save_json()
         run_in_thread(self._process_and_apply_entry)(entry)
+        return True
 
-    def clear_entry(self, entry_id: str) -> None:
+    def clear_entry(self, entry_id: str) -> bool:
         """Restore the original file and delete this entry from the list.
 
         Keeping cleared entries as 'not_set' ghosts causes two problems:
@@ -472,15 +482,31 @@ class ModificationManager(QObject):
         """
         entry = self._find_entry(entry_id)
         if entry is None:
-            return
+            return True
         # Invalidate any in-flight apply before restoring the original file.
         entry['_apply_gen'] = entry.get('_apply_gen', 0) + 1
-        self._restore_entry(entry)
+        try:
+            self._restore_entry(entry)
+        except Exception as exc:
+            self._mark_restore_failed(entry, exc)
+            return False
         self._data['entries'] = [e for e in self.entries if e.get('id') != entry_id]
         self._save_json()
         self.entry_status_changed.emit(entry_id, 'not_set', '')
         # Notify status bar that an active modification was cleared.
         self.restore_finished.emit()
+        return True
+
+    def _mark_restore_failed(self, entry: dict, exc: Exception) -> None:
+        """Keep the entry visible when restoring its original file fails."""
+        entry_id = entry.get('id', '')
+        error = f'Failed to restore original file: {exc}'
+        entry['status'] = 'error'
+        entry['error_message'] = error
+        self._save_json()
+        if entry_id:
+            self.entry_status_changed.emit(entry_id, 'error', error)
+        log_buffer.log('Modifications', f'Restore failed for {entry.get("display_name", "?")}: {exc}')
 
     # ------------------------------------------------------------------
     # Processing & applying
