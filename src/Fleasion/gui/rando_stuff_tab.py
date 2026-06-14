@@ -931,7 +931,8 @@ class RandoStuffTab(QWidget):
         username_layout.addLayout(self_row)
         username_layout.addWidget(self._username_self_game_creator_chk)
 
-        root.addWidget(username_group)
+        self._username_spoofer_proxy_gate = ProxyGate(username_group, compact=True)
+        root.addWidget(self._username_spoofer_proxy_gate)
 
         ac_group = QGroupBox("R6 ↔ R15 Animation Converter")
         acl = QVBoxLayout(ac_group)
@@ -1042,7 +1043,11 @@ class RandoStuffTab(QWidget):
         )
 
     def set_proxy_features_enabled(self, enabled: bool):
-        for gate_name in ('_rejoin_proxy_gate', '_subplace_blacklist_proxy_gate'):
+        for gate_name in (
+            '_rejoin_proxy_gate',
+            '_subplace_blacklist_proxy_gate',
+            '_username_spoofer_proxy_gate',
+        ):
             gate = getattr(self, gate_name, None)
             if gate is not None:
                 gate.set_proxy_enabled(enabled)

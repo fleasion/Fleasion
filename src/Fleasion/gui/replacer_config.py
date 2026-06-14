@@ -9,7 +9,7 @@ from typing import Union
 from urllib.error import URLError
 
 from PyQt6.QtCore import Qt, QByteArray, QRect, QSize, pyqtSignal
-from PyQt6.QtGui import QBrush, QPen, QPixmap, QPainter, QColor, QIcon, QPalette
+from PyQt6.QtGui import QBrush, QPen, QPixmap, QPainter, QColor, QIcon, QPalette, QFontMetrics
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -69,6 +69,7 @@ _GROUP_GUIDE_STEP_PX = 15
 _CONFIG_MENU_ROW_HEIGHT_PX = 28
 _CONFIG_MENU_SCREEN_MARGIN_PX = 12
 _CONFIG_MENU_OPEN_RELEASE_GRACE_SEC = 0.25
+_CONFIG_MENU_BUTTON_POPUP_EXTRA_WIDTH_PX = 24
 
 
 class UndoManager:
@@ -261,10 +262,14 @@ class _ConfigMenuRow(QWidget):
 
     def sizeHint(self):  # noqa: N802
         option = self._style_option()
+        metrics = QFontMetrics(self.font())
+        text_width = metrics.horizontalAdvance(self._name)
+        icon_width = option.maxIconWidth + 12 if option.maxIconWidth else 0
+        check_width = 28 if self._checkable else 0
         return self.style().sizeFromContents(
             QStyle.ContentsType.CT_MenuItem,
             option,
-            QSize(0, _CONFIG_MENU_ROW_HEIGHT_PX),
+            QSize(text_width + icon_width + check_width + 36, _CONFIG_MENU_ROW_HEIGHT_PX),
             self,
         )
 
@@ -601,12 +606,12 @@ class ReplacerConfigWindow(QDialog):
         self.tab_widget = QTabWidget()
 
         # Create Replacer tab
-        replacer_tab = self._proxy_required(self._create_replacer_tab())
+        replacer_tab = self._create_replacer_tab()
         self.tab_widget.addTab(replacer_tab, 'Replacer')
 
         # Create Cache tab if proxy_master is available
         if self.proxy_master and hasattr(self.proxy_master, 'cache_manager'):
-            cache_tab = self._proxy_required(self._create_cache_tab())
+            cache_tab = self._create_cache_tab()
             self.tab_widget.addTab(cache_tab, 'Scraper')
 
         # Create Modifications tab
@@ -670,6 +675,8 @@ class ReplacerConfigWindow(QDialog):
     def set_proxy_features_enabled(self, enabled: bool):
         for gate in self._proxy_gates:
             gate.set_proxy_enabled(enabled)
+        if hasattr(self, '_cache_viewer_tab') and hasattr(self._cache_viewer_tab, 'set_proxy_features_enabled'):
+            self._cache_viewer_tab.set_proxy_features_enabled(enabled)
         if hasattr(self, '_rando_stuff_tab') and hasattr(self._rando_stuff_tab, 'set_proxy_features_enabled'):
             self._rando_stuff_tab.set_proxy_features_enabled(enabled)
 
@@ -679,11 +686,19 @@ class ReplacerConfigWindow(QDialog):
         replacer_layout = QVBoxLayout()
         replacer_layout.setContentsMargins(0, 0, 0, 0)
 
+        top_section_widget = QWidget()
+        top_section_layout = QVBoxLayout(top_section_widget)
+        top_section_layout.setContentsMargins(0, 0, 0, 0)
+        top_section_layout.setSpacing(6)
+
         # Config selector section
-        self._create_config_section(replacer_layout)
+        self._create_config_section(top_section_layout)
 
         # Rules tree section
-        self._create_tree_section(replacer_layout)
+        self._create_tree_section(top_section_layout)
+
+        self._replacer_top_proxy_gate = self._proxy_required(top_section_widget)
+        replacer_layout.addWidget(self._replacer_top_proxy_gate)
 
         # Edit section
         self._create_edit_section(replacer_layout)
@@ -988,7 +1003,11 @@ class ReplacerConfigWindow(QDialog):
                 }
                 for name in current_configs
             ],
-            minimum_width=self.enabled_menu_btn.width() if hasattr(self, 'enabled_menu_btn') else 0,
+            minimum_width=(
+                self.enabled_menu_btn.width() + _CONFIG_MENU_BUTTON_POPUP_EXTRA_WIDTH_PX
+                if hasattr(self, 'enabled_menu_btn')
+                else 0
+            ),
         )
         self.config_enabled_vars.update(self.enabled_menu.item_widgets)
 
@@ -1283,7 +1302,11 @@ class ReplacerConfigWindow(QDialog):
 
         self.config_menu.set_entries(
             entries,
-            minimum_width=self.config_menu_btn.width() if hasattr(self, 'config_menu_btn') else 0,
+            minimum_width=(
+                self.config_menu_btn.width() + _CONFIG_MENU_BUTTON_POPUP_EXTRA_WIDTH_PX
+                if hasattr(self, 'config_menu_btn')
+                else 0
+            ),
         )
         # Ensure the Editing button reflects the enabled state after rebuild
         try:
