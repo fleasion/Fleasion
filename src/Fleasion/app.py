@@ -192,7 +192,19 @@ def _relaunch_as_admin(extra_args: str = '', parent_hwnd: int | None = None) -> 
     sei.hInstApp     = None
 
     shell32 = ctypes.WinDLL('shell32', use_last_error=True)
-    ok = shell32.ShellExecuteExW(ctypes.byref(sei))
+
+    reset_env_key = 'PYINSTALLER_RESET_ENVIRONMENT'
+    old_reset_env = os.environ.get(reset_env_key)
+    if getattr(sys, 'frozen', False):
+        os.environ[reset_env_key] = '1'
+    try:
+        ok = shell32.ShellExecuteExW(ctypes.byref(sei))
+    finally:
+        if getattr(sys, 'frozen', False):
+            if old_reset_env is None:
+                os.environ.pop(reset_env_key, None)
+            else:
+                os.environ[reset_env_key] = old_reset_env
     if not ok:
         err = ctypes.get_last_error()
         if err == 1223:  # ERROR_CANCELLED: user declined UAC
