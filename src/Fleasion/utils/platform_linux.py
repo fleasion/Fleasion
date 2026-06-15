@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import os
 import pwd
+import shlex
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Optional
 
 from .logging import log_buffer
-from .paths import APP_CACHE_DIR, STORAGE_DB, USER_HOME
+from .paths import APP_CACHE_DIR, APP_NAME, STORAGE_DB, USER_HOME, get_icon_path
 
 SOBER_APP_ID = 'org.vinegarhq.Sober'
 SOBER_FLATPAK_ROOT = USER_HOME / '.var' / 'app' / SOBER_APP_ID
@@ -20,6 +22,20 @@ SOBER_CONFIG_FILE = SOBER_FLATPAK_ROOT / 'config' / 'sober' / 'config.json'
 SOBER_ASSET_OVERLAY_DIR = SOBER_DATA_DIR / 'asset_overlay'
 SOBER_LEGACY_EXE_DIR = SOBER_DATA_DIR / 'exe'
 SOBER_PROCESS_NAMES = ('sober', 'Sober', SOBER_APP_ID)
+
+LINUX_APPLICATIONS_DIR = USER_HOME / '.local' / 'share' / 'applications'
+LINUX_INSTALL_DIR = USER_HOME / '.local' / 'share' / APP_NAME
+LINUX_BIN_DIR = USER_HOME / '.local' / 'bin'
+LINUX_DESKTOP_ENTRY_PATH = LINUX_APPLICATIONS_DIR / 'fleasion.desktop'
+LINUX_LAUNCHER_PATH = LINUX_BIN_DIR / 'fleasion-launch'
+LINUX_ROOT_RUNNER_PATH = LINUX_BIN_DIR / 'fleasion-root-runner'
+LINUX_INSTALLED_APP_PATH = LINUX_INSTALL_DIR / APP_NAME
+LINUX_INSTALLED_ICON_PATH = LINUX_INSTALL_DIR / 'fleasionlogoHR.ico'
+LINUX_DEPRECATED_DESKTOP_ENTRY_PATHS = (
+    LINUX_APPLICATIONS_DIR / 'fleasion-non-admin.desktop',
+    LINUX_APPLICATIONS_DIR / 'fleasion-read-only.desktop',
+    LINUX_APPLICATIONS_DIR / 'fleasion-proxy.desktop',
+)
 
 
 def run_cmd(args: list[str]) -> str:
@@ -290,6 +306,150 @@ def launch_as_standard_user(target: str | Path) -> bool:
     log_buffer.log('Launch', f'Launch target not found: {target_str}')
     return False
 
+
+def _find_project_root() -> Path | None:
+    check = Path(__file__).resolve().parent
+    for _ in range(8):
+        if (check / 'pyproject.toml').is_file() and (check / 'launcher.py').is_file():
+            return check
+        if check.parent == check:
+            break
+        check = check.parent
+    return None
+
+
+def _copy_linux_app_payload() -> tuple[Path | None, Path | None]:
+    """Copy frozen Linux app payload into the per-user install directory.
+
+    Source/development launches do not have a self-contained binary to copy, so
+    they keep running from the checkout. Frozen builds are copied so the desktop
+    entry does not point at a Downloads/tmp path that can disappear.
+    """
+    if not getattr(sys, 'frozen', False):
+        return None, None
+
+    source = Path(sys.executable).resolve()
+    LINUX_INSTALL_DIR.mkdir(parents=True, exist_ok=True)
+    installed_app = LINUX_INSTALLED_APP_PATH
+    if source != installed_app.resolve():
+        shutil.copy2(source, installed_app)
+    installed_app.chmod(0o755)
+
+    installed_icon: Path | None = None
+    icon_path = get_icon_path()
+    if icon_path is not None and icon_path.is_file():
+        installed_icon = LINUX_INSTALLED_ICON_PATH
+        if icon_path.resolve() != installed_icon.resolve():
+            shutil.copy2(icon_path, installed_icon)
+        installed_icon.chmod(0o644)
+
+    return installed_app, installed_icon
+
+
+def _linux_app_launch_command(installed_app: Path | None = None) -> tuple[list[str], Path | None]:
+    """Return the normal-user command that a privileged wrapper should run."""
+    if installed_app is not None:
+        return [str(installed_app)], installed_app.parent
+
+    if getattr(sys, 'frozen', False):
+        return [sys.executable], Path(sys.executable).parent
+
+    project = _find_project_root()
+    if project is not None:
+        return [sys.executable, str(project / 'launcher.py')], project
+
+    return [sys.executable, '-c', 'from Fleasion import main; main()'], None
+
+
+def _write_executable_script(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding='utf-8')
+    path.chmod(0o755)
+
+
+def install_desktop_entries() -> dict:
+    """Install the Linux desktop launcher and Polkit root runner.
+
+    The installed application entry always starts Fleasion through pkexec because
+    Linux/Sober interception needs root privileges for /etc/hosts and port 443.
+    Legacy non-admin/read-only desktop entries are removed so menus only expose
+    the supported proxy-capable launcher.
+    """
+    installed_app, installed_icon = _copy_linux_app_payload()
+    command, working_dir = _linux_app_launch_command(installed_app)
+    command_literal = ' '.join(shlex.quote(part) for part in command)
+    working_dir_literal = shlex.quote(str(working_dir)) if working_dir is not None else ''
+    pythonpath = '' if working_dir is None else f'export PYTHONPATH={shlex.quote(str(working_dir / "src"))}:$PYTHONPATH\n'
+
+    root_runner = f'''#!/bin/sh
+set -eu
+DISPLAY_VALUE="${{1:-}}"
+WAYLAND_DISPLAY_VALUE="${{2:-}}"
+XAUTHORITY_VALUE="${{3:-}}"
+XDG_RUNTIME_DIR_VALUE="${{4:-}}"
+USER_HOME_VALUE="${{5:-}}"
+shift 5 || true
+export DISPLAY="$DISPLAY_VALUE"
+export WAYLAND_DISPLAY="$WAYLAND_DISPLAY_VALUE"
+export XAUTHORITY="$XAUTHORITY_VALUE"
+export XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR_VALUE"
+export FLEASION_USER_HOME="$USER_HOME_VALUE"
+export HOME="$USER_HOME_VALUE"
+{pythonpath}{f'cd {working_dir_literal}' if working_dir is not None else ':'}
+exec {command_literal} "$@"
+'''
+    _write_executable_script(LINUX_ROOT_RUNNER_PATH, root_runner)
+
+    launcher = f'''#!/bin/sh
+set -eu
+PKEXEC=$(command -v pkexec || true)
+if [ -z "$PKEXEC" ]; then
+    if command -v zenity >/dev/null 2>&1; then
+        zenity --error --title="{APP_NAME}" --text="pkexec was not found. Install polkit/pkexec, then run {APP_NAME} again."
+    else
+        printf '%s\n' 'pkexec was not found. Install polkit/pkexec, then run {APP_NAME} again.' >&2
+    fi
+    exit 1
+fi
+exec "$PKEXEC" {shlex.quote(str(LINUX_ROOT_RUNNER_PATH))} "${{DISPLAY:-}}" "${{WAYLAND_DISPLAY:-}}" "${{XAUTHORITY:-$HOME/.Xauthority}}" "${{XDG_RUNTIME_DIR:-}}" "{USER_HOME}" "$@"
+'''
+    _write_executable_script(LINUX_LAUNCHER_PATH, launcher)
+
+    icon_path = installed_icon or get_icon_path()
+    icon_line = f'Icon={icon_path}\n' if icon_path is not None else 'Icon=fleasion\n'
+    desktop_entry = (
+        '[Desktop Entry]\n'
+        'Type=Application\n'
+        f'Name={APP_NAME}\n'
+        'Comment=Roblox asset interceptor and replacer for Sober\n'
+        f'Exec={shlex.quote(str(LINUX_LAUNCHER_PATH))}\n'
+        f'{icon_line}'
+        'Terminal=false\n'
+        'Categories=Game;Utility;\n'
+        'StartupNotify=true\n'
+    )
+    LINUX_APPLICATIONS_DIR.mkdir(parents=True, exist_ok=True)
+    LINUX_DESKTOP_ENTRY_PATH.write_text(desktop_entry, encoding='utf-8')
+    LINUX_DESKTOP_ENTRY_PATH.chmod(0o644)
+
+    removed: list[str] = []
+    for path in LINUX_DEPRECATED_DESKTOP_ENTRY_PATHS:
+        if path.exists():
+            path.unlink()
+            removed.append(str(path))
+
+    update_desktop = shutil.which('update-desktop-database')
+    if update_desktop:
+        subprocess.run([update_desktop, str(LINUX_APPLICATIONS_DIR)], capture_output=True, timeout=10)
+
+    return {
+        'desktop_entry': str(LINUX_DESKTOP_ENTRY_PATH),
+        'launcher': str(LINUX_LAUNCHER_PATH),
+        'root_runner': str(LINUX_ROOT_RUNNER_PATH),
+        'installed_app': str(installed_app) if installed_app is not None else None,
+        'installed_icon': str(installed_icon) if installed_icon is not None else None,
+        'removed_deprecated_entries': removed,
+    }
 
 def open_folder(path: Path):
     """Open a folder in the user's file manager."""
