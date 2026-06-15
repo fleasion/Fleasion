@@ -29,6 +29,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import socket
 import ssl
 import subprocess
@@ -865,13 +866,15 @@ def _extract_exe_from_command(command: str) -> Optional[Path]:
     if not cmd:
         return None
 
-    if cmd.startswith('"'):
-        end_quote = cmd.find('"', 1)
-        if end_quote <= 1:
-            return None
-        exe_path = cmd[1:end_quote]
+    match = re.match(r'(.+?\.exe)(?:["\s]|$)', cmd, re.IGNORECASE)
+    if match:
+        exe_path = match.group(1).strip('"')
     else:
-        exe_path = cmd.split()[0]
+        try:
+            parts = shlex.split(cmd, posix=False)
+        except ValueError:
+            parts = []
+        exe_path = parts[0].strip('"') if parts else cmd.split()[0]
 
     if not exe_path:
         return None

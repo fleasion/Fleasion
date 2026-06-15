@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 import ntpath
 import os
+import re
+import shlex
 import shutil
 import sys
 import threading
@@ -99,13 +101,15 @@ def _find_roblox_dirs() -> list[Path]:
         command = (command or '').replace('\x00', '').strip()
         if not command:
             return None
-        if command.startswith('"'):
-            end_quote = command.find('"', 1)
-            if end_quote <= 1:
-                return None
-            exe_path = command[1:end_quote]
+        match = re.match(r'(.+?\.exe)(?:["\s]|$)', command, re.IGNORECASE)
+        if match:
+            exe_path = match.group(1).strip('"')
         else:
-            exe_path = command.split()[0]
+            try:
+                parts = shlex.split(command, posix=False)
+            except ValueError:
+                parts = []
+            exe_path = parts[0].strip('"') if parts else command.split()[0]
         if not exe_path:
             return None
         return Path(exe_path)

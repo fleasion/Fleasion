@@ -2056,7 +2056,7 @@ class ReplacerConfigWindow(QDialog):
 
         Returns tuple of (mode, extra_fields).
         """
-        value = value.strip()
+        value = value.strip().strip('"\'')
 
         if not value:
             # Empty = remove
