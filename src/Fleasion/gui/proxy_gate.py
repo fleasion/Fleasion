@@ -1,10 +1,10 @@
 """Reusable UI gate for sections that require Fleasion's proxy."""
 
 from PyQt6.QtCore import QEvent, Qt
-from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 
-PROXY_DISABLED_MESSAGE = 'This section is closed because the proxy is disabled in Settings.'
+PROXY_DISABLED_MESSAGE = 'This section is closed because you turned off the proxy in the Settings.'
 
 
 class ProxyGate(QWidget):
@@ -15,7 +15,6 @@ class ProxyGate(QWidget):
         super().__init__(parent)
         self._content = content
         self._compact = compact
-        self._dismissed_for_session = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -35,25 +34,13 @@ class ProxyGate(QWidget):
         label.setWordWrap(True)
         label.setMinimumHeight(40 if compact else 80)
 
-        button = QPushButton('Dismiss')
-        button.setObjectName('_FleasionProxyDisabledOverlayDismissButton')
-        button.clicked.connect(self.dismiss_for_session)
-        button.setCursor(Qt.CursorShape.PointingHandCursor)
-
         row = QHBoxLayout()
         row.addStretch()
         row.addWidget(label)
         row.addStretch()
 
-        button_row = QHBoxLayout()
-        button_row.addStretch()
-        button_row.addWidget(button)
-        button_row.addStretch()
-
         overlay_layout.addStretch()
         overlay_layout.addLayout(row)
-        overlay_layout.addSpacing(8)
-        overlay_layout.addLayout(button_row)
         overlay_layout.addStretch()
         self._apply_style()
 
@@ -64,16 +51,11 @@ class ProxyGate(QWidget):
         return super().event(event)
 
     def set_proxy_enabled(self, enabled: bool):
-        effective_enabled = enabled or self._dismissed_for_session
-        self._content.setEnabled(effective_enabled)
-        self._overlay.setVisible(not effective_enabled)
-        if not effective_enabled:
+        self._content.setEnabled(enabled)
+        self._overlay.setVisible(not enabled)
+        if not enabled:
             self._overlay.setGeometry(self.rect())
             self._overlay.raise_()
-
-    def dismiss_for_session(self):
-        self._dismissed_for_session = True
-        self.set_proxy_enabled(True)
 
     def _apply_style(self):
         if self._compact:
@@ -98,16 +80,5 @@ class ProxyGate(QWidget):
                 padding: {label_padding};
                 font-weight: 600;
                 {label_width}
-            }}
-            QPushButton#_FleasionProxyDisabledOverlayDismissButton {{
-                background-color: rgba(255, 255, 255, 230);
-                color: rgb(20, 20, 20);
-                border: 1px solid rgba(255, 255, 255, 180);
-                border-radius: {radius}px;
-                padding: 6px 14px;
-                font-weight: 700;
-            }}
-            QPushButton#_FleasionProxyDisabledOverlayDismissButton:hover {{
-                background-color: rgba(255, 255, 255, 255);
             }}
         """)

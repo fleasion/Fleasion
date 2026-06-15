@@ -11,8 +11,6 @@ from __future__ import annotations
 import json
 import ntpath
 import os
-import re
-import shlex
 import shutil
 import sys
 import threading
@@ -66,6 +64,12 @@ def _find_roblox_dirs() -> list[Path]:
     """Locate Roblox resource directories that can receive file modifications."""
     if sys.platform == 'darwin':
         from ..utils.platform_macos import find_roblox_resource_dirs
+    elif sys.platform.startswith('linux'):
+        from ..utils.platform_linux import find_roblox_resource_dirs
+    else:
+        find_roblox_resource_dirs = None
+
+    if find_roblox_resource_dirs is not None:
 
         found: list[Path] = []
         seen: set[str] = set()
@@ -101,15 +105,13 @@ def _find_roblox_dirs() -> list[Path]:
         command = (command or '').replace('\x00', '').strip()
         if not command:
             return None
-        match = re.match(r'(.+?\.exe)(?:["\s]|$)', command, re.IGNORECASE)
-        if match:
-            exe_path = match.group(1).strip('"')
+        if command.startswith('"'):
+            end_quote = command.find('"', 1)
+            if end_quote <= 1:
+                return None
+            exe_path = command[1:end_quote]
         else:
-            try:
-                parts = shlex.split(command, posix=False)
-            except ValueError:
-                parts = []
-            exe_path = parts[0].strip('"') if parts else command.split()[0]
+            exe_path = command.split()[0]
         if not exe_path:
             return None
         return Path(exe_path)
@@ -431,27 +433,22 @@ class ModificationManager(QObject):
         run_in_thread(self._process_and_apply_entry)(entry)
         return entry_id
 
-    def remove_entry(self, entry_id: str) -> bool:
+    def remove_entry(self, entry_id: str) -> None:
         """Remove an entry and restore its original file."""
         entry = self._find_entry(entry_id)
         if entry is None:
-            return True
-        try:
-            self._restore_entry(entry)
-        except Exception as exc:
-            self._mark_restore_failed(entry, exc)
-            return False
+            return
+        self._restore_entry(entry)
         self._data['entries'] = [e for e in self.entries if e.get('id') != entry_id]
         self._save_json()
         # Notify the status bar that an entry was removed.
         self.restore_finished.emit()
-        return True
 
-    def update_entry(self, entry_id: str, **kwargs) -> bool:
+    def update_entry(self, entry_id: str, **kwargs) -> None:
         """Update an entry's source, restore old files, and re-apply."""
         entry = self._find_entry(entry_id)
         if entry is None:
-            return True
+            return
         # Invalidate any in-flight apply so its background thread discards
         # its result instead of overwriting the freshly-written new file.
         entry['_apply_gen'] = entry.get('_apply_gen', 0) + 1
@@ -461,19 +458,14 @@ class ModificationManager(QObject):
         # _restore_entry would incorrectly delete it via the "new file"
         # fallback branch.
         if entry.get('source_type') is not None:
-            try:
-                self._restore_entry(entry)
-            except Exception as exc:
-                self._mark_restore_failed(entry, exc)
-                return False
+            self._restore_entry(entry)
         entry.update(kwargs)
         entry['status'] = 'pending'
         entry['error_message'] = None
         self._save_json()
         run_in_thread(self._process_and_apply_entry)(entry)
-        return True
 
-    def clear_entry(self, entry_id: str) -> bool:
+    def clear_entry(self, entry_id: str) -> None:
         """Restore the original file and delete this entry from the list.
 
         Keeping cleared entries as 'not_set' ghosts causes two problems:
@@ -486,31 +478,15 @@ class ModificationManager(QObject):
         """
         entry = self._find_entry(entry_id)
         if entry is None:
-            return True
+            return
         # Invalidate any in-flight apply before restoring the original file.
         entry['_apply_gen'] = entry.get('_apply_gen', 0) + 1
-        try:
-            self._restore_entry(entry)
-        except Exception as exc:
-            self._mark_restore_failed(entry, exc)
-            return False
+        self._restore_entry(entry)
         self._data['entries'] = [e for e in self.entries if e.get('id') != entry_id]
         self._save_json()
         self.entry_status_changed.emit(entry_id, 'not_set', '')
         # Notify status bar that an active modification was cleared.
         self.restore_finished.emit()
-        return True
-
-    def _mark_restore_failed(self, entry: dict, exc: Exception) -> None:
-        """Keep the entry visible when restoring its original file fails."""
-        entry_id = entry.get('id', '')
-        error = f'Failed to restore original file: {exc}'
-        entry['status'] = 'error'
-        entry['error_message'] = error
-        self._save_json()
-        if entry_id:
-            self.entry_status_changed.emit(entry_id, 'error', error)
-        log_buffer.log('Modifications', f'Restore failed for {entry.get("display_name", "?")}: {exc}')
 
     # ------------------------------------------------------------------
     # Processing & applying
@@ -645,7 +621,7 @@ class ModificationManager(QObject):
             )
 
         extra_hdrs = {}
-        cookie = self._cache_scraper._get_roblosecurity(wait=True)
+        cookie = self._cache_scraper._get_roblosecurity()
         if cookie:
             extra_hdrs['Cookie'] = f'.ROBLOSECURITY={cookie};'
         data, status = self._cache_scraper._fetch_asset_with_place_id_retry(str(asset_id), extra_headers=extra_hdrs or None)

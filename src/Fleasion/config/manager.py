@@ -258,19 +258,6 @@ class ConfigManager:
         self._save_settings()
 
     @property
-    def macos_auth_source(self) -> str:
-        value = str(self.settings.get('macos_auth_source', '') or '')
-        valid = {'', 'manual', 'Chrome', 'Safari', 'Firefox', 'Brave', 'Edge', 'Chromium', 'Opera', 'Vivaldi'}
-        return value if value in valid else ''
-
-    @macos_auth_source.setter
-    def macos_auth_source(self, value: str):
-        value = str(value or '')
-        valid = {'', 'manual', 'Chrome', 'Safari', 'Firefox', 'Brave', 'Edge', 'Chromium', 'Opera', 'Vivaldi'}
-        self.settings['macos_auth_source'] = value if value in valid else ''
-        self._save_settings()
-
-    @property
     def upstream_transport_mode(self) -> str:
         mode = str(self.settings.get('upstream_transport_mode', 'auto') or 'auto').lower()
         valid = {'auto', 'direct_ip', 'system_proxy', 'http_connect', 'socks5'}
@@ -925,16 +912,9 @@ class ConfigManager:
                         # Empty local path means remove
                         removals.update(parsed_ids)
                 elif mode == 'id':
-                    # Empty with_id means remove. Replacement IDs 0 and 1 are
-                    # known dummy values and should be invisible to the proxy.
+                    # Empty with_id means remove
                     if (target := rule.get('with_id')) is not None:
-                        try:
-                            target_id = int(target)
-                        except (TypeError, ValueError):
-                            continue
-                        if target_id in (0, 1):
-                            continue
-                        replacements.update(dict.fromkeys(parsed_ids, target_id))
+                        replacements.update(dict.fromkeys(parsed_ids, target))
                     else:
                         removals.update(parsed_ids)
 

@@ -1,5 +1,6 @@
 """Rando Stuff tab - miscellaneous Roblox utilities (multi-instance, asset download, rejoin)."""
 
+import base64
 import ctypes
 import ctypes.wintypes as wintypes
 import json
@@ -40,10 +41,14 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+try:
+    import win32crypt  # type: ignore
+except Exception:
+    win32crypt = None
+
 from ..utils.paths import CONFIG_DIR
 from ..utils.plural import format_count
 from ..utils.roblox_auth import ROBLOX_COOKIES_PATH, discover_browser_roblosecurity, set_roblosecurity
-from ..utils.secure_tokens import decrypt_token, encrypt_token
 from ..utils.logging import log_buffer
 from ..utils.windows import launch_as_standard_user, resolve_roblox_player_exe_for_launch
 from .proxy_gate import ProxyGate
@@ -52,6 +57,7 @@ ACCOUNTS_FILE = CONFIG_DIR / 'accounts.json'
 ACCOUNTS_KEY_FILE = CONFIG_DIR / 'accounts.key'
 IS_WINDOWS = sys.platform == 'win32'
 IS_MACOS = sys.platform == 'darwin'
+IS_LINUX = sys.platform.startswith('linux')
 
 
 # Helpers
@@ -59,12 +65,64 @@ IS_MACOS = sys.platform == 'darwin'
 
 def _encrypt_cookie(cookie: str) -> str:
     """Encrypt a cookie string for storage."""
-    return encrypt_token(cookie, ACCOUNTS_KEY_FILE)
+    raw = cookie.encode("utf-8")
+    if win32crypt:
+        enc = win32crypt.CryptProtectData(raw, None, None, None, None, 0)
+        return base64.b64encode(enc).decode("ascii")
+    if IS_MACOS:
+        cipher = _get_macos_cookie_cipher()
+        if cipher is not None:
+            return 'fernet:' + cipher.encrypt(raw).decode('ascii')
+    # Legacy fallback: plain base64 (kept for old configs and unsupported platforms).
+    return base64.b64encode(raw).decode("ascii")
 
 
 def _decrypt_cookie(enc_b64: str) -> str | None:
     """Decrypt a stored cookie string. Returns plain cookie or None on failure."""
-    return decrypt_token(enc_b64, ACCOUNTS_KEY_FILE)
+    try:
+        if enc_b64.startswith('fernet:'):
+            cipher = _get_macos_cookie_cipher(create=False)
+            if cipher is None:
+                return None
+            return cipher.decrypt(enc_b64[len('fernet:'):].encode('ascii')).decode('utf-8')
+        enc = base64.b64decode(enc_b64)
+        if win32crypt:
+            return win32crypt.CryptUnprotectData(enc, None, None, None, 0)[1].decode("utf-8")
+        return enc.decode("utf-8")
+    except Exception:
+        return None
+
+
+def _get_macos_cookie_cipher(create: bool = True):
+    if not IS_MACOS:
+        return None
+    try:
+        from cryptography.fernet import Fernet
+    except Exception as exc:
+        log_buffer.log("accounts", f"macOS cookie encryption unavailable: {exc}")
+        return None
+
+    try:
+        key_path = ACCOUNTS_KEY_FILE
+        if not key_path.exists():
+            if not create:
+                return None
+            key_path.parent.mkdir(parents=True, exist_ok=True)
+            key = Fernet.generate_key()
+            flags = getattr(os, 'O_WRONLY', 1) | getattr(os, 'O_CREAT', 64) | getattr(os, 'O_EXCL', 128)
+            fd = os.open(key_path, flags, 0o600)
+            with os.fdopen(fd, 'wb') as f:
+                f.write(key)
+        else:
+            key = key_path.read_bytes().strip()
+        try:
+            os.chmod(key_path, 0o600)
+        except OSError:
+            pass
+        return Fernet(key)
+    except Exception as exc:
+        log_buffer.log("accounts", f"macOS cookie encryption failed: {exc}")
+        return None
 
 
 def _load_accounts() -> list[dict]:
@@ -860,7 +918,7 @@ class RandoStuffTab(QWidget):
         self._add_acct_btn.clicked.connect(self._on_add_account)
         self._import_browser_btn = QPushButton("Import Browser Login")
         self._import_browser_btn.clicked.connect(self._on_import_browser_account)
-        self._import_browser_btn.setVisible(IS_MACOS)
+        self._import_browser_btn.setVisible(IS_MACOS or IS_LINUX)
         self._launch_acct_btn = QPushButton("Launch")
         self._launch_acct_btn.clicked.connect(self._on_launch_account)
         self._switch_acct_btn = QPushButton("Switch to selected")
@@ -931,8 +989,7 @@ class RandoStuffTab(QWidget):
         username_layout.addLayout(self_row)
         username_layout.addWidget(self._username_self_game_creator_chk)
 
-        self._username_spoofer_proxy_gate = ProxyGate(username_group, compact=True)
-        root.addWidget(self._username_spoofer_proxy_gate)
+        root.addWidget(username_group)
 
         ac_group = QGroupBox("R6 ↔ R15 Animation Converter")
         acl = QVBoxLayout(ac_group)
@@ -1043,11 +1100,7 @@ class RandoStuffTab(QWidget):
         )
 
     def set_proxy_features_enabled(self, enabled: bool):
-        for gate_name in (
-            '_rejoin_proxy_gate',
-            '_subplace_blacklist_proxy_gate',
-            '_username_spoofer_proxy_gate',
-        ):
+        for gate_name in ('_rejoin_proxy_gate', '_subplace_blacklist_proxy_gate'):
             gate = getattr(self, gate_name, None)
             if gate is not None:
                 gate.set_proxy_enabled(enabled)

@@ -1220,7 +1220,6 @@ class CacheViewerTab(QWidget):
         self._resizing_cols: bool = False
 
         self._setup_ui()
-        self.set_proxy_features_enabled(self._proxy_features_enabled())
         self._refresh_timer = QTimer()
         self._refresh_timer.timeout.connect(self._check_for_updates)
         self._refresh_timer.start(3000)  # Check every 3 seconds
@@ -2313,19 +2312,6 @@ class CacheViewerTab(QWidget):
         if self.cache_scraper:
             self.cache_scraper.set_enabled(enabled)
 
-    def _proxy_features_enabled(self) -> bool:
-        if self.config_manager is None:
-            return True
-        return bool(getattr(self.config_manager, 'proxy_features_enabled', True))
-
-    def set_proxy_features_enabled(self, enabled: bool):
-        """Keep scraper browsing available while blocking proxy-only actions."""
-        if hasattr(self, 'scraper_toggle'):
-            self.scraper_toggle.setEnabled(enabled)
-            self.scraper_toggle.setToolTip(
-                '' if enabled else 'Enable proxy features in Settings to use the cache scraper.'
-            )
-
     def set_cache_scraper_enabled(self, enabled: bool):
         """Update the scraper toggle without re-emitting the toggle signal."""
         if hasattr(self, 'scraper_toggle'):
@@ -3364,9 +3350,6 @@ class CacheViewerTab(QWidget):
 
         send_replace_action = menu.addAction('Replace')
         send_replace_with_action = menu.addAction('Replace with')
-        proxy_enabled = self._proxy_features_enabled()
-        send_replace_action.setEnabled(proxy_enabled)
-        send_replace_with_action.setEnabled(proxy_enabled)
 
         # Export submenu with format options
         export_menu = menu.addMenu('Export Selected')

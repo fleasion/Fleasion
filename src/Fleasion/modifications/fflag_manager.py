@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import shutil
 import stat
+import sys
 from pathlib import Path
 
 from ..utils import format_count, log_buffer
@@ -57,6 +58,29 @@ def _clear_read_only(path: Path) -> None:
     if current_mode & stat.S_IWRITE:
         return
     path.chmod(current_mode | stat.S_IWRITE)
+
+
+def _sober_config_path_for_resource_dir(roblox_dir: Path) -> Path | None:
+    if not sys.platform.startswith('linux'):
+        return None
+    try:
+        from ..utils.platform_linux import SOBER_CONFIG_FILE, is_sober_resource_dir
+
+        return SOBER_CONFIG_FILE if is_sober_resource_dir(roblox_dir) else None
+    except Exception:
+        return None
+
+
+def _sober_flag_value(value: str):
+    lowered = value.lower()
+    if lowered == 'true':
+        return True
+    if lowered == 'false':
+        return False
+    try:
+        return int(value)
+    except ValueError:
+        return value
 
 
 class FastFlagManager:
@@ -163,6 +187,34 @@ class FastFlagManager:
                 failed += 1
                 log_buffer.log('FastFlags', f'Permission denied writing {dst}: {exc}')
 
+            sober_config = _sober_config_path_for_resource_dir(roblox_dir)
+            if sober_config is not None:
+                stash_config = self._stash_dir / roblox_dir.name / 'sober_config.json'
+                try:
+                    config_payload = {}
+                    if sober_config.exists():
+                        if not stash_config.exists():
+                            stash_config.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(sober_config, stash_config)
+                        try:
+                            loaded = json.loads(sober_config.read_text(encoding='utf-8'))
+                            if isinstance(loaded, dict):
+                                config_payload = loaded
+                        except json.JSONDecodeError:
+                            config_payload = {}
+                    config_payload['fflags'] = {
+                        key: _sober_flag_value(value)
+                        for key, value in flags.items()
+                    }
+                    sober_config.parent.mkdir(parents=True, exist_ok=True)
+                    sober_config.write_text(json.dumps(config_payload, indent=2), encoding='utf-8')
+                except PermissionError as exc:
+                    failed += 1
+                    log_buffer.log('FastFlags', f'Permission denied writing Sober config {sober_config}: {exc}')
+                except OSError as exc:
+                    failed += 1
+                    log_buffer.log('FastFlags', f'Failed writing Sober config {sober_config}: {exc}')
+
         message = f'Wrote {format_count(flags, "flag")} to {format_count(written, "Roblox dir")}'
         if failed:
             message += f'; skipped {format_count(failed, "Roblox dir")} due to permission errors'
@@ -190,6 +242,30 @@ class FastFlagManager:
             except PermissionError as exc:
                 failed += 1
                 log_buffer.log('FastFlags', f'Permission denied restoring {dst}: {exc}')
+
+            sober_config = _sober_config_path_for_resource_dir(roblox_dir)
+            if sober_config is not None:
+                stash_config = self._stash_dir / roblox_dir.name / 'sober_config.json'
+                try:
+                    if stash_config.exists():
+                        sober_config.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(stash_config, sober_config)
+                        _clear_read_only(stash_config)
+                        stash_config.unlink()
+                    elif sober_config.exists():
+                        try:
+                            payload = json.loads(sober_config.read_text(encoding='utf-8'))
+                        except json.JSONDecodeError:
+                            payload = {}
+                        if isinstance(payload, dict) and 'fflags' in payload:
+                            payload.pop('fflags', None)
+                            sober_config.write_text(json.dumps(payload, indent=2), encoding='utf-8')
+                except PermissionError as exc:
+                    failed += 1
+                    log_buffer.log('FastFlags', f'Permission denied restoring Sober config {sober_config}: {exc}')
+                except OSError as exc:
+                    failed += 1
+                    log_buffer.log('FastFlags', f'Failed restoring Sober config {sober_config}: {exc}')
 
         message = 'Restored ClientAppSettings.json'
         if failed:

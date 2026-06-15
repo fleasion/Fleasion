@@ -38,10 +38,7 @@ from PyQt6.QtWidgets import (
 from ..utils.paths import CONFIG_DIR
 from ..utils.plural import format_count
 from ..utils.logging import log_buffer
-from ..utils.roblox_auth import (
-    get_roblosecurity as _get_roblosecurity,
-    wait_for_roblosecurity as _wait_for_roblosecurity,
-)
+from ..utils.roblox_auth import get_roblosecurity as _get_roblosecurity
 from ..utils.windows import launch_as_standard_user
 
 
@@ -560,7 +557,7 @@ class SubplaceJoinerTab(QWidget):
 
     def _resolve_current_user(self):
         """Background thread: read the active Roblox cookie and resolve the username."""
-        cookie = _wait_for_roblosecurity()
+        cookie = _get_roblosecurity()
         if not cookie:
             return
         try:
@@ -783,7 +780,7 @@ class SubplaceJoinerTab(QWidget):
             return
         def _worker():
             try:
-                cookie = _wait_for_roblosecurity() or ""
+                cookie = _get_roblosecurity() or ""
                 r = self._get(
                     f"https://games.roblox.com/v1/games/multiget-place-details?placeIds={place_id}",
                     timeout=10,
@@ -998,7 +995,7 @@ class SubplaceJoinerTab(QWidget):
             ]
             self._on_main_guarded(lambda: self._add_new_cards(items), cancel_event)
 
-            cookie = _wait_for_roblosecurity() or ""
+            cookie = _get_roblosecurity() or ""
 
             def load_timestamps():
                 updated = []

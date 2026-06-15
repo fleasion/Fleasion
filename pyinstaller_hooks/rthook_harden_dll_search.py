@@ -1,9 +1,9 @@
 """Harden Windows DLL search order for the frozen application.
 
 PyInstaller's Windows bootloader points the process at ``sys._MEIPASS`` with
-SetDllDirectoryW. That is the only temporary extraction directory Fleasion
-should trust; stale ``_MEI*`` directories inherited from other frozen apps and
-DLLs in the current/executable directory must not be implicit candidates.
+SetDllDirectoryW, but Windows still searches the directory containing the
+outer .exe before that directory. For a one-file build launched from Downloads,
+that lets unrelated same-named DLLs beside the .exe shadow bundled Qt DLLs.
 """
 
 from __future__ import annotations
@@ -13,13 +13,6 @@ import sys
 
 
 _DLL_DIRECTORY_COOKIES = []
-
-
-def _is_within(path: str, root: str) -> bool:
-    try:
-        return os.path.commonpath((os.path.abspath(path), root)) == root
-    except ValueError:
-        return False
 
 
 def _add_dll_directory(kernel32, path: str) -> None:
@@ -44,8 +37,6 @@ def _harden_windows_dll_search() -> None:
         kernel32.SetDefaultDllDirectories.restype = ctypes.c_int
         kernel32.AddDllDirectory.argtypes = [ctypes.c_wchar_p]
         kernel32.AddDllDirectory.restype = ctypes.c_void_p
-        kernel32.SetDllDirectoryW.argtypes = [ctypes.c_wchar_p]
-        kernel32.SetDllDirectoryW.restype = ctypes.c_int
     except AttributeError:
         return
 
@@ -55,27 +46,21 @@ def _harden_windows_dll_search() -> None:
     meipass = getattr(sys, "_MEIPASS", None)
     if not meipass:
         return
-    meipass = os.path.abspath(meipass)
 
     qt_root = os.path.join(meipass, "PyQt6", "Qt6")
     if not os.path.isdir(qt_root):
         qt_root = os.path.join(meipass, "PyQt6", "Qt")
 
+    # Register only directories that belong to the extracted application.
+    _add_dll_directory(kernel32, meipass)
+    _add_dll_directory(kernel32, os.path.join(qt_root, "bin"))
+    _add_dll_directory(kernel32, os.path.join(meipass, "pywin32_system32"))
+
     # Exclude the outer .exe directory and the current working directory from
-    # implicit DLL lookup, and discard any inherited/stale SetDllDirectoryW
-    # value before adding Fleasion's own extraction directory back explicitly.
-    kernel32.SetDllDirectoryW("")
+    # implicit DLL lookup. Bundled directories above and System32 remain valid.
     kernel32.SetDefaultDllDirectories(
         load_library_search_user_dirs | load_library_search_system32
     )
-
-    for directory in (
-        meipass,
-        os.path.join(qt_root, "bin"),
-        os.path.join(meipass, "pywin32_system32"),
-    ):
-        if _is_within(directory, meipass):
-            _add_dll_directory(kernel32, directory)
 
 
 _harden_windows_dll_search()

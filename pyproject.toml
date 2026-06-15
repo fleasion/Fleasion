@@ -21,7 +21,7 @@ dependencies = [
     "zstandard>=0.21.0",
     "python-dateutil>=2.9.0",
     "win11toast>=0.36.3; platform_system == 'Windows'",
-    "browser-cookie3>=0.20.1; platform_system == 'Darwin'",
+    "browser-cookie3>=0.20.1; platform_system == 'Darwin' or platform_system == 'Linux'",
 ]
 
 # Optional / removed:

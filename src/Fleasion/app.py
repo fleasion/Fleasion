@@ -13,8 +13,7 @@ import time
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QTimer, QSharedMemory, QObject, pyqtSignal, pyqtSlot
-from PyQt6.QtNetwork import QLocalServer, QLocalSocket
-from PyQt6.QtWidgets import QApplication, QMessageBox, QPushButton, QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel
+from PyQt6.QtWidgets import QApplication, QMessageBox, QPushButton, QDialog, QVBoxLayout, QHBoxLayout, QLabel
 
 from . import __version__
 from .config import ConfigManager
@@ -22,11 +21,8 @@ from .modifications import ModificationManager
 from .prejsons import download_prejsons
 from .proxy import ProxyMaster, check_and_patch_running_roblox_ca
 from .tray import SystemTray
-from .utils import APP_DISCORD, APP_NAME, CONFIG_DIR, LOG_FILE, delete_cache, get_icon_path, get_roblox_player_exe_path, get_roblox_studio_exe_path, is_roblox_running, is_studio_running, log_buffer, open_folder, run_in_thread, start_update_check, time_tracker
+from .utils import APP_DISCORD, APP_NAME, CONFIG_DIR, LOG_FILE, delete_cache, get_icon_path, get_roblox_player_exe_path, get_roblox_studio_exe_path, is_roblox_running, is_studio_running, launch_as_standard_user, log_buffer, open_folder, run_in_thread, start_update_check, time_tracker
 
-
-_SINGLE_INSTANCE_KEY = 'FleasionSingleInstance'
-_SINGLE_INSTANCE_CONTROL_SERVER = 'FleasionSingleInstanceControl'
 
 
 class _FirstTimeSetupMessageBox(QMessageBox):
@@ -56,7 +52,7 @@ class _FirstTimeSetupMessageBox(QMessageBox):
 
 def _is_admin() -> bool:
     """Return True if the current process has administrator/root privileges."""
-    if sys.platform == 'darwin':
+    if sys.platform == 'darwin' or sys.platform.startswith('linux'):
         return hasattr(os, 'geteuid') and os.geteuid() == 0
     import ctypes
     try:
@@ -114,6 +110,53 @@ def _relaunch_as_admin(extra_args: str = '', parent_hwnd: int | None = None) -> 
             log_buffer.log('UAC', f'macOS administrator relaunch was cancelled or failed: {err or result.returncode}')
             return False
         return True
+
+    if sys.platform.startswith('linux'):
+        import shutil
+
+        pkexec = shutil.which('pkexec')
+        if not pkexec:
+            log_buffer.log('UAC', 'Linux administrator relaunch failed: pkexec not found')
+            return False
+
+        existing_args = [arg for arg in sys.argv[1:] if not arg.startswith('--fleasion-user-localappdata=')]
+        if extra_args.strip():
+            existing_args.extend(extra_args.strip().split())
+        runner = Path.home() / '.local' / 'bin' / 'fleasion-root-runner'
+        if not runner.is_file():
+            log_buffer.log('UAC', f'Linux administrator relaunch failed: root runner not found at {runner}')
+            return False
+
+        display = os.environ.get('DISPLAY', '')
+        wayland_display = os.environ.get('WAYLAND_DISPLAY', '')
+        xauthority = os.environ.get('XAUTHORITY') or str(Path.home() / '.Xauthority')
+        xdg_runtime_dir = os.environ.get('XDG_RUNTIME_DIR', '')
+        user_home = str(Path.home())
+        log_path = CONFIG_DIR / 'polkit_launch.log'
+        cmd = [
+            pkexec,
+            str(runner),
+            display,
+            wayland_display,
+            xauthority,
+            xdg_runtime_dir,
+            user_home,
+            *existing_args,
+        ]
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open('ab') as log_file:
+                subprocess.Popen(
+                    cmd,
+                    stdout=log_file,
+                    stderr=log_file,
+                    start_new_session=True,
+                )
+            log_buffer.log('UAC', f'Linux Polkit relaunch dispatched via {runner}; stderr/stdout: {log_path}')
+            return True
+        except Exception as exc:
+            log_buffer.log('UAC', f'Linux administrator relaunch failed: {exc}')
+            return False
 
     import ctypes
 
@@ -196,19 +239,7 @@ def _relaunch_as_admin(extra_args: str = '', parent_hwnd: int | None = None) -> 
     sei.hInstApp     = None
 
     shell32 = ctypes.WinDLL('shell32', use_last_error=True)
-
-    reset_env_key = 'PYINSTALLER_RESET_ENVIRONMENT'
-    old_reset_env = os.environ.get(reset_env_key)
-    if getattr(sys, 'frozen', False):
-        os.environ[reset_env_key] = '1'
-    try:
-        ok = shell32.ShellExecuteExW(ctypes.byref(sei))
-    finally:
-        if getattr(sys, 'frozen', False):
-            if old_reset_env is None:
-                os.environ.pop(reset_env_key, None)
-            else:
-                os.environ[reset_env_key] = old_reset_env
+    ok = shell32.ShellExecuteExW(ctypes.byref(sei))
     if not ok:
         err = ctypes.get_last_error()
         if err == 1223:  # ERROR_CANCELLED: user declined UAC
@@ -271,6 +302,13 @@ def _show_admin_required_dialog(parent=None):
         msg.setInformativeText(
             'Run Fleasion as your normal macOS user, then approve the proxy-helper install prompt. '
             'The helper owns port 443, updates /etc/hosts, and patches Roblox SSL trust while the app stays unprivileged.'
+        )
+    elif sys.platform.startswith('linux'):
+        msg.setText("Fleasion needs administrator permission for Linux/Sober interception.")
+        msg.setInformativeText(
+            'Linux support targets the Sober Flatpak client.\n\n'
+            'Asset interception, scraping, replacement, hosts-file changes, and the local HTTPS proxy need root access '
+            'because Fleasion writes /etc/hosts and listens on local port 443.'
         )
     else:
         msg.setText("Fleasion won't work unless you're in admin mode.")
@@ -342,8 +380,8 @@ def _show_hosts_write_exhausted_dialog(details: dict):
     """Show a user-facing popup when hosts writes fail after all retries."""
     import os
 
-    default_hosts_path = '/etc/hosts' if sys.platform == 'darwin' else r'C:\Windows\System32\drivers\etc\hosts'
-    default_hosts_dir = '/etc' if sys.platform == 'darwin' else r'C:\Windows\System32\drivers\etc'
+    default_hosts_path = '/etc/hosts' if sys.platform == 'darwin' or sys.platform.startswith('linux') else r'C:\Windows\System32\drivers\etc\hosts'
+    default_hosts_dir = '/etc' if sys.platform == 'darwin' or sys.platform.startswith('linux') else r'C:\Windows\System32\drivers\etc'
     hosts_path = str(details.get('hosts_path') or default_hosts_path)
     hosts_directory = str(
         details.get('hosts_directory')
@@ -475,85 +513,6 @@ def _show_macos_ca_patch_failed_dialog(details: dict):
     msg.exec()
 
 
-def _choose_macos_auth_source_on_launch(config_manager, tray=None) -> None:
-    """Ask macOS users which browser should be queried for Roblox auth."""
-    if sys.platform != 'darwin' or config_manager.macos_auth_source:
-        return
-
-    _top = QApplication.topLevelWidgets()
-    _parent = next((w for w in _top if w.isVisible()), None)
-    _on_top = any(w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in _top)
-
-    dialog = QDialog(_parent)
-    if _on_top:
-        dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
-    dialog.setWindowTitle('Fleasion - Roblox Login Source')
-    dialog.setMinimumWidth(620)
-
-    selected: dict[str, str] = {}
-    layout = QVBoxLayout(dialog)
-    layout.setContentsMargins(18, 18, 18, 18)
-    layout.setSpacing(14)
-
-    title = QLabel('Which browser is signed in to roblox.com?')
-    title.setStyleSheet('font-size: 18px; font-weight: 700;')
-    layout.addWidget(title)
-
-    warning = QLabel(
-        'Most Fleasion account-aware features will not work until a valid Roblox token is available: '
-        'private asset downloads, account launches, authenticated asset details, subplace metadata, '
-        'and private-server flows may fail or wait.'
-    )
-    warning.setWordWrap(True)
-    warning.setStyleSheet('font-weight: 600; color: #e0a53a;')
-    layout.addWidget(warning)
-
-    body = QLabel(
-        'Choose the browser where roblox.com is already signed in. macOS may ask for browser-data access; '
-        'choose Always Allow to avoid approving it every launch. You can change this later in Settings > Roblox Login.'
-    )
-    body.setWordWrap(True)
-    layout.addWidget(body)
-
-    grid = QGridLayout()
-    grid.setHorizontalSpacing(8)
-    grid.setVerticalSpacing(8)
-    browsers = ('Chrome', 'Safari', 'Firefox', 'Brave', 'Edge', 'Chromium', 'Opera', 'Vivaldi')
-
-    def _choose(browser: str) -> None:
-        selected['browser'] = browser
-        dialog.accept()
-
-    for index, browser in enumerate(browsers):
-        button = QPushButton(browser)
-        button.setMinimumHeight(34)
-        button.clicked.connect(lambda _checked=False, value=browser: _choose(value))
-        grid.addWidget(button, index // 4, index % 4)
-    layout.addLayout(grid)
-
-    footer = QHBoxLayout()
-    footer.addStretch()
-    skip_btn = QPushButton('Continue Without Token')
-    skip_btn.clicked.connect(dialog.reject)
-    footer.addWidget(skip_btn)
-    layout.addLayout(footer)
-
-    if icon_path := get_icon_path():
-        from PyQt6.QtGui import QIcon
-        dialog.setWindowIcon(QIcon(str(icon_path)))
-
-    dialog.exec()
-    if selected_browser := selected.get('browser'):
-        config_manager.macos_auth_source = selected_browser
-        try:
-            from .utils.roblox_auth import notify_auth_source_changed
-            notify_auth_source_changed()
-        except Exception:
-            pass
-        if tray is not None and hasattr(tray, '_refresh_settings_tab'):
-            tray._refresh_settings_tab()
-
-
 def _show_auth_cookie_unavailable_dialog(details: dict):
     """Show a user-facing popup when no readable Roblox auth cookie can be found."""
     _top = QApplication.topLevelWidgets()
@@ -588,14 +547,32 @@ def _show_auth_cookie_unavailable_dialog(details: dict):
             f'Candidate paths checked: {len(attempted)}<br><br>'
         )
         most_likely_html = (
-            'Fleasion checked RobloxCookies.dat plus the selected login source, '
+            'Fleasion checked RobloxCookies.dat plus supported browser login stores, '
             'but found zero usable Roblox login tokens.<br><br>'
             'This token is required for authenticated asset downloads, account launches, '
             'private-server joins, and other account-aware features.<br><br>'
             'Sign in to roblox.com in Chrome, Safari, Firefox, Brave, Edge, Chromium, Opera, '
-            'or Vivaldi, then choose that browser in Settings > Roblox Login. If macOS asks '
-            'whether Fleasion may access browser data, choose Allow or Always Allow.<br><br>'
-            'You can also store a token manually from Settings > Roblox Login > Import Token.<br><br>'
+            'or Vivaldi, then try again. If macOS asks whether Fleasion may access Chrome '
+            'Safe Storage or browser data, choose Allow.<br><br>'
+            'You can retry from Dashboard > Miscellaneous > Account Manager > '
+            'Import Browser Login.<br><br>'
+        )
+    elif sys.platform.startswith('linux'):
+        diagnostics_html = (
+            'Diagnostics:<br>'
+            f'Linux home: {html.escape(str(details.get("home") or "Unknown"))}<br>'
+            f'Fleasion config root: {html.escape(str(details.get("local_appdata") or "Unknown"))}<br>'
+            f'Default Sober cookie path: {html.escape(str(details.get("default_cookie_path") or "Unknown"))}<br>'
+            f'Candidate paths checked: {len(attempted)}<br><br>'
+        )
+        most_likely_html = (
+            'Fleasion checked Sober cookies plus supported browser login stores, '
+            'but found zero usable Roblox login tokens.<br><br>'
+            'This token is required for authenticated asset downloads, account launches, '
+            'private-server joins, and other account-aware features.<br><br>'
+            'Sign in through Sober or log in to roblox.com in Firefox or a Chrome-family browser, '
+            'then try again. You can retry from Dashboard > Miscellaneous > Account Manager > '
+            'Import Browser Login.<br><br>'
         )
     else:
         diagnostics_html = (
@@ -631,7 +608,7 @@ def _show_auth_cookie_unavailable_dialog(details: dict):
         + diagnostics_html
         + f'Need help? <a href="{html.escape(discord_url)}">{html.escape(APP_DISCORD)}</a>'
     )
-    if sys.platform == 'darwin':
+    if sys.platform == 'darwin' or sys.platform.startswith('linux'):
         import webbrowser
 
         open_login_button = msg.addButton('Open Roblox Login', QMessageBox.ButtonRole.ActionRole)
@@ -653,7 +630,10 @@ def _show_auth_cookie_unavailable_dialog(details: dict):
 
     msg.exec()
     if open_login_button is not None and msg.clickedButton() == open_login_button:
-        webbrowser.open('https://www.roblox.com/login')
+        if sys.platform.startswith('linux'):
+            launch_as_standard_user('https://www.roblox.com/login')
+        else:
+            webbrowser.open('https://www.roblox.com/login')
 
 
 class _ProxyErrorInvoker(QObject):
@@ -712,26 +692,31 @@ class RobloxExitMonitor(QObject):
 
         # --- Roblox Player: launch detection - check CA cert on new launch ---
         if not self._player_was_running and is_running:
-            exe_path = get_roblox_player_exe_path()
-            if exe_path is None:
-                # Process may still be initializing — retry for up to 10 s
-                for _ in range(10):
-                    time.sleep(1.0)
-                    exe_path = get_roblox_player_exe_path()
-                    if exe_path is not None:
-                        break
-            if exe_path is not None:
-                proxy_features_enabled = self.config_manager.proxy_features_enabled
+            if sys.platform.startswith('linux'):
                 if self._mod_manager is not None:
                     self._mod_manager.refresh_roblox_dirs()
-                if self._proxy_master is not None and proxy_features_enabled:
-                    run_in_thread(self._proxy_master.refresh_and_restart_roblox)(exe_path)
-                elif self._proxy_master is None and proxy_features_enabled:
-                    run_in_thread(check_and_patch_running_roblox_ca)(exe_path)
-                elif not proxy_features_enabled:
-                    log_buffer.log('Certificate', 'Roblox launch detected: proxy features disabled, skipping proxy CA refresh')
+                log_buffer.log('Certificate', 'Sober launch detected: skipping launch-time cert repair/restart')
             else:
-                log_buffer.log('Certificate', 'Roblox launch detected but could not resolve exe path for CA check')
+                exe_path = get_roblox_player_exe_path()
+                if exe_path is None:
+                    # Process may still be initializing — retry for up to 10 s
+                    for _ in range(10):
+                        time.sleep(1.0)
+                        exe_path = get_roblox_player_exe_path()
+                        if exe_path is not None:
+                            break
+                if exe_path is not None:
+                    proxy_features_enabled = self.config_manager.proxy_features_enabled
+                    if self._mod_manager is not None:
+                        self._mod_manager.refresh_roblox_dirs()
+                    if self._proxy_master is not None and proxy_features_enabled:
+                        run_in_thread(self._proxy_master.refresh_and_restart_roblox)(exe_path)
+                    elif self._proxy_master is None and proxy_features_enabled:
+                        run_in_thread(check_and_patch_running_roblox_ca)(exe_path)
+                    elif not proxy_features_enabled:
+                        log_buffer.log('Certificate', 'Roblox launch detected: proxy features disabled, skipping proxy CA refresh')
+                else:
+                    log_buffer.log('Certificate', 'Roblox launch detected but could not resolve exe path for CA check')
         self._player_was_running = is_running
 
         # --- Roblox Player: auto cache deletion on exit ---
@@ -854,7 +839,7 @@ def _other_fleasion_pids() -> list:
     exe_name = os.path.basename(sys.executable)
     pids = []
 
-    if sys.platform == 'darwin':
+    if sys.platform != 'win32':
         try:
             result = subprocess.run(
                 ['ps', '-axo', 'pid=,ppid=,command='],
@@ -920,100 +905,21 @@ def _other_fleasion_pids() -> list:
     return pids
 
 
-def _request_running_instance_exit(timeout_ms: int = 2000) -> bool:
-    """Ask the already-running Fleasion instance to exit through its Qt event loop."""
-    try:
-        socket = QLocalSocket()
-        socket.connectToServer(_SINGLE_INSTANCE_CONTROL_SERVER)
-        if not socket.waitForConnected(timeout_ms):
-            return False
-
-        socket.write(b'quit\n')
-        socket.waitForBytesWritten(1000)
-        socket.disconnectFromServer()
-        socket.waitForDisconnected(1000)
-        return True
-    except Exception:
-        return False
-
-
-def _wait_for_other_fleasion_instances_to_exit(timeout_seconds: float = 8.0) -> bool:
-    """Wait until no other Fleasion processes remain."""
-    deadline = time.monotonic() + timeout_seconds
-    while time.monotonic() < deadline:
-        if not _other_fleasion_pids():
-            return True
-        time.sleep(0.1)
-    return not _other_fleasion_pids()
-
-
-def _request_other_fleasion_instances_exit(timeout_seconds: float = 8.0) -> bool:
-    """Return True if other instances were asked to exit and disappeared."""
-    if not _other_fleasion_pids():
-        return True
-    if not _request_running_instance_exit():
-        return False
-    return _wait_for_other_fleasion_instances_to_exit(timeout_seconds)
-
-
-def _handle_single_instance_command(socket: QLocalSocket, tray: SystemTray):
-    try:
-        command = bytes(socket.readAll()).decode('utf-8', errors='replace').strip().lower()
-        if command == 'quit':
-            tray._exit_app()
-    except Exception:
-        pass
-
-
-def _start_single_instance_control_server(app: QApplication, tray: SystemTray) -> QLocalServer | None:
-    """Start a local control endpoint for clean single-instance handoff."""
-    server = QLocalServer(app)
-
-    if not server.listen(_SINGLE_INSTANCE_CONTROL_SERVER):
-        QLocalServer.removeServer(_SINGLE_INSTANCE_CONTROL_SERVER)
-        if not server.listen(_SINGLE_INSTANCE_CONTROL_SERVER):
-            log_buffer.log('App', 'Single-instance control server could not start')
-            return None
-
-    def _handle_connection():
-        while server.hasPendingConnections():
-            socket = server.nextPendingConnection()
-            if socket is not None:
-                socket.readyRead.connect(lambda s=socket: _handle_single_instance_command(s, tray))
-                if socket.bytesAvailable() > 0:
-                    _handle_single_instance_command(socket, tray)
-
-    server.newConnection.connect(_handle_connection)
-    return server
-
-
 
 def kill_other_fleasion_instances():
     """Kill all other Fleasion instances except the current process."""
     import os
     import subprocess
 
-    if _request_other_fleasion_instances_exit():
-        return
-
     for pid in _other_fleasion_pids():
         try:
-            if sys.platform == 'darwin':
+            if sys.platform != 'win32':
                 os.kill(pid, signal.SIGTERM)
             else:
                 subprocess.run(
-                    ['taskkill', '/PID', str(pid)],
-                    capture_output=True,
-                    creationflags=subprocess.CREATE_NO_WINDOW,
-                    timeout=5,
-                )
-                if _wait_for_other_fleasion_instances_to_exit(2.0):
-                    continue
-                subprocess.run(
                     ['taskkill', '/F', '/PID', str(pid)],
                     capture_output=True,
-                    creationflags=subprocess.CREATE_NO_WINDOW,
-                    timeout=5,
+                    creationflags=subprocess.CREATE_NO_WINDOW
                 )
         except Exception:
             pass
@@ -1031,17 +937,40 @@ def main():
     _parser.add_argument('--proxy-debug', '-proxy-debug', action='store_true', help=_ap.SUPPRESS)
     _parser.add_argument('--proxy-debug-mode', choices=['a', 'b', 'c', 'd', 'e', 'full'], help=_ap.SUPPRESS)
     _parser.add_argument('--fleasion-user-localappdata', help=_ap.SUPPRESS)
+    _parser.add_argument('--install-desktop-entry', '--install-linux-desktop', action='store_true',
+                         help='Install the Linux desktop launcher and Polkit helper, then exit')
     _args, _ = _parser.parse_known_args()
+    if _args.install_desktop_entry:
+        if not sys.platform.startswith('linux'):
+            print('Desktop entry installation is only supported on Linux.', file=sys.stderr)
+            sys.exit(1)
+        from .utils.platform_linux import install_desktop_entries
+
+        result = install_desktop_entries()
+        print(f'Installed desktop entry: {result["desktop_entry"]}')
+        print(f'Installed launcher: {result["launcher"]}')
+        print(f'Installed root runner: {result["root_runner"]}')
+        if result.get('installed_app'):
+            print(f'Installed app binary: {result["installed_app"]}')
+        if result.get('installed_icon'):
+            print(f'Installed icon: {result["installed_icon"]}')
+        removed = result.get('removed_deprecated_entries') or []
+        if removed:
+            print('Removed deprecated non-admin desktop entries:')
+            for path in removed:
+                print(f'  {path}')
+        sys.exit(0)
+
     _suppress_dashboard = _args.no_dashboard
     log_buffer.log('App', f'Version {__version__}')
 
     current_platform = platform.system()
-    if current_platform not in {'Windows', 'Darwin'}:
+    if current_platform not in {'Windows', 'Darwin', 'Linux'}:
         app = QApplication(sys.argv)
         QMessageBox.critical(
             None,
             'Unsupported Operating System',
-            'Fleasion supports Windows and macOS.\n\nThis application will now exit.',
+            'Fleasion supports Windows, macOS, and Linux/Sober.\n\nThis application will now exit.',
             QMessageBox.StandardButton.Ok
         )
         sys.exit(1)
@@ -1079,11 +1008,11 @@ def main():
             kill_other_fleasion_instances()
             import time as _time
             _time.sleep(0.3)
-        _stale = QSharedMemory(_SINGLE_INSTANCE_KEY)
+        _stale = QSharedMemory('FleasionSingleInstance')
         if _stale.attach():
             _stale.detach()
 
-    shared_memory = QSharedMemory(_SINGLE_INSTANCE_KEY)
+    shared_memory = QSharedMemory('FleasionSingleInstance')
     _shared_memory_created = shared_memory.create(1)
     if (
         not _shared_memory_created
@@ -1093,10 +1022,10 @@ def main():
     ):
         # A hard termination can leave Qt's POSIX shared-memory segment behind.
         # Attach/detach removes it when no real Fleasion process still owns it.
-        _stale = QSharedMemory(_SINGLE_INSTANCE_KEY)
+        _stale = QSharedMemory('FleasionSingleInstance')
         if _stale.attach():
             _stale.detach()
-        shared_memory = QSharedMemory(_SINGLE_INSTANCE_KEY)
+        shared_memory = QSharedMemory('FleasionSingleInstance')
         _shared_memory_created = shared_memory.create(1)
 
     if not _shared_memory_created:
@@ -1167,7 +1096,11 @@ def main():
     # Gate non-admin launches before opening the usable GUI. Some Windows setups
     # show UAC as a taskbar item instead of foregrounding it, so startup must
     # block here until UAC is accepted, denied, or fails.
-    _admin_prompt_needed = sys.platform == 'win32' and not _is_admin()
+    _admin_prompt_needed = (
+        (sys.platform == 'win32' or sys.platform.startswith('linux'))
+        and config_manager.proxy_features_enabled
+        and not _is_admin()
+    )
     if sys.platform == 'darwin':
         from .utils.macos_proxy_helper import helper_is_ready
 
@@ -1219,7 +1152,7 @@ def main():
 
     # Sync autostart on every launch (updates if launch method changed).
     # Only attempt when running elevated: the proxy needs hosts/port privileges.
-    if config_manager.run_on_boot and (sys.platform == 'darwin' or _is_admin()):
+    if config_manager.run_on_boot and (sys.platform == 'darwin' or sys.platform == 'win32') and (sys.platform == 'darwin' or _is_admin()):
         try:
             from .utils.autostart import sync_autostart
             if sys.platform != 'darwin' or not _is_admin():
@@ -1242,8 +1175,6 @@ def main():
 
     # Create system tray
     tray = SystemTray(app, config_manager, proxy_master, mod_manager, roblox_monitor)
-    app.aboutToQuit.connect(tray.cleanup_tray_icon)
-    single_instance_control_server = _start_single_instance_control_server(app, tray)
     log_buffer.log('App', f'Persistent log file: {LOG_FILE}')
     _admin_prompt_shown = False
 
@@ -1252,6 +1183,32 @@ def main():
         if _admin_prompt_shown or _is_admin():
             return
         _admin_prompt_shown = True
+
+        if sys.platform.startswith('linux'):
+            prompt = QMessageBox(_visible_parent_widget())
+            prompt.setWindowTitle('Fleasion - Polkit Permission Required')
+            prompt.setIcon(QMessageBox.Icon.Information)
+            prompt.setText('Start Fleasion with Polkit for proxy interception?')
+            prompt.setInformativeText(
+                'Linux/Sober interception needs permission to update /etc/hosts and listen on local port 443.\n\n'
+                'Choose "Start with Polkit" to approve the system prompt, or continue without proxy interception.'
+            )
+            start_button = prompt.addButton('Start with Polkit', QMessageBox.ButtonRole.AcceptRole)
+            continue_button = prompt.addButton('Continue Read-Only', QMessageBox.ButtonRole.RejectRole)
+            prompt.setDefaultButton(start_button)
+            if icon_path := get_icon_path():
+                from PyQt6.QtGui import QIcon
+                prompt.setWindowIcon(QIcon(str(icon_path)))
+            prompt.exec()
+
+            if prompt.clickedButton() == start_button:
+                log_buffer.log('UAC', 'Requesting Linux Polkit relaunch from GUI startup path')
+                if _relaunch_as_admin(parent_hwnd=_window_handle(prompt)):
+                    sys.exit(0)
+                _show_admin_required_dialog()
+            else:
+                log_buffer.log('Proxy', 'Linux Polkit relaunch skipped; continuing without proxy interception')
+            return
 
         gate = QDialog(None)
         gate.setModal(True)
@@ -1262,6 +1219,11 @@ def main():
             gate_text = (
                 'Fleasion is waiting for macOS administrator permission.\n\n'
                 'Approve the helper install prompt so the normal-user app can use proxy features.'
+            )
+        elif sys.platform.startswith('linux'):
+            gate_text = (
+                'Fleasion is waiting for Linux administrator permission.\n\n'
+                'Approve the pkexec prompt so Fleasion can update /etc/hosts and listen on local port 443.'
             )
         else:
             gate_text = (
@@ -1445,7 +1407,6 @@ def main():
         _show_auth_cookie_unavailable_dialog(details)
 
     auth_check_invoker.completed.connect(_handle_auth_check_complete)
-    _choose_macos_auth_source_on_launch(config_manager, tray)
 
     def _check_auth_cookie_once():
         try:
@@ -1453,7 +1414,7 @@ def main():
 
             if sys.platform == 'darwin':
                 log_buffer.log('Auth', 'Running startup Roblox login discovery')
-            cookie = get_roblosecurity(include_keychain_browsers=sys.platform == 'darwin')
+            cookie = get_roblosecurity(include_keychain_browsers=sys.platform == 'darwin' or sys.platform.startswith('linux'))
             details = get_auth_failure_details()
         except Exception as exc:
             log_buffer.log('Auth', f'Unexpected error during startup auth check: {type(exc).__name__}: {exc}')

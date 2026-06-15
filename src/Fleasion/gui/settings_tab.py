@@ -9,7 +9,6 @@ from PyQt6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
     QComboBox,
-    QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -27,25 +26,10 @@ from ..gui.theme import ThemeManager
 from .modifications_tab import CollapsibleSection
 from ..utils.autostart import sync_autostart
 from ..utils import CONFIG_DIR
-from ..utils.roblox_auth import notify_auth_source_changed, store_manual_roblosecurity
-
-
-_MACOS_AUTH_SOURCES = (
-    ('Choose on launch', ''),
-    ('Manual Token', 'manual'),
-    ('Chrome', 'Chrome'),
-    ('Safari', 'Safari'),
-    ('Firefox', 'Firefox'),
-    ('Brave', 'Brave'),
-    ('Edge', 'Edge'),
-    ('Chromium', 'Chromium'),
-    ('Opera', 'Opera'),
-    ('Vivaldi', 'Vivaldi'),
-)
 
 
 def _is_admin() -> bool:
-    if sys.platform == 'darwin':
+    if sys.platform == 'darwin' or sys.platform.startswith('linux'):
         return hasattr(os, 'geteuid') and os.geteuid() == 0
     try:
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
@@ -87,8 +71,6 @@ class SettingsTab(QWidget):
         self._container_layout.addWidget(self._build_appearance_section())
         self._container_layout.addWidget(self._build_proxy_section())
         self._container_layout.addWidget(self._build_convenience_section())
-        if sys.platform == 'darwin':
-            self._container_layout.addWidget(self._build_macos_auth_section())
         self._container_layout.addWidget(self._build_scraper_section())
         self._container_layout.addWidget(self._build_scraped_games_section())
         self._container_layout.addWidget(self._build_export_section())
@@ -144,29 +126,6 @@ class SettingsTab(QWidget):
         row_widget.setLayout(theme_row)
         section.add_widget(row_widget)
 
-        return section
-
-    def _build_macos_auth_section(self) -> CollapsibleSection:
-        section = CollapsibleSection('Roblox Login', expanded=True)
-
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 0)
-        row.addWidget(QLabel('Roblox is signed in through'))
-        self._macos_auth_source_combo = QComboBox()
-        for label, value in _MACOS_AUTH_SOURCES:
-            self._macos_auth_source_combo.addItem(label, value)
-        idx = self._macos_auth_source_combo.findData(self._config.macos_auth_source)
-        self._macos_auth_source_combo.setCurrentIndex(max(0, idx))
-        self._macos_auth_source_combo.currentIndexChanged.connect(self._on_macos_auth_source_changed)
-        row.addWidget(self._macos_auth_source_combo)
-        self._manual_token_btn = QPushButton('Import Token')
-        self._manual_token_btn.clicked.connect(self._on_import_manual_token)
-        row.addWidget(self._manual_token_btn)
-        row.addStretch()
-
-        row_widget = QWidget()
-        row_widget.setLayout(row)
-        section.add_widget(row_widget)
         return section
 
     # Proxy
@@ -473,11 +432,6 @@ class SettingsTab(QWidget):
             chk.blockSignals(True)
             chk.setChecked(self._config.is_export_naming_enabled(option))
             chk.blockSignals(False)
-        if sys.platform == 'darwin':
-            idx = self._macos_auth_source_combo.findData(self._config.macos_auth_source)
-            self._macos_auth_source_combo.blockSignals(True)
-            self._macos_auth_source_combo.setCurrentIndex(max(0, idx))
-            self._macos_auth_source_combo.blockSignals(False)
 
     # Handlers
 
@@ -601,39 +555,6 @@ class SettingsTab(QWidget):
         self._config.clear_cache_on_launch = checked
         if self._tray and hasattr(self._tray, 'clear_cache_action'):
             self._tray.clear_cache_action.setChecked(checked)
-
-    def _on_macos_auth_source_changed(self, *_args):
-        if sys.platform != 'darwin':
-            return
-        self._config.macos_auth_source = self._macos_auth_source_combo.currentData()
-        notify_auth_source_changed()
-
-    def _on_import_manual_token(self):
-        if sys.platform != 'darwin':
-            return
-        from .rando_stuff_tab import AddAccountDialog
-
-        dlg = AddAccountDialog(self, title='Import Roblox Token')
-        dlg.set_ok_label('Import')
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return
-        if not dlg.result_cookie:
-            return
-        if not store_manual_roblosecurity(dlg.result_cookie):
-            QMessageBox.warning(
-                self,
-                'Token Import Failed',
-                'Fleasion could not store the Roblox token encrypted.',
-            )
-            return
-        self._config.macos_auth_source = 'manual'
-        notify_auth_source_changed()
-        idx = self._macos_auth_source_combo.findData('manual')
-        self._macos_auth_source_combo.blockSignals(True)
-        self._macos_auth_source_combo.setCurrentIndex(max(0, idx))
-        self._macos_auth_source_combo.blockSignals(False)
-        username = dlg.result_username or 'Roblox account'
-        QMessageBox.information(self, 'Token Imported', f'{username} was stored encrypted.')
 
     def _on_close_scraped_games_toggled(self, checked: bool):
         self._config.close_scraped_games_on_open = checked

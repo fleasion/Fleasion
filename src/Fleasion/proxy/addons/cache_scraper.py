@@ -1148,8 +1148,6 @@ class CacheScraper:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _get_roblosecurity(self, *, wait: bool = False) -> str | None:
-        from ...utils.roblox_auth import get_roblosecurity, wait_for_roblosecurity
-        if wait:
-            return wait_for_roblosecurity()
+    def _get_roblosecurity(self) -> str | None:
+        from ...utils.roblox_auth import get_roblosecurity
         return get_roblosecurity()

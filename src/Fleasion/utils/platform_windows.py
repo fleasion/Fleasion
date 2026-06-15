@@ -4,7 +4,6 @@ import ctypes
 import ctypes.wintypes
 import os
 import re
-import shlex
 import stat
 import subprocess
 import time
@@ -353,15 +352,13 @@ def _extract_exe_from_command(command: str) -> Optional[Path]:
     command = (command or '').replace('\x00', '').strip()
     if not command:
         return None
-    match = re.match(r'(.+?\.exe)(?:["\s]|$)', command, re.IGNORECASE)
-    if match:
-        exe_path = match.group(1).strip('"')
+    if command.startswith('"'):
+        end_quote = command.find('"', 1)
+        if end_quote <= 1:
+            return None
+        exe_path = command[1:end_quote]
     else:
-        try:
-            parts = shlex.split(command, posix=False)
-        except ValueError:
-            parts = []
-        exe_path = parts[0].strip('"') if parts else command.split()[0]
+        exe_path = command.split()[0]
     if not exe_path:
         return None
     return Path(exe_path)

@@ -22,7 +22,7 @@ _TOAST_TEMPLATE = '<toast><visual><binding template="ToastGeneric"></binding></v
 
 
 def _is_admin() -> bool:
-    if sys.platform == 'darwin':
+    if sys.platform == 'darwin' or sys.platform.startswith('linux'):
         return hasattr(os, 'geteuid') and os.geteuid() == 0
     try:
         return bool(ctypes.windll.shell32.IsUserAnAdmin()) if hasattr(ctypes, 'windll') else False
@@ -51,7 +51,6 @@ class SystemTray:
         self._dashboard_close_notice_shown = False
         self._mac_beta_warning_shown = False
         self._notification_app_id = None
-        self._tray_cleaned_up = False
 
         # Create tray icon
         self.tray = QSystemTrayIcon()
@@ -364,6 +363,8 @@ class SystemTray:
                         self.config_manager.proxy_features_enabled = False
                         log_buffer.log('ProxyHelper', f'macOS proxy helper installation failed: {detail}')
                         enabled = False
+            elif sys.platform.startswith('linux') and _is_admin():
+                self.proxy_master.start()
             elif _is_admin():
                 self.proxy_master.start()
             else:
@@ -805,7 +806,6 @@ class SystemTray:
     def _exit_app(self):
         """Exit the application."""
         self._exiting = True
-        self.cleanup_tray_icon()
         # Stop proxy: always attempt to stop so startup failures (e.g., UAC rejected)
         # that leave background threads or waiters won't be skipped.
         try:
@@ -820,20 +820,6 @@ class SystemTray:
 
         # Quit Qt app
         self.app.quit()
-
-    def cleanup_tray_icon(self):
-        """Remove the tray icon before the Qt event loop exits."""
-        if self._tray_cleaned_up:
-            return
-
-        self._tray_cleaned_up = True
-        try:
-            self.tray.hide()
-            self.tray.setContextMenu(None)
-            self.tray.deleteLater()
-            QApplication.processEvents()
-        except Exception:
-            pass
 
     def update_status(self):
         """Update the status (called periodically or on proxy state change)."""
