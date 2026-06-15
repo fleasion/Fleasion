@@ -17,6 +17,9 @@ APP_REPO = 'https://github.com/fleasion/Fleasion'
 if sys.platform == 'darwin':
     ROBLOX_PROCESS = 'RobloxPlayer'
     ROBLOX_STUDIO_PROCESS = 'RobloxStudio'
+elif sys.platform.startswith('linux'):
+    ROBLOX_PROCESS = 'sober'
+    ROBLOX_STUDIO_PROCESS = 'RobloxStudioBeta.exe'
 else:
     ROBLOX_PROCESS = 'RobloxPlayerBeta.exe'
     ROBLOX_STUDIO_PROCESS = 'RobloxStudioBeta.exe'
@@ -67,6 +70,9 @@ LOCAL_APPDATA = _get_local_appdata()
 if sys.platform == 'darwin':
     STORAGE_DB = USER_HOME / 'Library' / 'Roblox' / 'rbx-storage.db'
     STORAGE_DB_GDK = USER_HOME / 'Library' / 'RobloxPCGDK' / 'rbx-storage.db'
+elif sys.platform.startswith('linux'):
+    STORAGE_DB = USER_HOME / '.var' / 'app' / 'org.vinegarhq.Sober' / 'data' / 'sober' / 'appData' / 'rbx-storage.db'
+    STORAGE_DB_GDK = STORAGE_DB
 else:
     STORAGE_DB = LOCAL_APPDATA / 'Roblox' / 'rbx-storage.db'
     # Microsoft Store (GDK) version of Roblox stores its DB here

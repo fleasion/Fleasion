@@ -52,7 +52,7 @@ class _FirstTimeSetupMessageBox(QMessageBox):
 
 def _is_admin() -> bool:
     """Return True if the current process has administrator/root privileges."""
-    if sys.platform == 'darwin':
+    if sys.platform == 'darwin' or sys.platform.startswith('linux'):
         return hasattr(os, 'geteuid') and os.geteuid() == 0
     import ctypes
     try:
@@ -110,6 +110,53 @@ def _relaunch_as_admin(extra_args: str = '', parent_hwnd: int | None = None) -> 
             log_buffer.log('UAC', f'macOS administrator relaunch was cancelled or failed: {err or result.returncode}')
             return False
         return True
+
+    if sys.platform.startswith('linux'):
+        import shutil
+
+        pkexec = shutil.which('pkexec')
+        if not pkexec:
+            log_buffer.log('UAC', 'Linux administrator relaunch failed: pkexec not found')
+            return False
+
+        existing_args = [arg for arg in sys.argv[1:] if not arg.startswith('--fleasion-user-localappdata=')]
+        if extra_args.strip():
+            existing_args.extend(extra_args.strip().split())
+        runner = Path.home() / '.local' / 'bin' / 'fleasion-root-runner'
+        if not runner.is_file():
+            log_buffer.log('UAC', f'Linux administrator relaunch failed: root runner not found at {runner}')
+            return False
+
+        display = os.environ.get('DISPLAY', '')
+        wayland_display = os.environ.get('WAYLAND_DISPLAY', '')
+        xauthority = os.environ.get('XAUTHORITY') or str(Path.home() / '.Xauthority')
+        xdg_runtime_dir = os.environ.get('XDG_RUNTIME_DIR', '')
+        user_home = str(Path.home())
+        log_path = CONFIG_DIR / 'polkit_launch.log'
+        cmd = [
+            pkexec,
+            str(runner),
+            display,
+            wayland_display,
+            xauthority,
+            xdg_runtime_dir,
+            user_home,
+            *existing_args,
+        ]
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open('ab') as log_file:
+                subprocess.Popen(
+                    cmd,
+                    stdout=log_file,
+                    stderr=log_file,
+                    start_new_session=True,
+                )
+            log_buffer.log('UAC', f'Linux Polkit relaunch dispatched via {runner}; stderr/stdout: {log_path}')
+            return True
+        except Exception as exc:
+            log_buffer.log('UAC', f'Linux administrator relaunch failed: {exc}')
+            return False
 
     import ctypes
 
@@ -256,6 +303,13 @@ def _show_admin_required_dialog(parent=None):
             'Run Fleasion as your normal macOS user, then approve the proxy-helper install prompt. '
             'The helper owns port 443, updates /etc/hosts, and patches Roblox SSL trust while the app stays unprivileged.'
         )
+    elif sys.platform.startswith('linux'):
+        msg.setText("Fleasion needs administrator permission for Linux/Sober interception.")
+        msg.setInformativeText(
+            'Linux support targets the Sober Flatpak client.\n\n'
+            'Asset interception, scraping, replacement, hosts-file changes, and the local HTTPS proxy need root access '
+            'because Fleasion writes /etc/hosts and listens on local port 443.'
+        )
     else:
         msg.setText("Fleasion won't work unless you're in admin mode.")
         msg.setInformativeText(
@@ -326,8 +380,8 @@ def _show_hosts_write_exhausted_dialog(details: dict):
     """Show a user-facing popup when hosts writes fail after all retries."""
     import os
 
-    default_hosts_path = '/etc/hosts' if sys.platform == 'darwin' else r'C:\Windows\System32\drivers\etc\hosts'
-    default_hosts_dir = '/etc' if sys.platform == 'darwin' else r'C:\Windows\System32\drivers\etc'
+    default_hosts_path = '/etc/hosts' if sys.platform == 'darwin' or sys.platform.startswith('linux') else r'C:\Windows\System32\drivers\etc\hosts'
+    default_hosts_dir = '/etc' if sys.platform == 'darwin' or sys.platform.startswith('linux') else r'C:\Windows\System32\drivers\etc'
     hosts_path = str(details.get('hosts_path') or default_hosts_path)
     hosts_directory = str(
         details.get('hosts_directory')
@@ -503,6 +557,23 @@ def _show_auth_cookie_unavailable_dialog(details: dict):
             'You can retry from Dashboard > Miscellaneous > Account Manager > '
             'Import Browser Login.<br><br>'
         )
+    elif sys.platform.startswith('linux'):
+        diagnostics_html = (
+            'Diagnostics:<br>'
+            f'Linux home: {html.escape(str(details.get("home") or "Unknown"))}<br>'
+            f'Fleasion config root: {html.escape(str(details.get("local_appdata") or "Unknown"))}<br>'
+            f'Default Sober cookie path: {html.escape(str(details.get("default_cookie_path") or "Unknown"))}<br>'
+            f'Candidate paths checked: {len(attempted)}<br><br>'
+        )
+        most_likely_html = (
+            'Fleasion checked Sober cookies plus supported browser login stores, '
+            'but found zero usable Roblox login tokens.<br><br>'
+            'This token is required for authenticated asset downloads, account launches, '
+            'private-server joins, and other account-aware features.<br><br>'
+            'Sign in through Sober or log in to roblox.com in Firefox or a Chrome-family browser, '
+            'then try again. You can retry from Dashboard > Miscellaneous > Account Manager > '
+            'Import Browser Login.<br><br>'
+        )
     else:
         diagnostics_html = (
             'Diagnostics:<br>'
@@ -537,7 +608,7 @@ def _show_auth_cookie_unavailable_dialog(details: dict):
         + diagnostics_html
         + f'Need help? <a href="{html.escape(discord_url)}">{html.escape(APP_DISCORD)}</a>'
     )
-    if sys.platform == 'darwin':
+    if sys.platform == 'darwin' or sys.platform.startswith('linux'):
         import webbrowser
 
         open_login_button = msg.addButton('Open Roblox Login', QMessageBox.ButtonRole.ActionRole)
@@ -618,26 +689,31 @@ class RobloxExitMonitor(QObject):
 
         # --- Roblox Player: launch detection - check CA cert on new launch ---
         if not self._player_was_running and is_running:
-            exe_path = get_roblox_player_exe_path()
-            if exe_path is None:
-                # Process may still be initializing — retry for up to 10 s
-                for _ in range(10):
-                    time.sleep(1.0)
-                    exe_path = get_roblox_player_exe_path()
-                    if exe_path is not None:
-                        break
-            if exe_path is not None:
-                proxy_features_enabled = self.config_manager.proxy_features_enabled
+            if sys.platform.startswith('linux'):
                 if self._mod_manager is not None:
                     self._mod_manager.refresh_roblox_dirs()
-                if self._proxy_master is not None and proxy_features_enabled:
-                    run_in_thread(self._proxy_master.refresh_and_restart_roblox)(exe_path)
-                elif self._proxy_master is None and proxy_features_enabled:
-                    run_in_thread(check_and_patch_running_roblox_ca)(exe_path)
-                elif not proxy_features_enabled:
-                    log_buffer.log('Certificate', 'Roblox launch detected: proxy features disabled, skipping proxy CA refresh')
+                log_buffer.log('Certificate', 'Sober launch detected: skipping launch-time cert repair/restart')
             else:
-                log_buffer.log('Certificate', 'Roblox launch detected but could not resolve exe path for CA check')
+                exe_path = get_roblox_player_exe_path()
+                if exe_path is None:
+                    # Process may still be initializing — retry for up to 10 s
+                    for _ in range(10):
+                        time.sleep(1.0)
+                        exe_path = get_roblox_player_exe_path()
+                        if exe_path is not None:
+                            break
+                if exe_path is not None:
+                    proxy_features_enabled = self.config_manager.proxy_features_enabled
+                    if self._mod_manager is not None:
+                        self._mod_manager.refresh_roblox_dirs()
+                    if self._proxy_master is not None and proxy_features_enabled:
+                        run_in_thread(self._proxy_master.refresh_and_restart_roblox)(exe_path)
+                    elif self._proxy_master is None and proxy_features_enabled:
+                        run_in_thread(check_and_patch_running_roblox_ca)(exe_path)
+                    elif not proxy_features_enabled:
+                        log_buffer.log('Certificate', 'Roblox launch detected: proxy features disabled, skipping proxy CA refresh')
+                else:
+                    log_buffer.log('Certificate', 'Roblox launch detected but could not resolve exe path for CA check')
         self._player_was_running = is_running
 
         # --- Roblox Player: auto cache deletion on exit ---
@@ -760,7 +836,7 @@ def _other_fleasion_pids() -> list:
     exe_name = os.path.basename(sys.executable)
     pids = []
 
-    if sys.platform == 'darwin':
+    if sys.platform != 'win32':
         try:
             result = subprocess.run(
                 ['ps', '-axo', 'pid=,ppid=,command='],
@@ -834,7 +910,7 @@ def kill_other_fleasion_instances():
 
     for pid in _other_fleasion_pids():
         try:
-            if sys.platform == 'darwin':
+            if sys.platform != 'win32':
                 os.kill(pid, signal.SIGTERM)
             else:
                 subprocess.run(
@@ -863,12 +939,12 @@ def main():
     log_buffer.log('App', f'Version {__version__}')
 
     current_platform = platform.system()
-    if current_platform not in {'Windows', 'Darwin'}:
+    if current_platform not in {'Windows', 'Darwin', 'Linux'}:
         app = QApplication(sys.argv)
         QMessageBox.critical(
             None,
             'Unsupported Operating System',
-            'Fleasion supports Windows and macOS.\n\nThis application will now exit.',
+            'Fleasion supports Windows, macOS, and Linux/Sober.\n\nThis application will now exit.',
             QMessageBox.StandardButton.Ok
         )
         sys.exit(1)
@@ -994,7 +1070,11 @@ def main():
     # Gate non-admin launches before opening the usable GUI. Some Windows setups
     # show UAC as a taskbar item instead of foregrounding it, so startup must
     # block here until UAC is accepted, denied, or fails.
-    _admin_prompt_needed = sys.platform == 'win32' and not _is_admin()
+    _admin_prompt_needed = (
+        (sys.platform == 'win32' or sys.platform.startswith('linux'))
+        and config_manager.proxy_features_enabled
+        and not _is_admin()
+    )
     if sys.platform == 'darwin':
         from .utils.macos_proxy_helper import helper_is_ready
 
@@ -1046,7 +1126,7 @@ def main():
 
     # Sync autostart on every launch (updates if launch method changed).
     # Only attempt when running elevated: the proxy needs hosts/port privileges.
-    if config_manager.run_on_boot and (sys.platform == 'darwin' or _is_admin()):
+    if config_manager.run_on_boot and (sys.platform == 'darwin' or sys.platform == 'win32') and (sys.platform == 'darwin' or _is_admin()):
         try:
             from .utils.autostart import sync_autostart
             if sys.platform != 'darwin' or not _is_admin():
@@ -1078,6 +1158,32 @@ def main():
             return
         _admin_prompt_shown = True
 
+        if sys.platform.startswith('linux'):
+            prompt = QMessageBox(_visible_parent_widget())
+            prompt.setWindowTitle('Fleasion - Polkit Permission Required')
+            prompt.setIcon(QMessageBox.Icon.Information)
+            prompt.setText('Start Fleasion with Polkit for proxy interception?')
+            prompt.setInformativeText(
+                'Linux/Sober interception needs permission to update /etc/hosts and listen on local port 443.\n\n'
+                'Choose "Start with Polkit" to approve the system prompt, or continue without proxy interception.'
+            )
+            start_button = prompt.addButton('Start with Polkit', QMessageBox.ButtonRole.AcceptRole)
+            continue_button = prompt.addButton('Continue Read-Only', QMessageBox.ButtonRole.RejectRole)
+            prompt.setDefaultButton(start_button)
+            if icon_path := get_icon_path():
+                from PyQt6.QtGui import QIcon
+                prompt.setWindowIcon(QIcon(str(icon_path)))
+            prompt.exec()
+
+            if prompt.clickedButton() == start_button:
+                log_buffer.log('UAC', 'Requesting Linux Polkit relaunch from GUI startup path')
+                if _relaunch_as_admin(parent_hwnd=_window_handle(prompt)):
+                    sys.exit(0)
+                _show_admin_required_dialog()
+            else:
+                log_buffer.log('Proxy', 'Linux Polkit relaunch skipped; continuing without proxy interception')
+            return
+
         gate = QDialog(None)
         gate.setModal(True)
         gate.setWindowTitle('Fleasion - Administrator Permission Required')
@@ -1087,6 +1193,11 @@ def main():
             gate_text = (
                 'Fleasion is waiting for macOS administrator permission.\n\n'
                 'Approve the helper install prompt so the normal-user app can use proxy features.'
+            )
+        elif sys.platform.startswith('linux'):
+            gate_text = (
+                'Fleasion is waiting for Linux administrator permission.\n\n'
+                'Approve the pkexec prompt so Fleasion can update /etc/hosts and listen on local port 443.'
             )
         else:
             gate_text = (
@@ -1277,7 +1388,7 @@ def main():
 
             if sys.platform == 'darwin':
                 log_buffer.log('Auth', 'Running startup Roblox login discovery')
-            cookie = get_roblosecurity(include_keychain_browsers=sys.platform == 'darwin')
+            cookie = get_roblosecurity(include_keychain_browsers=sys.platform == 'darwin' or sys.platform.startswith('linux'))
             details = get_auth_failure_details()
         except Exception as exc:
             log_buffer.log('Auth', f'Unexpected error during startup auth check: {type(exc).__name__}: {exc}')

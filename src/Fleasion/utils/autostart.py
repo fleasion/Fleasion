@@ -1,8 +1,9 @@
 """Autostart integration for Fleasion.
 
 Creates a Windows Task Scheduler task or macOS LaunchAgent that runs Fleasion at
-user logon. Detects whether we're running as a compiled executable or from a
-development checkout and updates the launch method when it changes.
+user logon, or an XDG autostart desktop entry on Linux. Detects whether we're
+running as a compiled executable or from a development checkout and updates the
+launch method when it changes.
 """
 
 import os
@@ -11,6 +12,7 @@ import base64
 import json
 import logging
 import plistlib
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -29,6 +31,7 @@ def _log(msg: str) -> None:
 TASK_NAME = 'Fleasion_Autostart'
 LAUNCH_AGENT_ID = 'com.fleasion.autostart'
 LAUNCH_AGENT_PATH = USER_HOME / 'Library' / 'LaunchAgents' / f'{LAUNCH_AGENT_ID}.plist'
+LINUX_AUTOSTART_PATH = USER_HOME / '.config' / 'autostart' / 'fleasion.desktop'
 
 
 # Bump this whenever the task XML format changes to force recreation on next launch.
@@ -45,7 +48,7 @@ def _get_launch_info() -> dict:
     if getattr(sys, 'frozen', False):
         return {'mode': 'exe', 'path': sys.executable, '_fmt': _TASK_FORMAT_VERSION}
 
-    if sys.platform == 'darwin':
+    if sys.platform == 'darwin' or sys.platform.startswith('linux'):
         check = Path(__file__).resolve().parent
         for _ in range(8):
             if (check / 'pyproject.toml').exists():
@@ -69,6 +72,8 @@ def _get_launch_info() -> dict:
 def _task_exists() -> bool:
     if sys.platform == 'darwin':
         return LAUNCH_AGENT_PATH.exists()
+    if sys.platform.startswith('linux'):
+        return LINUX_AUTOSTART_PATH.exists()
     try:
         r = subprocess.run(
             ['schtasks', '/Query', '/TN', TASK_NAME],
@@ -87,6 +92,12 @@ def _delete_task() -> None:
             pass
         try:
             LAUNCH_AGENT_PATH.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return
+    if sys.platform.startswith('linux'):
+        try:
+            LINUX_AUTOSTART_PATH.unlink(missing_ok=True)
         except OSError:
             pass
         return
@@ -135,6 +146,33 @@ def _create_task(launch_info: dict) -> bool:
             return True
         except Exception as e:
             _log(f'Failed to create LaunchAgent: {e}')
+            return False
+
+    if sys.platform.startswith('linux'):
+        try:
+            if launch_info['mode'] == 'exe':
+                command = shlex.join([launch_info['path'], '--no-dashboard'])
+                working_dir = str(Path(launch_info['path']).parent)
+            else:
+                project = Path(launch_info['project'])
+                command = shlex.join([launch_info['path'], str(project / 'launcher.py'), '--no-dashboard'])
+                working_dir = str(project)
+
+            content = (
+                '[Desktop Entry]\n'
+                'Type=Application\n'
+                'Name=Fleasion\n'
+                f'Exec={command}\n'
+                f'Path={working_dir}\n'
+                'Terminal=false\n'
+                'X-GNOME-Autostart-enabled=true\n'
+            )
+            LINUX_AUTOSTART_PATH.parent.mkdir(parents=True, exist_ok=True)
+            LINUX_AUTOSTART_PATH.write_text(content, encoding='utf-8')
+            _log('XDG autostart entry updated; it will take effect at the next login')
+            return True
+        except Exception as e:
+            _log(f'Failed to create XDG autostart entry: {e}')
             return False
 
     import tempfile, textwrap, html as _html

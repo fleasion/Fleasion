@@ -64,6 +64,12 @@ def _find_roblox_dirs() -> list[Path]:
     """Locate Roblox resource directories that can receive file modifications."""
     if sys.platform == 'darwin':
         from ..utils.platform_macos import find_roblox_resource_dirs
+    elif sys.platform.startswith('linux'):
+        from ..utils.platform_linux import find_roblox_resource_dirs
+    else:
+        find_roblox_resource_dirs = None
+
+    if find_roblox_resource_dirs is not None:
 
         found: list[Path] = []
         seen: set[str] = set()

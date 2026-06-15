@@ -57,6 +57,7 @@ ACCOUNTS_FILE = CONFIG_DIR / 'accounts.json'
 ACCOUNTS_KEY_FILE = CONFIG_DIR / 'accounts.key'
 IS_WINDOWS = sys.platform == 'win32'
 IS_MACOS = sys.platform == 'darwin'
+IS_LINUX = sys.platform.startswith('linux')
 
 
 # Helpers
@@ -917,7 +918,7 @@ class RandoStuffTab(QWidget):
         self._add_acct_btn.clicked.connect(self._on_add_account)
         self._import_browser_btn = QPushButton("Import Browser Login")
         self._import_browser_btn.clicked.connect(self._on_import_browser_account)
-        self._import_browser_btn.setVisible(IS_MACOS)
+        self._import_browser_btn.setVisible(IS_MACOS or IS_LINUX)
         self._launch_acct_btn = QPushButton("Launch")
         self._launch_acct_btn.clicked.connect(self._on_launch_account)
         self._switch_acct_btn = QPushButton("Switch to selected")

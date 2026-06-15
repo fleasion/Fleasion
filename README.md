@@ -1,6 +1,6 @@
-# Fleasion
+# Fleasion on Linux (Gay Edition)
 
-A Windows and macOS application for intercepting and replacing Roblox game assets in real time. Fleasion runs a local proxy that sits between Roblox and its servers, letting you swap textures, audio, meshes, animations, and other assets before they reach the game client.
+A Windows, macOS, and Linux/Sober application for intercepting and replacing Roblox game assets in real time. Fleasion runs a local proxy that sits between Roblox and its servers, letting you swap textures, audio, meshes, animations, and other assets before they reach the game client.
 
 To request help or request content, join our community <a href="https://discord.com/invite/pdtce585f6">Discord server!</a>
 
@@ -78,6 +78,7 @@ Fleasion runs a lightweight custom asyncio HTTPS proxy on `127.0.0.1:443`. On st
 - **Cache** original assets &mdash; browse, preview, and export everything Roblox downloads
 
 All interception happens locally on your machine. Windows runs Fleasion elevated. On macOS, Fleasion installs a small root-owned relay/hosts/CA-patching helper with one administrator approval; the dashboard and menu-bar app always run as the normal user.
+On Linux, Fleasion targets the Sober Flatpak client (`org.vinegarhq.Sober`). It uses Sober's asset overlay at `~/.var/app/org.vinegarhq.Sober/data/sober/asset_overlay` and writes Sober FFlags to `~/.var/app/org.vinegarhq.Sober/config/sober/config.json`. Proxy interception needs root permission because Fleasion updates `/etc/hosts` and listens on local port 443.
 
 **VPN compatibility:** Because interception uses the system's hosts file (application layer), it should be compatible with most VPN software, as long as it respects the hosts file.
 

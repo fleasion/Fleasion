@@ -22,7 +22,7 @@ _TOAST_TEMPLATE = '<toast><visual><binding template="ToastGeneric"></binding></v
 
 
 def _is_admin() -> bool:
-    if sys.platform == 'darwin':
+    if sys.platform == 'darwin' or sys.platform.startswith('linux'):
         return hasattr(os, 'geteuid') and os.geteuid() == 0
     try:
         return bool(ctypes.windll.shell32.IsUserAnAdmin()) if hasattr(ctypes, 'windll') else False
@@ -363,6 +363,8 @@ class SystemTray:
                         self.config_manager.proxy_features_enabled = False
                         log_buffer.log('ProxyHelper', f'macOS proxy helper installation failed: {detail}')
                         enabled = False
+            elif sys.platform.startswith('linux') and _is_admin():
+                self.proxy_master.start()
             elif _is_admin():
                 self.proxy_master.start()
             else:

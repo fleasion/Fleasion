@@ -19,6 +19,8 @@ except Exception:
 
 if sys.platform == 'darwin':
     ROBLOX_COOKIES_PATH = USER_HOME / 'Library' / 'Roblox' / 'RobloxCookies.dat'
+elif sys.platform.startswith('linux'):
+    ROBLOX_COOKIES_PATH = USER_HOME / '.var' / 'app' / 'org.vinegarhq.Sober' / 'data' / 'sober' / 'cookies'
 else:
     ROBLOX_COOKIES_PATH = LOCAL_APPDATA / 'Roblox' / 'LocalStorage' / 'RobloxCookies.dat'
 _LOGGED_AUTH_FAILURES: set[str] = set()
@@ -26,6 +28,9 @@ _ROBLOX_COOKIE_RELATIVE_PATH = Path('AppData') / 'Local' / 'Roblox' / 'LocalStor
 _MACOS_COOKIE_CANDIDATES = (
     Path('Library') / 'Roblox' / 'RobloxCookies.dat',
     Path('Library') / 'Roblox' / 'LocalStorage' / 'RobloxCookies.dat',
+)
+_LINUX_COOKIE_CANDIDATES = (
+    Path('.var') / 'app' / 'org.vinegarhq.Sober' / 'data' / 'sober' / 'cookies',
 )
 _SUCCESSFUL_COOKIE_PATH: Path | None = None
 _LAST_AUTH_FAILURE_DETAILS: dict[str, object] = {}
@@ -117,6 +122,11 @@ def _iter_user_profile_cookie_candidates() -> list[tuple[str, Path]]:
             _add_candidate(candidates, seen, 'macOS-home', USER_HOME / relative)
         return candidates
 
+    if sys.platform.startswith('linux'):
+        for relative in _LINUX_COOKIE_CANDIDATES:
+            _add_candidate(candidates, seen, 'Sober', USER_HOME / relative)
+        return candidates
+
     userprofile = os.environ.get('USERPROFILE')
     if userprofile:
         _add_candidate(candidates, seen, 'USERPROFILE', Path(userprofile) / _ROBLOX_COOKIE_RELATIVE_PATH)
@@ -156,6 +166,16 @@ def _read_cookie_payload(path: Path) -> tuple[dict, bytes] | None:
         )
         return None
 
+    if sys.platform.startswith('linux') and path.name == 'cookies':
+        try:
+            return {}, path.read_bytes()
+        except Exception as exc:
+            _log_auth_failure(
+                f'linux-cookie-read:{path}:{type(exc).__name__}',
+                f'Failed to read Sober cookie file at {path}: {type(exc).__name__}: {exc}',
+            )
+            return None
+
     try:
         with path.open('r', encoding='utf-8') as f:
             data = json.load(f)
@@ -182,6 +202,9 @@ def _read_cookie_payload(path: Path) -> tuple[dict, bytes] | None:
             f'Failed to decode RobloxCookies.dat CookiesData at {path}: {type(exc).__name__}: {exc}',
         )
         return None
+
+    if sys.platform.startswith('linux'):
+        return data, enc
 
     if win32crypt is None:
         if sys.platform == 'darwin':
@@ -605,7 +628,7 @@ def get_roblosecurity(path: Path | None = None, *, include_keychain_browsers: bo
             _LAST_AUTH_FAILURE_DETAILS = {}
             return cookie
 
-    if sys.platform == 'darwin':
+    if sys.platform == 'darwin' or sys.platform.startswith('linux'):
         browser_cookie, browser_source = discover_browser_roblosecurity(
             include_keychain=include_keychain_browsers,
         )

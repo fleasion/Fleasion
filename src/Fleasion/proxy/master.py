@@ -29,6 +29,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import socket
 import ssl
 import subprocess
@@ -84,9 +85,10 @@ logger = logging.getLogger(__name__)
 
 IS_WINDOWS = sys.platform == 'win32'
 IS_MACOS = sys.platform == 'darwin'
+IS_LINUX = sys.platform.startswith('linux')
 _ACTIVE_PROXY_CA_DIR = PROXY_CA_DIR
 
-if IS_MACOS:
+if IS_MACOS or IS_LINUX:
     HOSTS_FILE = Path('/etc/hosts')
     _PLATFORM_TEMP_DIR = Path(tempfile.gettempdir())
 else:
@@ -666,6 +668,26 @@ def _flush_dns() -> None:
             log_buffer.log('Hosts', 'DNS cache flushed')
         return
 
+    if IS_LINUX:
+        flushed = False
+        for cmd in (
+            ['resolvectl', 'flush-caches'],
+            ['systemd-resolve', '--flush-caches'],
+            ['service', 'nscd', 'restart'],
+        ):
+            try:
+                result = subprocess.run(cmd, capture_output=True, timeout=5)
+                if result.returncode == 0:
+                    flushed = True
+                    break
+            except Exception:
+                pass
+        if flushed:
+            log_buffer.log('Hosts', 'DNS cache flushed')
+        else:
+            log_buffer.log('Hosts', 'DNS cache flush skipped: no supported Linux flush command succeeded')
+        return
+
     # Primary: in-process DLL call — fast, no subprocess, immune to AV process blocks.
     try:
         ctypes.windll.LoadLibrary('dnsapi.dll').DnsFlushResolverCache()
@@ -848,7 +870,7 @@ def _cancel_hosts_cleanup_on_reboot() -> None:
 # ---------------------------------------------------------------------------
 
 def _is_admin() -> bool:
-    if IS_MACOS:
+    if IS_MACOS or IS_LINUX:
         return hasattr(os, 'geteuid') and os.geteuid() == 0
     try:
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
@@ -1026,7 +1048,7 @@ def _list_port_listeners_netstat(port: int) -> list[dict]:
 
 def _list_port_listeners(port: int) -> list[dict]:
     """Return unique listener records for a TCP port."""
-    if IS_MACOS:
+    if IS_MACOS or IS_LINUX:
         try:
             result = subprocess.run(
                 ['lsof', '-nP', f'-iTCP:{port}', '-sTCP:LISTEN'],
@@ -1439,11 +1461,16 @@ def _find_roblox_dirs() -> list:
     """
     if IS_MACOS:
         from ..utils.platform_macos import find_roblox_resource_dirs
+    elif IS_LINUX:
+        from ..utils.platform_linux import find_roblox_resource_dirs
+    else:
+        find_roblox_resource_dirs = None
 
+    if find_roblox_resource_dirs is not None:
         found: list[Path] = []
         seen: set[str] = set()
 
-        def _add_macos(path: Path) -> bool:
+        def _add_posix(path: Path) -> bool:
             key = str(path.resolve()).lower()
             if key in seen:
                 return False
@@ -1452,9 +1479,9 @@ def _find_roblox_dirs() -> list:
             return True
 
         for roblox_dir in find_roblox_resource_dirs(include_studio=True):
-            _add_macos(roblox_dir)
+            _add_posix(roblox_dir)
         for cached_dir in load_saved_roblox_dirs():
-            _add_macos(cached_dir)
+            _add_posix(cached_dir)
         save_saved_roblox_dirs(found)
         return found
 
@@ -1930,6 +1957,14 @@ def _install_ca_into_roblox(ca_pem: str) -> tuple[bool, dict]:
         ca_file = ssl_dir / 'cacert.pem'
         try:
             ssl_dir.mkdir(exist_ok=True)
+            if IS_LINUX and not ca_file.exists():
+                try:
+                    import certifi
+
+                    shutil.copy2(certifi.where(), ca_file)
+                    log_buffer.log('Certificate', f'Seeded Sober cacert.pem from certifi for {d.name}')
+                except Exception as exc:
+                    log_buffer.log('Certificate', f'Could not seed Sober cacert.pem for {d.name}: {exc}')
             _log_cacert_health(ca_file, ca_pem)
             changed, fleasion_count, current_count = _upsert_fleasion_ca_in_cacert(ca_file, ca_pem)
             post_state = _log_cacert_state(ca_file, ca_pem, f'cacert.pem after startup patch for {d.name}')
@@ -2156,6 +2191,11 @@ def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
         from ..utils.platform_macos import _resource_root_from_executable
 
         roblox_dir = _resource_root_from_executable(exe_path) or exe_path.parent
+    elif IS_LINUX:
+        from ..utils.platform_linux import find_roblox_resource_dirs
+
+        dirs = find_roblox_resource_dirs(include_studio=False)
+        roblox_dir = dirs[0] if dirs else exe_path.parent
     else:
         roblox_dir = exe_path.parent
     ssl_dir = roblox_dir / 'ssl'
@@ -2470,6 +2510,10 @@ class ProxyMaster:
         overwritten or incomplete, it patches certs, refreshes hosts/upstream IPs,
         and restarts Roblox exactly once for that launch window.
         """
+        if IS_LINUX:
+            log_buffer.log('Certificate', 'Sober launch detected: skipping automatic cert repair/restart')
+            return
+
         ca_cert_path = _current_proxy_ca_dir() / 'ca.crt'
         if not ca_cert_path.exists():
             return
@@ -2622,8 +2666,9 @@ class ProxyMaster:
             return
 
         # ── Optional cache clear on launch ───────────────────────────────
-        # ── Optional cache clear on launch ───────────────────────────────
-        if self.config_manager.clear_cache_on_launch:
+        if IS_LINUX and self.config_manager.clear_cache_on_launch:
+            log_buffer.log('Cleanup', 'Clear cache on launch ignored for Sober on Linux')
+        elif self.config_manager.clear_cache_on_launch:
             log_buffer.log('Cleanup', 'Clear cache on launch enabled - deleting cache')
 
             def _delete_and_log():

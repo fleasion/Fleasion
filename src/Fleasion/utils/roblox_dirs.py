@@ -32,6 +32,25 @@ def _normalise_roblox_dir(value: str | Path) -> Path | None:
             return path if path.is_dir() else None
         return None
 
+    if sys.platform.startswith('linux'):
+        try:
+            from .platform_linux import SOBER_ASSET_OVERLAY_DIR, SOBER_LEGACY_EXE_DIR
+
+            resolved = path.resolve()
+            for candidate in (SOBER_ASSET_OVERLAY_DIR, SOBER_LEGACY_EXE_DIR):
+                try:
+                    if resolved == candidate.resolve() and path.is_dir():
+                        return path
+                except OSError:
+                    pass
+        except Exception:
+            pass
+        if path.name in {'asset_overlay', 'exe'} and path.is_dir():
+            return path
+        if (path / 'ssl' / 'cacert.pem').is_file() or (path / 'content').is_dir():
+            return path if path.is_dir() else None
+        return None
+
     if path.name.lower() == ROBLOX_PROCESS.lower():
         path = path.parent
     if not path.is_dir():

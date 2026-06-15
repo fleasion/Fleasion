@@ -29,7 +29,7 @@ from ..utils import CONFIG_DIR
 
 
 def _is_admin() -> bool:
-    if sys.platform == 'darwin':
+    if sys.platform == 'darwin' or sys.platform.startswith('linux'):
         return hasattr(os, 'geteuid') and os.geteuid() == 0
     try:
         return bool(ctypes.windll.shell32.IsUserAnAdmin())

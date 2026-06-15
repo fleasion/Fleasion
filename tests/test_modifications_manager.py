@@ -3,6 +3,7 @@ import threading
 
 import pytest
 
+from Fleasion.modifications import fflag_manager
 from Fleasion.modifications.fflag_manager import FastFlagManager
 from Fleasion.modifications.manager import ModificationManager, normalise_target_path
 
@@ -67,4 +68,45 @@ def test_fast_flags_write_to_clientsettings_under_resource_root(tmp_path):
     settings_path = roblox_dir / "ClientSettings" / "ClientAppSettings.json"
     assert json.loads(settings_path.read_text(encoding="utf-8")) == {
         "FFlagDebugSkyGray": "True",
+    }
+
+
+def test_fast_flags_write_to_sober_config(tmp_path, monkeypatch):
+    sober_root = tmp_path / ".var" / "app" / "org.vinegarhq.Sober"
+    overlay = sober_root / "data" / "sober" / "asset_overlay"
+    config_path = sober_root / "config" / "sober" / "config.json"
+    overlay.mkdir(parents=True)
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text('{"close_on_leave": false, "fflags": {"Old": true}}', encoding="utf-8")
+
+    monkeypatch.setattr(fflag_manager.sys, "platform", "linux")
+    monkeypatch.setattr(
+        "Fleasion.utils.platform_linux.SOBER_ASSET_OVERLAY_DIR",
+        overlay,
+    )
+    monkeypatch.setattr(
+        "Fleasion.utils.platform_linux.SOBER_LEGACY_EXE_DIR",
+        sober_root / "data" / "sober" / "exe",
+    )
+    monkeypatch.setattr(
+        "Fleasion.utils.platform_linux.SOBER_CONFIG_FILE",
+        config_path,
+    )
+
+    manager = FastFlagManager([overlay], tmp_path / "stash")
+
+    manager.write({"grey_sky": True, "frm_quality_enabled": True, "frm_quality": 7})
+
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    assert payload["close_on_leave"] is False
+    assert payload["fflags"] == {
+        "FFlagDebugSkyGray": True,
+        "DFIntDebugFRMQualityLevelOverride": 7,
+    }
+
+    manager.restore()
+
+    assert json.loads(config_path.read_text(encoding="utf-8")) == {
+        "close_on_leave": False,
+        "fflags": {"Old": True},
     }
