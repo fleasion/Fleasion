@@ -8,8 +8,8 @@ import time
 from typing import Union
 from urllib.error import URLError
 
-from PyQt6.QtCore import Qt, QByteArray, QSize, pyqtSignal
-from PyQt6.QtGui import QBrush, QPen, QPixmap, QPainter, QColor, QIcon
+from PyQt6.QtCore import Qt, QByteArray, QRect, QSize, pyqtSignal
+from PyQt6.QtGui import QBrush, QPen, QPixmap, QPainter, QColor, QIcon, QPalette, QFontMetrics
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -30,6 +30,8 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QStyle,
     QStyleOptionMenuItem,
+    QStyleOptionViewItem,
+    QStyledItemDelegate,
     QTabWidget,
     QTextEdit,
     QTreeWidget,
@@ -49,20 +51,25 @@ from .proxy_gate import ProxyGate
 _ROLE_PATH = Qt.ItemDataRole.UserRole
 _ROLE_KIND = Qt.ItemDataRole.UserRole.value + 1
 _ROLE_SORT_BASE = Qt.ItemDataRole.UserRole.value + 16
+_ROLE_DRAW_GROUP_ICON = Qt.ItemDataRole.UserRole.value + 32
+_ROLE_GROUP_ICON_INDENT = Qt.ItemDataRole.UserRole.value + 33
 _KIND_PROFILE = 'profile'
 _KIND_GROUP = 'group'
 _MIXED_STATUS = '—'
 _DRAG_GROUP_COLORS = ('#2d6cdf', '#2f9e44', '#f08c00', '#ae3ec9', '#0ca678')
-_GROUP_ICON = '🗀'
 _TREE_INDENT_PX = 9
 _GROUP_ROW_HEIGHT_PX = 24
 _GROUP_CONTENT_INDENT_SPACES = 5
 _PROFILE_NAME_COLUMN = 1
+_GROUP_FOLDER_ICON_WIDTH_PX = 13
+_GROUP_FOLDER_ICON_HEIGHT_PX = 10
+_GROUP_FOLDER_ICON_GAP_PX = 4
 _GROUP_GUIDE_GUTTER_PX = 2
 _GROUP_GUIDE_STEP_PX = 15
 _CONFIG_MENU_ROW_HEIGHT_PX = 28
 _CONFIG_MENU_SCREEN_MARGIN_PX = 12
 _CONFIG_MENU_OPEN_RELEASE_GRACE_SEC = 0.25
+_CONFIG_MENU_BUTTON_POPUP_EXTRA_WIDTH_PX = 24
 
 
 class UndoManager:
@@ -114,6 +121,68 @@ class ReplacerTreeItem(QTreeWidgetItem):
         if left is not None and right is not None:
             return left < right
         return self.text(column).lower() < other.text(column).lower()
+
+
+class _ProfileNameDelegate(QStyledItemDelegate):
+    """Draw group folder icons without relying on platform emoji fonts."""
+
+    def paint(self, painter, option, index):  # noqa: N802
+        if not index.data(_ROLE_DRAW_GROUP_ICON):
+            super().paint(painter, option, index)
+            return
+
+        item_option = QStyleOptionViewItem(option)
+        self.initStyleOption(item_option, index)
+        label = item_option.text
+        item_option.text = ''
+        item_option.icon = QIcon()
+        widget = item_option.widget
+        style = widget.style() if widget is not None else QApplication.style()
+
+        painter.save()
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, item_option, painter, widget)
+
+        content_rect = style.subElementRect(QStyle.SubElement.SE_ItemViewItemText, item_option, widget)
+        content_x = content_rect.x() + (index.data(_ROLE_GROUP_ICON_INDENT) or 0)
+        icon_y = content_rect.y() + max(0, (content_rect.height() - _GROUP_FOLDER_ICON_HEIGHT_PX) // 2)
+        self._draw_folder_icon(painter, QRect(
+            content_x,
+            icon_y,
+            _GROUP_FOLDER_ICON_WIDTH_PX,
+            _GROUP_FOLDER_ICON_HEIGHT_PX,
+        ), item_option)
+
+        text_rect = QRect(content_rect)
+        text_rect.setX(content_x + _GROUP_FOLDER_ICON_WIDTH_PX + _GROUP_FOLDER_ICON_GAP_PX)
+        painter.setFont(item_option.font)
+        painter.setPen(item_option.palette.color(
+            QPalette.ColorGroup.Active
+            if item_option.state & QStyle.StateFlag.State_Enabled
+            else QPalette.ColorGroup.Disabled,
+            QPalette.ColorRole.HighlightedText
+            if item_option.state & QStyle.StateFlag.State_Selected
+            else QPalette.ColorRole.Text,
+        ))
+        painter.drawText(text_rect, item_option.displayAlignment, label)
+        painter.restore()
+
+    @staticmethod
+    def _draw_folder_icon(painter: QPainter, rect: QRect, option: QStyleOptionViewItem):
+        color = option.palette.color(
+            QPalette.ColorRole.HighlightedText
+            if option.state & QStyle.StateFlag.State_Selected
+            else QPalette.ColorRole.Text
+        )
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(color, 1))
+        tab_width = max(4, rect.width() // 2)
+        tab_height = 3
+        painter.drawLine(rect.left() + 1, rect.top() + tab_height, rect.left() + 1, rect.top() + 1)
+        painter.drawLine(rect.left() + 1, rect.top() + 1, rect.left() + tab_width, rect.top() + 1)
+        painter.drawLine(rect.left() + tab_width, rect.top() + 1, rect.left() + tab_width + 2, rect.top() + tab_height)
+        painter.drawLine(rect.left() + tab_width + 2, rect.top() + tab_height, rect.right() - 1, rect.top() + tab_height)
+        painter.drawRect(rect.left(), rect.top() + tab_height, rect.width() - 1, rect.height() - tab_height - 1)
 
 
 class ReplacerRulesTree(QTreeWidget):
@@ -193,10 +262,14 @@ class _ConfigMenuRow(QWidget):
 
     def sizeHint(self):  # noqa: N802
         option = self._style_option()
+        metrics = QFontMetrics(self.font())
+        text_width = metrics.horizontalAdvance(self._name)
+        icon_width = option.maxIconWidth + 12 if option.maxIconWidth else 0
+        check_width = 28 if self._checkable else 0
         return self.style().sizeFromContents(
             QStyle.ContentsType.CT_MenuItem,
             option,
-            QSize(0, _CONFIG_MENU_ROW_HEIGHT_PX),
+            QSize(text_width + icon_width + check_width + 36, _CONFIG_MENU_ROW_HEIGHT_PX),
             self,
         )
 
@@ -377,7 +450,7 @@ class _ScrollableConfigMenu(QMenu):
         max_height = max(1, available_height - _CONFIG_MENU_SCREEN_MARGIN_PX)
         max_width = max(1, available_geometry.width() - _CONFIG_MENU_SCREEN_MARGIN_PX)
         self._set_popup_content_size(max_height, max_width=max_width)
-        self.adjustSize()
+        self._reset_action_geometry()
 
     def _set_popup_content_size(self, max_height: int, *, max_width: int | None = None):
         natural = self._natural_content_size
@@ -533,12 +606,12 @@ class ReplacerConfigWindow(QDialog):
         self.tab_widget = QTabWidget()
 
         # Create Replacer tab
-        replacer_tab = self._proxy_required(self._create_replacer_tab())
+        replacer_tab = self._create_replacer_tab()
         self.tab_widget.addTab(replacer_tab, 'Replacer')
 
         # Create Cache tab if proxy_master is available
         if self.proxy_master and hasattr(self.proxy_master, 'cache_manager'):
-            cache_tab = self._proxy_required(self._create_cache_tab())
+            cache_tab = self._create_cache_tab()
             self.tab_widget.addTab(cache_tab, 'Scraper')
 
         # Create Modifications tab
@@ -602,6 +675,8 @@ class ReplacerConfigWindow(QDialog):
     def set_proxy_features_enabled(self, enabled: bool):
         for gate in self._proxy_gates:
             gate.set_proxy_enabled(enabled)
+        if hasattr(self, '_cache_viewer_tab') and hasattr(self._cache_viewer_tab, 'set_proxy_features_enabled'):
+            self._cache_viewer_tab.set_proxy_features_enabled(enabled)
         if hasattr(self, '_rando_stuff_tab') and hasattr(self._rando_stuff_tab, 'set_proxy_features_enabled'):
             self._rando_stuff_tab.set_proxy_features_enabled(enabled)
 
@@ -611,11 +686,19 @@ class ReplacerConfigWindow(QDialog):
         replacer_layout = QVBoxLayout()
         replacer_layout.setContentsMargins(0, 0, 0, 0)
 
+        top_section_widget = QWidget()
+        top_section_layout = QVBoxLayout(top_section_widget)
+        top_section_layout.setContentsMargins(0, 0, 0, 0)
+        top_section_layout.setSpacing(6)
+
         # Config selector section
-        self._create_config_section(replacer_layout)
+        self._create_config_section(top_section_layout)
 
         # Rules tree section
-        self._create_tree_section(replacer_layout)
+        self._create_tree_section(top_section_layout)
+
+        self._replacer_top_proxy_gate = self._proxy_required(top_section_widget)
+        replacer_layout.addWidget(self._replacer_top_proxy_gate)
 
         # Edit section
         self._create_edit_section(replacer_layout)
@@ -734,6 +817,7 @@ class ReplacerConfigWindow(QDialog):
         self.tree.setDropIndicatorShown(True)
         self.tree.setSortingEnabled(True)
         self.tree.setIndentation(_TREE_INDENT_PX)
+        self.tree.setItemDelegateForColumn(_PROFILE_NAME_COLUMN, _ProfileNameDelegate(self.tree))
 
         header = self.tree.header()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
@@ -919,7 +1003,11 @@ class ReplacerConfigWindow(QDialog):
                 }
                 for name in current_configs
             ],
-            minimum_width=self.enabled_menu_btn.width() if hasattr(self, 'enabled_menu_btn') else 0,
+            minimum_width=(
+                self.enabled_menu_btn.width() + _CONFIG_MENU_BUTTON_POPUP_EXTRA_WIDTH_PX
+                if hasattr(self, 'enabled_menu_btn')
+                else 0
+            ),
         )
         self.config_enabled_vars.update(self.enabled_menu.item_widgets)
 
@@ -1086,6 +1174,12 @@ class ReplacerConfigWindow(QDialog):
                 format_count(profile_count, 'profile'),
             ])
             item.setData(0, _ROLE_KIND, _KIND_GROUP)
+            item.setData(_PROFILE_NAME_COLUMN, _ROLE_DRAW_GROUP_ICON, True)
+            item.setData(
+                _PROFILE_NAME_COLUMN,
+                _ROLE_GROUP_ICON_INDENT,
+                _GROUP_GUIDE_STEP_PX * max(0, self._group_depth(path) - 1),
+            )
             sort_values = [sort_enabled, name.lower(), 'group', id_count, profile_count]
             flags = item.flags() | Qt.ItemFlag.ItemIsDragEnabled | Qt.ItemFlag.ItemIsDropEnabled
             item.setFlags(flags)
@@ -1208,7 +1302,11 @@ class ReplacerConfigWindow(QDialog):
 
         self.config_menu.set_entries(
             entries,
-            minimum_width=self.config_menu_btn.width() if hasattr(self, 'config_menu_btn') else 0,
+            minimum_width=(
+                self.config_menu_btn.width() + _CONFIG_MENU_BUTTON_POPUP_EXTRA_WIDTH_PX
+                if hasattr(self, 'config_menu_btn')
+                else 0
+            ),
         )
         # Ensure the Editing button reflects the enabled state after rebuild
         try:
@@ -1958,7 +2056,7 @@ class ReplacerConfigWindow(QDialog):
 
         Returns tuple of (mode, extra_fields).
         """
-        value = value.strip()
+        value = value.strip().strip('"\'')
 
         if not value:
             # Empty = remove
@@ -2199,7 +2297,7 @@ class ReplacerConfigWindow(QDialog):
         return f'{indent}{name}'
 
     def _group_display_name(self, name: str, path: tuple[int, ...]) -> str:
-        return self._entry_display_name(f'{_GROUP_ICON} {name}', path)
+        return name
 
     def _group_guide_x(self, group_path: tuple[int, ...]) -> int:
         name_left = self.tree.columnViewportPosition(_PROFILE_NAME_COLUMN)

@@ -13,7 +13,8 @@ import time
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QTimer, QSharedMemory, QObject, pyqtSignal, pyqtSlot
-from PyQt6.QtWidgets import QApplication, QMessageBox, QPushButton, QDialog, QVBoxLayout, QHBoxLayout, QLabel
+from PyQt6.QtNetwork import QLocalServer, QLocalSocket
+from PyQt6.QtWidgets import QApplication, QMessageBox, QPushButton, QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel
 
 from . import __version__
 from .config import ConfigManager
@@ -22,6 +23,10 @@ from .prejsons import download_prejsons
 from .proxy import ProxyMaster, check_and_patch_running_roblox_ca
 from .tray import SystemTray
 from .utils import APP_DISCORD, APP_NAME, CONFIG_DIR, LOG_FILE, delete_cache, get_icon_path, get_roblox_player_exe_path, get_roblox_studio_exe_path, is_roblox_running, is_studio_running, launch_as_standard_user, log_buffer, open_folder, run_in_thread, start_update_check, time_tracker
+
+
+_SINGLE_INSTANCE_KEY = 'FleasionSingleInstance'
+_SINGLE_INSTANCE_CONTROL_SERVER = 'FleasionSingleInstanceControl'
 
 
 
@@ -239,7 +244,19 @@ def _relaunch_as_admin(extra_args: str = '', parent_hwnd: int | None = None) -> 
     sei.hInstApp     = None
 
     shell32 = ctypes.WinDLL('shell32', use_last_error=True)
-    ok = shell32.ShellExecuteExW(ctypes.byref(sei))
+
+    reset_env_key = 'PYINSTALLER_RESET_ENVIRONMENT'
+    old_reset_env = os.environ.get(reset_env_key)
+    if getattr(sys, 'frozen', False):
+        os.environ[reset_env_key] = '1'
+    try:
+        ok = shell32.ShellExecuteExW(ctypes.byref(sei))
+    finally:
+        if getattr(sys, 'frozen', False):
+            if old_reset_env is None:
+                os.environ.pop(reset_env_key, None)
+            else:
+                os.environ[reset_env_key] = old_reset_env
     if not ok:
         err = ctypes.get_last_error()
         if err == 1223:  # ERROR_CANCELLED: user declined UAC
@@ -513,6 +530,85 @@ def _show_macos_ca_patch_failed_dialog(details: dict):
     msg.exec()
 
 
+def _choose_macos_auth_source_on_launch(config_manager, tray=None) -> None:
+    """Ask macOS users which browser should be queried for Roblox auth."""
+    if sys.platform != 'darwin' or config_manager.macos_auth_source:
+        return
+
+    _top = QApplication.topLevelWidgets()
+    _parent = next((w for w in _top if w.isVisible()), None)
+    _on_top = any(w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in _top)
+
+    dialog = QDialog(_parent)
+    if _on_top:
+        dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
+    dialog.setWindowTitle('Fleasion - Roblox Login Source')
+    dialog.setMinimumWidth(620)
+
+    selected: dict[str, str] = {}
+    layout = QVBoxLayout(dialog)
+    layout.setContentsMargins(18, 18, 18, 18)
+    layout.setSpacing(14)
+
+    title = QLabel('Which browser is signed in to roblox.com?')
+    title.setStyleSheet('font-size: 18px; font-weight: 700;')
+    layout.addWidget(title)
+
+    warning = QLabel(
+        'Most Fleasion account-aware features will not work until a valid Roblox token is available: '
+        'private asset downloads, account launches, authenticated asset details, subplace metadata, '
+        'and private-server flows may fail or wait.'
+    )
+    warning.setWordWrap(True)
+    warning.setStyleSheet('font-weight: 600; color: #e0a53a;')
+    layout.addWidget(warning)
+
+    body = QLabel(
+        'Choose the browser where roblox.com is already signed in. macOS may ask for browser-data access; '
+        'choose Always Allow to avoid approving it every launch. You can change this later in Settings > Roblox Login.'
+    )
+    body.setWordWrap(True)
+    layout.addWidget(body)
+
+    grid = QGridLayout()
+    grid.setHorizontalSpacing(8)
+    grid.setVerticalSpacing(8)
+    browsers = ('Chrome', 'Safari', 'Firefox', 'Brave', 'Edge', 'Chromium', 'Opera', 'Vivaldi')
+
+    def _choose(browser: str) -> None:
+        selected['browser'] = browser
+        dialog.accept()
+
+    for index, browser in enumerate(browsers):
+        button = QPushButton(browser)
+        button.setMinimumHeight(34)
+        button.clicked.connect(lambda _checked=False, value=browser: _choose(value))
+        grid.addWidget(button, index // 4, index % 4)
+    layout.addLayout(grid)
+
+    footer = QHBoxLayout()
+    footer.addStretch()
+    skip_btn = QPushButton('Continue Without Token')
+    skip_btn.clicked.connect(dialog.reject)
+    footer.addWidget(skip_btn)
+    layout.addLayout(footer)
+
+    if icon_path := get_icon_path():
+        from PyQt6.QtGui import QIcon
+        dialog.setWindowIcon(QIcon(str(icon_path)))
+
+    dialog.exec()
+    if selected_browser := selected.get('browser'):
+        config_manager.macos_auth_source = selected_browser
+        try:
+            from .utils.roblox_auth import notify_auth_source_changed
+            notify_auth_source_changed()
+        except Exception:
+            pass
+        if tray is not None and hasattr(tray, '_refresh_settings_tab'):
+            tray._refresh_settings_tab()
+
+
 def _show_auth_cookie_unavailable_dialog(details: dict):
     """Show a user-facing popup when no readable Roblox auth cookie can be found."""
     _top = QApplication.topLevelWidgets()
@@ -547,15 +643,15 @@ def _show_auth_cookie_unavailable_dialog(details: dict):
             f'Candidate paths checked: {len(attempted)}<br><br>'
         )
         most_likely_html = (
-            'Fleasion checked RobloxCookies.dat plus supported browser login stores, '
+            'Fleasion checked RobloxCookies.dat plus the selected login source, '
             'but found zero usable Roblox login tokens.<br><br>'
             'This token is required for authenticated asset downloads, account launches, '
             'private-server joins, and other account-aware features.<br><br>'
             'Sign in to roblox.com in Chrome, Safari, Firefox, Brave, Edge, Chromium, Opera, '
-            'or Vivaldi, then try again. If macOS asks whether Fleasion may access Chrome '
-            'Safe Storage or browser data, choose Allow.<br><br>'
-            'You can retry from Dashboard > Miscellaneous > Account Manager > '
-            'Import Browser Login.<br><br>'
+            'or Vivaldi, then choose that browser in Settings > Roblox Login. If macOS asks '
+            'whether Fleasion may access browser data, choose Allow or Always Allow.<br><br>'
+            'You can also store a token manually from Settings > Roblox Login > Import Token, '
+            'or retry from Dashboard > Miscellaneous > Account Manager > Import Browser Login.<br><br>'
         )
     elif sys.platform.startswith('linux'):
         diagnostics_html = (
@@ -905,11 +1001,80 @@ def _other_fleasion_pids() -> list:
     return pids
 
 
+def _request_running_instance_exit(timeout_ms: int = 2000) -> bool:
+    """Ask the already-running Fleasion instance to exit through its Qt event loop."""
+    try:
+        socket = QLocalSocket()
+        socket.connectToServer(_SINGLE_INSTANCE_CONTROL_SERVER)
+        if not socket.waitForConnected(timeout_ms):
+            return False
+
+        socket.write(b'quit\n')
+        socket.waitForBytesWritten(1000)
+        socket.disconnectFromServer()
+        socket.waitForDisconnected(1000)
+        return True
+    except Exception:
+        return False
+
+
+def _wait_for_other_fleasion_instances_to_exit(timeout_seconds: float = 8.0) -> bool:
+    """Wait until no other Fleasion processes remain."""
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if not _other_fleasion_pids():
+            return True
+        time.sleep(0.1)
+    return not _other_fleasion_pids()
+
+
+def _request_other_fleasion_instances_exit(timeout_seconds: float = 8.0) -> bool:
+    """Return True if other instances were asked to exit and disappeared."""
+    if not _other_fleasion_pids():
+        return True
+    if not _request_running_instance_exit():
+        return False
+    return _wait_for_other_fleasion_instances_to_exit(timeout_seconds)
+
+
+def _handle_single_instance_command(socket: QLocalSocket, tray: SystemTray):
+    try:
+        command = bytes(socket.readAll()).decode('utf-8', errors='replace').strip().lower()
+        if command == 'quit':
+            tray._exit_app()
+    except Exception:
+        pass
+
+
+def _start_single_instance_control_server(app: QApplication, tray: SystemTray) -> QLocalServer | None:
+    """Start a local control endpoint for clean single-instance handoff."""
+    server = QLocalServer(app)
+
+    if not server.listen(_SINGLE_INSTANCE_CONTROL_SERVER):
+        QLocalServer.removeServer(_SINGLE_INSTANCE_CONTROL_SERVER)
+        if not server.listen(_SINGLE_INSTANCE_CONTROL_SERVER):
+            log_buffer.log('App', 'Single-instance control server could not start')
+            return None
+
+    def _handle_connection():
+        while server.hasPendingConnections():
+            socket = server.nextPendingConnection()
+            if socket is not None:
+                socket.readyRead.connect(lambda s=socket: _handle_single_instance_command(s, tray))
+                if socket.bytesAvailable() > 0:
+                    _handle_single_instance_command(socket, tray)
+
+    server.newConnection.connect(_handle_connection)
+    return server
+
 
 def kill_other_fleasion_instances():
     """Kill all other Fleasion instances except the current process."""
     import os
     import subprocess
+
+    if _request_other_fleasion_instances_exit():
+        return
 
     for pid in _other_fleasion_pids():
         try:
@@ -917,9 +1082,18 @@ def kill_other_fleasion_instances():
                 os.kill(pid, signal.SIGTERM)
             else:
                 subprocess.run(
+                    ['taskkill', '/PID', str(pid)],
+                    capture_output=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                    timeout=5,
+                )
+                if _wait_for_other_fleasion_instances_to_exit(2.0):
+                    continue
+                subprocess.run(
                     ['taskkill', '/F', '/PID', str(pid)],
                     capture_output=True,
-                    creationflags=subprocess.CREATE_NO_WINDOW
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                    timeout=5,
                 )
         except Exception:
             pass
@@ -1008,11 +1182,11 @@ def main():
             kill_other_fleasion_instances()
             import time as _time
             _time.sleep(0.3)
-        _stale = QSharedMemory('FleasionSingleInstance')
+        _stale = QSharedMemory(_SINGLE_INSTANCE_KEY)
         if _stale.attach():
             _stale.detach()
 
-    shared_memory = QSharedMemory('FleasionSingleInstance')
+    shared_memory = QSharedMemory(_SINGLE_INSTANCE_KEY)
     _shared_memory_created = shared_memory.create(1)
     if (
         not _shared_memory_created
@@ -1022,10 +1196,10 @@ def main():
     ):
         # A hard termination can leave Qt's POSIX shared-memory segment behind.
         # Attach/detach removes it when no real Fleasion process still owns it.
-        _stale = QSharedMemory('FleasionSingleInstance')
+        _stale = QSharedMemory(_SINGLE_INSTANCE_KEY)
         if _stale.attach():
             _stale.detach()
-        shared_memory = QSharedMemory('FleasionSingleInstance')
+        shared_memory = QSharedMemory(_SINGLE_INSTANCE_KEY)
         _shared_memory_created = shared_memory.create(1)
 
     if not _shared_memory_created:
@@ -1175,6 +1349,8 @@ def main():
 
     # Create system tray
     tray = SystemTray(app, config_manager, proxy_master, mod_manager, roblox_monitor)
+    app.aboutToQuit.connect(tray.cleanup_tray_icon)
+    single_instance_control_server = _start_single_instance_control_server(app, tray)
     log_buffer.log('App', f'Persistent log file: {LOG_FILE}')
     _admin_prompt_shown = False
 
@@ -1407,6 +1583,7 @@ def main():
         _show_auth_cookie_unavailable_dialog(details)
 
     auth_check_invoker.completed.connect(_handle_auth_check_complete)
+    _choose_macos_auth_source_on_launch(config_manager, tray)
 
     def _check_auth_cookie_once():
         try:

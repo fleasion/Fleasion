@@ -182,7 +182,7 @@ On first launch, Fleasion will:
 - AppleBlox is not supported by Fleasion's macOS release path. Use the normal Roblox app bundle.
 - Fleasion must verify the helper-patched Roblox `ssl/cacert.pem` before it writes hosts entries. If verification fails, the proxy will not start.
 - Account Manager selected-account launches use Roblox auth-ticket `roblox-player:` URIs on macOS. Place, private-server, job-id, and plain app launches are attempted, but Roblox may still reject some app-launch flows; opening Roblox normally can use the account already signed in to Roblox.
-- Browser login discovery runs on startup so account-aware features can work immediately. Fleasion reuses a valid encrypted Chrome-family cache when present; if cache recovery is ambiguous, startup preserves it and skips surprise repeat prompts. Use **Miscellaneous -> Account Manager -> Import Browser Login** to import or re-import a browser login explicitly.
+- On first macOS launch, Fleasion asks which browser is signed in to roblox.com. It reads that browser directly when account-aware features need a Roblox login token, so macOS may ask for browser-data access; choose **Always Allow** if you do not want to approve it every time. Fleasion can also reuse a valid encrypted Chrome-family cache when present; if cache recovery is ambiguous, startup preserves it and skips surprise repeat prompts. Change the browser or store a manually imported encrypted token from **Settings -> Roblox Login**, or use **Miscellaneous -> Account Manager -> Import Browser Login** to re-import a browser login explicitly.
 
 ### Run on Boot
 

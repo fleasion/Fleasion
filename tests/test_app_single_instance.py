@@ -1,4 +1,5 @@
-from Fleasion.app import _looks_like_macos_fleasion_command
+from Fleasion import app as app_module
+from Fleasion.app import _handle_single_instance_command, _looks_like_macos_fleasion_command, kill_other_fleasion_instances
 
 
 def test_macos_fleasion_process_matching_accepts_real_launch_forms():
@@ -18,3 +19,34 @@ def test_macos_fleasion_process_matching_rejects_unrelated_commands():
         "/bin/zsh -c ps -axo command | rg 'Fleasion-v2.1.0|launcher.py'"
     )
     assert not _looks_like_macos_fleasion_command("/usr/bin/python3 /tmp/not-fleasion.py")
+
+
+def test_kill_other_instances_prefers_graceful_exit(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(app_module, '_request_other_fleasion_instances_exit', lambda: True)
+    monkeypatch.setattr(app_module, '_other_fleasion_pids', lambda: [1234])
+    monkeypatch.setattr(app_module.subprocess, 'run', lambda *args, **kwargs: calls.append((args, kwargs)))
+
+    kill_other_fleasion_instances()
+
+    assert calls == []
+
+
+def test_single_instance_quit_command_exits_tray():
+    class _SocketStub:
+        def readAll(self):
+            return b'quit\n'
+
+    class _TrayStub:
+        def __init__(self):
+            self.exit_calls = 0
+
+        def _exit_app(self):
+            self.exit_calls += 1
+
+    tray = _TrayStub()
+
+    _handle_single_instance_command(_SocketStub(), tray)
+
+    assert tray.exit_calls == 1

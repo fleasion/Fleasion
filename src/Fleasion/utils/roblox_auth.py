@@ -5,11 +5,13 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 from pathlib import Path
 
 from .logging import log_buffer
-from .paths import CONFIG_DIR, LOCAL_APPDATA, USER_HOME
+from .paths import CONFIG_DIR, CONFIG_FILE, LOCAL_APPDATA, USER_HOME
+from .secure_tokens import decrypt_token, encrypt_token
 
 try:
     import win32crypt  # type: ignore
@@ -37,11 +39,17 @@ _LAST_AUTH_FAILURE_DETAILS: dict[str, object] = {}
 _BROWSER_COOKIE_CACHE: str | None = None
 _BROWSER_COOKIE_SOURCE = ''
 _BROWSER_AUTO_DISCOVERY_ATTEMPTED = False
+_BROWSER_DISCOVERY_LOCK = threading.Lock()
 _BROWSER_AUTH_CACHE_FILE = CONFIG_DIR / 'browser_auth_cache.json'
 _BROWSER_AUTH_CACHE_KEY_FILE = CONFIG_DIR / 'browser_auth_cache.key'
 _PERSISTENT_BROWSER_AUTH_SOURCES = {'Chrome', 'Brave', 'Edge', 'Chromium', 'Opera', 'Vivaldi'}
 _BROWSER_AUTH_CACHE_BLOCKS_AUTOMATIC_IMPORT = False
 _LAST_BROWSER_AUTH_VALIDATION_DETAIL = ''
+_MANUAL_AUTH_TOKEN_FILE = CONFIG_DIR / 'manual_auth_token.json'
+_MANUAL_AUTH_TOKEN_KEY_FILE = CONFIG_DIR / 'manual_auth_token.key'
+_MACOS_AUTH_BROWSER_NAMES = ('Chrome', 'Safari', 'Firefox', 'Brave', 'Edge', 'Chromium', 'Opera', 'Vivaldi')
+_AUTH_READY_CONDITION = threading.Condition()
+_AUTH_READY_COOKIE: str | None = None
 
 
 def _log_auth_failure(key: str, message: str) -> None:
@@ -263,6 +271,34 @@ def get_auth_failure_details() -> dict[str, object]:
     return dict(_LAST_AUTH_FAILURE_DETAILS)
 
 
+def _mark_auth_cookie_available(cookie: str) -> None:
+    global _AUTH_READY_COOKIE
+    if not cookie:
+        return
+    with _AUTH_READY_CONDITION:
+        _AUTH_READY_COOKIE = cookie
+        _AUTH_READY_CONDITION.notify_all()
+
+
+def notify_auth_source_changed() -> None:
+    """Wake auth waiters after the user changes browser/manual-token settings."""
+    with _AUTH_READY_CONDITION:
+        _AUTH_READY_CONDITION.notify_all()
+
+
+def wait_for_roblosecurity(*, include_keychain_browsers: bool = True, retry_interval: float = 2.0) -> str | None:
+    """Wait until a usable Roblox token is available."""
+    if sys.platform != 'darwin':
+        return get_roblosecurity(include_keychain_browsers=include_keychain_browsers)
+
+    while True:
+        cookie = get_roblosecurity(include_keychain_browsers=include_keychain_browsers)
+        if cookie:
+            return cookie
+        with _AUTH_READY_CONDITION:
+            _AUTH_READY_CONDITION.wait(timeout=max(0.25, retry_interval))
+
+
 def _get_macos_browser_auth_cipher(create: bool = True):
     if sys.platform != 'darwin':
         return None
@@ -334,6 +370,65 @@ def _validate_roblosecurity(cookie: str) -> bool | None:
         _log_auth_failure(
             f'browser-auth-cache-validate:{type(exc).__name__}',
             f'Could not validate cached Roblox browser login: {type(exc).__name__}: {exc}',
+        )
+        return None
+
+
+def _get_configured_macos_auth_source() -> str:
+    if sys.platform != 'darwin':
+        return ''
+    try:
+        with CONFIG_FILE.open('r', encoding='utf-8') as f:
+            settings = json.load(f)
+    except Exception:
+        return ''
+    source = str(settings.get('macos_auth_source') or '')
+    valid = {'', 'manual', *_MACOS_AUTH_BROWSER_NAMES}
+    return source if source in valid else ''
+
+
+def store_manual_roblosecurity(cookie: str) -> bool:
+    """Store a manually imported Roblox token encrypted for local reuse."""
+    if not cookie or not cookie.strip():
+        return False
+    try:
+        _MANUAL_AUTH_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            'version': 1,
+            'token': encrypt_token(cookie.strip(), _MANUAL_AUTH_TOKEN_KEY_FILE),
+        }
+        with _MANUAL_AUTH_TOKEN_FILE.open('w', encoding='utf-8') as f:
+            json.dump(payload, f, indent=2)
+        try:
+            os.chmod(_MANUAL_AUTH_TOKEN_FILE, 0o600)
+        except OSError:
+            pass
+        _mark_auth_cookie_available(cookie.strip())
+        return True
+    except Exception as exc:
+        _log_auth_failure(
+            f'manual-auth-token-write:{type(exc).__name__}:{exc}',
+            f'Could not store manually imported Roblox token: {type(exc).__name__}: {exc}',
+        )
+        return False
+
+
+def get_manual_roblosecurity() -> str | None:
+    """Return the encrypted manually imported Roblox token, if present."""
+    if not _MANUAL_AUTH_TOKEN_FILE.exists():
+        return None
+    try:
+        with _MANUAL_AUTH_TOKEN_FILE.open('r', encoding='utf-8') as f:
+            payload = json.load(f)
+        token_payload = str(payload.get('token') or '')
+        if not token_payload:
+            return None
+        cookie = decrypt_token(token_payload, _MANUAL_AUTH_TOKEN_KEY_FILE)
+        return cookie.strip() if cookie else None
+    except Exception as exc:
+        _log_auth_failure(
+            f'manual-auth-token-read:{type(exc).__name__}:{exc}',
+            f'Could not read manually imported Roblox token: {type(exc).__name__}: {exc}',
         )
         return None
 
@@ -509,7 +604,12 @@ def _browser_cookie_loaders(include_keychain: bool):
     return loaders
 
 
-def discover_browser_roblosecurity(include_keychain: bool = False, *, explicit_import: bool = False) -> tuple[str | None, str]:
+def discover_browser_roblosecurity(
+    include_keychain: bool = False,
+    *,
+    explicit_import: bool = False,
+    browser: str | None = None,
+) -> tuple[str | None, str]:
     """Discover the Roblox cookie from local browsers without logging its value.
 
     Firefox discovery is prompt-free on macOS. Chrome-family browsers and
@@ -518,70 +618,76 @@ def discover_browser_roblosecurity(include_keychain: bool = False, *, explicit_i
     """
     global _BROWSER_COOKIE_CACHE, _BROWSER_COOKIE_SOURCE, _BROWSER_AUTO_DISCOVERY_ATTEMPTED
 
-    if not explicit_import and _BROWSER_COOKIE_CACHE:
-        return _BROWSER_COOKIE_CACHE, _BROWSER_COOKIE_SOURCE
-    if not explicit_import:
-        cached_cookie, cached_source = _read_cached_browser_roblosecurity(delete_invalid=include_keychain)
-        if cached_cookie:
-            _BROWSER_COOKIE_CACHE = cached_cookie
-            _BROWSER_COOKIE_SOURCE = cached_source
-            return cached_cookie, cached_source
-    if include_keychain and _BROWSER_AUTH_CACHE_BLOCKS_AUTOMATIC_IMPORT and not explicit_import:
-        log_buffer.log(
-            'Auth',
-            'Skipping automatic browser login prompt because encrypted cache recovery was inconclusive; use Import Browser Login to re-import explicitly',
-        )
-        return None, ''
-    if not include_keychain and _BROWSER_AUTO_DISCOVERY_ATTEMPTED:
-        return None, ''
-    if not include_keychain:
-        _BROWSER_AUTO_DISCOVERY_ATTEMPTED = True
-
-    try:
-        loaders = _browser_cookie_loaders(include_keychain)
-    except Exception as exc:
-        _log_auth_failure(
-            f'browser-cookie-library:{type(exc).__name__}',
-            f'Browser cookie discovery is unavailable: {type(exc).__name__}: {exc}',
-        )
+    if browser is not None and browser not in _MACOS_AUTH_BROWSER_NAMES:
         return None, ''
 
-    now = time.time()
-    for source, loader in loaders:
+    with _BROWSER_DISCOVERY_LOCK:
+        if not explicit_import and _BROWSER_COOKIE_CACHE and (not browser or browser == _BROWSER_COOKIE_SOURCE):
+            return _BROWSER_COOKIE_CACHE, _BROWSER_COOKIE_SOURCE
+        if not explicit_import:
+            cached_cookie, cached_source = _read_cached_browser_roblosecurity(delete_invalid=include_keychain)
+            if cached_cookie and (not browser or browser == cached_source):
+                _BROWSER_COOKIE_CACHE = cached_cookie
+                _BROWSER_COOKIE_SOURCE = cached_source
+                return cached_cookie, cached_source
+        if include_keychain and _BROWSER_AUTH_CACHE_BLOCKS_AUTOMATIC_IMPORT and not explicit_import:
+            log_buffer.log(
+                'Auth',
+                'Skipping automatic browser login prompt because encrypted cache recovery was inconclusive; use Import Browser Login to re-import explicitly',
+            )
+            return None, ''
+        if not explicit_import and not include_keychain and _BROWSER_AUTO_DISCOVERY_ATTEMPTED:
+            return None, ''
+        if not explicit_import and not include_keychain:
+            _BROWSER_AUTO_DISCOVERY_ATTEMPTED = True
+
         try:
-            jar = loader(domain_name='roblox.com')
-            candidates = [
-                cookie
-                for cookie in jar
-                if cookie.name == '.ROBLOSECURITY'
-                and cookie.value
-                and 'roblox.com' in (cookie.domain or '').lower()
-                and (not cookie.expires or cookie.expires > now)
-            ]
+            loaders = _browser_cookie_loaders(include_keychain)
         except Exception as exc:
             _log_auth_failure(
-                f'browser-cookie:{source}:{type(exc).__name__}:{exc}',
-                f'Could not read Roblox browser login from {source}: {type(exc).__name__}: {exc}',
+                f'browser-cookie-library:{type(exc).__name__}',
+                f'Browser cookie discovery is unavailable: {type(exc).__name__}: {exc}',
             )
-            continue
+            return None, ''
+        if browser:
+            loaders = [(source, loader) for source, loader in loaders if source == browser]
 
-        if not candidates:
-            continue
-        cookie = max(candidates, key=lambda item: item.expires or 0).value.strip()
-        if not cookie or any(char.isspace() for char in cookie):
-            continue
-        if source in _PERSISTENT_BROWSER_AUTH_SOURCES:
-            validation = _validate_roblosecurity(cookie)
-            if validation is False:
-                detail = _LAST_BROWSER_AUTH_VALIDATION_DETAIL or 'invalid'
-                log_buffer.log('Auth', f'Browser login discovered from {source} failed validation ({detail}); skipping')
+        now = time.time()
+        for source, loader in loaders:
+            try:
+                jar = loader(domain_name='roblox.com')
+                candidates = [
+                    cookie
+                    for cookie in jar
+                    if cookie.name == '.ROBLOSECURITY'
+                    and cookie.value
+                    and 'roblox.com' in (cookie.domain or '').lower()
+                    and (not cookie.expires or cookie.expires > now)
+                ]
+            except Exception as exc:
+                _log_auth_failure(
+                    f'browser-cookie:{source}:{type(exc).__name__}:{exc}',
+                    f'Could not read Roblox browser login from {source}: {type(exc).__name__}: {exc}',
+                )
                 continue
-        _BROWSER_COOKIE_CACHE = cookie
-        _BROWSER_COOKIE_SOURCE = source
-        _LAST_AUTH_FAILURE_DETAILS.clear()
-        log_buffer.log('Auth', f'Using domain-scoped Roblox browser login discovered from {source}')
-        _write_cached_browser_roblosecurity(cookie, source)
-        return cookie, source
+
+            if not candidates:
+                continue
+            cookie = max(candidates, key=lambda item: item.expires or 0).value.strip()
+            if not cookie or any(char.isspace() for char in cookie):
+                continue
+            if source in _PERSISTENT_BROWSER_AUTH_SOURCES:
+                validation = _validate_roblosecurity(cookie)
+                if validation is False:
+                    detail = _LAST_BROWSER_AUTH_VALIDATION_DETAIL or 'invalid'
+                    log_buffer.log('Auth', f'Browser login discovered from {source} failed validation ({detail}); skipping')
+                    continue
+            _BROWSER_COOKIE_CACHE = cookie
+            _BROWSER_COOKIE_SOURCE = source
+            _LAST_AUTH_FAILURE_DETAILS.clear()
+            log_buffer.log('Auth', f'Using domain-scoped Roblox browser login discovered from {source}')
+            _write_cached_browser_roblosecurity(cookie, source)
+            return cookie, source
 
     return None, ''
 
@@ -607,6 +713,7 @@ def get_roblosecurity(path: Path | None = None, *, include_keychain_browsers: bo
         attempted.append(str(_SUCCESSFUL_COOKIE_PATH))
         cookie = _get_roblosecurity_from_path(_SUCCESSFUL_COOKIE_PATH)
         if cookie:
+            _mark_auth_cookie_available(cookie)
             return cookie
         _SUCCESSFUL_COOKIE_PATH = None
 
@@ -624,16 +731,44 @@ def get_roblosecurity(path: Path | None = None, *, include_keychain_browsers: bo
                 _log_auth_failure(
                     f'fallback-success:{cookie_path}',
                     f'Using Roblox auth cookie discovered from {source}: {cookie_path}',
-                )
+            )
             _LAST_AUTH_FAILURE_DETAILS = {}
+            _mark_auth_cookie_available(cookie)
             return cookie
 
-    if sys.platform == 'darwin' or sys.platform.startswith('linux'):
+    if sys.platform == 'darwin':
+        auth_source = _get_configured_macos_auth_source()
+        if auth_source == 'manual':
+            manual_cookie = get_manual_roblosecurity()
+            browser_source = 'manual'
+            if manual_cookie:
+                _LAST_AUTH_FAILURE_DETAILS = {}
+                _mark_auth_cookie_available(manual_cookie)
+                return manual_cookie
+        elif auth_source:
+            browser_cookie, browser_source = discover_browser_roblosecurity(
+                include_keychain=include_keychain_browsers,
+                browser=auth_source,
+            )
+            if browser_cookie:
+                _LAST_AUTH_FAILURE_DETAILS = {}
+                _mark_auth_cookie_available(browser_cookie)
+                return browser_cookie
+        else:
+            browser_cookie, browser_source = discover_browser_roblosecurity(
+                include_keychain=False,
+            )
+            if browser_cookie:
+                _LAST_AUTH_FAILURE_DETAILS = {}
+                _mark_auth_cookie_available(browser_cookie)
+                return browser_cookie
+    elif sys.platform.startswith('linux'):
         browser_cookie, browser_source = discover_browser_roblosecurity(
             include_keychain=include_keychain_browsers,
         )
         if browser_cookie:
             _LAST_AUTH_FAILURE_DETAILS = {}
+            _mark_auth_cookie_available(browser_cookie)
             return browser_cookie
     else:
         browser_source = ''

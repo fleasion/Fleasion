@@ -462,7 +462,7 @@ class TextureStripper:
 
         self._PREDOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-        cookie = scraper._get_roblosecurity()
+        cookie = scraper._get_roblosecurity(wait=True)
         extra: dict = {}
         if cookie:
             extra['Cookie'] = f'.ROBLOSECURITY={cookie};'
@@ -549,6 +549,11 @@ class TextureStripper:
             return
 
         replacements, removals, cdn_replacements, local_replacements = replacements_tuple
+        replacements = {
+            key: value
+            for key, value in replacements.items()
+            if self._normalize_asset_id(value) not in (0, 1)
+        }
         parent_ids: set[int] = set()
         for key in (
             set(replacements.keys()) | set(cdn_replacements.keys()) |

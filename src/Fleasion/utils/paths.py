@@ -113,6 +113,7 @@ DEFAULT_SETTINGS = {
     'auto_delete_cache_on_exit': True,
     'clear_cache_on_launch': True,
     'proxy_features_enabled': True,
+    'macos_auth_source': '',
     'upstream_transport_mode': 'auto',
     'upstream_http_connect_host': '',
     'upstream_http_connect_port': 0,
