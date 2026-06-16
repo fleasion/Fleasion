@@ -79,7 +79,7 @@ from .upstream import HttpProxyConfig, Socks5ProxyConfig, UpstreamEndpoint, Upst
 from .windows_proxy import WindowsProxyInfo, detect_windows_proxy, detected_http_proxy
 from ..cache.cache_manager import CacheManager
 from ..utils.certs import generate_ca, generate_host_cert, generate_multi_host_cert, get_ca_pem
-from ..utils.roblox_dirs import load_saved_roblox_dirs, save_saved_roblox_dirs
+from ..utils.roblox_dirs import is_roblox_studio_resource_dir, load_saved_roblox_dirs, save_saved_roblox_dirs
 from ..utils.windows import get_roblox_player_exe_path, get_roblox_studio_exe_path, launch_as_standard_user
 
 logger = logging.getLogger(__name__)
@@ -641,6 +641,15 @@ def _select_proxy_ca_dir() -> Path:
 
 def _current_proxy_ca_dir() -> Path:
     return _ACTIVE_PROXY_CA_DIR
+
+
+def _is_macos_studio_bundle_path(exe_path: Path) -> bool:
+    if not IS_MACOS:
+        return False
+    resolved = Path(exe_path)
+    if resolved.name == 'RobloxStudio.app':
+        return True
+    return any(parent.name == 'RobloxStudio.app' for parent in resolved.parents)
 
 
 
@@ -1474,6 +1483,8 @@ def _find_roblox_dirs() -> list:
         seen: set[str] = set()
 
         def _add_posix(path: Path) -> bool:
+            if is_roblox_studio_resource_dir(path):
+                return False
             key = str(path.resolve()).lower()
             if key in seen:
                 return False
@@ -1481,7 +1492,7 @@ def _find_roblox_dirs() -> list:
             found.append(path)
             return True
 
-        for roblox_dir in find_roblox_resource_dirs(include_studio=True):
+        for roblox_dir in find_roblox_resource_dirs(include_studio=not IS_MACOS):
             _add_posix(roblox_dir)
         for cached_dir in load_saved_roblox_dirs():
             _add_posix(cached_dir)
@@ -2188,6 +2199,9 @@ def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
     ca_cert_path = _current_proxy_ca_dir() / 'ca.crt'
     if not ca_cert_path.exists():
         return False  # CA not generated yet – nothing to patch
+    if _is_macos_studio_bundle_path(Path(exe_path)):
+        log_buffer.log('Certificate', f'Skipping macOS Roblox Studio CA patch for {Path(exe_path).name}')
+        return False
 
     ca_pem = get_ca_pem(ca_cert_path)
     if IS_MACOS:
@@ -2522,6 +2536,9 @@ class ProxyMaster:
             return
 
         exe_path = Path(exe_path)
+        if _is_macos_studio_bundle_path(exe_path):
+            log_buffer.log('Certificate', f'Skipping macOS Roblox Studio CA refresh for {exe_path.name}')
+            return
         ca_pem = get_ca_pem(ca_cert_path)
         if IS_MACOS:
             from ..utils.platform_macos import _resource_root_from_executable

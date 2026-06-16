@@ -22,7 +22,7 @@ from pathlib import Path
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from ..utils import CONFIG_DIR, LOCAL_APPDATA, ROBLOX_PROCESS, format_count, get_roblox_player_exe_path, log_buffer
-from ..utils.roblox_dirs import load_saved_roblox_dirs, save_saved_roblox_dirs
+from ..utils.roblox_dirs import is_roblox_studio_resource_dir, load_saved_roblox_dirs, save_saved_roblox_dirs
 from ..utils.threading import run_in_thread
 from .fflag_manager import FastFlagManager
 from .global_settings_manager import GlobalSettingsManager
@@ -77,6 +77,8 @@ def _find_roblox_dirs() -> list[Path]:
         seen: set[str] = set()
 
         def _add(path: Path) -> None:
+            if is_roblox_studio_resource_dir(path):
+                return
             key = str(path.resolve()).lower()
             if key in seen:
                 return
@@ -96,6 +98,8 @@ def _find_roblox_dirs() -> list[Path]:
     seen: set[str] = set()
 
     def _add(path: Path) -> bool:
+        if is_roblox_studio_resource_dir(path):
+            return False
         key = str(path)
         if key not in seen:
             found.append(path)

@@ -836,7 +836,10 @@ class RobloxExitMonitor(QObject):
                     if studio_exe_path is not None:
                         break
             if studio_exe_path is not None and self.config_manager.proxy_features_enabled:
-                run_in_thread(check_and_patch_running_roblox_ca)(studio_exe_path)
+                if sys.platform == 'darwin':
+                    log_buffer.log('Certificate', 'Studio launch detected on macOS: skipping proxy CA refresh')
+                else:
+                    run_in_thread(check_and_patch_running_roblox_ca)(studio_exe_path)
             elif studio_exe_path is not None:
                 log_buffer.log('Certificate', 'Studio launch detected: proxy features disabled, skipping proxy CA refresh')
             else:

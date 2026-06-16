@@ -119,3 +119,48 @@ def test_macos_proxy_start_blocks_when_ca_patch_verification_fails(tmp_path, mon
     assert proxy._running is False
     assert errors and errors[0][0] == "macos_ca_patch_failed"
     assert hosts_calls == []
+
+
+def test_macos_roblox_dir_discovery_excludes_studio_saved_dirs(tmp_path, monkeypatch):
+    player = tmp_path / "Roblox.app" / "Contents" / "Resources"
+    studio = tmp_path / "RobloxStudio.app" / "Contents" / "Resources"
+    player.mkdir(parents=True)
+    studio.mkdir(parents=True)
+    discovery_calls = []
+    persisted = []
+
+    def fake_find_roblox_resource_dirs(include_studio: bool):
+        discovery_calls.append(include_studio)
+        return [player] + ([studio] if include_studio else [])
+
+    monkeypatch.setattr(proxy_master, "IS_MACOS", True)
+    monkeypatch.setattr(proxy_master, "IS_LINUX", False)
+    monkeypatch.setattr("Fleasion.utils.platform_macos.find_roblox_resource_dirs", fake_find_roblox_resource_dirs)
+    monkeypatch.setattr(proxy_master, "load_saved_roblox_dirs", lambda: [studio])
+    monkeypatch.setattr(proxy_master, "save_saved_roblox_dirs", lambda dirs: persisted.extend(dirs))
+
+    assert proxy_master._find_roblox_dirs() == [player]
+    assert discovery_calls == [False]
+    assert persisted == [player]
+
+
+def test_macos_studio_launch_skips_ca_patch(tmp_path, monkeypatch):
+    ca_dir = tmp_path / "proxy_ca"
+    ca_dir.mkdir()
+    (ca_dir / "ca.crt").write_text(
+        "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
+        encoding="utf-8",
+    )
+    studio_exe = tmp_path / "RobloxStudio.app" / "Contents" / "MacOS" / "RobloxStudio"
+    studio_exe.parent.mkdir(parents=True)
+    studio_exe.write_text("stub", encoding="utf-8")
+    logs = []
+
+    monkeypatch.setattr(proxy_master, "IS_MACOS", True)
+    monkeypatch.setattr(proxy_master, "_current_proxy_ca_dir", lambda: ca_dir)
+    monkeypatch.setattr(proxy_master, "log_buffer", SimpleNamespace(log=lambda category, message: logs.append((category, message))))
+    monkeypatch.setattr(proxy_master, "_log_cacert_state", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not inspect Studio certs")))
+    monkeypatch.setattr(proxy_master, "_upsert_fleasion_ca_in_cacert", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not patch Studio certs")))
+
+    assert proxy_master.check_and_patch_running_roblox_ca(studio_exe) is False
+    assert any("Skipping macOS Roblox Studio CA patch" in message for _category, message in logs)

@@ -3,6 +3,7 @@ import threading
 
 import pytest
 
+from Fleasion.modifications import manager as modifications_manager
 from Fleasion.modifications import fflag_manager
 from Fleasion.modifications.fflag_manager import FastFlagManager
 from Fleasion.modifications.manager import ModificationManager, normalise_target_path
@@ -204,3 +205,25 @@ def test_fast_flags_write_to_sober_config(tmp_path, monkeypatch):
         "close_on_leave": False,
         "fflags": {"Old": True},
     }
+
+
+def test_find_roblox_dirs_excludes_macos_studio_saved_dirs(tmp_path, monkeypatch):
+    player = tmp_path / "Roblox.app" / "Contents" / "Resources"
+    studio = tmp_path / "RobloxStudio.app" / "Contents" / "Resources"
+    player.mkdir(parents=True)
+    studio.mkdir(parents=True)
+    discovery_calls = []
+    persisted = []
+
+    def fake_find_roblox_resource_dirs(include_studio: bool):
+        discovery_calls.append(include_studio)
+        return [player] + ([studio] if include_studio else [])
+
+    monkeypatch.setattr(modifications_manager.sys, "platform", "darwin")
+    monkeypatch.setattr("Fleasion.utils.platform_macos.find_roblox_resource_dirs", fake_find_roblox_resource_dirs)
+    monkeypatch.setattr(modifications_manager, "load_saved_roblox_dirs", lambda: [studio])
+    monkeypatch.setattr(modifications_manager, "save_saved_roblox_dirs", lambda dirs: persisted.extend(dirs))
+
+    assert modifications_manager._find_roblox_dirs() == [player]
+    assert discovery_calls == [False]
+    assert persisted == [player]
