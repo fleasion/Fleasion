@@ -1,4 +1,4 @@
-# Fleasion on Linux (Gay Edition)
+# Fleasion
 
 A Windows, macOS, and Linux/Sober application for intercepting and replacing Roblox game assets in real time. Fleasion runs a local proxy that sits between Roblox and its servers, letting you swap textures, audio, meshes, animations, and other assets before they reach the game client.
 
