@@ -22,6 +22,7 @@ _DFD_CHANNEL_RED = 0
 _DFD_CHANNEL_GREEN = 1
 _DFD_CHANNEL_BLUE = 2
 _DFD_CHANNEL_ALPHA = 15
+_KTX_WRITER_VALUE = b'KTXwriter\x00Unidentified app / libktx v4.4.2-10-gac2edf19\x00'
 
 
 def write_rgba8_ktx2(rgba: bytes, width: int, height: int, out_path: Path) -> None:
@@ -37,7 +38,9 @@ def write_rgba8_ktx2(rgba: bytes, width: int, height: int, out_path: Path) -> No
 
     dfd = _make_rgba8_dfd()
     dfd_offset = _HEADER_AND_INDEX_SIZE
-    level_offset = dfd_offset + len(dfd)
+    kvd = _make_kvd()
+    kvd_offset = dfd_offset + len(dfd)
+    level_offset = kvd_offset + len(kvd)
     level_padding = b'\x00' * _padding_for(level_offset, 4)
     level_offset += len(level_padding)
 
@@ -59,8 +62,8 @@ def write_rgba8_ktx2(rgba: bytes, width: int, height: int, out_path: Path) -> No
             '<IIIIQQ',
             dfd_offset,
             len(dfd),
-            0,      # kvdByteOffset
-            0,      # kvdByteLength
+            kvd_offset,
+            len(kvd),
             0,      # sgdByteOffset
             0,      # sgdByteLength
         )
@@ -68,7 +71,7 @@ def write_rgba8_ktx2(rgba: bytes, width: int, height: int, out_path: Path) -> No
     )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_bytes(header + dfd + level_padding + rgba)
+    out_path.write_bytes(header + dfd + kvd + level_padding + rgba)
 
 
 def read_rgba8_ktx2(data: bytes) -> tuple[bytes, int, int] | None:
@@ -153,6 +156,11 @@ def _make_sample(bit_offset: int, channel_type: int) -> bytes:
         0,             # sampleLower
         255,           # sampleUpper
     )
+
+
+def _make_kvd() -> bytes:
+    entry = struct.pack('<I', len(_KTX_WRITER_VALUE)) + _KTX_WRITER_VALUE
+    return entry + (b'\x00' * _padding_for(len(entry), 4))
 
 
 def _padding_for(offset: int, alignment: int) -> int:

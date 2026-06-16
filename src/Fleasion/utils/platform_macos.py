@@ -357,7 +357,7 @@ def delete_cache() -> list[str]:
 
     if APP_CACHE_DIR.exists():
         try:
-            preserve = {APP_CACHE_DIR / 'predownloaded', APP_CACHE_DIR / 'texpack_slots'}
+            preserve = {APP_CACHE_DIR / 'predownloaded'}
             for child in APP_CACHE_DIR.iterdir():
                 if child in preserve:
                     continue

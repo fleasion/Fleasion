@@ -258,11 +258,11 @@ def delete_cache() -> list[str]:
     else:
         messages.append('Storage folder not found')
 
-    # Delete Fleasion APP_CACHE_DIR (preserve predownloaded/ and texpack_slots/)
+    # Delete Fleasion APP_CACHE_DIR (preserve predownloaded assets only)
     from .paths import APP_CACHE_DIR
     if APP_CACHE_DIR.exists():
         try:
-            _preserve_set = {APP_CACHE_DIR / 'predownloaded', APP_CACHE_DIR / 'texpack_slots'}
+            _preserve_set = {APP_CACHE_DIR / 'predownloaded'}
             for child in APP_CACHE_DIR.iterdir():
                 if child in _preserve_set:
                     continue

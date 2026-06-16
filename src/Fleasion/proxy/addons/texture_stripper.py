@@ -35,6 +35,40 @@ logger = logging.getLogger(__name__)
 _ZSTD_MAGIC = b'\x28\xb5\x2f\xfd'
 _GZIP_MAGIC = b'\x1f\x8b'
 
+_TEXPACK_SLOT_NAMES = {
+    0: 'Color',
+    1: 'Normal',
+    2: 'ORM',
+}
+
+
+def _texpack_slot_label(slot: int | None) -> str:
+    if slot is None:
+        return 'unknown'
+    name = _TEXPACK_SLOT_NAMES.get(slot, 'unknown')
+    return f'{slot}:{name}'
+
+
+def _short_value(value, limit: int = 120) -> str:
+    if value is None:
+        return 'remove/default'
+    text = str(value)
+    if len(text) <= limit:
+        return text
+    return text[:limit - 3] + '...'
+
+
+def _file_value(value) -> str:
+    if value is None:
+        return 'remove/default'
+    text = str(value)
+    if text.startswith(('http://', 'https://')):
+        return _short_value(text)
+    try:
+        return Path(text).name or text
+    except Exception:
+        return _short_value(text)
+
 
 def _b64decode_padded(value: str) -> bytes:
     import base64 as _b64
@@ -129,9 +163,25 @@ def _select_content_representation(e: dict) -> Optional[dict]:
             representation = decoded[requested]
             return representation if isinstance(representation, dict) else None
 
-    if len(decoded) == 1 and isinstance(decoded[0], dict):
+    if isinstance(decoded[0], dict):
         return decoded[0]
     return None
+
+
+def _decode_fidelity_slot_quality(fidelity_b64: str | None) -> tuple[int, int] | None:
+    if not fidelity_b64:
+        return None
+    try:
+        fb = _b64decode_padded(fidelity_b64)
+    except Exception:
+        return None
+    if len(fb) < 2:
+        return None
+    slot = (fb[0] & 0x60) >> 5
+    if slot > 2:
+        return None
+    quality = (fb[1] & 0xC0) >> 6
+    return slot, quality
 
 
 def _decode_texpack_slot_quality(e: dict) -> tuple[int, int] | None:
@@ -141,32 +191,14 @@ def _decode_texpack_slot_quality(e: dict) -> tuple[int, int] | None:
     representation = _select_content_representation(e)
     if not representation:
         return None
-    fidelity_b64 = representation.get('fidelity')
-    if not fidelity_b64:
-        return None
-    try:
-        fb = _b64decode_padded(fidelity_b64)
-    except Exception:
-        return None
-    if not fb:
-        return None
-    return fb[0] & 0x3F, (fb[0] >> 6) & 0x3
+    return _decode_fidelity_slot_quality(representation.get('fidelity'))
 
 
 def _decode_selected_representation_slot_quality(e: dict) -> tuple[int, int] | None:
     representation = e.get('contentRepresentationSpecifier')
     if not isinstance(representation, dict):
         return None
-    fidelity_b64 = representation.get('fidelity')
-    if not fidelity_b64:
-        return None
-    try:
-        fb = _b64decode_padded(fidelity_b64)
-    except Exception:
-        return None
-    if not fb:
-        return None
-    return fb[0] & 0x3F, (fb[0] >> 6) & 0x3
+    return _decode_fidelity_slot_quality(representation.get('fidelity'))
 
 
 def _decompress_cdn_response(data: bytes) -> bytes:
@@ -531,6 +563,10 @@ class TextureStripper:
                 parent_ids.add(int(parent_raw))
 
         for parent_id in sorted(parent_ids):
+            log_buffer.log(
+                'TexPackTrace',
+                f'Precheck: fetching TexturePack XML layout for pack {parent_id} because a slot >=2 rule exists',
+            )
             scraper.prefetch_texpack_layout(parent_id)
 
     # Rig auto-conversion helpers
@@ -861,7 +897,11 @@ class TextureStripper:
             return body
 
         replacements, removals, cdn_replacements, local_replacements = replacements_tuple
-
+        replacements = {
+            key: value
+            for key, value in replacements.items()
+            if self._normalize_asset_id(value) not in (0, 1)
+        }
         # Move pre-downloaded private replacements into local_replacements so
         # they follow the exact same code path as user-configured local files
         # (keeps batch body unmodified, CDN URL mapped at response time).
@@ -940,8 +980,11 @@ class TextureStripper:
                     log_buffer.log('TexPack', f'Routing {format_count(tp_slot_removals, "slot removal")} to blank placeholder')
 
         _slot_target_ids: set[int] = set()
-        for _key in (set(replacements.keys()) | set(cdn_replacements.keys()) |
-                     set(local_replacements.keys()) | set(removals)):
+        _all_texpack_rule_keys = (
+            set(replacements.keys()) | set(cdn_replacements.keys()) |
+            set(local_replacements.keys()) | set(removals)
+        )
+        for _key in _all_texpack_rule_keys:
             if isinstance(_key, str) and ':' in _key:
                 _pk = _key.split(':', 1)[0]
                 if _pk.isdigit():
@@ -998,7 +1041,6 @@ class TextureStripper:
                 None if (_cv is not None and _cv.lower().endswith(('.ktx2', '.ktx'))) else _cv
             )
             _orm_overrides.setdefault(_pk_key, {})[_ch] = _cv_resolved
-
         for idx, e in enumerate(data):
             if not isinstance(e, dict):
                 continue
@@ -1015,8 +1057,6 @@ class TextureStripper:
             # slot_key = "assetId:mapIndex" (e.g. "7547298786:1" for the normal-map slot).
             # wildcard_key = "TexturePack:N" matches the N-th slot of ANY TexturePack.
             map_index = _texpack_request_slots.get(idx)
-            if map_index is None:
-                map_index = self._get_texpack_map_index(e)
             slot_key = f'{aid}:{map_index}' if (aid is not None and map_index is not None) else None
             wildcard_key = f'TexturePack:{map_index}' if map_index is not None else None
 
@@ -1208,7 +1248,8 @@ class TextureStripper:
             _orm_overrides.setdefault(_pk_key, {})[_ch] = _cv_resolved
 
         _slot_target_ids: set[int] = set()
-        for _key in (set(cdn_replacements.keys()) | set(local_replacements.keys())):
+        _all_texpack_route_keys = set(cdn_replacements.keys()) | set(local_replacements.keys())
+        for _key in _all_texpack_route_keys:
             if isinstance(_key, str) and ':' in _key:
                 _pk = _key.split(':', 1)[0]
                 if _pk.isdigit():
@@ -1237,13 +1278,11 @@ class TextureStripper:
                     if by_request_index in self._pending:
                         pending_key = by_request_index
 
+                req_item = req_data[idx] if idx < len(req_data) and isinstance(req_data[idx], dict) else {}
+                aid = self._normalize_asset_id(req_item.get('assetId'))
+                map_index = _texpack_request_slots.get(idx)
+
                 if location and not pending_key:
-                    req_item = req_data[idx] if idx < len(req_data) and isinstance(req_data[idx], dict) else {}
-                    aid = self._normalize_asset_id(req_item.get('assetId'))
-                    map_index = _texpack_request_slots.get(idx)
-                    if map_index is None:
-                        slot_quality = _decode_selected_representation_slot_quality(item)
-                        map_index = slot_quality[0] if slot_quality is not None else None
                     if aid is not None and map_index is not None:
                         if map_index == 2 and _orm_overrides:
                             _orm_chs: dict[str, str | None] = {}
@@ -1320,23 +1359,49 @@ class TextureStripper:
         rig-matched local replacement file instead.
         """
         base_url = f'https://{host}{path}'.split('?')[0]
+
+        def _log_cdn_match(action: str, value) -> None:
+            try:
+                target = value[0] if action == 'anim_rig' and isinstance(value, tuple) else value
+                p = Path(str(target))
+                exists = p.exists()
+                size = p.stat().st_size if exists else 0
+                ext = p.suffix.lower()
+                category = 'TexPackTrace' if ext in ('.ktx', '.ktx2') else 'CDN'
+                log_buffer.log(
+                    category,
+                    f'CDN short-circuit match: action={action} url={base_url[:120]} '
+                    f'target={_file_value(str(target))} exists={exists} bytes={size}',
+                )
+            except Exception as exc:
+                log_buffer.log('CDN', f'CDN short-circuit log failed for {base_url[:80]}: {exc}')
+
         # Check animation rig-detect entries first (separate dict, no _lock needed here
         # since _anim_lock guards it; checked before _local_redirects so these never
         # accidentally land in the normal short-circuit path).
         with self._anim_lock:
             anim_entry = self._anim_rig_local.pop(base_url, None)
         if anim_entry is not None:
+            _log_cdn_match('anim_rig', anim_entry)
             return ('anim_rig', anim_entry)
 
         with self._lock:
             if base_url in self._local_redirects:
-                return ('local', self._local_redirects.pop(base_url))
+                value = self._local_redirects.pop(base_url)
+                _log_cdn_match('local', value)
+                return ('local', value)
             if base_url in self._cdn_redirects:
-                return ('cdn', self._cdn_redirects.pop(base_url))
+                value = self._cdn_redirects.pop(base_url)
+                log_buffer.log('CDN', f'CDN short-circuit match: action=cdn url={base_url[:120]} target={_short_value(value)}')
+                return ('cdn', value)
             if base_url in self._solidmodel_injections:
                 if base_url in self._solidmodel_force_v3:
-                    return ('solid_v3', self._solidmodel_injections[base_url])
-                return ('solid', self._solidmodel_injections[base_url])
+                    value = self._solidmodel_injections[base_url]
+                    _log_cdn_match('solid_v3', value)
+                    return ('solid_v3', value)
+                value = self._solidmodel_injections[base_url]
+                _log_cdn_match('solid', value)
+                return ('solid', value)
         return None
 
     def has_pending(self) -> bool:
@@ -1384,21 +1449,63 @@ class TextureStripper:
     def _convert_texpack_local(local_path: str) -> str:
         path = Path(local_path)
         ext = path.suffix.lower()
-        if ext in ('.ktx2', '.ktx'):
+        if ext == '.ktx2':
+            normalized = TextureStripper._normalize_rgba8_ktx2(path)
+            if normalized != path:
+                log_buffer.log(
+                    'TexPackTrace',
+                    f'Normalized local RGBA8 KTX2 for Roblox: input={path.name} output={normalized.name}',
+                )
+                return str(normalized)
+            log_buffer.log('TexPackTrace', f'Local TexturePack map already KTX: file={path.name}')
+            return local_path
+        if ext == '.ktx':
+            log_buffer.log('TexPackTrace', f'Local TexturePack map already KTX: file={path.name}')
             return local_path
         try:
             from ...cache.tools.image_to_ktx2.converter import get_or_create_ktx2_from_image
+            log_buffer.log('TexPackTrace', f'Converting local TexturePack map to KTX2: input={path.name}')
             converted_path = get_or_create_ktx2_from_image(path)
             if converted_path:
+                converted_path = TextureStripper._normalize_rgba8_ktx2(converted_path)
+                log_buffer.log(
+                    'TexPackTrace',
+                    f'Converted local TexturePack map: input={path.name} output={converted_path.name}',
+                )
                 return str(converted_path)
         except Exception as exc:
             log_buffer.log('Local', f'Failed to convert {path.name} to KTX2: {exc}')
+            log_buffer.log('TexPackTrace', f'Local TexturePack KTX2 conversion failed for {path.name}: {exc}')
         return local_path
+
+    @staticmethod
+    def _normalize_rgba8_ktx2(path: Path) -> Path:
+        """Rewrite simple RGBA8 KTX2 files through Fleasion's libktx-compatible writer."""
+        try:
+            from ...cache.tools.rgba_ktx2 import read_rgba8_ktx2, write_rgba8_ktx2
+            data = path.read_bytes()
+            parsed = read_rgba8_ktx2(data)
+            if parsed is None:
+                return path
+            rgba, width, height = parsed
+            digest = hashlib.md5(data).hexdigest()[:16]
+            out_path = APP_CACHE_DIR / f'{path.stem}_rgba8_{digest}.ktx2'
+            if not out_path.exists():
+                write_rgba8_ktx2(rgba, width, height, out_path)
+            return out_path
+        except Exception as exc:
+            log_buffer.log('TexPackTrace', f'RGBA8 KTX2 normalization skipped for {path.name}: {exc}')
+            return path
 
     def _route_cdn(self, req_id: str, aid, cdn_url: str, is_solidmodel: bool, is_texpack: bool = False) -> None:
         parsed = urlparse(str(cdn_url))
         ext = Path(parsed.path).suffix.lower()
         url_hash = hashlib.md5(str(cdn_url).encode()).hexdigest()
+        if is_texpack:
+            log_buffer.log(
+                'TexPackTrace',
+                f'Queue CDN TexturePack route req={req_id} aid={aid} ext={ext or "none"} url={_short_value(cdn_url)}',
+            )
 
         if ext == '.obj':
             local_cache = APP_CACHE_DIR / f'{url_hash}.obj'
@@ -1456,8 +1563,16 @@ class TextureStripper:
             local_cache = APP_CACHE_DIR / f'{url_hash}{ext}'
             if _download_remote_file(cdn_url, local_cache, 'CDN TexPack Map'):
                 # Divert back to local routing so it triggers KTX2 conversion!
+                log_buffer.log(
+                    'TexPackTrace',
+                    f'Downloaded CDN TexturePack map for local conversion aid={aid} file={local_cache.name}',
+                )
                 self._route_local(req_id, aid, str(local_cache), is_solidmodel, is_texpack=True)
                 return
+            log_buffer.log(
+                'TexPackTrace',
+                f'CDN TexturePack map download failed for aid={aid}; falling back to CDN redirect',
+            )
 
         with self._lock:
             self._pending[req_id] = ('cdn', cdn_url)
@@ -1476,6 +1591,12 @@ class TextureStripper:
         path = Path(local_path)
         ext = path.suffix.lower()
         original_path = path
+        if is_texpack:
+            log_buffer.log(
+                'TexPackTrace',
+                f'Queue local TexturePack route req={req_id} aid={aid} key={source_key} '
+                f'slot={_texpack_slot_label(map_index)} input={path.name} ext={ext or "none"}',
+            )
         
         # Isolate KTX2 explicit conversion only to TexturePack image replacements
         if is_texpack and ext != '.ktx2' and ext != '.ktx':
@@ -1483,11 +1604,29 @@ class TextureStripper:
                 from ...cache.tools.image_to_ktx2.converter import get_or_create_ktx2_from_image
                 converted_path = get_or_create_ktx2_from_image(path)
                 if converted_path:
+                    converted_path = self._normalize_rgba8_ktx2(converted_path)
                     local_path = str(converted_path)
                     path = converted_path
                     ext = path.suffix.lower()
+                    log_buffer.log(
+                        'TexPackTrace',
+                        f'Local TexturePack conversion selected output={path.name} '
+                        f'from={original_path.name} slot={_texpack_slot_label(map_index)}',
+                    )
             except Exception as e:
                 log_buffer.log('Local', f'Failed to convert {path.name} to KTX2: {e}')
+                log_buffer.log('TexPackTrace', f'Local TexturePack conversion failed for {path.name}: {e}')
+        elif is_texpack and ext == '.ktx2':
+            normalized = self._normalize_rgba8_ktx2(path)
+            if normalized != path:
+                local_path = str(normalized)
+                path = normalized
+                ext = path.suffix.lower()
+                log_buffer.log(
+                    'TexPackTrace',
+                    f'Local TexturePack RGBA8 KTX2 normalized output={path.name} '
+                    f'from={original_path.name} slot={_texpack_slot_label(map_index)}',
+                )
 
         def _log_local_queued(label: str = 'Queued local') -> None:
             details = []
@@ -1581,10 +1720,19 @@ class TextureStripper:
                 else:
                     resolved[_ch] = _val
             baseline = APP_CACHE_DIR / 'texpack_slots' / f'{parent_id}_slot2.ktx2'
+            log_buffer.log(
+                'TexPackTrace',
+                f'ORM composite input pack={parent_id} baseline={baseline.name if baseline.exists() else "missing"} '
+                f'channels={", ".join(f"{ch}={_file_value(val)}" for ch, val in sorted(resolved.items()))}',
+            )
             result = composite_orm(
                 baseline=(baseline if baseline.exists() else None),
                 channels={k: (Path(v) if v is not None else None) for k, v in resolved.items()},
                 cache_dir=APP_CACHE_DIR,
+            )
+            log_buffer.log(
+                'TexPackTrace',
+                f'ORM composite result pack={parent_id} output={_file_value(result)}',
             )
             return result
         except Exception as exc:
@@ -1642,20 +1790,23 @@ class TextureStripper:
             if not isinstance(aid, int) or aid not in texpack_ids:
                 continue
 
-            slot = _texpack_slot_from_request(item)
+            slot_quality = _decode_texpack_slot_quality(item)
+            slot = slot_quality[0] if slot_quality is not None else None
             if slot is None:
                 build_key = _texpack_build_key(item)
-                if build_key is not None:
+                if build_key is not None and asset_counts.get(aid, 0) > 1:
                     slots_for_asset = build_slots.setdefault(aid, {})
                     if build_key not in slots_for_asset:
                         raw_slot = next_slot.get(aid, 0)
                         slots_for_asset[build_key] = 2 if raw_slot >= 2 else raw_slot
                         next_slot[aid] = raw_slot + 1
                     slot = slots_for_asset[build_key]
-                else:
+                elif asset_counts.get(aid, 0) > 1:
                     raw_slot = occurrence_slot.get(aid, 0)
                     occurrence_slot[aid] = raw_slot + 1
                     slot = 2 if raw_slot >= 2 else raw_slot
+                else:
+                    continue
 
             result[idx] = slot
 
@@ -1749,9 +1900,9 @@ class TextureStripper:
         """Return texture map fidelity slot index from the batch item.
 
         Roblox sends a priority list plus a requested build type.  The selected
-        representation's base64 fidelity byte encodes:
-          bits 0–5 (& 0x3F): slot index
-          bits 6–7 (>> 6):   quality/LOD level (0=low … 3=ultra)
+        The representation's base64 fidelity bytes encode the TexturePack slot
+        in byte 0 bits 5-6 and quality/LOD in byte 1 bits 6-7. Examples observed
+        from live batches: 0040=color, 2040=normal, 4040=ORM.
 
         Roblox fidelity slot values (empirically verified):
           0 = Color / Albedo

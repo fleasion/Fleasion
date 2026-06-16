@@ -892,8 +892,23 @@ class FleasionProxy:
                     if short_circuit is not None:
                         action, value = short_circuit
                         if action == 'local':
+                            _serve_path = Path(str(value))
+                            _serve_exists = _serve_path.exists()
+                            _serve_size = _serve_path.stat().st_size if _serve_exists else 0
+                            _serve_category = 'TexPackTrace' if _serve_path.suffix.lower() in ('.ktx', '.ktx2') else 'Local'
+                            log_buffer.log(
+                                _serve_category,
+                                f'CDN local serve start: host={host} path={path[:160]} '
+                                f'file={_serve_path.name} exists={_serve_exists} bytes={_serve_size}',
+                            )
                             response = await asyncio.get_event_loop().run_in_executor(
                                 self._executor, _serve_local_file, value)
+                            _status_line = response.split(b'\r\n', 1)[0].decode('ascii', errors='replace') if response else 'empty'
+                            log_buffer.log(
+                                _serve_category,
+                                f'CDN local serve complete: host={host} path={path[:160]} '
+                                f'file={_serve_path.name} status={_status_line} response_bytes={len(response)}',
+                            )
                             writer.write(response)
                             await writer.drain()
                             # Cache our own served file so it appears in the scraper viewer

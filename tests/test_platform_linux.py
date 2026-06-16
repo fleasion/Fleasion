@@ -36,3 +36,26 @@ def test_launch_as_standard_user_opens_http_url(monkeypatch):
 
     assert platform_linux.launch_as_standard_user("https://www.roblox.com/login")
     assert calls == [["xdg-open", "https://www.roblox.com/login"]]
+
+
+def test_delete_cache_clears_texpack_slots_but_preserves_predownloaded(tmp_path, monkeypatch):
+    app_cache = tmp_path / "cache"
+    predownloaded = app_cache / "predownloaded"
+    texpack_slots = app_cache / "texpack_slots"
+    converted_cache = app_cache / "converted"
+    for path in (predownloaded, texpack_slots, converted_cache):
+        path.mkdir(parents=True)
+    (predownloaded / "asset.bin").write_bytes(b"keep")
+    (texpack_slots / "88088208586015_slot0.ktx2").write_bytes(b"delete")
+    (converted_cache / "mesh.obj").write_text("delete", encoding="utf-8")
+
+    monkeypatch.setattr(platform_linux, "APP_CACHE_DIR", app_cache)
+    monkeypatch.setattr(platform_linux, "STORAGE_DB", tmp_path / "rbx-storage.db")
+    monkeypatch.setattr(platform_linux, "is_roblox_running", lambda: False)
+
+    platform_linux.delete_cache()
+
+    assert predownloaded.exists()
+    assert (predownloaded / "asset.bin").exists()
+    assert not texpack_slots.exists()
+    assert not converted_cache.exists()

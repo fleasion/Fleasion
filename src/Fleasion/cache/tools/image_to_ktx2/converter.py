@@ -33,6 +33,7 @@ def get_or_create_ktx2_from_image(image_path: Path) -> Path:
     ktx2_path = APP_CACHE_DIR / f"{image_path.stem}_{h}.ktx2"
     if ktx2_path.exists():
         # Already converted before
+        log_buffer.log('TexPackTrace', f'image_to_ktx2 cache hit: input={image_path.name} output={ktx2_path.name}')
         return ktx2_path
 
     try:
@@ -44,9 +45,17 @@ def get_or_create_ktx2_from_image(image_path: Path) -> Path:
         width, height = img.size
         rgba_bytes = img.tobytes()
         expected_size = width * height * 4
+        log_buffer.log(
+            'TexPackTrace',
+            f'image_to_ktx2 convert start: input={image_path.name} mode={img.mode} size={width}x{height} bytes={original_size}',
+        )
         
         if len(rgba_bytes) != expected_size:
             log_buffer.log('Proxy', f'image_to_ktx2: size mismatch {len(rgba_bytes)} vs {expected_size}')
+            log_buffer.log(
+                'TexPackTrace',
+                f'image_to_ktx2 size mismatch: input={image_path.name} rgba={len(rgba_bytes)} expected={expected_size}',
+            )
             return image_path
 
         write_rgba8_ktx2(rgba_bytes, width, height, ktx2_path)
@@ -55,6 +64,10 @@ def get_or_create_ktx2_from_image(image_path: Path) -> Path:
         try:
             ktx2_size = ktx2_path.stat().st_size
             log_buffer.log('Proxy', f"Converted {image_path.name} -> KTX2 (Original: {original_size:,} bytes | KTX2: {ktx2_size:,} bytes)")
+            log_buffer.log(
+                'TexPackTrace',
+                f'image_to_ktx2 convert complete: input={image_path.name} output={ktx2_path.name} bytes={ktx2_size}',
+            )
         except Exception:
             pass
             
@@ -62,4 +75,5 @@ def get_or_create_ktx2_from_image(image_path: Path) -> Path:
 
     except Exception as exc:
         log_buffer.log('Proxy', f'image_to_ktx2: Exception during conversion: {exc}')
+        log_buffer.log('TexPackTrace', f'image_to_ktx2 convert failed: input={image_path.name} error={exc}')
         return image_path
