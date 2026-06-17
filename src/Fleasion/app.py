@@ -27,6 +27,7 @@ from .utils import APP_DISCORD, APP_NAME, CONFIG_DIR, LOG_FILE, delete_cache, ge
 
 _SINGLE_INSTANCE_KEY = 'FleasionSingleInstance'
 _SINGLE_INSTANCE_CONTROL_SERVER = 'FleasionSingleInstanceControl'
+_shared_memory = None
 
 
 
@@ -150,6 +151,10 @@ def _relaunch_as_admin(extra_args: str = '', parent_hwnd: int | None = None) -> 
         ]
         try:
             # Replace the current process with pkexec to avoid orphaning.
+            global _shared_memory
+            if _shared_memory is not None:
+                _shared_memory.detach()
+                _shared_memory = None
             os.execv(pkexec, cmd)
         except Exception as exc:
             log_buffer.log('UAC', f'Linux administrator relaunch failed: {exc}')
@@ -1181,12 +1186,13 @@ def main():
         if _stale.attach():
             _stale.detach()
 
-    shared_memory = QSharedMemory(_SINGLE_INSTANCE_KEY)
-    _shared_memory_created = shared_memory.create(1)
+    global _shared_memory
+    _shared_memory = QSharedMemory(_SINGLE_INSTANCE_KEY)
+    _shared_memory_created = _shared_memory.create(1)
     if (
         not _shared_memory_created
         and sys.platform == 'darwin'
-        and shared_memory.error() == QSharedMemory.SharedMemoryError.AlreadyExists
+        and _shared_memory.error() == QSharedMemory.SharedMemoryError.AlreadyExists
         and not _other_fleasion_pids()
     ):
         # A hard termination can leave Qt's POSIX shared-memory segment behind.
@@ -1194,11 +1200,11 @@ def main():
         _stale = QSharedMemory(_SINGLE_INSTANCE_KEY)
         if _stale.attach():
             _stale.detach()
-        shared_memory = QSharedMemory(_SINGLE_INSTANCE_KEY)
-        _shared_memory_created = shared_memory.create(1)
+        _shared_memory = QSharedMemory(_SINGLE_INSTANCE_KEY)
+        _shared_memory_created = _shared_memory.create(1)
 
     if not _shared_memory_created:
-        if shared_memory.error() == QSharedMemory.SharedMemoryError.AlreadyExists:
+        if _shared_memory.error() == QSharedMemory.SharedMemoryError.AlreadyExists:
             # Another instance is already running.
             if _suppress_dashboard:
                 sys.exit(0)

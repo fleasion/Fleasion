@@ -380,7 +380,7 @@ def install_desktop_entries() -> dict:
     command, working_dir = _linux_app_launch_command(installed_app)
     command_literal = ' '.join(shlex.quote(part) for part in command)
     working_dir_literal = shlex.quote(str(working_dir)) if working_dir is not None else ''
-    pythonpath = '' if working_dir is None else f'export PYTHONPATH={shlex.quote(str(working_dir / "src"))}:$PYTHONPATH\n'
+    pythonpath = '' if working_dir is None else f'export PYTHONPATH={shlex.quote(str(working_dir / "src"))}:${{PYTHONPATH:-}}\n'
 
     root_runner = f'''#!/bin/sh
 set -eu
