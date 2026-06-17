@@ -149,16 +149,8 @@ def _relaunch_as_admin(extra_args: str = '', parent_hwnd: int | None = None) -> 
             *existing_args,
         ]
         try:
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            with log_path.open('ab') as log_file:
-                subprocess.Popen(
-                    cmd,
-                    stdout=log_file,
-                    stderr=log_file,
-                    start_new_session=True,
-                )
-            log_buffer.log('UAC', f'Linux Polkit relaunch dispatched via {runner}; stderr/stdout: {log_path}')
-            return True
+            # Replace the current process with pkexec to avoid orphaning.
+            os.execv(pkexec, cmd)
         except Exception as exc:
             log_buffer.log('UAC', f'Linux administrator relaunch failed: {exc}')
             return False

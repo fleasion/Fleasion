@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import pwd
 import shlex
 import shutil
 import subprocess
@@ -255,6 +254,7 @@ def _standard_user_popen(args: list[str]) -> subprocess.Popen:
 
     user_home = Path(os.environ.get('FLEASION_USER_HOME') or USER_HOME)
     try:
+        import pwd
         stat = user_home.stat()
         uid = stat.st_uid
         gid = stat.st_gid
