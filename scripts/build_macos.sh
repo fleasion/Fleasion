@@ -22,13 +22,33 @@ UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/fleasion-uv-cache}"
 UV_X86_CACHE_DIR="${UV_X86_CACHE_DIR:-/tmp/fleasion-uv-cache-x86}"
 UV_X86_PROJECT_ENVIRONMENT="${UV_X86_PROJECT_ENVIRONMENT:-.tools/venv-x86}"
 UV_X86_PYTHON_INSTALL_DIR="${UV_X86_PYTHON_INSTALL_DIR:-.tools/pythons-x86}"
-UV_X86_PYTHON="${UV_X86_PYTHON:-3.14}"
+UV_X86_PYTHON_VERSION="${UV_X86_PYTHON_VERSION:-3.14}"
+UV_X86_PYTHON="${UV_X86_PYTHON:-cpython-${UV_X86_PYTHON_VERSION}-macos-x86_64-none}"
 UV_X86_VERSION="${UV_X86_VERSION:-$(uv --version 2>/dev/null | sed -n 's/^uv \([^ ]*\).*/\1/p')}"
 UV_X86_VERSION="${UV_X86_VERSION:-0.11.18}"
 UV_X86_DIR=".tools/uv-x86_64-apple-darwin"
 UV_X86_BIN="${UV_X86_DIR}/uv"
 
 export PYINSTALLER_CONFIG_DIR UV_CACHE_DIR
+
+x86_uv() {
+    UV_CACHE_DIR="$UV_X86_CACHE_DIR" \
+    UV_PROJECT_ENVIRONMENT="$UV_X86_PROJECT_ENVIRONMENT" \
+    UV_PYTHON_INSTALL_DIR="$UV_X86_PYTHON_INSTALL_DIR" \
+    UV_MANAGED_PYTHON=1 \
+    arch -x86_64 "$UV_X86_BIN" "$@"
+}
+
+find_x86_python() {
+    x86_uv python install "$UV_X86_PYTHON" --install-dir "$UV_X86_PYTHON_INSTALL_DIR" >/dev/null
+    x86_python_path="$(x86_uv python find "$UV_X86_PYTHON" --managed-python)"
+    x86_python_arch="$(arch -x86_64 "$x86_python_path" -c 'import platform; print(platform.machine())')"
+    if [ "$x86_python_arch" != "x86_64" ]; then
+        echo "Expected x86_64 Python for Intel build, got $x86_python_arch from $x86_python_path." >&2
+        exit 1
+    fi
+    printf '%s\n' "$x86_python_path"
+}
 
 require_archs() {
     file_path="$1"
@@ -117,16 +137,12 @@ ensure_x86_uv() {
 build_x86_64() {
     ensure_x86_uv
 
-    UV_CACHE_DIR="$UV_X86_CACHE_DIR" \
-    UV_PROJECT_ENVIRONMENT="$UV_X86_PROJECT_ENVIRONMENT" \
-    UV_PYTHON_INSTALL_DIR="$UV_X86_PYTHON_INSTALL_DIR" \
-    arch -x86_64 "$UV_X86_BIN" sync --python "$UV_X86_PYTHON" --group dev
+    x86_python_path="$(find_x86_python)"
+    rm -rf "$UV_X86_PROJECT_ENVIRONMENT"
+    x86_uv sync --locked --python "$x86_python_path" --group dev
 
-    UV_CACHE_DIR="$UV_X86_CACHE_DIR" \
-    UV_PROJECT_ENVIRONMENT="$UV_X86_PROJECT_ENVIRONMENT" \
-    UV_PYTHON_INSTALL_DIR="$UV_X86_PYTHON_INSTALL_DIR" \
     MACOS_TARGET_ARCH=x86_64 \
-    arch -x86_64 "$UV_X86_BIN" run pyinstaller --clean --noconfirm FleasionProxyHelper.spec
+    x86_uv run --python "$x86_python_path" pyinstaller --clean --noconfirm FleasionProxyHelper.spec
 
     if [ ! -x "$HELPER_DIST_PATH" ]; then
         echo "Intel helper build completed, but expected executable was not found: $HELPER_DIST_PATH" >&2
@@ -134,11 +150,8 @@ build_x86_64() {
     fi
     require_archs "$HELPER_DIST_PATH" x86_64
 
-    UV_CACHE_DIR="$UV_X86_CACHE_DIR" \
-    UV_PROJECT_ENVIRONMENT="$UV_X86_PROJECT_ENVIRONMENT" \
-    UV_PYTHON_INSTALL_DIR="$UV_X86_PYTHON_INSTALL_DIR" \
     MACOS_TARGET_ARCH=x86_64 \
-    arch -x86_64 "$UV_X86_BIN" run pyinstaller --clean --noconfirm Fleasion.spec
+    x86_uv run --python "$x86_python_path" pyinstaller --clean --noconfirm Fleasion.spec
 
     if [ ! -x "$EXEC_PATH" ]; then
         echo "Intel build completed, but expected executable was not found: $EXEC_PATH" >&2
