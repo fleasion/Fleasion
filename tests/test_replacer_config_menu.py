@@ -5,15 +5,17 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtCore import QEvent, QPointF, QRect, Qt
 from PyQt6.QtGui import QMouseEvent
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QTreeWidget
 
 from Fleasion.config import manager as manager_module
 from Fleasion.gui.replacer_config import (
     _GROUP_GUIDE_STEP_PX,
     ReplacerConfigWindow,
+    ReplacerTreeItem,
     _ProfileNameDelegate,
     _ROLE_DRAW_GROUP_ICON,
     _ROLE_GROUP_ICON_INDENT,
+    _ROLE_SORT_BASE,
     _ScrollableConfigMenu,
 )
 
@@ -126,6 +128,27 @@ def test_scrollable_config_menu_recalculates_geometry_when_entries_change():
 
     assert four_row_height > three_row_height > two_row_height
     assert popup.scroll_area.height() == popup._natural_content_size.height()
+    assert app is not None
+
+
+def test_replacer_tree_item_sort_handles_mixed_numeric_and_text_keys():
+    app = _qapp()
+    tree = QTreeWidget()
+    tree.setColumnCount(5)
+    tree.setSortingEnabled(True)
+    tree.sortItems(4, Qt.SortOrder.AscendingOrder)
+
+    group_item = ReplacerTreeItem(['On', 'Group', 'Group', '0 IDs', '1 profile'])
+    profile_item = ReplacerTreeItem(['On', 'Profile', 'Local', '1 ID', 'replacement.png'])
+    group_item.setData(4, _ROLE_SORT_BASE, 1)
+    profile_item.setData(4, _ROLE_SORT_BASE, 'replacement.png')
+
+    tree.addTopLevelItem(group_item)
+    tree.addTopLevelItem(profile_item)
+    tree.sortItems(4, Qt.SortOrder.AscendingOrder)
+
+    assert tree.topLevelItem(0) in (group_item, profile_item)
+    tree.close()
     assert app is not None
 
 

@@ -113,11 +113,23 @@ class UndoManager:
 class ReplacerTreeItem(QTreeWidgetItem):
     """Tree item with per-column sort keys for profile and group rows."""
 
+    @staticmethod
+    def _sort_key(value):
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return (0, int(value))
+        if isinstance(value, (int, float)):
+            return (0, value)
+        if isinstance(value, str):
+            return (1, value.casefold())
+        return (2, str(value).casefold())
+
     def __lt__(self, other):
         tree = self.treeWidget()
         column = tree.sortColumn() if tree is not None else 0
-        left = self.data(column, _ROLE_SORT_BASE)
-        right = other.data(column, _ROLE_SORT_BASE)
+        left = self._sort_key(self.data(column, _ROLE_SORT_BASE))
+        right = self._sort_key(other.data(column, _ROLE_SORT_BASE))
         if left is not None and right is not None:
             return left < right
         return self.text(column).lower() < other.text(column).lower()
