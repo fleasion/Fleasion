@@ -1099,6 +1099,20 @@ def kill_other_fleasion_instances():
             pass
 
 
+def _configure_opengl_for_legacy_viewers() -> None:
+    """Configure Qt before any OpenGL preview widgets create contexts."""
+    if sys.platform.startswith('linux'):
+        os.environ.setdefault('QT_OPENGL', 'desktop')
+    try:
+        QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
+    except Exception as exc:
+        log_buffer.log('OpenGL', f'Could not enable shared OpenGL contexts: {exc}')
+    try:
+        from .cache.gl_format import configure_default_legacy_gl_format
+        configure_default_legacy_gl_format()
+    except Exception as exc:
+        log_buffer.log('OpenGL', f'Could not configure default OpenGL format: {exc}')
+
 
 def main():
     """Main application entry point."""
@@ -1148,6 +1162,8 @@ def main():
             QMessageBox.StandardButton.Ok
         )
         sys.exit(1)
+
+    _configure_opengl_for_legacy_viewers()
 
     # Create Qt application
     app = QApplication(sys.argv)

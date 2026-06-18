@@ -22,9 +22,10 @@ from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QSlider, QLabel, QMessageBox, QMenu, QWidgetAction
 )
-from PyQt6.QtGui import QAction, QSurfaceFormat, QGuiApplication
+from PyQt6.QtGui import QAction, QGuiApplication
 
 
+from .gl_format import legacy_gl_format
 from ..utils import log_buffer
 
 # Math helpers
@@ -852,6 +853,7 @@ class AnimationGLWidget(QOpenGLWidget):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         # Slightly larger minimum so viewers are usable on small panels
         self.setMinimumSize(120, 120)
+        self.setFormat(legacy_gl_format())
         
         # Camera state
         self.camera_mode = 'orbit'

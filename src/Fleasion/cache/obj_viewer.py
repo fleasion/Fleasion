@@ -4,11 +4,14 @@ import math
 import time
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QSizePolicy, QMessageBox, QMenu
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QAction, QSurfaceFormat, QGuiApplication
+from PyQt6.QtGui import QAction, QGuiApplication
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 import numpy as np
 from OpenGL.GL import *
 from OpenGL.GLU import *
+
+from .gl_format import legacy_gl_format
+from ..utils.logging import log_buffer
 
 
 class ObjViewerWidget(QOpenGLWidget):
@@ -17,12 +20,12 @@ class ObjViewerWidget(QOpenGLWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        
+
         # Prevent scrollbars from spawning by allowing the widget to compress gracefully
         # Slightly larger minimum so viewers are usable on small panels
         self.setMinimumSize(120, 120)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        
+
         # Mesh Data
         self.vertices = []
         self.colors = []
@@ -32,16 +35,16 @@ class ObjViewerWidget(QOpenGLWidget):
 
         # Camera state (orbit) - Default to a nice 3/4 isometric-style view
         self.camera_mode = 'orbit' # 'orbit' or 'fps'
-        self.rotation_x = 20.0 
+        self.rotation_x = 20.0
         self.rotation_y = -30.0
         self.zoom = -5.0
-        
+
         # Camera state (fps)
         self.cam_pos = np.array([0.0, 0.0, 0.0], dtype=float)
         self.cam_yaw = 0.0
         self.cam_pitch = 0.0
         self.base_speed = 0.05  # Optimized for the normalized 1.0 unit model size
-        
+
         self.auto_rotate = False
         self.last_pos = None
         self.keys_pressed = set()
@@ -50,16 +53,14 @@ class ObjViewerWidget(QOpenGLWidget):
         # Display list for cached rendering
         self.mesh_display_list = 0
         self.needs_rebuild = False
-        
+        self._gl_context_logged = False
+        self._paint_error_logged = False
+
         # Display options
         self.show_wireframe = False
         self.show_grid = True
 
-        # Setup format
-        fmt = QSurfaceFormat()
-        fmt.setDepthBufferSize(24)
-        fmt.setSamples(4)
-        self.setFormat(fmt)
+        self.setFormat(legacy_gl_format())
 
         # Main update tick: use the monitor's refresh rate where possible
         self.timer = QTimer()
@@ -120,7 +121,7 @@ class ObjViewerWidget(QOpenGLWidget):
                     face_v.append(int(indices[0]) - 1)
                     if len(indices) >= 3 and indices[2]:
                         face_n.append(int(indices[2]) - 1)
-                
+
                 if len(face_v) >= 3:
                     self.faces.append({'v': face_v, 'n': face_n})
 
@@ -202,9 +203,9 @@ class ObjViewerWidget(QOpenGLWidget):
             for i, face in enumerate(self.faces):
                 v_indices = face['v']
                 n_indices = face['n']
-                
+
                 # Only explicitly rendering triangles to optimize glBegin calls
-                if len(v_indices) < 3: 
+                if len(v_indices) < 3:
                     continue
 
                 # Fallback to face normals if vertex normals missing
@@ -227,6 +228,7 @@ class ObjViewerWidget(QOpenGLWidget):
 
     def initializeGL(self):
         """Initialize OpenGL with high quality lighting."""
+        self._log_gl_context_once()
         glEnable(GL_DEPTH_TEST)
         glEnable(GL_LIGHTING)
         glEnable(GL_LIGHT0) # Key Light
@@ -252,13 +254,38 @@ class ObjViewerWidget(QOpenGLWidget):
         glLightfv(GL_LIGHT2, GL_POSITION, [0.0, 1.0, -2.0, 0.0])
         glLightfv(GL_LIGHT2, GL_DIFFUSE, [0.4, 0.4, 0.5, 1.0])
         glLightfv(GL_LIGHT2, GL_SPECULAR, [0.5, 0.5, 0.5, 1.0])
-        
+
         # Specular material settings - increase shininess to make it look less chalky
         glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, [0.6, 0.6, 0.6, 1.0])
         glMaterialf(GL_FRONT_AND_BACK, GL_SHININESS, 64.0)
 
         glClearColor(0.12, 0.12, 0.15, 1.0)
         glShadeModel(GL_SMOOTH)
+
+    def _log_gl_context_once(self):
+        if self._gl_context_logged:
+            return
+        self._gl_context_logged = True
+        try:
+            fmt = self.context().format()
+            version = glGetString(GL_VERSION)
+            renderer = glGetString(GL_RENDERER)
+            vendor = glGetString(GL_VENDOR)
+            log_buffer.log(
+                'OpenGL',
+                (
+                    'OBJ viewer context: '
+                    f'{fmt.majorVersion()}.{fmt.minorVersion()} '
+                    f'profile={fmt.profile().name} '
+                    f'renderable={fmt.renderableType().name} '
+                    f'samples={fmt.samples()} '
+                    f'version={version.decode(errors="replace") if version else "unknown"} '
+                    f'renderer={renderer.decode(errors="replace") if renderer else "unknown"} '
+                    f'vendor={vendor.decode(errors="replace") if vendor else "unknown"}'
+                ),
+            )
+        except Exception as exc:
+            log_buffer.log('OpenGL', f'Could not read OBJ viewer context details: {exc}')
 
     def resizeGL(self, w: int, h: int):
         """Handle standard clean projection resize."""
@@ -271,9 +298,23 @@ class ObjViewerWidget(QOpenGLWidget):
 
     def paintGL(self):
         """Render the scene using cached display list."""
+        try:
+            self._paint_scene()
+        except Exception as exc:
+            if not self._paint_error_logged:
+                self._paint_error_logged = True
+                log_buffer.log('OpenGL', f'OBJ viewer paint failed: {type(exc).__name__}: {exc}')
+            try:
+                glClearColor(0.08, 0.08, 0.10, 1.0)
+                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+            except Exception:
+                pass
+
+    def _paint_scene(self):
+        """Render the scene using cached display list."""
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         glLoadIdentity()
-        
+
         self._draw_background()
 
         # Camera Transform setup
@@ -295,31 +336,31 @@ class ObjViewerWidget(QOpenGLWidget):
                 if self.show_wireframe:
                     glEnable(GL_POLYGON_OFFSET_FILL)
                     glPolygonOffset(1.0, 1.0)
-                
+
                 glCallList(self.mesh_display_list)
-                
+
                 if self.show_wireframe:
                     glDisable(GL_POLYGON_OFFSET_FILL)
                     glPolygonMode(GL_FRONT_AND_BACK, GL_LINE)
                     glDisable(GL_LIGHTING)
-                    
+
                     # Prevent over-exposure by using blending + thin lines
                     glPushAttrib(GL_ENABLE_BIT | GL_COLOR_BUFFER_BIT | GL_LINE_BIT)
                     glEnable(GL_BLEND)
                     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-                    # Note: we use glBlendColor if we wanted, but since list overrides 
+                    # Note: we use glBlendColor if we wanted, but since list overrides
                     # glColor3fv, we just lower the alpha of everything drawn.
                     # Actually standard OpenGL allows constant alpha blending:
                     glBlendColor(1.0, 1.0, 1.0, 0.75)
                     glBlendFunc(GL_CONSTANT_ALPHA, GL_ONE_MINUS_CONSTANT_ALPHA)
-                    
+
                     try:
                         glLineWidth(0.5)
                     except Exception:
                         pass # Some drivers don't support width < 1.0
-                        
+
                     glCallList(self.mesh_display_list)
-                    
+
                     glPopAttrib()
                     glEnable(GL_LIGHTING)
                     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL)
@@ -371,16 +412,16 @@ class ObjViewerWidget(QOpenGLWidget):
         glDisable(GL_LIGHTING)
         glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-        
+
         glColor4f(1.0, 1.0, 1.0, 0.08) # Very subtle white lines
         glLineWidth(1.0)
-        
+
         grid_size = 2.0
         grid_step = 0.25
-        
+
         # Draw on the XZ plane slightly below the model
         bottom_y = -1.0
-        
+
         glBegin(GL_LINES)
         val = -grid_size
         while val <= grid_size + 0.001:
@@ -391,7 +432,7 @@ class ObjViewerWidget(QOpenGLWidget):
                 glColor4f(1.0, 1.0, 1.0, 0.08)
             glVertex3f(val, bottom_y, -grid_size)
             glVertex3f(val, bottom_y, grid_size)
-            
+
             # Lines parallel to X
             if abs(val) < 0.01:
                 glColor4f(0.2, 0.4, 1.0, 0.15) # Z axis highlight
@@ -399,10 +440,10 @@ class ObjViewerWidget(QOpenGLWidget):
                 glColor4f(1.0, 1.0, 1.0, 0.08)
             glVertex3f(-grid_size, bottom_y, val)
             glVertex3f(grid_size, bottom_y, val)
-            
+
             val += grid_step
         glEnd()
-        
+
         glPopAttrib()
 
     def _draw_axis_indicator(self):
@@ -466,10 +507,10 @@ class ObjViewerWidget(QOpenGLWidget):
         glMatrixMode(GL_MODELVIEW)
         glPopMatrix()
         glPopAttrib()
-        
+
         # Safely restore the exact viewport OpenGL was using
         glViewport(current_viewport[0], current_viewport[1], current_viewport[2], current_viewport[3])
-        
+
     # Physical scan codes for WASD and movement keys (layout-independent)
     # These correspond to physical key positions on a standard keyboard.
     _SCAN_W = 0x11
@@ -507,7 +548,7 @@ class ObjViewerWidget(QOpenGLWidget):
         scan = event.nativeScanCode()
         self.keys_pressed.discard(scan)
         super().keyReleaseEvent(event)
-        
+
     def focusOutEvent(self, event):
         self.keys_pressed.clear()
         super().focusOutEvent(event)
@@ -545,15 +586,15 @@ class ObjViewerWidget(QOpenGLWidget):
             speed = self.base_speed * 5.0 * (delta / 120.0)
             yaw = math.radians(self.cam_yaw)
             pitch = math.radians(self.cam_pitch)
-            
+
             # Mathematical inverse calculation from camera to world directional vectors
             forward = np.array([
-                math.cos(pitch) * math.sin(yaw), 
-                -math.sin(pitch), 
+                math.cos(pitch) * math.sin(yaw),
+                -math.sin(pitch),
                 -math.cos(pitch) * math.cos(yaw)
             ])
             self.cam_pos += forward * speed
-            
+
         self.update()
 
     def set_auto_rotate(self, enabled: bool):
@@ -567,7 +608,7 @@ class ObjViewerWidget(QOpenGLWidget):
         if self.camera_mode == 'fps': return
         self.camera_mode = 'fps'
         self.auto_rotate = False
-        
+
         # Normalize angles to [-180, 180] so the transition doesn't cause a view flick
         pitch = self.rotation_x % 360.0
         if pitch > 180.0:
@@ -582,7 +623,7 @@ class ObjViewerWidget(QOpenGLWidget):
         rx = math.radians(pitch)
         ry = math.radians(yaw)
 
-        # Calculates camera coordinate backwards cleanly utilizing inverted matrices 
+        # Calculates camera coordinate backwards cleanly utilizing inverted matrices
         px = self.zoom * math.cos(rx) * math.sin(ry)
         py = -self.zoom * math.sin(rx)
         pz = -self.zoom * math.cos(rx) * math.cos(ry)
@@ -602,10 +643,10 @@ class ObjViewerWidget(QOpenGLWidget):
             if self.auto_rotate:
                 self.rotation_y += 62.5 * dt
                 needs_update = True
-                
+
         elif self.camera_mode == 'fps':
             speed = self.base_speed * (dt * 62.5)
-            
+
             if self._is_scan_pressed(self._SCAN_E):
                 speed *= 3.0
             if self._is_scan_pressed(self._SCAN_Q):
@@ -617,13 +658,13 @@ class ObjViewerWidget(QOpenGLWidget):
 
             # Properly transposed camera vectors allows Unity-style flycam controls
             forward = np.array([
-                math.cos(pitch) * math.sin(yaw), 
-                -math.sin(pitch), 
+                math.cos(pitch) * math.sin(yaw),
+                -math.sin(pitch),
                 -math.cos(pitch) * math.cos(yaw)
             ])
             right = np.array([
-                math.cos(yaw), 
-                0.0, 
+                math.cos(yaw),
+                0.0,
                 math.sin(yaw)
             ])
             up = np.array([0.0, 1.0, 0.0])  # Native World Up
@@ -646,8 +687,8 @@ class ObjViewerWidget(QOpenGLWidget):
             if self._is_scan_pressed(self._SCAN_LSHIFT):
                 # Only fly down if no extension keys (Ctrl, Alt, Win) are held
                 mods = QGuiApplication.keyboardModifiers()
-                if not (mods & (Qt.KeyboardModifier.ControlModifier | 
-                                Qt.KeyboardModifier.AltModifier | 
+                if not (mods & (Qt.KeyboardModifier.ControlModifier |
+                                Qt.KeyboardModifier.AltModifier |
                                 Qt.KeyboardModifier.MetaModifier)):
                     self.cam_pos -= up * speed
                     moved = True
@@ -685,7 +726,7 @@ class ObjViewerWidget(QOpenGLWidget):
         self.rotation_x = 20.0
         self.rotation_y = -30.0
         self.zoom = -5.0
-        
+
         if self.mesh_display_list != 0:
             try:
                 glDeleteLists(self.mesh_display_list, 1)
@@ -698,7 +739,7 @@ class ObjViewerWidget(QOpenGLWidget):
 
 class ObjViewerPanel(QWidget):
     """Panel with 3D viewer and controls."""
-    
+
     clear_requested = pyqtSignal()
 
     def __init__(self, parent=None, config_manager=None):
@@ -722,7 +763,7 @@ class ObjViewerPanel(QWidget):
             if 'obj_show_grid' not in self.config_manager.settings:
                 self.config_manager.settings['obj_show_grid'] = True
                 updated = True
-            
+
             if updated:
                 self.config_manager.save()
 
@@ -732,7 +773,7 @@ class ObjViewerPanel(QWidget):
 
         # Controls
         controls_layout = QHBoxLayout()
-        
+
         # Original default buttons
         reset_btn = QPushButton('Reset View')
         reset_btn.clicked.connect(self.viewer.reset_view)
