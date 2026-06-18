@@ -10,6 +10,20 @@ import numpy as np
 from OpenGL.GL import *
 from OpenGL.GLU import *
 
+from .fps_controls import (
+    KEY_BACKWARD,
+    KEY_DOWN,
+    KEY_FAST,
+    KEY_FORWARD,
+    KEY_LEFT,
+    KEY_RIGHT,
+    KEY_SLOW,
+    KEY_UP,
+    VERTICAL_MOVEMENT_KEYS,
+    WASD_MOVEMENT_KEYS,
+    MovementKey,
+    movement_key_from_event,
+)
 from .gl_format import legacy_gl_format
 from ..utils.logging import log_buffer
 
@@ -47,7 +61,7 @@ class ObjViewerWidget(QOpenGLWidget):
 
         self.auto_rotate = False
         self.last_pos = None
-        self.keys_pressed = set()
+        self.keys_pressed: set[MovementKey] = set()
         self.last_tick_time = time.time()
 
         # Display list for cached rendering
@@ -511,42 +525,32 @@ class ObjViewerWidget(QOpenGLWidget):
         # Safely restore the exact viewport OpenGL was using
         glViewport(current_viewport[0], current_viewport[1], current_viewport[2], current_viewport[3])
 
-    # Physical scan codes for WASD and movement keys (layout-independent)
-    # These correspond to physical key positions on a standard keyboard.
-    _SCAN_W = 0x11
-    _SCAN_A = 0x1E
-    _SCAN_S = 0x1F
-    _SCAN_D = 0x20
-    _SCAN_Q = 0x10
-    _SCAN_E = 0x12
-    _SCAN_SPACE = 0x39
-    _SCAN_LSHIFT = 0x2A
-    _SCAN_WASD = {_SCAN_W, _SCAN_A, _SCAN_S, _SCAN_D}
-
-    def _is_scan_pressed(self, scan_code):
-        """Check if a physical key (by scan code) is currently held."""
-        return scan_code in self.keys_pressed
+    def _is_movement_pressed(self, movement_key: MovementKey) -> bool:
+        """Check if a normalized movement key is currently held."""
+        return movement_key in self.keys_pressed
 
     def keyPressEvent(self, event):
         """Handle FPS movement entry using physical scan codes for layout independence."""
-        scan = event.nativeScanCode()
+        movement_key = movement_key_from_event(event)
 
         if self.camera_mode == 'orbit':
-            if scan in self._SCAN_WASD:
+            if movement_key in WASD_MOVEMENT_KEYS:
                 self._transition_to_fps()
                 # After transition, handle the key normally
-            elif event.key() in {Qt.Key.Key_Space, Qt.Key.Key_Shift}:
+            elif movement_key in VERTICAL_MOVEMENT_KEYS:
                 # Ignore these keys while in orbit mode
                 return
             # For all other keys (including non-FPS keys), continue to normal handling
 
-        # Store the scan code for continuous movement polling
-        self.keys_pressed.add(scan)
+        # Store the normalized movement key for continuous movement polling
+        if movement_key is not None:
+            self.keys_pressed.add(movement_key)
         super().keyPressEvent(event)
 
     def keyReleaseEvent(self, event):
-        scan = event.nativeScanCode()
-        self.keys_pressed.discard(scan)
+        movement_key = movement_key_from_event(event)
+        if movement_key is not None:
+            self.keys_pressed.discard(movement_key)
         super().keyReleaseEvent(event)
 
     def focusOutEvent(self, event):
@@ -647,9 +651,9 @@ class ObjViewerWidget(QOpenGLWidget):
         elif self.camera_mode == 'fps':
             speed = self.base_speed * (dt * 62.5)
 
-            if self._is_scan_pressed(self._SCAN_E):
+            if self._is_movement_pressed(KEY_FAST):
                 speed *= 3.0
-            if self._is_scan_pressed(self._SCAN_Q):
+            if self._is_movement_pressed(KEY_SLOW):
                 speed *= 0.33
 
             moved = False
@@ -669,22 +673,22 @@ class ObjViewerWidget(QOpenGLWidget):
             ])
             up = np.array([0.0, 1.0, 0.0])  # Native World Up
 
-            if self._is_scan_pressed(self._SCAN_W):
+            if self._is_movement_pressed(KEY_FORWARD):
                 self.cam_pos += forward * speed
                 moved = True
-            if self._is_scan_pressed(self._SCAN_S):
+            if self._is_movement_pressed(KEY_BACKWARD):
                 self.cam_pos -= forward * speed
                 moved = True
-            if self._is_scan_pressed(self._SCAN_A):
+            if self._is_movement_pressed(KEY_LEFT):
                 self.cam_pos -= right * speed
                 moved = True
-            if self._is_scan_pressed(self._SCAN_D):
+            if self._is_movement_pressed(KEY_RIGHT):
                 self.cam_pos += right * speed
                 moved = True
-            if self._is_scan_pressed(self._SCAN_SPACE):
+            if self._is_movement_pressed(KEY_UP):
                 self.cam_pos += up * speed
                 moved = True
-            if self._is_scan_pressed(self._SCAN_LSHIFT):
+            if self._is_movement_pressed(KEY_DOWN):
                 # Only fly down if no extension keys (Ctrl, Alt, Win) are held
                 mods = QGuiApplication.keyboardModifiers()
                 if not (mods & (Qt.KeyboardModifier.ControlModifier |
