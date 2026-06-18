@@ -119,7 +119,7 @@ unfixable = [
 ]
 
 [tool.ruff.format]
-quote-style = "double"
+quote-style = "single"
 indent-style = "space"
 skip-magic-trailing-comma = false
 line-ending = "auto"
@@ -140,4 +140,4 @@ mark-parentheses = false
 parametrize-names-type = "csv"
 
 [tool.ruff.lint.flake8-quotes]
-inline-quotes = "double"
+inline-quotes = "single"
