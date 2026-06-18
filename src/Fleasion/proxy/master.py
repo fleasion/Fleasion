@@ -888,6 +888,10 @@ def _is_admin() -> bool:
         return False
 
 
+def _use_linux_privileged_helper() -> bool:
+    return IS_LINUX and not _is_admin()
+
+
 def _extract_exe_from_command(command: str) -> Optional[Path]:
     """Extract an executable path from a registry shell/open command string."""
     if not command:
@@ -2318,9 +2322,9 @@ class ProxyMaster:
     def _effective_wire_preserving_passthrough(self) -> bool:
         if self._proxy_debug_enabled() and self._proxy_debug_mode() == 'd':
             return True
-        if IS_MACOS:
+        if IS_MACOS or _use_linux_privileged_helper():
             # Rebuilding otherwise-unmodified gamejoin requests has caused Roblox
-            # to reject the request with HTTP 529 on macOS.
+            # to reject the request with HTTP 529 on helper/relay platforms.
             return True
         return self.config_manager.wire_preserving_passthrough
 
@@ -2360,6 +2364,8 @@ class ProxyMaster:
                 hosts = set(BASE_INTERCEPT_HOSTS)
         else:
             hosts = set(BASE_INTERCEPT_HOSTS)
+        if _use_linux_privileged_helper():
+            hosts.update(USERNAME_SPOOFER_INTERCEPT_HOSTS)
         spoofer = getattr(self, 'username_spoofer', None)
         if self._roblox_player_running and spoofer is not None and spoofer.is_enabled():
             hosts.update(USERNAME_SPOOFER_INTERCEPT_HOSTS)
@@ -2449,6 +2455,18 @@ class ProxyMaster:
         if not self._hosts_installed:
             return
         active_hosts = self._desired_intercept_hosts()
+        if _use_linux_privileged_helper():
+            log_buffer.log(
+                'Hosts',
+                'Skipping in-place hosts refresh during Linux helper mode; helper owns /etc/hosts and port 443',
+            )
+            new_endpoints = _resolve_real_endpoints(active_hosts)
+            if self._proxy is not None and new_endpoints:
+                self._proxy.set_upstream_endpoints(new_endpoints)
+            scraper_ips = _first_endpoint_ips(new_endpoints)
+            if scraper_ips:
+                self.cache_scraper.set_real_ips(scraper_ips)
+            return
         # Remove entries temporarily so getaddrinfo() sees real IPs again.
         _remove_hosts_entries(set(INTERCEPT_HOSTS))
         _flush_dns()
@@ -2638,9 +2656,14 @@ class ProxyMaster:
             # Clean up hosts file first so Roblox stops routing to us immediately
             if self._hosts_installed:
                 self._stop_watchdog()           # Cancel the force-kill guard task first
-                hosts_cleaned = _remove_hosts_entries(set(INTERCEPT_HOSTS))
+                if _use_linux_privileged_helper():
+                    from ..utils.linux_proxy_helper import stop_helper
+
+                    hosts_cleaned = stop_helper()
+                else:
+                    hosts_cleaned = _remove_hosts_entries(set(INTERCEPT_HOSTS))
+                    _flush_dns()  # Clear stale 127.0.0.1 cache so new connections stop coming in
                 self._hosts_installed = False
-                _flush_dns()  # Clear stale 127.0.0.1 cache so new connections stop coming in
                 # Only cancel the reboot guard if the hosts file was actually cleaned.
                 # If cleanup failed, the PendingFileRenameOperations entry must remain
                 # so the next reboot still removes our entries automatically.
@@ -2677,7 +2700,7 @@ class ProxyMaster:
                 self._emit_proxy_start_error('macos_helper_unavailable', {})
                 self._running = False
                 return
-        elif not _is_admin():
+        elif not _is_admin() and not _use_linux_privileged_helper():
             log_buffer.log('Error', (
                 'Fleasion requires administrator privileges to modify the hosts file '
                 'and bind port 443.  Please run as Administrator.'
@@ -2757,7 +2780,9 @@ class ProxyMaster:
         # Skip cleanup entirely if another elevated Fleasion instance already
         # owns the proxy.  Deleting its watchdog task or hosts entries while it
         # is running would break it silently.
-        if not _other_proxy_owner_alive():
+        if _use_linux_privileged_helper():
+            log_buffer.log('ProxyHelper', 'Linux user-mode GUI active; privileged helper will own port 443 and hosts entries')
+        elif not _other_proxy_owner_alive():
             _delete_watchdog_task()
             # Remove stale hosts entries: if the previous session crashed without
             # calling stop(), our entries may still be present.  getaddrinfo()
@@ -2814,7 +2839,8 @@ class ProxyMaster:
             pass
 
         # ── Start TLS proxy server ────────────────────────────────────────
-        listen_port = MACOS_PROXY_BACKEND_PORT if IS_MACOS else PROXY_PORT
+        use_linux_helper = _use_linux_privileged_helper()
+        listen_port = MACOS_PROXY_BACKEND_PORT if IS_MACOS or use_linux_helper else PROXY_PORT
         self._proxy = FleasionProxy(
             texture_stripper=self._texture_stripper,
             cache_scraper=self.cache_scraper,
@@ -2879,26 +2905,45 @@ class ProxyMaster:
             await self._proxy.stop()
             self._running = False
             return
-        if IS_MACOS and not await _run_tls_self_test(set(INTERCEPT_HOSTS), ca_cert_path, PROXY_PORT):
+        if use_linux_helper:
+            from ..utils.linux_proxy_helper import start_helper
+
+            if not start_helper(active_hosts, backend_port=listen_port):
+                await self._proxy.stop()
+                self._running = False
+                return
+        if (IS_MACOS or use_linux_helper) and not await _run_tls_self_test(set(INTERCEPT_HOSTS), ca_cert_path, PROXY_PORT):
             log_buffer.log('ProxyHelper', 'Privileged port-443 relay TLS self-test failed')
             await self._proxy.stop()
+            if use_linux_helper:
+                from ..utils.linux_proxy_helper import stop_helper
+
+                stop_helper()
             self._running = False
             return
 
         # ── Write hosts file entries ──────────────────────────────────────
         hosts_error_details: dict = {}
-        if not _add_hosts_entries(active_hosts, error_details=hosts_error_details):
+        if use_linux_helper:
+            self._hosts_installed = True
+        elif not _add_hosts_entries(active_hosts, error_details=hosts_error_details):
             if hosts_error_details.get('notify_user'):
                 self._emit_proxy_start_error('hosts_write_exhausted', hosts_error_details)
             # Hosts write failed - stop the server and bail
             await self._proxy.stop()
             self._running = False
             return
-        self._hosts_installed = True
-        _flush_dns()  # Make the new entries take effect immediately
+        else:
+            self._hosts_installed = True
+            _flush_dns()  # Make the new entries take effect immediately
         if not _verify_hosts_entries(active_hosts, error_details=hosts_error_details):
-            _remove_hosts_entries(set(INTERCEPT_HOSTS))
-            _flush_dns()
+            if use_linux_helper:
+                from ..utils.linux_proxy_helper import stop_helper
+
+                stop_helper()
+            else:
+                _remove_hosts_entries(set(INTERCEPT_HOSTS))
+                _flush_dns()
             self._hosts_installed = False
             await self._proxy.stop()
             self._running = False

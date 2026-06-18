@@ -364,7 +364,7 @@ class SystemTray:
                         self.config_manager.proxy_features_enabled = False
                         log_buffer.log('ProxyHelper', f'macOS proxy helper installation failed: {detail}')
                         enabled = False
-            elif sys.platform.startswith('linux') and _is_admin():
+            elif sys.platform.startswith('linux'):
                 self.proxy_master.start()
             elif _is_admin():
                 self.proxy_master.start()

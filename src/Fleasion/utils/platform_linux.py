@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import pwd
 import shlex
 import shutil
 import subprocess
@@ -27,7 +28,6 @@ LINUX_INSTALL_DIR = USER_HOME / '.local' / 'share' / APP_NAME
 LINUX_BIN_DIR = USER_HOME / '.local' / 'bin'
 LINUX_DESKTOP_ENTRY_PATH = LINUX_APPLICATIONS_DIR / 'fleasion.desktop'
 LINUX_LAUNCHER_PATH = LINUX_BIN_DIR / 'fleasion-launch'
-LINUX_ROOT_RUNNER_PATH = LINUX_BIN_DIR / 'fleasion-root-runner'
 LINUX_INSTALLED_APP_PATH = LINUX_INSTALL_DIR / APP_NAME
 LINUX_INSTALLED_ICON_PATH = LINUX_INSTALL_DIR / 'fleasionlogoHR.ico'
 LINUX_DEPRECATED_DESKTOP_ENTRY_PATHS = (
@@ -254,7 +254,6 @@ def _standard_user_popen(args: list[str]) -> subprocess.Popen:
 
     user_home = Path(os.environ.get('FLEASION_USER_HOME') or USER_HOME)
     try:
-        import pwd
         stat = user_home.stat()
         uid = stat.st_uid
         gid = stat.st_gid
@@ -369,10 +368,11 @@ def _write_executable_script(path: Path, content: str) -> None:
 
 
 def install_desktop_entries() -> dict:
-    """Install the Linux desktop launcher and Polkit root runner.
+    """Install the Linux desktop launcher.
 
-    The installed application entry always starts Fleasion through pkexec because
-    Linux/Sober interception needs root privileges for /etc/hosts and port 443.
+    The installed application entry starts Fleasion as the interactive user.
+    Linux/Sober interception starts a small pkexec helper only for /etc/hosts
+    and the privileged port-443 relay, keeping the Qt GUI in the user session.
     Legacy non-admin/read-only desktop entries are removed so menus only expose
     the supported proxy-capable launcher.
     """
@@ -380,39 +380,17 @@ def install_desktop_entries() -> dict:
     command, working_dir = _linux_app_launch_command(installed_app)
     command_literal = ' '.join(shlex.quote(part) for part in command)
     working_dir_literal = shlex.quote(str(working_dir)) if working_dir is not None else ''
-    pythonpath = '' if working_dir is None else f'export PYTHONPATH={shlex.quote(str(working_dir / "src"))}:${{PYTHONPATH:-}}\n'
-
-    root_runner = f'''#!/bin/sh
-set -eu
-DISPLAY_VALUE="${{1:-}}"
-WAYLAND_DISPLAY_VALUE="${{2:-}}"
-XAUTHORITY_VALUE="${{3:-}}"
-XDG_RUNTIME_DIR_VALUE="${{4:-}}"
-USER_HOME_VALUE="${{5:-}}"
-shift 5 || true
-export DISPLAY="$DISPLAY_VALUE"
-export WAYLAND_DISPLAY="$WAYLAND_DISPLAY_VALUE"
-export XAUTHORITY="$XAUTHORITY_VALUE"
-export XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR_VALUE"
-export FLEASION_USER_HOME="$USER_HOME_VALUE"
-export HOME="$USER_HOME_VALUE"
-{pythonpath}{f'cd {working_dir_literal}' if working_dir is not None else ':'}
-exec {command_literal} "$@"
-'''
-    _write_executable_script(LINUX_ROOT_RUNNER_PATH, root_runner)
+    pythonpath = (
+        ''
+        if working_dir is None
+        else f'export PYTHONPATH={shlex.quote(str(working_dir / "src"))}${{PYTHONPATH:+:$PYTHONPATH}}\n'
+    )
 
     launcher = f'''#!/bin/sh
 set -eu
-PKEXEC=$(command -v pkexec || true)
-if [ -z "$PKEXEC" ]; then
-    if command -v zenity >/dev/null 2>&1; then
-        zenity --error --title="{APP_NAME}" --text="pkexec was not found. Install polkit/pkexec, then run {APP_NAME} again."
-    else
-        printf '%s\n' 'pkexec was not found. Install polkit/pkexec, then run {APP_NAME} again.' >&2
-    fi
-    exit 1
-fi
-exec "$PKEXEC" {shlex.quote(str(LINUX_ROOT_RUNNER_PATH))} "${{DISPLAY:-}}" "${{WAYLAND_DISPLAY:-}}" "${{XAUTHORITY:-$HOME/.Xauthority}}" "${{XDG_RUNTIME_DIR:-}}" "{USER_HOME}" "$@"
+export FLEASION_USER_HOME="{USER_HOME}"
+{pythonpath}{f'cd {working_dir_literal}' if working_dir is not None else ':'}
+exec {command_literal} "$@"
 '''
     _write_executable_script(LINUX_LAUNCHER_PATH, launcher)
 
@@ -446,7 +424,6 @@ exec "$PKEXEC" {shlex.quote(str(LINUX_ROOT_RUNNER_PATH))} "${{DISPLAY:-}}" "${{W
     return {
         'desktop_entry': str(LINUX_DESKTOP_ENTRY_PATH),
         'launcher': str(LINUX_LAUNCHER_PATH),
-        'root_runner': str(LINUX_ROOT_RUNNER_PATH),
         'installed_app': str(installed_app) if installed_app is not None else None,
         'installed_icon': str(installed_icon) if installed_icon is not None else None,
         'removed_deprecated_entries': removed,

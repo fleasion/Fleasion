@@ -27,7 +27,6 @@ from .utils import APP_DISCORD, APP_NAME, CONFIG_DIR, LOG_FILE, delete_cache, ge
 
 _SINGLE_INSTANCE_KEY = 'FleasionSingleInstance'
 _SINGLE_INSTANCE_CONTROL_SERVER = 'FleasionSingleInstanceControl'
-_shared_memory = None
 
 
 
@@ -118,47 +117,8 @@ def _relaunch_as_admin(extra_args: str = '', parent_hwnd: int | None = None) -> 
         return True
 
     if sys.platform.startswith('linux'):
-        import shutil
-
-        pkexec = shutil.which('pkexec')
-        if not pkexec:
-            log_buffer.log('UAC', 'Linux administrator relaunch failed: pkexec not found')
-            return False
-
-        existing_args = [arg for arg in sys.argv[1:] if not arg.startswith('--fleasion-user-localappdata=')]
-        if extra_args.strip():
-            existing_args.extend(extra_args.strip().split())
-        runner = Path.home() / '.local' / 'bin' / 'fleasion-root-runner'
-        if not runner.is_file():
-            log_buffer.log('UAC', f'Linux administrator relaunch failed: root runner not found at {runner}')
-            return False
-
-        display = os.environ.get('DISPLAY', '')
-        wayland_display = os.environ.get('WAYLAND_DISPLAY', '')
-        xauthority = os.environ.get('XAUTHORITY') or str(Path.home() / '.Xauthority')
-        xdg_runtime_dir = os.environ.get('XDG_RUNTIME_DIR', '')
-        user_home = str(Path.home())
-        log_path = CONFIG_DIR / 'polkit_launch.log'
-        cmd = [
-            pkexec,
-            str(runner),
-            display,
-            wayland_display,
-            xauthority,
-            xdg_runtime_dir,
-            user_home,
-            *existing_args,
-        ]
-        try:
-            # Replace the current process with pkexec to avoid orphaning.
-            global _shared_memory
-            if _shared_memory is not None:
-                _shared_memory.detach()
-                _shared_memory = None
-            os.execv(pkexec, cmd)
-        except Exception as exc:
-            log_buffer.log('UAC', f'Linux administrator relaunch failed: {exc}')
-            return False
+        log_buffer.log('UAC', 'Linux administrator relaunch skipped: proxy uses the privileged helper instead')
+        return False
 
     import ctypes
 
@@ -1137,7 +1097,6 @@ def main():
         result = install_desktop_entries()
         print(f'Installed desktop entry: {result["desktop_entry"]}')
         print(f'Installed launcher: {result["launcher"]}')
-        print(f'Installed root runner: {result["root_runner"]}')
         if result.get('installed_app'):
             print(f'Installed app binary: {result["installed_app"]}')
         if result.get('installed_icon'):
@@ -1202,13 +1161,12 @@ def main():
         if _stale.attach():
             _stale.detach()
 
-    global _shared_memory
-    _shared_memory = QSharedMemory(_SINGLE_INSTANCE_KEY)
-    _shared_memory_created = _shared_memory.create(1)
+    shared_memory = QSharedMemory(_SINGLE_INSTANCE_KEY)
+    _shared_memory_created = shared_memory.create(1)
     if (
         not _shared_memory_created
         and sys.platform == 'darwin'
-        and _shared_memory.error() == QSharedMemory.SharedMemoryError.AlreadyExists
+        and shared_memory.error() == QSharedMemory.SharedMemoryError.AlreadyExists
         and not _other_fleasion_pids()
     ):
         # A hard termination can leave Qt's POSIX shared-memory segment behind.
@@ -1216,11 +1174,11 @@ def main():
         _stale = QSharedMemory(_SINGLE_INSTANCE_KEY)
         if _stale.attach():
             _stale.detach()
-        _shared_memory = QSharedMemory(_SINGLE_INSTANCE_KEY)
-        _shared_memory_created = _shared_memory.create(1)
+        shared_memory = QSharedMemory(_SINGLE_INSTANCE_KEY)
+        _shared_memory_created = shared_memory.create(1)
 
     if not _shared_memory_created:
-        if _shared_memory.error() == QSharedMemory.SharedMemoryError.AlreadyExists:
+        if shared_memory.error() == QSharedMemory.SharedMemoryError.AlreadyExists:
             # Another instance is already running.
             if _suppress_dashboard:
                 sys.exit(0)
@@ -1239,7 +1197,7 @@ def main():
 
             msg_box.setInformativeText('Do you want to run another instance anyway?')
 
-            if _is_admin() or sys.platform == 'darwin':
+            if _is_admin() or sys.platform == 'darwin' or sys.platform.startswith('linux'):
                 # Already elevated — can kill any process directly.
                 kill_others_button = msg_box.addButton('Kill Others', QMessageBox.ButtonRole.AcceptRole)
                 _kill_requires_elevation = False
@@ -1288,7 +1246,7 @@ def main():
     # show UAC as a taskbar item instead of foregrounding it, so startup must
     # block here until UAC is accepted, denied, or fails.
     _admin_prompt_needed = (
-        (sys.platform == 'win32' or sys.platform.startswith('linux'))
+        sys.platform == 'win32'
         and config_manager.proxy_features_enabled
         and not _is_admin()
     )
@@ -1377,32 +1335,6 @@ def main():
             return
         _admin_prompt_shown = True
 
-        if sys.platform.startswith('linux'):
-            prompt = QMessageBox(_visible_parent_widget())
-            prompt.setWindowTitle('Fleasion - Polkit Permission Required')
-            prompt.setIcon(QMessageBox.Icon.Information)
-            prompt.setText('Start Fleasion with Polkit for proxy interception?')
-            prompt.setInformativeText(
-                'Linux/Sober interception needs permission to update /etc/hosts and listen on local port 443.\n\n'
-                'Choose "Start with Polkit" to approve the system prompt, or continue without proxy interception.'
-            )
-            start_button = prompt.addButton('Start with Polkit', QMessageBox.ButtonRole.AcceptRole)
-            continue_button = prompt.addButton('Continue Read-Only', QMessageBox.ButtonRole.RejectRole)
-            prompt.setDefaultButton(start_button)
-            if icon_path := get_icon_path():
-                from PyQt6.QtGui import QIcon
-                prompt.setWindowIcon(QIcon(str(icon_path)))
-            prompt.exec()
-
-            if prompt.clickedButton() == start_button:
-                log_buffer.log('UAC', 'Requesting Linux Polkit relaunch from GUI startup path')
-                if _relaunch_as_admin(parent_hwnd=_window_handle(prompt)):
-                    sys.exit(0)
-                _show_admin_required_dialog()
-            else:
-                log_buffer.log('Proxy', 'Linux Polkit relaunch skipped; continuing without proxy interception')
-            return
-
         gate = QDialog(None)
         gate.setModal(True)
         gate.setWindowTitle('Fleasion - Administrator Permission Required')
@@ -1412,11 +1344,6 @@ def main():
             gate_text = (
                 'Fleasion is waiting for macOS administrator permission.\n\n'
                 'Approve the helper install prompt so the normal-user app can use proxy features.'
-            )
-        elif sys.platform.startswith('linux'):
-            gate_text = (
-                'Fleasion is waiting for Linux administrator permission.\n\n'
-                'Approve the pkexec prompt so Fleasion can update /etc/hosts and listen on local port 443.'
             )
         else:
             gate_text = (
