@@ -7,6 +7,7 @@ import re
 import sys
 import threading
 import time
+from http.cookiejar import CookieJar
 from pathlib import Path
 
 from .logging import log_buffer
@@ -48,6 +49,42 @@ _LAST_BROWSER_AUTH_VALIDATION_DETAIL = ''
 _MANUAL_AUTH_TOKEN_FILE = CONFIG_DIR / 'manual_auth_token.json'
 _MANUAL_AUTH_TOKEN_KEY_FILE = CONFIG_DIR / 'manual_auth_token.key'
 _MACOS_AUTH_BROWSER_NAMES = ('Chrome', 'Safari', 'Firefox', 'Brave', 'Edge', 'Chromium', 'Opera', 'Vivaldi')
+_MACOS_SAFARI_COOKIE_FILES = (
+    Path('Library') / 'Cookies' / 'Cookies.binarycookies',
+    Path('Library') / 'Containers' / 'com.apple.Safari' / 'Data' / 'Library' / 'Cookies' / 'Cookies.binarycookies',
+)
+_MACOS_CHROMIUM_BROWSER_DIRS = {
+    'Chrome': (
+        Path('Library') / 'Application Support' / 'Google' / 'Chrome',
+        Path('Library') / 'Application Support' / 'Google' / 'Chrome Beta',
+        Path('Library') / 'Application Support' / 'Google' / 'Chrome Dev',
+        Path('Library') / 'Application Support' / 'Google' / 'Chrome Canary',
+        Path('Library') / 'Application Support' / 'Google' / 'Chrome for Testing',
+    ),
+    'Brave': (
+        Path('Library') / 'Application Support' / 'BraveSoftware' / 'Brave-Browser',
+        Path('Library') / 'Application Support' / 'BraveSoftware' / 'Brave-Browser-Beta',
+        Path('Library') / 'Application Support' / 'BraveSoftware' / 'Brave-Browser-Dev',
+        Path('Library') / 'Application Support' / 'BraveSoftware' / 'Brave-Browser-Nightly',
+    ),
+    'Edge': (
+        Path('Library') / 'Application Support' / 'Microsoft Edge',
+        Path('Library') / 'Application Support' / 'Microsoft Edge Beta',
+        Path('Library') / 'Application Support' / 'Microsoft Edge Dev',
+        Path('Library') / 'Application Support' / 'Microsoft Edge Canary',
+    ),
+    'Chromium': (
+        Path('Library') / 'Application Support' / 'Chromium',
+    ),
+    'Opera': (
+        Path('Library') / 'Application Support' / 'com.operasoftware.Opera',
+        Path('Library') / 'Application Support' / 'com.operasoftware.OperaNext',
+        Path('Library') / 'Application Support' / 'com.operasoftware.OperaDeveloper',
+    ),
+    'Vivaldi': (
+        Path('Library') / 'Application Support' / 'Vivaldi',
+    ),
+}
 _AUTH_READY_CONDITION = threading.Condition()
 _AUTH_READY_COOKIE: str | None = None
 
@@ -584,6 +621,89 @@ def _write_cached_browser_roblosecurity(cookie: str, source: str) -> None:
         )
 
 
+def _macos_browser_cookie_files(source: str) -> list[Path]:
+    """Return explicit macOS cookie DB candidates for browser_cookie3 gaps."""
+    if sys.platform != 'darwin':
+        return []
+
+    if source == 'Safari':
+        return [USER_HOME / relative for relative in _MACOS_SAFARI_COOKIE_FILES if _path_exists(USER_HOME / relative)]
+
+    bases = _MACOS_CHROMIUM_BROWSER_DIRS.get(source)
+    if not bases:
+        return []
+
+    candidates: list[Path] = []
+    seen: set[str] = set()
+
+    def _add(path: Path) -> None:
+        if not _path_exists(path):
+            return
+        key = _normalise_key(path)
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(path)
+
+    for relative_base in bases:
+        base = USER_HOME / relative_base
+        # Modern Chromium stores cookies under Network/Cookies. Older installs
+        # and some channels still use the profile root Cookies DB.
+        for profile in ('Default',):
+            _add(base / profile / 'Network' / 'Cookies')
+            _add(base / profile / 'Cookies')
+        try:
+            profile_dirs = sorted(base.glob('Profile *'))
+        except OSError:
+            profile_dirs = []
+        for profile_dir in profile_dirs:
+            if not profile_dir.is_dir():
+                continue
+            _add(profile_dir / 'Network' / 'Cookies')
+            _add(profile_dir / 'Cookies')
+        _add(base / 'Network' / 'Cookies')
+        _add(base / 'Cookies')
+
+    return candidates
+
+
+def _make_browser_cookie_loader(source: str, loader):
+    def _load(**kwargs):
+        if sys.platform != 'darwin':
+            return loader(**kwargs)
+
+        cookie_files = _macos_browser_cookie_files(source)
+        if not cookie_files:
+            return loader(**kwargs)
+
+        combined = CookieJar()
+        loaded_any = False
+        first_error: Exception | None = None
+        errors: list[str] = []
+        for cookie_file in cookie_files:
+            try:
+                jar = loader(cookie_file=str(cookie_file), **kwargs)
+            except Exception as exc:
+                if first_error is None:
+                    first_error = exc
+                errors.append(f'{cookie_file}: {type(exc).__name__}: {exc}')
+                continue
+            loaded_any = True
+            for cookie in jar:
+                combined.set_cookie(cookie)
+
+        if loaded_any:
+            return combined
+
+        if first_error is not None:
+            if len(errors) > 1:
+                log_buffer.log('Auth', f'{source} browser cookie candidates failed: {"; ".join(errors[:3])}')
+            raise first_error
+        return loader(**kwargs)
+
+    return _load
+
+
 def _browser_cookie_loaders(include_keychain: bool):
     import browser_cookie3
 
@@ -601,7 +721,28 @@ def _browser_cookie_loaders(include_keychain: bool):
             ('Vivaldi', browser_cookie3.vivaldi),
             *loaders,
         ]
-    return loaders
+    return [(source, _make_browser_cookie_loader(source, loader)) for source, loader in loaders]
+
+
+def _candidate_roblosecurity_values(jar, now: float) -> list[str]:
+    candidates = [
+        cookie
+        for cookie in jar
+        if cookie.name == '.ROBLOSECURITY'
+        and cookie.value
+        and 'roblox.com' in (cookie.domain or '').lower()
+        and (not cookie.expires or cookie.expires > now)
+    ]
+
+    values: list[str] = []
+    seen: set[str] = set()
+    for cookie in sorted(candidates, key=lambda item: item.expires or 0, reverse=True):
+        value = cookie.value.strip()
+        if not value or any(char.isspace() for char in value) or value in seen:
+            continue
+        seen.add(value)
+        values.append(value)
+    return values
 
 
 def discover_browser_roblosecurity(
@@ -656,14 +797,7 @@ def discover_browser_roblosecurity(
         for source, loader in loaders:
             try:
                 jar = loader(domain_name='roblox.com')
-                candidates = [
-                    cookie
-                    for cookie in jar
-                    if cookie.name == '.ROBLOSECURITY'
-                    and cookie.value
-                    and 'roblox.com' in (cookie.domain or '').lower()
-                    and (not cookie.expires or cookie.expires > now)
-                ]
+                candidates = _candidate_roblosecurity_values(jar, now)
             except Exception as exc:
                 _log_auth_failure(
                     f'browser-cookie:{source}:{type(exc).__name__}:{exc}',
@@ -673,21 +807,19 @@ def discover_browser_roblosecurity(
 
             if not candidates:
                 continue
-            cookie = max(candidates, key=lambda item: item.expires or 0).value.strip()
-            if not cookie or any(char.isspace() for char in cookie):
-                continue
-            if source in _PERSISTENT_BROWSER_AUTH_SOURCES:
-                validation = _validate_roblosecurity(cookie)
-                if validation is False:
-                    detail = _LAST_BROWSER_AUTH_VALIDATION_DETAIL or 'invalid'
-                    log_buffer.log('Auth', f'Browser login discovered from {source} failed validation ({detail}); skipping')
-                    continue
-            _BROWSER_COOKIE_CACHE = cookie
-            _BROWSER_COOKIE_SOURCE = source
-            _LAST_AUTH_FAILURE_DETAILS.clear()
-            log_buffer.log('Auth', f'Using domain-scoped Roblox browser login discovered from {source}')
-            _write_cached_browser_roblosecurity(cookie, source)
-            return cookie, source
+            for cookie in candidates:
+                if source in _PERSISTENT_BROWSER_AUTH_SOURCES or explicit_import or browser:
+                    validation = _validate_roblosecurity(cookie)
+                    if validation is False:
+                        detail = _LAST_BROWSER_AUTH_VALIDATION_DETAIL or 'invalid'
+                        log_buffer.log('Auth', f'Browser login discovered from {source} failed validation ({detail}); skipping')
+                        continue
+                _BROWSER_COOKIE_CACHE = cookie
+                _BROWSER_COOKIE_SOURCE = source
+                _LAST_AUTH_FAILURE_DETAILS.clear()
+                log_buffer.log('Auth', f'Using domain-scoped Roblox browser login discovered from {source}')
+                _write_cached_browser_roblosecurity(cookie, source)
+                return cookie, source
 
     return None, ''
 

@@ -191,6 +191,87 @@ def test_browser_discovery_can_target_selected_browser(monkeypatch):
     assert calls == [True]
 
 
+def test_macos_chromium_cookie_files_include_modern_network_databases(tmp_path, monkeypatch):
+    _reset(monkeypatch)
+    base = tmp_path / "Library" / "Application Support" / "Google" / "Chrome"
+    default_network = base / "Default" / "Network" / "Cookies"
+    profile_network = base / "Profile 1" / "Network" / "Cookies"
+    legacy_default = base / "Default" / "Cookies"
+    default_network.parent.mkdir(parents=True)
+    profile_network.parent.mkdir(parents=True)
+    legacy_default.parent.mkdir(parents=True, exist_ok=True)
+    default_network.write_text("", encoding="utf-8")
+    profile_network.write_text("", encoding="utf-8")
+    legacy_default.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(roblox_auth.sys, "platform", "darwin")
+    monkeypatch.setattr(roblox_auth, "USER_HOME", tmp_path)
+
+    files = roblox_auth._macos_browser_cookie_files("Chrome")
+
+    assert default_network in files
+    assert profile_network in files
+    assert legacy_default in files
+
+
+def test_macos_safari_loader_continues_when_container_cookie_file_is_protected(tmp_path, monkeypatch):
+    _reset(monkeypatch)
+    legacy = tmp_path / "Library" / "Cookies" / "Cookies.binarycookies"
+    container = (
+        tmp_path
+        / "Library"
+        / "Containers"
+        / "com.apple.Safari"
+        / "Data"
+        / "Library"
+        / "Cookies"
+        / "Cookies.binarycookies"
+    )
+    legacy.parent.mkdir(parents=True)
+    container.parent.mkdir(parents=True)
+    legacy.write_text("", encoding="utf-8")
+    container.write_text("", encoding="utf-8")
+    jar = CookieJar()
+    jar.set_cookie(_cookie(".ROBLOSECURITY", "safari-secret"))
+    calls = []
+
+    def loader(cookie_file=None, **_kwargs):
+        calls.append(cookie_file)
+        if cookie_file == str(container):
+            raise PermissionError("Operation not permitted")
+        return jar
+
+    monkeypatch.setattr(roblox_auth.sys, "platform", "darwin")
+    monkeypatch.setattr(roblox_auth, "USER_HOME", tmp_path)
+
+    wrapped = roblox_auth._make_browser_cookie_loader("Safari", loader)
+
+    assert list(wrapped(domain_name="roblox.com")) == list(jar)
+    assert calls == [str(legacy), str(container)]
+
+
+def test_browser_discovery_tries_next_cookie_when_newest_fails_validation(monkeypatch):
+    _reset(monkeypatch)
+    jar = CookieJar()
+    now = int(time.time())
+    jar.set_cookie(_cookie(".ROBLOSECURITY", "stale-cookie", domain=".roblox.com", expires=now + 300))
+    jar.set_cookie(_cookie(".ROBLOSECURITY", "valid-cookie", domain="www.roblox.com", expires=now + 200))
+    validations = []
+
+    def validate(cookie):
+        validations.append(cookie)
+        return cookie == "valid-cookie"
+
+    monkeypatch.setattr(roblox_auth, "_browser_cookie_loaders", lambda include_keychain: [("Edge", lambda **_: jar)])
+    monkeypatch.setattr(roblox_auth, "_validate_roblosecurity", validate)
+
+    assert roblox_auth.discover_browser_roblosecurity(include_keychain=True, browser="Edge") == (
+        "valid-cookie",
+        "Edge",
+    )
+    assert validations == ["stale-cookie", "valid-cookie"]
+
+
 def test_prompt_capable_browser_discovery_is_single_flight(monkeypatch):
     _reset(monkeypatch)
     chrome_jar = CookieJar()
