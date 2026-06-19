@@ -1,17 +1,28 @@
 """Theme management for PyQt6."""
 
 import sys
+from dataclasses import dataclass
 from typing import ClassVar
 
-from PyQt6.QtGui import QPalette
+from PyQt6.QtGui import QColor, QPalette
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt
+
+
+@dataclass(frozen=True)
+class PanelThemeColors:
+    """Resolved colors for custom-painted tab panels."""
+
+    section_background: QColor
+    section_border: QColor
+    container_background_css: str
 
 
 class ThemeManager:
     """Manages application theme."""
 
     _system_style_name: ClassVar[str | None] = None
+    _current_theme: ClassVar[str] = 'System'
 
     @staticmethod
     def apply_theme(theme: str) -> None:
@@ -21,6 +32,7 @@ class ThemeManager:
             return
 
         ThemeManager._remember_system_theme(app)
+        ThemeManager._current_theme = theme
 
         if theme == 'System':
             ThemeManager._apply_system_theme(app)
@@ -73,3 +85,36 @@ class ThemeManager:
                 style.unpolish(widget)
                 style.polish(widget)
             widget.update()
+
+    @staticmethod
+    def panel_colors(palette: QPalette | None = None) -> PanelThemeColors:
+        """Return colors for custom panels without losing forced-theme styling.
+
+        The forced Light/Dark themes keep the previous Fleasion look. System
+        follows the active Qt palette so Linux desktop themes can supply their
+        own colors.
+        """
+        app = QApplication.instance()
+        if palette is None:
+            if isinstance(app, QApplication):
+                palette = app.palette()
+            else:
+                palette = QPalette()
+
+        if ThemeManager._current_theme == 'System':
+            return PanelThemeColors(
+                section_background=palette.alternateBase().color(),
+                section_border=palette.mid().color(),
+                container_background_css='background-color: palette(alternate-base);',
+            )
+
+        is_dark = ThemeManager._current_theme == 'Dark'
+        return PanelThemeColors(
+            section_background=QColor('#272727') if is_dark else QColor('#f0f0f0'),
+            section_border=QColor('#3a3a3a') if is_dark else QColor('#d0d0d0'),
+            container_background_css=(
+                'background-color: rgb(64, 64, 64);'
+                if is_dark
+                else 'background-color: palette(alternate-base);'
+            ),
+        )

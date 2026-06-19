@@ -15,8 +15,12 @@ def test_proxy_gate_dismisses_for_session_without_proxy():
     app = _qapp()
     content = QWidget()
     gate = ProxyGate(content, compact=True)
+    gate.resize(320, 160)
+    gate.show()
+    app.processEvents()
 
     gate.set_proxy_enabled(False)
+    app.processEvents()
 
     assert not content.isEnabled()
     assert gate._overlay.isVisible()

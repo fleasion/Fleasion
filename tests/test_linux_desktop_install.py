@@ -3,7 +3,7 @@ from pathlib import Path
 from Fleasion.utils import platform_linux
 
 
-def test_install_desktop_entries_writes_polkit_launcher_and_removes_deprecated(tmp_path, monkeypatch):
+def test_install_desktop_entries_writes_user_launcher_and_removes_deprecated(tmp_path, monkeypatch):
     applications = tmp_path / ".local" / "share" / "applications"
     bin_dir = tmp_path / ".local" / "bin"
     deprecated = applications / "fleasion-non-admin.desktop"
@@ -18,7 +18,6 @@ def test_install_desktop_entries_writes_polkit_launcher_and_removes_deprecated(t
     monkeypatch.setattr(platform_linux, "LINUX_INSTALL_DIR", install_dir)
     monkeypatch.setattr(platform_linux, "LINUX_DESKTOP_ENTRY_PATH", applications / "fleasion.desktop")
     monkeypatch.setattr(platform_linux, "LINUX_LAUNCHER_PATH", bin_dir / "fleasion-launch")
-    monkeypatch.setattr(platform_linux, "LINUX_ROOT_RUNNER_PATH", bin_dir / "fleasion-root-runner")
     monkeypatch.setattr(platform_linux, "LINUX_INSTALLED_APP_PATH", install_dir / "Fleasion")
     monkeypatch.setattr(platform_linux, "LINUX_INSTALLED_ICON_PATH", install_dir / "fleasionlogoHR.ico")
     monkeypatch.setattr(platform_linux, "LINUX_DEPRECATED_DESKTOP_ENTRY_PATHS", (deprecated,))
@@ -31,15 +30,13 @@ def test_install_desktop_entries_writes_polkit_launcher_and_removes_deprecated(t
 
     desktop_text = (applications / "fleasion.desktop").read_text(encoding="utf-8")
     launcher_text = (bin_dir / "fleasion-launch").read_text(encoding="utf-8")
-    runner_text = (bin_dir / "fleasion-root-runner").read_text(encoding="utf-8")
 
     assert "Name=Fleasion" in desktop_text
     assert f"Exec={bin_dir / 'fleasion-launch'}" in desktop_text
     assert "fleasion-non-admin" not in desktop_text
-    assert "pkexec" in launcher_text
-    assert str(bin_dir / "fleasion-root-runner") in launcher_text
-    assert "FLEASION_USER_HOME" in runner_text
-    assert "exec /usr/bin/python3 launcher.py" in runner_text
+    assert "pkexec" not in launcher_text
+    assert "FLEASION_USER_HOME" in launcher_text
+    assert "exec /usr/bin/python3 launcher.py" in launcher_text
     assert not deprecated.exists()
     assert result["removed_deprecated_entries"] == [str(deprecated)]
 

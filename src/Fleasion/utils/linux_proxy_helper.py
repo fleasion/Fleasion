@@ -13,11 +13,18 @@ from pathlib import Path
 
 from .logging import log_buffer
 from .paths import CONFIG_DIR, MACOS_PROXY_BACKEND_PORT, PROXY_PORT
+from .plural import format_count
 
 
 HELPER_READY_FILE = CONFIG_DIR / 'linux_proxy_helper.ready'
 HELPER_STOP_FILE = CONFIG_DIR / 'linux_proxy_helper.stop'
 HELPER_LOG_FILE = CONFIG_DIR / 'linux_proxy_helper.log'
+NSS_CERT_NICKNAME = 'Fleasion Proxy CA'
+SYSTEM_CA_NAME = 'fleasion-proxy-ca.crt'
+SYSTEM_CA_DIRS = (
+    Path('/usr/local/share/ca-certificates'),
+    Path('/etc/pki/ca-trust/source/anchors'),
+)
 
 
 def _source_helper_path() -> Path:
@@ -36,7 +43,12 @@ def _read_ready() -> dict | None:
         return None
 
 
-def start_helper(hosts: set[str], backend_port: int = MACOS_PROXY_BACKEND_PORT, timeout: float = 120.0) -> bool:
+def start_helper(
+    hosts: set[str],
+    backend_port: int = MACOS_PROXY_BACKEND_PORT,
+    timeout: float = 120.0,
+    ca_cert_path: Path | None = None,
+) -> bool:
     """Start the privileged Linux port/hosts helper and wait until it is ready."""
     pkexec = shutil.which('pkexec')
     if not pkexec:
@@ -73,6 +85,8 @@ def start_helper(hosts: set[str], backend_port: int = MACOS_PROXY_BACKEND_PORT, 
         '--parent-pid',
         str(os.getpid()),
     ]
+    if ca_cert_path is not None:
+        cmd.extend(['--ca-cert', str(ca_cert_path)])
 
     log_buffer.log('ProxyHelper', 'Requesting Linux Polkit approval for proxy relay and hosts entries')
     try:
@@ -128,3 +142,230 @@ def stop_helper(timeout: float = 8.0) -> bool:
 
     log_buffer.log('ProxyHelper', f'Linux proxy helper did not stop within {timeout:.0f}s')
     return False
+
+
+def _user_home() -> Path:
+    return Path(os.environ.get('FLEASION_USER_HOME') or Path.home()).expanduser()
+
+
+def _existing_nss_dbs(home: Path) -> list[Path]:
+    """Return existing browser NSS DB directories for the current user."""
+    candidates: set[Path] = set()
+    direct_dirs = (
+        home / '.pki' / 'nssdb',
+        home / 'snap' / 'chromium' / 'current' / '.pki' / 'nssdb',
+        home / 'snap' / 'firefox' / 'common' / '.pki' / 'nssdb',
+    )
+    for directory in direct_dirs:
+        if directory.is_dir():
+            candidates.add(directory)
+
+    profile_roots = (
+        home / '.mozilla' / 'firefox',
+        home / '.mozilla' / 'librewolf',
+        home / '.waterfox',
+        home / '.config' / 'google-chrome',
+        home / '.config' / 'chromium',
+        home / '.config' / 'BraveSoftware' / 'Brave-Browser',
+        home / '.config' / 'microsoft-edge',
+        home / '.config' / 'vivaldi',
+        home / 'snap' / 'firefox' / 'common' / '.mozilla' / 'firefox',
+        home / 'snap' / 'chromium' / 'current' / '.config' / 'chromium',
+        home / '.var' / 'app' / 'org.mozilla.firefox' / '.mozilla' / 'firefox',
+        home / '.var' / 'app' / 'io.gitlab.librewolf-community' / '.librewolf',
+        home / '.var' / 'app' / 'com.google.Chrome' / 'config' / 'google-chrome',
+        home / '.var' / 'app' / 'org.chromium.Chromium' / 'config' / 'chromium',
+        home / '.var' / 'app' / 'com.brave.Browser' / 'config' / 'BraveSoftware' / 'Brave-Browser',
+    )
+    for root in profile_roots:
+        if not root.is_dir():
+            continue
+        try:
+            if (root / 'cert9.db').exists():
+                candidates.add(root)
+            for cert_db in root.glob('*/cert9.db'):
+                candidates.add(cert_db.parent)
+        except OSError:
+            pass
+
+    return sorted(candidates)
+
+
+def _ensure_shared_nss_db(home: Path) -> Path | None:
+    """Create Chromium-family shared NSS DB when certutil is available."""
+    certutil = shutil.which('certutil')
+    if not certutil:
+        return None
+    nssdb = home / '.pki' / 'nssdb'
+    if (nssdb / 'cert9.db').exists():
+        return nssdb
+    try:
+        nssdb.mkdir(parents=True, exist_ok=True)
+        result = subprocess.run(
+            [certutil, '-N', '--empty-password', '-d', f'sql:{nssdb}'],
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            timeout=10,
+        )
+    except Exception as exc:
+        log_buffer.log('Certificate', f'Could not create shared NSS certificate DB at {nssdb}: {exc}')
+        return None
+    if result.returncode == 0 or (nssdb / 'cert9.db').exists():
+        return nssdb
+    err = (result.stderr or result.stdout or '').strip()
+    log_buffer.log('Certificate', f'Could not create shared NSS certificate DB at {nssdb}: {err or result.returncode}')
+    return None
+
+
+def _install_ca_into_nss_db(certutil: str, db_dir: Path, ca_cert_path: Path) -> dict:
+    db_arg = f'sql:{db_dir}'
+    subprocess.run(
+        [certutil, '-D', '-d', db_arg, '-n', NSS_CERT_NICKNAME],
+        capture_output=True,
+        timeout=10,
+    )
+    try:
+        result = subprocess.run(
+            [
+                certutil,
+                '-A',
+                '-d',
+                db_arg,
+                '-n',
+                NSS_CERT_NICKNAME,
+                '-t',
+                'C,,',
+                '-i',
+                str(ca_cert_path),
+            ],
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            timeout=10,
+        )
+    except Exception as exc:
+        return {'db': str(db_dir), 'ok': False, 'error': str(exc)}
+
+    if result.returncode == 0:
+        return {'db': str(db_dir), 'ok': True}
+    err = (result.stderr or result.stdout or '').strip()
+    return {'db': str(db_dir), 'ok': False, 'error': err or str(result.returncode)}
+
+
+def _install_ca_into_browser_nss(ca_cert_path: Path) -> list[dict]:
+    certutil = shutil.which('certutil')
+    if not certutil:
+        log_buffer.log('Certificate', 'Skipping Linux browser NSS trust import: certutil not found')
+        return [{'ok': False, 'error': 'certutil_not_found'}]
+
+    home = _user_home()
+    shared_db = _ensure_shared_nss_db(home)
+    dbs = set(_existing_nss_dbs(home))
+    if shared_db is not None:
+        dbs.add(shared_db)
+    if not dbs:
+        log_buffer.log('Certificate', 'No Linux browser NSS certificate databases found')
+        return []
+
+    results = [_install_ca_into_nss_db(certutil, db, ca_cert_path) for db in sorted(dbs)]
+    ok_count = sum(1 for item in results if item.get('ok'))
+    fail_count = len(results) - ok_count
+    if ok_count:
+        log_buffer.log('Certificate', f'Installed CA into {format_count(ok_count, "Linux browser NSS database")}')
+    if fail_count:
+        log_buffer.log('Certificate', f'Failed to install CA into {format_count(fail_count, "Linux browser NSS database")}')
+        for item in results:
+            if not item.get('ok'):
+                log_buffer.log('Certificate', f'Linux browser NSS import failed for {item.get("db")}: {item.get("error")}')
+    return results
+
+
+def linux_system_ca_needs_install(ca_cert_path: Path) -> bool:
+    """Return True when a supported Linux system CA target is missing/stale."""
+    try:
+        ca_bytes = ca_cert_path.read_bytes()
+    except OSError:
+        return False
+
+    supported_targets = [
+        directory / SYSTEM_CA_NAME
+        for directory in SYSTEM_CA_DIRS
+        if directory.is_dir()
+    ]
+    if not supported_targets:
+        return False
+
+    for target in supported_targets:
+        try:
+            if target.read_bytes() == ca_bytes:
+                return False
+        except OSError:
+            pass
+    return True
+
+
+def _install_ca_into_linux_system_store(ca_cert_path: Path) -> dict:
+    pkexec = shutil.which('pkexec')
+    if not pkexec:
+        log_buffer.log('Certificate', 'Skipping Linux system trust-store install: pkexec not found')
+        return {'ok': False, 'error': 'pkexec_not_found'}
+
+    helper_path = _source_helper_path()
+    cmd = [
+        pkexec,
+        sys.executable,
+        str(helper_path),
+        '--install-system-ca',
+        '--ca-cert',
+        str(ca_cert_path),
+    ]
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            timeout=120,
+        )
+    except Exception as exc:
+        log_buffer.log('Certificate', f'Failed to install CA into Linux system trust store: {exc}')
+        return {'ok': False, 'error': str(exc)}
+
+    output = (result.stdout or '').strip()
+    details: dict
+    try:
+        details = json.loads(output) if output else {}
+    except json.JSONDecodeError:
+        details = {'output': output}
+    details.setdefault('ok', result.returncode == 0)
+    if result.returncode == 0 and details.get('ok'):
+        stores = ', '.join(details.get('stores') or [])
+        log_buffer.log('Certificate', f'Installed CA into Linux system trust store{f" ({stores})" if stores else ""}')
+    else:
+        err = details.get('error') or (result.stderr or output or str(result.returncode)).strip()
+        log_buffer.log('Certificate', f'Failed to install CA into Linux system trust store: {err}')
+        details['error'] = err
+    return details
+
+
+def install_ca_into_linux_trust(ca_cert_path: Path, *, install_system: bool = True) -> dict:
+    """Trust Fleasion's CA for Linux browsers and system TLS clients."""
+    if not sys.platform.startswith('linux'):
+        return {'ok': True, 'skipped': 'not_linux'}
+
+    if install_system and linux_system_ca_needs_install(ca_cert_path):
+        system = _install_ca_into_linux_system_store(ca_cert_path)
+    elif install_system:
+        system = {'ok': True, 'skipped': 'already_installed'}
+    else:
+        system = {'ok': False, 'skipped': 'handled_by_privileged_helper'}
+    nss = _install_ca_into_browser_nss(ca_cert_path)
+    return {
+        'ok': bool(system.get('ok')) or any(item.get('ok') for item in nss),
+        'system': system,
+        'nss': nss,
+    }

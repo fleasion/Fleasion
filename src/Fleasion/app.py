@@ -746,9 +746,16 @@ class RobloxExitMonitor(QObject):
         # --- Roblox Player: launch detection - check CA cert on new launch ---
         if not self._player_was_running and is_running:
             if sys.platform.startswith('linux'):
+                exe_path = Path('org.vinegarhq.Sober')
                 if self._mod_manager is not None:
                     self._mod_manager.refresh_roblox_dirs()
-                log_buffer.log('Certificate', 'Sober launch detected: skipping launch-time cert repair/restart')
+                proxy_features_enabled = self.config_manager.proxy_features_enabled
+                if self._proxy_master is not None and proxy_features_enabled:
+                    run_in_thread(self._proxy_master.refresh_and_restart_roblox)(exe_path)
+                elif self._proxy_master is None and proxy_features_enabled:
+                    run_in_thread(check_and_patch_running_roblox_ca)(exe_path)
+                elif not proxy_features_enabled:
+                    log_buffer.log('Certificate', 'Sober launch detected: proxy features disabled, skipping proxy CA refresh')
             else:
                 exe_path = get_roblox_player_exe_path()
                 if exe_path is None:

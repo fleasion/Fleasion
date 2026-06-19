@@ -34,6 +34,7 @@ from ..modifications.manager import ModificationManager, normalise_target_path
 from ..utils import format_count, log_buffer, open_folder
 from ..utils.threading import run_in_thread
 from .file_drop import FileDropLineEdit
+from .theme import ThemeManager
 
 # ---------------------------------------------------------------------------
 # Built-in entry definitions
@@ -258,18 +259,16 @@ class CollapsibleSection(QWidget):
 
     def paintEvent(self, a0):  # noqa: N802
         """Draw a rounded-rect card that adapts to dark and light themes."""
-        from PyQt6.QtGui import QPainter, QColor, QPainterPath
+        from PyQt6.QtGui import QPainter, QPainterPath
         from PyQt6.QtCore import QRectF
-        is_dark = self.palette().window().color().lightness() < 128
-        bg     = QColor('#272727') if is_dark else QColor('#f0f0f0')
-        border = QColor('#3a3a3a') if is_dark else QColor('#d0d0d0')
+        colors = ThemeManager.panel_colors(self.palette())
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
         path = QPainterPath()
         path.addRoundedRect(rect, 8.0, 8.0)
-        painter.fillPath(path, bg)
-        painter.setPen(border)
+        painter.fillPath(path, colors.section_background)
+        painter.setPen(colors.section_border)
         painter.drawPath(path)
         painter.end()
 
@@ -468,7 +467,7 @@ class ModRowWidget(QWidget):
         layout.addWidget(self._browse_btn)
 
         # Preview button
-        self._preview_btn = _RichTextButton('Preview', '\u25b6', suffix_size_offset=5)
+        self._preview_btn = _RichTextButton('Preview', '\u25b6')
         self._preview_btn.setFixedWidth(82)
         self._preview_btn.clicked.connect(self._on_preview)
         layout.addWidget(self._preview_btn)

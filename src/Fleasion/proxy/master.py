@@ -1487,6 +1487,8 @@ def _find_roblox_dirs() -> list:
         seen: set[str] = set()
 
         def _add_posix(path: Path) -> bool:
+            if IS_MACOS and 'RobloxStudio.app' in path.parts:
+                return False
             if is_roblox_studio_resource_dir(path):
                 return False
             key = str(path.resolve()).lower()
@@ -2545,10 +2547,6 @@ class ProxyMaster:
         overwritten or incomplete, it patches certs, refreshes hosts/upstream IPs,
         and restarts Roblox exactly once for that launch window.
         """
-        if IS_LINUX:
-            log_buffer.log('Certificate', 'Sober launch detected: skipping automatic cert repair/restart')
-            return
-
         ca_cert_path = _current_proxy_ca_dir() / 'ca.crt'
         if not ca_cert_path.exists():
             return
@@ -2562,6 +2560,11 @@ class ProxyMaster:
             from ..utils.platform_macos import _resource_root_from_executable
 
             roblox_dir = _resource_root_from_executable(exe_path) or exe_path.parent
+        elif IS_LINUX:
+            from ..utils.platform_linux import find_roblox_resource_dirs
+
+            dirs = find_roblox_resource_dirs(include_studio=False)
+            roblox_dir = dirs[0] if dirs else exe_path.parent
         else:
             roblox_dir = exe_path.parent
         ca_file = roblox_dir / 'ssl' / 'cacert.pem'
@@ -2709,9 +2712,7 @@ class ProxyMaster:
             return
 
         # ── Optional cache clear on launch ───────────────────────────────
-        if IS_LINUX and self.config_manager.clear_cache_on_launch:
-            log_buffer.log('Cleanup', 'Clear cache on launch ignored for Sober on Linux')
-        elif self.config_manager.clear_cache_on_launch:
+        if self.config_manager.clear_cache_on_launch:
             log_buffer.log('Cleanup', 'Clear cache on launch enabled - deleting cache')
 
             def _delete_and_log():
@@ -2775,6 +2776,13 @@ class ProxyMaster:
             return
         if IS_WINDOWS:
             _install_ca_into_windows_root(ca_cert_path, ca_pem)
+        elif IS_LINUX:
+            from ..utils.linux_proxy_helper import install_ca_into_linux_trust
+
+            install_ca_into_linux_trust(
+                ca_cert_path,
+                install_system=False,
+            )
 
         # ── Clean up stale state from a previous crash ───────────────────
         # Skip cleanup entirely if another elevated Fleasion instance already
@@ -2906,12 +2914,31 @@ class ProxyMaster:
             self._running = False
             return
         if use_linux_helper:
-            from ..utils.linux_proxy_helper import start_helper
+            from ..utils.linux_proxy_helper import linux_system_ca_needs_install, start_helper
 
-            if not start_helper(active_hosts, backend_port=listen_port):
+            helper_ca_cert_path = ca_cert_path if linux_system_ca_needs_install(ca_cert_path) else None
+
+            if not start_helper(
+                active_hosts,
+                backend_port=listen_port,
+                ca_cert_path=helper_ca_cert_path,
+            ):
                 await self._proxy.stop()
                 self._running = False
                 return
+            if not ca_patch_ok:
+                ca_patch_ok, ca_patch_details = _install_ca_into_roblox(ca_pem)
+                if not ca_patch_ok:
+                    log_buffer.log(
+                        'Certificate',
+                        'Linux Roblox CA patch verification failed after privileged helper ownership repair',
+                    )
+                    await self._proxy.stop()
+                    from ..utils.linux_proxy_helper import stop_helper
+
+                    stop_helper()
+                    self._running = False
+                    return
         if (IS_MACOS or use_linux_helper) and not await _run_tls_self_test(set(INTERCEPT_HOSTS), ca_cert_path, PROXY_PORT):
             log_buffer.log('ProxyHelper', 'Privileged port-443 relay TLS self-test failed')
             await self._proxy.stop()

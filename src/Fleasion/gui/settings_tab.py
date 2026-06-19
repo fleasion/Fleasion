@@ -400,15 +400,9 @@ class SettingsTab(QWidget):
 
     def _update_container_bg(self):
         """Keep the Settings tab background aligned with the tab theme."""
-        pal = self.palette()
-        win_light = pal.window().color().lightness()
-        alt_light = pal.alternateBase().color().lightness()
-        if win_light < 128 and alt_light <= win_light:
-            bg = 'background-color: rgb(64, 64, 64);'
-        else:
-            bg = 'background-color: palette(alternate-base);'
+        colors = ThemeManager.panel_colors(self.palette())
         self._settings_container.setStyleSheet(
-            f'QWidget#_FleasionSettingsContainer {{ {bg} }}'
+            f'QWidget#_FleasionSettingsContainer {{ {colors.container_background_css} }}'
         )
 
     # Public
