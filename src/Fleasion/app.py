@@ -828,9 +828,22 @@ class _ProxyErrorInvoker(QObject):
 
 
 def _disable_proxy_features_after_start_failure(config_manager, tray: SystemTray | None, reason: str):
-    """Persist and propagate proxy disablement after an async startup failure."""
+    """Handle proxy startup failure without silently mutating the saved setting."""
     if not config_manager.proxy_features_enabled:
         return
+    if sys.platform.startswith('linux'):
+        log_buffer.log('Proxy', f'Linux proxy helper start failed; leaving proxy features enabled: {reason}')
+        QMessageBox.warning(
+            _visible_parent_widget(),
+            'Fleasion - Linux Proxy Helper Unavailable',
+            'Fleasion could not start the Linux proxy helper.\n\n'
+            f'{reason}\n\n'
+            'Proxy features remain enabled in Settings, so Fleasion will try again the next time you launch it.',
+        )
+        if tray is not None and hasattr(tray, 'update_status'):
+            tray.update_status()
+        return
+
     log_buffer.log('Proxy', f'Proxy features disabled after startup failure: {reason}')
     if tray is not None:
         tray.set_proxy_features_enabled(False)

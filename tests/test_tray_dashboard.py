@@ -165,15 +165,12 @@ def test_exit_app_cleans_tray_before_quitting(monkeypatch):
     assert calls[-1] == 'quit'
 
 
-def test_linux_helper_start_failure_disables_proxy_features():
+def test_linux_helper_start_failure_keeps_proxy_features_enabled(monkeypatch):
     config = SimpleNamespace(proxy_features_enabled=True)
     calls = []
-
-    def set_proxy_features_enabled(enabled):
-        calls.append(enabled)
-        config.proxy_features_enabled = enabled
-
-    tray = SimpleNamespace(set_proxy_features_enabled=set_proxy_features_enabled)
+    warnings = []
+    tray = SimpleNamespace(update_status=lambda: calls.append('update_status'))
+    monkeypatch.setattr(app_module.QMessageBox, 'warning', lambda *args, **kwargs: warnings.append((args, kwargs)))
 
     app_module._disable_proxy_features_after_start_failure(
         config,
@@ -181,5 +178,6 @@ def test_linux_helper_start_failure_disables_proxy_features():
         'Linux Polkit approval was denied or the proxy helper could not start',
     )
 
-    assert calls == [False]
-    assert config.proxy_features_enabled is False
+    assert calls == ['update_status']
+    assert warnings
+    assert config.proxy_features_enabled is True
