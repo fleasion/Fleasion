@@ -260,3 +260,28 @@ def test_nested_group_rows_use_guide_step_icon_indent_without_text_padding(tmp_p
     finally:
         window.close()
     assert app is not None
+
+
+def test_replace_ids_parser_splits_multiline_pastes(tmp_path, monkeypatch):
+    app = _qapp()
+    config_dir = tmp_path / 'FleasionNT'
+    configs_dir = config_dir / 'configs'
+    monkeypatch.setattr(manager_module, 'CONFIG_DIR', config_dir)
+    monkeypatch.setattr(manager_module, 'CONFIG_FILE', config_dir / 'settings.json')
+    monkeypatch.setattr(manager_module, 'CONFIGS_FOLDER', configs_dir)
+
+    config_manager = manager_module.ConfigManager()
+    window = ReplacerConfigWindow(config_manager)
+    try:
+        assert window._parse_ids('101\n202\t303;404,505 606') == [101, 202, 303, 404, 505, 606]
+
+        window.name_entry.setText('Multiline IDs')
+        window.replace_entry.setText('101\n202\n303')
+        window.replacement_entry.clear()
+        window._add_rule()
+
+        assert config_manager.replacement_rules[0]['replace_ids'] == [101, 202, 303]
+        assert window.tree.topLevelItem(0).text(3) == '3 IDs'
+    finally:
+        window.close()
+    assert app is not None

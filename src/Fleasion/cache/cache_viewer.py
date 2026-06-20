@@ -5,8 +5,8 @@ from PyQt6.QtCore import QEvent
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTableWidget,
     QTableWidgetItem, QLabel, QComboBox, QLineEdit, QMessageBox,
-    QHeaderView, QFileDialog, QGroupBox, QSplitter, QTextEdit, QCheckBox,
-    QMenu, QScrollArea, QGridLayout, QFrame, QDialog
+    QHeaderView, QFileDialog, QGroupBox, QSplitter, QTextEdit, QPlainTextEdit,
+    QCheckBox, QMenu, QScrollArea, QGridLayout, QFrame, QDialog
 )
 from PyQt6.QtWidgets import QWidgetAction
 from PyQt6.QtGui import QPixmap, QImage, QAction, QCursor, QFont, QFontDatabase, QPalette, QColor
@@ -4246,6 +4246,11 @@ class CacheViewerTab(QWidget):
             if event.type() == QEvent.Type.KeyPress:
                 # Space toggles play/pause when audio preview is active
                 if event.key() == Qt.Key.Key_Space:
+                    from PyQt6.QtWidgets import QApplication
+                    focus_widget = QApplication.focusWidget()
+                    if isinstance(focus_widget, (QLineEdit, QTextEdit, QPlainTextEdit)):
+                        return super().eventFilter(obj, event)
+
                     if self.audio_player and self.audio_wrapper.isVisible():
                         try:
                             # Toggle play/pause on the audio widget

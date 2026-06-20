@@ -80,12 +80,20 @@ class AudioPlayerWidget(QWidget):
     def _load_audio(self):
         """Load audio file and get metadata."""
         try:
-            # Load audio file
-            self.audio_data, self.sample_rate = sf.read(self.audio_file_path)
+            # Load audio as float32 so the callback writes the same dtype that
+            # PortAudio receives from sounddevice.
+            self.audio_data, self.sample_rate = sf.read(self.audio_file_path, dtype='float32')
 
-            # Convert to stereo if mono
+            # Convert to exactly stereo for the fixed two-channel output stream.
             if len(self.audio_data.shape) == 1:
                 self.audio_data = np.column_stack((self.audio_data, self.audio_data))
+            elif self.audio_data.shape[1] == 1:
+                self.audio_data = np.repeat(self.audio_data, 2, axis=1)
+            elif self.audio_data.shape[1] > 2:
+                mono = self.audio_data.mean(axis=1)
+                self.audio_data = np.column_stack((mono, mono))
+
+            self.audio_data = np.ascontiguousarray(np.clip(self.audio_data, -1.0, 1.0), dtype=np.float32)
 
             # Calculate duration
             self.duration = len(self.audio_data) / self.sample_rate
@@ -252,6 +260,7 @@ class AudioPlayerWidget(QWidget):
             stream = sd.OutputStream(
                 samplerate=self.sample_rate,
                 channels=2,
+                dtype='float32',
                 callback=callback,
                 blocksize=2048
             )

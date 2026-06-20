@@ -1,6 +1,7 @@
 """Replacer config window."""
 
 import json
+import re
 from copy import deepcopy
 from pathlib import Path
 import sys
@@ -1938,9 +1939,7 @@ class ReplacerConfigWindow(QDialog):
     def _parse_ids(self, text: str) -> list[Union[int, str]]:
         """Parse IDs from text."""
         ids: list[Union[int, str]] = []
-        # Replace common separators with comma
-        text = text.replace(';', ',').replace(' ', ',')
-        for part in text.split(','):
+        for part in re.split(r'[,\s;]+', text):
             part = part.strip()
             if not part:
                 continue

@@ -24,6 +24,12 @@ def _stub_loaded_audio(player):
     player.duration = len(player.audio_data) / player.sample_rate
 
 
+def _stub_nonzero_audio(player):
+    player.audio_data = np.full((4096, 2), 0.5, dtype=np.float32)
+    player.sample_rate = 44100
+    player.duration = len(player.audio_data) / player.sample_rate
+
+
 class RecordingStream:
     def __init__(self):
         self.stop_calls = 0
@@ -78,4 +84,37 @@ def test_playback_worker_closes_stream_after_stop(monkeypatch):
     assert stream.stop_calls == 1
     assert stream.close_calls == 1
     assert stream.close_thread is not threading.current_thread()
+    player.deleteLater()
+
+
+def test_playback_callback_outputs_nonzero_float32_audio(monkeypatch):
+    _qapp()
+    monkeypatch.setattr(AudioPlayerWidget, "_load_audio", _stub_nonzero_audio)
+    captured = {}
+
+    class CallbackStream(RecordingStream):
+        def __init__(self, **kwargs):
+            super().__init__()
+            self.kwargs = kwargs
+            captured["kwargs"] = kwargs
+
+        def start(self):
+            callback = self.kwargs["callback"]
+            outdata = np.zeros((128, self.kwargs["channels"]), dtype=np.float32)
+            callback(outdata, len(outdata), None, None)
+            captured["outdata"] = outdata
+
+    monkeypatch.setattr(
+        "Fleasion.cache.audio_player.sd.OutputStream",
+        lambda **kwargs: CallbackStream(**kwargs),
+    )
+    player = AudioPlayerWidget("unused")
+
+    player._play()
+    player.stop()
+    player.playback_thread.join(timeout=1)
+
+    assert captured["kwargs"]["dtype"] == "float32"
+    assert captured["outdata"].dtype == np.float32
+    assert np.any(captured["outdata"] != 0)
     player.deleteLater()
