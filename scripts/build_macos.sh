@@ -67,6 +67,80 @@ require_archs() {
     done
 }
 
+plist_value() {
+    plist_path="$1"
+    key="$2"
+
+    if [ -x /usr/libexec/PlistBuddy ]; then
+        /usr/libexec/PlistBuddy -c "Print :${key}" "$plist_path" 2>/dev/null || true
+        return
+    fi
+
+    sed -n "/<key>${key}<\/key>/{n;s/.*<string>\([^<]*\)<\/string>.*/\1/p;q;}" "$plist_path"
+}
+
+verify_app_bundle() {
+    app_path="$1"
+    build_label="$2"
+    contents_path="${app_path}/Contents"
+    info_plist="${contents_path}/Info.plist"
+    macos_path="${contents_path}/MacOS"
+    resources_path="${contents_path}/Resources"
+    frameworks_path="${contents_path}/Frameworks"
+    exec_path="${macos_path}/${EXEC_NAME}"
+    helper_path="${resources_path}/${HELPER_EXEC_NAME}"
+
+    if [ ! -d "$app_path" ]; then
+        echo "${build_label} completed, but expected app bundle directory was not found: $app_path" >&2
+        exit 1
+    fi
+    if [ ! -d "$contents_path" ]; then
+        echo "${build_label} completed, but app bundle is missing Contents: $contents_path" >&2
+        exit 1
+    fi
+    if [ ! -f "$info_plist" ]; then
+        echo "${build_label} completed, but app bundle is missing Info.plist: $info_plist" >&2
+        exit 1
+    fi
+    if [ ! -d "$macos_path" ]; then
+        echo "${build_label} completed, but app bundle is missing MacOS directory: $macos_path" >&2
+        exit 1
+    fi
+    if [ ! -d "$resources_path" ]; then
+        echo "${build_label} completed, but app bundle is missing Resources directory: $resources_path" >&2
+        exit 1
+    fi
+    if [ ! -d "$frameworks_path" ]; then
+        echo "${build_label} completed, but app bundle is missing Frameworks directory: $frameworks_path" >&2
+        exit 1
+    fi
+
+    icon_file="$(plist_value "$info_plist" CFBundleIconFile)"
+    package_type="$(plist_value "$info_plist" CFBundlePackageType)"
+    bundle_executable="$(plist_value "$info_plist" CFBundleExecutable)"
+
+    if [ "$package_type" != "APPL" ]; then
+        echo "${build_label} completed, but Info.plist CFBundlePackageType is '$package_type' instead of 'APPL': $info_plist" >&2
+        exit 1
+    fi
+    if [ "$bundle_executable" != "$EXEC_NAME" ]; then
+        echo "${build_label} completed, but Info.plist CFBundleExecutable is '$bundle_executable' instead of '$EXEC_NAME': $info_plist" >&2
+        exit 1
+    fi
+    if [ -z "$icon_file" ] || [ ! -f "${resources_path}/${icon_file}" ]; then
+        echo "${build_label} completed, but app bundle icon was not found in Resources: ${resources_path}/${icon_file}" >&2
+        exit 1
+    fi
+    if [ ! -x "$exec_path" ]; then
+        echo "${build_label} completed, but expected executable was not found: $exec_path" >&2
+        exit 1
+    fi
+    if [ ! -x "$helper_path" ]; then
+        echo "${build_label} completed, but bundled proxy helper was not found: $helper_path" >&2
+        exit 1
+    fi
+}
+
 verify_app_archs() {
     app_path="$1"
     require_archs "${app_path}/Contents/MacOS/${EXEC_NAME}" arm64 x86_64
@@ -103,14 +177,7 @@ build_current_arch() {
 
     MACOS_TARGET_ARCH="$target_arch" uv run pyinstaller --clean --noconfirm Fleasion.spec
 
-    if [ ! -x "$EXEC_PATH" ]; then
-        echo "Build completed, but expected executable was not found: $EXEC_PATH" >&2
-        exit 1
-    fi
-    if [ ! -x "$HELPER_APP_PATH" ]; then
-        echo "Build completed, but bundled proxy helper was not found: $HELPER_APP_PATH" >&2
-        exit 1
-    fi
+    verify_app_bundle "$APP_PATH" "Build"
     require_archs "$EXEC_PATH" "$target_arch"
     require_archs "$HELPER_APP_PATH" "$target_arch"
 }
@@ -153,14 +220,7 @@ build_x86_64() {
     MACOS_TARGET_ARCH=x86_64 \
     x86_uv run --python "$x86_python_path" pyinstaller --clean --noconfirm Fleasion.spec
 
-    if [ ! -x "$EXEC_PATH" ]; then
-        echo "Intel build completed, but expected executable was not found: $EXEC_PATH" >&2
-        exit 1
-    fi
-    if [ ! -x "$HELPER_APP_PATH" ]; then
-        echo "Intel build completed, but bundled proxy helper was not found: $HELPER_APP_PATH" >&2
-        exit 1
-    fi
+    verify_app_bundle "$APP_PATH" "Intel build"
     require_archs "$EXEC_PATH" x86_64
     require_archs "$HELPER_APP_PATH" x86_64
 }
@@ -230,6 +290,7 @@ finalize_app() {
     app_path="$1"
     app_arch="$2"
 
+    verify_app_bundle "$app_path" "Final app"
     codesign --force --deep --sign - "$app_path"
 
     if [ "$app_arch" = "universal2" ]; then
