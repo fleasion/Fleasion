@@ -209,6 +209,39 @@ class CacheManager:
 
         return False
 
+    def _detect_payload_type(self, data: bytes, asset_type: int) -> str | None:
+        """Return a display type override when the cached bytes identify better."""
+        try:
+            from . import mesh_processing
+            if asset_type != 4 and mesh_processing.is_mesh_data(data):
+                return 'Mesh'
+        except Exception:
+            pass
+
+        if asset_type != 3 and self._is_audio_data(data):
+            return 'Audio'
+
+        type_name = self.get_asset_type_name(asset_type)
+        if type_name.startswith('Unknown') and self._is_json_data(data):
+            return 'Json'
+
+        return None
+
+    @staticmethod
+    def _is_audio_data(data: bytes) -> bool:
+        """Return True when bytes look like a common Roblox audio payload."""
+        if not data:
+            return False
+        return (
+            data.startswith(b'OggS')
+            or data.startswith(b'ID3')
+            or data.startswith(b'\xFF\xFB')
+            or data.startswith(b'\xFF\xF3')
+            or data.startswith(b'\xFF\xF2')
+            or (len(data) >= 12 and data.startswith(b'RIFF') and data[8:12] == b'WAVE')
+            or data.startswith(b'fLaC')
+        )
+
     def store_asset(self, asset_id: str, asset_type: int, data: bytes,
                    url: str = '', metadata: Optional[dict] = None) -> bool:
         """
@@ -240,11 +273,9 @@ class CacheManager:
             # Calculate hash for deduplication
             file_hash = hashlib.sha256(data).hexdigest()[:16]
 
-            # Check if unknown type is actually JSON
-            detected_type = None
+            # Check if the payload identifies more specifically than assetTypeId.
+            detected_type = self._detect_payload_type(data, asset_type)
             type_name = self.get_asset_type_name(asset_type)
-            if type_name.startswith('Unknown') and self._is_json_data(data):
-                detected_type = 'Json'
 
             # Update index under lock to prevent concurrent corruption
             with self._lock:
@@ -347,6 +378,7 @@ class CacheManager:
                 asset_key = f'{asset_type}_{asset_id}'
                 if asset_key in self.index['assets']:
                     self.index['assets'][asset_key]['detected_type'] = detected_type
+                    self.index['assets'][asset_key]['type_name'] = detected_type
                     self._schedule_index_commit()
         except Exception as e:
             log_buffer.log('Scraper', f'Failed to set detected type for {asset_id}: {e}')
@@ -359,6 +391,17 @@ class CacheManager:
         # Return detected type if available, otherwise use standard type name
         if 'detected_type' in asset_info:
             return asset_info['detected_type']
+
+        # Some Roblox batch responses report RenderMesh CDN payloads as Image.
+        # Heal those persisted entries lazily so old cache indexes display
+        # correctly after a restart without requiring a re-download.
+        if asset_type in (1, 13):
+            data = self.get_asset(asset_id, asset_type)
+            if data:
+                detected_type = self._detect_payload_type(data, asset_type)
+                if detected_type:
+                    self.set_detected_type(asset_id, asset_type, detected_type)
+                    return detected_type
         
         return self.get_asset_type_name(asset_type)
 
@@ -716,8 +759,12 @@ class CacheManager:
             return '.png'
         elif data.startswith(b'OggS'):
             return '.ogg'
-        elif data.startswith(b'ID3') or data.startswith(b'\xFF\xFB'):
+        elif data.startswith(b'ID3') or data.startswith(b'\xFF\xFB') or data.startswith(b'\xFF\xF3') or data.startswith(b'\xFF\xF2'):
             return '.mp3'
+        elif len(data) >= 12 and data.startswith(b'RIFF') and data[8:12] == b'WAVE':
+            return '.wav'
+        elif data.startswith(b'fLaC'):
+            return '.flac'
         elif data.startswith(b'version '):
             return '.mesh'
         elif data.startswith(b'<roblox'):

@@ -65,7 +65,9 @@ class AudioPlayerWidget(QWidget):
         # Playback thread and stream
         self.stream = None
         self.playback_thread = None
+        self.stop_event = None
         self.position_lock = threading.Lock()
+        self.stream_lock = threading.Lock()
 
         self._load_audio()
         self._setup_ui()
@@ -185,7 +187,13 @@ class AudioPlayerWidget(QWidget):
         self.play_pause_btn.setText('⏸')
 
         # Start playback thread
-        self.playback_thread = threading.Thread(target=self._playback_worker, daemon=True)
+        stop_event = threading.Event()
+        self.stop_event = stop_event
+        self.playback_thread = threading.Thread(
+            target=self._playback_worker,
+            args=(stop_event,),
+            daemon=True,
+        )
         self.playback_thread.start()
 
     def _pause(self):
@@ -193,9 +201,12 @@ class AudioPlayerWidget(QWidget):
         self.is_playing = False
         self.should_stop = True
         self.play_pause_btn.setText('▶')
+        if self.stop_event:
+            self.stop_event.set()
 
-        if self.stream:
-            self.stream.stop()
+        # Let the playback worker close the PortAudio stream. Closing can block
+        # inside Pa_CloseStream on some device/backend transitions, and this
+        # method runs on the Qt UI thread.
 
     def _replay(self):
         """Replay from beginning."""
@@ -210,7 +221,7 @@ class AudioPlayerWidget(QWidget):
         # Start playing
         self._play()
 
-    def _playback_worker(self):
+    def _playback_worker(self, stop_event):
         """Worker thread for audio playback."""
         try:
             def callback(outdata, frames, time_info, status):
@@ -222,9 +233,9 @@ class AudioPlayerWidget(QWidget):
                     end_pos = min(start_pos + frames, len(self.audio_data))
                     chunk_size = end_pos - start_pos
 
-                    if chunk_size <= 0 or self.should_stop:
+                    if chunk_size <= 0 or stop_event.is_set():
                         outdata[:] = 0
-                        self.should_stop = True
+                        stop_event.set()
                         return
 
                     # Get audio data and apply volume
@@ -238,34 +249,58 @@ class AudioPlayerWidget(QWidget):
                     self.playback_position = end_pos
 
             # Create and start stream
-            self.stream = sd.OutputStream(
+            stream = sd.OutputStream(
                 samplerate=self.sample_rate,
                 channels=2,
                 callback=callback,
                 blocksize=2048
             )
+            with self.stream_lock:
+                self.stream = stream
 
-            with self.stream:
-                while not self.should_stop:
+            stream.start()
+            try:
+                while not stop_event.is_set():
                     time.sleep(0.01)
 
                     # Check if reached end
                     with self.position_lock:
                         if self.playback_position >= len(self.audio_data):
                             self.should_stop = True
+                            stop_event.set()
+            finally:
+                try:
+                    stream.stop()
+                except Exception as e:
+                    log_buffer.log('Audio', f'Error stopping audio stream: {e}')
+                try:
+                    stream.close()
+                except Exception as e:
+                    log_buffer.log('Audio', f'Error closing audio stream: {e}')
 
         except Exception as e:
             log_buffer.log('Audio', f'Playback error: {e}')
         finally:
-            self.is_playing = False
-            # Schedule UI update on the main thread to avoid manipulating
-            # Qt widgets from this worker thread (which can cause
-            # "wrapped C/C++ object ... has been deleted" errors).
+            is_current_playback = False
             try:
-                QTimer.singleShot(0, lambda: self._safe_set_play_pause_text('▶'))
+                with self.stream_lock:
+                    if self.stream is locals().get('stream'):
+                        self.stream = None
+                    if self.stop_event is stop_event:
+                        self.stop_event = None
+                        is_current_playback = True
             except Exception:
-                # If scheduling fails for any reason, ignore silently.
                 pass
+            if is_current_playback:
+                self.is_playing = False
+                # Schedule UI update on the main thread to avoid manipulating
+                # Qt widgets from this worker thread (which can cause
+                # "wrapped C/C++ object ... has been deleted" errors).
+                try:
+                    QTimer.singleShot(0, lambda: self._safe_set_play_pause_text('▶'))
+                except Exception:
+                    # If scheduling fails for any reason, ignore silently.
+                    pass
 
     def _safe_set_play_pause_text(self, text: str):
         """Set play/pause button text from the main thread, safely.
@@ -332,10 +367,8 @@ class AudioPlayerWidget(QWidget):
         """Stop playback and cleanup."""
         self.should_stop = True
         self.is_playing = False
-
-        if self.stream:
-            self.stream.stop()
-            self.stream.close()
+        if self.stop_event:
+            self.stop_event.set()
 
         if self.timer:
             self.timer.stop()

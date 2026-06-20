@@ -3305,6 +3305,12 @@ class CacheViewerTab(QWidget):
             if not data:
                 self._show_text_preview(f'Failed to load asset {asset_id}')
                 return
+            detected_type_name = self.cache_manager.get_type_name_for_asset(asset_id, asset_type)
+            if detected_type_name != self.cache_manager.get_asset_type_name(asset_type):
+                asset['type_name'] = detected_type_name
+                type_item = self.table.item(self.table.currentRow(), 4)
+                if type_item is not None:
+                    type_item.setText(detected_type_name)
             if asset_type == 63:  # TexturePack
                 self._show_loading()
                 self._preview_texturepack(data, asset_id)
@@ -3326,6 +3332,8 @@ class CacheViewerTab(QWidget):
                 self._preview_mesh(data, asset_id)
             elif asset_type == 39:  # SolidModel
                 self._preview_solidmodel(data, asset_id)
+            elif detected_type_name == 'Audio':  # Payload is audio despite assetTypeId
+                self._preview_audio(data, asset_id)
             elif asset_type in [1, 13]:  # Image, Decal
                 self._preview_image(data)
             elif asset_type == 3:  # Audio
@@ -4712,8 +4720,11 @@ class CacheViewerTab(QWidget):
             temp_dir = Path(tempfile.gettempdir()) / 'fleasion_audio'
             temp_dir.mkdir(exist_ok=True)
 
-            # Determine file extension (default to mp3)
-            temp_file = temp_dir / f'{asset_id}.mp3'
+            # Determine file extension.
+            ext = self.cache_manager._detect_extension(data, 3)
+            if ext not in ('.ogg', '.mp3', '.wav', '.flac'):
+                ext = '.mp3'
+            temp_file = temp_dir / f'{asset_id}{ext}'
 
             # Write audio data to temp file
             with open(temp_file, 'wb') as f:
@@ -4744,6 +4755,7 @@ class CacheViewerTab(QWidget):
                 return
 
             self.audio_container_layout.addWidget(self.audio_player)
+            self._hide_loading()
             self.audio_wrapper.show()
             self.stop_preview_btn.show()
 
