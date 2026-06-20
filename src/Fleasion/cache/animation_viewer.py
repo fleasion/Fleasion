@@ -16,7 +16,6 @@ from typing import Dict, List, Tuple, Optional
 
 import numpy as np
 from OpenGL.GL import *
-from OpenGL.GLU import *
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from PyQt6.QtWidgets import (
@@ -39,7 +38,7 @@ from .fps_controls import (
     MovementKey,
     movement_key_from_event,
 )
-from .gl_format import legacy_gl_format
+from .gl_format import legacy_gl_format, set_perspective
 from ..utils import log_buffer
 
 # Math helpers
@@ -1047,7 +1046,7 @@ class AnimationGLWidget(QOpenGLWidget):
         glMatrixMode(GL_PROJECTION)
         glLoadIdentity()
         aspect = w / h if h > 0 else 1
-        gluPerspective(30, aspect, 0.1, 500.0)
+        set_perspective(30, aspect, 0.1, 500.0)
         glMatrixMode(GL_MODELVIEW)
 
     def paintGL(self):

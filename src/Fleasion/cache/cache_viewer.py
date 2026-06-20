@@ -165,10 +165,12 @@ class ImageLoaderThread(QThread):
             log_buffer.log('Preview', f'Loading image ({len(self.data)} bytes)')
 
             data = self.data
-            if data[:12] in (b'\xabKTX 11\xbb\r\n\x1a\n', b'\xabKTX 20\xbb\r\n\x1a\n'):
+            from .tools.ktx_to_png import convert as _ktx_convert, strip_prefixed_ktx
+
+            ktx_payload = strip_prefixed_ktx(data)
+            if ktx_payload is not None:
                 log_buffer.log('Preview', 'KTX detected, converting to PNG...')
-                from .tools.ktx_to_png import convert as _ktx_convert
-                data = _ktx_convert(data)
+                data = _ktx_convert(ktx_payload)
                 if data is None:
                     if not self._stop_requested:
                         self.error.emit('KTX Conversion failed, see logs for details.')

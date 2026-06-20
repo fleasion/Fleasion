@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from functools import partial
 from pathlib import Path
 
@@ -31,6 +32,11 @@ from PyQt6.QtWidgets import (
 )
 
 from ..modifications.manager import ModificationManager, normalise_target_path
+from ..modifications.platform_targets import (
+    read_current_platform_original_asset,
+    target_path_for_current_platform,
+)
+from ..cache.tools.ktx_to_png import convert as ktx_to_png, strip_prefixed_ktx
 from ..utils import format_count, log_buffer, open_folder
 from ..utils.threading import run_in_thread
 from .file_drop import FileDropLineEdit
@@ -41,47 +47,54 @@ from .theme import ThemeManager
 # ---------------------------------------------------------------------------
 
 AVATAR_MESHES = [
-    ('Left Arm',  r'content\avatar\meshes\leftarm.mesh'),
-    ('Left Leg',  r'content\avatar\meshes\leftleg.mesh'),
-    ('Right Arm', r'content\avatar\meshes\rightarm.mesh'),
-    ('Right Leg', r'content\avatar\meshes\rightleg.mesh'),
-    ('Torso',     r'content\avatar\meshes\torso.mesh'),
-    ('Head',      r'content\avatar\heads\head.mesh'),
+    ('Left Arm',  target_path_for_current_platform(r'content\avatar\meshes\leftarm.mesh')),
+    ('Left Leg',  target_path_for_current_platform(r'content\avatar\meshes\leftleg.mesh')),
+    ('Right Arm', target_path_for_current_platform(r'content\avatar\meshes\rightarm.mesh')),
+    ('Right Leg', target_path_for_current_platform(r'content\avatar\meshes\rightleg.mesh')),
+    ('Torso',     target_path_for_current_platform(r'content\avatar\meshes\torso.mesh')),
+    ('Head',      target_path_for_current_platform(r'content\avatar\heads\head.mesh')),
 ]
 
 HEAD_VARIANTS = [f'head{chr(c)}.mesh' for c in range(ord('A'), ord('P') + 1)]
 
 SKYBOX_FACES = [
-    ('Sky \u2014 Back',  r'PlatformContent\pc\textures\sky\sky512_bk.tex'),
-    ('Sky \u2014 Down',  r'PlatformContent\pc\textures\sky\sky512_dn.tex'),
-    ('Sky \u2014 Front', r'PlatformContent\pc\textures\sky\sky512_ft.tex'),
-    ('Sky \u2014 Left',  r'PlatformContent\pc\textures\sky\sky512_lf.tex'),
-    ('Sky \u2014 Right', r'PlatformContent\pc\textures\sky\sky512_rt.tex'),
-    ('Sky \u2014 Up',    r'PlatformContent\pc\textures\sky\sky512_up.tex'),
+    ('Sky \u2014 Back',  target_path_for_current_platform(r'PlatformContent\pc\textures\sky\sky512_bk.tex')),
+    ('Sky \u2014 Down',  target_path_for_current_platform(r'PlatformContent\pc\textures\sky\sky512_dn.tex')),
+    ('Sky \u2014 Front', target_path_for_current_platform(r'PlatformContent\pc\textures\sky\sky512_ft.tex')),
+    ('Sky \u2014 Left',  target_path_for_current_platform(r'PlatformContent\pc\textures\sky\sky512_lf.tex')),
+    ('Sky \u2014 Right', target_path_for_current_platform(r'PlatformContent\pc\textures\sky\sky512_rt.tex')),
+    ('Sky \u2014 Up',    target_path_for_current_platform(r'PlatformContent\pc\textures\sky\sky512_up.tex')),
 ]
 
 INDOOR_FACES = [
-    ('Indoor \u2014 Back',  r'PlatformContent\pc\textures\sky\indoor512_bk.tex'),
-    ('Indoor \u2014 Down',  r'PlatformContent\pc\textures\sky\indoor512_dn.tex'),
-    ('Indoor \u2014 Front', r'PlatformContent\pc\textures\sky\indoor512_ft.tex'),
-    ('Indoor \u2014 Left',  r'PlatformContent\pc\textures\sky\indoor512_lf.tex'),
-    ('Indoor \u2014 Right', r'PlatformContent\pc\textures\sky\indoor512_rt.tex'),
-    ('Indoor \u2014 Up',    r'PlatformContent\pc\textures\sky\indoor512_up.tex'),
+    ('Indoor \u2014 Back',  target_path_for_current_platform(r'PlatformContent\pc\textures\sky\indoor512_bk.tex')),
+    ('Indoor \u2014 Down',  target_path_for_current_platform(r'PlatformContent\pc\textures\sky\indoor512_dn.tex')),
+    ('Indoor \u2014 Front', target_path_for_current_platform(r'PlatformContent\pc\textures\sky\indoor512_ft.tex')),
+    ('Indoor \u2014 Left',  target_path_for_current_platform(r'PlatformContent\pc\textures\sky\indoor512_lf.tex')),
+    ('Indoor \u2014 Right', target_path_for_current_platform(r'PlatformContent\pc\textures\sky\indoor512_rt.tex')),
+    ('Indoor \u2014 Up',    target_path_for_current_platform(r'PlatformContent\pc\textures\sky\indoor512_up.tex')),
 ]
 
 SOUNDS = [
-    ('Footsteps (Plastic)', r'content\sounds\action_footsteps_plastic.mp3', 'bundled:empty.mp3'),
-    ('Falling',             r'content\sounds\action_falling.ogg',           'bundled:empty.ogg'),
-    ('Get Up',              r'content\sounds\action_get_up.mp3',            'bundled:empty.mp3'),
-    ('Jump',                r'content\sounds\action_jump.mp3',              'bundled:empty.mp3'),
-    ('Jump Land',           r'content\sounds\action_jump_land.mp3',         'bundled:empty.mp3'),
-    ('Swim',                r'content\sounds\action_swim.mp3',              'bundled:empty.mp3'),
-    ('Explosion',           r'content\sounds\impact_explosion_03.mp3',      'bundled:empty.mp3'),
-    ('Water Impact',        r'content\sounds\impact_water.mp3',             'bundled:empty.mp3'),
-    ('Oof',                 r'content\sounds\oof.ogg',                      'bundled:empty.ogg'),
-    ('Ouch',                r'content\sounds\ouch.ogg',                     'bundled:empty.ogg'),
-    ('Volume Slider',       r'content\sounds\volume_slider.ogg',            'bundled:empty.ogg'),
+    ('Footsteps (Plastic)', target_path_for_current_platform(r'content\sounds\action_footsteps_plastic.mp3'), 'bundled:empty.mp3'),
+    ('Falling',             target_path_for_current_platform(r'content\sounds\action_falling.ogg'),           'bundled:empty.ogg'),
+    ('Get Up',              target_path_for_current_platform(r'content\sounds\action_get_up.mp3'),            'bundled:empty.mp3'),
+    ('Jump',                target_path_for_current_platform(r'content\sounds\action_jump.mp3'),              'bundled:empty.mp3'),
+    ('Jump Land',           target_path_for_current_platform(r'content\sounds\action_jump_land.mp3'),         'bundled:empty.mp3'),
+    ('Swim',                target_path_for_current_platform(r'content\sounds\action_swim.mp3'),              'bundled:empty.mp3'),
+    ('Explosion',           target_path_for_current_platform(r'content\sounds\impact_explosion_03.mp3'),      'bundled:empty.mp3'),
+    ('Water Impact',        target_path_for_current_platform(r'content\sounds\impact_water.mp3'),             'bundled:empty.mp3'),
+    ('Oof',                 target_path_for_current_platform(r'content\sounds\oof.ogg'),                      'bundled:empty.ogg'),
+    ('Ouch',                target_path_for_current_platform(r'content\sounds\ouch.ogg'),                     'bundled:empty.ogg'),
+    ('Volume Slider',       target_path_for_current_platform(r'content\sounds\volume_slider.ogg'),            'bundled:empty.ogg'),
 ]
+
+if sys.platform.startswith('linux'):
+    SOUNDS = [
+        sound
+        for sound in SOUNDS
+        if sound[1].replace('\\', '/').strip('/') != 'content/sounds/ouch.ogg'
+    ]
 
 # File-type filter strings for QFileDialog
 MESH_FILTER  = 'Mesh Files (*.mesh *.obj);;All Files (*)'
@@ -95,16 +108,16 @@ FONT_FILTER  = 'Font Files (*.ttf *.otf *.ttc);;All Files (*)'
 
 TEXTURES = [
     # (display_name, target_path, file_filter)
-    ('High Quality Studs — Diffuse',       r'PlatformContent\pc\textures\plastic\diffuse.dds',      DDS_FILTER),
-    ('High Quality Studs — Normal',        r'PlatformContent\pc\textures\plastic\normal.dds',       DDS_FILTER),
-    ('High Quality Studs — Detail',        r'PlatformContent\pc\textures\plastic\normaldetail.dds', DDS_FILTER),
-    ('Low Quality Studs',                   r'PlatformContent\pc\textures\studs.dds',                DDS_FILTER),
-    ('Shiftlock Cursor',                    r'content\textures\MouseLockedCursor.png',               IMAGE_FILTER),
-    ('Cursor — Pointing',                  r'content\textures\Cursors\KeyboardMouse\ArrowCursor.png',    IMAGE_FILTER),
-    ('Cursor — Arrow',                     r'content\textures\Cursors\KeyboardMouse\ArrowFarCursor.png', IMAGE_FILTER),
-    ('Cursor — IBeam',                     r'content\textures\Cursors\KeyboardMouse\IBeamCursor.png',    IMAGE_FILTER),
-    ('Moon',                                r'content\sky\moon.jpg',                                JPG_FILTER),
-    ('Sun',                                 r'content\sky\sun.jpg',                                 JPG_FILTER),
+    ('High Quality Studs — Diffuse',       target_path_for_current_platform(r'PlatformContent\pc\textures\plastic\diffuse.dds'),      DDS_FILTER),
+    ('High Quality Studs — Normal',        target_path_for_current_platform(r'PlatformContent\pc\textures\plastic\normal.dds'),       DDS_FILTER),
+    ('High Quality Studs — Detail',        target_path_for_current_platform(r'PlatformContent\pc\textures\plastic\normaldetail.dds'), DDS_FILTER),
+    ('Low Quality Studs',                  target_path_for_current_platform(r'PlatformContent\pc\textures\studs.dds'),                DDS_FILTER),
+    ('Shiftlock Cursor',                   target_path_for_current_platform(r'content\textures\MouseLockedCursor.png'),               IMAGE_FILTER),
+    ('Cursor — Pointing',                  target_path_for_current_platform(r'content\textures\Cursors\KeyboardMouse\ArrowCursor.png'),    IMAGE_FILTER),
+    ('Cursor — Arrow',                     target_path_for_current_platform(r'content\textures\Cursors\KeyboardMouse\ArrowFarCursor.png'), IMAGE_FILTER),
+    ('Cursor — IBeam',                     target_path_for_current_platform(r'content\textures\Cursors\KeyboardMouse\IBeamCursor.png'),    IMAGE_FILTER),
+    ('Moon',                               target_path_for_current_platform(r'content\sky\moon.jpg'),                                JPG_FILTER),
+    ('Sun',                                target_path_for_current_platform(r'content\sky\sun.jpg'),                                 JPG_FILTER),
 ]
 
 # Status badge styling
@@ -124,12 +137,13 @@ class _RichTextButton(QPushButton):
     vertically centred so mixed font sizes don't shift each other's position."""
 
     def __init__(self, label: str, suffix: str = '', suffix_size_offset: int = 0,
-                 y_offset: int = 0, parent=None):
+                 y_offset: int = 0, suffix_x_offset: int = 0, parent=None):
         super().__init__(parent)
         self._label = label
         self._suffix = suffix
         self._suffix_size_offset = suffix_size_offset
         self._y_offset = y_offset
+        self._suffix_x_offset = suffix_x_offset
         # Non-empty text so Qt includes normal button padding in sizeHint.
         super().setText('\u200b')
 
@@ -179,14 +193,19 @@ class _RichTextButton(QPushButton):
             painter.setFont(base_font)
             painter.drawText(start_x, baseline_label, label_text)
             painter.setFont(large_font)
-            painter.drawText(start_x + label_w, baseline_arrow, self._suffix)
+            painter.drawText(start_x + label_w + self._suffix_x_offset, baseline_arrow, self._suffix)
         else:
-            full_text = self._label + self._suffix
             fm = QFontMetrics(base_font)
-            w = fm.horizontalAdvance(full_text)
+            label_text = self._label + (' ' if self._suffix else '')
+            label_w = fm.horizontalAdvance(label_text)
+            suffix_w = fm.horizontalAdvance(self._suffix)
+            w = label_w + suffix_w + (self._suffix_x_offset if self._suffix else 0)
+            start_x = int(cr.x() + (cr.width() - w) / 2)
             baseline = int(center_y + (fm.ascent() - fm.descent()) / 2) + self._y_offset
             painter.setFont(base_font)
-            painter.drawText(int(cr.x() + (cr.width() - w) / 2), baseline, full_text)
+            painter.drawText(start_x, baseline, label_text)
+            if self._suffix:
+                painter.drawText(start_x + label_w + self._suffix_x_offset, baseline, self._suffix)
 
         painter.end()
 
@@ -467,7 +486,7 @@ class ModRowWidget(QWidget):
         layout.addWidget(self._browse_btn)
 
         # Preview button
-        self._preview_btn = _RichTextButton('Preview', '\u25b6')
+        self._preview_btn = _RichTextButton('Preview', '\u25b6', suffix_x_offset=3)
         self._preview_btn.setFixedWidth(82)
         self._preview_btn.clicked.connect(self._on_preview)
         layout.addWidget(self._preview_btn)
@@ -816,11 +835,23 @@ class ModPreviewDialog(QDialog):
         lower = self._target_path.lower()
 
         # Image / Texture (including .dds)
-        if lower.endswith(('.tex', '.dds', '.png', '.jpg', '.jpeg')):
+        if lower.endswith(('.tex', '.dds', '.ktx', '.ktx2', '.png', '.jpg', '.jpeg')):
             label = QLabel()
             label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             display_bytes = data
-            if lower.endswith(('.tex', '.dds')):
+            ktx_payload = strip_prefixed_ktx(data)
+            if ktx_payload is not None:
+                converted = ktx_to_png(ktx_payload)
+                if converted:
+                    display_bytes = converted
+                    if mode == 'mod':
+                        self._mod_converted_bytes = converted
+                        self._mod_converted_ext = '.png'
+                else:
+                    layout.addWidget(QLabel('Could not decode KTX texture file'))
+                    container.setLayout(layout)
+                    return container
+            elif lower.endswith(('.tex', '.dds')):
                 # The replacement may be a plain image (PNG/JPEG) even though
                 # the target path ends in .tex/.dds — detect by magic bytes first.
                 _is_raw_image = (
@@ -934,6 +965,9 @@ class ModPreviewDialog(QDialog):
             stash = MOD_ORIGINALS_DIR / roblox_dir.name / target_path
             if stash.is_file():
                 return stash.read_bytes()
+            original = read_current_platform_original_asset(self._target_path)
+            if original is not None:
+                return original
             mod_active = any(
                 e.get('target_path') == self._target_path
                 for e in self._manager.entries
@@ -945,7 +979,9 @@ class ModPreviewDialog(QDialog):
 
         # mode == 'mod' — read the current (modified) file from Roblox dir
         dst = roblox_dir / target_path
-        return dst.read_bytes() if dst.is_file() else None
+        if dst.is_file():
+            return dst.read_bytes()
+        return read_current_platform_original_asset(self._target_path)
 
     def _on_export(self):
         path, _ = QFileDialog.getSaveFileName(
@@ -953,7 +989,7 @@ class ModPreviewDialog(QDialog):
             Path(self._target_path).name,
         )
         if path:
-            data = self._load_data('mod')
+            data = self._load_data('original')
             if data:
                 export_path = Path(path)
                 export_path.write_bytes(data)
@@ -1509,12 +1545,12 @@ class ModificationsTab(QWidget):
         font_section = CollapsibleSection('Custom Font', expanded=True)
         font_row = ModRowWidget(
             self._manager, 'Custom Font',
-            r'content\fonts\CustomFont.ttf',
+            target_path_for_current_platform(r'content\fonts\CustomFont.ttf'),
             file_filter=FONT_FILTER,
             is_font=True,
         )
         font_section.add_widget(font_row)
-        self._row_widgets[r'content\fonts\CustomFont.ttf'] = font_row
+        self._row_widgets[target_path_for_current_platform(r'content\fonts\CustomFont.ttf')] = font_row
 
         self._container_layout.addWidget(font_section)
 
@@ -1646,7 +1682,7 @@ class ModificationsTab(QWidget):
         existing = {r._target_path for r in self._row_widgets.values()}
         available = [
             v for v in HEAD_VARIANTS
-            if rf'content\avatar\heads\{v}' not in existing
+            if target_path_for_current_platform(rf'content\avatar\heads\{v}') not in existing
         ]
         if not available:
             QMessageBox.information(self, 'Head Variants', 'All head variants already added.')
@@ -1656,7 +1692,7 @@ class ModificationsTab(QWidget):
             self, 'Add Head Variant', 'Select variant:', available, 0, False,
         )
         if ok and item:
-            target = rf'content\avatar\heads\{item}'
+            target = target_path_for_current_platform(rf'content\avatar\heads\{item}')
             name = item.replace('.mesh', '').title()
             row = ModRowWidget(self._manager, name, target,
                                file_filter=MESH_FILTER, deletable=True)

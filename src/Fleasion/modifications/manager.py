@@ -27,6 +27,8 @@ from ..utils.threading import run_in_thread
 from .fflag_manager import FastFlagManager
 from .global_settings_manager import GlobalSettingsManager
 from .font_utils import apply_custom_font, restore_font_families, validate_font_bytes
+from .platform_targets import read_current_platform_original_asset, target_path_for_current_platform
+from ..cache.tools.ktx_to_png import strip_prefixed_ktx
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -339,6 +341,8 @@ class ModificationManager(QObject):
 
         # Load persisted data
         self._data = self._load_json()
+        if self._migrate_target_paths_for_current_platform():
+            self._save_json()
 
         # FastFlagManager
         self.fflag_manager = FastFlagManager(self._roblox_dirs, self._stash_dir)
@@ -389,6 +393,18 @@ class ModificationManager(QObject):
         MODIFICATIONS_JSON.parent.mkdir(parents=True, exist_ok=True)
         with MODIFICATIONS_JSON.open('w', encoding='utf-8') as fp:
             json.dump(self._data, fp, indent=2)
+
+    def _migrate_target_paths_for_current_platform(self) -> bool:
+        changed = False
+        for entry in self._data.get('entries', []):
+            target = entry.get('target_path')
+            if not target:
+                continue
+            mapped = target_path_for_current_platform(target)
+            if mapped.replace('\\', '/').strip('/') != str(target).replace('\\', '/').strip('/'):
+                entry['target_path'] = mapped
+                changed = True
+        return changed
 
     # ------------------------------------------------------------------
     # Entry CRUD
@@ -561,6 +577,8 @@ class ModificationManager(QObject):
             if target.lower().endswith('.mesh') and self._looks_like_obj(data):
                 data = self._convert_obj_to_mesh(data)
 
+            data = self._coerce_replacement_for_target(target, data)
+
             self._stash_and_write(target, data)
 
             # Check if a reset/update happened while the write was in progress.
@@ -689,6 +707,38 @@ class ModificationManager(QObject):
         obj_text = data.decode('utf-8', errors='replace')
         vertices, colors, indices = parse_obj_for_mesh(obj_text)
         return export_v2_mesh(vertices, colors, indices)
+
+    @staticmethod
+    def _is_ktx(data: bytes) -> bool:
+        return strip_prefixed_ktx(data) is not None
+
+    def _coerce_replacement_for_target(self, target_path: str, data: bytes) -> bytes:
+        """Convert image replacements to KTX2 when replacing KTX-backed targets."""
+        if self._is_ktx(data):
+            return data
+
+        original = read_current_platform_original_asset(target_path)
+        if original is None or not self._is_ktx(original):
+            return data
+
+        try:
+            import hashlib
+            import io
+
+            from PIL import Image
+
+            from ..cache.tools.rgba_ktx2 import write_rgba8_ktx2
+
+            image = Image.open(io.BytesIO(data)).convert('RGBA')
+            width, height = image.size
+            digest = hashlib.sha256(data + target_path.encode('utf-8')).hexdigest()[:16]
+            out_path = MOD_CACHE_DIR / f'ktx2_{digest}.ktx2'
+            if not out_path.exists():
+                write_rgba8_ktx2(image.tobytes(), width, height, out_path)
+            return out_path.read_bytes()
+        except Exception as exc:
+            log_buffer.log('Modifications', f'KTX2 conversion skipped for {target_path}: {exc}')
+            return data
 
     # ------------------------------------------------------------------
     # Stash & write / restore

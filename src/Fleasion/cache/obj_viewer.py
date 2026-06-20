@@ -8,7 +8,6 @@ from PyQt6.QtGui import QAction, QGuiApplication
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 import numpy as np
 from OpenGL.GL import *
-from OpenGL.GLU import *
 
 from .fps_controls import (
     KEY_BACKWARD,
@@ -24,7 +23,7 @@ from .fps_controls import (
     MovementKey,
     movement_key_from_event,
 )
-from .gl_format import legacy_gl_format
+from .gl_format import legacy_gl_format, set_perspective
 from ..utils.logging import log_buffer
 
 
@@ -307,7 +306,7 @@ class ObjViewerWidget(QOpenGLWidget):
         glMatrixMode(GL_PROJECTION)
         glLoadIdentity()
         aspect = w / h if h > 0 else 1.0
-        gluPerspective(45.0, aspect, 0.1, 100.0)
+        set_perspective(45.0, aspect, 0.1, 100.0)
         glMatrixMode(GL_MODELVIEW)
 
     def paintGL(self):

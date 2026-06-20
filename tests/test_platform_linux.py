@@ -59,3 +59,40 @@ def test_delete_cache_clears_texpack_slots_but_preserves_predownloaded(tmp_path,
     assert (predownloaded / "asset.bin").exists()
     assert not texpack_slots.exists()
     assert not converted_cache.exists()
+
+
+def test_delete_cache_terminates_sober_before_cleanup(tmp_path, monkeypatch):
+    app_cache = tmp_path / "cache"
+    predownloaded = app_cache / "predownloaded"
+    converted_cache = app_cache / "converted"
+    predownloaded.mkdir(parents=True)
+    converted_cache.mkdir(parents=True)
+    (predownloaded / "asset.bin").write_bytes(b"keep")
+    (converted_cache / "mesh.obj").write_text("delete", encoding="utf-8")
+
+    storage_db = tmp_path / "rbx-storage.db"
+    storage_db.write_bytes(b"cache")
+    storage_folder = tmp_path / "rbx-storage"
+    storage_folder.mkdir()
+    (storage_folder / "db.dat").write_bytes(b"cache")
+
+    calls = []
+
+    monkeypatch.setattr(platform_linux, "APP_CACHE_DIR", app_cache)
+    monkeypatch.setattr(platform_linux, "STORAGE_DB", storage_db)
+    monkeypatch.setattr(platform_linux, "is_roblox_running", lambda: True)
+    monkeypatch.setattr(platform_linux, "terminate_roblox", lambda: calls.append("terminate") or True)
+    monkeypatch.setattr(platform_linux, "wait_for_roblox_exit", lambda timeout=10.0: True)
+
+    messages = platform_linux.delete_cache()
+
+    assert calls == ["terminate"]
+    assert messages[:2] == [
+        "Sober is running, terminating...",
+        "Sober terminated successfully",
+    ]
+    assert not storage_db.exists()
+    assert not storage_folder.exists()
+    assert predownloaded.exists()
+    assert (predownloaded / "asset.bin").exists()
+    assert not converted_cache.exists()

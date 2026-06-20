@@ -251,6 +251,27 @@ def _process_command(pid: int) -> Path | None:
     return Path(value) if value else None
 
 
+def _quit_app_bundle(app_path: Path) -> bool:
+    """Ask a macOS app bundle to quit via AppleScript."""
+    app_name = app_path.stem
+    try:
+        result = subprocess.run(
+            ['osascript', '-e', f'tell application "{app_name}" to quit'],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception as exc:
+        log_buffer.log('App', f'Failed to request macOS quit for {app_name}: {type(exc).__name__}: {exc}')
+        return False
+
+    if result.returncode != 0:
+        err = (result.stderr or result.stdout or '').strip()
+        log_buffer.log('App', f'macOS quit request for {app_name} failed: {err or result.returncode}')
+        return False
+    return True
+
+
 def wait_for_roblox_window(timeout: float = 60.0) -> bool:
     """Wait until Roblox's player process is running."""
     deadline = time.time() + timeout
@@ -295,11 +316,28 @@ def terminate_roblox() -> bool:
     """Terminate Roblox if it is running. Returns True if it was running."""
     if not is_roblox_running():
         return False
+
+    for app_path in ROBLOX_APP_CANDIDATES:
+        if app_path.exists():
+            _quit_app_bundle(app_path)
+            break
+
     try:
-        subprocess.run(['pkill', '-x', ROBLOX_PROCESS], capture_output=True, timeout=5)
+        subprocess.run(['pkill', '-TERM', '-x', ROBLOX_PROCESS], capture_output=True, timeout=5)
     except Exception:
         pass
-    return True
+
+    deadline = time.time() + 2.0
+    while time.time() < deadline:
+        if not is_roblox_running():
+            return True
+        time.sleep(0.1)
+
+    try:
+        subprocess.run(['pkill', '-KILL', '-x', ROBLOX_PROCESS], capture_output=True, timeout=5)
+    except Exception:
+        pass
+    return not is_roblox_running()
 
 
 def wait_for_roblox_exit(timeout: float = 10.0) -> bool:

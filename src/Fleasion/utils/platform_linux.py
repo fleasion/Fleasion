@@ -130,12 +130,28 @@ def terminate_roblox() -> bool:
     """Terminate Sober if it is running. Returns True if it was running."""
     if not is_roblox_running():
         return False
-    for name in SOBER_PROCESS_NAMES:
+    terminated = False
+
+    flatpak = shutil.which('flatpak')
+    if flatpak:
         try:
-            subprocess.run(['pkill', '-x', name], capture_output=True, timeout=5)
+            result = subprocess.run(
+                [flatpak, 'kill', SOBER_APP_ID],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            terminated = result.returncode == 0
         except Exception:
             pass
-    return True
+
+    for name in SOBER_PROCESS_NAMES:
+        try:
+            result = subprocess.run(['pkill', '-x', name], capture_output=True, timeout=5)
+            terminated = result.returncode == 0 or terminated
+        except Exception:
+            pass
+    return terminated or is_roblox_running()
 
 
 def wait_for_roblox_exit(timeout: float = 10.0) -> bool:
@@ -169,11 +185,13 @@ def delete_cache() -> list[str]:
     messages: list[str] = []
 
     if is_roblox_running():
-        messages.extend([
-            'Sober is running; close it before deleting cache',
-            'Cache deletion aborted',
-        ])
-        return messages
+        messages.append('Sober is running, terminating...')
+        terminate_roblox()
+        if wait_for_roblox_exit():
+            messages.append('Sober terminated successfully')
+        else:
+            messages.extend(['Sober termination timed out', 'Cache deletion aborted'])
+            return messages
     else:
         messages.append('Sober was closed')
 

@@ -1,10 +1,15 @@
 import json
+import sys
+import types
 import threading
+from io import BytesIO
 
 import pytest
+from PIL import Image
 
 from Fleasion.modifications import manager as modifications_manager
 from Fleasion.modifications import fflag_manager
+from Fleasion.cache.tools.rgba_ktx2 import read_rgba8_ktx2
 from Fleasion.modifications.fflag_manager import FastFlagManager
 from Fleasion.modifications.manager import ModificationManager, normalise_target_path
 
@@ -207,6 +212,48 @@ def test_fast_flags_write_to_sober_config(tmp_path, monkeypatch):
     }
 
 
+def test_ktx_backed_targets_convert_image_replacements_to_ktx2(monkeypatch, tmp_path):
+    monkeypatch.setattr(modifications_manager, "MOD_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(
+        modifications_manager,
+        "read_current_platform_original_asset",
+        lambda _target: b"\xabKTX 11\xbb\r\n\x1a\n" + b"original",
+    )
+
+    image = Image.new("RGBA", (1, 1), (1, 2, 3, 4))
+    buf = BytesIO()
+    image.save(buf, format="PNG")
+
+    manager = ModificationManager.__new__(ModificationManager)
+    converted = manager._coerce_replacement_for_target(
+        "android/textures/sky/sky512_bk.tex",
+        buf.getvalue(),
+    )
+
+    assert read_rgba8_ktx2(converted) == (bytes((1, 2, 3, 4)), 1, 1)
+
+
+def test_prefixed_ktx_backed_targets_convert_image_replacements_to_ktx2(monkeypatch, tmp_path):
+    monkeypatch.setattr(modifications_manager, "MOD_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(
+        modifications_manager,
+        "read_current_platform_original_asset",
+        lambda _target: b"WRAP" + b"\xabKTX 11\xbb\r\n\x1a\n" + b"original",
+    )
+
+    image = Image.new("RGBA", (1, 1), (9, 8, 7, 6))
+    buf = BytesIO()
+    image.save(buf, format="PNG")
+
+    manager = ModificationManager.__new__(ModificationManager)
+    converted = manager._coerce_replacement_for_target(
+        "android/textures/sky/sky512_bk.tex",
+        buf.getvalue(),
+    )
+
+    assert read_rgba8_ktx2(converted) == (bytes((9, 8, 7, 6)), 1, 1)
+
+
 def test_find_roblox_dirs_excludes_macos_studio_saved_dirs(tmp_path, monkeypatch):
     player = tmp_path / "Roblox.app" / "Contents" / "Resources"
     studio = tmp_path / "RobloxStudio.app" / "Contents" / "Resources"
@@ -220,7 +267,9 @@ def test_find_roblox_dirs_excludes_macos_studio_saved_dirs(tmp_path, monkeypatch
         return [player] + ([studio] if include_studio else [])
 
     monkeypatch.setattr(modifications_manager.sys, "platform", "darwin")
-    monkeypatch.setattr("Fleasion.utils.platform_macos.find_roblox_resource_dirs", fake_find_roblox_resource_dirs)
+    fake_platform_macos = types.ModuleType("Fleasion.utils.platform_macos")
+    fake_platform_macos.find_roblox_resource_dirs = fake_find_roblox_resource_dirs
+    monkeypatch.setitem(sys.modules, "Fleasion.utils.platform_macos", fake_platform_macos)
     monkeypatch.setattr(modifications_manager, "load_saved_roblox_dirs", lambda: [studio])
     monkeypatch.setattr(modifications_manager, "save_saved_roblox_dirs", lambda dirs: persisted.extend(dirs))
 
