@@ -3,6 +3,38 @@ from pathlib import Path
 from Fleasion.utils import linux_proxy_helper
 
 
+def test_helper_command_uses_source_script_when_not_frozen(monkeypatch):
+    monkeypatch.delattr(linux_proxy_helper.sys, '_MEIPASS', raising=False)
+    monkeypatch.setattr(linux_proxy_helper.sys, 'frozen', False, raising=False)
+    monkeypatch.setattr(linux_proxy_helper.sys, 'executable', '/usr/bin/python3')
+
+    command = linux_proxy_helper._helper_command()
+
+    assert command == [
+        '/usr/bin/python3',
+        str(Path(linux_proxy_helper.__file__).resolve().parents[1] / 'linux_proxy_helper_daemon.py'),
+    ]
+
+
+def test_helper_command_prefers_bundled_executable_when_frozen(monkeypatch, tmp_path):
+    helper = tmp_path / linux_proxy_helper.HELPER_BUNDLED_EXECUTABLE_NAME
+    helper.write_text('helper', encoding='utf-8')
+    monkeypatch.setattr(linux_proxy_helper.sys, '_MEIPASS', str(tmp_path), raising=False)
+    monkeypatch.setattr(linux_proxy_helper.sys, 'frozen', True, raising=False)
+    monkeypatch.setattr(linux_proxy_helper.sys, 'executable', '/opt/Fleasion/Fleasion')
+
+    assert linux_proxy_helper._helper_command() == [str(helper)]
+
+
+def test_helper_command_self_dispatches_when_frozen_without_bundled_helper(monkeypatch, tmp_path):
+    (tmp_path / 'linux_proxy_helper_daemon.py').write_text('helper source', encoding='utf-8')
+    monkeypatch.setattr(linux_proxy_helper.sys, '_MEIPASS', str(tmp_path), raising=False)
+    monkeypatch.setattr(linux_proxy_helper.sys, 'frozen', True, raising=False)
+    monkeypatch.setattr(linux_proxy_helper.sys, 'executable', '/opt/Fleasion/Fleasion')
+
+    assert linux_proxy_helper._helper_command() == ['/opt/Fleasion/Fleasion', '--linux-proxy-helper']
+
+
 def test_existing_nss_dbs_finds_shared_and_firefox_profiles(tmp_path):
     home = tmp_path / 'home'
     shared = home / '.pki' / 'nssdb'

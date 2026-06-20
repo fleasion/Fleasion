@@ -6,6 +6,7 @@ _paths_src = pathlib.Path('src/Fleasion/utils/paths.py').read_text()
 _version = re.search(r"APP_VERSION\s*=\s*['\"]([^'\"]+)['\"]", _paths_src).group(1)
 _macos_target_arch = os.environ.get('MACOS_TARGET_ARCH', 'universal2') if sys.platform == 'darwin' else None
 _bundled_macos_helper = pathlib.Path('dist/fleasion-proxy-helper')
+_bundled_linux_helper = pathlib.Path('dist/fleasion-linux-proxy-helper')
 
 datas = [
     ('src/Fleasion/fleasionlogoHR.ico', '.'),
@@ -73,6 +74,10 @@ elif sys.platform == 'darwin':
     datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
     tmp_ret = collect_all('Cryptodome')
     datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+elif sys.platform.startswith('linux'):
+    if _bundled_linux_helper.exists():
+        datas.append((str(_bundled_linux_helper), '.'))
+    datas.append(('src/Fleasion/linux_proxy_helper_daemon.py', '.'))
 
 a = Analysis(
     ['launcher.py'],

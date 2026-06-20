@@ -21,6 +21,7 @@ HELPER_STOP_FILE = CONFIG_DIR / 'linux_proxy_helper.stop'
 HELPER_LOG_FILE = CONFIG_DIR / 'linux_proxy_helper.log'
 NSS_CERT_NICKNAME = 'Fleasion Proxy CA'
 SYSTEM_CA_NAME = 'fleasion-proxy-ca.crt'
+HELPER_BUNDLED_EXECUTABLE_NAME = 'fleasion-linux-proxy-helper'
 SYSTEM_CA_DIRS = (
     Path('/usr/local/share/ca-certificates'),
     Path('/etc/pki/ca-trust/source/anchors'),
@@ -28,12 +29,26 @@ SYSTEM_CA_DIRS = (
 
 
 def _source_helper_path() -> Path:
-    frozen_root = Path(getattr(sys, '_MEIPASS', ''))
-    if frozen_root:
+    frozen_meipass = getattr(sys, '_MEIPASS', None)
+    if frozen_meipass:
+        frozen_root = Path(frozen_meipass)
+        bundled_executable = frozen_root / HELPER_BUNDLED_EXECUTABLE_NAME
+        if bundled_executable.exists():
+            return bundled_executable
         bundled = frozen_root / 'linux_proxy_helper_daemon.py'
         if bundled.exists():
             return bundled
     return Path(__file__).resolve().parents[1] / 'linux_proxy_helper_daemon.py'
+
+
+def _helper_command() -> list[str]:
+    """Return a Python-free helper command for frozen builds when possible."""
+    helper_path = _source_helper_path()
+    if helper_path.name == HELPER_BUNDLED_EXECUTABLE_NAME:
+        return [str(helper_path)]
+    if getattr(sys, 'frozen', False):
+        return [sys.executable, '--linux-proxy-helper']
+    return [sys.executable, str(helper_path)]
 
 
 def _read_ready() -> dict | None:
@@ -61,11 +76,9 @@ def start_helper(
     with contextlib.suppress(OSError):
         HELPER_STOP_FILE.unlink(missing_ok=True)
 
-    helper_path = _source_helper_path()
     cmd = [
         pkexec,
-        sys.executable,
-        str(helper_path),
+        *_helper_command(),
         '--backend-port',
         str(backend_port),
         '--listen-port',
@@ -313,11 +326,9 @@ def _install_ca_into_linux_system_store(ca_cert_path: Path) -> dict:
         log_buffer.log('Certificate', 'Skipping Linux system trust-store install: pkexec not found')
         return {'ok': False, 'error': 'pkexec_not_found'}
 
-    helper_path = _source_helper_path()
     cmd = [
         pkexec,
-        sys.executable,
-        str(helper_path),
+        *_helper_command(),
         '--install-system-ca',
         '--ca-cert',
         str(ca_cert_path),
