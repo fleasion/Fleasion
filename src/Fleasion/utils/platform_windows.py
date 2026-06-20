@@ -531,6 +531,9 @@ def _launch_roblox_uri_direct(target_str: str) -> bool:
         subprocess.Popen(
             [str(exe_path), target_str],
             cwd=str(exe_path.parent),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
         metadata = _extract_launch_metadata(target_str)

@@ -266,9 +266,17 @@ def resolve_roblox_player_exe_for_launch() -> Optional[Path]:
     return Path(flatpak) if flatpak else None
 
 
+_DETACHED_POPEN_KWARGS = {
+    'stdin': subprocess.DEVNULL,
+    'stdout': subprocess.DEVNULL,
+    'stderr': subprocess.DEVNULL,
+    'start_new_session': True,
+}
+
+
 def _standard_user_popen(args: list[str]) -> subprocess.Popen:
     if os.geteuid() != 0:
-        return subprocess.Popen(args)
+        return subprocess.Popen(args, **_DETACHED_POPEN_KWARGS)
 
     user_home = Path(os.environ.get('FLEASION_USER_HOME') or USER_HOME)
     try:
@@ -277,7 +285,7 @@ def _standard_user_popen(args: list[str]) -> subprocess.Popen:
         gid = stat.st_gid
         pw_entry = pwd.getpwuid(uid)
     except Exception:
-        return subprocess.Popen(args)
+        return subprocess.Popen(args, **_DETACHED_POPEN_KWARGS)
 
     env = os.environ.copy()
     env.update({
@@ -291,7 +299,7 @@ def _standard_user_popen(args: list[str]) -> subprocess.Popen:
         os.setgid(gid)
         os.setuid(uid)
 
-    return subprocess.Popen(args, env=env, preexec_fn=_demote)
+    return subprocess.Popen(args, env=env, preexec_fn=_demote, **_DETACHED_POPEN_KWARGS)
 
 
 def launch_as_standard_user(target: str | Path) -> bool:
@@ -450,7 +458,7 @@ exec {command_literal} "$@"
 def open_folder(path: Path):
     """Open a folder in the user's file manager."""
     path.mkdir(parents=True, exist_ok=True)
-    subprocess.Popen(['xdg-open', str(path)])
+    _standard_user_popen(['xdg-open', str(path)])
 
 
 def show_message_box(title: str, message: str, icon: int = 0x40):

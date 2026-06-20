@@ -32,10 +32,44 @@ def test_normalise_linux_sober_resource_dir(tmp_path, monkeypatch):
 def test_launch_as_standard_user_opens_http_url(monkeypatch):
     calls = []
 
-    monkeypatch.setattr(platform_linux, "_standard_user_popen", lambda args: calls.append(args))
+    monkeypatch.setattr(platform_linux.os, "geteuid", lambda: 1000)
+
+    def fake_popen(args, **kwargs):
+        calls.append((args, kwargs))
+        return object()
+
+    monkeypatch.setattr(platform_linux.subprocess, "Popen", fake_popen)
 
     assert platform_linux.launch_as_standard_user("https://www.roblox.com/login")
-    assert calls == [["xdg-open", "https://www.roblox.com/login"]]
+    assert calls == [
+        (
+            ["xdg-open", "https://www.roblox.com/login"],
+            platform_linux._DETACHED_POPEN_KWARGS,
+        )
+    ]
+
+
+def test_open_folder_uses_detached_standard_user_launch(tmp_path, monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(platform_linux.os, "geteuid", lambda: 1000)
+
+    def fake_popen(args, **kwargs):
+        calls.append((args, kwargs))
+        return object()
+
+    monkeypatch.setattr(platform_linux.subprocess, "Popen", fake_popen)
+
+    target = tmp_path / "exports"
+    platform_linux.open_folder(target)
+
+    assert target.is_dir()
+    assert calls == [
+        (
+            ["xdg-open", str(target)],
+            platform_linux._DETACHED_POPEN_KWARGS,
+        )
+    ]
 
 
 def test_delete_cache_clears_texpack_slots_but_preserves_predownloaded(tmp_path, monkeypatch):

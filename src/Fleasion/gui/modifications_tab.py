@@ -1031,7 +1031,13 @@ class ModPreviewDialog(QDialog):
 
                 paths = [Path(path) for path in exported_paths if path]
                 if len(paths) == 1 and paths[0].is_file():
-                    subprocess.Popen(['explorer.exe', '/select,', str(paths[0].resolve())])
+                    subprocess.Popen(
+                        ['explorer.exe', '/select,', str(paths[0].resolve())],
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+                    )
                 elif paths:
                     target = paths[0] if paths[0].is_dir() else paths[0].parent
                     open_folder(target)

@@ -460,25 +460,37 @@ def _app_for_executable(path: Path) -> Path | None:
     return None
 
 
+_DETACHED_POPEN_KWARGS = {
+    'stdin': subprocess.DEVNULL,
+    'stdout': subprocess.DEVNULL,
+    'stderr': subprocess.DEVNULL,
+    'start_new_session': True,
+}
+
+
+def _detached_popen(args: list[str]) -> subprocess.Popen:
+    return subprocess.Popen(args, **_DETACHED_POPEN_KWARGS)
+
+
 def launch_as_standard_user(target: str | Path) -> bool:
     """Launch a Roblox URI, app bundle, or executable without elevation."""
     target_str = str(target)
     try:
         if target_str.startswith(('roblox:', 'roblox-player:')):
-            subprocess.Popen(['open', target_str])
+            _detached_popen(['open', target_str])
             return True
 
         path = Path(target_str)
         if path.suffix == '.app' and path.exists():
-            subprocess.Popen(['open', str(path)])
+            _detached_popen(['open', str(path)])
             return True
 
         if path.exists():
             app = _app_for_executable(path)
             if app is not None:
-                subprocess.Popen(['open', str(app)])
+                _detached_popen(['open', str(app)])
             else:
-                subprocess.Popen(['open', str(path)])
+                _detached_popen(['open', str(path)])
             return True
     except Exception as exc:
         log_buffer.log('Launch', f'Failed to launch {target_str}: {exc}')
@@ -490,7 +502,7 @@ def launch_as_standard_user(target: str | Path) -> bool:
 
 def open_folder(path: Path):
     """Open a folder in Finder."""
-    subprocess.Popen(['open', str(path)])
+    _detached_popen(['open', str(path)])
 
 
 def show_message_box(title: str, message: str, icon: int = 0x40):

@@ -3044,7 +3044,13 @@ class CacheViewerTab(QWidget):
         try:
             if select_file:
                 if target.is_file():
-                    subprocess.Popen(['explorer.exe', '/select,', str(target.resolve())])
+                    subprocess.Popen(
+                        ['explorer.exe', '/select,', str(target.resolve())],
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+                    )
                 else:
                     _fallback_open_folder()
             else:
