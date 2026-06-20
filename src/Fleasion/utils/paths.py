@@ -4,6 +4,8 @@ import sys
 import os
 from pathlib import Path
 
+from platformdirs import user_config_dir
+
 # Application metadata
 APP_NAME = 'Fleasion'
 APP_VERSION = '2.1.0'
@@ -64,6 +66,13 @@ def _get_local_appdata() -> Path:
     return USER_HOME
 
 
+def _get_config_dir() -> Path:
+    """Return Fleasion's app configuration directory."""
+    if sys.platform.startswith('linux'):
+        return Path(user_config_dir(APP_NAME))
+    return LOCAL_APPDATA / 'FleasionNT'
+
+
 # Platform paths
 USER_HOME = _get_user_home()
 LOCAL_APPDATA = _get_local_appdata()
@@ -79,7 +88,7 @@ else:
     STORAGE_DB_GDK = LOCAL_APPDATA / 'RobloxPCGDK' / 'rbx-storage.db'
 
 # Application directories
-CONFIG_DIR = LOCAL_APPDATA / 'FleasionNT'
+CONFIG_DIR = _get_config_dir()
 APP_CACHE_DIR = CONFIG_DIR / 'cache'
 CONFIG_FILE = CONFIG_DIR / 'settings.json'
 CONFIGS_FOLDER = CONFIG_DIR / 'configs'
