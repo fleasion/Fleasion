@@ -1,8 +1,13 @@
+from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
 import subprocess
 
 import pytest
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import NameOID
 
 from Fleasion import macos_proxy_helper_daemon as daemon
 from Fleasion.utils import macos_proxy_helper
@@ -160,6 +165,27 @@ def _fake_roblox_resources(tmp_path: Path) -> Path:
     return resources
 
 
+def _make_self_signed_ca_pem(common_name: str = "Fleasion Proxy CA", organization: str = "Fleasion") -> str:
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([
+        x509.NameAttribute(NameOID.COMMON_NAME, common_name),
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME, organization),
+    ])
+    now = datetime.now(timezone.utc)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(days=1))
+        .not_valid_after(now + timedelta(days=365))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .sign(key, hashes.SHA256())
+    )
+    return cert.public_bytes(serialization.Encoding.PEM).decode("utf-8")
+
+
 def test_helper_patch_ca_writes_only_roblox_cacert_path(tmp_path, monkeypatch):
     _hosts_file, token_file = _reset_daemon_state(tmp_path, monkeypatch)
     resources = _fake_roblox_resources(tmp_path)
@@ -180,6 +206,36 @@ def test_helper_patch_ca_writes_only_roblox_cacert_path(tmp_path, monkeypatch):
     assert response["patched"][0]["ca_file"] == str(ca_file)
     assert ca_file.read_text(encoding="utf-8") == f"MOZILLA ROOT\n{current_ca}"
     assert oct(ca_file.stat().st_mode & 0o777) == "0o644"
+
+
+def test_helper_patch_ca_strips_all_fleasion_cas_when_requesting_full_cleanup(tmp_path, monkeypatch):
+    _hosts_file, token_file = _reset_daemon_state(tmp_path, monkeypatch)
+    resources = _fake_roblox_resources(tmp_path)
+    ca_file = resources / "ssl" / "cacert.pem"
+    ca_file.parent.mkdir()
+    stale_ca = _make_self_signed_ca_pem()
+    unrelated_ca = _make_self_signed_ca_pem(organization="Other Org")
+    current_ca = _make_self_signed_ca_pem()
+    ca_file.write_text(f"MOZILLA ROOT\n{stale_ca}{unrelated_ca}", encoding="utf-8")
+
+    response = daemon._handle_request({
+        "token": token_file.read_text(),
+        "action": "patch_ca",
+        "ca_pem": current_ca,
+        "installs": [{
+            "resource_dir": str(resources),
+            "remove_pems": [],
+            "strip_all_fleasion_ca": True,
+        }],
+    })
+
+    patched_text = ca_file.read_text(encoding="utf-8")
+    assert response["ok"] is True
+    assert response["patched"][0]["ca_file"] == str(ca_file)
+    assert stale_ca not in patched_text
+    assert unrelated_ca in patched_text
+    assert current_ca in patched_text
+    assert patched_text.count("-----BEGIN CERTIFICATE-----") == 2
 
 
 def test_helper_patch_ca_recovers_from_read_only_bundle_permissions(tmp_path, monkeypatch):

@@ -1,8 +1,10 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 from PyQt6.QtWidgets import QSystemTrayIcon
 
 from Fleasion import tray as tray_module
+from Fleasion import app as app_module
 from Fleasion.utils import platform_macos
 from Fleasion.tray import SystemTray
 
@@ -161,3 +163,23 @@ def test_exit_app_cleans_tray_before_quitting(monkeypatch):
     assert system_tray._exiting is True
     assert calls[0] == 'cleanup'
     assert calls[-1] == 'quit'
+
+
+def test_linux_helper_start_failure_disables_proxy_features():
+    config = SimpleNamespace(proxy_features_enabled=True)
+    calls = []
+
+    def set_proxy_features_enabled(enabled):
+        calls.append(enabled)
+        config.proxy_features_enabled = enabled
+
+    tray = SimpleNamespace(set_proxy_features_enabled=set_proxy_features_enabled)
+
+    app_module._disable_proxy_features_after_start_failure(
+        config,
+        tray,
+        'Linux Polkit approval was denied or the proxy helper could not start',
+    )
+
+    assert calls == [False]
+    assert config.proxy_features_enabled is False

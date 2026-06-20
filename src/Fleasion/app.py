@@ -815,6 +815,7 @@ class _ProxyErrorInvoker(QObject):
     """Main-thread bridge for proxy startup errors emitted from worker threads."""
 
     show_proxy_error = pyqtSignal(str, dict)
+    disable_proxy_features = pyqtSignal(str)
 
     @pyqtSlot(str, dict)
     def handle_proxy_error(self, code: str, details: dict):
@@ -824,6 +825,17 @@ class _ProxyErrorInvoker(QObject):
             _show_hosts_write_exhausted_dialog(details)
         elif code == 'macos_ca_patch_failed':
             _show_macos_ca_patch_failed_dialog(details)
+
+
+def _disable_proxy_features_after_start_failure(config_manager, tray: SystemTray | None, reason: str):
+    """Persist and propagate proxy disablement after an async startup failure."""
+    if not config_manager.proxy_features_enabled:
+        return
+    log_buffer.log('Proxy', f'Proxy features disabled after startup failure: {reason}')
+    if tray is not None:
+        tray.set_proxy_features_enabled(False)
+    else:
+        config_manager.proxy_features_enabled = False
 
 
 class _AuthCheckInvoker(QObject):
@@ -1392,8 +1404,19 @@ def main():
 
     proxy_error_invoker = _ProxyErrorInvoker()
     proxy_error_invoker.show_proxy_error.connect(proxy_error_invoker.handle_proxy_error)
+    tray_ref: dict[str, SystemTray | None] = {'tray': None}
+
+    def _handle_proxy_features_start_failure(reason: str):
+        _disable_proxy_features_after_start_failure(config_manager, tray_ref.get('tray'), reason)
+
+    proxy_error_invoker.disable_proxy_features.connect(_handle_proxy_features_start_failure)
 
     def _on_proxy_start_error(code: str, details: dict):
+        if code == 'linux_helper_unavailable':
+            proxy_error_invoker.disable_proxy_features.emit(
+                'Linux Polkit approval was denied or the proxy helper could not start'
+            )
+            return
         if code not in ('port_bind_failed', 'hosts_write_exhausted', 'macos_ca_patch_failed'):
             return
         proxy_error_invoker.show_proxy_error.emit(code, dict(details))
@@ -1453,6 +1476,7 @@ def main():
 
     # Create system tray
     tray = SystemTray(app, config_manager, proxy_master, mod_manager, roblox_monitor)
+    tray_ref['tray'] = tray
     app.aboutToQuit.connect(tray.cleanup_tray_icon)
     single_instance_control_server = _start_single_instance_control_server(app, tray)
     log_buffer.log('App', f'Persistent log file: {LOG_FILE}')

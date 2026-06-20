@@ -1916,14 +1916,17 @@ def _install_ca_into_roblox_with_helper(ca_pem: str, dirs: list[Path]) -> tuple[
     installs: list[dict] = []
     for roblox_dir in dirs:
         ca_file = roblox_dir / 'ssl' / 'cacert.pem'
+        strip_all_fleasion_ca = False
         try:
             existing = ca_file.read_text(encoding='utf-8', errors='replace') if ca_file.exists() else ''
         except OSError as exc:
             log_buffer.log('Certificate', f'Could not pre-read cacert.pem for {roblox_dir.name}; helper will try root read/write: {exc}')
             existing = ''
+            strip_all_fleasion_ca = True
         installs.append({
             'resource_dir': str(roblox_dir),
             'remove_pems': _fleasion_ca_blocks(existing),
+            'strip_all_fleasion_ca': strip_all_fleasion_ca,
         })
 
     response = helper_patch_ca(ca_pem, installs)
@@ -1955,6 +1958,45 @@ def _install_ca_into_roblox_with_helper(ca_pem: str, dirs: list[Path]) -> tuple[
 
     details['verified'] = verified
     return all_healthy, details
+
+
+def _patch_roblox_ca_with_macos_helper(ca_pem: str, roblox_dir: Path) -> tuple[bool, bool, dict]:
+    """Patch one macOS Roblox cacert.pem through the privileged helper.
+
+    Returns (request_ok, changed, response_details).
+    """
+    from ..utils.macos_proxy_helper import helper_patch_ca
+
+    ca_file = roblox_dir / 'ssl' / 'cacert.pem'
+    strip_all_fleasion_ca = False
+    try:
+        existing = ca_file.read_text(encoding='utf-8', errors='replace') if ca_file.exists() else ''
+    except OSError as exc:
+        log_buffer.log('Certificate', f'Could not pre-read cacert.pem for {roblox_dir.name}; helper will try root read/write: {exc}')
+        existing = ''
+        strip_all_fleasion_ca = True
+
+    response = helper_patch_ca(
+        ca_pem,
+        [{
+            'resource_dir': str(roblox_dir),
+            'remove_pems': _fleasion_ca_blocks(existing),
+            'strip_all_fleasion_ca': strip_all_fleasion_ca,
+        }],
+    )
+    if not response:
+        return False, False, {'failed': [{'resource_dir': str(roblox_dir), 'error': 'macOS proxy helper did not return a CA patch response'}]}
+
+    changed = any(bool(item.get('changed')) for item in response.get('patched') or [])
+    for item in response.get('failed') or []:
+        path = item.get('ca_file') or item.get('resource_dir') or str(ca_file)
+        log_buffer.log('Certificate', f'macOS helper CA patch failed for {path}: {item.get("error") or item.get("status") or "unknown error"}')
+    for key, label in (('patched', 'patched'), ('skipped', 'already current')):
+        for item in response.get(key) or []:
+            path = item.get('ca_file') or item.get('resource_dir') or str(ca_file)
+            item_changed = 'changed' if item.get('changed') else 'unchanged'
+            log_buffer.log('Certificate', f'macOS helper CA patch {label} for {path} ({item_changed})')
+    return bool(response.get('ok')), changed, response
 
 
 def _install_ca_into_roblox(ca_pem: str) -> tuple[bool, dict]:
@@ -2142,25 +2184,75 @@ def _install_ca_into_windows_root(ca_cert_path: Path, ca_pem: str) -> None:
     log_buffer.log('Certificate', f'Failed to install CA into Windows Root store: {err or result.returncode}')
 
 
-def _install_ca_into_macos_system_keychain(ca_cert_path: Path, ca_pem: str) -> None:
-    """Trust Fleasion's CA in the macOS system keychain for local TLS clients."""
-    thumbprint = _ca_thumbprint_sha1(ca_pem).lower()
-    keychain = '/Library/Keychains/System.keychain'
-
+def _macos_fleasion_keychain_thumbprints(keychain: str) -> list[str]:
     try:
         result = subprocess.run(
-            ['security', 'find-certificate', '-a', '-Z', '-c', 'Fleasion Proxy CA', keychain],
+            ['security', 'find-certificate', '-a', '-p', '-c', 'Fleasion Proxy CA', keychain],
             capture_output=True,
             text=True,
             encoding='utf-8',
             errors='replace',
             timeout=10,
         )
-        if result.returncode == 0 and thumbprint in (result.stdout or '').replace(' ', '').lower():
-            log_buffer.log('Certificate', 'CA already trusted in macOS System keychain')
-            return
     except Exception as exc:
-        log_buffer.log('Certificate', f'macOS trust-store check failed: {exc}')
+        log_buffer.log('Certificate', f'macOS trust-store enumeration failed: {exc}')
+        return []
+    if result.returncode != 0:
+        return []
+
+    thumbprints: list[str] = []
+    for match in _PEM_CERT_BLOCK_RE.finditer(result.stdout or ''):
+        block = match.group(0)
+        if _is_fleasion_ca_cert_block(block):
+            thumbprint = _ca_thumbprint_sha1(block).upper()
+            if thumbprint:
+                thumbprints.append(thumbprint)
+    return thumbprints
+
+
+def _macos_delete_keychain_certificate(keychain: str, thumbprint: str) -> bool:
+    try:
+        result = subprocess.run(
+            ['security', 'delete-certificate', '-Z', thumbprint, keychain],
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            timeout=20,
+        )
+    except Exception as exc:
+        log_buffer.log('Certificate', f'Failed to remove stale macOS CA {thumbprint}: {exc}')
+        return False
+    if result.returncode == 0:
+        return True
+    err = (result.stderr or result.stdout or '').strip()
+    log_buffer.log('Certificate', f'Failed to remove stale macOS CA {thumbprint}: {err or result.returncode}')
+    return False
+
+
+def _install_ca_into_macos_system_keychain(ca_cert_path: Path, ca_pem: str) -> None:
+    """Trust Fleasion's CA in the macOS system keychain for local TLS clients."""
+    thumbprint = _ca_thumbprint_sha1(ca_pem).upper()
+    keychain = '/Library/Keychains/System.keychain'
+
+    stored_thumbprints = _macos_fleasion_keychain_thumbprints(keychain)
+    stale_thumbprints = [
+        stored_thumbprint
+        for stored_thumbprint in stored_thumbprints
+        if stored_thumbprint != thumbprint
+    ]
+    removed_count = sum(
+        1
+        for stored_thumbprint in stale_thumbprints
+        if _macos_delete_keychain_certificate(keychain, stored_thumbprint)
+    )
+
+    if thumbprint in stored_thumbprints:
+        if removed_count:
+            log_buffer.log('Certificate', f'CA already trusted in macOS System keychain (removed {removed_count} stale Fleasion CA entr{"y" if removed_count == 1 else "ies"})')
+        else:
+            log_buffer.log('Certificate', 'CA already trusted in macOS System keychain')
+        return
 
     try:
         result = subprocess.run(
@@ -2185,7 +2277,10 @@ def _install_ca_into_macos_system_keychain(ca_cert_path: Path, ca_pem: str) -> N
         return
 
     if result.returncode == 0:
-        log_buffer.log('Certificate', 'Installed CA into macOS System keychain')
+        if removed_count:
+            log_buffer.log('Certificate', f'Installed CA into macOS System keychain (removed {removed_count} stale Fleasion CA entr{"y" if removed_count == 1 else "ies"})')
+        else:
+            log_buffer.log('Certificate', 'Installed CA into macOS System keychain')
         return
 
     err = (result.stderr or result.stdout or '').strip()
@@ -2225,10 +2320,22 @@ def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
     ca_file = ssl_dir / 'cacert.pem'
 
     try:
-        ssl_dir.mkdir(exist_ok=True)
         pre_state = _log_cacert_state(ca_file, ca_pem, f'cacert.pem before running-instance patch for {roblox_dir.name}')
-        changed, fleasion_count, current_count = _upsert_fleasion_ca_in_cacert(ca_file, ca_pem)
+        pre_state_readable = bool(pre_state.get('exists')) and not bool(pre_state.get('error'))
+        if IS_MACOS and not _is_admin():
+            request_ok, changed, helper_details = _patch_roblox_ca_with_macos_helper(ca_pem, roblox_dir)
+            if not request_ok:
+                log_buffer.log('Certificate', f'Failed to inject CA into running Roblox instance through macOS helper: {helper_details}')
+                return False
+            fleasion_count = int(pre_state.get('fleasion_certs') or 0) if pre_state_readable else 0
+            current_count = int(pre_state.get('current_fleasion_certs') or 0) if pre_state_readable else 0
+        else:
+            ssl_dir.mkdir(exist_ok=True)
+            changed, fleasion_count, current_count = _upsert_fleasion_ca_in_cacert(ca_file, ca_pem)
         post_state = _log_cacert_state(ca_file, ca_pem, f'cacert.pem after running-instance patch for {roblox_dir.name}')
+        if IS_MACOS and not _is_admin() and not pre_state_readable:
+            fleasion_count = int(post_state.get('fleasion_certs') or 0)
+            current_count = int(post_state.get('current_fleasion_certs') or 0)
     except (PermissionError, OSError) as exc:
         log_buffer.log('Certificate', f'Failed to inject CA into running Roblox instance: {exc}')
         return False
@@ -2924,6 +3031,7 @@ class ProxyMaster:
                 ca_cert_path=helper_ca_cert_path,
             ):
                 await self._proxy.stop()
+                self._emit_proxy_start_error('linux_helper_unavailable', {})
                 self._running = False
                 return
             if not ca_patch_ok:
