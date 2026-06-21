@@ -157,7 +157,7 @@ class SettingsTab(QWidget):
             self._macos_auth_source_combo.addItem(label, value)
         idx = self._macos_auth_source_combo.findData(self._config.macos_auth_source)
         self._macos_auth_source_combo.setCurrentIndex(max(0, idx))
-        self._macos_auth_source_combo.currentIndexChanged.connect(self._on_macos_auth_source_changed)
+        self._macos_auth_source_combo.activated.connect(self._on_macos_auth_source_changed)
         row.addWidget(self._macos_auth_source_combo)
         self._manual_token_btn = QPushButton('Import Token')
         self._manual_token_btn.clicked.connect(self._on_import_manual_token)
@@ -196,7 +196,7 @@ class SettingsTab(QWidget):
         current_mode = self._config.upstream_transport_mode
         idx = self._upstream_mode_combo.findData(current_mode)
         self._upstream_mode_combo.setCurrentIndex(max(0, idx))
-        self._upstream_mode_combo.currentIndexChanged.connect(self._on_upstream_mode_changed)
+        self._upstream_mode_combo.activated.connect(self._on_upstream_mode_changed)
         mode_row.addWidget(self._upstream_mode_combo)
         mode_row.addStretch()
         mode_widget = QWidget()
