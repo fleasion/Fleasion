@@ -170,6 +170,7 @@ def test_linux_helper_start_failure_keeps_proxy_features_enabled(monkeypatch):
     calls = []
     warnings = []
     tray = SimpleNamespace(update_status=lambda: calls.append('update_status'))
+    monkeypatch.setattr(app_module.sys, 'platform', 'linux')
     monkeypatch.setattr(app_module.QMessageBox, 'warning', lambda *args, **kwargs: warnings.append((args, kwargs)))
 
     app_module._disable_proxy_features_after_start_failure(

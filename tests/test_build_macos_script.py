@@ -113,6 +113,18 @@ def test_macos_build_script_creates_permission_preserving_zip():
     assert 'hdiutil create' not in script
 
 
+def test_macos_build_targets_catalina_compatible_qt_runtime():
+    script = Path('scripts/build_macos.sh').read_text(encoding='utf-8')
+    project = Path('pyproject.toml').read_text(encoding='utf-8')
+
+    assert 'MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-10.15}"' in script
+    assert 'UniformTypeIdentifiers.framework' in script
+    assert 'verify_macos_compatibility "$app_path"' in script
+    assert '\'pyqt6==6.2.3; platform_system == "Darwin"\'' in project
+    assert '\'pyqt6-qt6==6.2.4; platform_system == "Darwin"\'' in project
+    assert '\'pyqt6>=6.8.0; platform_system != "Darwin"\'' in project
+
+
 def test_github_workflow_uploads_macos_zip_without_artifact_rezipping():
     workflow = Path('.github/workflows/build.yml').read_text(encoding='utf-8')
 

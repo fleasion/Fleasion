@@ -17,6 +17,7 @@ HELPER_DIST_PATH="dist/${HELPER_EXEC_NAME}"
 HELPER_APP_PATH="${APP_PATH}/Contents/Resources/${HELPER_EXEC_NAME}"
 
 MACOS_TARGET_ARCH="${MACOS_TARGET_ARCH:-universal2}"
+MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-10.15}"
 PYINSTALLER_CONFIG_DIR="${PYINSTALLER_CONFIG_DIR:-/tmp/fleasion-pyinstaller}"
 UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/fleasion-uv-cache}"
 UV_X86_CACHE_DIR="${UV_X86_CACHE_DIR:-/tmp/fleasion-uv-cache-x86}"
@@ -29,7 +30,7 @@ UV_X86_VERSION="${UV_X86_VERSION:-0.11.18}"
 UV_X86_DIR=".tools/uv-x86_64-apple-darwin"
 UV_X86_BIN="${UV_X86_DIR}/uv"
 
-export PYINSTALLER_CONFIG_DIR UV_CACHE_DIR
+export MACOSX_DEPLOYMENT_TARGET PYINSTALLER_CONFIG_DIR UV_CACHE_DIR
 
 x86_uv() {
     UV_CACHE_DIR="$UV_X86_CACHE_DIR" \
@@ -166,6 +167,25 @@ verify_app_archs() {
     rm -f "$missing_archs"
 }
 
+verify_macos_compatibility() {
+    app_path="$1"
+    unavailable_frameworks="$(mktemp /tmp/fleasion-unavailable-frameworks.XXXXXX)"
+
+    find "$app_path" -type f -print | while IFS= read -r file_path; do
+        if otool -L "$file_path" 2>/dev/null | grep -q "/System/Library/Frameworks/UniformTypeIdentifiers.framework"; then
+            printf '%s\n' "$file_path" >> "$unavailable_frameworks"
+        fi
+    done
+
+    if [ -s "$unavailable_frameworks" ]; then
+        echo "App links frameworks unavailable on macOS 10.15 Catalina:" >&2
+        sed -n '1,40p' "$unavailable_frameworks" >&2
+        rm -f "$unavailable_frameworks"
+        exit 1
+    fi
+    rm -f "$unavailable_frameworks"
+}
+
 build_current_arch() {
     target_arch="$1"
     MACOS_TARGET_ARCH="$target_arch" uv run pyinstaller --clean --noconfirm FleasionProxyHelper.spec
@@ -293,6 +313,7 @@ verify_zip_package() {
     ditto -x -k "$zip_path" "$zip_check_dir"
     verify_app_bundle "${zip_check_dir}/${EXEC_NAME}.app" "Packaged zip"
     verify_app_archs "${zip_check_dir}/${EXEC_NAME}.app"
+    verify_macos_compatibility "${zip_check_dir}/${EXEC_NAME}.app"
     rm -rf "$zip_check_dir"
 }
 
@@ -305,6 +326,7 @@ finalize_app() {
 
     if [ "$app_arch" = "universal2" ]; then
         verify_app_archs "$app_path"
+        verify_macos_compatibility "$app_path"
         rm -f "$ZIP_PATH"
         ditto -c -k --sequesterRsrc --keepParent "$app_path" "$ZIP_PATH"
         verify_zip_package "$ZIP_PATH"
