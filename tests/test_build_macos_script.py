@@ -118,11 +118,18 @@ def test_macos_build_targets_catalina_compatible_qt_runtime():
     project = Path('pyproject.toml').read_text(encoding='utf-8')
 
     assert 'MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-10.15}"' in script
+    assert 'UV_MACOS_PYTHON_VERSION="${UV_MACOS_PYTHON_VERSION:-3.12}"' in script
+    assert 'UV_X86_PYTHON_VERSION="${UV_X86_PYTHON_VERSION:-3.12}"' in script
     assert 'UniformTypeIdentifiers.framework' in script
+    assert 'LC_BUILD_VERSION' in script
+    assert 'LC_VERSION_MIN_MACOSX' in script
+    assert 'App contains binaries requiring newer than macOS ${MACOSX_DEPLOYMENT_TARGET}' in script
     assert 'verify_macos_compatibility "$app_path"' in script
     assert '\'pyqt6==6.2.3; platform_system == "Darwin"\'' in project
     assert '\'pyqt6-qt6==6.2.4; platform_system == "Darwin"\'' in project
     assert '\'pyqt6>=6.8.0; platform_system != "Darwin"\'' in project
+    assert '\'numpy==1.26.4; platform_system == "Darwin" and python_version < "3.13"\'' in project
+    assert '\'numpy>=2.0.0; platform_system != "Darwin" or python_version >= "3.13"\'' in project
 
 
 def test_github_workflow_uploads_macos_zip_without_artifact_rezipping():

@@ -20,10 +20,13 @@ MACOS_TARGET_ARCH="${MACOS_TARGET_ARCH:-universal2}"
 MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-10.15}"
 PYINSTALLER_CONFIG_DIR="${PYINSTALLER_CONFIG_DIR:-/tmp/fleasion-pyinstaller}"
 UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/fleasion-uv-cache}"
+UV_MACOS_PROJECT_ENVIRONMENT="${UV_MACOS_PROJECT_ENVIRONMENT:-.tools/venv-macos}"
+UV_MACOS_PYTHON_INSTALL_DIR="${UV_MACOS_PYTHON_INSTALL_DIR:-.tools/pythons-macos}"
+UV_MACOS_PYTHON_VERSION="${UV_MACOS_PYTHON_VERSION:-3.12}"
 UV_X86_CACHE_DIR="${UV_X86_CACHE_DIR:-/tmp/fleasion-uv-cache-x86}"
 UV_X86_PROJECT_ENVIRONMENT="${UV_X86_PROJECT_ENVIRONMENT:-.tools/venv-x86}"
 UV_X86_PYTHON_INSTALL_DIR="${UV_X86_PYTHON_INSTALL_DIR:-.tools/pythons-x86}"
-UV_X86_PYTHON_VERSION="${UV_X86_PYTHON_VERSION:-3.14}"
+UV_X86_PYTHON_VERSION="${UV_X86_PYTHON_VERSION:-3.12}"
 UV_X86_PYTHON="${UV_X86_PYTHON:-cpython-${UV_X86_PYTHON_VERSION}-macos-x86_64-none}"
 UV_X86_VERSION="${UV_X86_VERSION:-$(uv --version 2>/dev/null | sed -n 's/^uv \([^ ]*\).*/\1/p')}"
 UV_X86_VERSION="${UV_X86_VERSION:-0.11.18}"
@@ -31,6 +34,13 @@ UV_X86_DIR=".tools/uv-x86_64-apple-darwin"
 UV_X86_BIN="${UV_X86_DIR}/uv"
 
 export MACOSX_DEPLOYMENT_TARGET PYINSTALLER_CONFIG_DIR UV_CACHE_DIR
+
+macos_uv() {
+    UV_PROJECT_ENVIRONMENT="$UV_MACOS_PROJECT_ENVIRONMENT" \
+    UV_PYTHON_INSTALL_DIR="$UV_MACOS_PYTHON_INSTALL_DIR" \
+    UV_MANAGED_PYTHON=1 \
+    uv "$@"
+}
 
 x86_uv() {
     UV_CACHE_DIR="$UV_X86_CACHE_DIR" \
@@ -40,15 +50,36 @@ x86_uv() {
     arch -x86_64 "$UV_X86_BIN" "$@"
 }
 
+find_macos_python() {
+    macos_uv python install "$UV_MACOS_PYTHON_VERSION" --install-dir "$UV_MACOS_PYTHON_INSTALL_DIR" >/dev/null
+    macos_uv python find "$UV_MACOS_PYTHON_VERSION" --managed-python
+}
+
 find_x86_python() {
     x86_uv python install "$UV_X86_PYTHON" --install-dir "$UV_X86_PYTHON_INSTALL_DIR" >/dev/null
-    x86_python_path="$(x86_uv python find "$UV_X86_PYTHON" --managed-python)"
+    x86_python_path="$(x86_uv python find "$UV_X86_PYTHON_VERSION" --managed-python)"
     x86_python_arch="$(arch -x86_64 "$x86_python_path" -c 'import platform; print(platform.machine())')"
     if [ "$x86_python_arch" != "x86_64" ]; then
         echo "Expected x86_64 Python for Intel build, got $x86_python_arch from $x86_python_path." >&2
         exit 1
     fi
     printf '%s\n' "$x86_python_path"
+}
+
+version_lte() {
+    awk -v left="$1" -v right="$2" '
+        BEGIN {
+            split(left, lhs, ".")
+            split(right, rhs, ".")
+            for (idx = 1; idx <= 3; idx++) {
+                lval = lhs[idx] + 0
+                rval = rhs[idx] + 0
+                if (lval < rval) exit 0
+                if (lval > rval) exit 1
+            }
+            exit 0
+        }
+    '
 }
 
 require_archs() {
@@ -170,32 +201,52 @@ verify_app_archs() {
 verify_macos_compatibility() {
     app_path="$1"
     unavailable_frameworks="$(mktemp /tmp/fleasion-unavailable-frameworks.XXXXXX)"
+    incompatible_minos="$(mktemp /tmp/fleasion-incompatible-minos.XXXXXX)"
 
     find "$app_path" -type f -print | while IFS= read -r file_path; do
         if otool -L "$file_path" 2>/dev/null | grep -q "/System/Library/Frameworks/UniformTypeIdentifiers.framework"; then
             printf '%s\n' "$file_path" >> "$unavailable_frameworks"
+        fi
+        minos="$(otool -l "$file_path" 2>/dev/null | awk '
+            /LC_BUILD_VERSION/ { build = 1; version_min = 0; next }
+            /LC_VERSION_MIN_MACOSX/ { version_min = 1; build = 0; next }
+            build && /minos/ { print $2; exit }
+            version_min && /version/ { print $2; exit }
+        ')"
+        if [ -n "$minos" ] && ! version_lte "$minos" "$MACOSX_DEPLOYMENT_TARGET"; then
+            printf '%s: macOS %s\n' "$file_path" "$minos" >> "$incompatible_minos"
         fi
     done
 
     if [ -s "$unavailable_frameworks" ]; then
         echo "App links frameworks unavailable on macOS 10.15 Catalina:" >&2
         sed -n '1,40p' "$unavailable_frameworks" >&2
-        rm -f "$unavailable_frameworks"
+        rm -f "$unavailable_frameworks" "$incompatible_minos"
         exit 1
     fi
-    rm -f "$unavailable_frameworks"
+    if [ -s "$incompatible_minos" ]; then
+        echo "App contains binaries requiring newer than macOS ${MACOSX_DEPLOYMENT_TARGET}:" >&2
+        sed -n '1,40p' "$incompatible_minos" >&2
+        rm -f "$unavailable_frameworks" "$incompatible_minos"
+        exit 1
+    fi
+    rm -f "$unavailable_frameworks" "$incompatible_minos"
 }
 
 build_current_arch() {
     target_arch="$1"
-    MACOS_TARGET_ARCH="$target_arch" uv run pyinstaller --clean --noconfirm FleasionProxyHelper.spec
+    macos_python_path="$(find_macos_python)"
+    rm -rf "$UV_MACOS_PROJECT_ENVIRONMENT"
+    macos_uv sync --locked --python "$macos_python_path" --group dev
+
+    MACOS_TARGET_ARCH="$target_arch" macos_uv run --python "$macos_python_path" pyinstaller --clean --noconfirm FleasionProxyHelper.spec
     if [ ! -x "$HELPER_DIST_PATH" ]; then
         echo "Helper build completed, but expected executable was not found: $HELPER_DIST_PATH" >&2
         exit 1
     fi
     require_archs "$HELPER_DIST_PATH" "$target_arch"
 
-    MACOS_TARGET_ARCH="$target_arch" uv run pyinstaller --clean --noconfirm Fleasion.spec
+    MACOS_TARGET_ARCH="$target_arch" macos_uv run --python "$macos_python_path" pyinstaller --clean --noconfirm Fleasion.spec
 
     verify_app_bundle "$APP_PATH" "Build"
     require_archs "$EXEC_PATH" "$target_arch"
