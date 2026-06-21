@@ -13,8 +13,11 @@ VERSIONED_APP_PATH="dist/${EXEC_NAME}.app"
 ZIP_PATH="dist/${EXEC_NAME}-MacOS-Universal.zip"
 EXEC_PATH="${APP_PATH}/Contents/MacOS/${EXEC_NAME}"
 HELPER_EXEC_NAME="fleasion-proxy-helper"
+HELPER_ARM64_EXEC_NAME="${HELPER_EXEC_NAME}-arm64"
+HELPER_X86_EXEC_NAME="${HELPER_EXEC_NAME}-x86_64"
 HELPER_DIST_PATH="dist/${HELPER_EXEC_NAME}"
-HELPER_APP_PATH="${APP_PATH}/Contents/Resources/${HELPER_EXEC_NAME}"
+HELPER_ARM64_DIST_PATH="dist/${HELPER_ARM64_EXEC_NAME}"
+HELPER_X86_DIST_PATH="dist/${HELPER_X86_EXEC_NAME}"
 
 MACOS_TARGET_ARCH="${MACOS_TARGET_ARCH:-universal2}"
 MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-10.15}"
@@ -99,6 +102,58 @@ require_archs() {
     done
 }
 
+require_only_archs() {
+    file_path="$1"
+    shift
+    archs="$(lipo -archs "$file_path" 2>/dev/null || true)"
+    for required_arch in "$@"; do
+        case " $archs " in
+            *" $required_arch "*) ;;
+            *)
+                echo "$file_path is missing $required_arch slice; found '$archs'." >&2
+                exit 1
+                ;;
+        esac
+    done
+    for found_arch in $archs; do
+        allowed=0
+        for required_arch in "$@"; do
+            if [ "$found_arch" = "$required_arch" ]; then
+                allowed=1
+                break
+            fi
+        done
+        if [ "$allowed" -ne 1 ]; then
+            echo "$file_path contains unexpected $found_arch slice; expected only '$*'." >&2
+            exit 1
+        fi
+    done
+}
+
+app_payload_path() {
+    app_path="$1"
+    file_name="$2"
+    for payload_dir in "${app_path}/Contents/Resources" "${app_path}/Contents/Frameworks"; do
+        if [ -e "${payload_dir}/${file_name}" ]; then
+            printf '%s\n' "${payload_dir}/${file_name}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+require_app_payload() {
+    app_path="$1"
+    file_name="$2"
+    build_label="$3"
+    payload_path="$(app_payload_path "$app_path" "$file_name" || true)"
+    if [ -z "$payload_path" ] || [ ! -x "$payload_path" ]; then
+        echo "${build_label} completed, but bundled payload was not found: ${file_name}" >&2
+        exit 1
+    fi
+    printf '%s\n' "$payload_path"
+}
+
 plist_value() {
     plist_path="$1"
     key="$2"
@@ -120,7 +175,6 @@ verify_app_bundle() {
     resources_path="${contents_path}/Resources"
     frameworks_path="${contents_path}/Frameworks"
     exec_path="${macos_path}/${EXEC_NAME}"
-    helper_path="${resources_path}/${HELPER_EXEC_NAME}"
 
     if [ ! -d "$app_path" ]; then
         echo "${build_label} completed, but expected app bundle directory was not found: $app_path" >&2
@@ -167,19 +221,26 @@ verify_app_bundle() {
         echo "${build_label} completed, but expected executable was not found: $exec_path" >&2
         exit 1
     fi
-    if [ ! -x "$helper_path" ]; then
-        echo "${build_label} completed, but bundled proxy helper was not found: $helper_path" >&2
-        exit 1
-    fi
 }
 
 verify_app_archs() {
     app_path="$1"
     require_archs "${app_path}/Contents/MacOS/${EXEC_NAME}" arm64 x86_64
-    require_archs "${app_path}/Contents/Resources/${HELPER_EXEC_NAME}" arm64 x86_64
+    arm_helper_path="$(require_app_payload "$app_path" "$HELPER_ARM64_EXEC_NAME" "Universal app")"
+    x86_helper_path="$(require_app_payload "$app_path" "$HELPER_X86_EXEC_NAME" "Universal app")"
+    require_only_archs "$arm_helper_path" arm64
+    require_only_archs "$x86_helper_path" x86_64
 
     missing_archs="$(mktemp /tmp/fleasion-missing-archs.XXXXXX)"
     find "$app_path" -type f -print | while IFS= read -r file_path; do
+        case "$file_path" in
+            *"/${HELPER_ARM64_EXEC_NAME}")
+                continue
+                ;;
+            *"/${HELPER_X86_EXEC_NAME}")
+                continue
+                ;;
+        esac
         archs="$(lipo -archs "$file_path" 2>/dev/null || true)"
         [ -n "$archs" ] || continue
         case " $archs " in *" arm64 "*) has_arm=1 ;; *) has_arm=0 ;; esac
@@ -233,6 +294,29 @@ verify_macos_compatibility() {
     rm -f "$unavailable_frameworks" "$incompatible_minos"
 }
 
+save_arch_helper() {
+    target_arch="$1"
+    case "$target_arch" in
+        arm64)
+            arch_helper_path="$HELPER_ARM64_DIST_PATH"
+            arch_helper_name="$HELPER_ARM64_EXEC_NAME"
+            ;;
+        x86_64)
+            arch_helper_path="$HELPER_X86_DIST_PATH"
+            arch_helper_name="$HELPER_X86_EXEC_NAME"
+            ;;
+        *)
+            echo "Unsupported helper architecture: $target_arch" >&2
+            exit 1
+            ;;
+    esac
+
+    cp "$HELPER_DIST_PATH" "$arch_helper_path"
+    chmod "$(stat -f %Lp "$HELPER_DIST_PATH")" "$arch_helper_path"
+    require_only_archs "$arch_helper_path" "$target_arch"
+    echo "Saved ${arch_helper_name} (${target_arch})"
+}
+
 build_current_arch() {
     target_arch="$1"
     macos_python_path="$(find_macos_python)"
@@ -245,12 +329,14 @@ build_current_arch() {
         exit 1
     fi
     require_archs "$HELPER_DIST_PATH" "$target_arch"
+    save_arch_helper "$target_arch"
 
     MACOS_TARGET_ARCH="$target_arch" macos_uv run --python "$macos_python_path" pyinstaller --clean --noconfirm Fleasion.spec
 
     verify_app_bundle "$APP_PATH" "Build"
     require_archs "$EXEC_PATH" "$target_arch"
-    require_archs "$HELPER_APP_PATH" "$target_arch"
+    helper_app_path="$(require_app_payload "$APP_PATH" "${HELPER_EXEC_NAME}-${target_arch}" "Build")"
+    require_only_archs "$helper_app_path" "$target_arch"
 }
 
 ensure_x86_uv() {
@@ -287,13 +373,15 @@ build_x86_64() {
         exit 1
     fi
     require_archs "$HELPER_DIST_PATH" x86_64
+    save_arch_helper x86_64
 
     MACOS_TARGET_ARCH=x86_64 \
     x86_uv run --python "$x86_python_path" pyinstaller --clean --noconfirm Fleasion.spec
 
     verify_app_bundle "$APP_PATH" "Intel build"
     require_archs "$EXEC_PATH" x86_64
-    require_archs "$HELPER_APP_PATH" x86_64
+    helper_app_path="$(require_app_payload "$APP_PATH" "$HELPER_X86_EXEC_NAME" "Intel build")"
+    require_only_archs "$helper_app_path" x86_64
 }
 
 copy_app() {
@@ -330,6 +418,14 @@ merge_apps() {
             echo "Failed to merge $rel" >&2
             exit 1
         fi
+    done
+
+    find "$x86_app" -type f -print | while IFS= read -r x86_file; do
+        rel="${x86_file#${x86_app}/}"
+        universal_file="${universal_app}/${rel}"
+        [ ! -e "$universal_file" ] || continue
+        mkdir -p "$(dirname "$universal_file")"
+        cp -p "$x86_file" "$universal_file"
     done
 
     merge_soundfile_dylib "$arm_app" "$x86_app" "$universal_app"
@@ -385,7 +481,8 @@ finalize_app() {
         echo "Built ${ZIP_PATH}"
     else
         require_archs "${app_path}/Contents/MacOS/${EXEC_NAME}" "$app_arch"
-        require_archs "${app_path}/Contents/Resources/${HELPER_EXEC_NAME}" "$app_arch"
+        helper_app_path="$(require_app_payload "$app_path" "${HELPER_EXEC_NAME}-${app_arch}" "Final app")"
+        require_only_archs "$helper_app_path" "$app_arch"
         echo "Built ${app_path} (${app_arch})"
     fi
 }

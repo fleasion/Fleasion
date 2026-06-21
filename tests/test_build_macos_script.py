@@ -132,6 +132,22 @@ def test_macos_build_targets_catalina_compatible_qt_runtime():
     assert '\'numpy>=2.0.0; platform_system != "Darwin" or python_version >= "3.13"\'' in project
 
 
+def test_macos_build_bundles_arch_specific_proxy_helpers():
+    script = Path('scripts/build_macos.sh').read_text(encoding='utf-8')
+    spec = Path('Fleasion.spec').read_text(encoding='utf-8')
+
+    assert 'HELPER_ARM64_EXEC_NAME="${HELPER_EXEC_NAME}-arm64"' in script
+    assert 'HELPER_X86_EXEC_NAME="${HELPER_EXEC_NAME}-x86_64"' in script
+    assert 'save_arch_helper "$target_arch"' in script
+    assert 'save_arch_helper x86_64' in script
+    assert 'require_only_archs "$arm_helper_path" arm64' in script
+    assert 'require_only_archs "$x86_helper_path" x86_64' in script
+    assert 'contains unexpected $found_arch slice; expected only' in script
+    assert 'cp -p "$x86_file" "$universal_file"' in script
+    assert "pathlib.Path('dist/fleasion-proxy-helper-arm64')" in spec
+    assert "pathlib.Path('dist/fleasion-proxy-helper-x86_64')" in spec
+
+
 def test_github_workflow_uploads_macos_zip_without_artifact_rezipping():
     workflow = Path('.github/workflows/build.yml').read_text(encoding='utf-8')
 

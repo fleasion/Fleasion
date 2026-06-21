@@ -25,7 +25,7 @@ import threading
 import time
 
 
-HELPER_VERSION = 3
+HELPER_VERSION = 4
 HELPER_CAPABILITIES = ("hosts", "relay", "patch_ca")
 HOSTS_FILE = "/etc/hosts"
 HOSTS_MARKER = "# Fleasion proxy entry"

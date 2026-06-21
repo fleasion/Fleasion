@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import plistlib
 import secrets
 import shlex
@@ -21,11 +22,15 @@ from .paths import CONFIG_DIR, MACOS_PROXY_BACKEND_PORT, MACOS_PROXY_HELPER_CONT
 
 HELPER_ID = "com.fleasion.proxy-helper"
 HELPER_BUNDLED_EXECUTABLE_NAME = "fleasion-proxy-helper"
+HELPER_BUNDLED_EXECUTABLE_NAMES = {
+    "arm64": "fleasion-proxy-helper-arm64",
+    "x86_64": "fleasion-proxy-helper-x86_64",
+}
 HELPER_INSTALL_PATH = Path("/Library/PrivilegedHelperTools") / HELPER_ID
 HELPER_PLIST_PATH = Path("/Library/LaunchDaemons") / f"{HELPER_ID}.plist"
 HELPER_TOKEN_FILE = CONFIG_DIR / "proxy-helper.token"
 HELPER_LOG_PATH = Path("/Library/Logs/Fleasion.proxy-helper.log")
-REQUIRED_HELPER_VERSION = 3
+REQUIRED_HELPER_VERSION = 4
 REQUIRED_HELPER_CAPABILITIES = {"patch_ca"}
 
 
@@ -157,9 +162,18 @@ def helper_patch_ca(ca_pem: str, installs: list[dict]) -> dict | None:
 def _source_helper_path() -> Path:
     frozen_root = Path(getattr(sys, "_MEIPASS", ""))
     if frozen_root:
-        bundled_executable = frozen_root / HELPER_BUNDLED_EXECUTABLE_NAME
-        if bundled_executable.exists():
-            return bundled_executable
+        machine = platform.machine().lower()
+        helper_names = [
+            HELPER_BUNDLED_EXECUTABLE_NAMES.get(machine),
+            HELPER_BUNDLED_EXECUTABLE_NAME,
+        ]
+        helper_names.extend(HELPER_BUNDLED_EXECUTABLE_NAMES.values())
+        for helper_name in helper_names:
+            if not helper_name:
+                continue
+            bundled_executable = frozen_root / helper_name
+            if bundled_executable.exists():
+                return bundled_executable
         bundled_source = frozen_root / "macos_proxy_helper_daemon.py"
         if bundled_source.exists():
             return bundled_source
