@@ -143,6 +143,9 @@ def test_macos_build_bundles_arch_specific_proxy_helpers():
     assert 'require_only_archs "$arm_helper_path" arm64' in script
     assert 'require_only_archs "$x86_helper_path" x86_64' in script
     assert 'contains unexpected $found_arch slice; expected only' in script
+    assert 'single_arch_macho_allowed "$file_path" "$archs"' in script
+    assert 'Cryptodome/Hash/_ghash_clmul.abi3.so:x86_64' in script
+    assert 'Cryptodome/Cipher/_raw_aesni.abi3.so:x86_64' in script
     assert 'cp -p "$x86_file" "$universal_file"' in script
     assert "pathlib.Path('dist/fleasion-proxy-helper-arm64')" in spec
     assert "pathlib.Path('dist/fleasion-proxy-helper-x86_64')" in spec

@@ -154,6 +154,19 @@ require_app_payload() {
     printf '%s\n' "$payload_path"
 }
 
+single_arch_macho_allowed() {
+    file_path="$1"
+    archs="$2"
+
+    case "$file_path:$archs" in
+        *"/Contents/Frameworks/Cryptodome/Hash/_ghash_clmul.abi3.so:x86_64" | \
+        *"/Contents/Frameworks/Cryptodome/Cipher/_raw_aesni.abi3.so:x86_64")
+            return 0
+            ;;
+    esac
+    return 1
+}
+
 plist_value() {
     plist_path="$1"
     key="$2"
@@ -246,6 +259,9 @@ verify_app_archs() {
         case " $archs " in *" arm64 "*) has_arm=1 ;; *) has_arm=0 ;; esac
         case " $archs " in *" x86_64 "*) has_x86=1 ;; *) has_x86=0 ;; esac
         if [ "$has_arm" -ne 1 ] || [ "$has_x86" -ne 1 ]; then
+            if single_arch_macho_allowed "$file_path" "$archs"; then
+                continue
+            fi
             printf '%s: %s\n' "$file_path" "$archs" >> "$missing_archs"
         fi
     done
