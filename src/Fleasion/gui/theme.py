@@ -51,7 +51,7 @@ class ThemeManager:
 
     @staticmethod
     def _apply_system_theme(app: QApplication) -> None:
-        app.styleHints().setColorScheme(Qt.ColorScheme.Unknown)
+        ThemeManager._set_color_scheme(app, 'Unknown')
 
         if sys.platform.startswith('linux'):
             current_style = app.style()
@@ -71,11 +71,27 @@ class ThemeManager:
     def _apply_forced_theme(app: QApplication, theme: str) -> None:
         app.setStyle('Fusion')
         if theme == 'Dark':
-            app.styleHints().setColorScheme(Qt.ColorScheme.Dark)
+            ThemeManager._set_color_scheme(app, 'Dark')
         elif theme == 'Light':
-            app.styleHints().setColorScheme(Qt.ColorScheme.Light)
+            ThemeManager._set_color_scheme(app, 'Light')
 
         app.setPalette(app.style().standardPalette())
+
+    @staticmethod
+    def _set_color_scheme(app: QApplication, color_scheme_name: str) -> None:
+        color_scheme = ThemeManager._qt_color_scheme(color_scheme_name)
+        if color_scheme is None:
+            return
+
+        style_hints = app.styleHints()
+        set_color_scheme = getattr(style_hints, 'setColorScheme', None)
+        if callable(set_color_scheme):
+            set_color_scheme(color_scheme)
+
+    @staticmethod
+    def _qt_color_scheme(color_scheme_name: str):
+        color_scheme_type = getattr(Qt, 'ColorScheme', None)
+        return getattr(color_scheme_type, color_scheme_name, None)
 
     @staticmethod
     def _refresh_widgets(app: QApplication) -> None:
