@@ -72,10 +72,70 @@ class ThemeManager:
         app.setStyle('Fusion')
         if theme == 'Dark':
             ThemeManager._set_color_scheme(app, 'Dark')
+            app.setPalette(ThemeManager._dark_palette())
         elif theme == 'Light':
             ThemeManager._set_color_scheme(app, 'Light')
+            app.setPalette(ThemeManager._light_palette())
+        else:
+            app.setPalette(app.style().standardPalette())
 
-        app.setPalette(app.style().standardPalette())
+    @staticmethod
+    def _dark_palette() -> QPalette:
+        palette = QPalette()
+        palette.setColor(QPalette.ColorRole.Window, QColor('#353535'))
+        palette.setColor(QPalette.ColorRole.WindowText, QColor('#ffffff'))
+        palette.setColor(QPalette.ColorRole.Base, QColor('#191919'))
+        palette.setColor(QPalette.ColorRole.AlternateBase, QColor('#353535'))
+        palette.setColor(QPalette.ColorRole.ToolTipBase, QColor('#ffffff'))
+        palette.setColor(QPalette.ColorRole.ToolTipText, QColor('#ffffff'))
+        palette.setColor(QPalette.ColorRole.Text, QColor('#ffffff'))
+        palette.setColor(QPalette.ColorRole.Button, QColor('#353535'))
+        palette.setColor(QPalette.ColorRole.ButtonText, QColor('#ffffff'))
+        palette.setColor(QPalette.ColorRole.BrightText, QColor('#ff0000'))
+        palette.setColor(QPalette.ColorRole.Link, QColor('#2a82da'))
+        palette.setColor(QPalette.ColorRole.Highlight, QColor('#2a82da'))
+        palette.setColor(QPalette.ColorRole.HighlightedText, QColor('#000000'))
+        palette.setColor(QPalette.ColorRole.PlaceholderText, QColor('#a0a0a0'))
+        palette.setColor(
+            QPalette.ColorGroup.Disabled,
+            QPalette.ColorRole.Text,
+            QColor('#7f7f7f'),
+        )
+        palette.setColor(
+            QPalette.ColorGroup.Disabled,
+            QPalette.ColorRole.ButtonText,
+            QColor('#7f7f7f'),
+        )
+        return palette
+
+    @staticmethod
+    def _light_palette() -> QPalette:
+        palette = QPalette()
+        palette.setColor(QPalette.ColorRole.Window, QColor('#f0f0f0'))
+        palette.setColor(QPalette.ColorRole.WindowText, QColor('#000000'))
+        palette.setColor(QPalette.ColorRole.Base, QColor('#ffffff'))
+        palette.setColor(QPalette.ColorRole.AlternateBase, QColor('#f0f0f0'))
+        palette.setColor(QPalette.ColorRole.ToolTipBase, QColor('#ffffff'))
+        palette.setColor(QPalette.ColorRole.ToolTipText, QColor('#000000'))
+        palette.setColor(QPalette.ColorRole.Text, QColor('#000000'))
+        palette.setColor(QPalette.ColorRole.Button, QColor('#f0f0f0'))
+        palette.setColor(QPalette.ColorRole.ButtonText, QColor('#000000'))
+        palette.setColor(QPalette.ColorRole.BrightText, QColor('#ffffff'))
+        palette.setColor(QPalette.ColorRole.Link, QColor('#0000ff'))
+        palette.setColor(QPalette.ColorRole.Highlight, QColor('#308cc6'))
+        palette.setColor(QPalette.ColorRole.HighlightedText, QColor('#ffffff'))
+        palette.setColor(QPalette.ColorRole.PlaceholderText, QColor('#808080'))
+        palette.setColor(
+            QPalette.ColorGroup.Disabled,
+            QPalette.ColorRole.Text,
+            QColor('#808080'),
+        )
+        palette.setColor(
+            QPalette.ColorGroup.Disabled,
+            QPalette.ColorRole.ButtonText,
+            QColor('#808080'),
+        )
+        return palette
 
     @staticmethod
     def _set_color_scheme(app: QApplication, color_scheme_name: str) -> None:

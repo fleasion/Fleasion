@@ -26,6 +26,64 @@ def test_panel_colors_use_qpalette_for_system_theme(monkeypatch):
     assert colors.container_background_css == 'background-color: palette(alternate-base);'
 
 
+def test_apply_forced_dark_sets_explicit_dark_palette(monkeypatch):
+    color_scheme_names = []
+    monkeypatch.setattr(
+        ThemeManager,
+        '_set_color_scheme',
+        staticmethod(lambda app, color_scheme_name: color_scheme_names.append(color_scheme_name)),
+    )
+
+    class App:
+        style_name = None
+        palette = None
+
+        def setStyle(self, style_name):
+            self.style_name = style_name
+
+        def setPalette(self, palette):
+            self.palette = palette
+
+    app = App()
+
+    ThemeManager._apply_forced_theme(app, 'Dark')
+
+    assert app.style_name == 'Fusion'
+    assert color_scheme_names == ['Dark']
+    assert app.palette.color(QPalette.ColorRole.Window) == QColor('#353535')
+    assert app.palette.color(QPalette.ColorRole.Base) == QColor('#191919')
+    assert app.palette.color(QPalette.ColorRole.Text) == QColor('#ffffff')
+
+
+def test_apply_forced_light_sets_explicit_light_palette(monkeypatch):
+    color_scheme_names = []
+    monkeypatch.setattr(
+        ThemeManager,
+        '_set_color_scheme',
+        staticmethod(lambda app, color_scheme_name: color_scheme_names.append(color_scheme_name)),
+    )
+
+    class App:
+        style_name = None
+        palette = None
+
+        def setStyle(self, style_name):
+            self.style_name = style_name
+
+        def setPalette(self, palette):
+            self.palette = palette
+
+    app = App()
+
+    ThemeManager._apply_forced_theme(app, 'Light')
+
+    assert app.style_name == 'Fusion'
+    assert color_scheme_names == ['Light']
+    assert app.palette.color(QPalette.ColorRole.Window) == QColor('#f0f0f0')
+    assert app.palette.color(QPalette.ColorRole.Base) == QColor('#ffffff')
+    assert app.palette.color(QPalette.ColorRole.Text) == QColor('#000000')
+
+
 def test_set_color_scheme_ignores_old_qt_style_hints_without_setter(monkeypatch):
     color_scheme = object()
     monkeypatch.setattr(
