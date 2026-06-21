@@ -281,10 +281,13 @@ verify_macos_compatibility() {
     incompatible_minos="$(mktemp /tmp/fleasion-incompatible-minos.XXXXXX)"
 
     find "$app_path" -type f -print | while IFS= read -r file_path; do
-        if otool -L "$file_path" 2>/dev/null | grep -q "/System/Library/Frameworks/UniformTypeIdentifiers.framework"; then
+        archs="$(lipo -archs "$file_path" 2>/dev/null || true)"
+        case " $archs " in *" x86_64 "*) ;; *) continue ;; esac
+
+        if otool -arch x86_64 -L "$file_path" 2>/dev/null | grep -q "/System/Library/Frameworks/UniformTypeIdentifiers.framework"; then
             printf '%s\n' "$file_path" >> "$unavailable_frameworks"
         fi
-        minos="$(otool -l "$file_path" 2>/dev/null | awk '
+        minos="$(otool -arch x86_64 -l "$file_path" 2>/dev/null | awk '
             /LC_BUILD_VERSION/ { build = 1; version_min = 0; next }
             /LC_VERSION_MIN_MACOSX/ { version_min = 1; build = 0; next }
             build && /minos/ { print $2; exit }

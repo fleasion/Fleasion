@@ -123,6 +123,9 @@ def test_macos_build_targets_catalina_compatible_qt_runtime():
     assert 'UniformTypeIdentifiers.framework' in script
     assert 'LC_BUILD_VERSION' in script
     assert 'LC_VERSION_MIN_MACOSX' in script
+    assert 'case " $archs " in *" x86_64 "*) ;; *) continue ;; esac' in script
+    assert 'otool -arch x86_64 -L "$file_path"' in script
+    assert 'otool -arch x86_64 -l "$file_path"' in script
     assert 'App contains binaries requiring newer than macOS ${MACOSX_DEPLOYMENT_TARGET}' in script
     assert 'verify_macos_compatibility "$app_path"' in script
     assert '\'pyqt6==6.2.3; platform_system == "Darwin"\'' in project
