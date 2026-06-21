@@ -286,6 +286,16 @@ merge_soundfile_dylib() {
     ln -s ../../Frameworks/_soundfile_data/libsndfile_x86_64.dylib "${resource_dir}/libsndfile_x86_64.dylib"
 }
 
+verify_zip_package() {
+    zip_path="$1"
+    zip_check_dir="$(mktemp -d /tmp/fleasion-zip-check.XXXXXX)"
+
+    ditto -x -k "$zip_path" "$zip_check_dir"
+    verify_app_bundle "${zip_check_dir}/${EXEC_NAME}.app" "Packaged zip"
+    verify_app_archs "${zip_check_dir}/${EXEC_NAME}.app"
+    rm -rf "$zip_check_dir"
+}
+
 finalize_app() {
     app_path="$1"
     app_arch="$2"
@@ -297,6 +307,7 @@ finalize_app() {
         verify_app_archs "$app_path"
         rm -f "$ZIP_PATH"
         ditto -c -k --sequesterRsrc --keepParent "$app_path" "$ZIP_PATH"
+        verify_zip_package "$ZIP_PATH"
         echo "Built ${app_path} (${app_arch})"
         echo "Built ${ZIP_PATH}"
     else

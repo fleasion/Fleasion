@@ -75,7 +75,16 @@ jobs:
         if: runner.os == 'macOS'
         run: ./scripts/build_macos.sh
 
+      - name: Upload macOS package
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ matrix.artifact_path }}
+          archive: false
+          if-no-files-found: error
+
       - name: Upload package
+        if: runner.os != 'macOS'
         uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.artifact_name }}

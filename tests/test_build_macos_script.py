@@ -101,6 +101,27 @@ def test_macos_build_script_validates_intel_and_final_bundles():
     assert 'verify_app_bundle "$app_path" "Final app"' in script
 
 
+def test_macos_build_script_creates_permission_preserving_zip():
+    script = Path('scripts/build_macos.sh').read_text(encoding='utf-8')
+
+    assert 'ZIP_PATH="dist/${EXEC_NAME}-MacOS-Universal.zip"' in script
+    assert 'ditto -c -k --sequesterRsrc --keepParent "$app_path" "$ZIP_PATH"' in script
+    assert 'verify_zip_package "$ZIP_PATH"' in script
+    assert 'verify_app_bundle "${zip_check_dir}/${EXEC_NAME}.app" "Packaged zip"' in script
+    assert 'verify_app_archs "${zip_check_dir}/${EXEC_NAME}.app"' in script
+    assert 'MacOS-Universal.dmg' not in script
+    assert 'hdiutil create' not in script
+
+
+def test_github_workflow_uploads_macos_zip_without_artifact_rezipping():
+    workflow = Path('.github/workflows/build.yml').read_text(encoding='utf-8')
+
+    assert 'artifact_path: dist/Fleasion-v*-MacOS-Universal.zip' in workflow
+    assert 'uses: actions/upload-artifact@v7' in workflow
+    assert 'archive: false' in workflow
+    assert 'artifact_path: dist/Fleasion-v*-MacOS-Universal.dmg' not in workflow
+
+
 def test_verify_app_bundle_accepts_complete_bundle(tmp_path):
     app_path = _write_valid_app_bundle(tmp_path)
 
