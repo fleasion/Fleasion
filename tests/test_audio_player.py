@@ -1,4 +1,5 @@
 import os
+import sys
 import threading
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -6,6 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import numpy as np
 from PyQt6.QtWidgets import QApplication
 
+from Fleasion.cache import audio_player
 from Fleasion.cache.audio_player import AudioPlayerWidget
 
 
@@ -118,3 +120,27 @@ def test_playback_callback_outputs_nonzero_float32_audio(monkeypatch):
     assert captured["outdata"].dtype == np.float32
     assert np.any(captured["outdata"] != 0)
     player.deleteLater()
+
+
+def test_bundled_portaudio_path_prefers_pyinstaller_root(tmp_path, monkeypatch):
+    bundled = tmp_path / "libportaudio.so.2"
+    bundled.write_bytes(b"portaudio")
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+
+    assert audio_player._bundled_portaudio_path() == bundled
+
+
+def test_bundled_portaudio_path_checks_pyinstaller_internal_dir(tmp_path, monkeypatch):
+    internal = tmp_path / "_internal"
+    internal.mkdir()
+    bundled = internal / "libportaudio.so.2"
+    bundled.write_bytes(b"portaudio")
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+
+    assert audio_player._bundled_portaudio_path() == bundled
+
+
+def test_bundled_portaudio_path_ignores_unfrozen_runtime(monkeypatch):
+    monkeypatch.delattr(sys, "_MEIPASS", raising=False)
+
+    assert audio_player._bundled_portaudio_path() is None

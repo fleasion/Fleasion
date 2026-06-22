@@ -172,6 +172,9 @@ def test_macos_build_bundles_audio_runtime_libraries():
 
     assert "('_sounddevice_data', '_soundfile_data')" in spec
     assert "collect_all(audio_runtime_package)" in spec
+    assert "_resolve_library_path('portaudio')" in spec
+    assert "'/usr/lib/x86_64-linux-gnu'" in spec
+    assert "binaries.append((str(_portaudio), '.'))" in spec
     assert '_sounddevice_data/portaudio-binaries/libportaudio.dylib' in script
     assert '_soundfile_data/libsndfile_arm64.dylib' in script
     assert '_soundfile_data/libsndfile_x86_64.dylib' in script

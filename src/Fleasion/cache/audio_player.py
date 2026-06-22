@@ -1,10 +1,12 @@
 """Audio player widget using sounddevice for Python 3.14 compatibility."""
 
+import ctypes.util
+import sys
 import threading
 import time
+from pathlib import Path
 
 import numpy as np
-import sounddevice as sd
 import soundfile as sf
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 
@@ -17,6 +19,48 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+
+def _bundled_portaudio_path() -> Path | None:
+    """Return PyInstaller's bundled PortAudio library, when available."""
+    meipass = getattr(sys, '_MEIPASS', None)
+    if not meipass:
+        return None
+
+    root = Path(meipass)
+    for relative_path in (
+        'libportaudio.so.2',
+        'libportaudio.so',
+        '_internal/libportaudio.so.2',
+        '_internal/libportaudio.so',
+    ):
+        candidate = root / relative_path
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _import_sounddevice_with_bundled_portaudio():
+    """Import sounddevice with PyInstaller's bundled PortAudio on Linux."""
+    original_find_library = ctypes.util.find_library
+    bundled_portaudio = _bundled_portaudio_path()
+
+    def find_library(name):
+        if name == 'portaudio' and bundled_portaudio is not None:
+            return str(bundled_portaudio)
+        return original_find_library(name)
+
+    if bundled_portaudio is not None and sys.platform.startswith('linux'):
+        ctypes.util.find_library = find_library
+    try:
+        import sounddevice as sounddevice
+    finally:
+        ctypes.util.find_library = original_find_library
+
+    return sounddevice
+
+
+sd = _import_sounddevice_with_bundled_portaudio()
 
 
 class AudioPlayerWidget(QWidget):
