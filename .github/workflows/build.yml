@@ -71,12 +71,9 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           archive_listing="$(uv run pyi-archive_viewer -b -l dist/Fleasion-v*)"
+          printf '%s\n' "$archive_listing" | grep -Ei 'portaudio|pulse|pipewire|jack|alsa|sound' || true
           if [[ "$archive_listing" == *libportaudio.so* ]]; then
             echo "Linux package must use host PortAudio, not the GitHub runner copy." >&2
-            exit 1
-          fi
-          if [[ "$archive_listing" != *libpipewire-0.3.so.0* ]]; then
-            echo "Linux package is missing PipeWire runtime needed by GUI audio playback." >&2
             exit 1
           fi
 

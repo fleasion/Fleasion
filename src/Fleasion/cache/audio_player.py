@@ -98,6 +98,44 @@ def _import_sounddevice_with_preferred_portaudio():
 
 
 sd = _import_sounddevice_with_preferred_portaudio()
+_AUDIO_BACKEND_LOGGED = False
+
+
+def _log_audio_backend_once():
+    """Log the PortAudio backend selected by the GUI player once per process."""
+    global _AUDIO_BACKEND_LOGGED
+    if _AUDIO_BACKEND_LOGGED:
+        return
+    _AUDIO_BACKEND_LOGGED = True
+
+    try:
+        preferred = _preferred_portaudio_path()
+        loaded = getattr(sd, '_libname', None)
+        version = getattr(sd, '__version__', 'unknown')
+        try:
+            portaudio_version = sd.get_portaudio_version()
+        except Exception as exc:
+            portaudio_version = f'unavailable ({type(exc).__name__}: {exc})'
+        try:
+            default_device = sd.default.device
+        except Exception as exc:
+            default_device = f'unavailable ({type(exc).__name__}: {exc})'
+        try:
+            device_count = len(sd.query_devices())
+        except Exception as exc:
+            device_count = f'unavailable ({type(exc).__name__}: {exc})'
+        log_buffer.log(
+            'Audio',
+            'Backend '
+            f'sounddevice={version} '
+            f'preferred_portaudio={preferred or "default"} '
+            f'loaded_portaudio={loaded or "unknown"} '
+            f'portaudio_version={portaudio_version} '
+            f'default_device={default_device} '
+            f'device_count={device_count}',
+        )
+    except Exception as exc:
+        log_buffer.log('Audio', f'Backend diagnostic failed: {type(exc).__name__}: {exc}')
 
 
 class AudioPlayerWidget(QWidget):
@@ -150,6 +188,7 @@ class AudioPlayerWidget(QWidget):
         self.position_lock = threading.Lock()
         self.stream_lock = threading.Lock()
 
+        _log_audio_backend_once()
         self._load_audio()
         self._setup_ui()
 

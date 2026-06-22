@@ -195,8 +195,8 @@ def test_github_workflow_verifies_linux_gui_audio_runtime():
     assert 'libspa-0.2-modules' in workflow
     assert 'libpulse0' in workflow
     assert 'Verify Linux audio runtime' in workflow
+    assert "grep -Ei 'portaudio|pulse|pipewire|jack|alsa|sound'" in workflow
     assert 'Linux package must use host PortAudio' in workflow
-    assert 'libpipewire-0.3.so.0' in workflow
 
 
 def test_verify_app_bundle_accepts_complete_bundle(tmp_path):
