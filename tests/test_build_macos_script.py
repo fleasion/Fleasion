@@ -11,7 +11,12 @@ HELPER_EXEC_NAME = 'fleasion-proxy-helper'
 def _build_script_functions() -> str:
     script = Path('scripts/build_macos.sh').read_text(encoding='utf-8')
     functions = []
-    for function_name in ('plist_value', 'verify_app_bundle'):
+    for function_name in (
+        'plist_value',
+        'app_file_payload_path',
+        'require_app_file_payload',
+        'verify_app_bundle',
+    ):
         match = re.search(
             rf'^{function_name}\(\) \{{\n.*?^}}\n',
             script,
@@ -85,6 +90,13 @@ def _write_valid_app_bundle(tmp_path: Path) -> Path:
 
     _write_info_plist(app_path)
     (resources_dir / 'fleasionlogoHR.icns').write_bytes(b'icon')
+    sounddevice_dir = frameworks_dir / '_sounddevice_data' / 'portaudio-binaries'
+    soundfile_dir = frameworks_dir / '_soundfile_data'
+    sounddevice_dir.mkdir(parents=True)
+    soundfile_dir.mkdir()
+    (sounddevice_dir / 'libportaudio.dylib').write_bytes(b'portaudio')
+    (soundfile_dir / 'libsndfile_arm64.dylib').write_bytes(b'sndfile-arm64')
+    (soundfile_dir / 'libsndfile_x86_64.dylib').write_bytes(b'sndfile-x86_64')
     executable = macos_dir / EXEC_NAME
     helper = resources_dir / HELPER_EXEC_NAME
     executable.write_bytes(b'#!/bin/sh\n')
@@ -152,6 +164,17 @@ def test_macos_build_bundles_arch_specific_proxy_helpers():
     assert 'cp -p "$x86_file" "$universal_file"' in script
     assert "pathlib.Path('dist/fleasion-proxy-helper-arm64')" in spec
     assert "pathlib.Path('dist/fleasion-proxy-helper-x86_64')" in spec
+
+
+def test_macos_build_bundles_audio_runtime_libraries():
+    script = Path('scripts/build_macos.sh').read_text(encoding='utf-8')
+    spec = Path('Fleasion.spec').read_text(encoding='utf-8')
+
+    assert "('_sounddevice_data', '_soundfile_data')" in spec
+    assert "collect_all(audio_runtime_package)" in spec
+    assert '_sounddevice_data/portaudio-binaries/libportaudio.dylib' in script
+    assert '_soundfile_data/libsndfile_arm64.dylib' in script
+    assert '_soundfile_data/libsndfile_x86_64.dylib' in script
 
 
 def test_github_workflow_uploads_macos_zip_without_artifact_rezipping():

@@ -154,6 +154,32 @@ require_app_payload() {
     printf '%s\n' "$payload_path"
 }
 
+app_file_payload_path() {
+    app_path="$1"
+    rel_path="$2"
+    for payload_dir in "${app_path}/Contents/Frameworks" "${app_path}/Contents/Resources"; do
+        payload_path="${payload_dir}/${rel_path}"
+        if [ -f "$payload_path" ]; then
+            printf '%s\n' "$payload_path"
+            return 0
+        fi
+    done
+    return 1
+}
+
+require_app_file_payload() {
+    app_path="$1"
+    rel_path="$2"
+    build_label="$3"
+    payload_path="$(app_file_payload_path "$app_path" "$rel_path" || true)"
+    if [ -n "$payload_path" ]; then
+        printf '%s\n' "$payload_path"
+        return 0
+    fi
+    echo "${build_label} completed, but bundled payload was not found: ${rel_path}" >&2
+    exit 1
+}
+
 single_arch_macho_allowed() {
     file_path="$1"
     archs="$2"
@@ -232,6 +258,13 @@ verify_app_bundle() {
     fi
     if [ ! -x "$exec_path" ]; then
         echo "${build_label} completed, but expected executable was not found: $exec_path" >&2
+        exit 1
+    fi
+
+    require_app_file_payload "$app_path" "_sounddevice_data/portaudio-binaries/libportaudio.dylib" "$build_label" >/dev/null
+    if ! app_file_payload_path "$app_path" "_soundfile_data/libsndfile_arm64.dylib" >/dev/null && \
+       ! app_file_payload_path "$app_path" "_soundfile_data/libsndfile_x86_64.dylib" >/dev/null; then
+        echo "${build_label} completed, but bundled payload was not found: _soundfile_data/libsndfile_*.dylib" >&2
         exit 1
     fi
 }
