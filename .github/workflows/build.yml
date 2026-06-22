@@ -72,8 +72,8 @@ jobs:
         run: |
           archive_listing="$(uv run pyi-archive_viewer -b -l dist/Fleasion-v*)"
           printf '%s\n' "$archive_listing" | grep -Ei 'portaudio|pulse|pipewire|jack|alsa|sound' || true
-          if [[ "$archive_listing" == *libportaudio.so* ]]; then
-            echo "Linux package must use host PortAudio, not the GitHub runner copy." >&2
+          if [[ "$archive_listing" =~ lib(portaudio|asound|jack|pulse|pulsecommon-|pipewire-) ]]; then
+            echo "Linux package must use host audio backend libraries, not the GitHub runner copies." >&2
             exit 1
           fi
 

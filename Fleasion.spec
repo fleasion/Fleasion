@@ -123,11 +123,23 @@ a = Analysis(
     optimize=0,
 )
 if sys.platform.startswith('linux'):
-    # The sounddevice hook collects the build machine's PortAudio. That can
-    # silence playback on other distros, so the GUI player uses host PortAudio.
+    # The sounddevice hook and dependency scan can collect the build machine's
+    # audio backend stack. That can silence playback on other distros, so the
+    # GUI player uses host PortAudio and host audio backend libraries.
+    _host_audio_lib_prefixes = (
+        'libportaudio.so',
+        'libasound.so',
+        'libjack.so',
+        'libpulse.so',
+        'libpulsecommon-',
+        'libpipewire-',
+    )
     a.binaries = [
         entry for entry in a.binaries
-        if not any(pathlib.Path(str(part)).name.startswith('libportaudio.so') for part in entry[:2])
+        if not any(
+            pathlib.Path(str(part)).name.startswith(_host_audio_lib_prefixes)
+            for part in entry[:2]
+        )
     ]
 pyz = PYZ(a.pure)
 

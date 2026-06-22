@@ -172,8 +172,11 @@ def test_macos_build_bundles_audio_runtime_libraries():
 
     assert "('_sounddevice_data', '_soundfile_data')" in spec
     assert "collect_all(audio_runtime_package)" in spec
-    assert "startswith('libportaudio.so')" in spec
-    assert 'the GUI player uses host PortAudio' in spec
+    assert "'libportaudio.so'" in spec
+    assert "'libpulse.so'" in spec
+    assert "'libjack.so'" in spec
+    assert "'libpipewire-'" in spec
+    assert 'host audio backend libraries' in spec
     assert '_sounddevice_data/portaudio-binaries/libportaudio.dylib' in script
     assert '_soundfile_data/libsndfile_arm64.dylib' in script
     assert '_soundfile_data/libsndfile_x86_64.dylib' in script
@@ -196,7 +199,8 @@ def test_github_workflow_verifies_linux_gui_audio_runtime():
     assert 'libpulse0' in workflow
     assert 'Verify Linux audio runtime' in workflow
     assert "grep -Ei 'portaudio|pulse|pipewire|jack|alsa|sound'" in workflow
-    assert 'Linux package must use host PortAudio' in workflow
+    assert 'Linux package must use host audio backend libraries' in workflow
+    assert 'lib(portaudio|asound|jack|pulse|pulsecommon-|pipewire-)' in workflow
 
 
 def test_verify_app_bundle_accepts_complete_bundle(tmp_path):
