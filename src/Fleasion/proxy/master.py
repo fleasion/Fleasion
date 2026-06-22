@@ -1130,6 +1130,35 @@ def _list_port_listeners(port: int) -> list[dict]:
 
 _HOSTS_WRITE_RETRIES = 8
 _HOSTS_WRITE_DELAY   = 0.25  # seconds between direct-write retries
+_HOSTS_IPV4_LOOPBACK = '127.0.0.1'
+_HOSTS_IPV6_LOOPBACK = '::1'
+_HOSTS_LOOPBACK_IPS = frozenset({_HOSTS_IPV4_LOOPBACK, _HOSTS_IPV6_LOOPBACK})
+_HOSTS_ACTIVE_LOOPBACK_IPS: tuple[str, ...] | None = None
+
+
+def _required_hosts_loopbacks() -> tuple[str, ...]:
+    """Return loopback mappings Fleasion should own in the hosts file."""
+    if _HOSTS_ACTIVE_LOOPBACK_IPS:
+        return _HOSTS_ACTIVE_LOOPBACK_IPS
+    if IS_WINDOWS:
+        return (_HOSTS_IPV4_LOOPBACK, _HOSTS_IPV6_LOOPBACK)
+    return (_HOSTS_IPV4_LOOPBACK,)
+
+
+def _set_active_hosts_loopbacks(loopbacks: tuple[str, ...] | list[str] | set[str] | None) -> None:
+    global _HOSTS_ACTIVE_LOOPBACK_IPS
+    if not loopbacks:
+        _HOSTS_ACTIVE_LOOPBACK_IPS = None
+        return
+    ordered = []
+    for ip in (_HOSTS_IPV4_LOOPBACK, _HOSTS_IPV6_LOOPBACK):
+        if ip in loopbacks:
+            ordered.append(ip)
+    _HOSTS_ACTIVE_LOOPBACK_IPS = tuple(ordered) or None
+
+
+def _is_hosts_loopback_ip(ip: str) -> bool:
+    return str(ip or '').strip().lower() in _HOSTS_LOOPBACK_IPS
 
 
 def _parse_active_hosts_entries(content: str) -> dict[str, list[dict]]:
@@ -1161,7 +1190,7 @@ def _hosts_conflicts(hosts: Set[str], entries: dict[str, list[dict]]) -> list[tu
     conflicts: list[tuple[str, dict]] = []
     for host in sorted(hosts):
         for entry in entries.get(host.lower(), []):
-            if entry.get('ip') != '127.0.0.1':
+            if not _is_hosts_loopback_ip(entry.get('ip', '')):
                 conflicts.append((host, entry))
     return conflicts
 
@@ -1208,10 +1237,12 @@ def _verify_hosts_entries(hosts: Set[str], error_details: Optional[dict] = None)
         return False
 
     missing = []
+    required_ips = _required_hosts_loopbacks()
     for host in sorted(hosts):
         host_entries = entries.get(host.lower(), [])
-        if not any(entry.get('ip') == '127.0.0.1' for entry in host_entries):
-            missing.append(host)
+        for ip in required_ips:
+            if not any(str(entry.get('ip', '')).lower() == ip for entry in host_entries):
+                missing.append(f'{host}->{ip}')
 
     if missing:
         log_buffer.log('Hosts', f'Hosts verification failed: missing active mappings for {", ".join(missing)}')
@@ -1227,7 +1258,7 @@ def _hosts_line_has_target_loopback(raw_line: str, hosts: Set[str]) -> bool:
     if not active:
         return False
     parts = active.split()
-    if len(parts) < 2 or parts[0] != '127.0.0.1':
+    if len(parts) < 2 or not _is_hosts_loopback_ip(parts[0]):
         return False
     target_hosts = {host.lower() for host in hosts}
     return any(host.lower() in target_hosts for host in parts[1:])
@@ -1377,10 +1408,13 @@ def _add_hosts_entries(hosts: Set[str], error_details: Optional[dict] = None) ->
         return False
 
     lines_to_add = []
+    required_ips = _required_hosts_loopbacks()
     for host in sorted(hosts):
-        entry = f'127.0.0.1 {host} {_HOSTS_MARKER}'
-        if not any(e.get('ip') == '127.0.0.1' for e in entries.get(host.lower(), [])):
-            lines_to_add.append(entry)
+        host_entries = entries.get(host.lower(), [])
+        for ip in required_ips:
+            entry = f'{ip} {host} {_HOSTS_MARKER}'
+            if not any(str(e.get('ip', '')).lower() == ip for e in host_entries):
+                lines_to_add.append(entry)
 
     if not lines_to_add:
         log_buffer.log('Hosts', 'Exact active hosts entries already present, skipping')
@@ -1390,8 +1424,8 @@ def _add_hosts_entries(hosts: Set[str], error_details: Optional[dict] = None) ->
     try:
         _write_hosts_file(new_content)
         for entry in lines_to_add:
-            host = entry.split()[1]
-            log_buffer.log('Hosts', f'Added redirect: {host} -> 127.0.0.1')
+            ip, host = entry.split()[:2]
+            log_buffer.log('Hosts', f'Added redirect: {host} -> {ip}')
         return True
     except PermissionError as exc:
         log_buffer.log('Hosts', f'Permission denied writing hosts file: {exc}')
@@ -2432,8 +2466,8 @@ class ProxyMaster:
         if self._proxy_debug_enabled() and self._proxy_debug_mode() == 'd':
             return True
         if IS_MACOS or _use_linux_privileged_helper():
-            # Rebuilding otherwise-unmodified gamejoin requests has caused Roblox
-            # to reject the request with HTTP 529 on helper/relay platforms.
+            # Helper/relay platforms keep their existing passthrough behavior.
+            # Do not use this as evidence that Windows should enable it globally.
             return True
         return self.config_manager.wire_preserving_passthrough
 
@@ -2791,6 +2825,7 @@ class ProxyMaster:
                     fut.result(timeout=3.0)
                 except Exception:
                     pass
+            _set_active_hosts_loopbacks(None)
 
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=5.0)
@@ -3012,12 +3047,18 @@ class ProxyMaster:
             self._running = False
             return
 
+        loopback_ips_for_hosts = getattr(self._proxy, 'loopback_ips_for_hosts', None)
+        _set_active_hosts_loopbacks(
+            loopback_ips_for_hosts() if IS_WINDOWS and callable(loopback_ips_for_hosts) else None
+        )
+
         # ── TLS startup self-test ───────────────────────────────────────────
         # Probe every intercepted host with SNI plus one no-SNI connection before
         # the hosts file points Roblox at us. This catches certificate/SNI failures
         # that otherwise happen before normal request logs exist.
         if not await _run_tls_self_test(set(INTERCEPT_HOSTS), ca_cert_path, listen_port):
             await self._proxy.stop()
+            _set_active_hosts_loopbacks(None)
             self._running = False
             return
         if use_linux_helper:
@@ -3031,6 +3072,7 @@ class ProxyMaster:
                 ca_cert_path=helper_ca_cert_path,
             ):
                 await self._proxy.stop()
+                _set_active_hosts_loopbacks(None)
                 self._emit_proxy_start_error('linux_helper_unavailable', {})
                 self._running = False
                 return
@@ -3042,6 +3084,7 @@ class ProxyMaster:
                         'Linux Roblox CA patch verification failed after privileged helper ownership repair',
                     )
                     await self._proxy.stop()
+                    _set_active_hosts_loopbacks(None)
                     from ..utils.linux_proxy_helper import stop_helper
 
                     stop_helper()
@@ -3050,6 +3093,7 @@ class ProxyMaster:
         if (IS_MACOS or use_linux_helper) and not await _run_tls_self_test(set(INTERCEPT_HOSTS), ca_cert_path, PROXY_PORT):
             log_buffer.log('ProxyHelper', 'Privileged port-443 relay TLS self-test failed')
             await self._proxy.stop()
+            _set_active_hosts_loopbacks(None)
             if use_linux_helper:
                 from ..utils.linux_proxy_helper import stop_helper
 
@@ -3066,6 +3110,7 @@ class ProxyMaster:
                 self._emit_proxy_start_error('hosts_write_exhausted', hosts_error_details)
             # Hosts write failed - stop the server and bail
             await self._proxy.stop()
+            _set_active_hosts_loopbacks(None)
             self._running = False
             return
         else:
@@ -3081,6 +3126,7 @@ class ProxyMaster:
                 _flush_dns()
             self._hosts_installed = False
             await self._proxy.stop()
+            _set_active_hosts_loopbacks(None)
             self._running = False
             return
         try:
@@ -3119,10 +3165,7 @@ class ProxyMaster:
 
         # ── Run until the server is stopped ──────────────────────────────
         try:
-            server = self._proxy._server
-            if server is None:
-                return
-            await server.serve_forever()
+            await self._proxy.serve_forever()
         except (asyncio.CancelledError, Exception):
             pass  # Normal shutdown path
         finally:
@@ -3142,5 +3185,6 @@ class ProxyMaster:
                 await self._proxy.stop()
             except Exception:
                 pass
+            _set_active_hosts_loopbacks(None)
             self._running = False
             self._loop = None
