@@ -188,6 +188,17 @@ def test_github_workflow_uploads_macos_zip_without_artifact_rezipping():
     assert 'artifact_path: dist/Fleasion-v*-MacOS-Universal.dmg' not in workflow
 
 
+def test_github_workflow_verifies_linux_gui_audio_runtime():
+    workflow = Path('.github/workflows/build.yml').read_text(encoding='utf-8')
+
+    assert 'libpipewire-0.3-0' in workflow
+    assert 'libspa-0.2-modules' in workflow
+    assert 'libpulse0' in workflow
+    assert 'Verify Linux audio runtime' in workflow
+    assert 'Linux package must use host PortAudio' in workflow
+    assert 'libpipewire-0.3.so.0' in workflow
+
+
 def test_verify_app_bundle_accepts_complete_bundle(tmp_path):
     app_path = _write_valid_app_bundle(tmp_path)
 

@@ -57,7 +57,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 libportaudio2
+          sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 libportaudio2 libpipewire-0.3-0 libspa-0.2-modules libpulse0
 
       - name: Build Windows package
         if: runner.os == 'Windows'
@@ -66,6 +66,19 @@ jobs:
       - name: Build Linux package
         if: runner.os == 'Linux'
         run: uv run pyinstaller --clean --noconfirm Fleasion.spec
+
+      - name: Verify Linux audio runtime
+        if: runner.os == 'Linux'
+        run: |
+          archive_listing="$(uv run pyi-archive_viewer -b -l dist/Fleasion-v*)"
+          if [[ "$archive_listing" == *libportaudio.so* ]]; then
+            echo "Linux package must use host PortAudio, not the GitHub runner copy." >&2
+            exit 1
+          fi
+          if [[ "$archive_listing" != *libpipewire-0.3.so.0* ]]; then
+            echo "Linux package is missing PipeWire runtime needed by GUI audio playback." >&2
+            exit 1
+          fi
 
       - name: Install Rosetta
         if: runner.os == 'macOS'
