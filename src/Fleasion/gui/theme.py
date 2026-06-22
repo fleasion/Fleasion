@@ -82,20 +82,21 @@ class ThemeManager:
     @staticmethod
     def _dark_palette() -> QPalette:
         palette = QPalette()
+        text = QColor('#f0f0f0')
         palette.setColor(QPalette.ColorRole.Window, QColor('#323232'))
-        palette.setColor(QPalette.ColorRole.WindowText, QColor('#f0f0f0'))
+        palette.setColor(QPalette.ColorRole.WindowText, text)
         palette.setColor(QPalette.ColorRole.Base, QColor('#242424'))
         palette.setColor(QPalette.ColorRole.AlternateBase, QColor('#2b2b2b'))
         palette.setColor(QPalette.ColorRole.ToolTipBase, QColor('#ffffdc'))
         palette.setColor(QPalette.ColorRole.ToolTipText, QColor('#000000'))
-        palette.setColor(QPalette.ColorRole.Text, QColor('#f0f0f0'))
+        palette.setColor(QPalette.ColorRole.Text, text)
         palette.setColor(QPalette.ColorRole.Button, QColor('#323232'))
-        palette.setColor(QPalette.ColorRole.ButtonText, QColor('#f0f0f0'))
+        palette.setColor(QPalette.ColorRole.ButtonText, text)
         palette.setColor(QPalette.ColorRole.BrightText, QColor('#4b4b4b'))
         palette.setColor(QPalette.ColorRole.Link, QColor('#308cc6'))
         palette.setColor(QPalette.ColorRole.Highlight, QColor('#308cc6'))
-        palette.setColor(QPalette.ColorRole.HighlightedText, QColor('#f0f0f0'))
-        palette.setColor(QPalette.ColorRole.PlaceholderText, QColor('#f0f0f0'))
+        palette.setColor(QPalette.ColorRole.HighlightedText, text)
+        palette.setColor(QPalette.ColorRole.PlaceholderText, ThemeManager._placeholder_color(text))
         palette.setColor(QPalette.ColorRole.Light, QColor('#4b4b4b'))
         palette.setColor(QPalette.ColorRole.Midlight, QColor('#2a2a2a'))
         palette.setColor(QPalette.ColorRole.Dark, QColor('#212121'))
@@ -126,20 +127,21 @@ class ThemeManager:
     @staticmethod
     def _light_palette() -> QPalette:
         palette = QPalette()
+        text = QColor('#000000')
         palette.setColor(QPalette.ColorRole.Window, QColor('#efefef'))
-        palette.setColor(QPalette.ColorRole.WindowText, QColor('#000000'))
+        palette.setColor(QPalette.ColorRole.WindowText, text)
         palette.setColor(QPalette.ColorRole.Base, QColor('#ffffff'))
         palette.setColor(QPalette.ColorRole.AlternateBase, QColor('#f7f7f7'))
         palette.setColor(QPalette.ColorRole.ToolTipBase, QColor('#ffffdc'))
         palette.setColor(QPalette.ColorRole.ToolTipText, QColor('#000000'))
-        palette.setColor(QPalette.ColorRole.Text, QColor('#000000'))
+        palette.setColor(QPalette.ColorRole.Text, text)
         palette.setColor(QPalette.ColorRole.Button, QColor('#efefef'))
-        palette.setColor(QPalette.ColorRole.ButtonText, QColor('#000000'))
+        palette.setColor(QPalette.ColorRole.ButtonText, text)
         palette.setColor(QPalette.ColorRole.BrightText, QColor('#ffffff'))
         palette.setColor(QPalette.ColorRole.Link, QColor('#0000ff'))
         palette.setColor(QPalette.ColorRole.Highlight, QColor('#308cc6'))
         palette.setColor(QPalette.ColorRole.HighlightedText, QColor('#ffffff'))
-        palette.setColor(QPalette.ColorRole.PlaceholderText, QColor('#000000'))
+        palette.setColor(QPalette.ColorRole.PlaceholderText, ThemeManager._placeholder_color(text))
         palette.setColor(QPalette.ColorRole.Light, QColor('#ffffff'))
         palette.setColor(QPalette.ColorRole.Midlight, QColor('#cacaca'))
         palette.setColor(QPalette.ColorRole.Dark, QColor('#9f9f9f'))
@@ -166,6 +168,12 @@ class ThemeManager:
             QColor('#ffffff'),
         )
         return palette
+
+    @staticmethod
+    def _placeholder_color(text_color: QColor) -> QColor:
+        color = QColor(text_color)
+        color.setAlpha(128)
+        return color
 
     @staticmethod
     def _set_color_scheme(app: QApplication, color_scheme_name: str) -> None:

@@ -101,6 +101,7 @@ class ObjViewerWidget(QOpenGLWidget):
 
     def load_obj_data(self, obj_content: str):
         """Load OBJ file content."""
+        self._discard_mesh_display_list()
         self.vertices = []
         self.colors = []
         self.faces = []
@@ -204,8 +205,7 @@ class ObjViewerWidget(QOpenGLWidget):
 
     def _build_display_list(self):
         """Build display list for fast rendering."""
-        if self.mesh_display_list != 0:
-            glDeleteLists(self.mesh_display_list, 1)
+        self._discard_mesh_display_list(make_current=False)
 
         self.mesh_display_list = glGenLists(1)
         glNewList(self.mesh_display_list, GL_COMPILE)
@@ -730,14 +730,30 @@ class ObjViewerWidget(QOpenGLWidget):
         self.rotation_y = -30.0
         self.zoom = -5.0
 
-        if self.mesh_display_list != 0:
-            try:
-                glDeleteLists(self.mesh_display_list, 1)
-            except Exception:
-                pass
-            self.mesh_display_list = 0
+        self._discard_mesh_display_list()
         self.needs_rebuild = False
         self.update()
+
+    def _discard_mesh_display_list(self, make_current: bool = True):
+        if self.mesh_display_list == 0:
+            return
+
+        display_list = self.mesh_display_list
+        self.mesh_display_list = 0
+        made_current = False
+        try:
+            if make_current and self.context() is not None:
+                self.makeCurrent()
+                made_current = True
+            glDeleteLists(display_list, 1)
+        except Exception:
+            pass
+        finally:
+            if made_current:
+                try:
+                    self.doneCurrent()
+                except Exception:
+                    pass
 
 
 class ObjViewerPanel(QWidget):
@@ -859,6 +875,10 @@ class ObjViewerPanel(QWidget):
         v_count = len(self.viewer.vertices)
         f_count = len(self.viewer.faces)
         self.stats_label.setText(f'{v_count:,} verts, {f_count:,} faces')
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.viewer.update()
 
     def clear(self):
         """Clear the viewer."""
