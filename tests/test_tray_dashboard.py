@@ -165,6 +165,21 @@ def test_exit_app_cleans_tray_before_quitting(monkeypatch):
     assert calls[-1] == 'quit'
 
 
+def test_ensure_exit_action_keeps_exit_enabled():
+    system_tray = SystemTray.__new__(SystemTray)
+    calls = []
+
+    class _ActionStub:
+        def setEnabled(self, enabled):
+            calls.append(enabled)
+
+    system_tray.exit_action = _ActionStub()
+
+    system_tray._ensure_exit_action_enabled()
+
+    assert calls == [True]
+
+
 def test_linux_helper_start_failure_keeps_proxy_features_enabled(monkeypatch):
     config = SimpleNamespace(proxy_features_enabled=True)
     calls = []

@@ -27,7 +27,11 @@ from ..gui.theme import ThemeManager
 from .modifications_tab import CollapsibleSection
 from ..utils.autostart import sync_autostart
 from ..utils import CONFIG_DIR
-from ..utils.roblox_auth import notify_auth_source_changed, store_manual_roblosecurity
+from ..utils.roblox_auth import (
+    notify_auth_source_changed,
+    store_manual_roblosecurity,
+    validate_roblosecurity_for_import,
+)
 
 
 _MACOS_AUTH_SOURCES = (
@@ -612,6 +616,14 @@ class SettingsTab(QWidget):
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         if not dlg.result_cookie:
+            return
+        valid, detail = validate_roblosecurity_for_import(dlg.result_cookie)
+        if not valid:
+            QMessageBox.warning(
+                self,
+                'Invalid Roblox Token',
+                f'Fleasion could not confirm this Roblox token is valid.\n\n{detail}',
+            )
             return
         if not store_manual_roblosecurity(dlg.result_cookie):
             QMessageBox.warning(

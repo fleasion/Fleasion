@@ -61,6 +61,7 @@ class SystemTray:
         # Create menu
         self.menu = QMenu()
         self._create_menu()
+        self.menu.aboutToShow.connect(self._ensure_exit_action_enabled)
         self.tray.setContextMenu(self.menu)
 
         # Apply initial theme
@@ -149,9 +150,16 @@ class SystemTray:
         self.menu.addSeparator()
 
         # Exit
-        exit_action = QAction('Exit', self.menu)
-        exit_action.triggered.connect(self._exit_app)
-        self.menu.addAction(exit_action)
+        self.exit_action = QAction('Exit', self.menu)
+        self.exit_action.setEnabled(True)
+        self.exit_action.triggered.connect(self._exit_app)
+        self.menu.addAction(self.exit_action)
+
+    def _ensure_exit_action_enabled(self):
+        """Keep quit available even when other tray actions are temporarily disabled."""
+        exit_action = getattr(self, 'exit_action', None)
+        if exit_action is not None:
+            exit_action.setEnabled(True)
 
     def _populate_configs_menu(self):
         """Populate the Configs submenu with current configs."""

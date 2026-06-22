@@ -36,6 +36,8 @@ def _reset(monkeypatch, *, disable_persistent_cache=True):
     monkeypatch.setattr(roblox_auth, "_BROWSER_AUTO_DISCOVERY_ATTEMPTED", False)
     monkeypatch.setattr(roblox_auth, "_BROWSER_AUTH_CACHE_BLOCKS_AUTOMATIC_IMPORT", False)
     monkeypatch.setattr(roblox_auth, "_AUTH_READY_COOKIE", None)
+    monkeypatch.setattr(roblox_auth, "_validate_roblosecurity", lambda cookie: True)
+    monkeypatch.setattr(roblox_auth, "_LAST_BROWSER_AUTH_ERROR_DETAILS", {})
     roblox_auth._LOGGED_AUTH_FAILURES.clear()
     if disable_persistent_cache:
         monkeypatch.setattr(roblox_auth, "_read_cached_browser_roblosecurity", lambda **_: (None, ""))
@@ -250,6 +252,36 @@ def test_macos_safari_loader_continues_when_container_cookie_file_is_protected(t
     assert calls == [str(legacy), str(container)]
 
 
+def test_macos_safari_permission_error_marks_full_disk_access_required(tmp_path, monkeypatch):
+    _reset(monkeypatch)
+    container = (
+        tmp_path
+        / "Library"
+        / "Containers"
+        / "com.apple.Safari"
+        / "Data"
+        / "Library"
+        / "Cookies"
+        / "Cookies.binarycookies"
+    )
+    container.parent.mkdir(parents=True)
+    container.write_text("", encoding="utf-8")
+
+    def loader(cookie_file=None, **_kwargs):
+        raise PermissionError(1, "Operation not permitted", cookie_file)
+
+    monkeypatch.setattr(roblox_auth.sys, "platform", "darwin")
+    monkeypatch.setattr(roblox_auth, "USER_HOME", tmp_path)
+    monkeypatch.setattr(roblox_auth, "_browser_cookie_loaders", lambda include_keychain: [("Safari", roblox_auth._make_browser_cookie_loader("Safari", loader))])
+
+    assert roblox_auth.discover_browser_roblosecurity(include_keychain=True, explicit_import=True, browser="Safari") == (None, "")
+    details = roblox_auth.get_last_browser_auth_error_details()
+    assert details["source"] == "Safari"
+    assert details["error_type"] == "PermissionError"
+    assert details["cookie_file"] == str(container)
+    assert details["full_disk_access_required"] is True
+
+
 def test_browser_discovery_tries_next_cookie_when_newest_fails_validation(monkeypatch):
     _reset(monkeypatch)
     jar = CookieJar()
@@ -270,6 +302,18 @@ def test_browser_discovery_tries_next_cookie_when_newest_fails_validation(monkey
         "Edge",
     )
     assert validations == ["stale-cookie", "valid-cookie"]
+
+
+def test_macos_browser_discovery_rejects_inconclusive_validation(monkeypatch):
+    _reset(monkeypatch)
+    jar = CookieJar()
+    jar.set_cookie(_cookie(".ROBLOSECURITY", "maybe-cookie"))
+
+    monkeypatch.setattr(roblox_auth.sys, "platform", "darwin")
+    monkeypatch.setattr(roblox_auth, "_browser_cookie_loaders", lambda include_keychain: [("Firefox", lambda **_: jar)])
+    monkeypatch.setattr(roblox_auth, "_validate_roblosecurity", lambda cookie: None)
+
+    assert roblox_auth.discover_browser_roblosecurity(include_keychain=False) == (None, "")
 
 
 def test_prompt_capable_browser_discovery_is_single_flight(monkeypatch):
@@ -322,6 +366,23 @@ def test_manual_token_storage_is_encrypted_and_used_when_selected(tmp_path, monk
     assert "manual-secret" not in token_path.read_text(encoding="utf-8")
     assert stat.S_IMODE(os.stat(key_path).st_mode) == 0o600
     assert roblox_auth.get_roblosecurity(include_keychain_browsers=True) == "manual-secret"
+
+
+def test_macos_invalid_manual_token_is_not_used(tmp_path, monkeypatch):
+    _reset(monkeypatch)
+    token_path = tmp_path / "manual_auth_token.json"
+    key_path = tmp_path / "manual_auth_token.key"
+
+    monkeypatch.setattr(roblox_auth.sys, "platform", "darwin")
+    monkeypatch.setattr(roblox_auth, "_MANUAL_AUTH_TOKEN_FILE", token_path)
+    monkeypatch.setattr(roblox_auth, "_MANUAL_AUTH_TOKEN_KEY_FILE", key_path)
+    monkeypatch.setattr(roblox_auth, "_iter_user_profile_cookie_candidates", lambda: [])
+    monkeypatch.setattr(roblox_auth, "_get_configured_macos_auth_source", lambda: "manual")
+
+    assert roblox_auth.store_manual_roblosecurity("manual-secret")
+    monkeypatch.setattr(roblox_auth, "_validate_roblosecurity", lambda cookie: False)
+
+    assert roblox_auth.get_roblosecurity(include_keychain_browsers=True) is None
 
 
 def test_macos_wait_for_token_retries_until_notified(monkeypatch):

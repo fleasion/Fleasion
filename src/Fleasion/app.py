@@ -51,6 +51,27 @@ class _FirstTimeSetupMessageBox(QMessageBox):
         event.ignore()
 
 
+class _ForcedAcknowledgeMessageBox(QMessageBox):
+    """Message box that cannot be dismissed until explicitly allowed."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._can_close = False
+
+    def allow_close(self):
+        self._can_close = True
+
+    def done(self, result: int):
+        if self._can_close:
+            super().done(result)
+
+    def closeEvent(self, event):
+        if self._can_close:
+            event.accept()
+        else:
+            event.ignore()
+
+
 class _MacOSAuthSourceDialog(QDialog):
     """Browser-token startup prompt that only closes through explicit choices."""
 
@@ -67,6 +88,30 @@ class _MacOSAuthSourceDialog(QDialog):
             event.accept()
         else:
             event.ignore()
+
+
+def _quit_after_modal_closes(modal, tray=None, selected: dict[str, str] | None = None) -> None:
+    """Close the active modal first, then run the normal quit path."""
+    if QApplication.overrideCursor() is not None:
+        QApplication.restoreOverrideCursor()
+    if selected is not None:
+        selected['exit'] = '1'
+    if hasattr(modal, 'allow_reject'):
+        modal.allow_reject = True
+    if hasattr(modal, 'allow_close'):
+        modal.allow_close()
+    try:
+        modal.reject()
+    except Exception:
+        pass
+
+    def _quit() -> None:
+        if tray is not None and hasattr(tray, '_exit_app'):
+            tray._exit_app()
+        else:
+            QApplication.quit()
+
+    QTimer.singleShot(0, _quit)
 
 
 # ---------------------------------------------------------------------------
@@ -510,7 +555,20 @@ def _choose_macos_auth_source_on_launch(config_manager, tray=None, *, force: boo
     if sys.platform != 'darwin':
         return 'unavailable'
     if config_manager.macos_auth_source and not force:
-        return 'already-configured'
+        try:
+            from .utils.roblox_auth import get_roblosecurity, notify_auth_source_changed
+
+            if get_roblosecurity(include_keychain_browsers=True):
+                return 'already-configured'
+            log_buffer.log(
+                'Auth',
+                f'Configured Roblox login source {config_manager.macos_auth_source} did not produce a valid token; reopening browser picker',
+            )
+            config_manager.macos_auth_source = ''
+            notify_auth_source_changed()
+        except Exception as exc:
+            log_buffer.log('Auth', f'Unexpected error while validating configured macOS auth source: {type(exc).__name__}: {exc}')
+            config_manager.macos_auth_source = ''
 
     _top = QApplication.topLevelWidgets()
     _parent = next((w for w in _top if w.isVisible()), None)
@@ -572,6 +630,32 @@ def _choose_macos_auth_source_on_launch(config_manager, tray=None, *, force: boo
         selected['browser'] = source
         dialog.accept()
 
+    def _exit_from_auth_prompt() -> None:
+        _quit_after_modal_closes(dialog, tray, selected)
+
+    def _show_safari_unsupported() -> None:
+        message = (
+            'Safari is not supported for Roblox login discovery on macOS because Safari stores cookies behind a '
+            'different privacy model than the other supported browsers.\n\n'
+            'Use one of the other browsers in the list instead: Chrome, Firefox, Brave, Edge, Chromium, Opera, or '
+            'Vivaldi. Log in to roblox.com in that browser, come back to Fleasion, and select that browser.\n\n'
+            'You do not have to use that browser for anything else. It only needs to stay logged in to roblox.com so '
+            'Fleasion can read a valid Roblox token.'
+        )
+        msg = QMessageBox(dialog)
+        msg.setWindowTitle('Safari Is Not Supported')
+        msg.setIcon(QMessageBox.Icon.Warning)
+        msg.setText('Safari cannot be used for Fleasion login discovery.')
+        msg.setInformativeText(message)
+        exit_button = msg.addButton('Exit Fleasion', QMessageBox.ButtonRole.DestructiveRole)
+        msg.addButton(QMessageBox.StandardButton.Ok)
+        if icon_path := get_icon_path():
+            from PyQt6.QtGui import QIcon
+            msg.setWindowIcon(QIcon(str(icon_path)))
+        msg.exec()
+        if msg.clickedButton() == exit_button:
+            _quit_after_modal_closes(dialog, tray, selected)
+
     grid = QGridLayout()
     grid.setHorizontalSpacing(8)
     grid.setVerticalSpacing(8)
@@ -596,10 +680,10 @@ def _choose_macos_auth_source_on_launch(config_manager, tray=None, *, force: boo
             return
         if browser == 'Safari':
             _set_ready(
-                'No valid Roblox login token was found in Safari. If the log says Operation not permitted, macOS is '
-                'blocking Safari app-data access; grant Fleasion Full Disk Access in System Settings > Privacy & '
-                'Security, choose another browser, import a token manually, or continue without a token.'
+                'Safari is not supported for Fleasion login discovery on macOS. Log in to roblox.com in another browser '
+                'from the list, then select that browser instead.'
             )
+            _show_safari_unsupported()
             return
         _set_ready(
             f'No valid Roblox login token was found in {browser}. Choose another browser, import a token manually, '
@@ -616,6 +700,8 @@ def _choose_macos_auth_source_on_launch(config_manager, tray=None, *, force: boo
 
     footer = QHBoxLayout()
     footer.addStretch()
+    exit_btn = QPushButton('Exit Fleasion')
+    footer.addWidget(exit_btn)
     manual_btn = QPushButton('Import Token Manually')
     footer.addWidget(manual_btn)
     skip_btn = QPushButton('Continue Without Token')
@@ -625,7 +711,7 @@ def _choose_macos_auth_source_on_launch(config_manager, tray=None, *, force: boo
 
     def _manual_import() -> None:
         from .gui.rando_stuff_tab import AddAccountDialog
-        from .utils.roblox_auth import store_manual_roblosecurity
+        from .utils.roblox_auth import store_manual_roblosecurity, validate_roblosecurity_for_import
 
         dlg = AddAccountDialog(dialog, title='Import Roblox Token')
         dlg.set_ok_label('Import')
@@ -633,6 +719,14 @@ def _choose_macos_auth_source_on_launch(config_manager, tray=None, *, force: boo
             from PyQt6.QtGui import QIcon
             dlg.setWindowIcon(QIcon(str(icon_path)))
         if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.result_cookie:
+            return
+        valid, detail = validate_roblosecurity_for_import(dlg.result_cookie)
+        if not valid:
+            QMessageBox.warning(
+                dialog,
+                'Invalid Roblox Token',
+                f'Fleasion could not confirm this Roblox token is valid.\n\n{detail}',
+            )
             return
         if not store_manual_roblosecurity(dlg.result_cookie):
             QMessageBox.warning(
@@ -650,6 +744,7 @@ def _choose_macos_auth_source_on_launch(config_manager, tray=None, *, force: boo
 
     manual_btn.clicked.connect(_manual_import)
     skip_btn.clicked.connect(_continue_without_token)
+    exit_btn.clicked.connect(_exit_from_auth_prompt)
 
     if icon_path := get_icon_path():
         from PyQt6.QtGui import QIcon
@@ -668,10 +763,12 @@ def _choose_macos_auth_source_on_launch(config_manager, tray=None, *, force: boo
         return 'selected'
     if selected.get('continue_without_token'):
         return 'skipped'
+    if selected.get('exit'):
+        return 'exiting'
     return 'dismissed'
 
 
-def _show_auth_cookie_unavailable_dialog(details: dict):
+def _show_auth_cookie_unavailable_dialog(details: dict, tray=None):
     """Show a user-facing popup when no readable Roblox auth cookie can be found."""
     _top = QApplication.topLevelWidgets()
     _parent = next((w for w in _top if w.isVisible()), None)
@@ -715,8 +812,9 @@ def _show_auth_cookie_unavailable_dialog(details: dict):
             'This token is required for authenticated asset downloads, account launches, '
             'private-server joins, and other account-aware features.<br><br>'
             'Sign in to roblox.com in Chrome, Firefox, Brave, Edge, Chromium, Opera, '
-            'or Vivaldi, then choose that browser in Settings > Roblox Login. Safari may require '
-            'Full Disk Access for Fleasion before macOS allows its cookie database to be read.<br><br>'
+            'or Vivaldi, then choose that browser in Settings > Roblox Login. Safari is not supported for '
+            'Fleasion login discovery on macOS.<br><br>'
+            'You do not have to use that browser for anything else; it only needs to stay logged in to roblox.com.<br><br>'
             'You can also store a token manually from Settings > Roblox Login > Import Token, '
             'or retry from Dashboard > Miscellaneous > Account Manager > Import Browser Login.<br><br>'
         )
@@ -761,7 +859,7 @@ def _show_auth_cookie_unavailable_dialog(details: dict):
             '4) Launch Roblox once, then restart Fleasion.<br><br>'
         )
 
-    msg = QMessageBox(_parent)
+    msg = _ForcedAcknowledgeMessageBox(_parent)
     if _on_top:
         msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
     msg.setWindowTitle('Fleasion - Roblox Token Not Readable')
@@ -774,9 +872,11 @@ def _show_auth_cookie_unavailable_dialog(details: dict):
     msg.setTextFormat(Qt.TextFormat.RichText)
     msg.setInformativeText(
         (
+            '<b>MOST FUNCTIONS OF FLEASION WILL NOT FUNCTION until a valid Roblox login token is available.</b><br><br>'
             'Authenticated Roblox asset downloads may fail until a token is imported.<br><br>'
             if skipped_token
-            else 'Authenticated Roblox asset downloads may fail until this is fixed.<br><br>'
+            else '<b>MOST FUNCTIONS OF FLEASION WILL NOT FUNCTION until a valid Roblox login token is available.</b><br><br>'
+            'Authenticated Roblox asset downloads may fail until this is fixed.<br><br>'
         )
         + most_likely_html
         + existing_html
@@ -787,10 +887,12 @@ def _show_auth_cookie_unavailable_dialog(details: dict):
         import webbrowser
 
         open_login_button = msg.addButton('Open Roblox Login', QMessageBox.ButtonRole.ActionRole)
+        exit_button = msg.addButton('Exit Fleasion', QMessageBox.ButtonRole.DestructiveRole)
         msg.addButton(QMessageBox.StandardButton.Ok)
     else:
         open_login_button = None
-        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        exit_button = msg.addButton('Exit Fleasion', QMessageBox.ButtonRole.DestructiveRole)
+        msg.addButton(QMessageBox.StandardButton.Ok)
 
     if icon_path := get_icon_path():
         from PyQt6.QtGui import QIcon
@@ -803,7 +905,42 @@ def _show_auth_cookie_unavailable_dialog(details: dict):
         )
         label.setOpenExternalLinks(True)
 
+    ack_buttons = list(msg.buttons())
+    countdown_buttons = [button for button in ack_buttons if button is not exit_button]
+    for button in countdown_buttons:
+        button.setEnabled(False)
+    ok_button = msg.button(QMessageBox.StandardButton.Ok)
+    remaining_seconds = 5
+    if ok_button is not None:
+        ok_button.setText(f'OK ({remaining_seconds}s)')
+
+    countdown_timer = QTimer(msg)
+    countdown_timer.setInterval(1000)
+
+    def _update_auth_warning_countdown():
+        nonlocal remaining_seconds
+        remaining_seconds -= 1
+        if remaining_seconds <= 0:
+            countdown_timer.stop()
+            msg.allow_close()
+            for button in countdown_buttons:
+                button.setEnabled(True)
+            if ok_button is not None:
+                ok_button.setText('OK')
+        elif ok_button is not None:
+            ok_button.setText(f'OK ({remaining_seconds}s)')
+
+    countdown_timer.timeout.connect(_update_auth_warning_countdown)
+    countdown_timer.start()
+
+    def _exit_from_warning() -> None:
+        _quit_after_modal_closes(msg, tray)
+
+    exit_button.clicked.connect(_exit_from_warning)
+
     msg.exec()
+    if msg.clickedButton() == exit_button:
+        return
     if open_login_button is not None and msg.clickedButton() == open_login_button:
         if sys.platform.startswith('linux'):
             launch_as_standard_user('https://www.roblox.com/login')
@@ -1712,7 +1849,7 @@ def main():
                         details['user_skipped_token'] = True
             except Exception as exc:
                 log_buffer.log('Auth', f'Unexpected error while retrying macOS auth picker: {type(exc).__name__}: {exc}')
-        _show_auth_cookie_unavailable_dialog(details)
+        _show_auth_cookie_unavailable_dialog(details, tray)
 
     auth_check_invoker.completed.connect(_handle_auth_check_complete)
     initial_auth_choice = _choose_macos_auth_source_on_launch(config_manager, tray)
@@ -1728,7 +1865,7 @@ def main():
             skip_details = {}
         skip_details = dict(skip_details)
         skip_details['user_skipped_token'] = True
-        _show_auth_cookie_unavailable_dialog(skip_details)
+        _show_auth_cookie_unavailable_dialog(skip_details, tray)
 
     def _check_auth_cookie_once():
         try:
