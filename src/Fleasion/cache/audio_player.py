@@ -21,6 +21,36 @@ from PyQt6.QtWidgets import (
 )
 
 
+_LINUX_LIBRARY_SEARCH_DIRS = (
+    '/lib64',
+    '/usr/lib64',
+    '/lib/x86_64-linux-gnu',
+    '/usr/lib/x86_64-linux-gnu',
+    '/lib',
+    '/usr/lib',
+    '/usr/local/lib',
+)
+
+
+def _resolve_library_path(library_name: str, search_dirs=None) -> Path | None:
+    """Resolve a system shared library to an absolute path when possible."""
+    resolved = ctypes.util.find_library(library_name)
+    if not resolved:
+        return None
+
+    candidate = Path(resolved)
+    if candidate.is_file():
+        return candidate
+    if Path(resolved).parent != Path('.'):
+        return None
+
+    for search_dir in search_dirs or _LINUX_LIBRARY_SEARCH_DIRS:
+        candidate = Path(search_dir) / resolved
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def _bundled_portaudio_path() -> Path | None:
     """Return PyInstaller's bundled PortAudio library, when available."""
     meipass = getattr(sys, '_MEIPASS', None)
@@ -40,17 +70,24 @@ def _bundled_portaudio_path() -> Path | None:
     return None
 
 
-def _import_sounddevice_with_bundled_portaudio():
-    """Import sounddevice with PyInstaller's bundled PortAudio on Linux."""
+def _preferred_portaudio_path() -> Path | None:
+    """Prefer the host audio stack; use bundled PortAudio only as fallback."""
+    if not sys.platform.startswith('linux'):
+        return None
+    return _resolve_library_path('portaudio') or _bundled_portaudio_path()
+
+
+def _import_sounddevice_with_preferred_portaudio():
+    """Import sounddevice with a deterministic PortAudio path on Linux."""
     original_find_library = ctypes.util.find_library
-    bundled_portaudio = _bundled_portaudio_path()
+    preferred_portaudio = _preferred_portaudio_path()
 
     def find_library(name):
-        if name == 'portaudio' and bundled_portaudio is not None:
-            return str(bundled_portaudio)
+        if name == 'portaudio' and preferred_portaudio is not None:
+            return str(preferred_portaudio)
         return original_find_library(name)
 
-    if bundled_portaudio is not None and sys.platform.startswith('linux'):
+    if preferred_portaudio is not None:
         ctypes.util.find_library = find_library
     try:
         import sounddevice as sounddevice
@@ -60,7 +97,7 @@ def _import_sounddevice_with_bundled_portaudio():
     return sounddevice
 
 
-sd = _import_sounddevice_with_bundled_portaudio()
+sd = _import_sounddevice_with_preferred_portaudio()
 
 
 class AudioPlayerWidget(QWidget):

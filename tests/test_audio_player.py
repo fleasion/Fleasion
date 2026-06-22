@@ -144,3 +144,28 @@ def test_bundled_portaudio_path_ignores_unfrozen_runtime(monkeypatch):
     monkeypatch.delattr(sys, "_MEIPASS", raising=False)
 
     assert audio_player._bundled_portaudio_path() is None
+
+
+def test_resolve_library_path_finds_bare_library_name(tmp_path, monkeypatch):
+    library = tmp_path / "libportaudio.so.2"
+    library.write_bytes(b"portaudio")
+    monkeypatch.setattr(audio_player.ctypes.util, "find_library", lambda name: library.name)
+
+    assert audio_player._resolve_library_path("portaudio", [tmp_path]) == library
+
+
+def test_preferred_portaudio_uses_system_before_bundled(tmp_path, monkeypatch):
+    system_dir = tmp_path / "system"
+    bundle_dir = tmp_path / "bundle"
+    system_dir.mkdir()
+    bundle_dir.mkdir()
+    system_library = system_dir / "libportaudio.so.2"
+    bundled_library = bundle_dir / "libportaudio.so.2"
+    system_library.write_bytes(b"system")
+    bundled_library.write_bytes(b"bundled")
+    monkeypatch.setattr(sys, "_MEIPASS", str(bundle_dir), raising=False)
+    monkeypatch.setattr(audio_player, "_LINUX_LIBRARY_SEARCH_DIRS", (str(system_dir),))
+    monkeypatch.setattr(audio_player.ctypes.util, "find_library", lambda name: system_library.name)
+    monkeypatch.setattr(audio_player.sys, "platform", "linux")
+
+    assert audio_player._preferred_portaudio_path() == system_library

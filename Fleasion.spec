@@ -1,32 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
 import importlib.util
-import ctypes.util
 import os, re, pathlib, sys
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
-
-def _resolve_library_path(library_name):
-    resolved = ctypes.util.find_library(library_name)
-    if not resolved:
-        return None
-    candidate = pathlib.Path(resolved)
-    if candidate.is_file():
-        return candidate
-    if os.path.sep in resolved:
-        return None
-    for search_dir in (
-        '/lib64',
-        '/usr/lib64',
-        '/lib/x86_64-linux-gnu',
-        '/usr/lib/x86_64-linux-gnu',
-        '/lib',
-        '/usr/lib',
-        '/usr/local/lib',
-    ):
-        candidate = pathlib.Path(search_dir) / resolved
-        if candidate.is_file():
-            return candidate
-    return None
 
 _paths_src = pathlib.Path('src/Fleasion/utils/paths.py').read_text()
 _version = re.search(r"APP_VERSION\s*=\s*['\"]([^'\"]+)['\"]", _paths_src).group(1)
@@ -121,9 +97,6 @@ elif sys.platform == 'darwin':
     tmp_ret = collect_all('Cryptodome')
     datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 elif sys.platform.startswith('linux'):
-    _portaudio = _resolve_library_path('portaudio')
-    if _portaudio:
-        binaries.append((str(_portaudio), '.'))
     if _bundled_linux_helper.exists():
         datas.append((str(_bundled_linux_helper), '.'))
     datas.append(('src/Fleasion/linux_proxy_helper_daemon.py', '.'))
@@ -149,6 +122,13 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+if sys.platform.startswith('linux'):
+    # The sounddevice hook collects the build machine's PortAudio. That can
+    # silence playback on other distros, so the GUI player uses host PortAudio.
+    a.binaries = [
+        entry for entry in a.binaries
+        if not any(pathlib.Path(str(part)).name.startswith('libportaudio.so') for part in entry[:2])
+    ]
 pyz = PYZ(a.pure)
 
 exe = EXE(
