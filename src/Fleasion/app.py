@@ -129,6 +129,18 @@ def _is_admin() -> bool:
         return False
 
 
+def _should_sync_autostart_on_launch(run_on_boot: bool) -> bool:
+    if not run_on_boot:
+        return False
+    if sys.platform == 'darwin':
+        return not _is_admin()
+    if sys.platform.startswith('linux'):
+        return True
+    if sys.platform == 'win32':
+        return _is_admin()
+    return False
+
+
 def _relaunch_as_admin(extra_args: str = '', parent_hwnd: int | None = None) -> bool:
     """Silently attempt to relaunch elevated via the platform prompt.
 
@@ -1602,12 +1614,12 @@ def main():
     start_update_check()
 
     # Sync autostart on every launch (updates if launch method changed).
-    # Only attempt when running elevated: the proxy needs hosts/port privileges.
-    if config_manager.run_on_boot and (sys.platform == 'darwin' or sys.platform == 'win32') and (sys.platform == 'darwin' or _is_admin()):
+    # Windows needs elevation for Task Scheduler; macOS/Linux use user-session
+    # launch entries and should reconcile from the normal GUI process.
+    if _should_sync_autostart_on_launch(config_manager.run_on_boot):
         try:
             from .utils.autostart import sync_autostart
-            if sys.platform != 'darwin' or not _is_admin():
-                sync_autostart(True, CONFIG_DIR)
+            sync_autostart(True, CONFIG_DIR)
         except Exception:
             pass
 

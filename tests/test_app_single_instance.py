@@ -1,5 +1,10 @@
 from Fleasion import app as app_module
-from Fleasion.app import _handle_single_instance_command, _looks_like_macos_fleasion_command, kill_other_fleasion_instances
+from Fleasion.app import (
+    _handle_single_instance_command,
+    _looks_like_macos_fleasion_command,
+    _should_sync_autostart_on_launch,
+    kill_other_fleasion_instances,
+)
 
 
 def test_macos_fleasion_process_matching_accepts_real_launch_forms():
@@ -50,3 +55,21 @@ def test_single_instance_quit_command_exits_tray():
     _handle_single_instance_command(_SocketStub(), tray)
 
     assert tray.exit_calls == 1
+
+
+def test_autostart_resync_includes_linux_normal_user(monkeypatch):
+    monkeypatch.setattr(app_module.sys, "platform", "linux")
+    monkeypatch.setattr(app_module, "_is_admin", lambda: False)
+
+    assert _should_sync_autostart_on_launch(True)
+    assert not _should_sync_autostart_on_launch(False)
+
+
+def test_autostart_resync_still_requires_admin_on_windows(monkeypatch):
+    monkeypatch.setattr(app_module.sys, "platform", "win32")
+    monkeypatch.setattr(app_module, "_is_admin", lambda: False)
+
+    assert not _should_sync_autostart_on_launch(True)
+
+    monkeypatch.setattr(app_module, "_is_admin", lambda: True)
+    assert _should_sync_autostart_on_launch(True)

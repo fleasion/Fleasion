@@ -25,6 +25,7 @@ def test_linux_autostart_quotes_exec_tokens(tmp_path, monkeypatch):
 
     monkeypatch.setattr(autostart.sys, "platform", "linux")
     monkeypatch.setattr(autostart, "LINUX_AUTOSTART_PATH", autostart_path)
+    monkeypatch.setattr(autostart, "_linux_installed_launcher", lambda: None)
 
     assert autostart._create_task(
         {
@@ -37,3 +38,28 @@ def test_linux_autostart_quotes_exec_tokens(tmp_path, monkeypatch):
     desktop_entry = autostart_path.read_text(encoding="utf-8")
     assert 'Exec="/opt/Fleasion Python" "' in desktop_entry
     assert 'launcher.py" --no-dashboard' in desktop_entry
+
+
+def test_linux_autostart_prefers_installed_launcher(tmp_path, monkeypatch):
+    autostart_path = tmp_path / ".config" / "autostart" / "fleasion.desktop"
+    launcher = tmp_path / ".local" / "bin" / "fleasion-launch"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    monkeypatch.setattr(autostart.sys, "platform", "linux")
+    monkeypatch.setattr(autostart, "LINUX_AUTOSTART_PATH", autostart_path)
+    monkeypatch.setattr(autostart, "_linux_installed_launcher", lambda: launcher)
+
+    launch_info = autostart._get_launch_info()
+    assert launch_info == {
+        "mode": "linux-launcher",
+        "path": str(launcher),
+        "_fmt": autostart._TASK_FORMAT_VERSION,
+    }
+
+    assert autostart._create_task(launch_info)
+
+    desktop_entry = autostart_path.read_text(encoding="utf-8")
+    assert f"Exec={launcher} --no-dashboard" in desktop_entry
+    assert f"Path={launcher.parent}" in desktop_entry
+    assert "Project Folder" not in desktop_entry

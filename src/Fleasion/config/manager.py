@@ -6,6 +6,7 @@ import stat
 import threading
 from copy import deepcopy
 from pathlib import Path
+from typing import Any
 
 from ..utils.paths import CONFIG_DIR, CONFIG_FILE, CONFIGS_FOLDER, DEFAULT_SETTINGS
 
@@ -107,7 +108,7 @@ class ConfigManager:
                 encodings.append(encoding)
         return tuple(encodings)
 
-    def _load_json_file(self, path: Path) -> dict:
+    def _load_json_file(self, path: Path) -> Any:
         """Load JSON and recover legacy non-UTF files when possible."""
         raw = path.read_bytes()
         decode_error: UnicodeDecodeError | None = None
@@ -138,13 +139,26 @@ class ConfigManager:
             raise decode_error
         return json.loads(raw)
 
+    @staticmethod
+    def _normalize_config_data(data: Any) -> dict:
+        """Return a valid config object from decoded JSON data."""
+        if isinstance(data, dict):
+            rules = data.get('replacement_rules', [])
+            if not isinstance(rules, list):
+                data = data.copy()
+                data['replacement_rules'] = []
+            return data
+        if isinstance(data, list):
+            return {'replacement_rules': data}
+        return {'replacement_rules': []}
+
     def _load_config(self, name: str) -> dict:
         """Load a config from disk."""
         path = self._get_config_path(name)
         if path.exists():
             try:
                 self._clear_read_only(path)
-                return self._load_json_file(Path(path))
+                return self._normalize_config_data(self._load_json_file(Path(path)))
             except (json.JSONDecodeError, OSError, UnicodeDecodeError):
                 pass
         return {'replacement_rules': []}

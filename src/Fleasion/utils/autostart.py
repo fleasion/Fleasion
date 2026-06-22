@@ -57,8 +57,26 @@ def _desktop_exec_join(parts: list[str]) -> str:
     return ' '.join(_desktop_exec_quote(part) for part in parts)
 
 
+def _linux_installed_launcher() -> Path | None:
+    try:
+        from .platform_linux import LINUX_LAUNCHER_PATH
+    except Exception:
+        return None
+    try:
+        if LINUX_LAUNCHER_PATH.is_file():
+            return LINUX_LAUNCHER_PATH
+    except OSError:
+        return None
+    return None
+
+
 def _get_launch_info() -> dict:
     """Return a dict describing how to launch the current instance."""
+    if sys.platform.startswith('linux'):
+        installed_launcher = _linux_installed_launcher()
+        if installed_launcher is not None:
+            return {'mode': 'linux-launcher', 'path': str(installed_launcher), '_fmt': _TASK_FORMAT_VERSION}
+
     if getattr(sys, 'frozen', False):
         return {'mode': 'exe', 'path': sys.executable, '_fmt': _TASK_FORMAT_VERSION}
 
@@ -164,7 +182,11 @@ def _create_task(launch_info: dict) -> bool:
 
     if sys.platform.startswith('linux'):
         try:
-            if launch_info['mode'] == 'exe':
+            if launch_info['mode'] == 'linux-launcher':
+                launcher = Path(launch_info['path'])
+                command = _desktop_exec_join([str(launcher), '--no-dashboard'])
+                working_dir = str(launcher.parent)
+            elif launch_info['mode'] == 'exe':
                 command = _desktop_exec_join([launch_info['path'], '--no-dashboard'])
                 working_dir = str(Path(launch_info['path']).parent)
             else:
