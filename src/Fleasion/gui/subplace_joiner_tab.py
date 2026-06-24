@@ -138,6 +138,8 @@ class _Invoker(QObject):
 
 from .prejsons_dialog import _make_rounded_pixmap, _preprocess_thumb_bytes, _CARD_W, _CARD_H, _THUMB_W, _THUMB_H
 
+_SUBPLACE_CARD_H = _CARD_H + 8
+
 
 class _JobIdEdit(QLineEdit):
     """QLineEdit with placeholder text for an optional JobId."""
@@ -192,7 +194,7 @@ class SubplaceGameCard(QFrame):
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self._apply_style()
         self.setMinimumWidth(_CARD_W)
-        self.setFixedHeight(_CARD_H)
+        self.setFixedHeight(_SUBPLACE_CARD_H)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._setup_ui()
 
@@ -215,7 +217,7 @@ class SubplaceGameCard(QFrame):
 
         self.name_label = QLabel("Unknown")
         self.name_label.setWordWrap(True)
-        self.name_label.setMaximumHeight(38)
+        self.name_label.setMaximumHeight(42)
         f = QFont()
         f.setBold(True)
         self.name_label.setFont(f)
