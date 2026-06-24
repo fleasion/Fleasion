@@ -22,6 +22,26 @@ def _certifi_context() -> ssl.SSLContext | None:
     return ssl.create_default_context(cafile=certifi.where())
 
 
+@lru_cache(maxsize=1)
+def _tls12_context() -> ssl.SSLContext:
+    ctx = ssl.create_default_context()
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.maximum_version = ssl.TLSVersion.TLSv1_2
+    return ctx
+
+
+@lru_cache(maxsize=1)
+def _certifi_tls12_context() -> ssl.SSLContext | None:
+    try:
+        import certifi
+    except Exception:
+        return None
+    ctx = ssl.create_default_context(cafile=certifi.where())
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.maximum_version = ssl.TLSVersion.TLSv1_2
+    return ctx
+
+
 def _is_certificate_verify_error(exc: BaseException) -> bool:
     seen: set[int] = set()
     pending: list[BaseException] = [exc]
@@ -45,6 +65,36 @@ def _is_certificate_verify_error(exc: BaseException) -> bool:
     return 'CERTIFICATE_VERIFY_FAILED' in str(exc)
 
 
+def _is_tls_record_layer_error(exc: BaseException) -> bool:
+    text = str(exc).upper()
+    return 'RECORD_LAYER_FAILURE' in text or 'RECORD LAYER FAILURE' in text
+
+
+def _open_with_contexts(
+    req: urllib.request.Request,
+    timeout: int,
+    contexts: list[ssl.SSLContext | None],
+):
+    last_exc: urllib.error.URLError | None = None
+    seen: set[int] = set()
+
+    for ctx in contexts:
+        if ctx is None:
+            continue
+        ident = id(ctx)
+        if ident in seen:
+            continue
+        seen.add(ident)
+        try:
+            return urllib.request.urlopen(req, timeout=timeout, context=ctx)
+        except urllib.error.URLError as exc:
+            last_exc = exc
+
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError('No HTTPS fallback context available')
+
+
 def _open_verified(
     req: urllib.request.Request,
     url: str,
@@ -53,13 +103,23 @@ def _open_verified(
     try:
         return urllib.request.urlopen(req, timeout=timeout)
     except urllib.error.URLError as exc:
-        if not url.lower().startswith('https://') or not _is_certificate_verify_error(exc):
+        if not url.lower().startswith('https://'):
             raise
 
-        ctx = _certifi_context()
-        if ctx is None:
-            raise
-        return urllib.request.urlopen(req, timeout=timeout, context=ctx)
+        if _is_certificate_verify_error(exc):
+            ctx = _certifi_context()
+            if ctx is None:
+                raise
+            return _open_with_contexts(req, timeout, [ctx])
+
+        if _is_tls_record_layer_error(exc):
+            return _open_with_contexts(
+                req,
+                timeout,
+                [_tls12_context(), _certifi_tls12_context()],
+            )
+
+        raise
 
 
 def http_get(url: str, timeout: int = 15, headers: dict[str, str] | None = None) -> bytes:
