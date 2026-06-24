@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ssl
+import subprocess
 import urllib.error
 import urllib.request
 from functools import lru_cache
@@ -11,6 +12,14 @@ import shutil
 
 
 _USER_AGENT = 'FleasionNT/1.2.0'
+
+
+def _log_http(message: str) -> None:
+    try:
+        from .logging import log_buffer
+    except Exception:
+        return
+    log_buffer.log('HTTP', message)
 
 
 @lru_cache(maxsize=1)
@@ -107,12 +116,14 @@ def _open_verified(
             raise
 
         if _is_certificate_verify_error(exc):
+            _log_http(f'Certificate verification failed for {url}; retrying with certifi')
             ctx = _certifi_context()
             if ctx is None:
                 raise
             return _open_with_contexts(req, timeout, [ctx])
 
         if _is_tls_record_layer_error(exc):
+            _log_http(f'TLS record layer failure for {url}; retrying with TLS 1.2')
             return _open_with_contexts(
                 req,
                 timeout,
@@ -153,5 +164,57 @@ def http_download_to(
         request_headers.update(headers)
     req = urllib.request.Request(url, headers=request_headers)
 
-    with _open_verified(req, url, timeout) as resp, dest.open('wb') as out:
-        shutil.copyfileobj(resp, out)
+    try:
+        with _open_verified(req, url, timeout) as resp, dest.open('wb') as out:
+            shutil.copyfileobj(resp, out)
+    except (urllib.error.URLError, OSError) as exc:
+        _curl_download_to(url, dest, timeout, request_headers, exc)
+
+
+def _curl_download_to(
+    url: str,
+    dest: Path,
+    timeout: int,
+    headers: dict[str, str],
+    original_exc: Exception,
+) -> None:
+    curl = shutil.which('curl')
+    if curl is None:
+        raise original_exc
+
+    _log_http(f'urllib download failed for {url}; retrying with curl')
+    tmp = dest.with_name(f'{dest.name}.download')
+    cmd = [
+        curl,
+        '--fail',
+        '--location',
+        '--silent',
+        '--show-error',
+        '--max-time',
+        str(max(1, int(timeout))),
+        '--output',
+        str(tmp),
+    ]
+    for key, value in headers.items():
+        if key.lower() == 'user-agent':
+            cmd.extend(['--user-agent', value])
+        else:
+            cmd.extend(['--header', f'{key}: {value}'])
+    cmd.append(url)
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or '').strip()
+            raise RuntimeError(detail or f'curl exited with code {result.returncode}')
+        tmp.replace(dest)
+    except Exception as exc:
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError(
+            f'urllib download failed: {original_exc}; curl fallback failed: {exc}'
+        ) from original_exc

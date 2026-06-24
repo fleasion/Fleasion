@@ -1,5 +1,6 @@
 import importlib.util
 import ssl
+import subprocess
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -60,3 +61,54 @@ def test_certificate_failure_without_certifi_reraises_original(monkeypatch):
         http._open_verified(req, 'https://example.test/file', 30)
 
     assert exc_info.value is original
+
+
+def test_http_download_to_uses_curl_fallback_after_urllib_failure(monkeypatch, tmp_path):
+    http = _load_http_module()
+    original = urllib.error.URLError(
+        ssl.SSLError('[SSL: RECORD_LAYER_FAILURE] record layer failure')
+    )
+    dest = tmp_path / 'asset.obj'
+    calls = {}
+
+    def fake_urlopen(req, timeout, context=None):
+        raise original
+
+    def fake_run(cmd, capture_output, check, text):
+        calls['cmd'] = cmd
+        calls['capture_output'] = capture_output
+        calls['check'] = check
+        calls['text'] = text
+        Path(cmd[cmd.index('--output') + 1]).write_bytes(b'from curl')
+        return subprocess.CompletedProcess(cmd, 0, '', '')
+
+    monkeypatch.setattr(urllib.request, 'urlopen', fake_urlopen)
+    monkeypatch.setattr(http.shutil, 'which', lambda name: '/usr/bin/curl')
+    monkeypatch.setattr(http.subprocess, 'run', fake_run)
+
+    http.http_download_to(
+        'https://file.garden/example.obj',
+        dest,
+        timeout=30,
+        headers={'User-Agent': 'Mozilla/5.0', 'Accept': '*/*'},
+    )
+
+    assert dest.read_bytes() == b'from curl'
+    assert calls['cmd'][:8] == [
+        '/usr/bin/curl',
+        '--fail',
+        '--location',
+        '--silent',
+        '--show-error',
+        '--max-time',
+        '30',
+        '--output',
+    ]
+    assert '--user-agent' in calls['cmd']
+    assert 'Mozilla/5.0' in calls['cmd']
+    assert '--header' in calls['cmd']
+    assert 'Accept: */*' in calls['cmd']
+    assert calls['cmd'][-1] == 'https://file.garden/example.obj'
+    assert calls['capture_output'] is True
+    assert calls['check'] is False
+    assert calls['text'] is True

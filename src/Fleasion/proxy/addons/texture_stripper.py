@@ -1397,7 +1397,6 @@ class TextureStripper:
                 return ('local', value)
             if base_url in self._cdn_redirects:
                 value = self._cdn_redirects.pop(base_url)
-                log_buffer.log('CDN', f'CDN short-circuit match: action=cdn url={base_url[:120]} target={_short_value(value)}')
                 return ('cdn', value)
             if base_url in self._solidmodel_injections:
                 if base_url in self._solidmodel_force_v3:

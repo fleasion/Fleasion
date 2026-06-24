@@ -1,5 +1,6 @@
 import json
 
+from Fleasion.proxy.addons import texture_stripper as texture_stripper_module
 from Fleasion.proxy.addons.texture_stripper import TextureStripper, _decode_texpack_slot_quality
 
 
@@ -70,3 +71,29 @@ def test_texturepack_partial_batch_uses_fidelity_before_occurrence_order():
         0: 2,
         1: 1,
     }
+
+
+def test_cdn_redirect_match_does_not_log_short_circuit_noise(monkeypatch):
+    messages = []
+
+    class _LogBuffer:
+        def log(self, category, message):
+            messages.append((category, message))
+
+    monkeypatch.setattr(texture_stripper_module, 'log_buffer', _LogBuffer())
+    with TextureStripper._lock:
+        TextureStripper._pending.clear()
+        TextureStripper._cdn_redirects.clear()
+        TextureStripper._local_redirects.clear()
+        TextureStripper._solidmodel_injections.clear()
+        TextureStripper._cdn_redirects['https://fts.rbxcdn.com/sc1/example'] = (
+            'https://file.garden/example.obj'
+        )
+
+    stripper = TextureStripper(_Config())
+
+    assert stripper.check_cdn_request('fts.rbxcdn.com', '/sc1/example?x=1') == (
+        'cdn',
+        'https://file.garden/example.obj',
+    )
+    assert not any('CDN short-circuit match' in message for _, message in messages)
