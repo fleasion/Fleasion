@@ -551,7 +551,7 @@ class ReplacerConfigWindow(QDialog):
         self._prejsons_dialog: QDialog | None = None
         self._proxy_gates: list[ProxyGate] = []
 
-        self.setWindowTitle(f'{APP_NAME} - Dashboard')
+        self.setWindowTitle('Dashboard')
         self.resize(900, 750)
         self.setMinimumSize(800, 650)
         if sys.platform == 'darwin':

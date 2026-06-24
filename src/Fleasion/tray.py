@@ -747,7 +747,7 @@ class SystemTray:
         dialog = QDialog(_parent)
         if _on_top:
             dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
-        dialog.setWindowTitle(f'{APP_NAME} - macOS Beta Warning')
+        dialog.setWindowTitle('macOS Beta Warning')
 
         layout = QVBoxLayout(dialog)
         layout.setSpacing(12)
@@ -798,7 +798,7 @@ class SystemTray:
         msg_box = QMessageBox(_parent)
         if _on_top:
             msg_box.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
-        msg_box.setWindowTitle(APP_NAME)
+        msg_box.setWindowTitle('Discord Invite Copied')
         msg_box.setText('Discord invite copied!')
         msg_box.setInformativeText(f'https://{APP_DISCORD}')
         msg_box.setIcon(QMessageBox.Icon.Information)

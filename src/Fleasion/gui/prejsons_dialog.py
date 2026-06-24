@@ -28,7 +28,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ..utils import CLOG_URL, PREJSONS_DIR, ORIGINALS_DIR, REPLACEMENTS_DIR, APP_NAME, get_icon_path
+from ..utils import CLOG_URL, PREJSONS_DIR, ORIGINALS_DIR, REPLACEMENTS_DIR, get_icon_path
 from ..utils.http import http_get
 from .file_drop import FileDropLineEdit
 
@@ -540,7 +540,7 @@ class PreJsonsDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(f"{APP_NAME} - Scraped Games")
+        self.setWindowTitle('Scraped Games')
         self.resize(760, 580)
         self.setMinimumSize(640, 480)
         self.setWindowFlags(

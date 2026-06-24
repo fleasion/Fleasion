@@ -344,7 +344,7 @@ def _show_admin_required_dialog(parent=None):
     msg = QMessageBox(_parent)
     if _on_top:
         msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
-    msg.setWindowTitle('Fleasion - Administrator Mode Required')
+    msg.setWindowTitle('Administrator Mode Required')
     msg.setIcon(QMessageBox.Icon.Warning)
     if sys.platform == 'darwin':
         msg.setText('Fleasion needs its macOS proxy helper before interception can start.')
@@ -385,7 +385,7 @@ def _show_proxy_bind_error_dialog(details: dict):
     msg = QMessageBox(_parent)
     if _on_top:
         msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
-    msg.setWindowTitle('Fleasion - Proxy Port Conflict')
+    msg.setWindowTitle('Proxy Port Conflict')
     msg.setIcon(QMessageBox.Icon.Warning)
     msg.setText(f'Fleasion could not start its local proxy on port {port}.')
 
@@ -451,7 +451,7 @@ def _show_hosts_write_exhausted_dialog(details: dict):
         msg = QMessageBox(_parent)
         if _on_top:
             msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
-        msg.setWindowTitle('Fleasion - Hosts File Write Failed')
+        msg.setWindowTitle('Hosts File Write Failed')
         msg.setIcon(QMessageBox.Icon.Warning)
         msg.setText('Fleasion could not modify the system hosts file after every write attempt was exhausted.')
 
@@ -537,7 +537,7 @@ def _show_macos_ca_patch_failed_dialog(details: dict):
     msg = QMessageBox(_parent)
     if _on_top:
         msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
-    msg.setWindowTitle('Fleasion - macOS Roblox CA Patch Failed')
+    msg.setWindowTitle('macOS Roblox CA Patch Failed')
     msg.setIcon(QMessageBox.Icon.Warning)
     msg.setText('Fleasion could not verify Roblox SSL trust patching, so the proxy was not started.')
     msg.setTextFormat(Qt.TextFormat.RichText)
@@ -589,7 +589,7 @@ def _choose_macos_auth_source_on_launch(config_manager, tray=None, *, force: boo
     dialog = _MacOSAuthSourceDialog(_parent)
     if _on_top:
         dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
-    dialog.setWindowTitle('Fleasion - Roblox Login Source')
+    dialog.setWindowTitle('Roblox Login Source')
     dialog.setMinimumWidth(620)
 
     selected: dict[str, str] = {}
@@ -874,7 +874,7 @@ def _show_auth_cookie_unavailable_dialog(details: dict, tray=None):
     msg = _ForcedAcknowledgeMessageBox(_parent)
     if _on_top:
         msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
-    msg.setWindowTitle('Fleasion - Roblox Token Not Readable')
+    msg.setWindowTitle('Roblox Token Not Readable')
     msg.setIcon(QMessageBox.Icon.Warning)
     msg.setText(
         'Fleasion is continuing without a Roblox login token.'
@@ -1122,7 +1122,7 @@ class RobloxExitMonitor(QObject):
         dialog = QDialog(_parent)
         if _on_top:
             dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
-        dialog.setWindowTitle('Fleasion — Roblox Studio Detected')
+        dialog.setWindowTitle('Roblox Studio Detected')
 
         layout = QVBoxLayout(dialog)
         layout.setSpacing(12)
@@ -1442,7 +1442,7 @@ def main():
     if sys.platform == 'darwin' and _is_admin():
         QMessageBox.critical(
             None,
-            'Fleasion - Do Not Run with sudo',
+            'Do Not Run with sudo',
             'Run Fleasion as your normal macOS user.\n\n'
             'Fleasion installs a small privileged proxy helper when needed; the dashboard and menu-bar app must not run as root.',
         )
@@ -1489,7 +1489,7 @@ def main():
             # silently does nothing.  Branch on whether WE are admin rather than
             # trying to inspect the other process's token cross-privilege.
             msg_box = QMessageBox()
-            msg_box.setWindowTitle('Fleasion Already Running')
+            msg_box.setWindowTitle('Already Running')
             msg_box.setText('Another instance of Fleasion is already running (Check your system tray).')
             msg_box.setIcon(QMessageBox.Icon.Warning)
 
@@ -1652,7 +1652,7 @@ def main():
 
         gate = QDialog(None)
         gate.setModal(True)
-        gate.setWindowTitle('Fleasion - Administrator Permission Required')
+        gate.setWindowTitle('Administrator Permission Required')
         gate.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
         gate_layout = QVBoxLayout(gate)
         if sys.platform == 'darwin':
@@ -1701,7 +1701,7 @@ def main():
             return
 
         prompt = QMessageBox(_visible_parent_widget())
-        prompt.setWindowTitle('Fleasion - Install Proxy Helper')
+        prompt.setWindowTitle('Install Proxy Helper')
         prompt.setIcon(QMessageBox.Icon.Information)
         prompt.setText('Install the Fleasion macOS proxy helper?')
         prompt.setInformativeText(
@@ -1742,7 +1742,7 @@ def main():
         _no_roblox_msg = QMessageBox(_parent)
         if _on_top:
             _no_roblox_msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
-        _no_roblox_msg.setWindowTitle('Fleasion — Roblox Not Found')
+        _no_roblox_msg.setWindowTitle('Roblox Not Found')
         _no_roblox_msg.setIcon(QMessageBox.Icon.Warning)
         _no_roblox_msg.setText('Roblox does not appear to be installed.')
         _no_roblox_msg.setInformativeText(
@@ -1776,7 +1776,7 @@ def main():
         welcome_box = _FirstTimeSetupMessageBox(_parent)
         if _on_top:
             welcome_box.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
-        welcome_box.setWindowTitle('Welcome to Fleasion')
+        welcome_box.setWindowTitle('Welcome')
         welcome_box.setText(
             'Welcome to Fleasion!\n\n'
             'Quick setup guide:\n\n'

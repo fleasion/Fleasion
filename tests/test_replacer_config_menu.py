@@ -1,5 +1,7 @@
 import json
 import os
+from pathlib import Path
+import re
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -182,6 +184,20 @@ def test_enabled_menu_button_press_loads_new_config_file_from_disk(tmp_path, mon
         window.enabled_menu.hide()
         window.close()
     assert app is not None
+
+
+def test_window_titles_do_not_embed_application_name():
+    source_root = Path(__file__).resolve().parents[1] / 'src' / 'Fleasion'
+    repeated_title_setters = []
+    pattern = re.compile(r'setWindowTitle\([^\n]*(APP_NAME|Fleasion)')
+
+    for path in source_root.rglob('*.py'):
+        text = path.read_text(encoding='utf-8')
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            if pattern.search(line):
+                repeated_title_setters.append(f'{path.relative_to(source_root)}:{line_number}')
+
+    assert repeated_title_setters == []
 
 
 def test_group_rows_use_painted_folder_icon_not_unicode_text(tmp_path, monkeypatch):
