@@ -379,6 +379,17 @@ def _dns_query_udp(hostname: str, server: str, port: int = 53, timeout: float = 
 _DNS_FALLBACK_SERVERS = ['8.8.8.8', '1.1.1.1', '1.0.0.1']
 
 
+def _prefer_ipv4_endpoints(endpoints: list[UpstreamEndpoint]) -> list[UpstreamEndpoint]:
+    """Return endpoints ordered like v2.0.1's stable IPv4-first upstream path."""
+    return sorted(
+        endpoints,
+        key=lambda ep: (
+            0 if ep.family == socket.AF_INET else 1 if ep.family == socket.AF_INET6 else 2,
+            ep.ip or ep.host,
+        ),
+    )
+
+
 def _resolve_real_endpoints(hosts: set[str]) -> dict[str, list[UpstreamEndpoint]]:
     """Resolve real upstream endpoints before hosts entries point at localhost.
 
@@ -387,7 +398,9 @@ def _resolve_real_endpoints(hosts: set[str]) -> dict[str, list[UpstreamEndpoint]
     upstream connections to loop back to ourselves.
 
     Primary strategy: socket.getaddrinfo() (uses OS resolver — fast, respects
-    IPv6 and system network config).
+    system network config). IPv4 endpoints are preferred because v2.0.1 was
+    IPv4-only and some user networks expose broken or very slow Roblox IPv6
+    routes that produce upstream TLS failures or HTTP 524 responses.
 
     Fallback strategy: raw UDP DNS query to well-known public resolvers, only
     when the OS resolver produced no routable endpoints. Public DNS can select
@@ -419,6 +432,7 @@ def _resolve_real_endpoints(hosts: set[str]) -> dict[str, list[UpstreamEndpoint]
             log_buffer.log('Proxy', f'DNS resolve failed for {host} (OS resolver): {exc}')
 
         if endpoints:
+            endpoints = _prefer_ipv4_endpoints(endpoints)
             real_endpoints[host] = endpoints
             log_buffer.log('Proxy', f'Resolved {host} -> {endpoints[0].ip} (OS resolver)')
             continue
@@ -431,7 +445,7 @@ def _resolve_real_endpoints(hosts: set[str]) -> dict[str, list[UpstreamEndpoint]
         for dns_server in _DNS_FALLBACK_SERVERS:
             try:
                 fallback: list[UpstreamEndpoint] = []
-                for family, qtype in ((socket.AF_INET6, 28), (socket.AF_INET, 1)):
+                for family, qtype in ((socket.AF_INET, 1), (socket.AF_INET6, 28)):
                     for ip in _dns_query_udp(host, dns_server, qtype=qtype):
                         key = (family, ip)
                         if key in seen:
@@ -439,6 +453,7 @@ def _resolve_real_endpoints(hosts: set[str]) -> dict[str, list[UpstreamEndpoint]
                         seen.add(key)
                         fallback.append(UpstreamEndpoint(host=host, ip=ip, family=family))
                 if fallback:
+                    fallback = _prefer_ipv4_endpoints(fallback)
                     real_endpoints[host] = fallback
                     log_buffer.log(
                         'Proxy',
