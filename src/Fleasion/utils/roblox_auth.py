@@ -7,7 +7,6 @@ import re
 import sys
 import threading
 import time
-from http.cookiejar import CookieJar
 from pathlib import Path
 
 from .logging import log_buffer
@@ -54,6 +53,7 @@ _MACOS_SAFARI_COOKIE_FILES = (
     Path('Library') / 'Cookies' / 'Cookies.binarycookies',
     Path('Library') / 'Containers' / 'com.apple.Safari' / 'Data' / 'Library' / 'Cookies' / 'Cookies.binarycookies',
 )
+_MACOS_FIREFOX_PROFILE_DIR = Path('Library') / 'Application Support' / 'Firefox' / 'Profiles'
 _MACOS_CHROMIUM_BROWSER_DIRS = {
     'Chrome': (
         Path('Library') / 'Application Support' / 'Google' / 'Chrome',
@@ -666,6 +666,14 @@ def _macos_browser_cookie_files(source: str) -> list[Path]:
     if source == 'Safari':
         return [USER_HOME / relative for relative in _MACOS_SAFARI_COOKIE_FILES if _path_exists(USER_HOME / relative)]
 
+    if source == 'Firefox':
+        profiles_dir = USER_HOME / _MACOS_FIREFOX_PROFILE_DIR
+        try:
+            profile_cookie_files = sorted(profiles_dir.glob('*/cookies.sqlite'))
+        except OSError:
+            return []
+        return [path for path in profile_cookie_files if _path_exists(path)]
+
     bases = _MACOS_CHROMIUM_BROWSER_DIRS.get(source)
     if not bases:
         return []
@@ -713,7 +721,7 @@ def _make_browser_cookie_loader(source: str, loader):
         if not cookie_files:
             return loader(**kwargs)
 
-        combined = CookieJar()
+        combined = []
         loaded_any = False
         first_error: Exception | None = None
         errors: list[str] = []
@@ -728,7 +736,7 @@ def _make_browser_cookie_loader(source: str, loader):
                 continue
             loaded_any = True
             for cookie in jar:
-                combined.set_cookie(cookie)
+                combined.append(cookie)
 
         if loaded_any:
             return combined

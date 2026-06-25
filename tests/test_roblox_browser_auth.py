@@ -216,6 +216,53 @@ def test_macos_chromium_cookie_files_include_modern_network_databases(tmp_path, 
     assert legacy_default in files
 
 
+def test_macos_firefox_cookie_files_include_modern_and_legacy_profiles(tmp_path, monkeypatch):
+    _reset(monkeypatch)
+    profiles = tmp_path / "Library" / "Application Support" / "Firefox" / "Profiles"
+    modern = profiles / "abc123.default-release" / "cookies.sqlite"
+    legacy = profiles / "xyz789.default" / "cookies.sqlite"
+    modern.parent.mkdir(parents=True)
+    legacy.parent.mkdir(parents=True)
+    modern.write_text("", encoding="utf-8")
+    legacy.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(roblox_auth.sys, "platform", "darwin")
+    monkeypatch.setattr(roblox_auth, "USER_HOME", tmp_path)
+
+    files = roblox_auth._macos_browser_cookie_files("Firefox")
+
+    assert modern in files
+    assert legacy in files
+
+
+def test_macos_firefox_loader_combines_profile_cookie_files(tmp_path, monkeypatch):
+    _reset(monkeypatch)
+    profiles = tmp_path / "Library" / "Application Support" / "Firefox" / "Profiles"
+    modern = profiles / "abc123.default-release" / "cookies.sqlite"
+    legacy = profiles / "xyz789.default" / "cookies.sqlite"
+    modern.parent.mkdir(parents=True)
+    legacy.parent.mkdir(parents=True)
+    modern.write_text("", encoding="utf-8")
+    legacy.write_text("", encoding="utf-8")
+    calls = []
+
+    def loader(cookie_file=None, **_kwargs):
+        calls.append(cookie_file)
+        jar = CookieJar()
+        value = "modern-secret" if cookie_file == str(modern) else "legacy-secret"
+        jar.set_cookie(_cookie(".ROBLOSECURITY", value))
+        return jar
+
+    monkeypatch.setattr(roblox_auth.sys, "platform", "darwin")
+    monkeypatch.setattr(roblox_auth, "USER_HOME", tmp_path)
+
+    wrapped = roblox_auth._make_browser_cookie_loader("Firefox", loader)
+    values = {cookie.value for cookie in wrapped(domain_name="roblox.com")}
+
+    assert calls == [str(modern), str(legacy)]
+    assert values == {"modern-secret", "legacy-secret"}
+
+
 def test_macos_safari_loader_continues_when_container_cookie_file_is_protected(tmp_path, monkeypatch):
     _reset(monkeypatch)
     legacy = tmp_path / "Library" / "Cookies" / "Cookies.binarycookies"
