@@ -307,7 +307,7 @@ class ObjViewerWidget(QOpenGLWidget):
         glLoadIdentity()
         aspect = w / h if h > 0 else 1.0
         set_perspective(45.0, aspect, 0.1, 100.0)
-        glMatrixMode(GL_MODELVIEW)
+        glMatrixMode(GL_MODELVIEW)  
 
     def paintGL(self):
         """Render the scene using cached display list."""

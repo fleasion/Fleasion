@@ -182,6 +182,14 @@ def test_macos_build_bundles_audio_runtime_libraries():
     assert '_soundfile_data/libsndfile_x86_64.dylib' in script
 
 
+def test_pyinstaller_spec_bundles_pyopengl_wayland_backend():
+    spec = Path('Fleasion.spec').read_text(encoding='utf-8')
+
+    assert "collect_submodules('OpenGL.arrays')" in spec
+    assert "'OpenGL.platform.glx'" in spec
+    assert "'OpenGL.platform.egl'" in spec
+
+
 def test_github_workflow_uploads_macos_zip_without_artifact_rezipping():
     workflow = Path('.github/workflows/build.yml').read_text(encoding='utf-8')
 

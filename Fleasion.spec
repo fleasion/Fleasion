@@ -41,6 +41,14 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('PyQt6')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
+# PyOpenGL resolves platform backends dynamically. The upstream PyInstaller
+# hook includes GLX on Linux, but Wayland sessions can select EGL instead.
+hiddenimports += collect_submodules('OpenGL.arrays')
+hiddenimports += [
+    'OpenGL.platform.glx',
+    'OpenGL.platform.egl',
+]
+
 # zstandard is a compiled C extension - collect_all ensures the .pyd is bundled
 tmp_ret = collect_all('zstandard')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]

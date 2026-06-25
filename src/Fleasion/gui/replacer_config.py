@@ -873,7 +873,7 @@ class ReplacerConfigWindow(QDialog):
         self.asset_types_btn = QPushButton('Asset Types')
         self.asset_types_btn.setFixedWidth(80)
         self.asset_types_btn.clicked.connect(self._show_asset_types_popup)
-        from ..cache.cache_viewer import CategoryFilterPopup
+        from ..cache.asset_type_filter import CategoryFilterPopup
         self.asset_types_popup = CategoryFilterPopup(parent=self)
         self.asset_types_popup.filters_changed.connect(self._on_asset_types_changed)
         self.asset_types_popup.aboutToHide.connect(self._mark_asset_types_popup_closed)
@@ -1778,7 +1778,7 @@ class ReplacerConfigWindow(QDialog):
                     text_edit.setPlainText('')
 
             import time as _time
-            from ..cache.cache_viewer import CategoryFilterPopup
+            from ..cache.asset_type_filter import CategoryFilterPopup
             from ..cache.cache_manager import CacheManager
             from PyQt6.QtCore import QPoint
             from PyQt6.QtWidgets import QApplication
