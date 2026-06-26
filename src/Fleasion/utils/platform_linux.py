@@ -281,9 +281,36 @@ _DETACHED_POPEN_KWARGS = {
 }
 
 
+def _host_subprocess_env() -> dict[str, str]:
+    """Run host desktop tools without PyInstaller's private library path."""
+    env = os.environ.copy()
+    original_library_path = env.pop('LD_LIBRARY_PATH_ORIG', None)
+    if original_library_path is not None:
+        if original_library_path:
+            env['LD_LIBRARY_PATH'] = original_library_path
+        else:
+            env.pop('LD_LIBRARY_PATH', None)
+        return env
+
+    bundle_root = getattr(sys, '_MEIPASS', None)
+    library_path = env.get('LD_LIBRARY_PATH')
+    if bundle_root and library_path:
+        bundle_path = Path(bundle_root).resolve()
+        entries = [
+            entry for entry in library_path.split(os.pathsep)
+            if entry and Path(entry).resolve() != bundle_path
+        ]
+        if entries:
+            env['LD_LIBRARY_PATH'] = os.pathsep.join(entries)
+        else:
+            env.pop('LD_LIBRARY_PATH', None)
+    return env
+
+
 def _standard_user_popen(args: list[str]) -> subprocess.Popen:
+    env = _host_subprocess_env()
     if os.geteuid() != 0:
-        return subprocess.Popen(args, **_DETACHED_POPEN_KWARGS)
+        return subprocess.Popen(args, env=env, **_DETACHED_POPEN_KWARGS)
 
     user_home = Path(os.environ.get('FLEASION_USER_HOME') or USER_HOME)
     try:
@@ -292,9 +319,8 @@ def _standard_user_popen(args: list[str]) -> subprocess.Popen:
         gid = stat.st_gid
         pw_entry = pwd.getpwuid(uid)
     except Exception:
-        return subprocess.Popen(args, **_DETACHED_POPEN_KWARGS)
+        return subprocess.Popen(args, env=env, **_DETACHED_POPEN_KWARGS)
 
-    env = os.environ.copy()
     env.update({
         'HOME': str(user_home),
         'USER': pw_entry.pw_name,

@@ -4,6 +4,12 @@ from Fleasion.utils import platform_linux
 from Fleasion.utils.roblox_dirs import _normalise_roblox_dir
 
 
+def _detached_kwargs_with_env(env: dict[str, str] | None = None) -> dict:
+    kwargs = dict(platform_linux._DETACHED_POPEN_KWARGS)
+    kwargs["env"] = env or platform_linux._host_subprocess_env()
+    return kwargs
+
+
 def test_find_sober_resource_dirs_prefers_asset_overlay(tmp_path, monkeypatch):
     sober_root = tmp_path / ".var" / "app" / "org.vinegarhq.Sober"
     data_dir = sober_root / "data" / "sober"
@@ -29,6 +35,31 @@ def test_normalise_linux_sober_resource_dir(tmp_path, monkeypatch):
     assert _normalise_roblox_dir(overlay) == overlay
 
 
+def test_host_subprocess_env_restores_pyinstaller_original_library_path(monkeypatch, tmp_path):
+    bundle_root = tmp_path / "_MEI12345"
+    host_libs = tmp_path / "host-libs"
+    monkeypatch.setattr(platform_linux.sys, "_MEIPASS", str(bundle_root), raising=False)
+    monkeypatch.setenv("LD_LIBRARY_PATH", f"{bundle_root}:{host_libs}")
+    monkeypatch.setenv("LD_LIBRARY_PATH_ORIG", str(host_libs))
+
+    env = platform_linux._host_subprocess_env()
+
+    assert env["LD_LIBRARY_PATH"] == str(host_libs)
+    assert "LD_LIBRARY_PATH_ORIG" not in env
+
+
+def test_host_subprocess_env_removes_pyinstaller_bundle_path(monkeypatch, tmp_path):
+    bundle_root = tmp_path / "_MEI12345"
+    host_libs = tmp_path / "host-libs"
+    monkeypatch.setattr(platform_linux.sys, "_MEIPASS", str(bundle_root), raising=False)
+    monkeypatch.setenv("LD_LIBRARY_PATH", f"{bundle_root}:{host_libs}")
+    monkeypatch.delenv("LD_LIBRARY_PATH_ORIG", raising=False)
+
+    env = platform_linux._host_subprocess_env()
+
+    assert env["LD_LIBRARY_PATH"] == str(host_libs)
+
+
 def test_launch_as_standard_user_opens_http_url(monkeypatch):
     calls = []
 
@@ -49,7 +80,7 @@ def test_launch_as_standard_user_opens_http_url(monkeypatch):
     assert calls == [
         (
             ["/usr/bin/xdg-open", "https://www.roblox.com/login"],
-            platform_linux._DETACHED_POPEN_KWARGS,
+            _detached_kwargs_with_env(),
         )
     ]
 
@@ -74,7 +105,7 @@ def test_launch_as_standard_user_opens_http_url_with_gio_fallback(monkeypatch):
     assert calls == [
         (
             ["/usr/bin/gio", "open", "https://www.roblox.com/login"],
-            platform_linux._DETACHED_POPEN_KWARGS,
+            _detached_kwargs_with_env(),
         )
     ]
 
@@ -114,9 +145,38 @@ def test_launch_as_standard_user_runs_sober_flatpak_for_roblox_uri(monkeypatch):
     assert calls == [
         (
             ["flatpak", "run", platform_linux.SOBER_APP_ID, uri],
-            platform_linux._DETACHED_POPEN_KWARGS,
+            _detached_kwargs_with_env(),
         )
     ]
+
+
+def test_launch_as_standard_user_strips_pyinstaller_env_for_sober_uri(monkeypatch, tmp_path):
+    calls = []
+    bundle_root = tmp_path / "_MEI12345"
+    host_libs = tmp_path / "host-libs"
+
+    monkeypatch.setattr(platform_linux.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(platform_linux.sys, "_MEIPASS", str(bundle_root), raising=False)
+    monkeypatch.setenv("LD_LIBRARY_PATH", f"{bundle_root}:{host_libs}")
+    monkeypatch.delenv("LD_LIBRARY_PATH_ORIG", raising=False)
+    monkeypatch.setattr(
+        platform_linux.shutil,
+        "which",
+        lambda name: "flatpak" if name == "flatpak" else None,
+    )
+
+    def fake_popen(args, **kwargs):
+        calls.append((args, kwargs))
+        return object()
+
+    monkeypatch.setattr(platform_linux.subprocess, "Popen", fake_popen)
+
+    uri = "roblox-player:1+launchmode:app"
+    assert platform_linux.launch_as_standard_user(uri)
+
+    assert calls[0][0] == ["flatpak", "run", platform_linux.SOBER_APP_ID, uri]
+    assert calls[0][1]["env"]["LD_LIBRARY_PATH"] == str(host_libs)
+    assert "LD_LIBRARY_PATH_ORIG" not in calls[0][1]["env"]
 
 
 def test_open_folder_uses_detached_standard_user_launch(tmp_path, monkeypatch):
@@ -142,7 +202,7 @@ def test_open_folder_uses_detached_standard_user_launch(tmp_path, monkeypatch):
     assert calls == [
         (
             ["/usr/bin/xdg-open", str(target)],
-            platform_linux._DETACHED_POPEN_KWARGS,
+            _detached_kwargs_with_env(),
         )
     ]
 
