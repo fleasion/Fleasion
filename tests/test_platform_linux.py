@@ -33,6 +33,11 @@ def test_launch_as_standard_user_opens_http_url(monkeypatch):
     calls = []
 
     monkeypatch.setattr(platform_linux.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(
+        platform_linux.shutil,
+        "which",
+        lambda name: "/usr/bin/xdg-open" if name == "xdg-open" else None,
+    )
 
     def fake_popen(args, **kwargs):
         calls.append((args, kwargs))
@@ -43,7 +48,72 @@ def test_launch_as_standard_user_opens_http_url(monkeypatch):
     assert platform_linux.launch_as_standard_user("https://www.roblox.com/login")
     assert calls == [
         (
-            ["xdg-open", "https://www.roblox.com/login"],
+            ["/usr/bin/xdg-open", "https://www.roblox.com/login"],
+            platform_linux._DETACHED_POPEN_KWARGS,
+        )
+    ]
+
+
+def test_launch_as_standard_user_opens_http_url_with_gio_fallback(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(platform_linux.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(
+        platform_linux.shutil,
+        "which",
+        lambda name: "/usr/bin/gio" if name == "gio" else None,
+    )
+
+    def fake_popen(args, **kwargs):
+        calls.append((args, kwargs))
+        return object()
+
+    monkeypatch.setattr(platform_linux.subprocess, "Popen", fake_popen)
+
+    assert platform_linux.launch_as_standard_user("https://www.roblox.com/login")
+    assert calls == [
+        (
+            ["/usr/bin/gio", "open", "https://www.roblox.com/login"],
+            platform_linux._DETACHED_POPEN_KWARGS,
+        )
+    ]
+
+
+def test_launch_as_standard_user_returns_false_when_no_desktop_opener(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(platform_linux.shutil, "which", lambda name: None)
+    monkeypatch.setattr(
+        platform_linux.subprocess,
+        "Popen",
+        lambda *args, **kwargs: calls.append(args),
+    )
+
+    assert not platform_linux.launch_as_standard_user("https://www.roblox.com/login")
+    assert calls == []
+
+
+def test_launch_as_standard_user_runs_sober_flatpak_for_roblox_uri(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(platform_linux.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(
+        platform_linux.shutil,
+        "which",
+        lambda name: "flatpak" if name == "flatpak" else None,
+    )
+
+    def fake_popen(args, **kwargs):
+        calls.append((args, kwargs))
+        return object()
+
+    monkeypatch.setattr(platform_linux.subprocess, "Popen", fake_popen)
+
+    uri = "roblox-player:1+launchmode:app"
+    assert platform_linux.launch_as_standard_user(uri)
+    assert calls == [
+        (
+            ["flatpak", "run", platform_linux.SOBER_APP_ID, uri],
             platform_linux._DETACHED_POPEN_KWARGS,
         )
     ]
@@ -53,6 +123,11 @@ def test_open_folder_uses_detached_standard_user_launch(tmp_path, monkeypatch):
     calls = []
 
     monkeypatch.setattr(platform_linux.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(
+        platform_linux.shutil,
+        "which",
+        lambda name: "/usr/bin/xdg-open" if name == "xdg-open" else None,
+    )
 
     def fake_popen(args, **kwargs):
         calls.append((args, kwargs))
@@ -66,10 +141,27 @@ def test_open_folder_uses_detached_standard_user_launch(tmp_path, monkeypatch):
     assert target.is_dir()
     assert calls == [
         (
-            ["xdg-open", str(target)],
+            ["/usr/bin/xdg-open", str(target)],
             platform_linux._DETACHED_POPEN_KWARGS,
         )
     ]
+
+
+def test_open_folder_returns_false_when_no_desktop_opener(tmp_path, monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(platform_linux.shutil, "which", lambda name: None)
+    monkeypatch.setattr(
+        platform_linux.subprocess,
+        "Popen",
+        lambda *args, **kwargs: calls.append(args),
+    )
+
+    target = tmp_path / "exports"
+
+    assert platform_linux.open_folder(target) is False
+    assert target.is_dir()
+    assert calls == []
 
 
 def test_delete_cache_clears_texpack_slots_but_preserves_predownloaded(tmp_path, monkeypatch):

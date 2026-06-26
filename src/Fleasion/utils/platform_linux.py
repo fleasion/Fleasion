@@ -22,6 +22,13 @@ SOBER_CONFIG_FILE = SOBER_FLATPAK_ROOT / 'config' / 'sober' / 'config.json'
 SOBER_ASSET_OVERLAY_DIR = SOBER_DATA_DIR / 'asset_overlay'
 SOBER_LEGACY_EXE_DIR = SOBER_DATA_DIR / 'exe'
 SOBER_PROCESS_NAMES = ('sober', 'Sober', SOBER_APP_ID)
+DESKTOP_OPENERS = (
+    ('xdg-open', ()),
+    ('gio', ('open',)),
+    ('kde-open5', ()),
+    ('kde-open', ()),
+    ('gnome-open', ()),
+)
 
 LINUX_APPLICATIONS_DIR = USER_HOME / '.local' / 'share' / 'applications'
 LINUX_INSTALL_DIR = USER_HOME / '.local' / 'share' / APP_NAME
@@ -302,6 +309,27 @@ def _standard_user_popen(args: list[str]) -> subprocess.Popen:
     return subprocess.Popen(args, env=env, preexec_fn=_demote, **_DETACHED_POPEN_KWARGS)
 
 
+def _desktop_open_command(target: str) -> list[str] | None:
+    for executable, extra_args in DESKTOP_OPENERS:
+        resolved = shutil.which(executable)
+        if resolved:
+            return [resolved, *extra_args, target]
+    return None
+
+
+def _open_with_desktop_handler(target: str, label: str) -> bool:
+    command = _desktop_open_command(target)
+    if command is None:
+        log_buffer.log('Launch', f'Cannot open {label}: no desktop opener found')
+        return False
+    try:
+        _standard_user_popen(command)
+        return True
+    except Exception as exc:
+        log_buffer.log('Launch', f'Failed to open {label}: {exc}')
+        return False
+
+
 def launch_as_standard_user(target: str | Path) -> bool:
     """Launch a Roblox URI or Sober itself."""
     target_str = str(target).strip()
@@ -309,12 +337,15 @@ def launch_as_standard_user(target: str | Path) -> bool:
         return False
     try:
         if target_str.startswith(('roblox:', 'roblox-player:')):
-            _standard_user_popen(['xdg-open', target_str])
+            flatpak = shutil.which('flatpak')
+            if not flatpak:
+                log_buffer.log('Launch', 'Cannot launch Sober URI: flatpak command not found')
+                return False
+            _standard_user_popen([flatpak, 'run', SOBER_APP_ID, target_str])
             return True
 
         if target_str.startswith(('http://', 'https://')):
-            _standard_user_popen(['xdg-open', target_str])
-            return True
+            return _open_with_desktop_handler(target_str, 'URL')
 
         path = Path(target_str)
         flatpak = shutil.which('flatpak')
@@ -323,8 +354,7 @@ def launch_as_standard_user(target: str | Path) -> bool:
             return True
 
         if path.exists():
-            _standard_user_popen(['xdg-open', str(path)])
-            return True
+            return _open_with_desktop_handler(str(path), 'path')
     except Exception as exc:
         log_buffer.log('Launch', f'Failed to launch {target_str}: {exc}')
         return False
@@ -458,7 +488,7 @@ exec {command_literal} "$@"
 def open_folder(path: Path):
     """Open a folder in the user's file manager."""
     path.mkdir(parents=True, exist_ok=True)
-    _standard_user_popen(['xdg-open', str(path)])
+    return _open_with_desktop_handler(str(path), 'folder')
 
 
 def show_message_box(title: str, message: str, icon: int = 0x40):
