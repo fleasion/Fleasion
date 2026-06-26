@@ -144,6 +144,7 @@ def terminate_roblox() -> bool:
         try:
             result = subprocess.run(
                 [flatpak, 'kill', SOBER_APP_ID],
+                env=_host_subprocess_env(),
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -154,7 +155,12 @@ def terminate_roblox() -> bool:
 
     for name in SOBER_PROCESS_NAMES:
         try:
-            result = subprocess.run(['pkill', '-x', name], capture_output=True, timeout=5)
+            result = subprocess.run(
+                ['pkill', '-x', name],
+                env=_host_subprocess_env(),
+                capture_output=True,
+                timeout=5,
+            )
             terminated = result.returncode == 0 or terminated
         except Exception:
             pass
@@ -367,6 +373,12 @@ def launch_as_standard_user(target: str | Path) -> bool:
             if not flatpak:
                 log_buffer.log('Launch', 'Cannot launch Sober URI: flatpak command not found')
                 return False
+            if is_roblox_running():
+                log_buffer.log('Launch', 'Sober is already running; restarting before URI launch')
+                terminate_roblox()
+                if not wait_for_roblox_exit():
+                    log_buffer.log('Launch', 'Sober did not exit before URI launch')
+                    return False
             _standard_user_popen([flatpak, 'run', SOBER_APP_ID, target_str])
             return True
 

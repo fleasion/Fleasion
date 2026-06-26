@@ -128,6 +128,7 @@ def test_launch_as_standard_user_runs_sober_flatpak_for_roblox_uri(monkeypatch):
     calls = []
 
     monkeypatch.setattr(platform_linux.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(platform_linux, "is_roblox_running", lambda: False)
     monkeypatch.setattr(
         platform_linux.shutil,
         "which",
@@ -156,6 +157,7 @@ def test_launch_as_standard_user_strips_pyinstaller_env_for_sober_uri(monkeypatc
     host_libs = tmp_path / "host-libs"
 
     monkeypatch.setattr(platform_linux.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(platform_linux, "is_roblox_running", lambda: False)
     monkeypatch.setattr(platform_linux.sys, "_MEIPASS", str(bundle_root), raising=False)
     monkeypatch.setenv("LD_LIBRARY_PATH", f"{bundle_root}:{host_libs}")
     monkeypatch.delenv("LD_LIBRARY_PATH_ORIG", raising=False)
@@ -177,6 +179,75 @@ def test_launch_as_standard_user_strips_pyinstaller_env_for_sober_uri(monkeypatc
     assert calls[0][0] == ["flatpak", "run", platform_linux.SOBER_APP_ID, uri]
     assert calls[0][1]["env"]["LD_LIBRARY_PATH"] == str(host_libs)
     assert "LD_LIBRARY_PATH_ORIG" not in calls[0][1]["env"]
+
+
+def test_launch_as_standard_user_restarts_running_sober_before_uri(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(platform_linux.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(
+        platform_linux.shutil,
+        "which",
+        lambda name: "flatpak" if name == "flatpak" else None,
+    )
+    monkeypatch.setattr(platform_linux, "is_roblox_running", lambda: True)
+    monkeypatch.setattr(
+        platform_linux,
+        "terminate_roblox",
+        lambda: calls.append("terminate") or True,
+    )
+    monkeypatch.setattr(
+        platform_linux,
+        "wait_for_roblox_exit",
+        lambda timeout=10.0: calls.append("wait") or True,
+    )
+
+    def fake_popen(args, **kwargs):
+        calls.append((args, kwargs))
+        return object()
+
+    monkeypatch.setattr(platform_linux.subprocess, "Popen", fake_popen)
+
+    uri = "roblox://experiences/start?placeId=121814103864070"
+    assert platform_linux.launch_as_standard_user(uri)
+
+    assert calls == [
+        "terminate",
+        "wait",
+        (
+            ["flatpak", "run", platform_linux.SOBER_APP_ID, uri],
+            _detached_kwargs_with_env(),
+        ),
+    ]
+
+
+def test_launch_as_standard_user_aborts_uri_when_running_sober_does_not_exit(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(
+        platform_linux.shutil,
+        "which",
+        lambda name: "flatpak" if name == "flatpak" else None,
+    )
+    monkeypatch.setattr(platform_linux, "is_roblox_running", lambda: True)
+    monkeypatch.setattr(
+        platform_linux,
+        "terminate_roblox",
+        lambda: calls.append("terminate") or True,
+    )
+    monkeypatch.setattr(
+        platform_linux,
+        "wait_for_roblox_exit",
+        lambda timeout=10.0: calls.append("wait") or False,
+    )
+    monkeypatch.setattr(
+        platform_linux.subprocess,
+        "Popen",
+        lambda *args, **kwargs: calls.append(args),
+    )
+
+    assert not platform_linux.launch_as_standard_user("roblox://experiences/start?placeId=1")
+    assert calls == ["terminate", "wait"]
 
 
 def test_open_folder_uses_detached_standard_user_launch(tmp_path, monkeypatch):
