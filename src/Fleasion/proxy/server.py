@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from .addons.cache_scraper import CacheScraper
     from .addons.texture_stripper import TextureStripper
 
+from .roblox_metadata import strip_roblox_metadata
 from .upstream import (
     AutoConnector,
     BaseUpstreamConnector,
@@ -348,17 +349,7 @@ def _read_local_bytes(local_path: str) -> bytes:
             path = get_or_create_mesh_from_obj(path)
         except Exception:
             pass
-    return _strip_roblox_metadata(path, path.read_bytes()) if path.exists() else b''
-
-
-def _strip_roblox_metadata(path: Path, content: bytes) -> bytes:
-    """Drop CDN metadata prefixes from raw Roblox document replacements."""
-    if path.suffix.lower() not in ('', '.bin'):
-        return content
-    roblox_start = content.find(b'<roblox')
-    if roblox_start <= 0:
-        return content
-    return content[roblox_start:]
+    return strip_roblox_metadata(path, path.read_bytes()) if path.exists() else b''
 
 
 def _serve_local_file(local_path: str) -> bytes:
@@ -371,7 +362,7 @@ def _serve_local_file(local_path: str) -> bytes:
             logger.debug('OBJ->mesh conversion failed: %s', exc)
     if not path.exists():
         return b'HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: keep-alive\r\n\r\n'
-    content = _strip_roblox_metadata(path, path.read_bytes())
+    content = strip_roblox_metadata(path, path.read_bytes())
     ext = path.suffix.lower()
     ct_map = {
         '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
@@ -1251,7 +1242,7 @@ class FleasionProxy:
                                     if conv:
                                         final_path = conv
                             p = Path(final_path)
-                            return p.read_bytes() if p.exists() else orig_bytes
+                            return strip_roblox_metadata(p, p.read_bytes()) if p.exists() else orig_bytes
 
                         resp_body_raw = await asyncio.get_event_loop().run_in_executor(
                             self._executor, _pick_rig_matched_file, _orig_bytes, _anim_repl_path, _required_rig,

@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 
 from ...utils import APP_CACHE_DIR, format_count, log_buffer
 from ...utils.http import http_download_to
+from ..roblox_metadata import strip_roblox_metadata
 
 # Use orjson when available (2-3x faster JSON parse)
 try:
@@ -659,7 +660,8 @@ class TextureStripper:
                 pass
             # Last resort: peek at magic bytes for .dat / extensionless files
             try:
-                head = Path(local_path).read_bytes()[:64]
+                path = Path(local_path)
+                head = strip_roblox_metadata(path, path.read_bytes())[:64]
                 if (head.startswith(b'<roblox!')
                         or b'KeyframeSequence' in head
                         or b'CurveAnimation' in head):
@@ -673,7 +675,7 @@ class TextureStripper:
             if not p.exists():
                 continue
             try:
-                data = p.read_bytes()
+                data = strip_roblox_metadata(p, p.read_bytes())
             except Exception:
                 continue
 
@@ -710,7 +712,7 @@ class TextureStripper:
 
         try:
             if data is None:
-                data = p.read_bytes()
+                data = strip_roblox_metadata(p, p.read_bytes())
             content_key = hashlib.sha256(data).hexdigest()[:16]
         except Exception:
             return None
@@ -789,7 +791,7 @@ class TextureStripper:
 
         try:
             if data is None:
-                data = p.read_bytes()
+                data = strip_roblox_metadata(p, p.read_bytes())
             content_key = hashlib.sha256(data).hexdigest()[:16]
         except Exception:
             return None
@@ -865,7 +867,8 @@ class TextureStripper:
                 return self._anim_repl_rig[local_path]
         try:
             from ...utils.anim_converter import detect_rig
-            rig = detect_rig(Path(local_path).read_bytes())
+            path = Path(local_path)
+            rig = detect_rig(strip_roblox_metadata(path, path.read_bytes()))
         except Exception:
             rig = 'unknown'
         with self._anim_lock:

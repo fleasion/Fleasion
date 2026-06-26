@@ -1,4 +1,5 @@
 import json
+from unittest.mock import patch
 
 from Fleasion.proxy.addons import texture_stripper as texture_stripper_module
 from Fleasion.proxy.addons.texture_stripper import TextureStripper, _decode_texpack_slot_quality
@@ -97,3 +98,14 @@ def test_cdn_redirect_match_does_not_log_short_circuit_noise(monkeypatch):
         'https://file.garden/example.obj',
     )
     assert not any('CDN short-circuit match' in message for _, message in messages)
+
+
+def test_animation_replacement_rig_detection_strips_bin_metadata(tmp_path):
+    replacement = tmp_path / "replacement.bin"
+    replacement.write_bytes(b"RBXH amazon metadata" + b"<roblox!binary animation")
+    stripper = TextureStripper(_Config())
+
+    with patch("Fleasion.utils.anim_converter.detect_rig", return_value="R15") as detect_rig:
+        assert stripper._detect_repl_rig(str(replacement)) == "R15"
+
+    detect_rig.assert_called_once_with(b"<roblox!binary animation")
