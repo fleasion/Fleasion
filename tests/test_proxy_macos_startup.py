@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
+import certifi
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -147,6 +148,50 @@ def test_macos_proxy_start_blocks_when_ca_patch_verification_fails(tmp_path, mon
     assert proxy._running is False
     assert errors and errors[0][0] == "macos_ca_patch_failed"
     assert hosts_calls == []
+
+
+def test_linux_roblox_ca_patch_reseeds_truncated_bundle_even_when_current_ca_exists(tmp_path, monkeypatch):
+    logs = []
+    roblox_dir = tmp_path / "asset_overlay"
+    healthy_dir = tmp_path / "exe"
+    ssl_dir = roblox_dir / "ssl"
+    healthy_ssl_dir = healthy_dir / "ssl"
+    ssl_dir.mkdir(parents=True)
+    healthy_ssl_dir.mkdir(parents=True)
+    ca_file = ssl_dir / "cacert.pem"
+    healthy_ca_file = healthy_ssl_dir / "cacert.pem"
+    ca_pem = _make_self_signed_ca_pem()
+    other_ca = _make_self_signed_ca_pem(common_name="Other Root", organization="Other")
+    ca_file.write_text(f"{other_ca}\n{ca_pem}", encoding="utf-8")
+    assert ca_file.stat().st_size < proxy_master._CACERT_MIN_HEALTHY_SIZE_BYTES
+
+    mozilla_bundle = tmp_path / "mozilla-cacert.pem"
+    mozilla_bundle.write_text(
+        "## Bundle of CA Root Certificates\n"
+        "-----BEGIN CERTIFICATE-----\nROOT1\n-----END CERTIFICATE-----\n"
+        + ("x" * 5000)
+        + "\n-----BEGIN CERTIFICATE-----\nROOT2\n-----END CERTIFICATE-----\n",
+        encoding="utf-8",
+    )
+    healthy_ca_file.write_text(mozilla_bundle.read_text(encoding="utf-8") + ca_pem, encoding="utf-8")
+
+    monkeypatch.setattr(proxy_master, "IS_MACOS", False)
+    monkeypatch.setattr(proxy_master, "IS_LINUX", True)
+    monkeypatch.setattr(proxy_master, "_find_roblox_dirs", lambda: [roblox_dir, healthy_dir])
+    monkeypatch.setattr(certifi, "where", lambda: (_ for _ in ()).throw(AssertionError("should prefer local healthy bundle")))
+    monkeypatch.setattr(proxy_master, "log_buffer", SimpleNamespace(log=lambda category, message: logs.append((category, message))))
+
+    ok, details = proxy_master._install_ca_into_roblox(ca_pem)
+
+    patched_text = ca_file.read_text(encoding="utf-8")
+    assert ok is True
+    assert details["verified"][0]["healthy"] is True
+    assert patched_text.startswith("## Bundle of CA Root Certificates")
+    _, fleasion_count, current_count = proxy_master._analyze_and_strip_fleasion_cas(patched_text, ca_pem)
+    assert fleasion_count == 1
+    assert current_count == 1
+    assert details["patched"][0] == {"resource_dir": str(roblox_dir), "ca_file": str(ca_file), "changed": True}
+    assert any("Seeded Roblox cacert.pem from healthy local bundle" in message for _category, message in logs)
 
 
 def test_linux_proxy_start_emits_error_when_helper_denied(tmp_path, monkeypatch):
@@ -390,7 +435,7 @@ def test_macos_system_keychain_removes_stale_fleasion_ca_before_current_check(tm
     monkeypatch.setattr(proxy_master, "log_buffer", SimpleNamespace(log=lambda category, message: logs.append((category, message))))
     monkeypatch.setattr(proxy_master.subprocess, "run", fake_run)
 
-    proxy_master._install_ca_into_macos_system_keychain(ca_cert, "pem")
+    proxy_master._install_ca_into_macos_system_keychain(ca_cert, current_ca)
 
     assert ["security", "delete-certificate", "-Z", stale_thumbprint, "/Library/Keychains/System.keychain"] in calls
     assert not any(isinstance(call, list) and lookalike_thumbprint in call for call in calls)

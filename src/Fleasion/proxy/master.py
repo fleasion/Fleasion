@@ -1926,6 +1926,56 @@ def _log_cacert_health(ca_file: Path, ca_pem: str) -> None:
     _log_cacert_state(ca_file, ca_pem, f'cacert.pem health for {ca_file.parent.parent.name}')
 
 
+def _linux_cacert_needs_seed(state: dict) -> bool:
+    return (
+        not bool(state.get('exists'))
+        or int(state.get('size') or 0) < _CACERT_MIN_HEALTHY_SIZE_BYTES
+        or int(state.get('total_certs') or 0) < _CACERT_MIN_HEALTHY_CERTS
+    )
+
+
+def _healthy_linux_cacert_source(ca_file: Path, ca_pem: str, dirs: list[Path]) -> Path | None:
+    for candidate_dir in dirs:
+        candidate = candidate_dir / 'ssl' / 'cacert.pem'
+        if candidate == ca_file:
+            continue
+        state = _describe_cacert_state(candidate, ca_pem)
+        if bool(state.get('healthy')):
+            return candidate
+    return None
+
+
+def _seed_linux_cacert_if_needed(ca_file: Path, state: dict, install_name: str, ca_pem: str, dirs: list[Path]) -> bool:
+    """Replace a missing/truncated Roblox CA bundle with a healthy local or Mozilla bundle."""
+    if not IS_LINUX:
+        return False
+    if bool(state.get('error')):
+        return False
+    if not _linux_cacert_needs_seed(state):
+        return False
+
+    source = _healthy_linux_cacert_source(ca_file, ca_pem, dirs)
+    if source is not None:
+        try:
+            ca_file.parent.mkdir(exist_ok=True)
+            shutil.copy2(source, ca_file)
+            log_buffer.log('Certificate', f'Seeded Roblox cacert.pem from healthy local bundle for {install_name}: {source}')
+            return True
+        except Exception as exc:
+            log_buffer.log('Certificate', f'Could not seed Roblox cacert.pem from local bundle for {install_name}: {exc}')
+
+    try:
+        import certifi
+
+        ca_file.parent.mkdir(exist_ok=True)
+        shutil.copy2(certifi.where(), ca_file)
+        log_buffer.log('Certificate', f'Seeded Roblox cacert.pem from Mozilla CA bundle for {install_name}')
+        return True
+    except Exception as exc:
+        log_buffer.log('Certificate', f'Could not seed Roblox cacert.pem for {install_name}: {exc}')
+        return False
+
+
 def _upsert_fleasion_ca_in_cacert(ca_file: Path, ca_pem: str) -> tuple[bool, int, int]:
     """Ensure exactly one current Fleasion CA exists in *ca_file*.
 
@@ -2068,16 +2118,10 @@ def _install_ca_into_roblox(ca_pem: str) -> tuple[bool, dict]:
         ca_file = ssl_dir / 'cacert.pem'
         try:
             ssl_dir.mkdir(exist_ok=True)
-            if IS_LINUX and not ca_file.exists():
-                try:
-                    import certifi
-
-                    shutil.copy2(certifi.where(), ca_file)
-                    log_buffer.log('Certificate', f'Seeded Sober cacert.pem from certifi for {d.name}')
-                except Exception as exc:
-                    log_buffer.log('Certificate', f'Could not seed Sober cacert.pem for {d.name}: {exc}')
-            _log_cacert_health(ca_file, ca_pem)
+            pre_state = _log_cacert_state(ca_file, ca_pem, f'cacert.pem health for {d.name}')
+            seeded = _seed_linux_cacert_if_needed(ca_file, pre_state, d.name, ca_pem, dirs)
             changed, fleasion_count, current_count = _upsert_fleasion_ca_in_cacert(ca_file, ca_pem)
+            changed = changed or seeded
             post_state = _log_cacert_state(ca_file, ca_pem, f'cacert.pem after startup patch for {d.name}')
             details['verified'].append(post_state)
             ok = ok and bool(post_state.get('healthy'))
