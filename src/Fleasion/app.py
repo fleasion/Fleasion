@@ -141,6 +141,94 @@ def _should_sync_autostart_on_launch(run_on_boot: bool) -> bool:
     return False
 
 
+def _refresh_run_on_boot_ui(tray, enabled: bool) -> None:
+    if tray is not None and hasattr(tray, 'run_on_boot_action'):
+        tray.run_on_boot_action.setChecked(enabled)
+    if tray is not None and hasattr(tray, '_refresh_settings_tab'):
+        tray._refresh_settings_tab()
+
+
+def _show_run_on_boot_failure(parent) -> None:
+    msg = QMessageBox(parent)
+    msg.setWindowTitle('Run on Boot Failed')
+    msg.setIcon(QMessageBox.Icon.Warning)
+    msg.setText(
+        'Failed to register autostart.\n'
+        'Check the application log for details.\n\n'
+        'On Windows, ensure Fleasion is running as Administrator.'
+    )
+    if icon_path := get_icon_path():
+        from PyQt6.QtGui import QIcon
+        msg.setWindowIcon(QIcon(str(icon_path)))
+    msg.exec()
+
+
+def _prompt_first_time_run_on_boot(config_manager: ConfigManager, tray=None) -> None:
+    """Ask first-time users whether Fleasion should start at login."""
+    _top = QApplication.topLevelWidgets()
+    _parent = next((w for w in _top if w.isVisible()), None)
+    _on_top = any(w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in _top)
+
+    dialog = QDialog(_parent)
+    dialog.setModal(True)
+    dialog.setWindowTitle('Run on Boot')
+    if _on_top:
+        dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
+    if icon_path := get_icon_path():
+        from PyQt6.QtGui import QIcon
+        dialog.setWindowIcon(QIcon(str(icon_path)))
+
+    layout = QVBoxLayout(dialog)
+    label = QLabel(dialog)
+    label.setWordWrap(True)
+    message = (
+        'Do you want to enable run-on-boot?\n\n'
+        'It will launch Fleasion on boot.'
+    )
+    if sys.platform.startswith('linux'):
+        message += '\n\nOn Linux, you will need to manually approve authentication on every boot lol.'
+    else:
+        message += '\n\nOn this OS, boot launches will be auto-elevated.'
+    label.setText(message)
+    layout.addWidget(label)
+
+    button_row = QHBoxLayout()
+    no_button = QPushButton('No', dialog)
+    yes_button = QPushButton('Yes', dialog)
+    yes_button.setDefault(True)
+    yes_button.setAutoDefault(True)
+    no_button.clicked.connect(dialog.reject)
+    yes_button.clicked.connect(dialog.accept)
+    button_row.addStretch(1)
+    button_row.addWidget(no_button)
+    button_row.addWidget(yes_button)
+    layout.addLayout(button_row)
+
+    yes_button.setFocus(Qt.FocusReason.OtherFocusReason)
+    dialog.show()
+    dialog.raise_()
+    dialog.activateWindow()
+    result = dialog.exec()
+
+    enable = result == QDialog.DialogCode.Accepted
+    try:
+        from .utils.autostart import sync_autostart
+        ok = sync_autostart(enable, CONFIG_DIR)
+    except Exception as exc:
+        ok = False
+        log_buffer.log('Autostart', f'First-time run-on-boot prompt failed: {exc}')
+
+    if ok:
+        config_manager.run_on_boot = enable
+        _refresh_run_on_boot_ui(tray, enable)
+        return
+
+    config_manager.run_on_boot = False
+    _refresh_run_on_boot_ui(tray, False)
+    if enable:
+        _show_run_on_boot_failure(dialog.parentWidget())
+
+
 def _relaunch_as_admin(extra_args: str = '', parent_hwnd: int | None = None) -> bool:
     """Silently attempt to relaunch elevated via the platform prompt.
 
@@ -1616,7 +1704,7 @@ def main():
     # Sync autostart on every launch (updates if launch method changed).
     # Windows needs elevation for Task Scheduler; macOS/Linux use user-session
     # launch entries and should reconcile from the normal GUI process.
-    if _should_sync_autostart_on_launch(config_manager.run_on_boot):
+    if config_manager.first_time_setup_complete and _should_sync_autostart_on_launch(config_manager.run_on_boot):
         try:
             from .utils.autostart import sync_autostart
             sync_autostart(True, CONFIG_DIR)
@@ -1825,6 +1913,7 @@ def main():
             from PyQt6.QtGui import QIcon
             welcome_box.setWindowIcon(QIcon(str(icon_path)))
         welcome_box.exec()
+        _prompt_first_time_run_on_boot(config_manager, tray)
         config_manager.first_time_setup_complete = True
         tray._show_replacer_config()
     elif not _suppress_dashboard and config_manager.open_dashboard_on_launch:
