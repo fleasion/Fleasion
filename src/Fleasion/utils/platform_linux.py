@@ -18,9 +18,11 @@ from .paths import APP_CACHE_DIR, APP_NAME, STORAGE_DB, USER_HOME, get_icon_path
 SOBER_APP_ID = 'org.vinegarhq.Sober'
 SOBER_FLATPAK_ROOT = USER_HOME / '.var' / 'app' / SOBER_APP_ID
 SOBER_DATA_DIR = SOBER_FLATPAK_ROOT / 'data' / 'sober'
+SOBER_CACHE_DIR = SOBER_FLATPAK_ROOT / 'cache' / 'sober'
 SOBER_CONFIG_FILE = SOBER_FLATPAK_ROOT / 'config' / 'sober' / 'config.json'
 SOBER_ASSET_OVERLAY_DIR = SOBER_DATA_DIR / 'asset_overlay'
 SOBER_LEGACY_EXE_DIR = SOBER_DATA_DIR / 'exe'
+SOBER_CACHE_STORAGE_DIR = SOBER_CACHE_DIR / 'rbx-storage'
 SOBER_PROCESS_NAMES = ('sober', 'Sober', SOBER_APP_ID)
 DESKTOP_OPENERS = (
     ('xdg-open', ()),
@@ -216,6 +218,8 @@ def delete_cache() -> list[str]:
 
     storage_folder = STORAGE_DB.parent / 'rbx-storage'
     _delete_path(storage_folder, messages, 'Storage folder')
+    if SOBER_CACHE_STORAGE_DIR != storage_folder:
+        _delete_path(SOBER_CACHE_STORAGE_DIR, messages, 'Cache storage folder')
 
     if APP_CACHE_DIR.exists():
         try:

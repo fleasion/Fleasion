@@ -318,6 +318,37 @@ def test_delete_cache_clears_texpack_slots_but_preserves_predownloaded(tmp_path,
     assert not converted_cache.exists()
 
 
+def test_delete_cache_clears_sober_appdata_and_cache_storage(tmp_path, monkeypatch):
+    storage_db = tmp_path / "data" / "sober" / "appData" / "rbx-storage.db"
+    storage_db.parent.mkdir(parents=True)
+    storage_db.write_bytes(b"cache")
+    Path(str(storage_db) + "-wal").write_bytes(b"wal")
+
+    appdata_storage = storage_db.parent / "rbx-storage"
+    appdata_storage.mkdir()
+    (appdata_storage / "entry").write_bytes(b"cache")
+
+    cache_storage = tmp_path / "cache" / "sober" / "rbx-storage"
+    cache_storage.mkdir(parents=True)
+    (cache_storage / "entry").write_bytes(b"cache")
+
+    monkeypatch.setattr(platform_linux, "APP_CACHE_DIR", tmp_path / "fleasion-cache")
+    monkeypatch.setattr(platform_linux, "STORAGE_DB", storage_db)
+    monkeypatch.setattr(platform_linux, "SOBER_CACHE_STORAGE_DIR", cache_storage)
+    monkeypatch.setattr(platform_linux, "is_roblox_running", lambda: False)
+
+    messages = platform_linux.delete_cache()
+
+    assert "Storage database deleted successfully" in messages
+    assert "Storage database -wal deleted successfully" in messages
+    assert "Storage folder deleted successfully" in messages
+    assert "Cache storage folder deleted successfully" in messages
+    assert not storage_db.exists()
+    assert not Path(str(storage_db) + "-wal").exists()
+    assert not appdata_storage.exists()
+    assert not cache_storage.exists()
+
+
 def test_delete_cache_terminates_sober_before_cleanup(tmp_path, monkeypatch):
     app_cache = tmp_path / "cache"
     predownloaded = app_cache / "predownloaded"
