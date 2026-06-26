@@ -348,7 +348,17 @@ def _read_local_bytes(local_path: str) -> bytes:
             path = get_or_create_mesh_from_obj(path)
         except Exception:
             pass
-    return path.read_bytes() if path.exists() else b''
+    return _strip_roblox_metadata(path, path.read_bytes()) if path.exists() else b''
+
+
+def _strip_roblox_metadata(path: Path, content: bytes) -> bytes:
+    """Drop CDN metadata prefixes from raw Roblox document replacements."""
+    if path.suffix.lower() not in ('', '.bin'):
+        return content
+    roblox_start = content.find(b'<roblox')
+    if roblox_start <= 0:
+        return content
+    return content[roblox_start:]
 
 
 def _serve_local_file(local_path: str) -> bytes:
@@ -361,7 +371,7 @@ def _serve_local_file(local_path: str) -> bytes:
             logger.debug('OBJ->mesh conversion failed: %s', exc)
     if not path.exists():
         return b'HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: keep-alive\r\n\r\n'
-    content = path.read_bytes()
+    content = _strip_roblox_metadata(path, path.read_bytes())
     ext = path.suffix.lower()
     ct_map = {
         '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',

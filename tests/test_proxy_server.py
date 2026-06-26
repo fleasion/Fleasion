@@ -1,11 +1,14 @@
 import asyncio
+import tempfile
 import unittest
+from pathlib import Path
 
 from Fleasion.proxy.server import (
     _build_modified_request,
     _is_empty_json_array,
     _read_body_wire,
     _read_headers_raw,
+    _serve_local_file,
 )
 
 
@@ -16,6 +19,10 @@ async def _read_message(data: bytes):
     headers = await _read_headers_raw(reader)
     body = await _read_body_wire(reader, headers.headers)
     return headers, body
+
+
+def _response_body(response: bytes) -> bytes:
+    return response.split(b"\r\n\r\n", 1)[1]
 
 
 class ProxyServerRawHttpTests(unittest.TestCase):
@@ -116,6 +123,46 @@ class ProxyServerRawHttpTests(unittest.TestCase):
         self.assertTrue(_is_empty_json_array(b" [] \r\n"))
         self.assertFalse(_is_empty_json_array(b'[{"assetId":1}]'))
         self.assertFalse(_is_empty_json_array(b""))
+
+    def test_local_extensionless_roblox_file_strips_metadata_prefix(self):
+        expected = b"<roblox version=\"4\"></roblox>"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "asset_hash"
+            path.write_bytes(b"RBXH metadata bytes\r\n" + expected)
+
+            response = _serve_local_file(str(path))
+
+        self.assertIn(f"Content-Length: {len(expected)}".encode(), response)
+        self.assertEqual(_response_body(response), expected)
+
+    def test_local_bin_roblox_file_strips_metadata_prefix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "asset.bin"
+            path.write_bytes(b"metadata\n\n<roblox><Item /></roblox>")
+
+            response = _serve_local_file(str(path))
+
+        self.assertEqual(_response_body(response), b"<roblox><Item /></roblox>")
+
+    def test_local_non_target_extension_keeps_prefix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "asset.rbxmx"
+            content = b"metadata\n<roblox><Item /></roblox>"
+            path.write_bytes(content)
+
+            response = _serve_local_file(str(path))
+
+        self.assertEqual(_response_body(response), content)
+
+    def test_local_target_extension_without_roblox_marker_keeps_content(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "asset.bin"
+            content = b"not a roblox document"
+            path.write_bytes(content)
+
+            response = _serve_local_file(str(path))
+
+        self.assertEqual(_response_body(response), content)
 
 
 if __name__ == "__main__":
