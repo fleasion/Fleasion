@@ -1406,7 +1406,7 @@ class ReplacerConfigWindow(QDialog):
             self,
             'Select Local File',
             initial_dir,
-            'All Files (*.*)',
+            'All Files (*)',
         )
         if file_path:
             self.replacement_entry.setText(file_path)
@@ -1884,7 +1884,12 @@ class ReplacerConfigWindow(QDialog):
                 if path.parent.exists():
                     initial_dir = str(path)
 
-            path, _ = QFileDialog.getOpenFileName(dialog, 'Select Local File', initial_dir, 'All Files (*.*)')
+            path, _ = QFileDialog.getOpenFileName(
+                dialog,
+                'Select Local File',
+                initial_dir,
+                'All Files (*)',
+            )
             if path:
                 line_edit.setText(path)
                 dialog.accept()

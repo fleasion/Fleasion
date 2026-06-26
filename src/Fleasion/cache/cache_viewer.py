@@ -2967,7 +2967,7 @@ class CacheViewerTab(QWidget):
             self,
             'Export Asset',
             default_name,
-            'All Files (*.*)'
+            'All Files (*)'
         )
 
         if not file_path:
