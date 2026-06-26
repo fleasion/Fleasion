@@ -3,6 +3,31 @@ import subprocess
 from Fleasion import linux_proxy_helper_daemon as daemon
 
 
+def test_host_subprocess_env_restores_pyinstaller_original_library_path(monkeypatch, tmp_path):
+    bundle_root = tmp_path / '_MEI12345'
+    host_libs = tmp_path / 'host-libs'
+    monkeypatch.setattr(daemon.sys, '_MEIPASS', str(bundle_root), raising=False)
+    monkeypatch.setenv('LD_LIBRARY_PATH', f'{bundle_root}:{host_libs}')
+    monkeypatch.setenv('LD_LIBRARY_PATH_ORIG', str(host_libs))
+
+    env = daemon._host_subprocess_env()
+
+    assert env['LD_LIBRARY_PATH'] == str(host_libs)
+    assert 'LD_LIBRARY_PATH_ORIG' not in env
+
+
+def test_host_subprocess_env_removes_bundle_path_without_original(monkeypatch, tmp_path):
+    bundle_root = tmp_path / '_MEI12345'
+    host_libs = tmp_path / 'host-libs'
+    monkeypatch.setattr(daemon.sys, '_MEIPASS', str(bundle_root), raising=False)
+    monkeypatch.setenv('LD_LIBRARY_PATH', f'{bundle_root}:{host_libs}')
+    monkeypatch.delenv('LD_LIBRARY_PATH_ORIG', raising=False)
+
+    env = daemon._host_subprocess_env()
+
+    assert env['LD_LIBRARY_PATH'] == str(host_libs)
+
+
 def test_boot_guard_command_removes_only_fleasion_hosts_lines(tmp_path, monkeypatch):
     hosts = tmp_path / 'hosts'
     unit = tmp_path / 'fleasion-hosts-restore.service'

@@ -29,6 +29,35 @@ BOOT_GUARD_SERVICE = 'fleasion-hosts-restore.service'
 BOOT_GUARD_PATH = Path('/etc/systemd/system') / BOOT_GUARD_SERVICE
 
 
+def _host_subprocess_env() -> dict[str, str]:
+    """Run host tools without PyInstaller's private shared-library path."""
+    env = os.environ.copy()
+    original_library_path = env.pop('LD_LIBRARY_PATH_ORIG', None)
+    if original_library_path is not None:
+        if original_library_path:
+            env['LD_LIBRARY_PATH'] = original_library_path
+        else:
+            env.pop('LD_LIBRARY_PATH', None)
+        return env
+
+    bundle_root = getattr(sys, '_MEIPASS', None)
+    library_path = env.get('LD_LIBRARY_PATH')
+    if bundle_root and library_path:
+        entries = [
+            entry for entry in library_path.split(os.pathsep)
+            if entry and Path(entry).resolve() != Path(bundle_root).resolve()
+        ]
+        if entries:
+            env['LD_LIBRARY_PATH'] = os.pathsep.join(entries)
+        else:
+            env.pop('LD_LIBRARY_PATH', None)
+    return env
+
+
+def _run_host_command(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, env=_host_subprocess_env(), **kwargs)
+
+
 def _log(message: str) -> None:
     print(message, flush=True)
 
@@ -111,7 +140,7 @@ WantedBy=multi-user.target
         BOOT_GUARD_PATH.write_text(unit, encoding='utf-8')
         BOOT_GUARD_PATH.chmod(0o644)
         for cmd in ([systemctl, 'daemon-reload'], [systemctl, 'enable', BOOT_GUARD_SERVICE]):
-            result = subprocess.run(
+            result = _run_host_command(
                 cmd,
                 capture_output=True,
                 text=True,
@@ -136,7 +165,7 @@ def _remove_boot_guard() -> bool:
     ok = True
     if systemctl:
         try:
-            result = subprocess.run(
+            result = _run_host_command(
                 [systemctl, 'disable', BOOT_GUARD_SERVICE],
                 capture_output=True,
                 text=True,
@@ -153,7 +182,7 @@ def _remove_boot_guard() -> bool:
         ok = False
     if systemctl:
         try:
-            result = subprocess.run(
+            result = _run_host_command(
                 [systemctl, 'daemon-reload'],
                 capture_output=True,
                 text=True,
@@ -190,7 +219,7 @@ def _flush_dns() -> None:
         ['service', 'nscd', 'restart'],
     ):
         try:
-            result = subprocess.run(cmd, capture_output=True, timeout=5)
+            result = _run_host_command(cmd, capture_output=True, timeout=5)
             if result.returncode == 0:
                 _log(f'Flushed DNS with {cmd[0]}')
                 return
@@ -201,7 +230,7 @@ def _flush_dns() -> None:
 
 def _run_trust_update(cmd: list[str]) -> tuple[bool, str]:
     try:
-        result = subprocess.run(
+        result = _run_host_command(
             cmd,
             capture_output=True,
             text=True,

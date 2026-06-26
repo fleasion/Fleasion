@@ -28,6 +28,39 @@ SYSTEM_CA_DIRS = (
 )
 
 
+def _host_subprocess_env() -> dict[str, str]:
+    """Run host tools without PyInstaller's private shared-library path."""
+    env = os.environ.copy()
+    original_library_path = env.pop('LD_LIBRARY_PATH_ORIG', None)
+    if original_library_path is not None:
+        if original_library_path:
+            env['LD_LIBRARY_PATH'] = original_library_path
+        else:
+            env.pop('LD_LIBRARY_PATH', None)
+        return env
+
+    bundle_root = getattr(sys, '_MEIPASS', None)
+    library_path = env.get('LD_LIBRARY_PATH')
+    if bundle_root and library_path:
+        entries = [
+            entry for entry in library_path.split(os.pathsep)
+            if entry and Path(entry).resolve() != Path(bundle_root).resolve()
+        ]
+        if entries:
+            env['LD_LIBRARY_PATH'] = os.pathsep.join(entries)
+        else:
+            env.pop('LD_LIBRARY_PATH', None)
+    return env
+
+
+def _run_host_command(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, env=_host_subprocess_env(), **kwargs)
+
+
+def _popen_host_command(cmd: list[str], **kwargs) -> subprocess.Popen:
+    return subprocess.Popen(cmd, env=_host_subprocess_env(), **kwargs)
+
+
 def _source_helper_path() -> Path:
     frozen_meipass = getattr(sys, '_MEIPASS', None)
     if frozen_meipass:
@@ -110,7 +143,7 @@ def start_helper(
 
     with log_file:
         try:
-            process = subprocess.Popen(cmd, stdout=log_file, stderr=log_file, start_new_session=True)
+            process = _popen_host_command(cmd, stdout=log_file, stderr=log_file, start_new_session=True)
         except Exception as exc:
             log_buffer.log('ProxyHelper', f'Could not start Linux proxy helper: {exc}')
             return False
@@ -214,7 +247,7 @@ def _ensure_shared_nss_db(home: Path) -> Path | None:
         return nssdb
     try:
         nssdb.mkdir(parents=True, exist_ok=True)
-        result = subprocess.run(
+        result = _run_host_command(
             [certutil, '-N', '--empty-password', '-d', f'sql:{nssdb}'],
             capture_output=True,
             text=True,
@@ -234,13 +267,13 @@ def _ensure_shared_nss_db(home: Path) -> Path | None:
 
 def _install_ca_into_nss_db(certutil: str, db_dir: Path, ca_cert_path: Path) -> dict:
     db_arg = f'sql:{db_dir}'
-    subprocess.run(
+    _run_host_command(
         [certutil, '-D', '-d', db_arg, '-n', NSS_CERT_NICKNAME],
         capture_output=True,
         timeout=10,
     )
     try:
-        result = subprocess.run(
+        result = _run_host_command(
             [
                 certutil,
                 '-A',
@@ -334,7 +367,7 @@ def _install_ca_into_linux_system_store(ca_cert_path: Path) -> dict:
         str(ca_cert_path),
     ]
     try:
-        result = subprocess.run(
+        result = _run_host_command(
             cmd,
             capture_output=True,
             text=True,
