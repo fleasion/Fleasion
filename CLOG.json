@@ -36,10 +36,9 @@
             "github": "https://raw.githubusercontent.com/gastrophobic/Fleasion_Contributes/refs/heads/main/dahood.json",
             "replacement": null
         },
-        {
-            "name": "Rivals",
-            "credit": "Fleasion Staff Team Archive",
-            "placeId": 17625359962,
+        "Rivals": {
+            "Owner": "Fleasion Staff Team Archive",
+            "id": 17625359962,
             "github": "https://raw.githubusercontent.com/VanillaMeow/Rivals.json-Archive/refs/heads/main/Rivals.json",
             "replacement": null
         },
