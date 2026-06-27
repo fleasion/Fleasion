@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 
 
-EXEC_NAME = 'Fleasion-v2.1.1'
+EXEC_NAME = 'Fleasion-v2.2.0'
 HELPER_EXEC_NAME = 'fleasion-proxy-helper'
 
 
@@ -251,4 +251,4 @@ def test_verify_app_bundle_rejects_plist_executable_mismatch(tmp_path):
     result = _run_verify_app_bundle(tmp_path, app_path)
 
     assert result.returncode != 0
-    assert "CFBundleExecutable is 'Fleasion' instead of 'Fleasion-v2.1.1'" in result.stderr
+    assert "CFBundleExecutable is 'Fleasion' instead of 'Fleasion-v2.2.0'" in result.stderr
