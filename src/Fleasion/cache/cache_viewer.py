@@ -1112,6 +1112,9 @@ class ColumnVisibilityMenu(QMenu):
     def mouseReleaseEvent(self, a0):
         if a0 is None:
             return
+        if a0.button() != Qt.MouseButton.LeftButton:
+            a0.ignore()
+            return
         action = self.actionAt(a0.pos())
         if action and action.isCheckable():
             action.toggle()          # manually toggle without closing
