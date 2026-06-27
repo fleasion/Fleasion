@@ -1,4 +1,5 @@
 import json
+import stat
 import sys
 import types
 import threading
@@ -84,6 +85,84 @@ def test_stash_write_and_restore_use_normalised_target_paths(tmp_path):
     manager._restore_entry({"target_path": r"content\textures\MouseLockedCursor.png"})
 
     assert target.read_bytes() == b"original"
+
+
+def test_read_only_guard_protects_managed_files_and_restores_modes(tmp_path):
+    roblox_dir = tmp_path / "Roblox.app" / "Contents" / "Resources"
+    target = roblox_dir / "content" / "textures" / "MouseLockedCursor.png"
+    settings = roblox_dir / "ClientSettings" / "ClientAppSettings.json"
+    cacert = roblox_dir / "ssl" / "cacert.pem"
+    for path in (target, settings, cacert):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"original")
+
+    manager = ModificationManager.__new__(ModificationManager)
+    manager._roblox_dirs = [roblox_dir]
+    manager._data = {
+        "entries": [
+            {
+                "target_path": r"content\textures\MouseLockedCursor.png",
+                "source_type": "local_file",
+                "source_value": "replacement.png",
+            }
+        ],
+        "fast_flags_enabled": True,
+    }
+    manager._read_only_original_modes = {}
+
+    manager.protect_managed_files([cacert])
+
+    assert not (target.stat().st_mode & stat.S_IWRITE)
+    assert not (settings.stat().st_mode & stat.S_IWRITE)
+    assert not (cacert.stat().st_mode & stat.S_IWRITE)
+
+    manager.clear_managed_file_read_only()
+
+    assert target.stat().st_mode & stat.S_IWRITE
+    assert settings.stat().st_mode & stat.S_IWRITE
+    assert cacert.stat().st_mode & stat.S_IWRITE
+
+
+def test_stash_write_does_not_preserve_guarded_read_only_mode(tmp_path):
+    roblox_dir = tmp_path / "Roblox.app" / "Contents" / "Resources"
+    target_path = r"content\textures\MouseLockedCursor.png"
+    target = roblox_dir / "content" / "textures" / "MouseLockedCursor.png"
+    cacert = roblox_dir / "ssl" / "cacert.pem"
+    target.parent.mkdir(parents=True)
+    cacert.parent.mkdir(parents=True)
+    target.write_bytes(b"original")
+    cacert.write_bytes(b"cert")
+
+    entry = {
+        "target_path": target_path,
+        "source_type": "local_file",
+        "source_value": "replacement.png",
+    }
+    manager = ModificationManager.__new__(ModificationManager)
+    manager._roblox_dirs = [roblox_dir]
+    manager._stash_dir = tmp_path / "stash"
+    manager._fs_lock = threading.Lock()
+    manager._data = {"entries": [entry]}
+    manager._read_only_original_modes = {}
+    manager._read_only_extra_paths = set()
+
+    manager.protect_managed_files([cacert])
+    assert not (target.stat().st_mode & stat.S_IWRITE)
+    assert not (cacert.stat().st_mode & stat.S_IWRITE)
+
+    manager._stash_and_write(target_path, b"modified")
+
+    stash = manager._stash_dir / roblox_dir.name / "content" / "textures" / "MouseLockedCursor.png"
+    assert target.read_bytes() == b"modified"
+    assert not (target.stat().st_mode & stat.S_IWRITE)
+    assert not (cacert.stat().st_mode & stat.S_IWRITE)
+    assert stash.stat().st_mode & stat.S_IWRITE
+
+    manager.clear_managed_file_read_only()
+    manager._restore_entry(entry)
+
+    assert target.read_bytes() == b"original"
+    assert target.stat().st_mode & stat.S_IWRITE
 
 
 def test_clear_entry_restore_failure_keeps_entry_and_reports_error(monkeypatch):

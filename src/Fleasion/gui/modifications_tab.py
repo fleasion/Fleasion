@@ -1412,16 +1412,6 @@ class FFlagSection(QWidget):
         self._manager.framerate_cap = 0
 
         self._manager.fast_flags_enabled = False
-        try:
-            self._manager.fflag_manager.restore()
-        except Exception:
-            pass
-        
-        # Restore global settings as well
-        try:
-            self._manager.global_settings_manager.restore()
-        except Exception:
-            pass
 
 
 # ═══════════════════════════════════════════════════════════════════

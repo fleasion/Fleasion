@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import stat
 from pathlib import Path
 
 from ..utils import log_buffer
@@ -23,6 +24,18 @@ FONT_HEADERS: dict[str, bytes] = {
 CUSTOM_FONT_PATH = 'rbxasset://fonts/CustomFont.ttf'
 CUSTOM_FONT_REL = Path('content') / 'fonts' / 'CustomFont.ttf'
 FAMILIES_REL = Path('content') / 'fonts' / 'families'
+
+
+def _clear_read_only(path: Path) -> None:
+    if not path.exists():
+        return
+    try:
+        mode = path.stat().st_mode
+        if mode & stat.S_IWRITE:
+            return
+        path.chmod(mode | stat.S_IWRITE)
+    except OSError:
+        pass
 
 
 def validate_font_bytes(data: bytes) -> bool:
@@ -59,6 +72,7 @@ def apply_custom_font(
             stash_font.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(dst_font, stash_font)
 
+        _clear_read_only(dst_font)
         dst_font.write_bytes(font_data)
 
         # --- Rewrite family manifests -------------------------------------
@@ -86,6 +100,7 @@ def apply_custom_font(
                     changed = True
 
             if changed:
+                _clear_read_only(json_path)
                 with json_path.open('w', encoding='utf-8') as fp:
                     json.dump(family, fp, indent=2)
 
@@ -102,9 +117,12 @@ def restore_font_families(
         dst_font = roblox_dir / CUSTOM_FONT_REL
         stash_font = stash_dir / roblox_dir.name / CUSTOM_FONT_REL
         if stash_font.exists():
+            _clear_read_only(dst_font)
             shutil.copy2(stash_font, dst_font)
+            _clear_read_only(stash_font)
             stash_font.unlink()
         elif dst_font.exists():
+            _clear_read_only(dst_font)
             dst_font.unlink()
 
         # Restore family JSONs
@@ -113,7 +131,9 @@ def restore_font_families(
         if stash_families.is_dir():
             for stash_json in stash_families.glob('*.json'):
                 dst_json = families_dir / stash_json.name
+                _clear_read_only(dst_json)
                 shutil.copy2(stash_json, dst_json)
+                _clear_read_only(stash_json)
                 stash_json.unlink()
 
         log_buffer.log('Modifications', f'Restored font families in {roblox_dir.name}')

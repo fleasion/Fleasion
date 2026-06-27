@@ -1679,6 +1679,15 @@ def main():
         cache_scraper=getattr(proxy_master, 'cache_scraper', None)
     )
 
+    def _current_roblox_ca_paths() -> list[Path]:
+        return [roblox_dir / 'ssl' / 'cacert.pem' for roblox_dir in mod_manager.roblox_dirs]
+
+    def _refresh_managed_read_only_guard() -> None:
+        try:
+            mod_manager.protect_managed_files(_current_roblox_ca_paths())
+        except Exception as exc:
+            log_buffer.log('Modifications', f'Read-only guard refresh failed: {exc}')
+
     # Re-apply saved modifications on launch so the GUI state and Roblox files stay in sync.
     run_in_thread(mod_manager.reapply_all)()
 
@@ -1686,6 +1695,7 @@ def main():
     # 1. Graceful Windows shutdown / log-off: Qt fires commitDataRequest before
     #    the session ends, giving us a chance to clean up the hosts file.
     def _on_commit_data(_session):
+        mod_manager.clear_managed_file_read_only()
         proxy_master.stop()
         mod_manager.restore_all()
     app.commitDataRequest.connect(_on_commit_data)
@@ -1693,6 +1703,7 @@ def main():
     # 2. Normal Python exit (sys.exit, end of main): last-resort fallback so
     #    the hosts file is cleaned up even if the tray Exit path was bypassed.
     atexit.register(proxy_master.stop)
+    atexit.register(mod_manager.clear_managed_file_read_only)
     atexit.register(mod_manager.restore_all)
 
     # Start PreJsons download in background
@@ -1714,6 +1725,7 @@ def main():
     # Start proxy only if enabled and we have admin rights
     if start_proxy:
         proxy_master.start()
+        _refresh_managed_read_only_guard()
     elif not config_manager.proxy_features_enabled:
         log_buffer.log('Proxy', 'Proxy features disabled in settings: proxy not started')
     elif sys.platform == 'darwin':
@@ -1783,6 +1795,7 @@ def main():
 
         if helper_is_ready():
             proxy_master.start()
+            _refresh_managed_read_only_guard()
             return
         if _suppress_dashboard:
             log_buffer.log('ProxyHelper', 'Autostart launch skipped helper installation prompt; open Fleasion normally to install it')
@@ -1809,6 +1822,7 @@ def main():
         ok, detail = install_helper()
         if ok:
             proxy_master.start()
+            _refresh_managed_read_only_guard()
             return
 
         log_buffer.log('ProxyHelper', f'macOS proxy helper installation failed: {detail}')
@@ -1855,6 +1869,12 @@ def main():
     roblox_check_timer = QTimer()
     roblox_check_timer.timeout.connect(roblox_monitor.check_roblox_status)
     roblox_check_timer.start(500)  # Check every 0.5 seconds
+
+    managed_read_only_timer = QTimer()
+    managed_read_only_timer.timeout.connect(_refresh_managed_read_only_guard)
+    managed_read_only_timer.start(1000)
+    QTimer.singleShot(250, _refresh_managed_read_only_guard)
+    QTimer.singleShot(1500, _refresh_managed_read_only_guard)
 
     # Show first-time setup guide if this is the first run.
     if not _suppress_dashboard and not config_manager.first_time_setup_complete:
