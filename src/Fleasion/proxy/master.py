@@ -33,6 +33,7 @@ import shlex
 import shutil
 import socket
 import ssl
+import stat
 import subprocess
 import sys
 import tempfile
@@ -1299,7 +1300,6 @@ def _write_hosts_file(content: str) -> None:
 
     # --- Strategy 0: clear read-only attribute if present ---
     if HOSTS_FILE.exists():
-        import stat
         current_mode = HOSTS_FILE.stat().st_mode
         if not (current_mode & stat.S_IWRITE):
             try:
@@ -1934,6 +1934,55 @@ def _linux_cacert_needs_seed(state: dict) -> bool:
     )
 
 
+def _clear_cacert_write_barriers(path: Path) -> None:
+    """Clear OS write barriers that would block rewriting Roblox cacert.pem."""
+    try:
+        current_flags = getattr(path.stat(), 'st_flags', 0)
+    except OSError:
+        current_flags = 0
+
+    if current_flags and hasattr(os, 'chflags'):
+        immutable_mask = 0
+        for name in ('UF_IMMUTABLE', 'UF_APPEND', 'SF_IMMUTABLE', 'SF_APPEND'):
+            immutable_mask |= getattr(stat, name, 0)
+        if immutable_mask:
+            try:
+                os.chflags(path, current_flags & ~immutable_mask)
+            except OSError:
+                pass
+
+    try:
+        mode = path.stat().st_mode
+    except OSError:
+        return
+
+    desired_mode = mode | stat.S_IWRITE
+    if path.is_dir():
+        desired_mode |= stat.S_IXUSR
+    if desired_mode == mode:
+        return
+    try:
+        path.chmod(desired_mode)
+    except OSError:
+        pass
+
+
+def _prepare_cacert_target_for_write(ca_file: Path) -> None:
+    """Make Roblox's ssl/cacert.pem destination writable before direct writes."""
+    ssl_dir = ca_file.parent
+    resource_dir = ssl_dir.parent
+
+    if resource_dir.exists():
+        _clear_cacert_write_barriers(resource_dir)
+    if ssl_dir.exists():
+        _clear_cacert_write_barriers(ssl_dir)
+    else:
+        ssl_dir.mkdir(exist_ok=True)
+        _clear_cacert_write_barriers(ssl_dir)
+    if ca_file.exists():
+        _clear_cacert_write_barriers(ca_file)
+
+
 def _healthy_linux_cacert_source(ca_file: Path, ca_pem: str, dirs: list[Path]) -> Path | None:
     for candidate_dir in dirs:
         candidate = candidate_dir / 'ssl' / 'cacert.pem'
@@ -1957,7 +2006,7 @@ def _seed_linux_cacert_if_needed(ca_file: Path, state: dict, install_name: str, 
     source = _healthy_linux_cacert_source(ca_file, ca_pem, dirs)
     if source is not None:
         try:
-            ca_file.parent.mkdir(exist_ok=True)
+            _prepare_cacert_target_for_write(ca_file)
             shutil.copy2(source, ca_file)
             log_buffer.log('Certificate', f'Seeded Roblox cacert.pem from healthy local bundle for {install_name}: {source}')
             return True
@@ -1967,7 +2016,7 @@ def _seed_linux_cacert_if_needed(ca_file: Path, state: dict, install_name: str, 
     try:
         import certifi
 
-        ca_file.parent.mkdir(exist_ok=True)
+        _prepare_cacert_target_for_write(ca_file)
         shutil.copy2(certifi.where(), ca_file)
         log_buffer.log('Certificate', f'Seeded Roblox cacert.pem from Mozilla CA bundle for {install_name}')
         return True
@@ -1981,6 +2030,7 @@ def _upsert_fleasion_ca_in_cacert(ca_file: Path, ca_pem: str) -> tuple[bool, int
 
     Returns (changed, fleasion_count_before, current_count_before).
     """
+    _prepare_cacert_target_for_write(ca_file)
     existing = ca_file.read_text(encoding='utf-8', errors='replace') if ca_file.exists() else ''
     normalized_existing = _normalize_newlines(existing)
 
@@ -2117,7 +2167,7 @@ def _install_ca_into_roblox(ca_pem: str) -> tuple[bool, dict]:
         ssl_dir = d / 'ssl'
         ca_file = ssl_dir / 'cacert.pem'
         try:
-            ssl_dir.mkdir(exist_ok=True)
+            _prepare_cacert_target_for_write(ca_file)
             pre_state = _log_cacert_state(ca_file, ca_pem, f'cacert.pem health for {d.name}')
             seeded = _seed_linux_cacert_if_needed(ca_file, pre_state, d.name, ca_pem, dirs)
             changed, fleasion_count, current_count = _upsert_fleasion_ca_in_cacert(ca_file, ca_pem)
@@ -2423,7 +2473,7 @@ def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
             fleasion_count = int(pre_state.get('fleasion_certs') or 0) if pre_state_readable else 0
             current_count = int(pre_state.get('current_fleasion_certs') or 0) if pre_state_readable else 0
         else:
-            ssl_dir.mkdir(exist_ok=True)
+            _prepare_cacert_target_for_write(ca_file)
             changed, fleasion_count, current_count = _upsert_fleasion_ca_in_cacert(ca_file, ca_pem)
         post_state = _log_cacert_state(ca_file, ca_pem, f'cacert.pem after running-instance patch for {roblox_dir.name}')
         if IS_MACOS and not _is_admin() and not pre_state_readable:

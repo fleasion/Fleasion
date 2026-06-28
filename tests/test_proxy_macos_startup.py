@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 import certifi
+import stat
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -191,6 +192,78 @@ def test_linux_roblox_ca_patch_reseeds_truncated_bundle_even_when_current_ca_exi
     assert fleasion_count == 1
     assert current_count == 1
     assert details["patched"][0] == {"resource_dir": str(roblox_dir), "ca_file": str(ca_file), "changed": True}
+    assert any("Seeded Roblox cacert.pem from healthy local bundle" in message for _category, message in logs)
+
+
+def test_direct_cacert_upsert_clears_read_only_before_write(tmp_path):
+    ca_file = tmp_path / "Roblox" / "ssl" / "cacert.pem"
+    ca_file.parent.mkdir(parents=True)
+    ca_file.write_text("MOZILLA ROOTS\n", encoding="utf-8")
+    ca_file.chmod(0o444)
+    ca_pem = "-----BEGIN CERTIFICATE-----\nCURRENT\n-----END CERTIFICATE-----\n"
+
+    changed, fleasion_count, current_count = proxy_master._upsert_fleasion_ca_in_cacert(ca_file, ca_pem)
+
+    assert changed is True
+    assert fleasion_count == 0
+    assert current_count == 0
+    assert ca_file.read_text(encoding="utf-8") == f"MOZILLA ROOTS\n{ca_pem}"
+    assert ca_file.stat().st_mode & stat.S_IWRITE
+
+
+def test_cacert_write_barrier_clear_removes_immutable_flags(monkeypatch):
+    calls = []
+
+    class FakePath:
+        mode = 0o444
+
+        def stat(self):
+            return SimpleNamespace(st_mode=self.mode, st_flags=0b1111)
+
+        def is_dir(self):
+            return False
+
+        def chmod(self, mode):
+            self.mode = mode
+
+    fake_path = FakePath()
+    monkeypatch.setattr(proxy_master.stat, "UF_IMMUTABLE", 0b0001, raising=False)
+    monkeypatch.setattr(proxy_master.stat, "UF_APPEND", 0b0010, raising=False)
+    monkeypatch.setattr(proxy_master.stat, "SF_IMMUTABLE", 0b0100, raising=False)
+    monkeypatch.setattr(proxy_master.stat, "SF_APPEND", 0b1000, raising=False)
+    monkeypatch.setattr(proxy_master.os, "chflags", lambda path, flags: calls.append((path, flags)), raising=False)
+
+    proxy_master._clear_cacert_write_barriers(fake_path)
+
+    assert calls == [(fake_path, 0)]
+    assert fake_path.mode & stat.S_IWRITE
+
+
+def test_linux_cacert_seed_clears_read_only_before_copy(tmp_path, monkeypatch):
+    logs = []
+    ca_file = tmp_path / "asset_overlay" / "ssl" / "cacert.pem"
+    source = tmp_path / "healthy" / "ssl" / "cacert.pem"
+    ca_file.parent.mkdir(parents=True)
+    source.parent.mkdir(parents=True)
+    ca_file.write_text("truncated", encoding="utf-8")
+    source.write_text("replacement bundle", encoding="utf-8")
+    ca_file.chmod(0o444)
+
+    monkeypatch.setattr(proxy_master, "IS_LINUX", True)
+    monkeypatch.setattr(proxy_master, "_healthy_linux_cacert_source", lambda *_args: source)
+    monkeypatch.setattr(proxy_master, "log_buffer", SimpleNamespace(log=lambda category, message: logs.append((category, message))))
+
+    seeded = proxy_master._seed_linux_cacert_if_needed(
+        ca_file,
+        {"exists": True, "size": 9, "total_certs": 0, "error": ""},
+        "asset_overlay",
+        "ca",
+        [tmp_path / "asset_overlay", tmp_path / "healthy"],
+    )
+
+    assert seeded is True
+    assert ca_file.read_text(encoding="utf-8") == "replacement bundle"
+    assert ca_file.stat().st_mode & stat.S_IWRITE
     assert any("Seeded Roblox cacert.pem from healthy local bundle" in message for _category, message in logs)
 
 
