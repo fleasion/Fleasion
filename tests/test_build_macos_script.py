@@ -195,8 +195,36 @@ def test_github_workflow_uploads_macos_zip_without_artifact_rezipping():
 
     assert 'artifact_path: dist/Fleasion-v*-MacOS-Universal.zip' in workflow
     assert 'uses: actions/upload-artifact@v7' in workflow
+    assert 'name: Fleasion-v${{ env.APP_VERSION }}-MacOS-Universal.zip' in workflow
     assert 'archive: false' in workflow
     assert 'artifact_path: dist/Fleasion-v*-MacOS-Universal.dmg' not in workflow
+
+
+def test_github_workflow_uploads_windows_exe_without_artifact_rezipping():
+    workflow = Path('.github/workflows/build.yml').read_text(encoding='utf-8')
+
+    assert 'name: Fleasion-v${{ env.APP_VERSION }}-Windows.exe' in workflow
+    assert "if: runner.os == 'Windows'" in workflow
+    assert 'path: ${{ matrix.artifact_path }}' in workflow
+    assert 'archive: false' in workflow
+
+
+def test_draft_release_workflow_builds_main_and_uploads_versioned_assets():
+    workflow = Path('.github/workflows/draft-release.yml').read_text(encoding='utf-8')
+
+    assert 'workflow_dispatch:' in workflow
+    assert 'contents: write' in workflow
+    assert 'ref: main' in workflow
+    assert 'ref: ${{ needs.prepare.outputs.main_sha }}' in workflow
+    assert 'release_tag: v${{ steps.version.outputs.app_version }}' in workflow
+    assert 'artifact_path: dist/Fleasion-v*.exe' in workflow
+    assert 'artifact_path: dist/Fleasion-v*-Linux.zip' in workflow
+    assert 'artifact_path: dist/Fleasion-v*-MacOS-Universal.zip' in workflow
+    assert 'zip -9 "Fleasion-v${{ needs.prepare.outputs.app_version }}-Linux.zip"' in workflow
+    assert 'archive: false' in workflow
+    assert 'gh release create "$RELEASE_TAG" release-files/*' in workflow
+    assert '--draft' in workflow
+    assert '--target "$MAIN_SHA"' in workflow
 
 
 def test_github_workflow_verifies_linux_gui_audio_runtime():

@@ -27,15 +27,12 @@ jobs:
         include:
           - name: Windows
             os: windows-latest
-            artifact_name: Fleasion-Windows
             artifact_path: dist/Fleasion-v*.exe
           - name: Linux
             os: ubuntu-latest
-            artifact_name: Fleasion-Linux
             artifact_path: dist/Fleasion-v*
           - name: macOS
             os: macos-latest
-            artifact_name: Fleasion-MacOS-Universal
             artifact_path: dist/Fleasion-v*-MacOS-Universal.zip
 
     steps:
@@ -49,6 +46,12 @@ jobs:
 
       - name: Set up Python
         run: uv python install
+
+      - name: Read version
+        shell: bash
+        run: |
+          app_version="$(sed -n "s/^APP_VERSION = ['\"]\\([^'\"]*\\)['\"]$/\\1/p" src/Fleasion/utils/paths.py)"
+          echo "APP_VERSION=$app_version" >> "$GITHUB_ENV"
 
       - name: Sync dependencies
         run: uv sync --locked --group dev
@@ -89,14 +92,24 @@ jobs:
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v7
         with:
+          name: Fleasion-v${{ env.APP_VERSION }}-MacOS-Universal.zip
+          path: ${{ matrix.artifact_path }}
+          archive: false
+          if-no-files-found: error
+
+      - name: Upload Windows package
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: Fleasion-v${{ env.APP_VERSION }}-Windows.exe
           path: ${{ matrix.artifact_path }}
           archive: false
           if-no-files-found: error
 
       - name: Upload package
-        if: runner.os != 'macOS'
+        if: runner.os == 'Linux'
         uses: actions/upload-artifact@v6
         with:
-          name: ${{ matrix.artifact_name }}
+          name: Fleasion-v${{ env.APP_VERSION }}-Linux
           path: ${{ matrix.artifact_path }}
           if-no-files-found: error

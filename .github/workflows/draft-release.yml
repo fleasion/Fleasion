@@ -1,0 +1,155 @@
+name: Build Draft Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  PYTHONHASHSEED: '0'
+  SOURCE_DATE_EPOCH: '0'
+  LC_ALL: C.UTF-8
+  TZ: UTC
+
+jobs:
+  prepare:
+    name: Prepare main release metadata
+    runs-on: ubuntu-latest
+    outputs:
+      app_version: ${{ steps.version.outputs.app_version }}
+      main_sha: ${{ steps.version.outputs.main_sha }}
+      release_tag: v${{ steps.version.outputs.app_version }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+
+      - name: Read version
+        id: version
+        run: |
+          app_version="$(sed -n "s/^APP_VERSION = ['\"]\\([^'\"]*\\)['\"]$/\\1/p" src/Fleasion/utils/paths.py)"
+          if [ -z "$app_version" ]; then
+            echo "Could not read APP_VERSION from src/Fleasion/utils/paths.py." >&2
+            exit 1
+          fi
+          main_sha="$(git rev-parse HEAD)"
+          echo "app_version=$app_version" >> "$GITHUB_OUTPUT"
+          echo "main_sha=$main_sha" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.name }}
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+            artifact_name: Fleasion-Windows-release-asset
+            artifact_path: dist/Fleasion-v*.exe
+          - name: Linux
+            os: ubuntu-latest
+            artifact_name: Fleasion-Linux-release-asset
+            artifact_path: dist/Fleasion-v*-Linux.zip
+          - name: macOS
+            os: macos-latest
+            artifact_name: Fleasion-MacOS-release-asset
+            artifact_path: dist/Fleasion-v*-MacOS-Universal.zip
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.main_sha }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Sync dependencies
+        run: uv sync --locked --group dev
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zip libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 libportaudio2 libpipewire-0.3-0 libspa-0.2-modules libpulse0
+
+      - name: Build Windows package
+        if: runner.os == 'Windows'
+        run: uv run pyinstaller --clean --noconfirm Fleasion.spec
+
+      - name: Build Linux package
+        if: runner.os == 'Linux'
+        run: uv run pyinstaller --clean --noconfirm Fleasion.spec
+
+      - name: Verify Linux audio runtime
+        if: runner.os == 'Linux'
+        run: |
+          archive_listing="$(uv run pyi-archive_viewer -b -l dist/Fleasion-v*)"
+          printf '%s\n' "$archive_listing" | grep -Ei 'portaudio|pulse|pipewire|jack|alsa|sound' || true
+          if [[ "$archive_listing" =~ lib(portaudio|asound|jack|pulse|pulsecommon-|pipewire-) ]]; then
+            echo "Linux package must use host audio backend libraries, not the GitHub runner copies." >&2
+            exit 1
+          fi
+
+      - name: Package Linux release zip
+        if: runner.os == 'Linux'
+        run: |
+          cd dist
+          zip -9 "Fleasion-v${{ needs.prepare.outputs.app_version }}-Linux.zip" "Fleasion-v${{ needs.prepare.outputs.app_version }}"
+
+      - name: Install Rosetta
+        if: runner.os == 'macOS'
+        run: sudo softwareupdate --install-rosetta --agree-to-license
+
+      - name: Build macOS package
+        if: runner.os == 'macOS'
+        run: ./scripts/build_macos.sh
+
+      - name: Upload release asset
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_path }}
+          archive: false
+          if-no-files-found: error
+
+  draft-release:
+    name: Create draft release
+    needs:
+      - prepare
+      - build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v6
+        with:
+          path: release-assets
+
+      - name: Stage release assets
+        run: |
+          mkdir -p release-files
+          find release-assets -type f -name 'Fleasion-v*' -exec cp {} release-files/ \;
+          find release-files -maxdepth 1 -type f -print | sort
+          test "$(find release-files -maxdepth 1 -type f | wc -l)" -eq 3
+
+      - name: Create draft GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          APP_VERSION: ${{ needs.prepare.outputs.app_version }}
+          MAIN_SHA: ${{ needs.prepare.outputs.main_sha }}
+        run: |
+          gh release create "$RELEASE_TAG" release-files/* \
+            --draft \
+            --target "$MAIN_SHA" \
+            --title "Fleasion v${APP_VERSION}" \
+            --notes "Draft release for Fleasion v${APP_VERSION}."
