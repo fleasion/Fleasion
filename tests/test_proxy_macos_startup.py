@@ -208,7 +208,7 @@ def test_direct_cacert_upsert_clears_read_only_before_write(tmp_path):
     assert fleasion_count == 0
     assert current_count == 0
     assert ca_file.read_text(encoding="utf-8") == f"MOZILLA ROOTS\n{ca_pem}"
-    assert ca_file.stat().st_mode & stat.S_IWRITE
+    assert not (ca_file.stat().st_mode & stat.S_IWRITE)
 
 
 def test_cacert_write_barrier_clear_removes_immutable_flags(monkeypatch):
@@ -263,7 +263,7 @@ def test_linux_cacert_seed_clears_read_only_before_copy(tmp_path, monkeypatch):
 
     assert seeded is True
     assert ca_file.read_text(encoding="utf-8") == "replacement bundle"
-    assert ca_file.stat().st_mode & stat.S_IWRITE
+    assert not (ca_file.stat().st_mode & stat.S_IWRITE)
     assert any("Seeded Roblox cacert.pem from healthy local bundle" in message for _category, message in logs)
 
 

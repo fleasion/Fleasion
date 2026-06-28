@@ -1983,6 +1983,21 @@ def _prepare_cacert_target_for_write(ca_file: Path) -> None:
         _clear_cacert_write_barriers(ca_file)
 
 
+def _cacert_is_read_only(ca_file: Path) -> bool:
+    try:
+        return ca_file.exists() and not bool(ca_file.stat().st_mode & stat.S_IWRITE)
+    except OSError:
+        return False
+
+
+def _restore_cacert_read_only(ca_file: Path) -> None:
+    try:
+        if ca_file.exists():
+            ca_file.chmod(ca_file.stat().st_mode & ~stat.S_IWRITE)
+    except OSError:
+        pass
+
+
 def _healthy_linux_cacert_source(ca_file: Path, ca_pem: str, dirs: list[Path]) -> Path | None:
     for candidate_dir in dirs:
         candidate = candidate_dir / 'ssl' / 'cacert.pem'
@@ -2005,6 +2020,7 @@ def _seed_linux_cacert_if_needed(ca_file: Path, state: dict, install_name: str, 
 
     source = _healthy_linux_cacert_source(ca_file, ca_pem, dirs)
     if source is not None:
+        restore_read_only = _cacert_is_read_only(ca_file)
         try:
             _prepare_cacert_target_for_write(ca_file)
             shutil.copy2(source, ca_file)
@@ -2012,10 +2028,15 @@ def _seed_linux_cacert_if_needed(ca_file: Path, state: dict, install_name: str, 
             return True
         except Exception as exc:
             log_buffer.log('Certificate', f'Could not seed Roblox cacert.pem from local bundle for {install_name}: {exc}')
+        finally:
+            if restore_read_only:
+                _restore_cacert_read_only(ca_file)
 
+    restore_read_only = False
     try:
         import certifi
 
+        restore_read_only = _cacert_is_read_only(ca_file)
         _prepare_cacert_target_for_write(ca_file)
         shutil.copy2(certifi.where(), ca_file)
         log_buffer.log('Certificate', f'Seeded Roblox cacert.pem from Mozilla CA bundle for {install_name}')
@@ -2023,6 +2044,9 @@ def _seed_linux_cacert_if_needed(ca_file: Path, state: dict, install_name: str, 
     except Exception as exc:
         log_buffer.log('Certificate', f'Could not seed Roblox cacert.pem for {install_name}: {exc}')
         return False
+    finally:
+        if restore_read_only:
+            _restore_cacert_read_only(ca_file)
 
 
 def _upsert_fleasion_ca_in_cacert(ca_file: Path, ca_pem: str) -> tuple[bool, int, int]:
@@ -2030,21 +2054,26 @@ def _upsert_fleasion_ca_in_cacert(ca_file: Path, ca_pem: str) -> tuple[bool, int
 
     Returns (changed, fleasion_count_before, current_count_before).
     """
+    restore_read_only = _cacert_is_read_only(ca_file)
     _prepare_cacert_target_for_write(ca_file)
-    existing = ca_file.read_text(encoding='utf-8', errors='replace') if ca_file.exists() else ''
-    normalized_existing = _normalize_newlines(existing)
+    try:
+        existing = ca_file.read_text(encoding='utf-8', errors='replace') if ca_file.exists() else ''
+        normalized_existing = _normalize_newlines(existing)
 
-    cleaned, fleasion_count, current_count = _analyze_and_strip_fleasion_cas(existing, ca_pem)
-    normalized_current = _normalize_pem_block(ca_pem)
+        cleaned, fleasion_count, current_count = _analyze_and_strip_fleasion_cas(existing, ca_pem)
+        normalized_current = _normalize_pem_block(ca_pem)
 
-    cleaned = cleaned.rstrip('\n')
-    updated = f'{cleaned}\n{normalized_current}' if cleaned else normalized_current
+        cleaned = cleaned.rstrip('\n')
+        updated = f'{cleaned}\n{normalized_current}' if cleaned else normalized_current
 
-    changed = updated != normalized_existing
-    if changed:
-        ca_file.write_text(updated, encoding='utf-8')
+        changed = updated != normalized_existing
+        if changed:
+            ca_file.write_text(updated, encoding='utf-8')
 
-    return changed, fleasion_count, current_count
+        return changed, fleasion_count, current_count
+    finally:
+        if restore_read_only:
+            _restore_cacert_read_only(ca_file)
 
 
 def _cacert_has_only_current_fleasion_ca(cacert_text: str, current_ca_pem: str) -> bool:
