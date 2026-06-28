@@ -137,13 +137,15 @@ class _RichTextButton(QPushButton):
     vertically centred so mixed font sizes don't shift each other's position."""
 
     def __init__(self, label: str, suffix: str = '', suffix_size_offset: int = 0,
-                 y_offset: int = 0, suffix_x_offset: int = 0, parent=None):
+                 y_offset: int = 0, suffix_x_offset: int = 0,
+                 suffix_pixel_size: int | None = None, parent=None):
         super().__init__(parent)
         self._label = label
         self._suffix = suffix
         self._suffix_size_offset = suffix_size_offset
         self._y_offset = y_offset
         self._suffix_x_offset = suffix_x_offset
+        self._suffix_pixel_size = suffix_pixel_size
         # Non-empty text so Qt includes normal button padding in sizeHint.
         super().setText('\u200b')
 
@@ -172,12 +174,15 @@ class _RichTextButton(QPushButton):
         base_font = self.font()
         center_y = cr.y() + cr.height() / 2
 
-        if self._suffix and self._suffix_size_offset:
+        if self._suffix and (self._suffix_size_offset or self._suffix_pixel_size):
             large_font = QFont(base_font)
-            pt = large_font.pointSize()
-            if pt < 0:
-                pt = 9
-            large_font.setPointSize(pt + self._suffix_size_offset)
+            if self._suffix_pixel_size:
+                large_font.setPixelSize(self._suffix_pixel_size)
+            else:
+                pt = large_font.pointSize()
+                if pt < 0:
+                    pt = 9
+                large_font.setPointSize(pt + self._suffix_size_offset)
 
             fm_base = QFontMetrics(base_font)
             fm_large = QFontMetrics(large_font)
@@ -220,8 +225,9 @@ class CollapsibleSection(QWidget):
     _EXPANDED_ARROW = '\u25BC'
     _COLLAPSED_ARROW = '\u25B6'
     _DEFAULT_ARROW_STYLE = 'border: none;'
+    _WINDOWS_COLLAPSED_ARROW_SIZE = 19
     _WINDOWS_EXPANDED_ARROW_STYLE = 'font-size: 11px; border: none;'
-    _WINDOWS_COLLAPSED_ARROW_STYLE = 'font-size: 19px; border: none;'
+    _WINDOWS_COLLAPSED_ARROW_STYLE = f'font-size: {_WINDOWS_COLLAPSED_ARROW_SIZE}px; border: none;'
 
     def __init__(self, title: str, parent=None, expanded: bool = True,
                  header_widgets: list[QWidget] | None = None):
@@ -486,7 +492,17 @@ class ModRowWidget(QWidget):
         layout.addWidget(self._browse_btn)
 
         # Preview button
-        self._preview_btn = _RichTextButton('Preview', '\u25b6', suffix_x_offset=3)
+        preview_arrow_size = (
+            CollapsibleSection._WINDOWS_COLLAPSED_ARROW_SIZE
+            if os.name == 'nt'
+            else None
+        )
+        self._preview_btn = _RichTextButton(
+            'Preview',
+            '\u25b6',
+            suffix_x_offset=3,
+            suffix_pixel_size=preview_arrow_size,
+        )
         self._preview_btn.setFixedWidth(82)
         self._preview_btn.clicked.connect(self._on_preview)
         layout.addWidget(self._preview_btn)
