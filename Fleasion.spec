@@ -1,11 +1,18 @@
 # -*- mode: python ; coding: utf-8 -*-
+import importlib.util
 import os, re, pathlib, sys
 from PyInstaller.utils.hooks import collect_all, collect_submodules
+
 
 _paths_src = pathlib.Path('src/Fleasion/utils/paths.py').read_text()
 _version = re.search(r"APP_VERSION\s*=\s*['\"]([^'\"]+)['\"]", _paths_src).group(1)
 _macos_target_arch = os.environ.get('MACOS_TARGET_ARCH', 'universal2') if sys.platform == 'darwin' else None
-_bundled_macos_helper = pathlib.Path('dist/fleasion-proxy-helper')
+_bundled_macos_helpers = {
+    'arm64': pathlib.Path('dist/fleasion-proxy-helper-arm64'),
+    'x86_64': pathlib.Path('dist/fleasion-proxy-helper-x86_64'),
+}
+_bundled_legacy_macos_helper = pathlib.Path('dist/fleasion-proxy-helper')
+_bundled_linux_helper = pathlib.Path('dist/fleasion-linux-proxy-helper')
 
 datas = [
     ('src/Fleasion/fleasionlogoHR.ico', '.'),
@@ -34,9 +41,24 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('PyQt6')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
+# PyOpenGL resolves platform backends dynamically. The upstream PyInstaller
+# hook includes GLX on Linux, but Wayland sessions can select EGL instead.
+hiddenimports += collect_submodules('OpenGL.arrays')
+hiddenimports += [
+    'OpenGL.platform.glx',
+    'OpenGL.platform.egl',
+]
+
 # zstandard is a compiled C extension - collect_all ensures the .pyd is bundled
 tmp_ret = collect_all('zstandard')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+
+# sounddevice/soundfile are single-file modules, but their native runtime
+# libraries live in sibling data packages that PyInstaller does not discover.
+for audio_runtime_package in ('_sounddevice_data', '_soundfile_data'):
+    if importlib.util.find_spec(audio_runtime_package):
+        tmp_ret = collect_all(audio_runtime_package)
+        datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 # orjson is a compiled extension - make sure it's included
 hiddenimports += collect_submodules('orjson')
@@ -62,17 +84,30 @@ if sys.platform == 'win32':
         'winreg',
     ]
 elif sys.platform == 'darwin':
-    if _bundled_macos_helper.exists():
-        datas.append((str(_bundled_macos_helper), '.'))
-    else:
+    _wanted_macos_helpers = (
+        [_bundled_macos_helpers[_macos_target_arch]]
+        if _macos_target_arch in _bundled_macos_helpers
+        else list(_bundled_macos_helpers.values())
+    )
+    _existing_macos_helpers = [helper for helper in _wanted_macos_helpers if helper.exists()]
+    if not _existing_macos_helpers and _bundled_legacy_macos_helper.exists():
+        _existing_macos_helpers = [_bundled_legacy_macos_helper]
+    if not _existing_macos_helpers:
         raise SystemExit(
-            'Missing dist/fleasion-proxy-helper. Build the macOS helper first with '
+            'Missing dist/fleasion-proxy-helper-arm64 or dist/fleasion-proxy-helper-x86_64. '
+            'Build the macOS helper first with '
             'PyInstaller or use ./scripts/build_macos.sh.'
         )
+    for helper in _existing_macos_helpers:
+        datas.append((str(helper), '.'))
     tmp_ret = collect_all('browser_cookie3')
     datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
     tmp_ret = collect_all('Cryptodome')
     datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+elif sys.platform.startswith('linux'):
+    if _bundled_linux_helper.exists():
+        datas.append((str(_bundled_linux_helper), '.'))
+    datas.append(('src/Fleasion/linux_proxy_helper_daemon.py', '.'))
 
 a = Analysis(
     ['launcher.py'],
@@ -95,6 +130,25 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+if sys.platform.startswith('linux'):
+    # The sounddevice hook and dependency scan can collect the build machine's
+    # audio backend stack. That can silence playback on other distros, so the
+    # GUI player uses host PortAudio and host audio backend libraries.
+    _host_audio_lib_prefixes = (
+        'libportaudio.so',
+        'libasound.so',
+        'libjack.so',
+        'libpulse.so',
+        'libpulsecommon-',
+        'libpipewire-',
+    )
+    a.binaries = [
+        entry for entry in a.binaries
+        if not any(
+            pathlib.Path(str(part)).name.startswith(_host_audio_lib_prefixes)
+            for part in entry[:2]
+        )
+    ]
 pyz = PYZ(a.pure)
 
 exe = EXE(

@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
-from ..utils import APP_NAME, LOGS_DIR, get_icon_path, log_buffer, open_folder, time_tracker
+from ..utils import LOGS_DIR, get_icon_path, log_buffer, open_folder, time_tracker
 
 
 class LogsWindow(QDialog):
@@ -21,7 +21,7 @@ class LogsWindow(QDialog):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f'{APP_NAME} - Logs')
+        self.setWindowTitle('Logs')
         self.resize(600, 400)
         self.setWindowFlags(
             Qt.WindowType.Window |

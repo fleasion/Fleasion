@@ -37,6 +37,14 @@ class GlobalSettingsManager:
                 log_buffer.log('GlobalSettings', '~/Library/Roblox directory not found')
             return roblox_dirs
 
+        if sys.platform.startswith('linux'):
+            sober_local = USER_HOME / '.var' / 'app' / 'org.vinegarhq.Sober' / 'data' / 'sober'
+            if sober_local.exists():
+                roblox_dirs.append(sober_local)
+            else:
+                log_buffer.log('GlobalSettings', '~/.var/app/org.vinegarhq.Sober/data/sober directory not found')
+            return roblox_dirs
+
         users_dir = Path('C:/Users')
         
         if not users_dir.exists():

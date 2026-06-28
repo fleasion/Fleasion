@@ -38,7 +38,10 @@ from PyQt6.QtWidgets import (
 from ..utils.paths import CONFIG_DIR
 from ..utils.plural import format_count
 from ..utils.logging import log_buffer
-from ..utils.roblox_auth import get_roblosecurity as _get_roblosecurity
+from ..utils.roblox_auth import (
+    get_roblosecurity as _get_roblosecurity,
+    wait_for_roblosecurity as _wait_for_roblosecurity,
+)
 from ..utils.windows import launch_as_standard_user
 
 
@@ -135,6 +138,8 @@ class _Invoker(QObject):
 
 from .prejsons_dialog import _make_rounded_pixmap, _preprocess_thumb_bytes, _CARD_W, _CARD_H, _THUMB_W, _THUMB_H
 
+_SUBPLACE_CARD_H = _CARD_H + 8
+
 
 class _JobIdEdit(QLineEdit):
     """QLineEdit with placeholder text for an optional JobId."""
@@ -189,7 +194,7 @@ class SubplaceGameCard(QFrame):
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self._apply_style()
         self.setMinimumWidth(_CARD_W)
-        self.setFixedHeight(_CARD_H)
+        self.setFixedHeight(_SUBPLACE_CARD_H)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._setup_ui()
 
@@ -212,7 +217,7 @@ class SubplaceGameCard(QFrame):
 
         self.name_label = QLabel("Unknown")
         self.name_label.setWordWrap(True)
-        self.name_label.setMaximumHeight(38)
+        self.name_label.setMaximumHeight(42)
         f = QFont()
         f.setBold(True)
         self.name_label.setFont(f)
@@ -557,7 +562,7 @@ class SubplaceJoinerTab(QWidget):
 
     def _resolve_current_user(self):
         """Background thread: read the active Roblox cookie and resolve the username."""
-        cookie = _get_roblosecurity()
+        cookie = _wait_for_roblosecurity()
         if not cookie:
             return
         try:
@@ -780,7 +785,7 @@ class SubplaceJoinerTab(QWidget):
             return
         def _worker():
             try:
-                cookie = _get_roblosecurity() or ""
+                cookie = _wait_for_roblosecurity() or ""
                 r = self._get(
                     f"https://games.roblox.com/v1/games/multiget-place-details?placeIds={place_id}",
                     timeout=10,
@@ -995,7 +1000,7 @@ class SubplaceJoinerTab(QWidget):
             ]
             self._on_main_guarded(lambda: self._add_new_cards(items), cancel_event)
 
-            cookie = _get_roblosecurity() or ""
+            cookie = _wait_for_roblosecurity() or ""
 
             def load_timestamps():
                 updated = []

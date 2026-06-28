@@ -6,6 +6,7 @@ import stat
 import threading
 from copy import deepcopy
 from pathlib import Path
+from typing import Any
 
 from ..utils.paths import CONFIG_DIR, CONFIG_FILE, CONFIGS_FOLDER, DEFAULT_SETTINGS
 
@@ -107,7 +108,7 @@ class ConfigManager:
                 encodings.append(encoding)
         return tuple(encodings)
 
-    def _load_json_file(self, path: Path) -> dict:
+    def _load_json_file(self, path: Path) -> Any:
         """Load JSON and recover legacy non-UTF files when possible."""
         raw = path.read_bytes()
         decode_error: UnicodeDecodeError | None = None
@@ -138,13 +139,26 @@ class ConfigManager:
             raise decode_error
         return json.loads(raw)
 
+    @staticmethod
+    def _normalize_config_data(data: Any) -> dict:
+        """Return a valid config object from decoded JSON data."""
+        if isinstance(data, dict):
+            rules = data.get('replacement_rules', [])
+            if not isinstance(rules, list):
+                data = data.copy()
+                data['replacement_rules'] = []
+            return data
+        if isinstance(data, list):
+            return {'replacement_rules': data}
+        return {'replacement_rules': []}
+
     def _load_config(self, name: str) -> dict:
         """Load a config from disk."""
         path = self._get_config_path(name)
         if path.exists():
             try:
                 self._clear_read_only(path)
-                return self._load_json_file(Path(path))
+                return self._normalize_config_data(self._load_json_file(Path(path)))
             except (json.JSONDecodeError, OSError, UnicodeDecodeError):
                 pass
         return {'replacement_rules': []}
@@ -255,6 +269,19 @@ class ConfigManager:
     def proxy_features_enabled(self, value: bool):
         """Set proxy feature toggle."""
         self.settings['proxy_features_enabled'] = value
+        self._save_settings()
+
+    @property
+    def macos_auth_source(self) -> str:
+        value = str(self.settings.get('macos_auth_source', '') or '')
+        valid = {'', 'manual', 'Chrome', 'Safari', 'Firefox', 'Brave', 'Edge', 'Chromium', 'Opera', 'Vivaldi'}
+        return value if value in valid else ''
+
+    @macos_auth_source.setter
+    def macos_auth_source(self, value: str):
+        value = str(value or '')
+        valid = {'', 'manual', 'Chrome', 'Safari', 'Firefox', 'Brave', 'Edge', 'Chromium', 'Opera', 'Vivaldi'}
+        self.settings['macos_auth_source'] = value if value in valid else ''
         self._save_settings()
 
     @property
@@ -912,9 +939,16 @@ class ConfigManager:
                         # Empty local path means remove
                         removals.update(parsed_ids)
                 elif mode == 'id':
-                    # Empty with_id means remove
+                    # Empty with_id means remove. Replacement IDs 0 and 1 are
+                    # known dummy values and should be invisible to the proxy.
                     if (target := rule.get('with_id')) is not None:
-                        replacements.update(dict.fromkeys(parsed_ids, target))
+                        try:
+                            target_id = int(target)
+                        except (TypeError, ValueError):
+                            continue
+                        if target_id in (0, 1):
+                            continue
+                        replacements.update(dict.fromkeys(parsed_ids, target_id))
                     else:
                         removals.update(parsed_ids)
 

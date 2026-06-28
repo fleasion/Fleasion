@@ -102,6 +102,41 @@ class ConfigManagerEncodingTests(unittest.TestCase):
 
             self.assertEqual(manager.replacement_rules, [])
 
+    def test_large_list_root_config_is_loaded_as_replacement_rules(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_manager_module = self._load_manager_for(Path(tmp))
+            configs_dir = Path(tmp) / 'FleasionNT' / 'configs'
+            configs_dir.mkdir(parents=True)
+            rules = [
+                {
+                    'name': 'Large imported config',
+                    'enabled': True,
+                    'replace_ids': ['123'],
+                    'mode': 'id',
+                    'with_id': 456,
+                    'notes': 'x' * (225 * 1024),
+                }
+            ]
+            (configs_dir / 'Default.json').write_text(json.dumps(rules), encoding='utf-8')
+
+            manager = config_manager_module.ConfigManager()
+
+            self.assertEqual(manager.replacement_rules, rules)
+
+    def test_config_with_non_list_replacement_rules_loads_empty_rules(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_manager_module = self._load_manager_for(Path(tmp))
+            configs_dir = Path(tmp) / 'FleasionNT' / 'configs'
+            configs_dir.mkdir(parents=True)
+            (configs_dir / 'Default.json').write_text(
+                json.dumps({'replacement_rules': {'not': 'a list'}}),
+                encoding='utf-8',
+            )
+
+            manager = config_manager_module.ConfigManager()
+
+            self.assertEqual(manager.replacement_rules, [])
+
     def test_wire_preserving_passthrough_defaults_off_and_rejects_string_trueish_values(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_manager_module = self._load_manager_for(Path(tmp))
@@ -123,6 +158,41 @@ class ConfigManagerEncodingTests(unittest.TestCase):
 
             self.assertTrue(manager.run_on_boot)
             self.assertEqual(manager.export_naming, ['name', 'id'])
+
+    def test_dummy_replacement_ids_are_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_manager_module = self._load_manager_for(Path(tmp))
+
+            manager = config_manager_module.ConfigManager()
+            manager.enabled_configs = ['Default']
+            manager.replacement_rules = [
+                {'name': 'Dummy zero', 'enabled': True, 'replace_ids': ['100'], 'mode': 'id', 'with_id': 0},
+                {'name': 'Dummy one', 'enabled': True, 'replace_ids': ['101'], 'mode': 'id', 'with_id': 1},
+                {'name': 'Real', 'enabled': True, 'replace_ids': ['102'], 'mode': 'id', 'with_id': 999},
+            ]
+
+            replacements, removals, cdn_replacements, local_replacements = manager.get_all_replacements()
+
+            self.assertEqual(replacements, {102: 999})
+            self.assertEqual(removals, set())
+            self.assertEqual(cdn_replacements, {})
+            self.assertEqual(local_replacements, {})
+
+    def test_macos_auth_source_accepts_only_supported_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_manager_module = self._load_manager_for(Path(tmp))
+
+            manager = config_manager_module.ConfigManager()
+            self.assertEqual(manager.macos_auth_source, '')
+
+            manager.macos_auth_source = 'Chrome'
+            self.assertEqual(manager.macos_auth_source, 'Chrome')
+
+            manager.macos_auth_source = 'manual'
+            self.assertEqual(manager.macos_auth_source, 'manual')
+
+            manager.macos_auth_source = 'Internet Explorer'
+            self.assertEqual(manager.macos_auth_source, '')
 
 
 if __name__ == '__main__':

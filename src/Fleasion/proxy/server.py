@@ -25,6 +25,7 @@ import asyncio
 import gzip
 import logging
 import ssl
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +35,7 @@ if TYPE_CHECKING:
     from .addons.cache_scraper import CacheScraper
     from .addons.texture_stripper import TextureStripper
 
+from .roblox_metadata import strip_roblox_metadata
 from .upstream import (
     AutoConnector,
     BaseUpstreamConnector,
@@ -60,6 +62,7 @@ CDN_HOSTS: frozenset = frozenset({'fts.rbxcdn.com', 'contentdelivery.roblox.com'
 BASE_INTERCEPT_HOSTS: frozenset = frozenset({ASSET_DELIVERY_HOST, GAMEJOIN_HOST, *CDN_HOSTS})
 USERNAME_SPOOFER_INTERCEPT_HOSTS: frozenset = frozenset({PROFILE_API_HOST})
 INTERCEPT_HOSTS: frozenset = BASE_INTERCEPT_HOSTS | USERNAME_SPOOFER_INTERCEPT_HOSTS
+ASSET_TRAFFIC_MISSING_DIAGNOSTIC_SECONDS = 20.0
 
 _ZSTD_MAGIC = b'\x28\xb5\x2f\xfd'
 _GZIP_MAGIC  = b'\x1f\x8b'
@@ -346,7 +349,7 @@ def _read_local_bytes(local_path: str) -> bytes:
             path = get_or_create_mesh_from_obj(path)
         except Exception:
             pass
-    return path.read_bytes() if path.exists() else b''
+    return strip_roblox_metadata(path, path.read_bytes()) if path.exists() else b''
 
 
 def _serve_local_file(local_path: str) -> bytes:
@@ -359,7 +362,7 @@ def _serve_local_file(local_path: str) -> bytes:
             logger.debug('OBJ->mesh conversion failed: %s', exc)
     if not path.exists():
         return b'HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: keep-alive\r\n\r\n'
-    content = path.read_bytes()
+    content = strip_roblox_metadata(path, path.read_bytes())
     ext = path.suffix.lower()
     ct_map = {
         '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
@@ -529,10 +532,15 @@ class FleasionProxy:
             upstream_endpoints = upstream_ips or {}
         self._upstream_endpoints = normalize_endpoints(upstream_endpoints)
         self._server: Optional[asyncio.Server] = None
+        self._servers: List[asyncio.Server] = []
+        self._listening_loopbacks: set[str] = set()
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix='fleasion-cpu')
         self._sni_diagnostics_seen: set[str] = set()
         self._fallback_diagnostics_seen: set[tuple[str, str]] = set()
         self._wire_preserving_passthrough = bool(wire_preserving_passthrough)
+        self._last_gamejoin_time: float = 0.0
+        self._last_asset_traffic_time: float = 0.0
+        self._asset_diag_generation: int = 0
 
         asset_limit = max(1, int(vpn_compat_max_assetdelivery_connections or 16))
         cdn_limit = max(1, int(vpn_compat_max_cdn_connections or 32))
@@ -612,7 +620,33 @@ class FleasionProxy:
             backlog=256,
             reuse_address=True,
         )
+        self._servers = [self._server]
+        self._listening_loopbacks = {'127.0.0.1'}
         logger.info('Fleasion proxy listening on 127.0.0.1:%d (TLS)', self.port)
+
+        try:
+            ipv6_server = await asyncio.start_server(
+                self._handle_client,
+                host='::1',
+                port=self.port,
+                ssl=self._server_ssl_ctx,
+                backlog=256,
+                reuse_address=True,
+            )
+            self._servers.append(ipv6_server)
+            self._listening_loopbacks.add('::1')
+            logger.info('Fleasion proxy listening on [::1]:%d (TLS)', self.port)
+        except OSError as exc:
+            try:
+                from ..utils import log_buffer
+                log_buffer.log('Proxy', f'IPv6 loopback listener unavailable on [::1]:{self.port}: {exc}')
+            except Exception:
+                logger.debug('IPv6 loopback listener unavailable on [::1]:%d: %s', self.port, exc)
+
+    async def serve_forever(self) -> None:
+        if not self._servers:
+            return
+        await asyncio.gather(*(server.serve_forever() for server in self._servers))
 
     def set_module_interceptors(self, interceptors: List) -> None:
         """Set the list of module interceptors for gamejoin traffic hooks."""
@@ -647,14 +681,54 @@ class FleasionProxy:
         )
 
     async def stop(self) -> None:
-        if self._server:
-            self._server.close()
+        servers = list(self._servers)
+        if self._server is not None and self._server not in servers:
+            servers.append(self._server)
+        for server in servers:
+            server.close()
+        for server in servers:
             try:
-                await asyncio.wait_for(self._server.wait_closed(), timeout=3.0)
+                await asyncio.wait_for(server.wait_closed(), timeout=3.0)
             except Exception:
                 pass
-            self._server = None
+        self._servers = []
+        self._server = None
+        self._listening_loopbacks = set()
         self._executor.shutdown(wait=False, cancel_futures=True)
+
+    def loopback_ips_for_hosts(self) -> tuple[str, ...]:
+        ordered = []
+        for ip in ('127.0.0.1', '::1'):
+            if ip in self._listening_loopbacks:
+                ordered.append(ip)
+        return tuple(ordered) or ('127.0.0.1',)
+
+    def _note_asset_traffic(self) -> None:
+        self._last_asset_traffic_time = time.monotonic()
+
+    def _note_gamejoin_traffic(self) -> None:
+        self._last_gamejoin_time = time.monotonic()
+        self._asset_diag_generation += 1
+        generation = self._asset_diag_generation
+        asyncio.create_task(self._warn_if_asset_traffic_missing(generation, self._last_gamejoin_time))
+
+    async def _warn_if_asset_traffic_missing(self, generation: int, gamejoin_time: float) -> None:
+        await asyncio.sleep(ASSET_TRAFFIC_MISSING_DIAGNOSTIC_SECONDS)
+        if generation != self._asset_diag_generation:
+            return
+        if self._last_asset_traffic_time >= gamejoin_time:
+            return
+        try:
+            from ..utils import log_buffer
+            log_buffer.log(
+                'ProxyDiag',
+                'Game join traffic was intercepted, but no assetdelivery/CDN requests reached Fleasion '
+                f'within {ASSET_TRAFFIC_MISSING_DIAGNOSTIC_SECONDS:.0f}s. '
+                'Possible asset traffic bypass: IPv6 loopback, stale DNS cache, hosts-file protection, '
+                'or security/VPN filtering.',
+            )
+        except Exception:
+            logger.debug('No assetdelivery/CDN traffic observed after gamejoin')
 
     def _endpoints_for_host(
         self,
@@ -866,6 +940,9 @@ class FleasionProxy:
                 _gamejoin_flow: Optional[ProxyFlow] = None
                 _profile_flow: Optional[ProxyFlow] = None
 
+                if host == ASSET_DELIVERY_HOST or host in CDN_HOSTS:
+                    self._note_asset_traffic()
+
                 # ── TextureStripper: CDN short-circuit (replace before upstream) ──
                 # Race condition fix: the batch-request coroutine (on the assetdelivery
                 # connection) and this CDN coroutine run concurrently.
@@ -892,8 +969,23 @@ class FleasionProxy:
                     if short_circuit is not None:
                         action, value = short_circuit
                         if action == 'local':
+                            _serve_path = Path(str(value))
+                            _serve_exists = _serve_path.exists()
+                            _serve_size = _serve_path.stat().st_size if _serve_exists else 0
+                            _serve_category = 'TexPackTrace' if _serve_path.suffix.lower() in ('.ktx', '.ktx2') else 'Local'
+                            log_buffer.log(
+                                _serve_category,
+                                f'CDN local serve start: host={host} path={path[:160]} '
+                                f'file={_serve_path.name} exists={_serve_exists} bytes={_serve_size}',
+                            )
                             response = await asyncio.get_event_loop().run_in_executor(
                                 self._executor, _serve_local_file, value)
+                            _status_line = response.split(b'\r\n', 1)[0].decode('ascii', errors='replace') if response else 'empty'
+                            log_buffer.log(
+                                _serve_category,
+                                f'CDN local serve complete: host={host} path={path[:160]} '
+                                f'file={_serve_path.name} status={_status_line} response_bytes={len(response)}',
+                            )
                             writer.write(response)
                             await writer.drain()
                             # Cache our own served file so it appears in the scraper viewer
@@ -1020,6 +1112,8 @@ class FleasionProxy:
                 resp_body_raw = resp_body.payload
 
                 status_code = _parse_status_code(resp_first)
+                if host == GAMEJOIN_HOST and 200 <= status_code < 400:
+                    self._note_gamejoin_traffic()
                 if status_code in (400, 429) and host in {ASSET_DELIVERY_HOST, *CDN_HOSTS}:
                     ct = resp_headers.get(b'content-type', b'').decode('ascii', errors='replace')
                     retry_after = resp_headers.get(b'retry-after', b'').decode('ascii', errors='replace')
@@ -1148,7 +1242,7 @@ class FleasionProxy:
                                     if conv:
                                         final_path = conv
                             p = Path(final_path)
-                            return p.read_bytes() if p.exists() else orig_bytes
+                            return strip_roblox_metadata(p, p.read_bytes()) if p.exists() else orig_bytes
 
                         resp_body_raw = await asyncio.get_event_loop().run_in_executor(
                             self._executor, _pick_rig_matched_file, _orig_bytes, _anim_repl_path, _required_rig,

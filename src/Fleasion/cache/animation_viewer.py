@@ -16,15 +16,29 @@ from typing import Dict, List, Tuple, Optional
 
 import numpy as np
 from OpenGL.GL import *
-from OpenGL.GLU import *
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QSlider, QLabel, QMessageBox, QMenu, QWidgetAction
 )
-from PyQt6.QtGui import QAction, QSurfaceFormat, QGuiApplication
+from PyQt6.QtGui import QAction, QGuiApplication
 
 
+from .fps_controls import (
+    KEY_BACKWARD,
+    KEY_DOWN,
+    KEY_FAST,
+    KEY_FORWARD,
+    KEY_LEFT,
+    KEY_RIGHT,
+    KEY_SLOW,
+    KEY_UP,
+    VERTICAL_MOVEMENT_KEYS,
+    WASD_MOVEMENT_KEYS,
+    MovementKey,
+    movement_key_from_event,
+)
+from .gl_format import legacy_gl_format, set_perspective
 from ..utils import log_buffer
 
 # Math helpers
@@ -852,6 +866,7 @@ class AnimationGLWidget(QOpenGLWidget):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         # Slightly larger minimum so viewers are usable on small panels
         self.setMinimumSize(120, 120)
+        self.setFormat(legacy_gl_format())
         
         # Camera state
         self.camera_mode = 'orbit'
@@ -861,7 +876,7 @@ class AnimationGLWidget(QOpenGLWidget):
         self.base_speed = 0.1
         
         self.auto_rotate = False
-        self.keys_pressed = set()
+        self.keys_pressed: set[MovementKey] = set()
         self.last_tick_time = time.time()
         self.show_grid = True
         
@@ -1031,7 +1046,7 @@ class AnimationGLWidget(QOpenGLWidget):
         glMatrixMode(GL_PROJECTION)
         glLoadIdentity()
         aspect = w / h if h > 0 else 1
-        gluPerspective(30, aspect, 0.1, 500.0)
+        set_perspective(30, aspect, 0.1, 500.0)
         glMatrixMode(GL_MODELVIEW)
 
     def paintGL(self):
@@ -1368,33 +1383,24 @@ class AnimationGLWidget(QOpenGLWidget):
         self.update()
 
 
-    # Physical scan codes
-    _SCAN_W = 0x11
-    _SCAN_A = 0x1E
-    _SCAN_S = 0x1F
-    _SCAN_D = 0x20
-    _SCAN_Q = 0x10
-    _SCAN_E = 0x12
-    _SCAN_SPACE = 0x39
-    _SCAN_LSHIFT = 0x2A
-    _SCAN_WASD = {_SCAN_W, _SCAN_A, _SCAN_S, _SCAN_D}
-
-    def _is_scan_pressed(self, scan_code):
-        return scan_code in self.keys_pressed
+    def _is_movement_pressed(self, movement_key: MovementKey) -> bool:
+        return movement_key in self.keys_pressed
 
     def keyPressEvent(self, event):
-        scan = event.nativeScanCode()
+        movement_key = movement_key_from_event(event)
         if self.camera_mode == 'orbit':
-            if scan in self._SCAN_WASD:
+            if movement_key in WASD_MOVEMENT_KEYS:
                 self._transition_to_fps()
-            elif event.key() in {Qt.Key.Key_Space, Qt.Key.Key_Shift}:
+            elif movement_key in VERTICAL_MOVEMENT_KEYS:
                 return
-        self.keys_pressed.add(scan)
+        if movement_key is not None:
+            self.keys_pressed.add(movement_key)
         super().keyPressEvent(event)
 
     def keyReleaseEvent(self, event):
-        scan = event.nativeScanCode()
-        self.keys_pressed.discard(scan)
+        movement_key = movement_key_from_event(event)
+        if movement_key is not None:
+            self.keys_pressed.discard(movement_key)
         super().keyReleaseEvent(event)
         
     def focusOutEvent(self, event):
@@ -1443,8 +1449,8 @@ class AnimationGLWidget(QOpenGLWidget):
         elif self.camera_mode == 'fps':
             speed = self.base_speed * (dt * 62.5)
             
-            if self._is_scan_pressed(self._SCAN_E): speed *= 3.0
-            if self._is_scan_pressed(self._SCAN_Q): speed *= 0.33
+            if self._is_movement_pressed(KEY_FAST): speed *= 3.0
+            if self._is_movement_pressed(KEY_SLOW): speed *= 0.33
 
             moved = False
             yaw = math.radians(self.cam_yaw)
@@ -1454,12 +1460,12 @@ class AnimationGLWidget(QOpenGLWidget):
             right = np.array([math.cos(yaw), 0.0, math.sin(yaw)])
             up = np.array([0.0, 1.0, 0.0])
 
-            if self._is_scan_pressed(self._SCAN_W): self.cam_pos += forward * speed; moved = True
-            if self._is_scan_pressed(self._SCAN_S): self.cam_pos -= forward * speed; moved = True
-            if self._is_scan_pressed(self._SCAN_A): self.cam_pos -= right * speed; moved = True
-            if self._is_scan_pressed(self._SCAN_D): self.cam_pos += right * speed; moved = True
-            if self._is_scan_pressed(self._SCAN_SPACE): self.cam_pos += up * speed; moved = True
-            if self._is_scan_pressed(self._SCAN_LSHIFT):
+            if self._is_movement_pressed(KEY_FORWARD): self.cam_pos += forward * speed; moved = True
+            if self._is_movement_pressed(KEY_BACKWARD): self.cam_pos -= forward * speed; moved = True
+            if self._is_movement_pressed(KEY_LEFT): self.cam_pos -= right * speed; moved = True
+            if self._is_movement_pressed(KEY_RIGHT): self.cam_pos += right * speed; moved = True
+            if self._is_movement_pressed(KEY_UP): self.cam_pos += up * speed; moved = True
+            if self._is_movement_pressed(KEY_DOWN):
                 mods = QGuiApplication.keyboardModifiers()
                 if not (mods & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.MetaModifier)):
                     self.cam_pos -= up * speed

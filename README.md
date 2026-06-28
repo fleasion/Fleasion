@@ -1,6 +1,6 @@
 # Fleasion
 
-A Windows and macOS application for intercepting and replacing Roblox game assets in real time. Fleasion runs a local proxy that sits between Roblox and its servers, letting you swap textures, audio, meshes, animations, and other assets before they reach the game client.
+A Windows, macOS, and Linux/Sober application for intercepting and replacing Roblox game assets in real time. Fleasion runs a local proxy that sits between Roblox and its servers, letting you swap textures, audio, meshes, animations, and other assets before they reach the game client.
 
 To request help or request content, join our community <a href="https://discord.com/invite/pdtce585f6">Discord server!</a>
 
@@ -18,8 +18,9 @@ If the `.exe` fails to launch on startup with a `DLL load failed` error, move th
 
 ## Requirements for Building from Source
 
-- **Windows 10+ or macOS**
+- **Windows 10+, macOS, or Linux with Sober Flatpak**
 - [**uv**](https://docs.astral.sh/uv/) package manager
+- Linux desktop installs need `pkexec`/Polkit available (installed by default on Mint and most desktop distributions)
 
 ### Building from Source
 
@@ -30,6 +31,11 @@ cd fleasion
 
 # Run the application (auto-installs all dependencies)
 uv run Fleasion
+
+# Linux only: install the Mint/GNOME/KDE desktop launcher
+# This copies packaged Linux builds into ~/.local/share/Fleasion, creates one
+# Polkit-enabled launcher, and removes old non-admin/read-only entries.
+uv run Fleasion --install-desktop-entry
 
 # (OPTIONAL) Compile as a standalone Windows executable
 uv run pyinstaller Fleasion.spec
@@ -78,6 +84,7 @@ Fleasion runs a lightweight custom asyncio HTTPS proxy on `127.0.0.1:443`. On st
 - **Cache** original assets &mdash; browse, preview, and export everything Roblox downloads
 
 All interception happens locally on your machine. Windows runs Fleasion elevated. On macOS, Fleasion installs a small root-owned relay/hosts/CA-patching helper with one administrator approval; the dashboard and menu-bar app always run as the normal user.
+On Linux, Fleasion targets the Sober Flatpak client (`org.vinegarhq.Sober`). It uses Sober's asset overlay at `~/.var/app/org.vinegarhq.Sober/data/sober/asset_overlay` and writes Sober FFlags to `~/.var/app/org.vinegarhq.Sober/config/sober/config.json`. Proxy interception needs root permission because Fleasion updates `/etc/hosts` and listens on local port 443.
 
 **VPN compatibility:** Because interception uses the system's hosts file (application layer), it should be compatible with most VPN software, as long as it respects the hosts file.
 
@@ -166,6 +173,7 @@ Every asset type Roblox uses &mdash; images, decals, audio, meshes, animations, 
 On first launch, Fleasion will:
 - Generate a local CA certificate and install it into Roblox's SSL trust bundle
 - On macOS, offer to install the root-owned proxy helper with one administrator approval. The helper owns local port 443, updates `/etc/hosts`, and patches Roblox `ssl/cacert.pem`.
+- On Linux, use the installed desktop launcher or startup prompt to relaunch through Polkit; the desktop installer intentionally creates only the proxy-capable launcher, not the deprecated non-admin/read-only entry.
 - Show a welcome dialog explaining how the proxy works
 - Open the Dashboard automatically
 
@@ -174,11 +182,11 @@ On first launch, Fleasion will:
 - AppleBlox is not supported by Fleasion's macOS release path. Use the normal Roblox app bundle.
 - Fleasion must verify the helper-patched Roblox `ssl/cacert.pem` before it writes hosts entries. If verification fails, the proxy will not start.
 - Account Manager selected-account launches use Roblox auth-ticket `roblox-player:` URIs on macOS. Place, private-server, job-id, and plain app launches are attempted, but Roblox may still reject some app-launch flows; opening Roblox normally can use the account already signed in to Roblox.
-- Browser login discovery runs on startup so account-aware features can work immediately. Fleasion reuses a valid encrypted Chrome-family cache when present; if cache recovery is ambiguous, startup preserves it and skips surprise repeat prompts. Use **Miscellaneous -> Account Manager -> Import Browser Login** to import or re-import a browser login explicitly.
+- On first macOS launch, Fleasion asks which browser is signed in to roblox.com. It reads that browser directly when account-aware features need a Roblox login token, so macOS may ask for browser-data access; choose **Always Allow** if you do not want to approve it every time. Fleasion can also reuse a valid encrypted Chrome-family cache when present; if cache recovery is ambiguous, startup preserves it and skips surprise repeat prompts. Change the browser or store a manually imported encrypted token from **Settings -> Roblox Login**, or use **Miscellaneous -> Account Manager -> Import Browser Login** to re-import a browser login explicitly.
 
 ### Run on Boot
 
-Fleasion can be configured to launch automatically via **Settings → Run on Boot**. On Windows this creates a Task Scheduler task with `RunLevel=HighestAvailable`. On macOS this creates an unprivileged LaunchAgent; the already-installed proxy helper starts separately as a LaunchDaemon, so boot launches do not request an administrator password.
+Fleasion can be configured to launch automatically via **Settings → Run on Boot**. On Windows this creates a Task Scheduler task with `RunLevel=HighestAvailable`. On macOS this creates an unprivileged LaunchAgent; the already-installed proxy helper starts separately as a LaunchDaemon, so boot launches do not request an administrator password. On Linux, run `uv run Fleasion --install-desktop-entry` once to add the app to your desktop menu. Packaged Linux builds are copied into `~/.local/share/Fleasion`, and the launcher starts through Polkit so proxy interception can update `/etc/hosts` and bind local port 443.
 
 ## Project Structure
 

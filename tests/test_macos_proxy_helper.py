@@ -1,8 +1,13 @@
+from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
 import subprocess
 
 import pytest
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import NameOID
 
 from Fleasion import macos_proxy_helper_daemon as daemon
 from Fleasion.utils import macos_proxy_helper
@@ -106,15 +111,44 @@ def test_installed_helper_plist_runs_root_owned_helper_copy():
     assert plist["KeepAlive"] is True
 
 
-def test_frozen_helper_source_prefers_bundled_executable(tmp_path, monkeypatch):
+def test_frozen_helper_source_prefers_native_arch_bundled_executable(tmp_path, monkeypatch):
     frozen_root = tmp_path / "_MEIPASS"
     frozen_root.mkdir()
-    bundled_executable = frozen_root / macos_proxy_helper.HELPER_BUNDLED_EXECUTABLE_NAME
+    bundled_executable = frozen_root / macos_proxy_helper.HELPER_BUNDLED_EXECUTABLE_NAMES["arm64"]
+    other_arch_executable = frozen_root / macos_proxy_helper.HELPER_BUNDLED_EXECUTABLE_NAMES["x86_64"]
+    legacy_executable = frozen_root / macos_proxy_helper.HELPER_BUNDLED_EXECUTABLE_NAME
     bundled_source = frozen_root / "macos_proxy_helper_daemon.py"
     bundled_executable.write_bytes(b"helper binary")
+    other_arch_executable.write_bytes(b"other helper binary")
+    legacy_executable.write_bytes(b"legacy helper binary")
     bundled_source.write_text("# source fallback\n", encoding="utf-8")
 
     monkeypatch.setattr(macos_proxy_helper.sys, "_MEIPASS", str(frozen_root), raising=False)
+    monkeypatch.setattr(macos_proxy_helper.platform, "machine", lambda: "arm64")
+
+    assert macos_proxy_helper._source_helper_path() == bundled_executable
+
+
+def test_frozen_helper_source_uses_x86_bundled_executable_on_intel(tmp_path, monkeypatch):
+    frozen_root = tmp_path / "_MEIPASS"
+    frozen_root.mkdir()
+    bundled_executable = frozen_root / macos_proxy_helper.HELPER_BUNDLED_EXECUTABLE_NAMES["x86_64"]
+    bundled_executable.write_bytes(b"helper binary")
+
+    monkeypatch.setattr(macos_proxy_helper.sys, "_MEIPASS", str(frozen_root), raising=False)
+    monkeypatch.setattr(macos_proxy_helper.platform, "machine", lambda: "x86_64")
+
+    assert macos_proxy_helper._source_helper_path() == bundled_executable
+
+
+def test_frozen_helper_source_falls_back_to_legacy_bundled_executable(tmp_path, monkeypatch):
+    frozen_root = tmp_path / "_MEIPASS"
+    frozen_root.mkdir()
+    bundled_executable = frozen_root / macos_proxy_helper.HELPER_BUNDLED_EXECUTABLE_NAME
+    bundled_executable.write_bytes(b"legacy helper binary")
+
+    monkeypatch.setattr(macos_proxy_helper.sys, "_MEIPASS", str(frozen_root), raising=False)
+    monkeypatch.setattr(macos_proxy_helper.platform, "machine", lambda: "arm64")
 
     assert macos_proxy_helper._source_helper_path() == bundled_executable
 
@@ -160,6 +194,27 @@ def _fake_roblox_resources(tmp_path: Path) -> Path:
     return resources
 
 
+def _make_self_signed_ca_pem(common_name: str = "Fleasion Proxy CA", organization: str = "Fleasion") -> str:
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([
+        x509.NameAttribute(NameOID.COMMON_NAME, common_name),
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME, organization),
+    ])
+    now = datetime.now(timezone.utc)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(days=1))
+        .not_valid_after(now + timedelta(days=365))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .sign(key, hashes.SHA256())
+    )
+    return cert.public_bytes(serialization.Encoding.PEM).decode("utf-8")
+
+
 def test_helper_patch_ca_writes_only_roblox_cacert_path(tmp_path, monkeypatch):
     _hosts_file, token_file = _reset_daemon_state(tmp_path, monkeypatch)
     resources = _fake_roblox_resources(tmp_path)
@@ -180,6 +235,36 @@ def test_helper_patch_ca_writes_only_roblox_cacert_path(tmp_path, monkeypatch):
     assert response["patched"][0]["ca_file"] == str(ca_file)
     assert ca_file.read_text(encoding="utf-8") == f"MOZILLA ROOT\n{current_ca}"
     assert oct(ca_file.stat().st_mode & 0o777) == "0o644"
+
+
+def test_helper_patch_ca_strips_all_fleasion_cas_when_requesting_full_cleanup(tmp_path, monkeypatch):
+    _hosts_file, token_file = _reset_daemon_state(tmp_path, monkeypatch)
+    resources = _fake_roblox_resources(tmp_path)
+    ca_file = resources / "ssl" / "cacert.pem"
+    ca_file.parent.mkdir()
+    stale_ca = _make_self_signed_ca_pem()
+    unrelated_ca = _make_self_signed_ca_pem(organization="Other Org")
+    current_ca = _make_self_signed_ca_pem()
+    ca_file.write_text(f"MOZILLA ROOT\n{stale_ca}{unrelated_ca}", encoding="utf-8")
+
+    response = daemon._handle_request({
+        "token": token_file.read_text(),
+        "action": "patch_ca",
+        "ca_pem": current_ca,
+        "installs": [{
+            "resource_dir": str(resources),
+            "remove_pems": [],
+            "strip_all_fleasion_ca": True,
+        }],
+    })
+
+    patched_text = ca_file.read_text(encoding="utf-8")
+    assert response["ok"] is True
+    assert response["patched"][0]["ca_file"] == str(ca_file)
+    assert stale_ca not in patched_text
+    assert unrelated_ca in patched_text
+    assert current_ca in patched_text
+    assert patched_text.count("-----BEGIN CERTIFICATE-----") == 2
 
 
 def test_helper_patch_ca_recovers_from_read_only_bundle_permissions(tmp_path, monkeypatch):
@@ -270,11 +355,11 @@ def test_helper_readiness_requires_ca_patch_capability(monkeypatch):
     monkeypatch.setattr(
         macos_proxy_helper,
         "helper_status",
-        lambda timeout=1.0: {
-            "ok": True,
-            "version": 3,
-            "backend_port": macos_proxy_helper.MACOS_PROXY_BACKEND_PORT,
-            "capabilities": ["hosts", "relay", "patch_ca"],
-        },
+            lambda timeout=1.0: {
+                "ok": True,
+                "version": 4,
+                "backend_port": macos_proxy_helper.MACOS_PROXY_BACKEND_PORT,
+                "capabilities": ["hosts", "relay", "patch_ca"],
+            },
     )
     assert macos_proxy_helper.helper_is_ready() is True

@@ -11,20 +11,32 @@ from __future__ import annotations
 import json
 import ntpath
 import os
+import re
+import shlex
 import shutil
+import stat
 import sys
 import threading
 import uuid
 from pathlib import Path
+from typing import Iterable
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from ..utils import CONFIG_DIR, LOCAL_APPDATA, ROBLOX_PROCESS, format_count, get_roblox_player_exe_path, log_buffer
-from ..utils.roblox_dirs import load_saved_roblox_dirs, save_saved_roblox_dirs
+from ..utils.roblox_dirs import is_roblox_studio_resource_dir, load_saved_roblox_dirs, save_saved_roblox_dirs
 from ..utils.threading import run_in_thread
-from .fflag_manager import FastFlagManager
+from .fflag_manager import CLIENT_SETTINGS_REL, FastFlagManager
 from .global_settings_manager import GlobalSettingsManager
-from .font_utils import apply_custom_font, restore_font_families, validate_font_bytes
+from .font_utils import (
+    CUSTOM_FONT_REL,
+    FAMILIES_REL,
+    apply_custom_font,
+    restore_font_families,
+    validate_font_bytes,
+)
+from .platform_targets import read_current_platform_original_asset, target_path_for_current_platform
+from ..cache.tools.ktx_to_png import strip_prefixed_ktx
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -56,6 +68,40 @@ def normalise_target_path(target_path: str | Path) -> Path:
         raise ValueError('Target path cannot contain ".." segments')
     return Path(*parts)
 
+
+def _clear_read_only(path: Path) -> None:
+    """Clear a file's read-only bit before Fleasion writes/restores it."""
+    if not path.exists():
+        return
+    try:
+        mode = path.stat().st_mode
+        if mode & stat.S_IWRITE:
+            return
+        path.chmod(mode | stat.S_IWRITE)
+    except OSError:
+        pass
+
+
+def _set_read_only(path: Path) -> None:
+    """Set a file's read-only bit without changing other mode bits."""
+    if not path.is_file():
+        return
+    try:
+        mode = path.stat().st_mode
+        if not (mode & stat.S_IWRITE):
+            return
+        path.chmod(mode & ~stat.S_IWRITE)
+    except OSError:
+        pass
+
+
+def _instance_attr(obj, name: str, default=None):
+    """Read attributes safely on partially initialized QObject test doubles."""
+    try:
+        return object.__getattribute__(obj, name)
+    except (AttributeError, RuntimeError):
+        return default
+
 # ---------------------------------------------------------------------------
 # Roblox directory discovery  (mirrors proxy/master.py::_find_roblox_dirs)
 # ---------------------------------------------------------------------------
@@ -64,11 +110,19 @@ def _find_roblox_dirs() -> list[Path]:
     """Locate Roblox resource directories that can receive file modifications."""
     if sys.platform == 'darwin':
         from ..utils.platform_macos import find_roblox_resource_dirs
+    elif sys.platform.startswith('linux'):
+        from ..utils.platform_linux import find_roblox_resource_dirs
+    else:
+        find_roblox_resource_dirs = None
+
+    if find_roblox_resource_dirs is not None:
 
         found: list[Path] = []
         seen: set[str] = set()
 
         def _add(path: Path) -> None:
+            if is_roblox_studio_resource_dir(path):
+                return
             key = str(path.resolve()).lower()
             if key in seen:
                 return
@@ -88,6 +142,8 @@ def _find_roblox_dirs() -> list[Path]:
     seen: set[str] = set()
 
     def _add(path: Path) -> bool:
+        if is_roblox_studio_resource_dir(path):
+            return False
         key = str(path)
         if key not in seen:
             found.append(path)
@@ -99,13 +155,15 @@ def _find_roblox_dirs() -> list[Path]:
         command = (command or '').replace('\x00', '').strip()
         if not command:
             return None
-        if command.startswith('"'):
-            end_quote = command.find('"', 1)
-            if end_quote <= 1:
-                return None
-            exe_path = command[1:end_quote]
+        match = re.match(r'(.+?\.exe)(?:["\s]|$)', command, re.IGNORECASE)
+        if match:
+            exe_path = match.group(1).strip('"')
         else:
-            exe_path = command.split()[0]
+            try:
+                parts = shlex.split(command, posix=False)
+            except ValueError:
+                parts = []
+            exe_path = parts[0].strip('"') if parts else command.split()[0]
         if not exe_path:
             return None
         return Path(exe_path)
@@ -322,9 +380,13 @@ class ModificationManager(QObject):
         # a background apply thread from writing to dst after the main thread
         # has already restored the original (Apply → Reset race condition).
         self._fs_lock = threading.Lock()
+        self._read_only_original_modes: dict[Path, int] = {}
+        self._read_only_extra_paths: set[Path] = set()
 
         # Load persisted data
         self._data = self._load_json()
+        if self._migrate_target_paths_for_current_platform():
+            self._save_json()
 
         # FastFlagManager
         self.fflag_manager = FastFlagManager(self._roblox_dirs, self._stash_dir)
@@ -338,6 +400,119 @@ class ModificationManager(QObject):
     @property
     def roblox_dirs(self) -> list[Path]:
         return list(self._roblox_dirs)
+
+    def _active_managed_resource_files(self, extra_paths: Iterable[Path] = ()) -> list[Path]:
+        """Return existing Roblox-version files Fleasion currently owns."""
+        files: list[Path] = []
+        seen: set[str] = set()
+
+        def _add(path: Path) -> None:
+            try:
+                key = str(path.resolve()).lower()
+            except OSError:
+                key = str(path).lower()
+            if key in seen:
+                return
+            seen.add(key)
+            files.append(path)
+
+        data = _instance_attr(self, '_data', {})
+        entries = data.get('entries', []) if isinstance(data, dict) else []
+
+        for roblox_dir in self._roblox_dirs:
+            for entry in entries:
+                target = entry.get('target_path', '')
+                if not target:
+                    continue
+                if not (entry.get('source_type') and entry.get('source_value')):
+                    continue
+                if target.lower().endswith(('customfont.ttf',)) or entry.get('_is_font'):
+                    _add(roblox_dir / CUSTOM_FONT_REL)
+                    families_dir = roblox_dir / FAMILIES_REL
+                    try:
+                        for json_path in families_dir.glob('*.json'):
+                            _add(json_path)
+                    except OSError:
+                        pass
+                    continue
+                try:
+                    _add(roblox_dir / normalise_target_path(target))
+                except ValueError as exc:
+                    log_buffer.log('Modifications', f'Skipping read-only guard for invalid target path {target!r}: {exc}')
+
+            if isinstance(data, dict) and data.get('fast_flags_enabled'):
+                _add(roblox_dir / CLIENT_SETTINGS_REL)
+
+        for raw_path in extra_paths:
+            _add(Path(raw_path))
+
+        return [path for path in files if path.is_file()]
+
+    def protect_managed_files(self, extra_paths: Iterable[Path] = ()) -> None:
+        """Mark Fleasion-managed Roblox files read-only until Fleasion needs to write."""
+        lock = _instance_attr(self, '_fs_lock')
+        if lock is None:
+            self._protect_managed_files_locked(extra_paths)
+            return
+        with lock:
+            self._protect_managed_files_locked(extra_paths)
+
+    def _protect_managed_files_locked(self, extra_paths: Iterable[Path] = ()) -> None:
+        protected = _instance_attr(self, '_read_only_original_modes')
+        if protected is None:
+            protected = {}
+            self._read_only_original_modes = protected
+        registered_extra_paths = _instance_attr(self, '_read_only_extra_paths')
+        if registered_extra_paths is None:
+            registered_extra_paths = set()
+            self._read_only_extra_paths = registered_extra_paths
+        registered_extra_paths.update(Path(path) for path in extra_paths)
+
+        newly_protected = 0
+        for path in self._active_managed_resource_files(registered_extra_paths):
+            try:
+                mode = path.stat().st_mode
+            except OSError:
+                continue
+            if path not in protected:
+                protected[path] = mode
+                newly_protected += 1
+            _set_read_only(path)
+
+        if newly_protected:
+            log_buffer.log(
+                'Modifications',
+                f'Read-only guarded {format_count(newly_protected, "managed Roblox file")}',
+            )
+
+    def clear_managed_file_read_only(self) -> None:
+        """Restore original modes for files previously protected by Fleasion."""
+        lock = _instance_attr(self, '_fs_lock')
+        if lock is None:
+            self._clear_managed_file_read_only_locked()
+            return
+        with lock:
+            self._clear_managed_file_read_only_locked()
+
+    def _clear_managed_file_read_only_locked(self) -> None:
+        protected = _instance_attr(self, '_read_only_original_modes')
+        if not protected:
+            return
+
+        restored = 0
+        for path, mode in list(protected.items()):
+            try:
+                if path.exists():
+                    path.chmod(mode)
+                    restored += 1
+            except OSError as exc:
+                log_buffer.log('Modifications', f'Failed to restore read-only state for {path}: {exc}')
+        protected.clear()
+        if restored:
+            log_buffer.log(
+                'Modifications',
+                f'Restored read-only state for {format_count(restored, "managed Roblox file")}',
+            )
 
     # ------------------------------------------------------------------
     # Persistence
@@ -375,6 +550,18 @@ class ModificationManager(QObject):
         MODIFICATIONS_JSON.parent.mkdir(parents=True, exist_ok=True)
         with MODIFICATIONS_JSON.open('w', encoding='utf-8') as fp:
             json.dump(self._data, fp, indent=2)
+
+    def _migrate_target_paths_for_current_platform(self) -> bool:
+        changed = False
+        for entry in self._data.get('entries', []):
+            target = entry.get('target_path')
+            if not target:
+                continue
+            mapped = target_path_for_current_platform(target)
+            if mapped.replace('\\', '/').strip('/') != str(target).replace('\\', '/').strip('/'):
+                entry['target_path'] = mapped
+                changed = True
+        return changed
 
     # ------------------------------------------------------------------
     # Entry CRUD
@@ -427,22 +614,27 @@ class ModificationManager(QObject):
         run_in_thread(self._process_and_apply_entry)(entry)
         return entry_id
 
-    def remove_entry(self, entry_id: str) -> None:
+    def remove_entry(self, entry_id: str) -> bool:
         """Remove an entry and restore its original file."""
         entry = self._find_entry(entry_id)
         if entry is None:
-            return
-        self._restore_entry(entry)
+            return True
+        try:
+            self._restore_entry(entry)
+        except Exception as exc:
+            self._mark_restore_failed(entry, exc)
+            return False
         self._data['entries'] = [e for e in self.entries if e.get('id') != entry_id]
         self._save_json()
         # Notify the status bar that an entry was removed.
         self.restore_finished.emit()
+        return True
 
-    def update_entry(self, entry_id: str, **kwargs) -> None:
+    def update_entry(self, entry_id: str, **kwargs) -> bool:
         """Update an entry's source, restore old files, and re-apply."""
         entry = self._find_entry(entry_id)
         if entry is None:
-            return
+            return True
         # Invalidate any in-flight apply so its background thread discards
         # its result instead of overwriting the freshly-written new file.
         entry['_apply_gen'] = entry.get('_apply_gen', 0) + 1
@@ -452,14 +644,19 @@ class ModificationManager(QObject):
         # _restore_entry would incorrectly delete it via the "new file"
         # fallback branch.
         if entry.get('source_type') is not None:
-            self._restore_entry(entry)
+            try:
+                self._restore_entry(entry)
+            except Exception as exc:
+                self._mark_restore_failed(entry, exc)
+                return False
         entry.update(kwargs)
         entry['status'] = 'pending'
         entry['error_message'] = None
         self._save_json()
         run_in_thread(self._process_and_apply_entry)(entry)
+        return True
 
-    def clear_entry(self, entry_id: str) -> None:
+    def clear_entry(self, entry_id: str) -> bool:
         """Restore the original file and delete this entry from the list.
 
         Keeping cleared entries as 'not_set' ghosts causes two problems:
@@ -472,15 +669,31 @@ class ModificationManager(QObject):
         """
         entry = self._find_entry(entry_id)
         if entry is None:
-            return
+            return True
         # Invalidate any in-flight apply before restoring the original file.
         entry['_apply_gen'] = entry.get('_apply_gen', 0) + 1
-        self._restore_entry(entry)
+        try:
+            self._restore_entry(entry)
+        except Exception as exc:
+            self._mark_restore_failed(entry, exc)
+            return False
         self._data['entries'] = [e for e in self.entries if e.get('id') != entry_id]
         self._save_json()
         self.entry_status_changed.emit(entry_id, 'not_set', '')
         # Notify status bar that an active modification was cleared.
         self.restore_finished.emit()
+        return True
+
+    def _mark_restore_failed(self, entry: dict, exc: Exception) -> None:
+        """Keep the entry visible when restoring its original file fails."""
+        entry_id = entry.get('id', '')
+        error = f'Failed to restore original file: {exc}'
+        entry['status'] = 'error'
+        entry['error_message'] = error
+        self._save_json()
+        if entry_id:
+            self.entry_status_changed.emit(entry_id, 'error', error)
+        log_buffer.log('Modifications', f'Restore failed for {entry.get("display_name", "?")}: {exc}')
 
     # ------------------------------------------------------------------
     # Processing & applying
@@ -506,7 +719,12 @@ class ModificationManager(QObject):
             if target.lower().endswith(('customfont.ttf',)) or entry.get('_is_font'):
                 if not validate_font_bytes(data):
                     raise ValueError('Not a valid font file (invalid header)')
-                apply_custom_font(data, self._roblox_dirs, self._stash_dir)
+                with self._fs_lock:
+                    self._clear_managed_file_read_only_locked()
+                    try:
+                        apply_custom_font(data, self._roblox_dirs, self._stash_dir)
+                    finally:
+                        self._protect_managed_files_locked()
                 if entry.get('_apply_gen', 0) != apply_gen:
                     self.apply_finished.emit(entry_id)
                     return
@@ -520,6 +738,8 @@ class ModificationManager(QObject):
             # Mesh conversion: .obj → .mesh
             if target.lower().endswith('.mesh') and self._looks_like_obj(data):
                 data = self._convert_obj_to_mesh(data)
+
+            data = self._coerce_replacement_for_target(target, data)
 
             self._stash_and_write(target, data)
 
@@ -615,7 +835,7 @@ class ModificationManager(QObject):
             )
 
         extra_hdrs = {}
-        cookie = self._cache_scraper._get_roblosecurity()
+        cookie = self._cache_scraper._get_roblosecurity(wait=True)
         if cookie:
             extra_hdrs['Cookie'] = f'.ROBLOSECURITY={cookie};'
         data, status = self._cache_scraper._fetch_asset_with_place_id_retry(str(asset_id), extra_headers=extra_hdrs or None)
@@ -650,6 +870,38 @@ class ModificationManager(QObject):
         vertices, colors, indices = parse_obj_for_mesh(obj_text)
         return export_v2_mesh(vertices, colors, indices)
 
+    @staticmethod
+    def _is_ktx(data: bytes) -> bool:
+        return strip_prefixed_ktx(data) is not None
+
+    def _coerce_replacement_for_target(self, target_path: str, data: bytes) -> bytes:
+        """Convert image replacements to KTX2 when replacing KTX-backed targets."""
+        if self._is_ktx(data):
+            return data
+
+        original = read_current_platform_original_asset(target_path)
+        if original is None or not self._is_ktx(original):
+            return data
+
+        try:
+            import hashlib
+            import io
+
+            from PIL import Image
+
+            from ..cache.tools.rgba_ktx2 import write_rgba8_ktx2
+
+            image = Image.open(io.BytesIO(data)).convert('RGBA')
+            width, height = image.size
+            digest = hashlib.sha256(data + target_path.encode('utf-8')).hexdigest()[:16]
+            out_path = MOD_CACHE_DIR / f'ktx2_{digest}.ktx2'
+            if not out_path.exists():
+                write_rgba8_ktx2(image.tobytes(), width, height, out_path)
+            return out_path.read_bytes()
+        except Exception as exc:
+            log_buffer.log('Modifications', f'KTX2 conversion skipped for {target_path}: {exc}')
+            return data
+
     # ------------------------------------------------------------------
     # Stash & write / restore
     # ------------------------------------------------------------------
@@ -663,28 +915,33 @@ class ModificationManager(QObject):
     def _stash_and_write(self, target_path_rel: str, new_bytes: bytes) -> None:
         """Stash the original file and write the mod in every Roblox dir."""
         with self._fs_lock:
-            for roblox_dir in self._roblox_dirs:
-                target_path = normalise_target_path(target_path_rel)
-                dst = roblox_dir / target_path
-                stash = self._stash_dir / roblox_dir.name / target_path
-                marker = stash.with_name(stash.name + self._NEW_FILE_MARKER_SUFFIX)
+            self._clear_managed_file_read_only_locked()
+            try:
+                for roblox_dir in self._roblox_dirs:
+                    target_path = normalise_target_path(target_path_rel)
+                    dst = roblox_dir / target_path
+                    stash = self._stash_dir / roblox_dir.name / target_path
+                    marker = stash.with_name(stash.name + self._NEW_FILE_MARKER_SUFFIX)
 
-                # Stash original ONCE (idempotent)
-                if dst.exists() and not stash.exists():
-                    stash.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(dst, stash)
-                    # Remove any stale new-file marker from a previous run
-                    if marker.exists():
-                        marker.unlink(missing_ok=True)
-                elif not dst.exists() and not stash.exists() and not marker.exists():
-                    # Target is brand-new (no original to stash); leave a marker
-                    # so _restore_entry knows it is safe to delete the file later.
-                    stash.parent.mkdir(parents=True, exist_ok=True)
-                    marker.touch()
+                    # Stash original ONCE (idempotent)
+                    if dst.exists() and not stash.exists():
+                        stash.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(dst, stash)
+                        # Remove any stale new-file marker from a previous run
+                        if marker.exists():
+                            marker.unlink(missing_ok=True)
+                    elif not dst.exists() and not stash.exists() and not marker.exists():
+                        # Target is brand-new (no original to stash); leave a marker
+                        # so _restore_entry knows it is safe to delete the file later.
+                        stash.parent.mkdir(parents=True, exist_ok=True)
+                        marker.touch()
 
-                # Write mod
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                dst.write_bytes(new_bytes)
+                    # Write mod
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    _clear_read_only(dst)
+                    dst.write_bytes(new_bytes)
+            finally:
+                self._protect_managed_files_locked()
 
     def _restore_entry(self, entry: dict) -> None:
         """Undo a single entry: restore the stash or delete the mod file."""
@@ -692,7 +949,8 @@ class ModificationManager(QObject):
 
         # Font special-case
         if target.lower().endswith(('customfont.ttf',)) or entry.get('_is_font'):
-            restore_font_families(self._roblox_dirs, self._stash_dir)
+            with self._fs_lock:
+                restore_font_families(self._roblox_dirs, self._stash_dir)
             return
 
         try:
@@ -707,13 +965,17 @@ class ModificationManager(QObject):
                 stash = self._stash_dir / roblox_dir.name / target_path
                 marker = stash.with_name(stash.name + self._NEW_FILE_MARKER_SUFFIX)
                 if stash.exists():
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    _clear_read_only(dst)
                     shutil.copy2(stash, dst)
+                    _clear_read_only(stash)
                     stash.unlink()
                 elif marker.exists():
                     # Was a brand-new file (no original existed) — delete it
                     # and clean up the marker.
                     marker.unlink(missing_ok=True)
                     if dst.exists():
+                        _clear_read_only(dst)
                         dst.unlink()
                 # else: no stash and no marker means the entry was previously
                 # cleared (clear_entry already restored dst) or an error
@@ -740,12 +1002,15 @@ class ModificationManager(QObject):
                 marker = stash.with_name(stash.name + self._NEW_FILE_MARKER_SUFFIX)
                 if stash.exists():
                     dst.parent.mkdir(parents=True, exist_ok=True)
+                    _clear_read_only(dst)
                     shutil.copy2(stash, dst)
+                    _clear_read_only(stash)
                     stash.unlink()
                     restored = True
                 elif marker.exists():
                     marker.unlink(missing_ok=True)
                     if dst.exists():
+                        _clear_read_only(dst)
                         dst.unlink()
                     restored = True
             return restored
@@ -756,6 +1021,8 @@ class ModificationManager(QObject):
 
     def restore_all(self) -> None:
         """Restore every applied modification and fast-flags."""
+        self.clear_managed_file_read_only()
+
         for entry in self.entries:
             if entry.get('status') == 'applied':
                 try:
@@ -785,7 +1052,12 @@ class ModificationManager(QObject):
                 self._process_and_apply_entry(entry)
 
         if self._data.get('fast_flags_enabled') and self._data.get('fast_flags'):
-            self.fflag_manager.write(self._data['fast_flags'])
+            with self._fs_lock:
+                self._clear_managed_file_read_only_locked()
+                try:
+                    self.fflag_manager.write(self._data['fast_flags'])
+                finally:
+                    self._protect_managed_files_locked()
 
         if self._data.get('fast_flags_enabled'):
             self.sync_saved_global_settings()
@@ -804,10 +1076,14 @@ class ModificationManager(QObject):
     def fast_flags_enabled(self, value: bool) -> None:
         self._data['fast_flags_enabled'] = value
         if not value:
-            try:
-                self.fflag_manager.restore()
-            except Exception:
-                pass
+            with self._fs_lock:
+                self._clear_managed_file_read_only_locked()
+                try:
+                    self.fflag_manager.restore()
+                except Exception:
+                    pass
+                finally:
+                    self._protect_managed_files_locked()
             try:
                 self.global_settings_manager.restore()
             except Exception:
@@ -861,7 +1137,12 @@ class ModificationManager(QObject):
         self._data['fast_flags'] = {k: v for k, v in settings.items() if k != 'framerate_cap'}
         self._data['fast_flags_enabled'] = True
         self._save_json()
-        self.fflag_manager.write(settings)
+        with self._fs_lock:
+            self._clear_managed_file_read_only_locked()
+            try:
+                self.fflag_manager.write(settings)
+            finally:
+                self._protect_managed_files_locked()
         self.sync_saved_global_settings()
 
     def refresh_roblox_dirs(self) -> None:

@@ -4,6 +4,7 @@ import ctypes
 import ctypes.wintypes
 import os
 import re
+import shlex
 import stat
 import subprocess
 import time
@@ -258,11 +259,11 @@ def delete_cache() -> list[str]:
     else:
         messages.append('Storage folder not found')
 
-    # Delete Fleasion APP_CACHE_DIR (preserve predownloaded/ and texpack_slots/)
+    # Delete Fleasion APP_CACHE_DIR (preserve predownloaded assets only)
     from .paths import APP_CACHE_DIR
     if APP_CACHE_DIR.exists():
         try:
-            _preserve_set = {APP_CACHE_DIR / 'predownloaded', APP_CACHE_DIR / 'texpack_slots'}
+            _preserve_set = {APP_CACHE_DIR / 'predownloaded'}
             for child in APP_CACHE_DIR.iterdir():
                 if child in _preserve_set:
                     continue
@@ -352,13 +353,15 @@ def _extract_exe_from_command(command: str) -> Optional[Path]:
     command = (command or '').replace('\x00', '').strip()
     if not command:
         return None
-    if command.startswith('"'):
-        end_quote = command.find('"', 1)
-        if end_quote <= 1:
-            return None
-        exe_path = command[1:end_quote]
+    match = re.match(r'(.+?\.exe)(?:["\s]|$)', command, re.IGNORECASE)
+    if match:
+        exe_path = match.group(1).strip('"')
     else:
-        exe_path = command.split()[0]
+        try:
+            parts = shlex.split(command, posix=False)
+        except ValueError:
+            parts = []
+        exe_path = parts[0].strip('"') if parts else command.split()[0]
     if not exe_path:
         return None
     return Path(exe_path)
@@ -528,6 +531,9 @@ def _launch_roblox_uri_direct(target_str: str) -> bool:
         subprocess.Popen(
             [str(exe_path), target_str],
             cwd=str(exe_path.parent),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
         metadata = _extract_launch_metadata(target_str)

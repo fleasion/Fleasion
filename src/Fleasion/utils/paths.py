@@ -4,9 +4,11 @@ import sys
 import os
 from pathlib import Path
 
+from platformdirs import user_config_dir
+
 # Application metadata
 APP_NAME = 'Fleasion'
-APP_VERSION = '2.1.0'
+APP_VERSION = '2.2.0'
 APP_AUTHOR = '@8ar__, @dis_spencer, @1_v'
 APP_LOGIC = '@blockce, @0100152000022000, @Yeha., @emk530'
 APP_CONCEPT = '@cro.p'
@@ -17,6 +19,9 @@ APP_REPO = 'https://github.com/fleasion/Fleasion'
 if sys.platform == 'darwin':
     ROBLOX_PROCESS = 'RobloxPlayer'
     ROBLOX_STUDIO_PROCESS = 'RobloxStudio'
+elif sys.platform.startswith('linux'):
+    ROBLOX_PROCESS = 'sober'
+    ROBLOX_STUDIO_PROCESS = 'RobloxStudioBeta.exe'
 else:
     ROBLOX_PROCESS = 'RobloxPlayerBeta.exe'
     ROBLOX_STUDIO_PROCESS = 'RobloxStudioBeta.exe'
@@ -61,19 +66,29 @@ def _get_local_appdata() -> Path:
     return USER_HOME
 
 
+def _get_config_dir() -> Path:
+    """Return Fleasion's app configuration directory."""
+    if sys.platform.startswith('linux'):
+        return Path(user_config_dir(APP_NAME))
+    return LOCAL_APPDATA / 'FleasionNT'
+
+
 # Platform paths
 USER_HOME = _get_user_home()
 LOCAL_APPDATA = _get_local_appdata()
 if sys.platform == 'darwin':
     STORAGE_DB = USER_HOME / 'Library' / 'Roblox' / 'rbx-storage.db'
     STORAGE_DB_GDK = USER_HOME / 'Library' / 'RobloxPCGDK' / 'rbx-storage.db'
+elif sys.platform.startswith('linux'):
+    STORAGE_DB = USER_HOME / '.var' / 'app' / 'org.vinegarhq.Sober' / 'data' / 'sober' / 'appData' / 'rbx-storage.db'
+    STORAGE_DB_GDK = STORAGE_DB
 else:
     STORAGE_DB = LOCAL_APPDATA / 'Roblox' / 'rbx-storage.db'
     # Microsoft Store (GDK) version of Roblox stores its DB here
     STORAGE_DB_GDK = LOCAL_APPDATA / 'RobloxPCGDK' / 'rbx-storage.db'
 
 # Application directories
-CONFIG_DIR = LOCAL_APPDATA / 'FleasionNT'
+CONFIG_DIR = _get_config_dir()
 APP_CACHE_DIR = CONFIG_DIR / 'cache'
 CONFIG_FILE = CONFIG_DIR / 'settings.json'
 CONFIGS_FOLDER = CONFIG_DIR / 'configs'
@@ -107,6 +122,7 @@ DEFAULT_SETTINGS = {
     'auto_delete_cache_on_exit': True,
     'clear_cache_on_launch': True,
     'proxy_features_enabled': True,
+    'macos_auth_source': '',
     'upstream_transport_mode': 'auto',
     'upstream_http_connect_host': '',
     'upstream_http_connect_port': 0,

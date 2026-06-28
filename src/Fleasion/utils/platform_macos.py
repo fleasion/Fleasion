@@ -251,6 +251,27 @@ def _process_command(pid: int) -> Path | None:
     return Path(value) if value else None
 
 
+def _quit_app_bundle(app_path: Path) -> bool:
+    """Ask a macOS app bundle to quit via AppleScript."""
+    app_name = app_path.stem
+    try:
+        result = subprocess.run(
+            ['osascript', '-e', f'tell application "{app_name}" to quit'],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception as exc:
+        log_buffer.log('App', f'Failed to request macOS quit for {app_name}: {type(exc).__name__}: {exc}')
+        return False
+
+    if result.returncode != 0:
+        err = (result.stderr or result.stdout or '').strip()
+        log_buffer.log('App', f'macOS quit request for {app_name} failed: {err or result.returncode}')
+        return False
+    return True
+
+
 def wait_for_roblox_window(timeout: float = 60.0) -> bool:
     """Wait until Roblox's player process is running."""
     deadline = time.time() + timeout
@@ -295,11 +316,28 @@ def terminate_roblox() -> bool:
     """Terminate Roblox if it is running. Returns True if it was running."""
     if not is_roblox_running():
         return False
+
+    for app_path in ROBLOX_APP_CANDIDATES:
+        if app_path.exists():
+            _quit_app_bundle(app_path)
+            break
+
     try:
-        subprocess.run(['pkill', '-x', ROBLOX_PROCESS], capture_output=True, timeout=5)
+        subprocess.run(['pkill', '-TERM', '-x', ROBLOX_PROCESS], capture_output=True, timeout=5)
     except Exception:
         pass
-    return True
+
+    deadline = time.time() + 2.0
+    while time.time() < deadline:
+        if not is_roblox_running():
+            return True
+        time.sleep(0.1)
+
+    try:
+        subprocess.run(['pkill', '-KILL', '-x', ROBLOX_PROCESS], capture_output=True, timeout=5)
+    except Exception:
+        pass
+    return not is_roblox_running()
 
 
 def wait_for_roblox_exit(timeout: float = 10.0) -> bool:
@@ -357,7 +395,7 @@ def delete_cache() -> list[str]:
 
     if APP_CACHE_DIR.exists():
         try:
-            preserve = {APP_CACHE_DIR / 'predownloaded', APP_CACHE_DIR / 'texpack_slots'}
+            preserve = {APP_CACHE_DIR / 'predownloaded'}
             for child in APP_CACHE_DIR.iterdir():
                 if child in preserve:
                     continue
@@ -422,25 +460,37 @@ def _app_for_executable(path: Path) -> Path | None:
     return None
 
 
+_DETACHED_POPEN_KWARGS = {
+    'stdin': subprocess.DEVNULL,
+    'stdout': subprocess.DEVNULL,
+    'stderr': subprocess.DEVNULL,
+    'start_new_session': True,
+}
+
+
+def _detached_popen(args: list[str]) -> subprocess.Popen:
+    return subprocess.Popen(args, **_DETACHED_POPEN_KWARGS)
+
+
 def launch_as_standard_user(target: str | Path) -> bool:
     """Launch a Roblox URI, app bundle, or executable without elevation."""
     target_str = str(target)
     try:
         if target_str.startswith(('roblox:', 'roblox-player:')):
-            subprocess.Popen(['open', target_str])
+            _detached_popen(['open', target_str])
             return True
 
         path = Path(target_str)
         if path.suffix == '.app' and path.exists():
-            subprocess.Popen(['open', str(path)])
+            _detached_popen(['open', str(path)])
             return True
 
         if path.exists():
             app = _app_for_executable(path)
             if app is not None:
-                subprocess.Popen(['open', str(app)])
+                _detached_popen(['open', str(app)])
             else:
-                subprocess.Popen(['open', str(path)])
+                _detached_popen(['open', str(path)])
             return True
     except Exception as exc:
         log_buffer.log('Launch', f'Failed to launch {target_str}: {exc}')
@@ -452,7 +502,7 @@ def launch_as_standard_user(target: str | Path) -> bool:
 
 def open_folder(path: Path):
     """Open a folder in Finder."""
-    subprocess.Popen(['open', str(path)])
+    _detached_popen(['open', str(path)])
 
 
 def show_message_box(title: str, message: str, icon: int = 0x40):

@@ -1,0 +1,115 @@
+name: Build PyInstaller Packages
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - main-indev
+  pull_request:
+    branches:
+      - main
+      - main-indev
+
+env:
+  PYTHONHASHSEED: '0'
+  SOURCE_DATE_EPOCH: '0'
+  LC_ALL: C.UTF-8
+  TZ: UTC
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+            artifact_path: dist/Fleasion-v*.exe
+          - name: Linux
+            os: ubuntu-latest
+            artifact_path: dist/Fleasion-v*
+          - name: macOS
+            os: macos-latest
+            artifact_path: dist/Fleasion-v*-MacOS-Universal.zip
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Read version
+        shell: bash
+        run: |
+          app_version="$(sed -n "s/^APP_VERSION = ['\"]\\([^'\"]*\\)['\"]$/\\1/p" src/Fleasion/utils/paths.py)"
+          echo "APP_VERSION=$app_version" >> "$GITHUB_ENV"
+
+      - name: Sync dependencies
+        run: uv sync --locked --group dev
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 libportaudio2 libpipewire-0.3-0 libspa-0.2-modules libpulse0
+
+      - name: Build Windows package
+        if: runner.os == 'Windows'
+        run: uv run pyinstaller --clean --noconfirm Fleasion.spec
+
+      - name: Build Linux package
+        if: runner.os == 'Linux'
+        run: uv run pyinstaller --clean --noconfirm Fleasion.spec
+
+      - name: Verify Linux audio runtime
+        if: runner.os == 'Linux'
+        run: |
+          archive_listing="$(uv run pyi-archive_viewer -b -l dist/Fleasion-v*)"
+          printf '%s\n' "$archive_listing" | grep -Ei 'portaudio|pulse|pipewire|jack|alsa|sound' || true
+          if [[ "$archive_listing" =~ lib(portaudio|asound|jack|pulse|pulsecommon-|pipewire-) ]]; then
+            echo "Linux package must use host audio backend libraries, not the GitHub runner copies." >&2
+            exit 1
+          fi
+
+      - name: Install Rosetta
+        if: runner.os == 'macOS'
+        run: sudo softwareupdate --install-rosetta --agree-to-license
+
+      - name: Build macOS package
+        if: runner.os == 'macOS'
+        run: ./scripts/build_macos.sh
+
+      - name: Upload macOS package
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v7
+        with:
+          name: Fleasion-v${{ env.APP_VERSION }}-MacOS-Universal.zip
+          path: ${{ matrix.artifact_path }}
+          archive: false
+          if-no-files-found: error
+
+      - name: Upload Windows package
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: Fleasion-v${{ env.APP_VERSION }}-Windows.exe
+          path: ${{ matrix.artifact_path }}
+          archive: false
+          if-no-files-found: error
+
+      - name: Upload package
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v6
+        with:
+          name: Fleasion-v${{ env.APP_VERSION }}-Linux
+          path: ${{ matrix.artifact_path }}
+          if-no-files-found: error

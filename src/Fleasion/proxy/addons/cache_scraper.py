@@ -34,6 +34,18 @@ ASSET_DELIVERY_HOST = 'assetdelivery.roblox.com'
 CDN_HOSTS = frozenset({'fts.rbxcdn.com', 'contentdelivery.roblox.com'})
 DELIVERY_ENDPOINT = '/v1/assets/batch'
 
+_TEXPACK_SLOT_NAMES = {
+    0: 'Color',
+    1: 'Normal',
+    2: 'ORM',
+}
+
+
+def _texpack_slot_label(slot: int | None) -> str:
+    if slot is None:
+        return 'unknown'
+    return f'{slot}:{_TEXPACK_SLOT_NAMES.get(slot, "unknown")}'
+
 
 def _b64decode_padded(value: str) -> bytes:
     raw = str(value).encode('ascii', errors='ignore')
@@ -148,20 +160,23 @@ def _build_texpack_request_slot_map(req_json: list) -> dict[int, int]:
         aid = _normalize_asset_id(item.get('assetId'))
         if not isinstance(aid, int) or aid not in texpack_ids:
             continue
-        slot = _texpack_slot_from_request(item)
+        slot_quality = _decode_texpack_slot_quality(item)
+        slot = slot_quality[0] if slot_quality is not None else None
         if slot is None:
             build_key = _texpack_build_key(item)
-            if build_key is not None:
+            if build_key is not None and asset_counts.get(aid, 0) > 1:
                 slots_for_asset = build_slots.setdefault(aid, {})
                 if build_key not in slots_for_asset:
                     raw_slot = next_slot.get(aid, 0)
                     slots_for_asset[build_key] = 2 if raw_slot >= 2 else raw_slot
                     next_slot[aid] = raw_slot + 1
                 slot = slots_for_asset[build_key]
-            else:
+            elif asset_counts.get(aid, 0) > 1:
                 raw_slot = occurrence_slot.get(aid, 0)
                 occurrence_slot[aid] = raw_slot + 1
                 slot = 2 if raw_slot >= 2 else raw_slot
+            else:
+                continue
         result[idx] = slot
 
     return result
@@ -197,9 +212,25 @@ def _select_content_representation(item: dict) -> dict | None:
             representation = decoded[requested]
             return representation if isinstance(representation, dict) else None
 
-    if len(decoded) == 1 and isinstance(decoded[0], dict):
+    if isinstance(decoded[0], dict):
         return decoded[0]
     return None
+
+
+def _decode_fidelity_slot_quality(fidelity_b64: str | None) -> tuple[int, int] | None:
+    if not fidelity_b64:
+        return None
+    try:
+        fb = _b64decode_padded(fidelity_b64)
+    except Exception:
+        return None
+    if len(fb) < 2:
+        return None
+    slot = (fb[0] & 0x60) >> 5
+    if slot > 2:
+        return None
+    quality = (fb[1] & 0xC0) >> 6
+    return slot, quality
 
 
 def _decode_texpack_slot_quality(item: dict) -> tuple[int, int] | None:
@@ -209,32 +240,14 @@ def _decode_texpack_slot_quality(item: dict) -> tuple[int, int] | None:
     representation = _select_content_representation(item)
     if not representation:
         return None
-    fidelity_b64 = representation.get('fidelity')
-    if not fidelity_b64:
-        return None
-    try:
-        fb = _b64decode_padded(fidelity_b64)
-    except Exception:
-        return None
-    if not fb:
-        return None
-    return fb[0] & 0x3F, (fb[0] >> 6) & 0x3
+    return _decode_fidelity_slot_quality(representation.get('fidelity'))
 
 
 def _decode_selected_representation_slot_quality(item: dict) -> tuple[int, int] | None:
     representation = item.get('contentRepresentationSpecifier')
     if not isinstance(representation, dict):
         return None
-    fidelity_b64 = representation.get('fidelity')
-    if not fidelity_b64:
-        return None
-    try:
-        fb = _b64decode_padded(fidelity_b64)
-    except Exception:
-        return None
-    if not fb:
-        return None
-    return fb[0] & 0x3F, (fb[0] >> 6) & 0x3
+    return _decode_fidelity_slot_quality(representation.get('fidelity'))
 
 
 class CacheScraper:
@@ -330,6 +343,24 @@ class CacheScraper:
                 if asset_type is None:
                     continue
                 base_url = location.split('?')[0]
+
+                # TexturePack slot metadata must be refreshed before the
+                # duplicate-URL skip below. Otherwise the first classification
+                # of a reused CDN URL sticks forever and KTX2 slot exports can
+                # be written under the wrong slot name.
+                if asset_type == 63:
+                    request_slot = texpack_request_slots.get(idx)
+                    selected_quality = _decode_selected_representation_slot_quality(res_item)
+                    if request_slot is not None:
+                        slot_quality = (request_slot, selected_quality[1] if selected_quality else 0)
+                    else:
+                        slot_quality = None
+                    if slot_quality is not None:
+                        _slot, _qual = slot_quality
+                        new_meta = (int(asset_id), int(_slot), int(_qual))
+                        old_meta = self._url_to_texpack_slot.get(base_url)
+                        if old_meta != new_meta:
+                            self._url_to_texpack_slot[base_url] = new_meta
                 # Skip if this exact CDN URL is already registered.
                 # Previously this was keyed by asset_id alone, which meant only
                 # the FIRST batch entry for a given assetId was tracked — silently
@@ -358,21 +389,6 @@ class CacheScraper:
 
                 url_list.append(asset_id)
                 tracked += 1
-
-                # For TexturePack slots: decode the selected representation's
-                # fidelity byte to learn slot + quality so process_cdn_response
-                # can store each slot KTX2 separately.
-                if asset_type == 63 and base_url not in self._url_to_texpack_slot:
-                    request_slot = texpack_request_slots.get(idx)
-                    selected_quality = _decode_selected_representation_slot_quality(res_item)
-                    if request_slot is not None:
-                        slot_quality = (request_slot, selected_quality[1] if selected_quality else 0)
-                    else:
-                        slot_quality = selected_quality or _decode_texpack_slot_quality(item)
-                    if slot_quality is not None:
-                        _slot, _qual = slot_quality
-                        self._url_to_texpack_slot[base_url] = (
-                            int(asset_id), _slot, _qual)
 
         # Submit copy tasks outside the lock
         for source_id, dest_id, asset_type, url in to_copy:
@@ -937,12 +953,12 @@ class CacheScraper:
                 if global_index is None:
                     continue  # unknown tag — skip (don't advance virtual_slot)
                 text = (elem.text or '').strip()
+                sub_id = int(text) if text.isdigit() and int(text) != 0 else None
+                channel = _TAG_TO_CHANNEL.get(tag_lower)
                 if text.isdigit() and int(text) != 0:
-                    sub_id = int(text)
                     self._texpack_subasset_lookup[sub_id] = (parent_id, global_index)
                     added += 1
                 # Record virtual slot → channel for ORM sub-channels (legacy, kept for potential revert).
-                channel = _TAG_TO_CHANNEL.get(tag_lower)
                 if channel is not None:  # None means Color/Normal/full-ORM → no channel
                     with self._lock:
                         self._texpack_vslot_channel[(parent_id, virtual_slot)] = channel
@@ -978,24 +994,36 @@ class CacheScraper:
             slot_dir.mkdir(parents=True, exist_ok=True)
             slot_path = slot_dir / f'{parent_id}_slot{slot}.ktx2'
 
-            # Gate: only overwrite if new KTX2 has strictly larger width than existing.
-            # Parse width from KTX2 header offset 20 (uint32 LE).
+            # Gate by dimensions first.  Larger textures always win; smaller
+            # textures never replace existing exports.  Equal-width textures can
+            # still be a corrected slot classification from a previous run, so
+            # do not skip them solely because the width matches.
             new_w = _struct.unpack_from('<I', ktx2_bytes, 20)[0] if len(ktx2_bytes) >= 24 else 0
+            key = (parent_id, slot)
             if slot_path.exists():
                 try:
                     existing = slot_path.read_bytes()
                     existing_w = _struct.unpack_from('<I', existing, 20)[0] if len(existing) >= 24 else 0
-                    if new_w <= existing_w:
-                        # Already have same or better — skip silently
+                    existing_quality = self._texpack_slot_quality.get(key)
+                    if new_w < existing_w:
                         return
-                    log_buffer.log('TexPackSlot',
-                                   f'Upgrading {parent_id} slot{slot}: {existing_w}px → {new_w}px')
+                    if new_w == existing_w:
+                        if existing == ktx2_bytes:
+                            return
+                        if existing_quality is not None and quality < existing_quality:
+                            return
+                        log_buffer.log(
+                            'TexPackSlot',
+                            f'Replacing {parent_id} slot{slot}: same {new_w}px, q={quality}, bytes changed',
+                        )
+                    else:
+                        log_buffer.log('TexPackSlot',
+                                       f'Upgrading {parent_id} slot{slot}: {existing_w}px -> {new_w}px')
                 except Exception:
                     pass  # can't read existing — overwrite it
 
             slot_path.write_bytes(ktx2_bytes)
             # Update in-memory quality tracker for within-session fast-path.
-            key = (parent_id, slot)
             with self._lock:
                 self._texpack_slot_quality[key] = quality
 
@@ -1003,7 +1031,7 @@ class CacheScraper:
             slot_name = _SLOT_NAMES.get(slot, f'slot{slot}')
             log_buffer.log('TexPackSlot',
                            f'Cached {slot_name} q={quality} {new_w}px for pack {parent_id} '
-                           f'({len(ktx2_bytes)} bytes) → {slot_path.name}')
+                           f'({len(ktx2_bytes)} bytes) -> {slot_path.name}')
         except Exception as exc:
             log_buffer.log('TexPackSlot', f'Failed to store slot {slot} for {parent_id}: {exc}')
 
@@ -1148,6 +1176,8 @@ class CacheScraper:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _get_roblosecurity(self) -> str | None:
-        from ...utils.roblox_auth import get_roblosecurity
+    def _get_roblosecurity(self, *, wait: bool = False) -> str | None:
+        from ...utils.roblox_auth import get_roblosecurity, wait_for_roblosecurity
+        if wait:
+            return wait_for_roblosecurity()
         return get_roblosecurity()

@@ -1,6 +1,5 @@
 """Rando Stuff tab - miscellaneous Roblox utilities (multi-instance, asset download, rejoin)."""
 
-import base64
 import ctypes
 import ctypes.wintypes as wintypes
 import json
@@ -41,14 +40,10 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-try:
-    import win32crypt  # type: ignore
-except Exception:
-    win32crypt = None
-
 from ..utils.paths import CONFIG_DIR
 from ..utils.plural import format_count
 from ..utils.roblox_auth import ROBLOX_COOKIES_PATH, discover_browser_roblosecurity, set_roblosecurity
+from ..utils.secure_tokens import decrypt_token, encrypt_token
 from ..utils.logging import log_buffer
 from ..utils.windows import launch_as_standard_user, resolve_roblox_player_exe_for_launch
 from .proxy_gate import ProxyGate
@@ -57,6 +52,7 @@ ACCOUNTS_FILE = CONFIG_DIR / 'accounts.json'
 ACCOUNTS_KEY_FILE = CONFIG_DIR / 'accounts.key'
 IS_WINDOWS = sys.platform == 'win32'
 IS_MACOS = sys.platform == 'darwin'
+IS_LINUX = sys.platform.startswith('linux')
 
 
 # Helpers
@@ -64,64 +60,12 @@ IS_MACOS = sys.platform == 'darwin'
 
 def _encrypt_cookie(cookie: str) -> str:
     """Encrypt a cookie string for storage."""
-    raw = cookie.encode("utf-8")
-    if win32crypt:
-        enc = win32crypt.CryptProtectData(raw, None, None, None, None, 0)
-        return base64.b64encode(enc).decode("ascii")
-    if IS_MACOS:
-        cipher = _get_macos_cookie_cipher()
-        if cipher is not None:
-            return 'fernet:' + cipher.encrypt(raw).decode('ascii')
-    # Legacy fallback: plain base64 (kept for old configs and unsupported platforms).
-    return base64.b64encode(raw).decode("ascii")
+    return encrypt_token(cookie, ACCOUNTS_KEY_FILE)
 
 
 def _decrypt_cookie(enc_b64: str) -> str | None:
     """Decrypt a stored cookie string. Returns plain cookie or None on failure."""
-    try:
-        if enc_b64.startswith('fernet:'):
-            cipher = _get_macos_cookie_cipher(create=False)
-            if cipher is None:
-                return None
-            return cipher.decrypt(enc_b64[len('fernet:'):].encode('ascii')).decode('utf-8')
-        enc = base64.b64decode(enc_b64)
-        if win32crypt:
-            return win32crypt.CryptUnprotectData(enc, None, None, None, 0)[1].decode("utf-8")
-        return enc.decode("utf-8")
-    except Exception:
-        return None
-
-
-def _get_macos_cookie_cipher(create: bool = True):
-    if not IS_MACOS:
-        return None
-    try:
-        from cryptography.fernet import Fernet
-    except Exception as exc:
-        log_buffer.log("accounts", f"macOS cookie encryption unavailable: {exc}")
-        return None
-
-    try:
-        key_path = ACCOUNTS_KEY_FILE
-        if not key_path.exists():
-            if not create:
-                return None
-            key_path.parent.mkdir(parents=True, exist_ok=True)
-            key = Fernet.generate_key()
-            flags = getattr(os, 'O_WRONLY', 1) | getattr(os, 'O_CREAT', 64) | getattr(os, 'O_EXCL', 128)
-            fd = os.open(key_path, flags, 0o600)
-            with os.fdopen(fd, 'wb') as f:
-                f.write(key)
-        else:
-            key = key_path.read_bytes().strip()
-        try:
-            os.chmod(key_path, 0o600)
-        except OSError:
-            pass
-        return Fernet(key)
-    except Exception as exc:
-        log_buffer.log("accounts", f"macOS cookie encryption failed: {exc}")
-        return None
+    return decrypt_token(enc_b64, ACCOUNTS_KEY_FILE)
 
 
 def _load_accounts() -> list[dict]:
@@ -138,7 +82,6 @@ def _save_accounts(accounts: list[dict]):
     """Persist accounts list to disk."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     ACCOUNTS_FILE.write_text(json.dumps(accounts, indent=2), encoding="utf-8")
-
 
 
 def _get_auth_ticket(cookie: str) -> str | None:
@@ -212,6 +155,46 @@ def _get_access_code(place_id: str, link_code: str, cookie: str) -> str | None:
     return None
 
 
+def _preseed_root_place_for_subplace(root_place_id: str, cookie: str) -> bool:
+    """Prime Roblox's join state for a subplace launch by joining the root place."""
+    if not root_place_id or not cookie:
+        return False
+    try:
+        sess = _requests.Session()
+        sess.trust_env = False
+        sess.proxies = {}
+        sess.verify = False
+        sess.headers.update({
+            "User-Agent": "Roblox/WinInet",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Referer": "https://www.roblox.com/",
+            "Origin": "https://www.roblox.com",
+            "Cookie": f".ROBLOSECURITY={cookie};",
+        })
+        try:
+            token_resp = sess.post("https://auth.roblox.com/v2/logout", timeout=10)
+            token = token_resp.headers.get("x-csrf-token") or token_resp.headers.get("X-CSRF-TOKEN")
+            if token:
+                sess.headers["X-CSRF-TOKEN"] = token
+        except Exception:
+            pass
+
+        payload = {
+            "placeId": int(root_place_id),
+            "isTeleport": True,
+            "isImmersiveAdsTeleport": False,
+            "gameJoinAttemptId": str(uuid.uuid4()),
+        }
+        resp = sess.post("https://gamejoin.roblox.com/v1/join-game", json=payload, timeout=15)
+        try:
+            return resp.status_code == 200 and resp.json().get("status") == 2
+        except Exception:
+            return False
+    except Exception as exc:
+        log_buffer.log("accounts", f"Subplace root pre-seed error: {exc}")
+        return False
+
 
 _UUID_RE = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', re.IGNORECASE)
 
@@ -219,7 +202,11 @@ def _extract_job_id(raw: str) -> str:
     """Return just the UUID from a job ID string, stripping any prefix like 'JoinGame=JOBID '."""
     raw = raw.strip()
     m = _UUID_RE.search(raw)
-    return m.group(0) if m else raw
+    if m:
+        return m.group(0)
+    if re.search(r'(?:^|[;:\s])Join(?:Place|Game|PrivateGame)\s*[=:]', raw, re.IGNORECASE):
+        return ""
+    return raw
 
 
 def _parse_game_link(link: str) -> tuple[str | None, str | None]:
@@ -563,6 +550,8 @@ class RandoStuffTab(QWidget):
         "/v1/join-play-together-game",
         "/v1/join-game-instance",
     )
+    _PRIVATE_GAME_ENDPOINT = "/v1/join-private-game"
+    _RESERVED_GAME_ENDPOINT = "/v1/join-reserved-game"
 
     def __init__(self, parent=None, config_manager=None, proxy_master=None):
         super().__init__(parent)
@@ -600,6 +589,7 @@ class RandoStuffTab(QWidget):
         self._game_jobs: dict = {}  # placeId -> jobId, session-only memory
         self._account_manager_job_id: str = ""
         self._account_manager_capture_place_id: str | None = None
+        self._account_manager_teleport_place_id: str | None = None
         self._auto_filled_for_place: str | None = None
         self._username_spoofer_current_user_id: str | None = None
         self._username_spoofer_current_username = ''
@@ -658,6 +648,45 @@ class RandoStuffTab(QWidget):
     def _is_subplace_blacklisted(self, place_id) -> bool:
         normalized = self._normalize_numeric_id(place_id)
         return normalized is not None and normalized in self._subplace_blacklisted_ids
+
+    def _apply_account_manager_subplace_teleport(self, body: dict) -> bool:
+        body_place_id = self._normalize_numeric_id(body.get("placeId"))
+        with self._lock:
+            teleport_place_id = self._account_manager_teleport_place_id
+        if not teleport_place_id or body_place_id != teleport_place_id:
+            return False
+        if body.get("isTeleport") is not True:
+            body["isTeleport"] = True
+            return True
+        return False
+
+    def _clear_account_manager_subplace_teleport_if_complete(self, flow, req_path: str):
+        with self._lock:
+            teleport_place_id = self._account_manager_teleport_place_id
+        if not teleport_place_id or req_path not in (
+            *self._WANTED_ENDPOINTS,
+            self._PRIVATE_GAME_ENDPOINT,
+            self._RESERVED_GAME_ENDPOINT,
+        ):
+            return
+        try:
+            body = json.loads(flow.request.content)
+        except Exception:
+            return
+        if self._normalize_numeric_id(body.get("placeId")) != teleport_place_id:
+            return
+        resp_json = {}
+        try:
+            if flow.response is not None:
+                resp_json = json.loads(flow.response.content)
+        except Exception:
+            resp_json = {}
+        status = resp_json.get("status")
+        if status in (0, 1):
+            return
+        with self._lock:
+            if self._account_manager_teleport_place_id == teleport_place_id:
+                self._account_manager_teleport_place_id = None
 
     def _drop_subplace_join(self, flow, place_id: str, attempt_id: str | None = None):
         with self._lock:
@@ -917,7 +946,7 @@ class RandoStuffTab(QWidget):
         self._add_acct_btn.clicked.connect(self._on_add_account)
         self._import_browser_btn = QPushButton("Import Browser Login")
         self._import_browser_btn.clicked.connect(self._on_import_browser_account)
-        self._import_browser_btn.setVisible(IS_MACOS)
+        self._import_browser_btn.setVisible(IS_MACOS or IS_LINUX)
         self._launch_acct_btn = QPushButton("Launch")
         self._launch_acct_btn.clicked.connect(self._on_launch_account)
         self._switch_acct_btn = QPushButton("Switch to selected")
@@ -988,7 +1017,8 @@ class RandoStuffTab(QWidget):
         username_layout.addLayout(self_row)
         username_layout.addWidget(self._username_self_game_creator_chk)
 
-        root.addWidget(username_group)
+        self._username_spoofer_proxy_gate = ProxyGate(username_group, compact=True)
+        root.addWidget(self._username_spoofer_proxy_gate)
 
         ac_group = QGroupBox("R6 ↔ R15 Animation Converter")
         acl = QVBoxLayout(ac_group)
@@ -1099,7 +1129,11 @@ class RandoStuffTab(QWidget):
         )
 
     def set_proxy_features_enabled(self, enabled: bool):
-        for gate_name in ('_rejoin_proxy_gate', '_subplace_blacklist_proxy_gate'):
+        for gate_name in (
+            '_rejoin_proxy_gate',
+            '_subplace_blacklist_proxy_gate',
+            '_username_spoofer_proxy_gate',
+        ):
             gate = getattr(self, gate_name, None)
             if gate is not None:
                 gate.set_proxy_enabled(enabled)
@@ -1818,6 +1852,22 @@ class RandoStuffTab(QWidget):
             f"subplaceId={subplace_id or '(none)'}, launchPlaceId={launch_place_id or '(none)'}, "
             f"linkCode={'present' if bool(link_code) else 'missing'}, jobId={'present' if bool(job_id) else 'missing'}",
         )
+        root_place_id = self._normalize_numeric_id(place_id)
+        normalized_launch_place_id = self._normalize_numeric_id(launch_place_id)
+        is_distinct_subplace_launch = (
+            bool(subplace_id)
+            and root_place_id is not None
+            and normalized_launch_place_id is not None
+            and normalized_launch_place_id != root_place_id
+        )
+        with self._lock:
+            self._account_manager_teleport_place_id = (
+                normalized_launch_place_id if is_distinct_subplace_launch else None
+            )
+        if is_distinct_subplace_launch:
+            ok = _preseed_root_place_for_subplace(root_place_id, cookie)
+            if not ok:
+                log_buffer.log("accounts", f"Subplace root pre-seed failed for root {root_place_id}")
         launch_ok = False
         if place_id and link_code and launch_place_id:
             # Private server launch
@@ -2068,9 +2118,20 @@ class RandoStuffTab(QWidget):
 
         parsed = urlparse(url)
 
-        if parsed.path == "/v1/join-reserved-game":
+        if parsed.path == self._PRIVATE_GAME_ENDPOINT:
             try:
                 body = json.loads(flow.request.content)
+                if self._apply_account_manager_subplace_teleport(body):
+                    flow.request.raw_content = json.dumps(body, separators=(",", ":")).encode("utf-8")
+            except Exception as exc:
+                log_buffer.log("accounts", f"Failed to parse join-private-game body: {exc}")
+            return
+
+        if parsed.path == self._RESERVED_GAME_ENDPOINT:
+            try:
+                body = json.loads(flow.request.content)
+                if self._apply_account_manager_subplace_teleport(body):
+                    flow.request.raw_content = json.dumps(body, separators=(",", ":")).encode("utf-8")
                 place_id = body.get("placeId")
                 access_code = body.get("accessCode")
                 attempt_id = body.get('gameJoinAttemptId')
@@ -2119,16 +2180,25 @@ class RandoStuffTab(QWidget):
         except Exception:
             pass
 
+        account_body = None
+        account_body_modified = False
+        if parsed.path in self._WANTED_ENDPOINTS:
+            try:
+                account_body = json.loads(flow.request.content)
+                account_body_modified = self._apply_account_manager_subplace_teleport(account_body)
+            except Exception:
+                account_body = None
+
         # Account manager: redirect join-game to join-game-instance if a jobId is pending
         if parsed.path == "/v1/join-game":
             with self._lock:
                 pending_job = self._account_manager_job_id
             if pending_job:
                 try:
-                    body = json.loads(flow.request.content)
+                    body = account_body if isinstance(account_body, dict) else json.loads(flow.request.content)
                     body["gameId"] = pending_job
                     flow.request.url = "https://gamejoin.roblox.com/v1/join-game-instance"
-                    flow.request.raw_content = json.dumps(body).encode("utf-8")
+                    flow.request.raw_content = json.dumps(body, separators=(",", ":")).encode("utf-8")
                     with self._lock:
                         self._account_manager_job_id = ""
                     log_buffer.log("accounts", f"Redirected join-game -> join-game-instance with jobId={pending_job}")
@@ -2136,8 +2206,11 @@ class RandoStuffTab(QWidget):
                     log_buffer.log("accounts", f"Failed to intercept join-game for jobId: {exc}")
                 return
 
+        if account_body_modified and isinstance(account_body, dict):
+            flow.request.raw_content = json.dumps(account_body, separators=(",", ":")).encode("utf-8")
+
         try:
-            req_body = json.loads(flow.request.content)
+            req_body = account_body if isinstance(account_body, dict) else json.loads(flow.request.content)
             attempt_id = req_body.get("gameJoinAttemptId")
         except Exception:
             req_body = {}
@@ -2198,6 +2271,8 @@ class RandoStuffTab(QWidget):
             return
 
         req_path = urlparse(flow.request.pretty_url).path
+
+        self._clear_account_manager_subplace_teleport_if_complete(flow, req_path)
 
         # Capture jobId from a normal game join initiated by the account manager
         with self._lock:

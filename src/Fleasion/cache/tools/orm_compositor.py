@@ -99,6 +99,7 @@ def composite_orm(
     out_path = out_dir / f'{cache_key}.ktx2'
 
     if out_path.exists():
+        log_buffer.log('TexPackTrace', f'ORM compositor cache hit: output={out_path.name}')
         return str(out_path)
 
     # ── Decode baseline or synthesise defaults ───────────────────────────────
@@ -107,9 +108,12 @@ def composite_orm(
 
     if baseline and baseline.exists():
         try:
+            log_buffer.log('TexPackTrace', f'ORM compositor decoding baseline={baseline.name}')
             rgba, width, height = _decode_bc_ktx2(baseline.read_bytes())
+            log_buffer.log('TexPackTrace', f'ORM compositor baseline decoded: {width}x{height}')
         except Exception as exc:
             log_buffer.log('ORM', f'Baseline decode failed ({baseline.name}): {exc}')
+            log_buffer.log('TexPackTrace', f'ORM compositor baseline decode failed: baseline={baseline.name} error={exc}')
 
     if rgba is None:
         # Default: non-metallic (R=0), fully-rough (G=255), no-emissive (B=0),
@@ -117,6 +121,7 @@ def composite_orm(
         rgba = np.zeros((height, width, 4), dtype=np.uint8)
         rgba[:, :, 1] = 255
         rgba[:, :, 3] = 128
+        log_buffer.log('TexPackTrace', f'ORM compositor using synthesized default baseline: {width}x{height}')
 
     # ── Apply per-channel PNG overrides ─────────────────────────────────────
     applied: list[str] = []
@@ -129,9 +134,11 @@ def composite_orm(
             # "Remove" / zero-out: set channel to its neutral default value.
             rgba[:, :, ch_idx] = _CHANNEL_ZERO.get(ch_name.lower(), 0)
             applied.append(f'{ch_name}=zero')
+            log_buffer.log('TexPackTrace', f'ORM compositor channel {ch_name}: remove/default value applied')
             continue
         if not png_path.exists():
             log_buffer.log('ORM', f'Channel PNG not found: {png_path}')
+            log_buffer.log('TexPackTrace', f'ORM compositor channel {ch_name}: missing file={png_path}')
             continue
         try:
             img = Image.open(png_path)
@@ -145,10 +152,16 @@ def composite_orm(
                     Image.fromarray(r_arr).resize((width, height), Image.Resampling.BILINEAR),
                     dtype=np.uint8,
                 )
+                log_buffer.log(
+                    'TexPackTrace',
+                    f'ORM compositor channel {ch_name}: resized source to {width}x{height} file={png_path.name}',
+                )
             rgba[:, :, ch_idx] = r_arr
             applied.append(ch_name)
+            log_buffer.log('TexPackTrace', f'ORM compositor channel {ch_name}: applied file={png_path.name}')
         except Exception as exc:
             log_buffer.log('ORM', f'Failed to apply channel "{ch_name}": {exc}')
+            log_buffer.log('TexPackTrace', f'ORM compositor channel {ch_name}: failed file={png_path.name} error={exc}')
 
     if not applied:
         log_buffer.log('ORM', 'No channels were applied — skipping composite')

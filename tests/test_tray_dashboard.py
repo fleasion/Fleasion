@@ -1,8 +1,10 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 from PyQt6.QtWidgets import QSystemTrayIcon
 
 from Fleasion import tray as tray_module
+from Fleasion import app as app_module
 from Fleasion.utils import platform_macos
 from Fleasion.tray import SystemTray
 
@@ -18,6 +20,22 @@ class _DashboardStub:
     def hide(self):
         self.visible = False
         self.hide_calls += 1
+
+
+class _TrayIconStub:
+    def __init__(self):
+        self.hide_calls = 0
+        self.context_menus = []
+        self.delete_later_calls = 0
+
+    def hide(self):
+        self.hide_calls += 1
+
+    def setContextMenu(self, menu):
+        self.context_menus.append(menu)
+
+    def deleteLater(self):
+        self.delete_later_calls += 1
 
 
 def test_dashboard_toggle_hides_visible_window():
@@ -104,3 +122,78 @@ def test_windows_tray_activation_still_toggles_dashboard(monkeypatch):
     system_tray._on_tray_activated(QSystemTrayIcon.ActivationReason.Trigger)
 
     assert toggle_calls == [True]
+
+
+def test_cleanup_tray_icon_hides_and_deletes_once(monkeypatch):
+    system_tray = SystemTray.__new__(SystemTray)
+    tray_icon = _TrayIconStub()
+    process_events_calls = []
+    system_tray.tray = tray_icon
+    system_tray._tray_cleaned_up = False
+    monkeypatch.setattr(tray_module.QApplication, 'processEvents', lambda: process_events_calls.append(True))
+
+    system_tray.cleanup_tray_icon()
+    system_tray.cleanup_tray_icon()
+
+    assert tray_icon.hide_calls == 1
+    assert tray_icon.context_menus == [None]
+    assert tray_icon.delete_later_calls == 1
+    assert process_events_calls == [True]
+
+
+def test_exit_app_cleans_tray_before_quitting(monkeypatch):
+    system_tray = SystemTray.__new__(SystemTray)
+    calls = []
+
+    class _AppStub:
+        def quit(self):
+            calls.append('quit')
+
+    class _ProxyMasterStub:
+        def stop(self):
+            calls.append('stop')
+
+    system_tray.app = _AppStub()
+    system_tray.proxy_master = _ProxyMasterStub()
+    system_tray.cleanup_tray_icon = lambda: calls.append('cleanup')
+    monkeypatch.setattr(tray_module, 'run_in_thread', lambda func: func)
+
+    system_tray._exit_app()
+
+    assert system_tray._exiting is True
+    assert calls[0] == 'cleanup'
+    assert calls[-1] == 'quit'
+
+
+def test_ensure_exit_action_keeps_exit_enabled():
+    system_tray = SystemTray.__new__(SystemTray)
+    calls = []
+
+    class _ActionStub:
+        def setEnabled(self, enabled):
+            calls.append(enabled)
+
+    system_tray.exit_action = _ActionStub()
+
+    system_tray._ensure_exit_action_enabled()
+
+    assert calls == [True]
+
+
+def test_linux_helper_start_failure_keeps_proxy_features_enabled(monkeypatch):
+    config = SimpleNamespace(proxy_features_enabled=True)
+    calls = []
+    warnings = []
+    tray = SimpleNamespace(update_status=lambda: calls.append('update_status'))
+    monkeypatch.setattr(app_module.sys, 'platform', 'linux')
+    monkeypatch.setattr(app_module.QMessageBox, 'warning', lambda *args, **kwargs: warnings.append((args, kwargs)))
+
+    app_module._disable_proxy_features_after_start_failure(
+        config,
+        tray,
+        'Linux Polkit approval was denied or the proxy helper could not start',
+    )
+
+    assert calls == ['update_status']
+    assert warnings
+    assert config.proxy_features_enabled is True

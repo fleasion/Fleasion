@@ -29,6 +29,8 @@ import json
 import logging
 import os
 import re
+import shlex
+import shutil
 import socket
 import ssl
 import subprocess
@@ -77,16 +79,17 @@ from .upstream import HttpProxyConfig, Socks5ProxyConfig, UpstreamEndpoint, Upst
 from .windows_proxy import WindowsProxyInfo, detect_windows_proxy, detected_http_proxy
 from ..cache.cache_manager import CacheManager
 from ..utils.certs import generate_ca, generate_host_cert, generate_multi_host_cert, get_ca_pem
-from ..utils.roblox_dirs import load_saved_roblox_dirs, save_saved_roblox_dirs
+from ..utils.roblox_dirs import is_roblox_studio_resource_dir, load_saved_roblox_dirs, save_saved_roblox_dirs
 from ..utils.windows import get_roblox_player_exe_path, get_roblox_studio_exe_path, launch_as_standard_user
 
 logger = logging.getLogger(__name__)
 
 IS_WINDOWS = sys.platform == 'win32'
 IS_MACOS = sys.platform == 'darwin'
+IS_LINUX = sys.platform.startswith('linux')
 _ACTIVE_PROXY_CA_DIR = PROXY_CA_DIR
 
-if IS_MACOS:
+if IS_MACOS or IS_LINUX:
     HOSTS_FILE = Path('/etc/hosts')
     _PLATFORM_TEMP_DIR = Path(tempfile.gettempdir())
 else:
@@ -376,6 +379,17 @@ def _dns_query_udp(hostname: str, server: str, port: int = 53, timeout: float = 
 _DNS_FALLBACK_SERVERS = ['8.8.8.8', '1.1.1.1', '1.0.0.1']
 
 
+def _prefer_ipv4_endpoints(endpoints: list[UpstreamEndpoint]) -> list[UpstreamEndpoint]:
+    """Return endpoints ordered like v2.0.1's stable IPv4-first upstream path."""
+    return sorted(
+        endpoints,
+        key=lambda ep: (
+            0 if ep.family == socket.AF_INET else 1 if ep.family == socket.AF_INET6 else 2,
+            ep.ip or ep.host,
+        ),
+    )
+
+
 def _resolve_real_endpoints(hosts: set[str]) -> dict[str, list[UpstreamEndpoint]]:
     """Resolve real upstream endpoints before hosts entries point at localhost.
 
@@ -384,7 +398,9 @@ def _resolve_real_endpoints(hosts: set[str]) -> dict[str, list[UpstreamEndpoint]
     upstream connections to loop back to ourselves.
 
     Primary strategy: socket.getaddrinfo() (uses OS resolver — fast, respects
-    IPv6 and system network config).
+    system network config). IPv4 endpoints are preferred because v2.0.1 was
+    IPv4-only and some user networks expose broken or very slow Roblox IPv6
+    routes that produce upstream TLS failures or HTTP 524 responses.
 
     Fallback strategy: raw UDP DNS query to well-known public resolvers, only
     when the OS resolver produced no routable endpoints. Public DNS can select
@@ -416,6 +432,7 @@ def _resolve_real_endpoints(hosts: set[str]) -> dict[str, list[UpstreamEndpoint]
             log_buffer.log('Proxy', f'DNS resolve failed for {host} (OS resolver): {exc}')
 
         if endpoints:
+            endpoints = _prefer_ipv4_endpoints(endpoints)
             real_endpoints[host] = endpoints
             log_buffer.log('Proxy', f'Resolved {host} -> {endpoints[0].ip} (OS resolver)')
             continue
@@ -428,7 +445,7 @@ def _resolve_real_endpoints(hosts: set[str]) -> dict[str, list[UpstreamEndpoint]
         for dns_server in _DNS_FALLBACK_SERVERS:
             try:
                 fallback: list[UpstreamEndpoint] = []
-                for family, qtype in ((socket.AF_INET6, 28), (socket.AF_INET, 1)):
+                for family, qtype in ((socket.AF_INET, 1), (socket.AF_INET6, 28)):
                     for ip in _dns_query_udp(host, dns_server, qtype=qtype):
                         key = (family, ip)
                         if key in seen:
@@ -436,6 +453,7 @@ def _resolve_real_endpoints(hosts: set[str]) -> dict[str, list[UpstreamEndpoint]
                         seen.add(key)
                         fallback.append(UpstreamEndpoint(host=host, ip=ip, family=family))
                 if fallback:
+                    fallback = _prefer_ipv4_endpoints(fallback)
                     real_endpoints[host] = fallback
                     log_buffer.log(
                         'Proxy',
@@ -640,6 +658,15 @@ def _current_proxy_ca_dir() -> Path:
     return _ACTIVE_PROXY_CA_DIR
 
 
+def _is_macos_studio_bundle_path(exe_path: Path) -> bool:
+    if not IS_MACOS:
+        return False
+    resolved = Path(exe_path)
+    if resolved.name == 'RobloxStudio.app':
+        return True
+    return any(parent.name == 'RobloxStudio.app' for parent in resolved.parents)
+
+
 
 def _flush_dns() -> None:
     """Flush the OS DNS cache so hosts-file changes take effect immediately.
@@ -664,6 +691,26 @@ def _flush_dns() -> None:
                 log_buffer.log('Hosts', f'DNS flush command failed ({cmd[0]}): {exc}')
         if flushed:
             log_buffer.log('Hosts', 'DNS cache flushed')
+        return
+
+    if IS_LINUX:
+        flushed = False
+        for cmd in (
+            ['resolvectl', 'flush-caches'],
+            ['systemd-resolve', '--flush-caches'],
+            ['service', 'nscd', 'restart'],
+        ):
+            try:
+                result = subprocess.run(cmd, capture_output=True, timeout=5)
+                if result.returncode == 0:
+                    flushed = True
+                    break
+            except Exception:
+                pass
+        if flushed:
+            log_buffer.log('Hosts', 'DNS cache flushed')
+        else:
+            log_buffer.log('Hosts', 'DNS cache flush skipped: no supported Linux flush command succeeded')
         return
 
     # Primary: in-process DLL call — fast, no subprocess, immune to AV process blocks.
@@ -848,12 +895,16 @@ def _cancel_hosts_cleanup_on_reboot() -> None:
 # ---------------------------------------------------------------------------
 
 def _is_admin() -> bool:
-    if IS_MACOS:
+    if IS_MACOS or IS_LINUX:
         return hasattr(os, 'geteuid') and os.geteuid() == 0
     try:
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
     except Exception:
         return False
+
+
+def _use_linux_privileged_helper() -> bool:
+    return IS_LINUX and not _is_admin()
 
 
 def _extract_exe_from_command(command: str) -> Optional[Path]:
@@ -865,13 +916,15 @@ def _extract_exe_from_command(command: str) -> Optional[Path]:
     if not cmd:
         return None
 
-    if cmd.startswith('"'):
-        end_quote = cmd.find('"', 1)
-        if end_quote <= 1:
-            return None
-        exe_path = cmd[1:end_quote]
+    match = re.match(r'(.+?\.exe)(?:["\s]|$)', cmd, re.IGNORECASE)
+    if match:
+        exe_path = match.group(1).strip('"')
     else:
-        exe_path = cmd.split()[0]
+        try:
+            parts = shlex.split(cmd, posix=False)
+        except ValueError:
+            parts = []
+        exe_path = parts[0].strip('"') if parts else cmd.split()[0]
 
     if not exe_path:
         return None
@@ -1026,7 +1079,7 @@ def _list_port_listeners_netstat(port: int) -> list[dict]:
 
 def _list_port_listeners(port: int) -> list[dict]:
     """Return unique listener records for a TCP port."""
-    if IS_MACOS:
+    if IS_MACOS or IS_LINUX:
         try:
             result = subprocess.run(
                 ['lsof', '-nP', f'-iTCP:{port}', '-sTCP:LISTEN'],
@@ -1092,6 +1145,35 @@ def _list_port_listeners(port: int) -> list[dict]:
 
 _HOSTS_WRITE_RETRIES = 8
 _HOSTS_WRITE_DELAY   = 0.25  # seconds between direct-write retries
+_HOSTS_IPV4_LOOPBACK = '127.0.0.1'
+_HOSTS_IPV6_LOOPBACK = '::1'
+_HOSTS_LOOPBACK_IPS = frozenset({_HOSTS_IPV4_LOOPBACK, _HOSTS_IPV6_LOOPBACK})
+_HOSTS_ACTIVE_LOOPBACK_IPS: tuple[str, ...] | None = None
+
+
+def _required_hosts_loopbacks() -> tuple[str, ...]:
+    """Return loopback mappings Fleasion should own in the hosts file."""
+    if _HOSTS_ACTIVE_LOOPBACK_IPS:
+        return _HOSTS_ACTIVE_LOOPBACK_IPS
+    if IS_WINDOWS:
+        return (_HOSTS_IPV4_LOOPBACK, _HOSTS_IPV6_LOOPBACK)
+    return (_HOSTS_IPV4_LOOPBACK,)
+
+
+def _set_active_hosts_loopbacks(loopbacks: tuple[str, ...] | list[str] | set[str] | None) -> None:
+    global _HOSTS_ACTIVE_LOOPBACK_IPS
+    if not loopbacks:
+        _HOSTS_ACTIVE_LOOPBACK_IPS = None
+        return
+    ordered = []
+    for ip in (_HOSTS_IPV4_LOOPBACK, _HOSTS_IPV6_LOOPBACK):
+        if ip in loopbacks:
+            ordered.append(ip)
+    _HOSTS_ACTIVE_LOOPBACK_IPS = tuple(ordered) or None
+
+
+def _is_hosts_loopback_ip(ip: str) -> bool:
+    return str(ip or '').strip().lower() in _HOSTS_LOOPBACK_IPS
 
 
 def _parse_active_hosts_entries(content: str) -> dict[str, list[dict]]:
@@ -1123,7 +1205,7 @@ def _hosts_conflicts(hosts: Set[str], entries: dict[str, list[dict]]) -> list[tu
     conflicts: list[tuple[str, dict]] = []
     for host in sorted(hosts):
         for entry in entries.get(host.lower(), []):
-            if entry.get('ip') != '127.0.0.1':
+            if not _is_hosts_loopback_ip(entry.get('ip', '')):
                 conflicts.append((host, entry))
     return conflicts
 
@@ -1170,10 +1252,12 @@ def _verify_hosts_entries(hosts: Set[str], error_details: Optional[dict] = None)
         return False
 
     missing = []
+    required_ips = _required_hosts_loopbacks()
     for host in sorted(hosts):
         host_entries = entries.get(host.lower(), [])
-        if not any(entry.get('ip') == '127.0.0.1' for entry in host_entries):
-            missing.append(host)
+        for ip in required_ips:
+            if not any(str(entry.get('ip', '')).lower() == ip for entry in host_entries):
+                missing.append(f'{host}->{ip}')
 
     if missing:
         log_buffer.log('Hosts', f'Hosts verification failed: missing active mappings for {", ".join(missing)}')
@@ -1189,7 +1273,7 @@ def _hosts_line_has_target_loopback(raw_line: str, hosts: Set[str]) -> bool:
     if not active:
         return False
     parts = active.split()
-    if len(parts) < 2 or parts[0] != '127.0.0.1':
+    if len(parts) < 2 or not _is_hosts_loopback_ip(parts[0]):
         return False
     target_hosts = {host.lower() for host in hosts}
     return any(host.lower() in target_hosts for host in parts[1:])
@@ -1339,10 +1423,13 @@ def _add_hosts_entries(hosts: Set[str], error_details: Optional[dict] = None) ->
         return False
 
     lines_to_add = []
+    required_ips = _required_hosts_loopbacks()
     for host in sorted(hosts):
-        entry = f'127.0.0.1 {host} {_HOSTS_MARKER}'
-        if not any(e.get('ip') == '127.0.0.1' for e in entries.get(host.lower(), [])):
-            lines_to_add.append(entry)
+        host_entries = entries.get(host.lower(), [])
+        for ip in required_ips:
+            entry = f'{ip} {host} {_HOSTS_MARKER}'
+            if not any(str(e.get('ip', '')).lower() == ip for e in host_entries):
+                lines_to_add.append(entry)
 
     if not lines_to_add:
         log_buffer.log('Hosts', 'Exact active hosts entries already present, skipping')
@@ -1352,8 +1439,8 @@ def _add_hosts_entries(hosts: Set[str], error_details: Optional[dict] = None) ->
     try:
         _write_hosts_file(new_content)
         for entry in lines_to_add:
-            host = entry.split()[1]
-            log_buffer.log('Hosts', f'Added redirect: {host} -> 127.0.0.1')
+            ip, host = entry.split()[:2]
+            log_buffer.log('Hosts', f'Added redirect: {host} -> {ip}')
         return True
     except PermissionError as exc:
         log_buffer.log('Hosts', f'Permission denied writing hosts file: {exc}')
@@ -1439,11 +1526,20 @@ def _find_roblox_dirs() -> list:
     """
     if IS_MACOS:
         from ..utils.platform_macos import find_roblox_resource_dirs
+    elif IS_LINUX:
+        from ..utils.platform_linux import find_roblox_resource_dirs
+    else:
+        find_roblox_resource_dirs = None
 
+    if find_roblox_resource_dirs is not None:
         found: list[Path] = []
         seen: set[str] = set()
 
-        def _add_macos(path: Path) -> bool:
+        def _add_posix(path: Path) -> bool:
+            if IS_MACOS and 'RobloxStudio.app' in path.parts:
+                return False
+            if is_roblox_studio_resource_dir(path):
+                return False
             key = str(path.resolve()).lower()
             if key in seen:
                 return False
@@ -1451,10 +1547,10 @@ def _find_roblox_dirs() -> list:
             found.append(path)
             return True
 
-        for roblox_dir in find_roblox_resource_dirs(include_studio=True):
-            _add_macos(roblox_dir)
+        for roblox_dir in find_roblox_resource_dirs(include_studio=not IS_MACOS):
+            _add_posix(roblox_dir)
         for cached_dir in load_saved_roblox_dirs():
-            _add_macos(cached_dir)
+            _add_posix(cached_dir)
         save_saved_roblox_dirs(found)
         return found
 
@@ -1830,6 +1926,56 @@ def _log_cacert_health(ca_file: Path, ca_pem: str) -> None:
     _log_cacert_state(ca_file, ca_pem, f'cacert.pem health for {ca_file.parent.parent.name}')
 
 
+def _linux_cacert_needs_seed(state: dict) -> bool:
+    return (
+        not bool(state.get('exists'))
+        or int(state.get('size') or 0) < _CACERT_MIN_HEALTHY_SIZE_BYTES
+        or int(state.get('total_certs') or 0) < _CACERT_MIN_HEALTHY_CERTS
+    )
+
+
+def _healthy_linux_cacert_source(ca_file: Path, ca_pem: str, dirs: list[Path]) -> Path | None:
+    for candidate_dir in dirs:
+        candidate = candidate_dir / 'ssl' / 'cacert.pem'
+        if candidate == ca_file:
+            continue
+        state = _describe_cacert_state(candidate, ca_pem)
+        if bool(state.get('healthy')):
+            return candidate
+    return None
+
+
+def _seed_linux_cacert_if_needed(ca_file: Path, state: dict, install_name: str, ca_pem: str, dirs: list[Path]) -> bool:
+    """Replace a missing/truncated Roblox CA bundle with a healthy local or Mozilla bundle."""
+    if not IS_LINUX:
+        return False
+    if bool(state.get('error')):
+        return False
+    if not _linux_cacert_needs_seed(state):
+        return False
+
+    source = _healthy_linux_cacert_source(ca_file, ca_pem, dirs)
+    if source is not None:
+        try:
+            ca_file.parent.mkdir(exist_ok=True)
+            shutil.copy2(source, ca_file)
+            log_buffer.log('Certificate', f'Seeded Roblox cacert.pem from healthy local bundle for {install_name}: {source}')
+            return True
+        except Exception as exc:
+            log_buffer.log('Certificate', f'Could not seed Roblox cacert.pem from local bundle for {install_name}: {exc}')
+
+    try:
+        import certifi
+
+        ca_file.parent.mkdir(exist_ok=True)
+        shutil.copy2(certifi.where(), ca_file)
+        log_buffer.log('Certificate', f'Seeded Roblox cacert.pem from Mozilla CA bundle for {install_name}')
+        return True
+    except Exception as exc:
+        log_buffer.log('Certificate', f'Could not seed Roblox cacert.pem for {install_name}: {exc}')
+        return False
+
+
 def _upsert_fleasion_ca_in_cacert(ca_file: Path, ca_pem: str) -> tuple[bool, int, int]:
     """Ensure exactly one current Fleasion CA exists in *ca_file*.
 
@@ -1869,14 +2015,17 @@ def _install_ca_into_roblox_with_helper(ca_pem: str, dirs: list[Path]) -> tuple[
     installs: list[dict] = []
     for roblox_dir in dirs:
         ca_file = roblox_dir / 'ssl' / 'cacert.pem'
+        strip_all_fleasion_ca = False
         try:
             existing = ca_file.read_text(encoding='utf-8', errors='replace') if ca_file.exists() else ''
         except OSError as exc:
             log_buffer.log('Certificate', f'Could not pre-read cacert.pem for {roblox_dir.name}; helper will try root read/write: {exc}')
             existing = ''
+            strip_all_fleasion_ca = True
         installs.append({
             'resource_dir': str(roblox_dir),
             'remove_pems': _fleasion_ca_blocks(existing),
+            'strip_all_fleasion_ca': strip_all_fleasion_ca,
         })
 
     response = helper_patch_ca(ca_pem, installs)
@@ -1910,6 +2059,45 @@ def _install_ca_into_roblox_with_helper(ca_pem: str, dirs: list[Path]) -> tuple[
     return all_healthy, details
 
 
+def _patch_roblox_ca_with_macos_helper(ca_pem: str, roblox_dir: Path) -> tuple[bool, bool, dict]:
+    """Patch one macOS Roblox cacert.pem through the privileged helper.
+
+    Returns (request_ok, changed, response_details).
+    """
+    from ..utils.macos_proxy_helper import helper_patch_ca
+
+    ca_file = roblox_dir / 'ssl' / 'cacert.pem'
+    strip_all_fleasion_ca = False
+    try:
+        existing = ca_file.read_text(encoding='utf-8', errors='replace') if ca_file.exists() else ''
+    except OSError as exc:
+        log_buffer.log('Certificate', f'Could not pre-read cacert.pem for {roblox_dir.name}; helper will try root read/write: {exc}')
+        existing = ''
+        strip_all_fleasion_ca = True
+
+    response = helper_patch_ca(
+        ca_pem,
+        [{
+            'resource_dir': str(roblox_dir),
+            'remove_pems': _fleasion_ca_blocks(existing),
+            'strip_all_fleasion_ca': strip_all_fleasion_ca,
+        }],
+    )
+    if not response:
+        return False, False, {'failed': [{'resource_dir': str(roblox_dir), 'error': 'macOS proxy helper did not return a CA patch response'}]}
+
+    changed = any(bool(item.get('changed')) for item in response.get('patched') or [])
+    for item in response.get('failed') or []:
+        path = item.get('ca_file') or item.get('resource_dir') or str(ca_file)
+        log_buffer.log('Certificate', f'macOS helper CA patch failed for {path}: {item.get("error") or item.get("status") or "unknown error"}')
+    for key, label in (('patched', 'patched'), ('skipped', 'already current')):
+        for item in response.get(key) or []:
+            path = item.get('ca_file') or item.get('resource_dir') or str(ca_file)
+            item_changed = 'changed' if item.get('changed') else 'unchanged'
+            log_buffer.log('Certificate', f'macOS helper CA patch {label} for {path} ({item_changed})')
+    return bool(response.get('ok')), changed, response
+
+
 def _install_ca_into_roblox(ca_pem: str) -> tuple[bool, dict]:
     """Ensure each Roblox ssl/cacert.pem has exactly one current Fleasion CA cert."""
     t0 = time.perf_counter()
@@ -1930,8 +2118,10 @@ def _install_ca_into_roblox(ca_pem: str) -> tuple[bool, dict]:
         ca_file = ssl_dir / 'cacert.pem'
         try:
             ssl_dir.mkdir(exist_ok=True)
-            _log_cacert_health(ca_file, ca_pem)
+            pre_state = _log_cacert_state(ca_file, ca_pem, f'cacert.pem health for {d.name}')
+            seeded = _seed_linux_cacert_if_needed(ca_file, pre_state, d.name, ca_pem, dirs)
             changed, fleasion_count, current_count = _upsert_fleasion_ca_in_cacert(ca_file, ca_pem)
+            changed = changed or seeded
             post_state = _log_cacert_state(ca_file, ca_pem, f'cacert.pem after startup patch for {d.name}')
             details['verified'].append(post_state)
             ok = ok and bool(post_state.get('healthy'))
@@ -2087,25 +2277,75 @@ def _install_ca_into_windows_root(ca_cert_path: Path, ca_pem: str) -> None:
     log_buffer.log('Certificate', f'Failed to install CA into Windows Root store: {err or result.returncode}')
 
 
-def _install_ca_into_macos_system_keychain(ca_cert_path: Path, ca_pem: str) -> None:
-    """Trust Fleasion's CA in the macOS system keychain for local TLS clients."""
-    thumbprint = _ca_thumbprint_sha1(ca_pem).lower()
-    keychain = '/Library/Keychains/System.keychain'
-
+def _macos_fleasion_keychain_thumbprints(keychain: str) -> list[str]:
     try:
         result = subprocess.run(
-            ['security', 'find-certificate', '-a', '-Z', '-c', 'Fleasion Proxy CA', keychain],
+            ['security', 'find-certificate', '-a', '-p', '-c', 'Fleasion Proxy CA', keychain],
             capture_output=True,
             text=True,
             encoding='utf-8',
             errors='replace',
             timeout=10,
         )
-        if result.returncode == 0 and thumbprint in (result.stdout or '').replace(' ', '').lower():
-            log_buffer.log('Certificate', 'CA already trusted in macOS System keychain')
-            return
     except Exception as exc:
-        log_buffer.log('Certificate', f'macOS trust-store check failed: {exc}')
+        log_buffer.log('Certificate', f'macOS trust-store enumeration failed: {exc}')
+        return []
+    if result.returncode != 0:
+        return []
+
+    thumbprints: list[str] = []
+    for match in _PEM_CERT_BLOCK_RE.finditer(result.stdout or ''):
+        block = match.group(0)
+        if _is_fleasion_ca_cert_block(block):
+            thumbprint = _ca_thumbprint_sha1(block).upper()
+            if thumbprint:
+                thumbprints.append(thumbprint)
+    return thumbprints
+
+
+def _macos_delete_keychain_certificate(keychain: str, thumbprint: str) -> bool:
+    try:
+        result = subprocess.run(
+            ['security', 'delete-certificate', '-Z', thumbprint, keychain],
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            timeout=20,
+        )
+    except Exception as exc:
+        log_buffer.log('Certificate', f'Failed to remove stale macOS CA {thumbprint}: {exc}')
+        return False
+    if result.returncode == 0:
+        return True
+    err = (result.stderr or result.stdout or '').strip()
+    log_buffer.log('Certificate', f'Failed to remove stale macOS CA {thumbprint}: {err or result.returncode}')
+    return False
+
+
+def _install_ca_into_macos_system_keychain(ca_cert_path: Path, ca_pem: str) -> None:
+    """Trust Fleasion's CA in the macOS system keychain for local TLS clients."""
+    thumbprint = _ca_thumbprint_sha1(ca_pem).upper()
+    keychain = '/Library/Keychains/System.keychain'
+
+    stored_thumbprints = _macos_fleasion_keychain_thumbprints(keychain)
+    stale_thumbprints = [
+        stored_thumbprint
+        for stored_thumbprint in stored_thumbprints
+        if stored_thumbprint != thumbprint
+    ]
+    removed_count = sum(
+        1
+        for stored_thumbprint in stale_thumbprints
+        if _macos_delete_keychain_certificate(keychain, stored_thumbprint)
+    )
+
+    if thumbprint in stored_thumbprints:
+        if removed_count:
+            log_buffer.log('Certificate', f'CA already trusted in macOS System keychain (removed {removed_count} stale Fleasion CA entr{"y" if removed_count == 1 else "ies"})')
+        else:
+            log_buffer.log('Certificate', 'CA already trusted in macOS System keychain')
+        return
 
     try:
         result = subprocess.run(
@@ -2130,7 +2370,10 @@ def _install_ca_into_macos_system_keychain(ca_cert_path: Path, ca_pem: str) -> N
         return
 
     if result.returncode == 0:
-        log_buffer.log('Certificate', 'Installed CA into macOS System keychain')
+        if removed_count:
+            log_buffer.log('Certificate', f'Installed CA into macOS System keychain (removed {removed_count} stale Fleasion CA entr{"y" if removed_count == 1 else "ies"})')
+        else:
+            log_buffer.log('Certificate', 'Installed CA into macOS System keychain')
         return
 
     err = (result.stderr or result.stdout or '').strip()
@@ -2150,22 +2393,42 @@ def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
     ca_cert_path = _current_proxy_ca_dir() / 'ca.crt'
     if not ca_cert_path.exists():
         return False  # CA not generated yet – nothing to patch
+    if _is_macos_studio_bundle_path(Path(exe_path)):
+        log_buffer.log('Certificate', f'Skipping macOS Roblox Studio CA patch for {Path(exe_path).name}')
+        return False
 
     ca_pem = get_ca_pem(ca_cert_path)
     if IS_MACOS:
         from ..utils.platform_macos import _resource_root_from_executable
 
         roblox_dir = _resource_root_from_executable(exe_path) or exe_path.parent
+    elif IS_LINUX:
+        from ..utils.platform_linux import find_roblox_resource_dirs
+
+        dirs = find_roblox_resource_dirs(include_studio=False)
+        roblox_dir = dirs[0] if dirs else exe_path.parent
     else:
         roblox_dir = exe_path.parent
     ssl_dir = roblox_dir / 'ssl'
     ca_file = ssl_dir / 'cacert.pem'
 
     try:
-        ssl_dir.mkdir(exist_ok=True)
         pre_state = _log_cacert_state(ca_file, ca_pem, f'cacert.pem before running-instance patch for {roblox_dir.name}')
-        changed, fleasion_count, current_count = _upsert_fleasion_ca_in_cacert(ca_file, ca_pem)
+        pre_state_readable = bool(pre_state.get('exists')) and not bool(pre_state.get('error'))
+        if IS_MACOS and not _is_admin():
+            request_ok, changed, helper_details = _patch_roblox_ca_with_macos_helper(ca_pem, roblox_dir)
+            if not request_ok:
+                log_buffer.log('Certificate', f'Failed to inject CA into running Roblox instance through macOS helper: {helper_details}')
+                return False
+            fleasion_count = int(pre_state.get('fleasion_certs') or 0) if pre_state_readable else 0
+            current_count = int(pre_state.get('current_fleasion_certs') or 0) if pre_state_readable else 0
+        else:
+            ssl_dir.mkdir(exist_ok=True)
+            changed, fleasion_count, current_count = _upsert_fleasion_ca_in_cacert(ca_file, ca_pem)
         post_state = _log_cacert_state(ca_file, ca_pem, f'cacert.pem after running-instance patch for {roblox_dir.name}')
+        if IS_MACOS and not _is_admin() and not pre_state_readable:
+            fleasion_count = int(post_state.get('fleasion_certs') or 0)
+            current_count = int(post_state.get('current_fleasion_certs') or 0)
     except (PermissionError, OSError) as exc:
         log_buffer.log('Certificate', f'Failed to inject CA into running Roblox instance: {exc}')
         return False
@@ -2261,9 +2524,9 @@ class ProxyMaster:
     def _effective_wire_preserving_passthrough(self) -> bool:
         if self._proxy_debug_enabled() and self._proxy_debug_mode() == 'd':
             return True
-        if IS_MACOS:
-            # Rebuilding otherwise-unmodified gamejoin requests has caused Roblox
-            # to reject the request with HTTP 529 on macOS.
+        if IS_MACOS or _use_linux_privileged_helper():
+            # Helper/relay platforms keep their existing passthrough behavior.
+            # Do not use this as evidence that Windows should enable it globally.
             return True
         return self.config_manager.wire_preserving_passthrough
 
@@ -2303,6 +2566,8 @@ class ProxyMaster:
                 hosts = set(BASE_INTERCEPT_HOSTS)
         else:
             hosts = set(BASE_INTERCEPT_HOSTS)
+        if _use_linux_privileged_helper():
+            hosts.update(USERNAME_SPOOFER_INTERCEPT_HOSTS)
         spoofer = getattr(self, 'username_spoofer', None)
         if self._roblox_player_running and spoofer is not None and spoofer.is_enabled():
             hosts.update(USERNAME_SPOOFER_INTERCEPT_HOSTS)
@@ -2392,6 +2657,18 @@ class ProxyMaster:
         if not self._hosts_installed:
             return
         active_hosts = self._desired_intercept_hosts()
+        if _use_linux_privileged_helper():
+            log_buffer.log(
+                'Hosts',
+                'Skipping in-place hosts refresh during Linux helper mode; helper owns /etc/hosts and port 443',
+            )
+            new_endpoints = _resolve_real_endpoints(active_hosts)
+            if self._proxy is not None and new_endpoints:
+                self._proxy.set_upstream_endpoints(new_endpoints)
+            scraper_ips = _first_endpoint_ips(new_endpoints)
+            if scraper_ips:
+                self.cache_scraper.set_real_ips(scraper_ips)
+            return
         # Remove entries temporarily so getaddrinfo() sees real IPs again.
         _remove_hosts_entries(set(INTERCEPT_HOSTS))
         _flush_dns()
@@ -2475,11 +2752,19 @@ class ProxyMaster:
             return
 
         exe_path = Path(exe_path)
+        if _is_macos_studio_bundle_path(exe_path):
+            log_buffer.log('Certificate', f'Skipping macOS Roblox Studio CA refresh for {exe_path.name}')
+            return
         ca_pem = get_ca_pem(ca_cert_path)
         if IS_MACOS:
             from ..utils.platform_macos import _resource_root_from_executable
 
             roblox_dir = _resource_root_from_executable(exe_path) or exe_path.parent
+        elif IS_LINUX:
+            from ..utils.platform_linux import find_roblox_resource_dirs
+
+            dirs = find_roblox_resource_dirs(include_studio=False)
+            roblox_dir = dirs[0] if dirs else exe_path.parent
         else:
             roblox_dir = exe_path.parent
         ca_file = roblox_dir / 'ssl' / 'cacert.pem'
@@ -2574,9 +2859,14 @@ class ProxyMaster:
             # Clean up hosts file first so Roblox stops routing to us immediately
             if self._hosts_installed:
                 self._stop_watchdog()           # Cancel the force-kill guard task first
-                hosts_cleaned = _remove_hosts_entries(set(INTERCEPT_HOSTS))
+                if _use_linux_privileged_helper():
+                    from ..utils.linux_proxy_helper import stop_helper
+
+                    hosts_cleaned = stop_helper()
+                else:
+                    hosts_cleaned = _remove_hosts_entries(set(INTERCEPT_HOSTS))
+                    _flush_dns()  # Clear stale 127.0.0.1 cache so new connections stop coming in
                 self._hosts_installed = False
-                _flush_dns()  # Clear stale 127.0.0.1 cache so new connections stop coming in
                 # Only cancel the reboot guard if the hosts file was actually cleaned.
                 # If cleanup failed, the PendingFileRenameOperations entry must remain
                 # so the next reboot still removes our entries automatically.
@@ -2594,6 +2884,7 @@ class ProxyMaster:
                     fut.result(timeout=3.0)
                 except Exception:
                     pass
+            _set_active_hosts_loopbacks(None)
 
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=5.0)
@@ -2613,7 +2904,7 @@ class ProxyMaster:
                 self._emit_proxy_start_error('macos_helper_unavailable', {})
                 self._running = False
                 return
-        elif not _is_admin():
+        elif not _is_admin() and not _use_linux_privileged_helper():
             log_buffer.log('Error', (
                 'Fleasion requires administrator privileges to modify the hosts file '
                 'and bind port 443.  Please run as Administrator.'
@@ -2621,7 +2912,6 @@ class ProxyMaster:
             self._running = False
             return
 
-        # ── Optional cache clear on launch ───────────────────────────────
         # ── Optional cache clear on launch ───────────────────────────────
         if self.config_manager.clear_cache_on_launch:
             log_buffer.log('Cleanup', 'Clear cache on launch enabled - deleting cache')
@@ -2687,12 +2977,21 @@ class ProxyMaster:
             return
         if IS_WINDOWS:
             _install_ca_into_windows_root(ca_cert_path, ca_pem)
+        elif IS_LINUX:
+            from ..utils.linux_proxy_helper import install_ca_into_linux_trust
+
+            install_ca_into_linux_trust(
+                ca_cert_path,
+                install_system=False,
+            )
 
         # ── Clean up stale state from a previous crash ───────────────────
         # Skip cleanup entirely if another elevated Fleasion instance already
         # owns the proxy.  Deleting its watchdog task or hosts entries while it
         # is running would break it silently.
-        if not _other_proxy_owner_alive():
+        if _use_linux_privileged_helper():
+            log_buffer.log('ProxyHelper', 'Linux user-mode GUI active; privileged helper will own port 443 and hosts entries')
+        elif not _other_proxy_owner_alive():
             _delete_watchdog_task()
             # Remove stale hosts entries: if the previous session crashed without
             # calling stop(), our entries may still be present.  getaddrinfo()
@@ -2749,7 +3048,8 @@ class ProxyMaster:
             pass
 
         # ── Start TLS proxy server ────────────────────────────────────────
-        listen_port = MACOS_PROXY_BACKEND_PORT if IS_MACOS else PROXY_PORT
+        use_linux_helper = _use_linux_privileged_helper()
+        listen_port = MACOS_PROXY_BACKEND_PORT if IS_MACOS or use_linux_helper else PROXY_PORT
         self._proxy = FleasionProxy(
             texture_stripper=self._texture_stripper,
             cache_scraper=self.cache_scraper,
@@ -2806,36 +3106,86 @@ class ProxyMaster:
             self._running = False
             return
 
+        loopback_ips_for_hosts = getattr(self._proxy, 'loopback_ips_for_hosts', None)
+        _set_active_hosts_loopbacks(
+            loopback_ips_for_hosts() if IS_WINDOWS and callable(loopback_ips_for_hosts) else None
+        )
+
         # ── TLS startup self-test ───────────────────────────────────────────
         # Probe every intercepted host with SNI plus one no-SNI connection before
         # the hosts file points Roblox at us. This catches certificate/SNI failures
         # that otherwise happen before normal request logs exist.
         if not await _run_tls_self_test(set(INTERCEPT_HOSTS), ca_cert_path, listen_port):
             await self._proxy.stop()
+            _set_active_hosts_loopbacks(None)
             self._running = False
             return
-        if IS_MACOS and not await _run_tls_self_test(set(INTERCEPT_HOSTS), ca_cert_path, PROXY_PORT):
+        if use_linux_helper:
+            from ..utils.linux_proxy_helper import linux_system_ca_needs_install, start_helper
+
+            helper_ca_cert_path = ca_cert_path if linux_system_ca_needs_install(ca_cert_path) else None
+
+            if not start_helper(
+                active_hosts,
+                backend_port=listen_port,
+                ca_cert_path=helper_ca_cert_path,
+            ):
+                await self._proxy.stop()
+                _set_active_hosts_loopbacks(None)
+                self._emit_proxy_start_error('linux_helper_unavailable', {})
+                self._running = False
+                return
+            if not ca_patch_ok:
+                ca_patch_ok, ca_patch_details = _install_ca_into_roblox(ca_pem)
+                if not ca_patch_ok:
+                    log_buffer.log(
+                        'Certificate',
+                        'Linux Roblox CA patch verification failed after privileged helper ownership repair',
+                    )
+                    await self._proxy.stop()
+                    _set_active_hosts_loopbacks(None)
+                    from ..utils.linux_proxy_helper import stop_helper
+
+                    stop_helper()
+                    self._running = False
+                    return
+        if (IS_MACOS or use_linux_helper) and not await _run_tls_self_test(set(INTERCEPT_HOSTS), ca_cert_path, PROXY_PORT):
             log_buffer.log('ProxyHelper', 'Privileged port-443 relay TLS self-test failed')
             await self._proxy.stop()
+            _set_active_hosts_loopbacks(None)
+            if use_linux_helper:
+                from ..utils.linux_proxy_helper import stop_helper
+
+                stop_helper()
             self._running = False
             return
 
         # ── Write hosts file entries ──────────────────────────────────────
         hosts_error_details: dict = {}
-        if not _add_hosts_entries(active_hosts, error_details=hosts_error_details):
+        if use_linux_helper:
+            self._hosts_installed = True
+        elif not _add_hosts_entries(active_hosts, error_details=hosts_error_details):
             if hosts_error_details.get('notify_user'):
                 self._emit_proxy_start_error('hosts_write_exhausted', hosts_error_details)
             # Hosts write failed - stop the server and bail
             await self._proxy.stop()
+            _set_active_hosts_loopbacks(None)
             self._running = False
             return
-        self._hosts_installed = True
-        _flush_dns()  # Make the new entries take effect immediately
+        else:
+            self._hosts_installed = True
+            _flush_dns()  # Make the new entries take effect immediately
         if not _verify_hosts_entries(active_hosts, error_details=hosts_error_details):
-            _remove_hosts_entries(set(INTERCEPT_HOSTS))
-            _flush_dns()
+            if use_linux_helper:
+                from ..utils.linux_proxy_helper import stop_helper
+
+                stop_helper()
+            else:
+                _remove_hosts_entries(set(INTERCEPT_HOSTS))
+                _flush_dns()
             self._hosts_installed = False
             await self._proxy.stop()
+            _set_active_hosts_loopbacks(None)
             self._running = False
             return
         try:
@@ -2874,10 +3224,7 @@ class ProxyMaster:
 
         # ── Run until the server is stopped ──────────────────────────────
         try:
-            server = self._proxy._server
-            if server is None:
-                return
-            await server.serve_forever()
+            await self._proxy.serve_forever()
         except (asyncio.CancelledError, Exception):
             pass  # Normal shutdown path
         finally:
@@ -2897,5 +3244,6 @@ class ProxyMaster:
                 await self._proxy.stop()
             except Exception:
                 pass
+            _set_active_hosts_loopbacks(None)
             self._running = False
             self._loop = None

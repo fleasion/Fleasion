@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from typing import Iterable
 
-from .paths import CONFIG_DIR, ROBLOX_PROCESS
+from .paths import CONFIG_DIR, ROBLOX_PROCESS, ROBLOX_STUDIO_PROCESS
 
 ROBLOX_DIRS_FILE = CONFIG_DIR / 'roblox_dirs.json'
 
@@ -32,6 +32,25 @@ def _normalise_roblox_dir(value: str | Path) -> Path | None:
             return path if path.is_dir() else None
         return None
 
+    if sys.platform.startswith('linux'):
+        try:
+            from .platform_linux import SOBER_ASSET_OVERLAY_DIR, SOBER_LEGACY_EXE_DIR
+
+            resolved = path.resolve()
+            for candidate in (SOBER_ASSET_OVERLAY_DIR, SOBER_LEGACY_EXE_DIR):
+                try:
+                    if resolved == candidate.resolve() and path.is_dir():
+                        return path
+                except OSError:
+                    pass
+        except Exception:
+            pass
+        if path.name in {'asset_overlay', 'exe'} and path.is_dir():
+            return path
+        if (path / 'ssl' / 'cacert.pem').is_file() or (path / 'content').is_dir():
+            return path if path.is_dir() else None
+        return None
+
     if path.name.lower() == ROBLOX_PROCESS.lower():
         path = path.parent
     if not path.is_dir():
@@ -39,6 +58,33 @@ def _normalise_roblox_dir(value: str | Path) -> Path | None:
     if not (path / ROBLOX_PROCESS).is_file():
         return None
     return path
+
+
+def is_roblox_studio_resource_dir(path: Path) -> bool:
+    """Return True when *path* points at a Roblox Studio resource root."""
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path
+
+    if sys.platform == 'darwin':
+        if resolved.name == 'RobloxStudio.app':
+            return True
+        if resolved.name == 'Resources':
+            try:
+                app_bundle = resolved.parent.parent
+            except Exception:
+                return False
+            return app_bundle.name == 'RobloxStudio.app'
+        return False
+
+    if sys.platform.startswith('linux'):
+        return False
+
+    try:
+        return resolved.is_dir() and (resolved / ROBLOX_STUDIO_PROCESS).is_file()
+    except OSError:
+        return False
 
 
 def load_saved_roblox_dirs() -> list[Path]:

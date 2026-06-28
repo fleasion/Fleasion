@@ -11,7 +11,7 @@ class AboutWindow(QDialog):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f'About {APP_NAME}')
+        self.setWindowTitle('About')
         self.setFixedSize(360, 240)
         self.setWindowFlags(
             Qt.WindowType.Window |

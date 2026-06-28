@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 # -------------------------------------------------------------------------------
 KTX1_MAGIC = b'\xabKTX 11\xbb\r\n\x1a\n'
 KTX2_MAGIC = b'\xabKTX 20\xbb\r\n\x1a\n'
+_KTX_MAGIC_SCAN_LIMIT = 64
 
 # -------------------------------------------------------------------------------
 # Public API
@@ -53,11 +54,36 @@ def convert(data: bytes) -> bytes | None:
             return _convert_ktx1(data)
         if data[:12] == KTX2_MAGIC:
             return _convert_ktx2(data)
+        stripped = strip_prefixed_ktx(data)
+        if stripped is not None:
+            if stripped[:12] == KTX1_MAGIC:
+                return _convert_ktx1(stripped)
+            if stripped[:12] == KTX2_MAGIC:
+                return _convert_ktx2(stripped)
         logger.debug('ktx_to_png: unrecognised magic bytes')
         return None
     except Exception as exc:
         logger.debug('ktx_to_png: conversion failed: %s', exc)
         return None
+
+
+def strip_prefixed_ktx(data: bytes) -> bytes | None:
+    """Return KTX bytes with any small non-standard prefix removed.
+
+    Roblox's Linux/Sober texture assets can carry a short wrapper before the
+    actual KTX header.  The decoder and preview paths need the payload starting
+    at the KTX magic bytes, not the wrapper.
+    """
+
+    if len(data) < 12:
+        return None
+
+    for magic in (KTX1_MAGIC, KTX2_MAGIC):
+        offset = data.find(magic, 0, min(len(data), _KTX_MAGIC_SCAN_LIMIT + len(magic)))
+        if offset >= 0:
+            return data[offset:]
+
+    return None
 
 
 # -------------------------------------------------------------------------------
@@ -104,7 +130,13 @@ def _convert_ktx1(data: bytes) -> bytes | None:
     if len(data) < 64:
         return None
 
-    (internal_fmt, real_width, real_height, kv_size) = struct.unpack_from('<IIII', data, 28)
+    try:
+        internal_fmt = struct.unpack_from('<I', data, 28)[0]
+        real_width = struct.unpack_from('<I', data, 36)[0]
+        real_height = struct.unpack_from('<I', data, 40)[0]
+        kv_size = struct.unpack_from('<I', data, 60)[0]
+    except struct.error:
+        return None
 
     image_data_offset = 64 + kv_size
     if len(data) < image_data_offset + 4:
@@ -154,8 +186,12 @@ def _bswap64(b8: bytes) -> int:
 
 
 def _extend_sign(val: int, bits: int) -> int:
-    shift = 32 - bits
-    return (val << shift) >> shift    # arithmetic right-shift via Python int
+    # Python ints do not have a fixed sign bit width, so we need to explicitly
+    # interpret the top bit as the sign bit before widening the value.
+    sign_bit = 1 << (bits - 1)
+    mask = (1 << bits) - 1
+    val &= mask
+    return val - (1 << bits) if val & sign_bit else val
 
 
 def _clamp255(x) -> int:
@@ -532,12 +568,11 @@ def _find_ktx_dll() -> str | None:
     """Locate native libktx in frozen and development environments."""
     search_dirs = [Path(__file__).parent]
 
-    # Frozen app: PyInstaller extracts binaries to _MEIPASS or next to the exe.
+    # Frozen app: trust only this process' PyInstaller extraction directory.
     if getattr(sys, 'frozen', False):
         meipass = getattr(sys, '_MEIPASS', None)
         if meipass:
             search_dirs.append(Path(meipass))
-        search_dirs.append(Path(sys.executable).parent)
 
     for directory in search_dirs:
         for name in _ktx_library_names():

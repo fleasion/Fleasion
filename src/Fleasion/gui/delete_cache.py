@@ -6,7 +6,7 @@ import time
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import QDialog, QLabel, QPushButton, QTextEdit, QVBoxLayout
 
-from ..utils import APP_NAME, delete_cache, get_icon_path, log_buffer
+from ..utils import delete_cache, get_icon_path, log_buffer
 
 
 class DeleteCacheWindow(QDialog):
@@ -17,7 +17,7 @@ class DeleteCacheWindow(QDialog):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f'{APP_NAME} - Clear Cache')
+        self.setWindowTitle('Clear Cache')
         self.setFixedSize(400, 200)
 
         # Set window flags to allow minimize

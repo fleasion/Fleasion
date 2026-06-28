@@ -1,17 +1,24 @@
+[build-system]
+requires = ['uv_build>=0.11.0,<0.12.0']
+build-backend = 'uv_build'
+
 [project]
 name = 'Fleasion'
-version = '2.1.0'
+version = '2.2.0'
 description = 'Roblox asset interceptor and replacer with PyQt6 GUI'
 readme = 'README.md'
 requires-python = '>=3.12'
 dependencies = [
     'cryptography>=42.0.0',
     'certifi>=2024.7.4',
-    'pyqt6>=6.8.0',
+    'pyqt6==6.2.3; platform_system == "Darwin"',
+    'pyqt6-qt6==6.2.4; platform_system == "Darwin"',
+    'pyqt6>=6.8.0; platform_system != "Darwin"',
     'pyopengl>=3.1.0',
     'DracoPy>=1.3.0',
     'pillow>=11.0.0',
-    'numpy>=2.0.0',
+    'numpy==1.26.4; platform_system == "Darwin" and python_version < "3.13"',
+    'numpy>=2.0.0; platform_system != "Darwin" or python_version >= "3.13"',
     'pywin32>=307; platform_system == "Windows"',
     'requests>=2.32.0',
     "sounddevice>=0.5.3",
@@ -20,8 +27,9 @@ dependencies = [
     "orjson>=3.9.0",
     "zstandard>=0.21.0",
     "python-dateutil>=2.9.0",
+    "platformdirs>=4.0.0",
     "win11toast>=0.36.3; platform_system == 'Windows'",
-    "browser-cookie3>=0.20.1; platform_system == 'Darwin'",
+    "browser-cookie3>=0.20.1; platform_system == 'Darwin' or platform_system == 'Linux'",
 ]
 
 # Optional / removed:
@@ -34,12 +42,106 @@ dependencies = [
 [project.scripts]
 Fleasion = 'Fleasion:main'
 
-[build-system]
-requires = ['uv_build>=0.9.18,<0.10.0']
-build-backend = 'uv_build'
-
 [dependency-groups]
 dev = [
     "pyinstaller>=6.19.0",
     "pytest>=9.0.0",
 ]
+
+[tool.uv.build-backend]
+module-name = "Fleasion"
+
+[tool.pyright]
+typeCheckingMode = "basic"
+
+[tool.ruff]
+line-length = 88
+target-version = "py314"
+
+[tool.ruff.lint]
+preview = true
+
+# For now, disable all rules
+select = []
+
+# This is a rough set of rules we would like to eventually use
+ignore = [
+    "E501",
+    "T201",
+    "EXE002",
+    "ANN204",
+    "RUF006",
+    "RUF029",
+    "S404",
+    "S602",
+    # "TC001",  # False positives with pydantic
+    # "TC002",  # False positives with pydantic
+    # "TC003",  # False positives with pydantic
+    "TD003",
+    "FIX002",
+    "W293",
+    "E303",
+    "G004",
+    "ERA",
+    "ANN201",
+    "ANN202",
+    "RET503",
+    "EM101",
+    "FBT001",
+    "FBT002",
+    "C901",
+    "PLR0914",
+    "PLR0915",
+    "PLR0904",
+
+    # Umbra preset
+    "ANN401",
+    "ASYNC109",
+    "COM812",
+    "CPY001",
+    "D",        # not needed here
+    "DOC",
+    "INP001",   # due to how I load modules this results in annoyances
+    "PD011",    # this is not a numpy codebase
+    "PERF203",
+    "PLC0414",  # pyright ruling for `as` imports needed
+    "PLR0912",
+    "PLR0913",
+    "PLR2004",  # I hate this rule
+    "PLR6301",
+    "Q000",
+    "RUF001",
+    "RUF009",
+    "SIM105",
+    "TRY003",   # over-eager rule
+    "TRY301",   # unrealistic rule
+    "UP034",
+]
+unfixable = [
+    "E501", # line length handled in other ways by ruff format
+    "ERA",  # Don"t delete commented out code
+]
+
+[tool.ruff.format]
+quote-style = "single"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.ruff.lint.isort]
+split-on-trailing-comma = true
+combine-as-imports = true
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+
+[tool.ruff.lint.flake8-annotations]
+allow-star-arg-any = true
+
+[tool.ruff.lint.flake8-pytest-style]
+fixture-parentheses = false
+mark-parentheses = false
+parametrize-names-type = "csv"
+
+[tool.ruff.lint.flake8-quotes]
+inline-quotes = "single"

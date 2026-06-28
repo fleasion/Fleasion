@@ -12,6 +12,7 @@ import json
 import logging
 from logging.handlers import RotatingFileHandler
 import os
+import ssl
 import stat
 from pathlib import Path
 import re
@@ -24,7 +25,7 @@ import threading
 import time
 
 
-HELPER_VERSION = 3
+HELPER_VERSION = 4
 HELPER_CAPABILITIES = ("hosts", "relay", "patch_ca")
 HOSTS_FILE = "/etc/hosts"
 HOSTS_MARKER = "# Fleasion proxy entry"
@@ -165,6 +166,37 @@ def _normalize_pem_block(pem):
     return _normalize_newlines(pem).strip() + "\n"
 
 
+def _is_fleasion_ca_cert_block(pem_block):
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
+            handle.write(_normalize_pem_block(pem_block))
+            temp_path = handle.name
+        try:
+            cert = ssl._ssl._test_decode_cert(temp_path)
+        finally:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+        subject = cert.get("subject") or ()
+        issuer = cert.get("issuer") or ()
+
+        def _name_value(entries, key):
+            for rdn in entries:
+                for attr_key, attr_value in rdn:
+                    if attr_key == key:
+                        return attr_value
+            return ""
+
+        return (
+            subject == issuer
+            and _name_value(subject, "commonName") == "Fleasion Proxy CA"
+            and _name_value(subject, "organizationName") == "Fleasion"
+        )
+    except Exception:
+        return False
+
+
 def _is_relative_to(child, parent):
     try:
         return os.path.commonpath([str(child), str(parent)]) == str(parent)
@@ -214,14 +246,14 @@ def _safe_cacert_path(resource_root):
     return ca_file
 
 
-def _strip_requested_pem_blocks(cacert_text, remove_pems):
+def _strip_requested_pem_blocks(cacert_text, remove_pems, *, strip_all_fleasion_ca=False):
     normalized = _normalize_newlines(cacert_text)
     remove_set = {
         _normalize_pem_block(pem)
         for pem in remove_pems
         if isinstance(pem, str) and pem.strip()
     }
-    if not remove_set:
+    if not remove_set and not strip_all_fleasion_ca:
         return normalized
 
     pieces = []
@@ -229,7 +261,7 @@ def _strip_requested_pem_blocks(cacert_text, remove_pems):
     for match in _PEM_CERT_BLOCK_RE.finditer(normalized):
         pieces.append(normalized[last_end:match.start()])
         block = _normalize_pem_block(match.group(0))
-        if block not in remove_set:
+        if block not in remove_set and not (strip_all_fleasion_ca and _is_fleasion_ca_cert_block(block)):
             pieces.append(match.group(0))
         last_end = match.end()
     pieces.append(normalized[last_end:])
@@ -337,7 +369,12 @@ def _patch_ca(ca_pem, installs):
                 existing = ca_file.read_text(encoding="utf-8", errors="replace") if ca_file.exists() else ""
             remove_pems = list(item.get("remove_pems") or []) if isinstance(item, dict) else []
             remove_pems.append(current_ca)
-            cleaned = _strip_requested_pem_blocks(existing, remove_pems).rstrip("\n")
+            strip_all_fleasion_ca = bool(item.get("strip_all_fleasion_ca")) if isinstance(item, dict) else False
+            cleaned = _strip_requested_pem_blocks(
+                existing,
+                remove_pems,
+                strip_all_fleasion_ca=strip_all_fleasion_ca,
+            ).rstrip("\n")
             updated = f"{cleaned}\n{current_ca}" if cleaned else current_ca
             if updated == _normalize_newlines(existing):
                 _normalize_cacert_permissions(ca_file)

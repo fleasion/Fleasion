@@ -1,10 +1,12 @@
 """Audio player widget using sounddevice for Python 3.14 compatibility."""
 
+import ctypes.util
+import sys
 import threading
 import time
+from pathlib import Path
 
 import numpy as np
-import sounddevice as sd
 import soundfile as sf
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 
@@ -17,6 +19,123 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+
+_LINUX_LIBRARY_SEARCH_DIRS = (
+    '/lib64',
+    '/usr/lib64',
+    '/lib/x86_64-linux-gnu',
+    '/usr/lib/x86_64-linux-gnu',
+    '/lib',
+    '/usr/lib',
+    '/usr/local/lib',
+)
+
+
+def _resolve_library_path(library_name: str, search_dirs=None) -> Path | None:
+    """Resolve a system shared library to an absolute path when possible."""
+    resolved = ctypes.util.find_library(library_name)
+    if not resolved:
+        return None
+
+    candidate = Path(resolved)
+    if candidate.is_file():
+        return candidate
+    if Path(resolved).parent != Path('.'):
+        return None
+
+    for search_dir in search_dirs or _LINUX_LIBRARY_SEARCH_DIRS:
+        candidate = Path(search_dir) / resolved
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _bundled_portaudio_path() -> Path | None:
+    """Return PyInstaller's bundled PortAudio library, when available."""
+    meipass = getattr(sys, '_MEIPASS', None)
+    if not meipass:
+        return None
+
+    root = Path(meipass)
+    for relative_path in (
+        'libportaudio.so.2',
+        'libportaudio.so',
+        '_internal/libportaudio.so.2',
+        '_internal/libportaudio.so',
+    ):
+        candidate = root / relative_path
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _preferred_portaudio_path() -> Path | None:
+    """Prefer the host audio stack; use bundled PortAudio only as fallback."""
+    if not sys.platform.startswith('linux'):
+        return None
+    return _resolve_library_path('portaudio') or _bundled_portaudio_path()
+
+
+def _import_sounddevice_with_preferred_portaudio():
+    """Import sounddevice with a deterministic PortAudio path on Linux."""
+    original_find_library = ctypes.util.find_library
+    preferred_portaudio = _preferred_portaudio_path()
+
+    def find_library(name):
+        if name == 'portaudio' and preferred_portaudio is not None:
+            return str(preferred_portaudio)
+        return original_find_library(name)
+
+    if preferred_portaudio is not None:
+        ctypes.util.find_library = find_library
+    try:
+        import sounddevice as sounddevice
+    finally:
+        ctypes.util.find_library = original_find_library
+
+    return sounddevice
+
+
+sd = _import_sounddevice_with_preferred_portaudio()
+_AUDIO_BACKEND_LOGGED = False
+
+
+def _log_audio_backend_once():
+    """Log the PortAudio backend selected by the GUI player once per process."""
+    global _AUDIO_BACKEND_LOGGED
+    if _AUDIO_BACKEND_LOGGED:
+        return
+    _AUDIO_BACKEND_LOGGED = True
+
+    try:
+        preferred = _preferred_portaudio_path()
+        loaded = getattr(sd, '_libname', None)
+        version = getattr(sd, '__version__', 'unknown')
+        try:
+            portaudio_version = sd.get_portaudio_version()
+        except Exception as exc:
+            portaudio_version = f'unavailable ({type(exc).__name__}: {exc})'
+        try:
+            default_device = sd.default.device
+        except Exception as exc:
+            default_device = f'unavailable ({type(exc).__name__}: {exc})'
+        try:
+            device_count = len(sd.query_devices())
+        except Exception as exc:
+            device_count = f'unavailable ({type(exc).__name__}: {exc})'
+        log_buffer.log(
+            'Audio',
+            'Backend '
+            f'sounddevice={version} '
+            f'preferred_portaudio={preferred or "default"} '
+            f'loaded_portaudio={loaded or "unknown"} '
+            f'portaudio_version={portaudio_version} '
+            f'default_device={default_device} '
+            f'device_count={device_count}',
+        )
+    except Exception as exc:
+        log_buffer.log('Audio', f'Backend diagnostic failed: {type(exc).__name__}: {exc}')
 
 
 class AudioPlayerWidget(QWidget):
@@ -65,8 +184,11 @@ class AudioPlayerWidget(QWidget):
         # Playback thread and stream
         self.stream = None
         self.playback_thread = None
+        self.stop_event = None
         self.position_lock = threading.Lock()
+        self.stream_lock = threading.Lock()
 
+        _log_audio_backend_once()
         self._load_audio()
         self._setup_ui()
 
@@ -78,12 +200,20 @@ class AudioPlayerWidget(QWidget):
     def _load_audio(self):
         """Load audio file and get metadata."""
         try:
-            # Load audio file
-            self.audio_data, self.sample_rate = sf.read(self.audio_file_path)
+            # Load audio as float32 so the callback writes the same dtype that
+            # PortAudio receives from sounddevice.
+            self.audio_data, self.sample_rate = sf.read(self.audio_file_path, dtype='float32')
 
-            # Convert to stereo if mono
+            # Convert to exactly stereo for the fixed two-channel output stream.
             if len(self.audio_data.shape) == 1:
                 self.audio_data = np.column_stack((self.audio_data, self.audio_data))
+            elif self.audio_data.shape[1] == 1:
+                self.audio_data = np.repeat(self.audio_data, 2, axis=1)
+            elif self.audio_data.shape[1] > 2:
+                mono = self.audio_data.mean(axis=1)
+                self.audio_data = np.column_stack((mono, mono))
+
+            self.audio_data = np.ascontiguousarray(np.clip(self.audio_data, -1.0, 1.0), dtype=np.float32)
 
             # Calculate duration
             self.duration = len(self.audio_data) / self.sample_rate
@@ -185,7 +315,13 @@ class AudioPlayerWidget(QWidget):
         self.play_pause_btn.setText('⏸')
 
         # Start playback thread
-        self.playback_thread = threading.Thread(target=self._playback_worker, daemon=True)
+        stop_event = threading.Event()
+        self.stop_event = stop_event
+        self.playback_thread = threading.Thread(
+            target=self._playback_worker,
+            args=(stop_event,),
+            daemon=True,
+        )
         self.playback_thread.start()
 
     def _pause(self):
@@ -193,9 +329,12 @@ class AudioPlayerWidget(QWidget):
         self.is_playing = False
         self.should_stop = True
         self.play_pause_btn.setText('▶')
+        if self.stop_event:
+            self.stop_event.set()
 
-        if self.stream:
-            self.stream.stop()
+        # Let the playback worker close the PortAudio stream. Closing can block
+        # inside Pa_CloseStream on some device/backend transitions, and this
+        # method runs on the Qt UI thread.
 
     def _replay(self):
         """Replay from beginning."""
@@ -210,7 +349,7 @@ class AudioPlayerWidget(QWidget):
         # Start playing
         self._play()
 
-    def _playback_worker(self):
+    def _playback_worker(self, stop_event):
         """Worker thread for audio playback."""
         try:
             def callback(outdata, frames, time_info, status):
@@ -222,9 +361,9 @@ class AudioPlayerWidget(QWidget):
                     end_pos = min(start_pos + frames, len(self.audio_data))
                     chunk_size = end_pos - start_pos
 
-                    if chunk_size <= 0 or self.should_stop:
+                    if chunk_size <= 0 or stop_event.is_set():
                         outdata[:] = 0
-                        self.should_stop = True
+                        stop_event.set()
                         return
 
                     # Get audio data and apply volume
@@ -238,34 +377,59 @@ class AudioPlayerWidget(QWidget):
                     self.playback_position = end_pos
 
             # Create and start stream
-            self.stream = sd.OutputStream(
+            stream = sd.OutputStream(
                 samplerate=self.sample_rate,
                 channels=2,
+                dtype='float32',
                 callback=callback,
                 blocksize=2048
             )
+            with self.stream_lock:
+                self.stream = stream
 
-            with self.stream:
-                while not self.should_stop:
+            stream.start()
+            try:
+                while not stop_event.is_set():
                     time.sleep(0.01)
 
                     # Check if reached end
                     with self.position_lock:
                         if self.playback_position >= len(self.audio_data):
                             self.should_stop = True
+                            stop_event.set()
+            finally:
+                try:
+                    stream.stop()
+                except Exception as e:
+                    log_buffer.log('Audio', f'Error stopping audio stream: {e}')
+                try:
+                    stream.close()
+                except Exception as e:
+                    log_buffer.log('Audio', f'Error closing audio stream: {e}')
 
         except Exception as e:
             log_buffer.log('Audio', f'Playback error: {e}')
         finally:
-            self.is_playing = False
-            # Schedule UI update on the main thread to avoid manipulating
-            # Qt widgets from this worker thread (which can cause
-            # "wrapped C/C++ object ... has been deleted" errors).
+            is_current_playback = False
             try:
-                QTimer.singleShot(0, lambda: self._safe_set_play_pause_text('▶'))
+                with self.stream_lock:
+                    if self.stream is locals().get('stream'):
+                        self.stream = None
+                    if self.stop_event is stop_event:
+                        self.stop_event = None
+                        is_current_playback = True
             except Exception:
-                # If scheduling fails for any reason, ignore silently.
                 pass
+            if is_current_playback:
+                self.is_playing = False
+                # Schedule UI update on the main thread to avoid manipulating
+                # Qt widgets from this worker thread (which can cause
+                # "wrapped C/C++ object ... has been deleted" errors).
+                try:
+                    QTimer.singleShot(0, lambda: self._safe_set_play_pause_text('▶'))
+                except Exception:
+                    # If scheduling fails for any reason, ignore silently.
+                    pass
 
     def _safe_set_play_pause_text(self, text: str):
         """Set play/pause button text from the main thread, safely.
@@ -332,10 +496,8 @@ class AudioPlayerWidget(QWidget):
         """Stop playback and cleanup."""
         self.should_stop = True
         self.is_playing = False
-
-        if self.stream:
-            self.stream.stop()
-            self.stream.close()
+        if self.stop_event:
+            self.stop_event.set()
 
         if self.timer:
             self.timer.stop()
