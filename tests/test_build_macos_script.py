@@ -215,6 +215,7 @@ def test_draft_release_workflow_builds_main_and_uploads_versioned_assets():
     assert 'workflow_dispatch:' in workflow
     assert 'contents: write' in workflow
     assert 'ref: main' in workflow
+    assert 'Checkout main for release' in workflow
     assert 'ref: ${{ needs.prepare.outputs.main_sha }}' in workflow
     assert 'release_tag: v${{ steps.version.outputs.app_version }}' in workflow
     assert 'artifact_name: Fleasion-v${{ needs.prepare.outputs.app_version }}.exe' in workflow

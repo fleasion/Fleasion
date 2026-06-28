@@ -129,6 +129,11 @@ jobs:
       - build
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout main for release
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.main_sha }}
+
       - name: Download Windows release asset
         uses: actions/download-artifact@v8
         with:
