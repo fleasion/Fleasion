@@ -30,6 +30,22 @@ from ..utils.roblox_auth import get_roblosecurity as _get_roblosecurity
 import json
 
 
+def _format_table_timestamp(value) -> str:
+    """Format ISO-ish timestamps for scraper table date columns."""
+    text = str(value or '')
+    if not text:
+        return ''
+    try:
+        if 'T' in text:
+            date_part, time_part = text.split('T', 1)
+            time_part = time_part.rstrip('Z')
+            time_part = time_part.split('.', 1)[0]
+            return f'{date_part} {time_part}'
+    except (ValueError, AttributeError):
+        pass
+    return text
+
+
 class NumericSortItem(QTableWidgetItem):
     """Custom table item that sorts based on a numeric value rather than text."""
     def __init__(self, numeric_val, text):
@@ -52,7 +68,7 @@ class SearchWorkerThread(QThread):
         self.assets = assets
         self.search_text = search_text.strip().lower()
         self.asset_info = asset_info
-        self.search_columns = search_columns if search_columns is not None else _ALL_SEARCH_COL_KEYS
+        self.search_columns = search_columns if search_columns is not None else _DEFAULT_SEARCH_COL_KEYS
         self._stop_requested = False
 
     def stop(self):
@@ -104,8 +120,33 @@ class SearchWorkerThread(QThread):
                 if not matched and 'hash' in cols and self.search_text in a.get('hash', '').lower():
                     matched = True
 
-                if not matched and 'cached_at' in cols and self.search_text in a.get('cached_at', '').lower():
+                if (
+                    not matched
+                    and 'cached_at' in cols
+                    and (
+                        self.search_text in a.get('cached_at', '').lower()
+                        or self.search_text in _format_table_timestamp(a.get('cached_at')).lower()
+                    )
+                ):
                     matched = True
+
+                if not matched and ('updated_at' in cols or 'created_at' in cols):
+                    info = self.asset_info.get(asset_id, {})
+                    updated_at = info.get('updated_at') or a.get('resolved_updated_at') or ''
+                    created_at = info.get('created_at') or a.get('resolved_created_at') or ''
+                    updated_display = _format_table_timestamp(updated_at).lower()
+                    created_display = _format_table_timestamp(created_at).lower()
+                    if (
+                        'updated_at' in cols
+                        and (self.search_text in updated_at.lower() or self.search_text in updated_display)
+                    ):
+                        matched = True
+                    if (
+                        not matched
+                        and 'created_at' in cols
+                        and (self.search_text in created_at.lower() or self.search_text in created_display)
+                    ):
+                        matched = True
 
                 if matched:
                     filtered.append(a)
@@ -486,11 +527,11 @@ class AssetLoaderThread(QThread):
             except Exception:
                 sess.headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
 
-        # Phase 1: Batch-fetch asset metadata (name, type, creator) in groups of 50
+        # Phase 1: Batch-fetch asset metadata (name, type, creator, timestamps) in groups of 50
         self.status_message.emit('Fetching asset info...')
         log_buffer.log('Scraper', f'[Load Asset] Fetching info for {format_count(total, "asset")}')
 
-        asset_metadata = {}  # asset_id_str -> {name, type, creator_id, creator_type}
+        asset_metadata = {}  # asset_id_str -> {name, type, creator_id, creator_type, created_at, updated_at}
         batch_size = 50
         str_ids = [str(aid) for aid in self.asset_ids]
 
@@ -537,6 +578,8 @@ class AssetLoaderThread(QThread):
                         'type': item.get('typeId') or item.get('assetTypeId') or 1,
                         'creator_id': creator_id,
                         'creator_type': creator_type,
+                        'created_at': item.get('created') or '',
+                        'updated_at': item.get('updated') or '',
                     }
                 log_buffer.log('Scraper', f'[Load Asset] Fetched metadata for batch {i // batch_size + 1}')
             except Exception as e:
@@ -982,7 +1025,7 @@ class CategoryFilterPopup(QMenu):
 
 # --- Column definitions used across the scraper tab ---
 # Column 0 is always the ▼ toggle/counter — not user-configurable.
-# Columns 1-6 are the data columns the user can show/hide.
+# Columns 1+ are the data columns the user can show/hide.
 COL_TOGGLE_WIDTH = 14
 SCRAPER_COLUMNS = [
     # (key, label, default_visible, default_width)
@@ -992,24 +1035,30 @@ SCRAPER_COLUMNS = [
     ('type',       'Type',       True,  120),
     ('size',       'Size',       True,   70),
     ('cached_at',  'Cached At',  True,  135),
+    ('updated_at', 'Updated At', False, 180),
+    ('created_at', 'Created At', False, 180),
     ('url',        'URL',        False, 300),  # off by default
 ]
-# Logical index → column key  (index 0 = toggle column, 1-6 = data columns)
+# Logical index → column key  (index 0 = toggle column, 1+ = data columns)
 _COL_IDX_TO_KEY = ['_toggle'] + [c[0] for c in SCRAPER_COLUMNS]
 # Column key → logical index
 _COL_KEY_TO_IDX = {'_toggle': 0, **{c[0]: i + 1 for i, c in enumerate(SCRAPER_COLUMNS)}}
 
 # Search column definitions for the column-picker button
 _SEARCH_COLS = [
-    ('id',        'Asset ID'),
-    ('type',      'Type'),
-    ('name',      'Name'),
-    ('creator',   'Creator'),
-    ('url',       'URL'),
-    ('hash',      'Hash'),
-    ('cached_at', 'Cached At'),
+    # (key, label, default_active)
+    ('id',         'Asset ID',   True),
+    ('type',       'Type',       True),
+    ('name',       'Name',       True),
+    ('creator',    'Creator',    True),
+    ('hash',       'Hash',       True),
+    ('cached_at',  'Cached At',  True),
+    ('updated_at', 'Updated At', False),
+    ('created_at', 'Created At', False),
+    ('url',        'URL',       False),
 ]
-_ALL_SEARCH_COL_KEYS = frozenset(k for k, _ in _SEARCH_COLS)
+_ALL_SEARCH_COL_KEYS = frozenset(k for k, *_ in _SEARCH_COLS)
+_DEFAULT_SEARCH_COL_KEYS = frozenset(k for k, _label, default in _SEARCH_COLS if default)
 
 
 class ColumnFilterPopup(QMenu):
@@ -1025,7 +1074,7 @@ class ColumnFilterPopup(QMenu):
             QCheckBox { padding: 2px 4px; color: palette(window-text); font-size: 12px; }
             QCheckBox::indicator { width: 14px; height: 14px; }
         """)
-        self.active_cols = set(active_cols) if active_cols else set(_ALL_SEARCH_COL_KEYS)
+        self.active_cols = set(active_cols) if active_cols is not None else set(_DEFAULT_SEARCH_COL_KEYS)
 
         container = QWidget()
         container.setObjectName('ColContainer')
@@ -1034,7 +1083,7 @@ class ColumnFilterPopup(QMenu):
         vbox.setSpacing(4)
 
         self.checkboxes: dict = {}
-        for key, label in _SEARCH_COLS:
+        for key, label, _default in _SEARCH_COLS:
             cb = QCheckBox(label)
             cb.setChecked(key in self.active_cols)
             cb.stateChanged.connect(lambda state, k=key: self._on_toggle(k, bool(state)))
@@ -1166,7 +1215,7 @@ class CacheViewerTab(QWidget):
         self._selected_asset_id: str | None = None  # Track selected asset by ID
         self._show_names = config_manager.show_names if config_manager is not None else True
         self._show_creator_id = config_manager.show_creator_id if config_manager is not None else False
-        self._asset_info: dict[str, dict] = {}  # asset_id -> {resolved_name, creator_id, creator_name, creator_type, hash, row}
+        self._asset_info: dict[str, dict] = {}  # asset_id -> resolved metadata, hash, row
         self._current_pixmap = None  # Store current image for resize
         
         # OPTIMIZATION: Cache asset_id -> row mapping for O(1) lookups instead of O(n) linear search
@@ -1214,8 +1263,8 @@ class CacheViewerTab(QWidget):
         self._col_widths: dict[str, int | None] = self._load_col_widths()
         # Toggle column (col 0) width – start with legacy constant, will be recalculated
         self._col_toggle_width: int = COL_TOGGLE_WIDTH
-        # Currently active sort column (logical index). Defaults to Cached At (6, shifted by 1).
-        self._sort_col_idx: int = 6
+        # Currently active sort column (logical index). Defaults to Cached At.
+        self._sort_col_idx: int = _COL_KEY_TO_IDX['cached_at']
         self._sort_order = Qt.SortOrder.DescendingOrder
         # Guard against re-entrant sort-indicator resets when blocking col-0 sort
         self._in_sort_guard: bool = False
@@ -1348,7 +1397,7 @@ class CacheViewerTab(QWidget):
         self.config_manager.save()
 
     def _apply_column_visibility(self, initial: bool = False):
-        """Show/hide table columns (indices 1–7) and update resize modes.
+        """Show/hide table data columns and update resize modes.
 
         Column 0 (▼ toggle/counter) is always visible and Fixed — never touched here.
         The last *visible* data column (index ≥ 1) gets Stretch so it fills the
@@ -1356,11 +1405,11 @@ class CacheViewerTab(QWidget):
         data column is Interactive so the user can drag its seam.
 
         If the currently active sort column is hidden, reset the sort to
-        'Cached At' (logical index 6).
+        'Cached At'.
         """
         header = self.table.horizontalHeader()
 
-        # Find which data column will be last visible (idx 1-6)
+        # Find which data column will be last visible.
         last_visible_idx = -1
         for i, (key, *_) in enumerate(SCRAPER_COLUMNS, start=1):
             if self._col_visibility.get(key, True):
@@ -1375,12 +1424,12 @@ class CacheViewerTab(QWidget):
                 else:
                     header.setSectionResizeMode(i, QHeaderView.ResizeMode.Interactive)
 
-        # If sort column just became hidden, reset to Cached At (idx 6)
+        # If sort column just became hidden, reset to Cached At.
         sort_key = _COL_IDX_TO_KEY[self._sort_col_idx] if self._sort_col_idx < len(_COL_IDX_TO_KEY) else None
         if sort_key and sort_key != '_toggle' and not self._col_visibility.get(sort_key, True):
-            self._sort_col_idx = 6   # Cached At
+            self._sort_col_idx = _COL_KEY_TO_IDX['cached_at']
             self._sort_order = Qt.SortOrder.DescendingOrder
-            self.table.sortByColumn(6, Qt.SortOrder.DescendingOrder)
+            self.table.sortByColumn(self._sort_col_idx, Qt.SortOrder.DescendingOrder)
 
         if not initial:
             self._save_col_settings()
@@ -1479,9 +1528,9 @@ class CacheViewerTab(QWidget):
 
         header = self.table.horizontalHeader()
 
-        # Find last visible data column (idx 1-7, Stretch mode)
+        # Find last visible data column (Stretch mode)
         last_visible_idx = -1
-        for i in range(7, 0, -1):
+        for i in range(len(SCRAPER_COLUMNS), 0, -1):
             if not header.isSectionHidden(i):
                 last_visible_idx = i
                 break
@@ -1489,7 +1538,7 @@ class CacheViewerTab(QWidget):
         # Col 0: fixed toggle/counter width (always visible)
         col_w = self._col_toggle_width
 
-        for i in range(1, 8):
+        for i in range(1, len(SCRAPER_COLUMNS) + 1):
             if header.isSectionHidden(i):
                 continue
             if i == last_visible_idx:
@@ -1729,12 +1778,12 @@ class CacheViewerTab(QWidget):
 
     def _load_search_cols(self) -> set:
         if self.config_manager is None:
-            return set(_ALL_SEARCH_COL_KEYS)
+            return set(_DEFAULT_SEARCH_COL_KEYS)
         saved = self.config_manager.settings.get('scraper_search_columns', None)
         if saved is None:
-            return set(_ALL_SEARCH_COL_KEYS)
+            return set(_DEFAULT_SEARCH_COL_KEYS)
         valid = {k for k in saved if k in _ALL_SEARCH_COL_KEYS}
-        return valid if valid else set(_ALL_SEARCH_COL_KEYS)
+        return valid if valid else set(_DEFAULT_SEARCH_COL_KEYS)
 
     def _save_search_cols(self):
         if self.config_manager is None:
@@ -1750,7 +1799,7 @@ class CacheViewerTab(QWidget):
             self.search_col_btn.setText('Search columns: None')
         elif len(cols) == 1:
             key = next(iter(cols))
-            label = next((l for k, l in _SEARCH_COLS if k == key), key)
+            label = next((l for k, l, _default in _SEARCH_COLS if k == key), key)
             self.search_col_btn.setText(f'Search columns: {label}')
         else:
             self.search_col_btn.setText(f'Search columns: {len(cols)} selected')
@@ -1799,10 +1848,8 @@ class CacheViewerTab(QWidget):
     def _create_table(self, parent_layout):
         """Create asset table."""
         self.table = QTableWidget()
-        self.table.setColumnCount(8)
-        self.table.setHorizontalHeaderLabels([
-            '▼', 'Hash/Name', 'Creator', 'Asset ID', 'Type', 'Size', 'Cached At', 'URL'
-        ])
+        self.table.setColumnCount(len(_COL_IDX_TO_KEY))
+        self.table.setHorizontalHeaderLabels(['▼'] + [label for _key, label, _vis, _width in SCRAPER_COLUMNS])
 
         header = self.table.horizontalHeader()
 
@@ -2067,6 +2114,8 @@ class CacheViewerTab(QWidget):
                     'creator_id': None,
                     'creator_name': None,
                     'creator_type': None,
+                    'created_at': a.get('resolved_created_at'),
+                    'updated_at': a.get('resolved_updated_at'),
                     'row': None,
                 }
 
@@ -2137,10 +2186,16 @@ class CacheViewerTab(QWidget):
                         'creator_id': None,
                         'creator_name': None,
                         'creator_type': None,
+                        'created_at': asset.get('resolved_created_at'),
+                        'updated_at': asset.get('resolved_updated_at'),
                         'row': row,
                     }
                 else:
                     self._asset_info[asset_id]['row'] = row
+                    if self._asset_info[asset_id].get('created_at') is None and asset.get('resolved_created_at') is not None:
+                        self._asset_info[asset_id]['created_at'] = asset.get('resolved_created_at')
+                    if self._asset_info[asset_id].get('updated_at') is None and asset.get('resolved_updated_at') is not None:
+                        self._asset_info[asset_id]['updated_at'] = asset.get('resolved_updated_at')
 
                 # Column 0: row counter (1-based), not selectable, centred
                 counter_item = NumericSortItem(row, str(row + 1))
@@ -2203,19 +2258,28 @@ class CacheViewerTab(QWidget):
                 self.table.setItem(row, 5, size_item)
 
                 # Column 6: Cached At
-                cached_at = asset.get('cached_at', '')
-                if cached_at:
-                    try:
-                        cached_at = cached_at.split('T')[0] + ' ' + cached_at.split('T')[1].split('.')[0]
-                    except (IndexError, AttributeError):
-                        pass
+                cached_at = _format_table_timestamp(asset.get('cached_at'))
                 cached_item = QTableWidgetItem(cached_at)
-                self.table.setItem(row, 6, cached_item)
+                self.table.setItem(row, _COL_KEY_TO_IDX['cached_at'], cached_item)
 
-                # Column 7: URL
+                # Column 7: Updated At
+                updated_at = _format_table_timestamp(
+                    info.get('updated_at') or asset.get('resolved_updated_at')
+                )
+                updated_item = QTableWidgetItem(updated_at)
+                self.table.setItem(row, _COL_KEY_TO_IDX['updated_at'], updated_item)
+
+                # Column 8: Created At
+                created_at = _format_table_timestamp(
+                    info.get('created_at') or asset.get('resolved_created_at')
+                )
+                created_item = QTableWidgetItem(created_at)
+                self.table.setItem(row, _COL_KEY_TO_IDX['created_at'], created_item)
+
+                # Column 9: URL
                 url = asset.get('url', '')
                 url_item = QTableWidgetItem(url)
-                self.table.setItem(row, 7, url_item)
+                self.table.setItem(row, _COL_KEY_TO_IDX['url'], url_item)
             
             # CRITICAL FIX: After all cells are created, immediately update any cells
             # that already have resolved data in _asset_info. This fixes the race condition
@@ -2237,6 +2301,14 @@ class CacheViewerTab(QWidget):
                     creator_item = self.table.item(row, 2)
                     if creator_item:
                         creator_item.setText(self._creator_display(info))
+
+                # Update timestamps if resolved
+                updated_item = self.table.item(row, _COL_KEY_TO_IDX['updated_at'])
+                if updated_item and info.get('updated_at'):
+                    updated_item.setText(_format_table_timestamp(info['updated_at']))
+                created_item = self.table.item(row, _COL_KEY_TO_IDX['created_at'])
+                if created_item and info.get('created_at'):
+                    created_item.setText(_format_table_timestamp(info['created_at']))
         finally:
             # Re-enable updates
             self.table.blockSignals(False)
@@ -2407,7 +2479,9 @@ class CacheViewerTab(QWidget):
             creator_id = asset_data.get('resolved_creator_id')
             creator_name = asset_data.get('resolved_creator_name')
             creator_type = asset_data.get('resolved_creator_type')
-            if resolved_name is not None or creator_id is not None:
+            created_at = asset_data.get('resolved_created_at')
+            updated_at = asset_data.get('resolved_updated_at')
+            if resolved_name is not None or creator_id is not None or created_at is not None or updated_at is not None:
                 if asset_id not in self._asset_info:
                     self._asset_info[asset_id] = {
                         'hash': asset_data.get('hash', ''),
@@ -2415,6 +2489,8 @@ class CacheViewerTab(QWidget):
                         'creator_id': creator_id,
                         'creator_name': creator_name,
                         'creator_type': creator_type,
+                        'created_at': created_at,
+                        'updated_at': updated_at,
                         'row': None,
                     }
                     loaded_count += 1
@@ -2425,6 +2501,10 @@ class CacheViewerTab(QWidget):
                         self._asset_info[asset_id]['creator_id'] = creator_id
                         self._asset_info[asset_id]['creator_name'] = creator_name
                         self._asset_info[asset_id]['creator_type'] = creator_type
+                    if created_at is not None:
+                        self._asset_info[asset_id]['created_at'] = created_at
+                    if updated_at is not None:
+                        self._asset_info[asset_id]['updated_at'] = updated_at
         log_buffer.log('Scraper', f'[Cache Viewer] Loaded {loaded_count} persisted asset names from index')
 
     def _creator_display(self, info: dict) -> str:
@@ -2588,6 +2668,16 @@ class CacheViewerTab(QWidget):
                         desired = self._creator_display(info)
                         if creator_item.text() != desired:
                             creator_item.setText(desired)
+
+                # Update Roblox asset timestamps if resolved
+                updated_item = self.table.item(row, _COL_KEY_TO_IDX['updated_at'])
+                updated_at = _format_table_timestamp(info.get('updated_at'))
+                if updated_item and updated_item.text() != updated_at:
+                    updated_item.setText(updated_at)
+                created_item = self.table.item(row, _COL_KEY_TO_IDX['created_at'])
+                created_at = _format_table_timestamp(info.get('created_at'))
+                if created_item and created_item.text() != created_at:
+                    created_item.setText(created_at)
         finally:
             self.table.setUpdatesEnabled(True)
             self.table.viewport().update()
@@ -2656,6 +2746,19 @@ class CacheViewerTab(QWidget):
                 asset_data['resolved_creator_id'] = creator_id
                 asset_data['resolved_creator_name'] = creator_name
                 asset_data['resolved_creator_type'] = creator_type
+                break
+
+    def _save_resolved_timestamps_to_index(self, asset_id: str, created_at: str | None,
+                                           updated_at: str | None):
+        """Save Roblox asset created/updated timestamps to index.json for persistence."""
+        asset_keys = list(self.cache_manager.index['assets'].keys())
+        for asset_key in asset_keys:
+            if asset_key not in self.cache_manager.index['assets']:
+                continue
+            asset_data = self.cache_manager.index['assets'][asset_key]
+            if asset_data['id'] == asset_id:
+                asset_data['resolved_created_at'] = created_at or ''
+                asset_data['resolved_updated_at'] = updated_at or ''
                 break
 
     def _get_roblosecurity(self) -> str | None:
@@ -2745,6 +2848,8 @@ class CacheViewerTab(QWidget):
                 'name': item.get('name', 'Unknown'),
                 'creator_id': creator_id,
                 'creator_type': creator_type,  # 1 = User, 2 = Group
+                'created_at': item.get('created') or '',
+                'updated_at': item.get('updated') or '',
             }
 
             
@@ -2844,7 +2949,11 @@ class CacheViewerTab(QWidget):
             visible = []
             hidden = []
             for asset_id, info in self._asset_info.items():
-                if info.get('resolved_name') is not None:
+                if (
+                    info.get('resolved_name') is not None
+                    and info.get('created_at') is not None
+                    and info.get('updated_at') is not None
+                ):
                     continue
                 row = info.get('row')
                 if row is not None and row < _row_count:
@@ -2921,15 +3030,20 @@ class CacheViewerTab(QWidget):
                 creator_id = data.get('creator_id')
                 creator_type = data.get('creator_type')
                 creator_name = creator_names.get(creator_id) if creator_id is not None else None
+                created_at = data.get('created_at') or ''
+                updated_at = data.get('updated_at') or ''
                 # Store resolved name in memory
                 info['resolved_name'] = name
                 info['creator_id'] = creator_id
                 info['creator_type'] = creator_type
                 info['creator_name'] = creator_name
+                info['created_at'] = created_at
+                info['updated_at'] = updated_at
 
                 # Save to index.json for persistence
                 self._save_resolved_name_to_index(asset_id, name)
                 self._save_resolved_creator_to_index(asset_id, creator_id, creator_name, creator_type)
+                self._save_resolved_timestamps_to_index(asset_id, created_at, updated_at)
 
             # Save index after batch update (less frequent saves)
             try:
@@ -3095,11 +3209,21 @@ class CacheViewerTab(QWidget):
                 hash_val = a.get('hash', '').lower()
                 size_str = self._format_size(a.get('raw_size', a.get('size', 0))).lower()
                 cached_at = a.get('cached_at', '').lower()
+                cached_at_display = _format_table_timestamp(a.get('cached_at')).lower()
+                created_at = (a.get('resolved_created_at') or '').lower()
+                updated_at = (a.get('resolved_updated_at') or '').lower()
+                created_at_display = _format_table_timestamp(a.get('resolved_created_at')).lower()
+                updated_at_display = _format_table_timestamp(a.get('resolved_updated_at')).lower()
 
                 resolved_name = ''
                 if asset_id in self._asset_info:
-                    name = self._asset_info[asset_id].get('resolved_name')
+                    info = self._asset_info[asset_id]
+                    name = info.get('resolved_name')
                     resolved_name = name.lower() if name else ''
+                    created_at = (info.get('created_at') or created_at).lower()
+                    updated_at = (info.get('updated_at') or updated_at).lower()
+                    created_at_display = _format_table_timestamp(info.get('created_at') or created_at).lower()
+                    updated_at_display = _format_table_timestamp(info.get('updated_at') or updated_at).lower()
 
                 if (search_text in asset_id or
                     search_text in type_name or
@@ -3107,7 +3231,12 @@ class CacheViewerTab(QWidget):
                     search_text in hash_val or
                     search_text in resolved_name or
                     search_text in size_str or
-                    search_text in cached_at):
+                    search_text in cached_at or
+                    search_text in cached_at_display or
+                    search_text in updated_at or
+                    search_text in updated_at_display or
+                    search_text in created_at or
+                    search_text in created_at_display):
                     filtered.append(a)
             assets = filtered
 
@@ -3543,7 +3672,7 @@ class CacheViewerTab(QWidget):
         elif action == copy_id_action:
             self._copy_column(3)   # Asset ID (shifted by Creator col)
         elif action == copy_url_action:
-            self._copy_column(7)   # URL (shifted by Creator col)
+            self._copy_column(_COL_KEY_TO_IDX['url'])
         elif action == copy_creator_name_action:
             self._copy_creator_info('name')
         elif action == copy_creator_id_action:
@@ -5278,12 +5407,16 @@ class CacheViewerTab(QWidget):
                         'creator_id': None,
                         'creator_name': None,
                         'creator_type': None,
+                        'created_at': None,
+                        'updated_at': None,
                         'row': None,
                     }
                 info = self._asset_info[asset_id]
                 info['resolved_name'] = meta.get('name')
                 info['creator_id'] = meta.get('creator_id')
                 info['creator_type'] = meta.get('creator_type')
+                info['created_at'] = meta.get('created_at') or ''
+                info['updated_at'] = meta.get('updated_at') or ''
                 cid = meta.get('creator_id')
                 if cid is not None and cid in creator_names:
                     info['creator_name'] = creator_names[cid]
@@ -5297,6 +5430,11 @@ class CacheViewerTab(QWidget):
                     meta.get('creator_id'),
                     info.get('creator_name'),
                     meta.get('creator_type'),
+                )
+                self._save_resolved_timestamps_to_index(
+                    asset_id,
+                    meta.get('created_at'),
+                    meta.get('updated_at'),
                 )
 
             # Save index once
