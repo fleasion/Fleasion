@@ -5,7 +5,7 @@ from Fleasion.cache import mesh_processing
 
 EARLY_MESH = (
     b"version 1.00\n"
-    b"0\n"
+    b"1\n"
     b"[0,0,0][0,1,0][0,0,0]"
     b"[1,0,0][0,1,0][1,0,0]"
     b"[0,1,0][0,1,0][0,1,0]"
@@ -21,5 +21,6 @@ def test_early_mesh_converts_to_obj():
     obj = mesh_processing.convert(EARLY_MESH)
 
     assert obj is not None
-    assert "v 0 0 0" in obj
+    assert "v 0.0 0.0 0.0" in obj
+    assert "v 0.5 0.0 0.0" in obj
     assert "f 1/1/1 2/2/2 3/3/3" in obj

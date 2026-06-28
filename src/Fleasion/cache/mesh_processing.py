@@ -126,6 +126,11 @@ def process_v1(data: bytes) -> str:
             log_buffer.log('Mesh',"Invalid v1 mesh: not enough lines")
             return None
         version = lines[0].strip()
+        try:
+            face_count = int(lines[1].strip())
+        except ValueError as e:
+            log_buffer.log('Mesh', f"Invalid v1 face count: {e}")
+            return None
         # Parse JSON vertex data (on line 3)
         try:
             # Convert ][ to ],[ for valid JSON array
@@ -135,6 +140,13 @@ def process_v1(data: bytes) -> str:
             return None
         # Each vertex group has 3 elements: position, normal, uv
         groups = len(content) // 3
+        if groups != face_count * 3:
+            log_buffer.log(
+                'Mesh',
+                f"Invalid v1 mesh: {groups} vertices for {face_count} faces"
+            )
+            return None
+        position_scale = 0.5 if version == 'version 1.00' else 1.0
         verts = []
         norms = []
         uvs = []
@@ -143,8 +155,11 @@ def process_v1(data: bytes) -> str:
             v = content[i * 3] # Position [x, y, z]
             n = content[i * 3 + 1] # Normal [x, y, z]
             uv = content[i * 3 + 2] # UV [u, v, w]
+            px = v[0] * position_scale
+            py = v[1] * position_scale
+            pz = v[2] * position_scale
             verts.append(
-                f"v {fix_float(str(v[0]))} {fix_float(str(v[1]))} {fix_float(str(v[2]))}")
+                f"v {fix_float(str(px))} {fix_float(str(py))} {fix_float(str(pz))}")
             norms.append(
                 f"vn {fix_float(str(n[0]))} {fix_float(str(n[1]))} {fix_float(str(n[2]))}")
             uvs.append(
