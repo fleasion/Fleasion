@@ -48,15 +48,15 @@ jobs:
         include:
           - name: Windows
             os: windows-latest
-            artifact_name: Fleasion-Windows-release-asset
+            artifact_name: Fleasion-v${{ needs.prepare.outputs.app_version }}.exe
             artifact_path: dist/Fleasion-v*.exe
           - name: Linux
             os: ubuntu-latest
-            artifact_name: Fleasion-Linux-release-asset
+            artifact_name: Fleasion-v${{ needs.prepare.outputs.app_version }}-Linux.zip
             artifact_path: dist/Fleasion-v*-Linux.zip
           - name: macOS
             os: macos-latest
-            artifact_name: Fleasion-MacOS-release-asset
+            artifact_name: Fleasion-v${{ needs.prepare.outputs.app_version }}-MacOS-Universal.zip
             artifact_path: dist/Fleasion-v*-MacOS-Universal.zip
 
     steps:
@@ -129,17 +129,34 @@ jobs:
       - build
     runs-on: ubuntu-latest
     steps:
-      - name: Download release assets
-        uses: actions/download-artifact@v6
+      - name: Download Windows release asset
+        uses: actions/download-artifact@v8
         with:
-          path: release-assets
+          name: Fleasion-v${{ needs.prepare.outputs.app_version }}.exe
+          path: release-files
+          skip-decompress: true
 
-      - name: Stage release assets
+      - name: Download Linux release asset
+        uses: actions/download-artifact@v8
+        with:
+          name: Fleasion-v${{ needs.prepare.outputs.app_version }}-Linux.zip
+          path: release-files
+          skip-decompress: true
+
+      - name: Download macOS release asset
+        uses: actions/download-artifact@v8
+        with:
+          name: Fleasion-v${{ needs.prepare.outputs.app_version }}-MacOS-Universal.zip
+          path: release-files
+          skip-decompress: true
+
+      - name: Verify release assets
         run: |
-          mkdir -p release-files
-          find release-assets -type f -name 'Fleasion-v*' -exec cp {} release-files/ \;
           find release-files -maxdepth 1 -type f -print | sort
-          test "$(find release-files -maxdepth 1 -type f | wc -l)" -eq 3
+          test -f "release-files/Fleasion-v${{ needs.prepare.outputs.app_version }}.exe"
+          test -f "release-files/Fleasion-v${{ needs.prepare.outputs.app_version }}-Linux.zip"
+          test -f "release-files/Fleasion-v${{ needs.prepare.outputs.app_version }}-MacOS-Universal.zip"
+          test "$(find release-files -maxdepth 1 -type f -name 'Fleasion-v*' | wc -l)" -eq 3
 
       - name: Create draft GitHub release
         env:

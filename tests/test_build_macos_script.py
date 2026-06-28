@@ -217,11 +217,19 @@ def test_draft_release_workflow_builds_main_and_uploads_versioned_assets():
     assert 'ref: main' in workflow
     assert 'ref: ${{ needs.prepare.outputs.main_sha }}' in workflow
     assert 'release_tag: v${{ steps.version.outputs.app_version }}' in workflow
+    assert 'artifact_name: Fleasion-v${{ needs.prepare.outputs.app_version }}.exe' in workflow
+    assert 'artifact_name: Fleasion-v${{ needs.prepare.outputs.app_version }}-Linux.zip' in workflow
+    assert 'artifact_name: Fleasion-v${{ needs.prepare.outputs.app_version }}-MacOS-Universal.zip' in workflow
     assert 'artifact_path: dist/Fleasion-v*.exe' in workflow
     assert 'artifact_path: dist/Fleasion-v*-Linux.zip' in workflow
     assert 'artifact_path: dist/Fleasion-v*-MacOS-Universal.zip' in workflow
     assert 'zip -9 "Fleasion-v${{ needs.prepare.outputs.app_version }}-Linux.zip"' in workflow
     assert 'archive: false' in workflow
+    assert 'uses: actions/download-artifact@v8' in workflow
+    assert 'name: Fleasion-v${{ needs.prepare.outputs.app_version }}.exe' in workflow
+    assert 'name: Fleasion-v${{ needs.prepare.outputs.app_version }}-Linux.zip' in workflow
+    assert 'name: Fleasion-v${{ needs.prepare.outputs.app_version }}-MacOS-Universal.zip' in workflow
+    assert 'skip-decompress: true' in workflow
     assert 'gh release create "$RELEASE_TAG" release-files/*' in workflow
     assert '--draft' in workflow
     assert '--target "$MAIN_SHA"' in workflow
