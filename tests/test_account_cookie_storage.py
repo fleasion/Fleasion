@@ -1,13 +1,16 @@
+import base64
 import json
 import os
 import stat
 import sys
 import threading
+from types import SimpleNamespace
 from urllib.parse import unquote
 
 import pytest
 
 from Fleasion.gui import rando_stuff_tab
+from Fleasion.utils import roblox_auth
 
 
 class _FakeRequest:
@@ -77,6 +80,29 @@ def test_account_cookie_storage_writes_encrypted_payload(tmp_path, monkeypatch):
     assert token.startswith(('dpapi:', 'fernet:'))
     assert 'cookie-secret' not in token
     assert rando_stuff_tab._decrypt_cookie(token) == 'cookie-secret'
+
+
+def test_set_roblosecurity_clears_read_only_before_write(tmp_path, monkeypatch):
+    cookie_path = tmp_path / 'RobloxCookies.dat'
+    cookie_path.write_text(
+        json.dumps({
+            'CookiesData': base64.b64encode(b'.ROBLOSECURITY\told-cookie').decode('ascii'),
+        }),
+        encoding='utf-8',
+    )
+    cookie_path.chmod(0o444)
+    monkeypatch.setattr(
+        roblox_auth,
+        'win32crypt',
+        SimpleNamespace(CryptProtectData=lambda data, *_args: data),
+    )
+
+    assert roblox_auth.set_roblosecurity('new-cookie', cookie_path) is True
+
+    data = json.loads(cookie_path.read_text(encoding='utf-8'))
+    decoded = base64.b64decode(data['CookiesData']).decode('latin-1')
+    assert decoded == '.ROBLOSECURITY\tnew-cookie'
+    assert not (cookie_path.stat().st_mode & stat.S_IWRITE)
 
 
 @pytest.mark.skipif(sys.platform != 'darwin', reason='macOS-specific cookie storage')

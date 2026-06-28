@@ -4,6 +4,7 @@ import base64
 import json
 import os
 import re
+import stat
 import sys
 import threading
 import time
@@ -136,6 +137,29 @@ def _safe_resolve(path: Path) -> Path:
         return path.resolve()
     except OSError:
         return path
+
+
+def _path_is_read_only(path: Path) -> bool:
+    try:
+        return path.exists() and not bool(path.stat().st_mode & stat.S_IWRITE)
+    except OSError:
+        return False
+
+
+def _clear_read_only(path: Path) -> None:
+    try:
+        if path.exists():
+            path.chmod(path.stat().st_mode | stat.S_IWRITE)
+    except OSError:
+        pass
+
+
+def _restore_read_only(path: Path) -> None:
+    try:
+        if path.exists():
+            path.chmod(path.stat().st_mode & ~stat.S_IWRITE)
+    except OSError:
+        pass
 
 
 def _normalise_key(path: Path) -> str:
@@ -994,8 +1018,14 @@ def set_roblosecurity(cookie: str, path: Path | None = None) -> bool:
             return False
         new_enc = win32crypt.CryptProtectData(new_text.encode('latin-1'), None, None, None, None, 0)
         data['CookiesData'] = base64.b64encode(new_enc).decode('ascii')
-        with cookie_path.open('w', encoding='utf-8') as f:
-            json.dump(data, f)
+        restore_read_only = _path_is_read_only(cookie_path)
+        _clear_read_only(cookie_path)
+        try:
+            with cookie_path.open('w', encoding='utf-8') as f:
+                json.dump(data, f)
+        finally:
+            if restore_read_only:
+                _restore_read_only(cookie_path)
         return True
     except Exception as exc:
         _log_auth_failure(

@@ -87,7 +87,7 @@ def test_stash_write_and_restore_use_normalised_target_paths(tmp_path):
     assert target.read_bytes() == b"original"
 
 
-def test_read_only_guard_protects_managed_files_and_restores_modes(tmp_path):
+def test_read_only_guard_protects_managed_files_and_clears_on_close(tmp_path):
     roblox_dir = tmp_path / "Roblox.app" / "Contents" / "Resources"
     target = roblox_dir / "content" / "textures" / "MouseLockedCursor.png"
     settings = roblox_dir / "ClientSettings" / "ClientAppSettings.json"
@@ -95,6 +95,7 @@ def test_read_only_guard_protects_managed_files_and_restores_modes(tmp_path):
     for path in (target, settings, cacert):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"original")
+    cacert.chmod(0o444)
 
     manager = ModificationManager.__new__(ModificationManager)
     manager._roblox_dirs = [roblox_dir]
@@ -121,6 +122,32 @@ def test_read_only_guard_protects_managed_files_and_restores_modes(tmp_path):
     assert target.stat().st_mode & stat.S_IWRITE
     assert settings.stat().st_mode & stat.S_IWRITE
     assert cacert.stat().st_mode & stat.S_IWRITE
+
+
+def test_restore_all_finishes_with_guarded_cacert_writable(tmp_path):
+    roblox_dir = tmp_path / "Fishstrap" / "Versions" / "WindowsPlayer"
+    cacert = roblox_dir / "ssl" / "cacert.pem"
+    cacert.parent.mkdir(parents=True)
+    cacert.write_bytes(b"cert")
+    cacert.chmod(0o444)
+
+    manager = ModificationManager.__new__(ModificationManager)
+    manager._roblox_dirs = [roblox_dir]
+    manager._stash_dir = tmp_path / "stash"
+    manager._fs_lock = threading.Lock()
+    manager._data = {"entries": [], "fast_flags_enabled": False}
+    manager._read_only_original_modes = {}
+    manager._read_only_extra_paths = set()
+    manager.global_settings_manager = types.SimpleNamespace(restore=lambda: None)
+    manager.restore_finished = _SignalSpy()
+
+    manager.protect_managed_files([cacert])
+    assert not (cacert.stat().st_mode & stat.S_IWRITE)
+
+    manager.restore_all()
+
+    assert cacert.stat().st_mode & stat.S_IWRITE
+    assert manager.restore_finished.calls == [()]
 
 
 def test_stash_write_does_not_preserve_guarded_read_only_mode(tmp_path):
@@ -257,6 +284,7 @@ def test_fast_flags_write_to_sober_config(tmp_path, monkeypatch):
     overlay.mkdir(parents=True)
     config_path.parent.mkdir(parents=True)
     config_path.write_text('{"close_on_leave": false, "fflags": {"Old": true}}', encoding="utf-8")
+    config_path.chmod(0o444)
 
     monkeypatch.setattr(fflag_manager.sys, "platform", "linux")
     monkeypatch.setattr(
@@ -282,6 +310,7 @@ def test_fast_flags_write_to_sober_config(tmp_path, monkeypatch):
         "FFlagDebugSkyGray": True,
         "DFIntDebugFRMQualityLevelOverride": 7,
     }
+    assert not (config_path.stat().st_mode & stat.S_IWRITE)
 
     manager.restore()
 
@@ -289,6 +318,7 @@ def test_fast_flags_write_to_sober_config(tmp_path, monkeypatch):
         "close_on_leave": False,
         "fflags": {"Old": True},
     }
+    assert not (config_path.stat().st_mode & stat.S_IWRITE)
 
 
 def test_ktx_backed_targets_convert_image_replacements_to_ktx2(monkeypatch, tmp_path):

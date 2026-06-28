@@ -486,7 +486,7 @@ class ModificationManager(QObject):
             )
 
     def clear_managed_file_read_only(self) -> None:
-        """Restore original modes for files previously protected by Fleasion."""
+        """Clear Fleasion's read-only guard from managed Roblox files."""
         lock = _instance_attr(self, '_fs_lock')
         if lock is None:
             self._clear_managed_file_read_only_locked()
@@ -496,22 +496,45 @@ class ModificationManager(QObject):
 
     def _clear_managed_file_read_only_locked(self) -> None:
         protected = _instance_attr(self, '_read_only_original_modes')
-        if not protected:
-            return
+        if protected is None:
+            protected = {}
+            self._read_only_original_modes = protected
+        registered_extra_paths = _instance_attr(self, '_read_only_extra_paths')
+        if registered_extra_paths is None:
+            registered_extra_paths = set()
+            self._read_only_extra_paths = registered_extra_paths
 
-        restored = 0
-        for path, mode in list(protected.items()):
+        paths: list[Path] = []
+        seen: set[str] = set()
+
+        def _add(path: Path) -> None:
+            try:
+                key = str(path.resolve()).lower()
+            except OSError:
+                key = str(path).lower()
+            if key in seen:
+                return
+            seen.add(key)
+            paths.append(path)
+
+        for path in protected:
+            _add(path)
+        for path in self._active_managed_resource_files(registered_extra_paths):
+            _add(path)
+
+        cleared = 0
+        for path in paths:
             try:
                 if path.exists():
-                    path.chmod(mode)
-                    restored += 1
+                    _clear_read_only(path)
+                    cleared += 1
             except OSError as exc:
-                log_buffer.log('Modifications', f'Failed to restore read-only state for {path}: {exc}')
+                log_buffer.log('Modifications', f'Failed to clear read-only guard for {path}: {exc}')
         protected.clear()
-        if restored:
+        if cleared:
             log_buffer.log(
                 'Modifications',
-                f'Restored read-only state for {format_count(restored, "managed Roblox file")}',
+                f'Cleared read-only guard for {format_count(cleared, "managed Roblox file")}',
             )
 
     # ------------------------------------------------------------------
@@ -1023,24 +1046,27 @@ class ModificationManager(QObject):
         """Restore every applied modification and fast-flags."""
         self.clear_managed_file_read_only()
 
-        for entry in self.entries:
-            if entry.get('status') == 'applied':
-                try:
-                    self._restore_entry(entry)
-                except Exception as exc:
-                    log_buffer.log('Modifications', f'Restore failed for {entry.get("display_name", "?")}: {exc}')
-
-        if self._data.get('fast_flags_enabled'):
-            try:
-                self.fflag_manager.restore()
-            except Exception as exc:
-                log_buffer.log('FastFlags', f'Restore failed: {exc}')
-        
-        # Restore global settings
         try:
-            self.global_settings_manager.restore()
-        except Exception as exc:
-            log_buffer.log('GlobalSettings', f'Restore failed: {exc}')
+            for entry in self.entries:
+                if entry.get('status') == 'applied':
+                    try:
+                        self._restore_entry(entry)
+                    except Exception as exc:
+                        log_buffer.log('Modifications', f'Restore failed for {entry.get("display_name", "?")}: {exc}')
+
+            if self._data.get('fast_flags_enabled'):
+                try:
+                    self.fflag_manager.restore()
+                except Exception as exc:
+                    log_buffer.log('FastFlags', f'Restore failed: {exc}')
+            
+            # Restore global settings
+            try:
+                self.global_settings_manager.restore()
+            except Exception as exc:
+                log_buffer.log('GlobalSettings', f'Restore failed: {exc}')
+        finally:
+            self.clear_managed_file_read_only()
 
         self.restore_finished.emit()
         log_buffer.log('Modifications', 'All modifications restored')
