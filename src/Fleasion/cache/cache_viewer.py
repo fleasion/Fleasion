@@ -683,34 +683,56 @@ class AssetLoaderThread(QThread):
                         cid = meta.get('creator_id')
                         ctype = meta.get('creator_type')
                         if cid is not None and ctype is not None:
-                            g_paths = ([f'/v2/users/{cid}/games?sortOrder=Asc&limit=100']
-                                        if ctype == 1 else
-                                        [f'/v2/groups/{cid}/gamesV2?accessFilter=2&limit=100&sortOrder=Asc',
-                                         f'/v2/groups/{cid}/gamesV2?accessFilter=1&limit=100&sortOrder=Asc'])
                             try:
+                                from ..proxy.addons.cache_scraper import (
+                                    CREATOR_GAME_MAX_SCAN,
+                                    CREATOR_GAME_PAGE_LIMITS,
+                                    creator_game_base_paths,
+                                )
                                 seen_pids = set()
-                                for g_path in g_paths:
-                                    g_r = sess.get(f'https://games.roblox.com{g_path}',
-                                                   headers={'Accept': 'application/json'},
-                                                   timeout=10)
-                                    if g_r.status_code == 200:
-                                        games = g_r.json().get('data', [])
-                                        for game in games:
-                                            rp = game.get('rootPlace')
-                                            if rp and rp.get('id'):
-                                                pid = int(rp['id'])
-                                                if pid in seen_pids:
-                                                    continue
-                                                seen_pids.add(pid)
-                                                retry_h = {**dl_headers, 'Roblox-Place-Id': str(pid)}
-                                                r2 = sess.get(api_url, headers=retry_h,
-                                                              timeout=15, allow_redirects=True)
-                                                if r2.status_code == 200 and r2.content:
-                                                    data = r2.content
-                                                    log_buffer.log('Scraper', f'[Load Asset] Place-ID bypass succeeded for {aid_str}')
-                                                    break  # Found working place ID
-                                    if data:
-                                        break  # Stop trying paths
+                                attempted_paths = set()
+                                for limit in CREATOR_GAME_PAGE_LIMITS:
+                                    found_before_limit = len(seen_pids)
+                                    max_pages = max(1, (CREATOR_GAME_MAX_SCAN + limit - 1) // limit)
+                                    for g_path in creator_game_base_paths(int(cid), int(ctype), limit):
+                                        if g_path in attempted_paths:
+                                            continue
+                                        attempted_paths.add(g_path)
+                                        cursor = ''
+                                        for _page in range(max_pages):
+                                            path = g_path + (f'&cursor={cursor}' if cursor else '')
+                                            g_r = sess.get(
+                                                f'https://games.roblox.com{path}',
+                                                headers={'Accept': 'application/json'},
+                                                timeout=10,
+                                            )
+                                            if g_r.status_code != 200:
+                                                break
+                                            resp_json = g_r.json()
+                                            games = resp_json.get('data', [])
+                                            for game in games:
+                                                rp = game.get('rootPlace')
+                                                if rp and rp.get('id'):
+                                                    pid = int(rp['id'])
+                                                    if pid in seen_pids:
+                                                        continue
+                                                    seen_pids.add(pid)
+                                                    retry_h = {**dl_headers, 'Roblox-Place-Id': str(pid)}
+                                                    r2 = sess.get(api_url, headers=retry_h,
+                                                                  timeout=15, allow_redirects=True)
+                                                    if r2.status_code == 200 and r2.content:
+                                                        data = r2.content
+                                                        log_buffer.log('Scraper', f'[Load Asset] Place-ID bypass succeeded for {aid_str}')
+                                                        break  # Found working place ID
+                                            if data:
+                                                break
+                                            cursor = resp_json.get('nextPageCursor') or ''
+                                            if not cursor:
+                                                break
+                                        if data:
+                                            break
+                                    if data or len(seen_pids) > found_before_limit:
+                                        break
                             except Exception:
                                 pass
 

@@ -33,6 +33,8 @@ logger = logging.getLogger(__name__)
 ASSET_DELIVERY_HOST = 'assetdelivery.roblox.com'
 CDN_HOSTS = frozenset({'fts.rbxcdn.com', 'contentdelivery.roblox.com'})
 DELIVERY_ENDPOINT = '/v1/assets/batch'
+CREATOR_GAME_PAGE_LIMITS = (50, 25, 10)
+CREATOR_GAME_MAX_SCAN = 300
 
 _TEXPACK_SLOT_NAMES = {
     0: 'Color',
@@ -120,6 +122,21 @@ def _normalize_asset_id(asset_id):
         except ValueError:
             return asset_id
     return asset_id
+
+
+def creator_game_base_paths(creator_id: int, creator_type: int, limit: int) -> list[str]:
+    """Return games.roblox.com paths for a creator using a Roblox-supported page size."""
+    if creator_type == 1:
+        return [
+            f'/v2/users/{creator_id}/games?sortOrder=Asc&limit={limit}',
+            f'/v2/users/{creator_id}/games?accessFilter=Public&sortOrder=Asc&limit={limit}',
+        ]
+    if creator_type == 2:
+        return [
+            f'/v2/groups/{creator_id}/gamesV2?accessFilter=2&limit={limit}&sortOrder=Asc',
+            f'/v2/groups/{creator_id}/gamesV2?accessFilter=1&limit={limit}&sortOrder=Asc',
+        ]
+    return []
 
 
 def _build_texpack_request_slot_map(req_json: list) -> dict[int, int]:
@@ -685,49 +702,47 @@ class CacheScraper:
             return cached if isinstance(cached, list) else ([cached] if cached else [])
 
         try:
-            if creator_type == 1:  # User
-                host = 'games.roblox.com'
-                base_paths = [f'/v2/users/{creator_id}/games?sortOrder=Asc&limit=100']
-            elif creator_type == 2:  # Group
-                # Scan public (non-hidden) games first — they're much more likely
-                # to contain the asset.  Only fall back to ALL games (including
-                # hidden/private) when the public set comes up empty or none of
-                # its place IDs succeed later.
-                host = 'games.roblox.com'
-                base_paths = [
-                    f'/v2/groups/{creator_id}/gamesV2?accessFilter=2&limit=100&sortOrder=Asc',  # public
-                    f'/v2/groups/{creator_id}/gamesV2?accessFilter=1&limit=100&sortOrder=Asc',  # all (hidden too)
-                ]
-            else:
+            if creator_type not in (1, 2):
                 self._creator_place_cache[creator_id] = []
                 return []
 
+            host = 'games.roblox.com'
             place_ids: list[int] = []
             seen: set[int] = set()
-            cursor = ''
-            # Paginate through up to 3 pages per base path (300 games max with limit=100)
-            for base_path in base_paths:
-                cursor = ''
-                for _page in range(3):
-                    path = base_path + (f'&cursor={cursor}' if cursor else '')
-                    raw = self._https_get(host, path, extra_headers={'Accept': 'application/json'})
-                    if not raw:
-                        break
+            attempted: set[str] = set()
 
-                    import json as _json
-                    resp = _json.loads(raw)
-                    games = resp.get('data', [])
-                    for game in games:
-                        root_place = game.get('rootPlace')
-                        if root_place and root_place.get('id'):
-                            pid = int(root_place['id'])
-                            if pid not in seen:
-                                place_ids.append(pid)
-                                seen.add(pid)
+            for limit in CREATOR_GAME_PAGE_LIMITS:
+                found_before_limit = len(place_ids)
+                max_pages = max(1, (CREATOR_GAME_MAX_SCAN + limit - 1) // limit)
 
-                    cursor = resp.get('nextPageCursor') or ''
-                    if not cursor:
-                        break
+                for base_path in creator_game_base_paths(creator_id, creator_type, limit):
+                    if base_path in attempted:
+                        continue
+                    attempted.add(base_path)
+                    cursor = ''
+                    for _page in range(max_pages):
+                        path = base_path + (f'&cursor={cursor}' if cursor else '')
+                        raw = self._https_get(host, path, extra_headers={'Accept': 'application/json'})
+                        if not raw:
+                            break
+
+                        import json as _json
+                        resp = _json.loads(raw)
+                        games = resp.get('data', [])
+                        for game in games:
+                            root_place = game.get('rootPlace')
+                            if root_place and root_place.get('id'):
+                                pid = int(root_place['id'])
+                                if pid not in seen:
+                                    place_ids.append(pid)
+                                    seen.add(pid)
+
+                        cursor = resp.get('nextPageCursor') or ''
+                        if not cursor:
+                            break
+
+                if len(place_ids) > found_before_limit:
+                    break
 
             self._creator_place_cache[creator_id] = place_ids
             if place_ids:
