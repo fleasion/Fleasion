@@ -367,6 +367,11 @@ def _extract_exe_from_command(command: str) -> Optional[Path]:
     return Path(exe_path)
 
 
+def _is_roblox_player_exe_path(path: Path) -> bool:
+    """Return True only for the Roblox player executable, never installers."""
+    return path.name.lower() == ROBLOX_PROCESS.lower()
+
+
 def _scan_for_player_exes(root: Path, max_depth: int) -> list[Path]:
     """Return Roblox player executables found under a root folder."""
     results: list[Path] = []
@@ -412,22 +417,25 @@ def _safe_mtime(path: Path) -> float:
 
 def _resolve_roblox_player_exe_for_launch() -> Optional[Path]:
     """Resolve best Roblox executable path for URI launches with fallbacks."""
-    candidates: list[tuple[int, float, Path]] = []
-    seen: set[str] = set()
+    candidates_by_path: dict[str, tuple[int, float, Path]] = {}
 
     def _add(path: Path, priority: int) -> None:
+        if not _is_roblox_player_exe_path(path):
+            return
         if not path.is_file():
             return
         key = str(path).lower()
-        if key in seen:
+        candidate = (priority, _safe_mtime(path), path)
+        existing = candidates_by_path.get(key)
+        if existing is not None and (existing[0], existing[1]) >= (candidate[0], candidate[1]):
             return
-        seen.add(key)
-        candidates.append((priority, _safe_mtime(path), path))
+        candidates_by_path[key] = candidate
 
-    # 1) Running client path (highest confidence)
+    # 1) Running client path. Useful for custom installs, but do not let a stale
+    # running version outrank the current LocalAppData install.
     running_exe = get_roblox_player_exe_path()
     if running_exe is not None:
-        _add(running_exe, 300)
+        _add(running_exe, 250)
 
     # 2) Registry shell/open command (lowest confidence; can be stale)
     try:
@@ -452,8 +460,9 @@ def _resolve_roblox_player_exe_for_launch() -> Optional[Path]:
     for exe_path in _scan_for_player_exes(pf_versions, 2):
         _add(exe_path, 240)
 
-    if not candidates:
+    if not candidates_by_path:
         return None
+    candidates = list(candidates_by_path.values())
     candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
     return candidates[0][2]
 

@@ -587,6 +587,12 @@ class SubplaceJoinerTab(QWidget):
         """Update the selected-account footer label from external account switches."""
         username = (username or '').strip()
         self._selected_label.setText(f"Selected: {username if username else '(none)'}")
+        unresolved = set(self.recent_ids) | set(self.favorites)
+        for place_id in unresolved:
+            if self._place_name_cache.get(place_id) == place_id:
+                self._place_name_cache.pop(place_id, None)
+        self._rebuild_recent_buttons()
+        self._rebuild_favorite_buttons()
 
     # UI setup
 
@@ -786,18 +792,69 @@ class SubplaceJoinerTab(QWidget):
         def _worker():
             try:
                 cookie = _wait_for_roblosecurity() or ""
-                r = self._get(
-                    f"https://games.roblox.com/v1/games/multiget-place-details?placeIds={place_id}",
-                    timeout=10,
-                    cookies={".ROBLOSECURITY": cookie} if cookie else None)
-                r.raise_for_status()
-                data = r.json()
-                name = data[0].get("name", place_id) if data else place_id
-            except Exception:
-                name = place_id
+                name = self._resolve_place_name(place_id, cookie)
+            except Exception as exc:
+                log_buffer.log("subplace", f"Failed to resolve recent PlaceID {place_id}: {exc}")
+                return
+            if not name:
+                return
             self._place_name_cache[place_id] = name
             self._on_main(lambda n=name: callback(n))
         threading.Thread(target=_worker, daemon=True).start()
+
+    def _resolve_place_name(self, place_id: str, cookie: str = "") -> str | None:
+        cookies = {".ROBLOSECURITY": cookie} if cookie else None
+        errors: list[str] = []
+        if cookie:
+            try:
+                r = self._get(
+                    f"https://games.roblox.com/v1/games/multiget-place-details?placeIds={place_id}",
+                    timeout=10,
+                    cookies=cookies,
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    name = data[0].get("name") if data else None
+                    if name:
+                        return str(name)
+                else:
+                    errors.append(f"multiget status {r.status_code}")
+            except Exception as exc:
+                errors.append(f"multiget {type(exc).__name__}: {exc}")
+        else:
+            errors.append("missing cookie")
+
+        try:
+            universe = self._get(
+                f"https://apis.roblox.com/universes/v1/places/{place_id}/universe",
+                timeout=10,
+            )
+            if universe.status_code != 200:
+                errors.append(f"universe status {universe.status_code}")
+            else:
+                universe_id = universe.json().get("universeId")
+                if universe_id:
+                    details = self._get(
+                        f"https://games.roblox.com/v1/games?universeIds={universe_id}",
+                        timeout=10,
+                    )
+                    if details.status_code == 200:
+                        games_data = details.json().get("data", [])
+                        name = games_data[0].get("name") if games_data else None
+                        if name and name not in {"[TITLE UNAVAILABLE]", place_id}:
+                            return str(name)
+                    else:
+                        errors.append(f"games status {details.status_code}")
+                else:
+                    errors.append("universe missing universeId")
+        except Exception as exc:
+            errors.append(f"public fallback {type(exc).__name__}: {exc}")
+
+        log_buffer.log(
+            "subplace",
+            f"Could not resolve recent PlaceID {place_id}: {'; '.join(errors)}",
+        )
+        return None
 
     def _make_placeid_button(self, place_id: str, handler):
         btn = QPushButton(place_id)

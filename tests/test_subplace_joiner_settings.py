@@ -1,6 +1,20 @@
 import json
+import threading
 
 from Fleasion.gui import subplace_joiner_tab
+
+
+class _FakeResponse:
+    def __init__(self, status_code=200, data=None):
+        self.status_code = status_code
+        self._data = data
+
+    def json(self):
+        return self._data
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
 
 
 def _settings_owner():
@@ -8,6 +22,7 @@ def _settings_owner():
     owner.recent_ids = []
     owner.favorites = []
     owner._custom_names = {}
+    owner._place_name_cache = {}
     return owner
 
 
@@ -79,3 +94,48 @@ def test_subplace_settings_prefers_primary_over_legacy(tmp_path, monkeypatch):
 
     assert owner.recent_ids == ["222"]
     assert owner.favorites == ["333"]
+
+
+def test_subplace_recent_name_resolves_with_authenticated_multiget():
+    owner = _settings_owner()
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append((url, kwargs))
+        return _FakeResponse(200, [{"name": "Build A Boat For Treasure"}])
+
+    owner._get = fake_get
+
+    assert owner._resolve_place_name("537413528", "cookie-secret") == "Build A Boat For Treasure"
+    assert calls[0][1]["cookies"] == {".ROBLOSECURITY": "cookie-secret"}
+
+
+def test_subplace_recent_name_uses_public_fallback_without_cookie():
+    owner = _settings_owner()
+
+    def fake_get(url, **_kwargs):
+        if "universes/v1/places" in url:
+            return _FakeResponse(200, {"universeId": 210851291})
+        if "games?universeIds" in url:
+            return _FakeResponse(200, {"data": [{"name": "Build A Boat For Treasure"}]})
+        raise AssertionError(url)
+
+    owner._get = fake_get
+
+    assert owner._resolve_place_name("537413528", "") == "Build A Boat For Treasure"
+
+
+def test_subplace_recent_name_failure_does_not_cache_raw_place_id(monkeypatch):
+    owner = _settings_owner()
+    done = threading.Event()
+    callbacks = []
+
+    monkeypatch.setattr(subplace_joiner_tab, "_wait_for_roblosecurity", lambda: "")
+    owner._resolve_place_name = lambda place_id, cookie="": None
+    owner._on_main = lambda fn: (fn(), True)[1]
+
+    owner._fetch_place_name("537413528", lambda name: (callbacks.append(name), done.set()))
+
+    assert done.wait(2) is False
+    assert callbacks == []
+    assert owner._place_name_cache == {}

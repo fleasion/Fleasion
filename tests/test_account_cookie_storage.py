@@ -248,6 +248,23 @@ def test_account_private_server_subplace_launch_preserves_private_game_uri(monke
     assert "linkCode=link-123" in decoded
 
 
+def test_account_plain_windows_launch_uses_app_auth_ticket_uri(monkeypatch):
+    owner = _account_manager_owner()
+    launched = []
+
+    monkeypatch.setattr(rando_stuff_tab, "IS_WINDOWS", True)
+    monkeypatch.setattr(rando_stuff_tab, "IS_MACOS", False)
+    monkeypatch.setattr(rando_stuff_tab, "_find_roblox_exe", lambda: "/RobloxPlayerBeta.exe")
+    monkeypatch.setattr(rando_stuff_tab, "_get_auth_ticket", lambda cookie: "ticket-123")
+    monkeypatch.setattr(rando_stuff_tab, "launch_as_standard_user", lambda target: launched.append(target) or True)
+    owner._write_cookie_to_dat = lambda cookie: None
+
+    owner._launch_account_thread("cookie-secret", "KeepItComingBack0")
+
+    assert len(launched) == 1
+    assert launched[0].startswith("roblox-player:1+launchmode:app+gameinfo:ticket-123")
+
+
 def test_account_subplace_root_preseed_disables_proxy_cert_verification(monkeypatch):
     sessions = []
 

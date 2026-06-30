@@ -1955,28 +1955,30 @@ class RandoStuffTab(QWidget):
                     log_buffer.log("accounts", "Failed to launch Roblox deeplink without elevation")
                 launch_ok = exe_started and deeplink_started
         else:
-            if IS_MACOS:
-                ticket = self._get_launch_auth_ticket(cookie, "app")
-                if ticket:
-                    roblox_player_uri = _build_auth_ticket_app_uri(ticket)
-                    log_buffer.log("accounts", "Launching Roblox app URI for selected macOS account")
-                    launch_ok = launch_as_standard_user(roblox_player_uri)
-                    if not launch_ok:
-                        log_buffer.log("accounts", "Failed to launch Roblox app URI without elevation")
+            ticket = self._get_launch_auth_ticket(cookie, "app")
+            if ticket:
+                roblox_player_uri = _build_auth_ticket_app_uri(ticket)
+                log_buffer.log("accounts", "Launching Roblox app URI for selected account")
+                launch_ok = launch_as_standard_user(roblox_player_uri)
+                if not launch_ok:
+                    log_buffer.log("accounts", "Failed to launch Roblox app URI without elevation")
+                    if IS_MACOS:
                         self._show_selected_account_launch_failed(
                             username,
                             "Roblox accepted the account ticket request, but macOS did not open the Roblox app URI.",
                         )
-                else:
+            else:
+                if IS_MACOS:
                     self._show_selected_account_launch_failed(
                         username,
                         "Roblox did not issue an authentication ticket for the app launch.",
                     )
-            else:
-                log_buffer.log("accounts", f"Launching Roblox executable: {exe}")
-                launch_ok = launch_as_standard_user(exe)
-                if not launch_ok:
-                    log_buffer.log("accounts", "Failed to launch Roblox Player without elevation")
+                else:
+                    log_buffer.log("accounts", "Failed to get auth ticket, falling back to executable launch")
+                    log_buffer.log("accounts", f"Launching Roblox executable: {exe}")
+                    launch_ok = launch_as_standard_user(exe)
+                    if not launch_ok:
+                        log_buffer.log("accounts", "Failed to launch Roblox Player without elevation")
         if launch_ok:
             log_buffer.log("accounts", f"Launched Roblox for account: {username}")
         else:
