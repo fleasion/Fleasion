@@ -2645,10 +2645,9 @@ class ProxyMaster:
                 hosts = set(BASE_INTERCEPT_HOSTS)
         else:
             hosts = set(BASE_INTERCEPT_HOSTS)
-        if _use_linux_privileged_helper():
-            hosts.update(USERNAME_SPOOFER_INTERCEPT_HOSTS)
         spoofer = getattr(self, 'username_spoofer', None)
-        if self._roblox_player_running and spoofer is not None and spoofer.is_enabled():
+        spoofer_enabled = spoofer is not None and spoofer.is_enabled()
+        if spoofer_enabled and (self._roblox_player_running or _use_linux_privileged_helper()):
             hosts.update(USERNAME_SPOOFER_INTERCEPT_HOSTS)
         return hosts
 
@@ -2667,6 +2666,22 @@ class ProxyMaster:
                 return
             if not self._hosts_installed or self._proxy is None:
                 self._active_intercept_hosts = set(desired_hosts)
+                return
+
+            if _use_linux_privileged_helper():
+                from ..utils.linux_proxy_helper import update_helper_hosts
+
+                if not update_helper_hosts(desired_hosts):
+                    log_buffer.log('Hosts', 'Failed to request Linux helper username spoofer hosts update')
+                    return
+                real_endpoints = _resolve_real_endpoints(desired_hosts)
+                _log_upstream_ip_coverage(desired_hosts, real_endpoints)
+                self._active_intercept_hosts = set(desired_hosts)
+                self._proxy.set_upstream_endpoints(real_endpoints)
+                scraper_ips = _first_endpoint_ips(real_endpoints)
+                if scraper_ips:
+                    self.cache_scraper.set_real_ips(scraper_ips)
+                log_buffer.log('Hosts', f'Requested Linux helper intercept update: {", ".join(sorted(desired_hosts))}')
                 return
 
             previous_hosts = set(self._active_intercept_hosts)
@@ -3200,14 +3215,16 @@ class ProxyMaster:
             self._running = False
             return
         if use_linux_helper:
-            from ..utils.linux_proxy_helper import linux_system_ca_needs_install, start_helper
+            from ..utils.linux_proxy_helper import start_helper
 
-            helper_ca_cert_path = ca_cert_path if linux_system_ca_needs_install(ca_cert_path) else None
+            require_linux_system_ca = bool(active_hosts & USERNAME_SPOOFER_INTERCEPT_HOSTS)
+            helper_ca_cert_path = ca_cert_path
 
             if not start_helper(
                 active_hosts,
                 backend_port=listen_port,
                 ca_cert_path=helper_ca_cert_path,
+                require_system_ca=require_linux_system_ca,
             ):
                 await self._proxy.stop()
                 _set_active_hosts_loopbacks(None)

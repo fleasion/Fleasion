@@ -18,10 +18,15 @@ from .plural import format_count
 
 HELPER_READY_FILE = CONFIG_DIR / 'linux_proxy_helper.ready'
 HELPER_STOP_FILE = CONFIG_DIR / 'linux_proxy_helper.stop'
+HELPER_HOSTS_FILE = CONFIG_DIR / 'linux_proxy_helper.hosts.json'
 HELPER_LOG_FILE = CONFIG_DIR / 'linux_proxy_helper.log'
 NSS_CERT_NICKNAME = 'Fleasion Proxy CA'
 SYSTEM_CA_NAME = 'fleasion-proxy-ca.crt'
 HELPER_BUNDLED_EXECUTABLE_NAME = 'fleasion-linux-proxy-helper'
+INSTALLED_HELPER_PATH = Path('/usr/local/libexec/fleasion-linux-proxy-helper')
+POLKIT_ACTION_NAMESPACE = 'com.fleasion.proxy-helper'
+POLKIT_POLICY_PATH = Path('/usr/share/polkit-1/actions') / f'{POLKIT_ACTION_NAMESPACE}.policy'
+LEGACY_POLKIT_POLICY_PATH = Path('/usr/local/share/polkit-1/actions') / f'{POLKIT_ACTION_NAMESPACE}.policy'
 SYSTEM_CA_DIRS = (
     Path('/usr/local/share/ca-certificates'),
     Path('/etc/pki/ca-trust/source/anchors'),
@@ -74,8 +79,62 @@ def _source_helper_path() -> Path:
     return Path(__file__).resolve().parents[1] / 'linux_proxy_helper_daemon.py'
 
 
+def _installable_helper_source() -> tuple[Path, bool]:
+    """Return the helper payload and whether it needs --linux-proxy-helper."""
+    frozen_meipass = getattr(sys, '_MEIPASS', None)
+    if frozen_meipass:
+        bundled_executable = Path(frozen_meipass) / HELPER_BUNDLED_EXECUTABLE_NAME
+        if bundled_executable.exists():
+            return bundled_executable, False
+        return Path(sys.executable), True
+    return _source_helper_path(), False
+
+
+def _is_trusted_installed_helper(path: Path = INSTALLED_HELPER_PATH) -> bool:
+    try:
+        stat_result = path.stat()
+    except OSError:
+        return False
+    return (
+        path.is_file()
+        and stat_result.st_uid == 0
+        and bool(stat_result.st_mode & 0o111)
+        and not bool(stat_result.st_mode & 0o022)
+    )
+
+
+def _policy_file_is_current(path: Path) -> bool:
+    try:
+        text = path.read_text(encoding='utf-8')
+    except OSError:
+        return False
+    return (
+        f'id="{POLKIT_ACTION_NAMESPACE}.run"' in text
+        and '<allow_active>yes</allow_active>' in text
+        and f'<annotate key="org.freedesktop.policykit.exec.path">{INSTALLED_HELPER_PATH}</annotate>' in text
+    )
+
+
+def _installed_policy_is_current() -> bool:
+    return (
+        _policy_file_is_current(POLKIT_POLICY_PATH)
+        and _policy_file_is_current(LEGACY_POLKIT_POLICY_PATH)
+    )
+
+
 def _helper_command() -> list[str]:
     """Return a Python-free helper command for frozen builds when possible."""
+    if _is_trusted_installed_helper():
+        return [str(INSTALLED_HELPER_PATH)]
+    helper_path = _source_helper_path()
+    if helper_path.name == HELPER_BUNDLED_EXECUTABLE_NAME:
+        return [str(helper_path)]
+    if getattr(sys, 'frozen', False):
+        return [sys.executable, '--linux-proxy-helper']
+    return [sys.executable, str(helper_path)]
+
+
+def _source_helper_command() -> list[str]:
     helper_path = _source_helper_path()
     if helper_path.name == HELPER_BUNDLED_EXECUTABLE_NAME:
         return [str(helper_path)]
@@ -91,23 +150,138 @@ def _read_ready() -> dict | None:
         return None
 
 
+def _current_process_start_time() -> str | None:
+    if not sys.platform.startswith('linux'):
+        return None
+    try:
+        content = Path(f'/proc/{os.getpid()}/stat').read_text(encoding='utf-8', errors='replace')
+        _before, after_comm = content.rsplit(')', 1)
+        fields = after_comm.strip().split()
+        return fields[19] if len(fields) > 19 else None
+    except OSError:
+        return None
+    except ValueError:
+        return None
+
+
+def update_helper_hosts(hosts: set[str]) -> bool:
+    """Ask the running privileged helper to apply a new allowlisted host set."""
+    try:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        tmp_path = HELPER_HOSTS_FILE.with_name(f'{HELPER_HOSTS_FILE.name}.tmp')
+        tmp_path.write_text(
+            json.dumps({'hosts': sorted(hosts)}, separators=(',', ':')),
+            encoding='utf-8',
+        )
+        tmp_path.replace(HELPER_HOSTS_FILE)
+        return True
+    except OSError as exc:
+        log_buffer.log('ProxyHelper', f'Failed to request Linux helper hosts update: {exc}')
+        return False
+
+
+def install_privileged_helper(*, enable_promptless: bool = False, timeout: float = 120.0) -> dict:
+    """Install the root-owned helper and Polkit policy with one admin approval."""
+    pkexec = shutil.which('pkexec')
+    if not pkexec:
+        return {'ok': False, 'error': 'pkexec_not_found'}
+
+    source, needs_helper_flag = _installable_helper_source()
+    cmd = [
+        pkexec,
+        *_source_helper_command(),
+        '--install-privileged-helper',
+        '--source-helper',
+        str(source),
+    ]
+    if needs_helper_flag:
+        cmd.append('--source-helper-needs-dispatch-flag')
+    if enable_promptless:
+        cmd.append('--enable-promptless')
+
+    try:
+        result = _run_host_command(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            timeout=timeout,
+        )
+    except Exception as exc:
+        return {'ok': False, 'error': str(exc)}
+
+    output = (result.stdout or '').strip()
+    try:
+        details = json.loads(output) if output else {}
+    except json.JSONDecodeError:
+        details = {'output': output}
+    details.setdefault('ok', result.returncode == 0)
+    if not details.get('ok'):
+        details.setdefault('error', (result.stderr or output or str(result.returncode)).strip())
+    return details
+
+
+def ensure_privileged_helper_installed(*, enable_promptless: bool = True) -> bool:
+    """Ensure runtime launches use Fleasion's installed Polkit action."""
+    if _is_trusted_installed_helper() and _installed_policy_is_current():
+        return True
+
+    log_buffer.log('ProxyHelper', 'Installing Fleasion Linux privileged helper for persistent proxy permissions')
+    details = install_privileged_helper(enable_promptless=enable_promptless)
+    if not details.get('ok'):
+        log_buffer.log(
+            'ProxyHelper',
+            f'Linux privileged helper install failed: {details.get("error") or details}',
+        )
+        return False
+
+    if not _is_trusted_installed_helper():
+        log_buffer.log('ProxyHelper', 'Linux privileged helper install finished but installed helper was not trusted')
+        return False
+    if not _installed_policy_is_current():
+        log_buffer.log('ProxyHelper', 'Linux privileged helper install finished but Polkit policy was not current')
+        return False
+
+    if details.get('promptless_rule'):
+        log_buffer.log('ProxyHelper', 'Installed promptless Polkit rule for Fleasion proxy helper')
+    else:
+        log_buffer.log('ProxyHelper', 'Installed Fleasion proxy helper Polkit action')
+    return True
+
+
 def start_helper(
     hosts: set[str],
     backend_port: int = MACOS_PROXY_BACKEND_PORT,
     timeout: float = 120.0,
     ca_cert_path: Path | None = None,
+    require_system_ca: bool = False,
 ) -> bool:
     """Start the privileged Linux port/hosts helper and wait until it is ready."""
     pkexec = shutil.which('pkexec')
     if not pkexec:
         log_buffer.log('ProxyHelper', 'Linux proxy helper failed: pkexec not found')
         return False
+    if require_system_ca and ca_cert_path is None:
+        log_buffer.log('ProxyHelper', 'Linux proxy helper failed: system CA trust is required but no CA cert was supplied')
+        return False
+    if not ensure_privileged_helper_installed(enable_promptless=True):
+        return False
+    if require_system_ca and ca_cert_path is not None and not linux_system_ca_is_current(ca_cert_path):
+        details = _install_ca_into_linux_system_store(ca_cert_path)
+        if not details.get('ok'):
+            log_buffer.log(
+                'ProxyHelper',
+                f'Linux proxy helper failed: system CA trust could not be installed: {details.get("error") or details}',
+            )
+            return False
 
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     with contextlib.suppress(OSError):
         HELPER_READY_FILE.unlink(missing_ok=True)
     with contextlib.suppress(OSError):
         HELPER_STOP_FILE.unlink(missing_ok=True)
+    update_helper_hosts(hosts)
 
     cmd = [
         pkexec,
@@ -122,6 +296,8 @@ def start_helper(
         str(HELPER_STOP_FILE),
         '--ready-file',
         str(HELPER_READY_FILE),
+        '--hosts-file',
+        str(HELPER_HOSTS_FILE),
         '--config-dir',
         str(CONFIG_DIR),
         '--owner-uid',
@@ -131,10 +307,15 @@ def start_helper(
         '--parent-pid',
         str(os.getpid()),
     ]
-    if ca_cert_path is not None:
+    parent_start_time = _current_process_start_time()
+    if parent_start_time:
+        cmd.extend(['--parent-start-time', parent_start_time])
+    if require_system_ca and ca_cert_path is not None:
         cmd.extend(['--ca-cert', str(ca_cert_path)])
+    if require_system_ca:
+        cmd.append('--require-system-ca')
 
-    log_buffer.log('ProxyHelper', 'Requesting Linux Polkit approval for proxy relay and hosts entries')
+    log_buffer.log('ProxyHelper', 'Requesting Linux Polkit approval for Fleasion hosts entries and port-443 relay')
     try:
         log_file = HELPER_LOG_FILE.open('ab')
     except OSError as exc:
@@ -153,6 +334,9 @@ def start_helper(
         ready = _read_ready()
         if ready:
             if ready.get('ok'):
+                if require_system_ca and not (ready.get('system_ca') or {}).get('ok'):
+                    log_buffer.log('ProxyHelper', 'Linux proxy helper failed: system CA trust was not confirmed')
+                    return False
                 log_buffer.log('ProxyHelper', f'Linux proxy helper ready on port {PROXY_PORT}')
                 return True
             log_buffer.log('ProxyHelper', f'Linux proxy helper failed: {ready.get("error") or "unknown error"}')
@@ -183,6 +367,8 @@ def stop_helper(timeout: float = 8.0) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
         if not HELPER_READY_FILE.exists():
+            with contextlib.suppress(OSError):
+                HELPER_HOSTS_FILE.unlink(missing_ok=True)
             return True
         time.sleep(0.2)
 
@@ -329,8 +515,8 @@ def _install_ca_into_browser_nss(ca_cert_path: Path) -> list[dict]:
     return results
 
 
-def linux_system_ca_needs_install(ca_cert_path: Path) -> bool:
-    """Return True when a supported Linux system CA target is missing/stale."""
+def linux_system_ca_is_current(ca_cert_path: Path) -> bool:
+    """Return True when a supported Linux system CA target already matches."""
     try:
         ca_bytes = ca_cert_path.read_bytes()
     except OSError:
@@ -347,9 +533,23 @@ def linux_system_ca_needs_install(ca_cert_path: Path) -> bool:
     for target in supported_targets:
         try:
             if target.read_bytes() == ca_bytes:
-                return False
+                return True
         except OSError:
             pass
+    return False
+
+
+def linux_system_ca_needs_install(ca_cert_path: Path) -> bool:
+    """Return True when a supported Linux system CA target is missing/stale."""
+    supported_targets = [
+        directory / SYSTEM_CA_NAME
+        for directory in SYSTEM_CA_DIRS
+        if directory.is_dir()
+    ]
+    if not supported_targets:
+        return False
+    if linux_system_ca_is_current(ca_cert_path):
+        return False
     return True
 
 

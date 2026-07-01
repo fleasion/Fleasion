@@ -20,6 +20,21 @@ from pathlib import Path
 HOSTS_FILE = Path('/etc/hosts')
 HOSTS_MARKER = '# Fleasion proxy entry'
 BUFFER_SIZE = 256 * 1024
+PROXY_PORT = 443
+BACKEND_PORT = 58443
+CONFIG_DIR_NAME = 'Fleasion'
+HELPER_READY_NAME = 'linux_proxy_helper.ready'
+HELPER_STOP_NAME = 'linux_proxy_helper.stop'
+HELPER_HOSTS_NAME = 'linux_proxy_helper.hosts.json'
+PROXY_CA_RELATIVE = Path('proxy_ca') / 'ca.crt'
+PROFILE_API_HOST = 'apis.roblox.com'
+ALLOWED_PROXY_HOSTS = frozenset({
+    'apis.roblox.com',
+    'assetdelivery.roblox.com',
+    'contentdelivery.roblox.com',
+    'fts.rbxcdn.com',
+    'gamejoin.roblox.com',
+})
 SYSTEM_CA_NAME = 'fleasion-proxy-ca.crt'
 SYSTEM_CA_DIRS = (
     Path('/usr/local/share/ca-certificates'),
@@ -27,6 +42,14 @@ SYSTEM_CA_DIRS = (
 )
 BOOT_GUARD_SERVICE = 'fleasion-hosts-restore.service'
 BOOT_GUARD_PATH = Path('/etc/systemd/system') / BOOT_GUARD_SERVICE
+INSTALLED_HELPER_PATH = Path('/usr/local/libexec/fleasion-linux-proxy-helper')
+INSTALLED_HELPER_SCRIPT_PATH = Path('/usr/local/libexec/fleasion-linux-proxy-helper.py')
+POLKIT_ACTION_NAMESPACE = 'com.fleasion.proxy-helper'
+POLKIT_RUN_ACTION_ID = f'{POLKIT_ACTION_NAMESPACE}.run'
+POLKIT_INSTALL_CA_ACTION_ID = f'{POLKIT_ACTION_NAMESPACE}.install-system-ca'
+POLKIT_POLICY_PATH = Path('/usr/share/polkit-1/actions') / f'{POLKIT_ACTION_NAMESPACE}.policy'
+LEGACY_POLKIT_POLICY_PATH = Path('/usr/local/share/polkit-1/actions') / f'{POLKIT_ACTION_NAMESPACE}.policy'
+POLKIT_PROMPTLESS_RULE_PATH = Path('/etc/polkit-1/rules.d/49-fleasion-proxy-helper.rules')
 
 
 def _host_subprocess_env() -> dict[str, str]:
@@ -62,14 +85,288 @@ def _log(message: str) -> None:
     print(message, flush=True)
 
 
-def _parent_alive(pid: int) -> bool:
+def _polkit_policy_xml() -> str:
+    helper = str(INSTALLED_HELPER_PATH)
+    return f'''<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD polkit Policy Configuration 1.0//EN"
+"http://www.freedesktop.org/software/polkit/policyconfig-1.dtd">
+<policyconfig>
+  <vendor>Fleasion</vendor>
+  <vendor_url>https://github.com/fleasion/Fleasion</vendor_url>
+
+  <action id="{POLKIT_RUN_ACTION_ID}">
+    <description>Run the Fleasion Linux proxy helper</description>
+    <message>Authentication is required to let Fleasion update Roblox proxy hosts and run its local port-443 relay.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">{helper}</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">--backend-port</annotate>
+  </action>
+
+  <action id="{POLKIT_INSTALL_CA_ACTION_ID}">
+    <description>Install the Fleasion proxy CA into Linux system trust</description>
+    <message>Authentication is required to trust Fleasion's proxy CA for system WebView traffic.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">{helper}</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">--install-system-ca</annotate>
+  </action>
+</policyconfig>
+'''
+
+
+def _polkit_promptless_rule() -> str:
+    return f'''polkit.addRule(function(action, subject) {{
+    if (action.id == "{POLKIT_RUN_ACTION_ID}" &&
+        subject.local && subject.active &&
+        (subject.isInGroup("sudo") || subject.isInGroup("wheel"))) {{
+        return polkit.Result.YES;
+    }}
+}});
+'''
+
+
+def _write_root_file(path: Path, content: str, mode: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding='utf-8')
+    os.chown(path, 0, 0)
+    path.chmod(mode)
+
+
+def _copy_root_file(source: Path, target: Path, mode: int) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+    os.chown(target, 0, 0)
+    target.chmod(mode)
+
+
+def _install_privileged_helper(
+    source_helper: str | None,
+    *,
+    enable_promptless: bool = False,
+    source_helper_needs_dispatch_flag: bool = False,
+) -> dict:
+    source = Path(source_helper or '').resolve(strict=False)
+    if not source.is_file() or source.is_symlink():
+        return {'ok': False, 'error': f'helper source is not a real file: {source}'}
+
+    try:
+        if source_helper_needs_dispatch_flag:
+            _copy_root_file(source, INSTALLED_HELPER_SCRIPT_PATH, 0o755)
+            wrapper = (
+                '#!/bin/sh\n'
+                f'exec {shlex.quote(str(INSTALLED_HELPER_SCRIPT_PATH))} --linux-proxy-helper "$@"\n'
+            )
+            _write_root_file(INSTALLED_HELPER_PATH, wrapper, 0o755)
+        elif source.suffix == '.py':
+            python = shutil.which('python3') or '/usr/bin/python3'
+            _copy_root_file(source, INSTALLED_HELPER_SCRIPT_PATH, 0o755)
+            wrapper = f'#!/bin/sh\nexec {shlex.quote(python)} {shlex.quote(str(INSTALLED_HELPER_SCRIPT_PATH))} "$@"\n'
+            _write_root_file(INSTALLED_HELPER_PATH, wrapper, 0o755)
+        else:
+            _copy_root_file(source, INSTALLED_HELPER_PATH, 0o755)
+
+        policy_xml = _polkit_policy_xml()
+        _write_root_file(POLKIT_POLICY_PATH, policy_xml, 0o644)
+        _write_root_file(LEGACY_POLKIT_POLICY_PATH, policy_xml, 0o644)
+
+        return {
+            'ok': True,
+            'helper': str(INSTALLED_HELPER_PATH),
+            'policy': str(POLKIT_POLICY_PATH),
+            'legacy_policy': str(LEGACY_POLKIT_POLICY_PATH),
+            'promptless_rule': None,
+        }
+    except Exception as exc:
+        return {'ok': False, 'error': str(exc)}
+
+
+def _linux_process_state_and_start_time(pid: int) -> tuple[str | None, str | None]:
+    content = Path(f'/proc/{pid}/stat').read_text(encoding='utf-8', errors='replace')
+    try:
+        _before, after_comm = content.rsplit(')', 1)
+    except ValueError:
+        return None, None
+    fields = after_comm.strip().split()
+    state = fields[0] if fields else None
+    start_time = fields[19] if len(fields) > 19 else None
+    return state, start_time
+
+
+def _parent_alive(pid: int, expected_start_time: str | None = None) -> bool:
     if pid <= 0:
         return True
+    if sys.platform.startswith('linux'):
+        try:
+            state, start_time = _linux_process_state_and_start_time(pid)
+        except FileNotFoundError:
+            return False
+        except OSError:
+            state, start_time = None, None
+        if state == 'Z':
+            return False
+        if expected_start_time and start_time and start_time != str(expected_start_time):
+            return False
+        if state is not None:
+            return True
     try:
         os.kill(pid, 0)
         return True
     except OSError:
         return False
+
+
+def _path_is_within(path: Path, parent: Path) -> bool:
+    return parent in (path, *path.parents)
+
+
+def _reject_symlink(path: Path, label: str) -> None:
+    try:
+        if path.is_symlink():
+            raise RuntimeError(f'{label} must not be a symlink: {path}')
+    except OSError as exc:
+        raise RuntimeError(f'could not inspect {label}: {exc}') from exc
+
+
+def _pkexec_uid() -> int | None:
+    raw_uid = os.environ.get('PKEXEC_UID')
+    if not raw_uid:
+        return None
+    try:
+        return int(raw_uid)
+    except ValueError as exc:
+        raise RuntimeError(f'invalid PKEXEC_UID: {raw_uid}') from exc
+
+
+def _validate_user_context(args: argparse.Namespace) -> tuple[int, int, Path]:
+    expected_uid = _pkexec_uid()
+    owner_uid = int(args.owner_uid)
+    if expected_uid is not None and owner_uid != expected_uid:
+        raise RuntimeError('owner uid does not match invoking user')
+
+    try:
+        pw_entry = pwd.getpwuid(owner_uid)
+    except KeyError as exc:
+        raise RuntimeError(f'unknown owner uid: {owner_uid}') from exc
+
+    owner_gid = int(args.owner_gid)
+    if owner_gid != int(pw_entry.pw_gid):
+        raise RuntimeError('owner gid does not match invoking user primary group')
+
+    user_home = Path(pw_entry.pw_dir).resolve()
+    if user_home == Path('/'):
+        raise RuntimeError('refusing to use / as invoking user home')
+    return owner_uid, owner_gid, user_home
+
+
+def _validate_config_paths(args: argparse.Namespace, user_home: Path) -> Path:
+    config_dir = Path(args.config_dir).resolve(strict=False)
+    if config_dir.name != CONFIG_DIR_NAME or not _path_is_within(config_dir, user_home):
+        raise RuntimeError(f'config dir must be the invoking user Fleasion config dir: {config_dir}')
+    if config_dir.exists() and (not config_dir.is_dir() or config_dir.is_symlink()):
+        raise RuntimeError(f'config dir must be a real directory: {config_dir}')
+
+    expected_paths = {
+        'ready file': config_dir / HELPER_READY_NAME,
+        'stop file': config_dir / HELPER_STOP_NAME,
+        'hosts update file': config_dir / HELPER_HOSTS_NAME,
+    }
+    provided_paths = {
+        'ready file': Path(args.ready_file).resolve(strict=False),
+        'stop file': Path(args.stop_file).resolve(strict=False),
+        'hosts update file': Path(args.hosts_file).resolve(strict=False) if getattr(args, 'hosts_file', None) else None,
+    }
+    for label, expected in expected_paths.items():
+        provided = provided_paths[label]
+        if provided != expected:
+            raise RuntimeError(f'{label} must be {expected}')
+        _reject_symlink(expected, label)
+
+    ca_cert = getattr(args, 'ca_cert', None)
+    if ca_cert:
+        ca_path = Path(ca_cert).resolve(strict=False)
+        expected_ca = config_dir / PROXY_CA_RELATIVE
+        if ca_path != expected_ca:
+            raise RuntimeError(f'CA certificate must be {expected_ca}')
+        _reject_symlink(ca_path, 'CA certificate')
+    return config_dir
+
+
+def _safe_write_user_file(path: Path, content: str, uid: int, gid: int, mode: int = 0o600) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    if hasattr(os, 'O_NOFOLLOW'):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(path, flags, mode)
+    try:
+        data = content.encode('utf-8')
+        os.write(fd, data)
+        os.fchown(fd, uid, gid)
+        os.fchmod(fd, mode)
+    finally:
+        os.close(fd)
+
+
+def _validate_runtime_args(args: argparse.Namespace) -> tuple[int, int]:
+    if args.backend_host != '127.0.0.1':
+        raise RuntimeError('backend host must be 127.0.0.1')
+    if args.backend_port != BACKEND_PORT:
+        raise RuntimeError(f'backend port must be {BACKEND_PORT}')
+    if args.listen_host != '127.0.0.1':
+        raise RuntimeError('listen host must be 127.0.0.1')
+    if args.listen_port != PROXY_PORT:
+        raise RuntimeError(f'listen port must be {PROXY_PORT}')
+
+    owner_uid, owner_gid, user_home = _validate_user_context(args)
+    _validate_config_paths(args, user_home)
+    return owner_uid, owner_gid
+
+
+def _validate_install_system_ca_args(ca_cert: str | None) -> Path:
+    ca_path = Path(ca_cert or '').resolve(strict=False)
+    invoking_uid = _pkexec_uid()
+    if invoking_uid is None:
+        _reject_symlink(ca_path, 'CA certificate')
+        return ca_path
+
+    try:
+        user_home = Path(pwd.getpwuid(invoking_uid).pw_dir).resolve()
+    except KeyError as exc:
+        raise RuntimeError(f'unknown invoking uid: {invoking_uid}') from exc
+    if (
+        ca_path.name != PROXY_CA_RELATIVE.name
+        or ca_path.parent.name != PROXY_CA_RELATIVE.parent.name
+        or ca_path.parent.parent.name != CONFIG_DIR_NAME
+        or not _path_is_within(ca_path, user_home)
+    ):
+        raise RuntimeError('CA certificate must be the invoking user Fleasion proxy CA')
+    _reject_symlink(ca_path, 'CA certificate')
+    return ca_path
+
+
+def _validate_hosts(hosts: set[str]) -> set[str]:
+    normalized = {str(host).strip().lower() for host in hosts if str(host).strip()}
+    if not normalized:
+        raise RuntimeError('no hosts supplied')
+    invalid = sorted(normalized - ALLOWED_PROXY_HOSTS)
+    if invalid:
+        raise RuntimeError(f'unsupported hosts requested: {", ".join(invalid)}')
+    return normalized
+
+
+def _read_hosts_update(path: Path) -> set[str]:
+    _reject_symlink(path, 'hosts update file')
+    payload = json.loads(path.read_text(encoding='utf-8'))
+    raw_hosts = payload.get('hosts') if isinstance(payload, dict) else payload
+    if not isinstance(raw_hosts, list):
+        raise RuntimeError('hosts update must contain a hosts list')
+    return _validate_hosts({str(host) for host in raw_hosts})
 
 
 def _clean_hosts_content(content: str) -> str:
@@ -309,6 +606,27 @@ def _install_system_ca(ca_cert: Path) -> dict:
     return {'ok': False, 'error': 'no_supported_system_trust_store'}
 
 
+def _system_ca_is_current(ca_cert: Path) -> bool:
+    return any(
+        target.is_file() and _target_has_ca(ca_cert, target)
+        for target in (directory / SYSTEM_CA_NAME for directory in SYSTEM_CA_DIRS if directory.is_dir())
+    )
+
+
+def _ensure_system_ca_for_hosts(hosts: set[str], ca_cert: str | None, *, install: bool = False) -> dict | None:
+    """Install/verify system trust when WebKit-visible API hosts are requested."""
+    if PROFILE_API_HOST not in hosts:
+        return None
+    if not ca_cert:
+        return {'ok': False, 'error': 'missing_ca_cert_for_profile_api'}
+    ca_path = Path(ca_cert)
+    if install:
+        return _install_system_ca(ca_path)
+    if _system_ca_is_current(ca_path):
+        return {'ok': True, 'stores': ['system-ca:already-current']}
+    return {'ok': False, 'error': 'system_ca_not_installed'}
+
+
 def _repair_config_ownership(config_dir: Path, uid: int, gid: int) -> None:
     """Return stale root-owned Fleasion config files to the interactive user."""
     if uid <= 0 or gid < 0:
@@ -414,14 +732,29 @@ async def _relay_client(
 
 
 async def _serve(args: argparse.Namespace) -> int:
-    hosts = {host.strip().lower() for host in args.hosts.split(',') if host.strip()}
-    if not hosts:
-        raise RuntimeError('no hosts supplied')
+    owner_uid, owner_gid = _validate_runtime_args(args)
+    hosts = _validate_hosts({host.strip().lower() for host in args.hosts.split(',') if host.strip()})
 
     stop_file = Path(args.stop_file)
     ready_file = Path(args.ready_file)
     ready_file.unlink(missing_ok=True)
     stop_file.unlink(missing_ok=True)
+
+    _repair_config_ownership(Path(args.config_dir), owner_uid, owner_gid)
+    _repair_sober_cert_ownership(owner_uid, owner_gid)
+    system_ca_details = _ensure_system_ca_for_hosts(hosts, args.ca_cert, install=False)
+    if system_ca_details is not None:
+        details = system_ca_details
+        if details.get('ok'):
+            stores = ', '.join(details.get('stores') or [])
+            _log(f'Linux system trust store ready{f" ({stores})" if stores else ""}')
+        else:
+            error = details.get('error') or details
+            _log(f'Linux system trust-store install skipped/failed: {error}')
+            if args.require_system_ca:
+                raise RuntimeError(f'Linux system trust-store install failed: {error}')
+    elif args.require_system_ca:
+        raise RuntimeError('Linux system trust-store install failed: missing CA certificate')
 
     server = await asyncio.start_server(
         lambda reader, writer: _relay_client(reader, writer, args.backend_host, args.backend_port),
@@ -431,26 +764,54 @@ async def _serve(args: argparse.Namespace) -> int:
     sockets = ', '.join(str(sock.getsockname()) for sock in (server.sockets or ()))
     _log(f'Listening on {sockets}; relaying to {args.backend_host}:{args.backend_port}')
 
-    _repair_config_ownership(Path(args.config_dir), args.owner_uid, args.owner_gid)
-    _repair_sober_cert_ownership(args.owner_uid, args.owner_gid)
-    if args.ca_cert:
-        details = _install_system_ca(Path(args.ca_cert))
-        if details.get('ok'):
-            stores = ', '.join(details.get('stores') or [])
-            _log(f'Installed CA into Linux system trust store{f" ({stores})" if stores else ""}')
-        else:
-            _log(f'Linux system trust-store install skipped/failed: {details.get("error") or details}')
     _clear_hosts()
     _install_boot_guard()
     _apply_hosts(hosts)
     _flush_dns()
-    ready_file.write_text(json.dumps({'ok': True, 'pid': os.getpid()}), encoding='utf-8')
-    with contextlib.suppress(OSError):
-        os.chown(ready_file, args.owner_uid, args.owner_gid)
+    ready_payload = {'ok': True, 'pid': os.getpid()}
+    if system_ca_details is not None:
+        ready_payload['system_ca'] = system_ca_details
+    _safe_write_user_file(ready_file, json.dumps(ready_payload), owner_uid, owner_gid)
     _log(f'Applied {len(hosts)} hosts entries')
 
+    current_hosts = set(hosts)
+    hosts_file = Path(args.hosts_file) if args.hosts_file else None
+    hosts_file_mtime_ns: int | None = None
+
     try:
-        while not stop_file.exists() and _parent_alive(args.parent_pid):
+        shutdown_requested = getattr(args, 'shutdown_requested', lambda: False)
+        while (
+            not shutdown_requested()
+            and not stop_file.exists()
+            and _parent_alive(args.parent_pid, getattr(args, 'parent_start_time', None))
+        ):
+            if hosts_file is not None:
+                try:
+                    stat_result = hosts_file.stat()
+                    if stat_result.st_mtime_ns != hosts_file_mtime_ns:
+                        hosts_file_mtime_ns = stat_result.st_mtime_ns
+                        updated_hosts = _read_hosts_update(hosts_file)
+                        if updated_hosts != current_hosts:
+                            update_ca_details = _ensure_system_ca_for_hosts(
+                                updated_hosts,
+                                args.ca_cert,
+                                install=False,
+                            )
+                            if update_ca_details is not None and not update_ca_details.get('ok'):
+                                _log(
+                                    'Skipped Linux hosts update because system trust-store '
+                                    f'install failed: {update_ca_details.get("error") or update_ca_details}'
+                                )
+                            else:
+                                _clear_hosts()
+                                _apply_hosts(updated_hosts)
+                                _flush_dns()
+                                current_hosts = set(updated_hosts)
+                                _log(f'Applied live hosts update: {", ".join(sorted(current_hosts))}')
+                except FileNotFoundError:
+                    pass
+                except Exception as exc:
+                    _log(f'Ignored invalid Linux helper hosts update: {exc}')
             await asyncio.sleep(0.5)
     finally:
         server.close()
@@ -468,6 +829,11 @@ async def _serve(args: argparse.Namespace) -> int:
 def main() -> None:
     parser = argparse.ArgumentParser(description='Fleasion privileged Linux proxy helper')
     parser.add_argument('--install-system-ca', action='store_true')
+    parser.add_argument('--install-privileged-helper', action='store_true')
+    parser.add_argument('--source-helper')
+    parser.add_argument('--source-helper-needs-dispatch-flag', action='store_true')
+    parser.add_argument('--enable-promptless', action='store_true')
+    parser.add_argument('--require-system-ca', action='store_true')
     parser.add_argument('--ca-cert')
     parser.add_argument('--backend-host', default='127.0.0.1')
     parser.add_argument('--backend-port', type=int)
@@ -476,17 +842,33 @@ def main() -> None:
     parser.add_argument('--hosts')
     parser.add_argument('--stop-file')
     parser.add_argument('--ready-file')
+    parser.add_argument('--hosts-file')
     parser.add_argument('--config-dir')
     parser.add_argument('--owner-uid', type=int)
     parser.add_argument('--owner-gid', type=int)
     parser.add_argument('--parent-pid', type=int, default=0)
+    parser.add_argument('--parent-start-time')
     args = parser.parse_args()
 
     if hasattr(os, 'geteuid') and os.geteuid() != 0:
         raise SystemExit('Fleasion Linux proxy helper must run as root')
 
+    if args.install_privileged_helper:
+        details = _install_privileged_helper(
+            args.source_helper,
+            enable_promptless=args.enable_promptless,
+            source_helper_needs_dispatch_flag=args.source_helper_needs_dispatch_flag,
+        )
+        print(json.dumps(details), flush=True)
+        raise SystemExit(0 if details.get('ok') else 1)
+
     if args.install_system_ca:
-        details = _install_system_ca(Path(args.ca_cert or ''))
+        try:
+            ca_cert = _validate_install_system_ca_args(args.ca_cert)
+        except Exception as exc:
+            print(json.dumps({'ok': False, 'error': str(exc)}), flush=True)
+            raise SystemExit(1)
+        details = _install_system_ca(ca_cert)
         print(json.dumps(details), flush=True)
         raise SystemExit(0 if details.get('ok') else 1)
 
@@ -502,28 +884,33 @@ def main() -> None:
     if any(value is None for value in required):
         raise SystemExit('missing required proxy helper arguments')
 
+    try:
+        owner_uid, owner_gid = _validate_runtime_args(args)
+    except Exception as exc:
+        raise SystemExit(str(exc))
+
     shutting_down = False
 
     def _handle_signal(_signum, _frame) -> None:
         nonlocal shutting_down
         shutting_down = True
-        if args.stop_file:
-            Path(args.stop_file).touch()
 
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT, _handle_signal)
+    args.shutdown_requested = lambda: shutting_down
 
     try:
         raise SystemExit(asyncio.run(_serve(args)))
     except Exception as exc:
         if args.ready_file:
             ready_file = Path(args.ready_file)
-            ready_file.write_text(
-                json.dumps({'ok': False, 'error': str(exc)}),
-                encoding='utf-8',
-            )
             with contextlib.suppress(OSError):
-                os.chown(ready_file, args.owner_uid, args.owner_gid)
+                _safe_write_user_file(
+                    ready_file,
+                    json.dumps({'ok': False, 'error': str(exc)}),
+                    owner_uid,
+                    owner_gid,
+                )
         if not shutting_down:
             _log(f'Helper failed: {exc}')
         with contextlib.suppress(Exception):

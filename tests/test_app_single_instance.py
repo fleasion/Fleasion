@@ -2,9 +2,11 @@ from Fleasion import app as app_module
 from Fleasion.app import (
     _handle_single_instance_command,
     _looks_like_macos_fleasion_command,
+    _should_reclaim_stale_single_instance,
     _should_sync_autostart_on_launch,
     kill_other_fleasion_instances,
 )
+from PyQt6.QtCore import QSharedMemory
 
 
 def test_macos_fleasion_process_matching_accepts_real_launch_forms():
@@ -24,6 +26,32 @@ def test_macos_fleasion_process_matching_rejects_unrelated_commands():
         "/bin/zsh -c ps -axo command | rg 'Fleasion-v2.2.1|launcher.py'"
     )
     assert not _looks_like_macos_fleasion_command("/usr/bin/python3 /tmp/not-fleasion.py")
+
+
+def test_fleasion_process_matching_rejects_linux_proxy_helper_commands():
+    assert not _looks_like_macos_fleasion_command(
+        "/opt/Fleasion/Fleasion --linux-proxy-helper --backend-port 8443"
+    )
+    assert not _looks_like_macos_fleasion_command(
+        "/usr/bin/python3 /project/launcher.py --linux-proxy-helper --backend-port 8443"
+    )
+    assert not _looks_like_macos_fleasion_command(
+        "/usr/bin/python3 /project/src/Fleasion/linux_proxy_helper_daemon.py --backend-port 8443"
+    )
+
+
+def test_stale_single_instance_can_be_reclaimed_on_linux_without_gui_process(monkeypatch):
+    monkeypatch.setattr(app_module.sys, "platform", "linux")
+    monkeypatch.setattr(app_module, "_other_fleasion_pids", lambda: [])
+
+    assert _should_reclaim_stale_single_instance(QSharedMemory.SharedMemoryError.AlreadyExists)
+
+
+def test_stale_single_instance_not_reclaimed_on_linux_with_gui_process(monkeypatch):
+    monkeypatch.setattr(app_module.sys, "platform", "linux")
+    monkeypatch.setattr(app_module, "_other_fleasion_pids", lambda: [1234])
+
+    assert not _should_reclaim_stale_single_instance(QSharedMemory.SharedMemoryError.AlreadyExists)
 
 
 def test_kill_other_instances_prefers_graceful_exit(monkeypatch):

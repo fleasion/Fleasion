@@ -329,6 +329,83 @@ def test_linux_proxy_start_emits_error_when_helper_denied(tmp_path, monkeypatch)
     assert errors == [("linux_helper_unavailable", {})]
 
 
+def test_linux_helper_does_not_intercept_profile_api_when_spoofer_disabled(monkeypatch):
+    monkeypatch.setattr(proxy_master, "_use_linux_privileged_helper", lambda: True)
+
+    proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
+    proxy.config_manager = SimpleNamespace(settings={})
+    proxy.username_spoofer = SimpleNamespace(is_enabled=lambda: False)
+    proxy._roblox_player_running = True
+
+    assert proxy._desired_intercept_hosts() == set(proxy_master.BASE_INTERCEPT_HOSTS)
+
+
+def test_linux_helper_intercepts_profile_api_when_spoofer_enabled(monkeypatch):
+    monkeypatch.setattr(proxy_master, "_use_linux_privileged_helper", lambda: True)
+
+    proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
+    proxy.config_manager = SimpleNamespace(settings={})
+    proxy.username_spoofer = SimpleNamespace(is_enabled=lambda: True)
+    proxy._roblox_player_running = True
+
+    assert proxy._desired_intercept_hosts() == (
+        set(proxy_master.BASE_INTERCEPT_HOSTS)
+        | set(proxy_master.USERNAME_SPOOFER_INTERCEPT_HOSTS)
+    )
+
+
+def test_linux_helper_preloads_profile_api_when_spoofer_enabled_before_sober(monkeypatch):
+    monkeypatch.setattr(proxy_master, "_use_linux_privileged_helper", lambda: True)
+
+    proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
+    proxy.config_manager = SimpleNamespace(settings={})
+    proxy.username_spoofer = SimpleNamespace(is_enabled=lambda: True)
+    proxy._roblox_player_running = False
+
+    assert proxy._desired_intercept_hosts() == (
+        set(proxy_master.BASE_INTERCEPT_HOSTS)
+        | set(proxy_master.USERNAME_SPOOFER_INTERCEPT_HOSTS)
+    )
+
+
+def test_linux_helper_refresh_requests_helper_update_without_direct_hosts_write(monkeypatch):
+    logs = []
+    helper_updates = []
+    endpoint_hosts = []
+
+    class ProxyStub:
+        def set_upstream_endpoints(self, endpoints):
+            endpoint_hosts.append(set(endpoints))
+
+    monkeypatch.setattr(proxy_master, "_use_linux_privileged_helper", lambda: True)
+    monkeypatch.setattr(proxy_master, "_add_hosts_entries", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("direct add should not run")))
+    monkeypatch.setattr(proxy_master, "_remove_hosts_entries", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("direct remove should not run")))
+    monkeypatch.setattr(proxy_master, "_resolve_real_endpoints", lambda hosts: {host: [] for host in hosts})
+    monkeypatch.setattr(proxy_master, "log_buffer", SimpleNamespace(log=lambda category, message: logs.append((category, message))))
+
+    import Fleasion.utils.linux_proxy_helper as linux_proxy_helper
+
+    monkeypatch.setattr(linux_proxy_helper, "update_helper_hosts", lambda hosts: helper_updates.append(set(hosts)) or True)
+
+    proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
+    proxy.config_manager = SimpleNamespace(settings={})
+    proxy.username_spoofer = SimpleNamespace(is_enabled=lambda: True)
+    proxy._roblox_player_running = False
+    proxy._active_intercept_hosts = set(proxy_master.BASE_INTERCEPT_HOSTS)
+    proxy._hosts_installed = True
+    proxy._proxy = ProxyStub()
+    proxy._lock = threading.Lock()
+    proxy.cache_scraper = SimpleNamespace(set_real_ips=lambda _ips: None)
+
+    proxy.refresh_username_spoofer_interception()
+
+    expected = set(proxy_master.BASE_INTERCEPT_HOSTS) | set(proxy_master.USERNAME_SPOOFER_INTERCEPT_HOSTS)
+    assert helper_updates == [expected]
+    assert endpoint_hosts == [expected]
+    assert proxy._active_intercept_hosts == expected
+    assert any("Requested Linux helper intercept update" in message for _category, message in logs)
+
+
 def test_macos_roblox_dir_discovery_excludes_studio_saved_dirs(tmp_path, monkeypatch):
     player = tmp_path / "Roblox.app" / "Contents" / "Resources"
     studio = tmp_path / "RobloxStudio.app" / "Contents" / "Resources"

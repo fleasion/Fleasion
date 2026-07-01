@@ -1254,13 +1254,18 @@ class RobloxExitMonitor(QObject):
             log_buffer.log('Cache', msg)
 
 
-def _looks_like_macos_fleasion_command(command: str) -> bool:
-    """Return whether a macOS process command is a Fleasion app/dev launch."""
+def _looks_like_fleasion_gui_command(command: str) -> bool:
+    """Return whether a process command is a Fleasion GUI app/dev launch."""
     try:
         tokens = shlex.split(command)
     except ValueError:
         tokens = command.split()
     if not tokens:
+        return False
+
+    if '--linux-proxy-helper' in tokens:
+        return False
+    if any(Path(token).name == 'linux_proxy_helper_daemon.py' for token in tokens):
         return False
 
     executable = Path(tokens[0]).name.lower()
@@ -1275,8 +1280,13 @@ def _looks_like_macos_fleasion_command(command: str) -> bool:
     return False
 
 
+def _looks_like_macos_fleasion_command(command: str) -> bool:
+    """Compatibility wrapper for tests and older imports."""
+    return _looks_like_fleasion_gui_command(command)
+
+
 def _other_fleasion_pids() -> list:
-    """Return PIDs of other Fleasion processes (excludes current process and its parent)."""
+    """Return PIDs of other Fleasion GUI processes (excludes current process and its parent)."""
     import os
     import subprocess
 
@@ -1300,7 +1310,7 @@ def _other_fleasion_pids() -> list:
                     pid = int(pid_text)
                 except (ValueError, TypeError):
                     continue
-                if pid not in safe_pids and _looks_like_macos_fleasion_command(command):
+                if pid not in safe_pids and _looks_like_fleasion_gui_command(command):
                     pids.append(pid)
         except Exception:
             pass
@@ -1350,6 +1360,15 @@ def _other_fleasion_pids() -> list:
         pass
 
     return pids
+
+
+def _should_reclaim_stale_single_instance(error) -> bool:
+    """Return True when a stale Qt singleton marker can be safely reclaimed."""
+    if error != QSharedMemory.SharedMemoryError.AlreadyExists:
+        return False
+    if not (sys.platform == 'darwin' or sys.platform.startswith('linux')):
+        return False
+    return not _other_fleasion_pids()
 
 
 def _request_running_instance_exit(timeout_ms: int = 2000) -> bool:
@@ -1477,8 +1496,28 @@ def main():
     _parser.add_argument('--proxy-debug-mode', choices=['a', 'b', 'c', 'd', 'e', 'full'], help=_ap.SUPPRESS)
     _parser.add_argument('--fleasion-user-localappdata', help=_ap.SUPPRESS)
     _parser.add_argument('--install-desktop-entry', '--install-linux-desktop', action='store_true',
-                         help='Install the Linux desktop launcher and Polkit helper, then exit')
+                         help='Install the Linux desktop launcher, then exit')
+    _parser.add_argument('--install-linux-privileged-helper', action='store_true',
+                         help='Install the root-owned Linux proxy helper and Polkit policy, then exit')
+    _parser.add_argument('--linux-helper-promptless', action='store_true',
+                         help='Allow active sudo/wheel users to run the Linux proxy helper without future prompts')
     _args, _ = _parser.parse_known_args()
+    if _args.install_linux_privileged_helper:
+        if not sys.platform.startswith('linux'):
+            print('Linux privileged helper installation is only supported on Linux.', file=sys.stderr)
+            sys.exit(1)
+        from .utils.linux_proxy_helper import install_privileged_helper
+
+        result = install_privileged_helper(enable_promptless=_args.linux_helper_promptless)
+        if not result.get('ok'):
+            print(f'Failed to install Linux privileged helper: {result.get("error") or result}', file=sys.stderr)
+            sys.exit(1)
+        print(f'Installed Linux privileged helper: {result["helper"]}')
+        print(f'Installed Polkit policy: {result["policy"]}')
+        if result.get('promptless_rule'):
+            print(f'Installed promptless Polkit rule: {result["promptless_rule"]}')
+        sys.exit(0)
+
     if _args.install_desktop_entry:
         if not sys.platform.startswith('linux'):
             print('Desktop entry installation is only supported on Linux.', file=sys.stderr)
@@ -1554,14 +1593,11 @@ def main():
 
     shared_memory = QSharedMemory(_SINGLE_INSTANCE_KEY)
     _shared_memory_created = shared_memory.create(1)
-    if (
-        not _shared_memory_created
-        and sys.platform == 'darwin'
-        and shared_memory.error() == QSharedMemory.SharedMemoryError.AlreadyExists
-        and not _other_fleasion_pids()
-    ):
-        # A hard termination can leave Qt's POSIX shared-memory segment behind.
-        # Attach/detach removes it when no real Fleasion process still owns it.
+    if not _shared_memory_created and _should_reclaim_stale_single_instance(shared_memory.error()):
+        # A hard termination can leave Qt's native shared-memory segment behind
+        # on Unix-like platforms. Attach/detach removes it when no real
+        # Fleasion GUI process still owns it; Linux proxy helpers are ignored by
+        # _other_fleasion_pids() because they are not app instances.
         _stale = QSharedMemory(_SINGLE_INSTANCE_KEY)
         if _stale.attach():
             _stale.detach()

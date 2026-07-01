@@ -1,4 +1,6 @@
+import asyncio
 import subprocess
+from types import SimpleNamespace
 
 from Fleasion import linux_proxy_helper_daemon as daemon
 
@@ -150,6 +152,87 @@ def test_install_system_ca_skips_update_when_target_is_current(tmp_path, monkeyp
         'failures': [],
     }
     assert calls == []
+
+
+def test_read_hosts_update_rejects_non_allowlisted_hosts(tmp_path):
+    hosts_file = tmp_path / 'hosts.json'
+    hosts_file.write_text('{"hosts":["assetdelivery.roblox.com","example.com"]}', encoding='utf-8')
+
+    try:
+        daemon._read_hosts_update(hosts_file)
+    except RuntimeError as exc:
+        assert 'unsupported hosts requested: example.com' in str(exc)
+    else:
+        raise AssertionError('expected invalid hosts update failure')
+
+
+def test_read_hosts_update_accepts_allowlisted_hosts(tmp_path):
+    hosts_file = tmp_path / 'hosts.json'
+    hosts_file.write_text('{"hosts":["apis.roblox.com","gamejoin.roblox.com"]}', encoding='utf-8')
+
+    assert daemon._read_hosts_update(hosts_file) == {'apis.roblox.com', 'gamejoin.roblox.com'}
+
+
+def test_parent_alive_rejects_linux_zombie_parent(monkeypatch):
+    monkeypatch.setattr(daemon.sys, 'platform', 'linux')
+    monkeypatch.setattr(daemon, '_linux_process_state_and_start_time', lambda _pid: ('Z', '12345'))
+
+    assert daemon._parent_alive(1234, '12345') is False
+
+
+def test_parent_alive_rejects_reused_linux_pid(monkeypatch):
+    monkeypatch.setattr(daemon.sys, 'platform', 'linux')
+    monkeypatch.setattr(daemon, '_linux_process_state_and_start_time', lambda _pid: ('S', '99999'))
+
+    assert daemon._parent_alive(1234, '12345') is False
+
+
+def test_parent_alive_accepts_matching_linux_parent(monkeypatch):
+    monkeypatch.setattr(daemon.sys, 'platform', 'linux')
+    monkeypatch.setattr(daemon, '_linux_process_state_and_start_time', lambda _pid: ('S', '12345'))
+
+    assert daemon._parent_alive(1234, '12345') is True
+
+
+def test_serve_requires_system_ca_before_applying_hosts(tmp_path, monkeypatch):
+    hosts_calls = []
+    home = tmp_path / 'home'
+    config_dir = home / '.config' / 'Fleasion'
+    ca = config_dir / 'proxy_ca' / 'ca.crt'
+    ca.parent.mkdir(parents=True)
+    ca.write_text('ca', encoding='utf-8')
+
+    monkeypatch.setattr(daemon, '_repair_config_ownership', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(daemon, '_repair_sober_cert_ownership', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(daemon, '_system_ca_is_current', lambda _path: False)
+    monkeypatch.setattr(daemon, '_apply_hosts', lambda hosts: hosts_calls.append(hosts))
+    monkeypatch.setattr(daemon.pwd, 'getpwuid', lambda _uid: SimpleNamespace(pw_dir=str(home), pw_gid=1000))
+
+    args = SimpleNamespace(
+        hosts='apis.roblox.com',
+        stop_file=str(config_dir / daemon.HELPER_STOP_NAME),
+        ready_file=str(config_dir / daemon.HELPER_READY_NAME),
+        hosts_file=str(config_dir / daemon.HELPER_HOSTS_NAME),
+        config_dir=str(config_dir),
+        owner_uid=1000,
+        owner_gid=1000,
+        ca_cert=str(ca),
+        require_system_ca=True,
+        backend_host='127.0.0.1',
+        backend_port=daemon.BACKEND_PORT,
+        listen_host='127.0.0.1',
+        listen_port=daemon.PROXY_PORT,
+        parent_pid=0,
+    )
+
+    try:
+        asyncio.run(daemon._serve(args))
+    except RuntimeError as exc:
+        assert 'Linux system trust-store install failed' in str(exc)
+    else:
+        raise AssertionError('expected required system CA failure')
+
+    assert hosts_calls == []
 
 
 def test_repair_sober_cert_ownership_repairs_only_user_home_paths(tmp_path, monkeypatch):

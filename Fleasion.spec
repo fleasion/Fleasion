@@ -105,8 +105,12 @@ elif sys.platform == 'darwin':
     tmp_ret = collect_all('Cryptodome')
     datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 elif sys.platform.startswith('linux'):
-    if _bundled_linux_helper.exists():
-        datas.append((str(_bundled_linux_helper), '.'))
+    if not _bundled_linux_helper.exists():
+        raise SystemExit(
+            'Missing dist/fleasion-linux-proxy-helper. '
+            'Build the Linux proxy helper first with FleasionLinuxProxyHelper.spec.'
+        )
+    datas.append((str(_bundled_linux_helper), '.'))
     datas.append(('src/Fleasion/linux_proxy_helper_daemon.py', '.'))
 
 a = Analysis(
