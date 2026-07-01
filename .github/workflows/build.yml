@@ -62,6 +62,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 libportaudio2 libpipewire-0.3-0 libspa-0.2-modules libpulse0
 
+      - name: Build Linux proxy helper
+        if: runner.os == 'Linux'
+        run: uv run pyinstaller --clean --noconfirm FleasionLinuxProxyHelper.spec
+
       - name: Build Windows package
         if: runner.os == 'Windows'
         run: uv run pyinstaller --clean --noconfirm Fleasion.spec

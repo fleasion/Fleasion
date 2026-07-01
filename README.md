@@ -40,6 +40,10 @@ uv run Fleasion --install-desktop-entry
 # (OPTIONAL) Compile as a standalone Windows executable
 uv run pyinstaller Fleasion.spec
 
+# Linux only: build the privileged proxy helper before packaging the app
+uv run pyinstaller FleasionLinuxProxyHelper.spec
+uv run pyinstaller Fleasion.spec
+
 # (OPTIONAL) Build the native macOS application bundle
 ./scripts/build_macos.sh
 ```
