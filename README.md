@@ -16,6 +16,8 @@ Download the current standalone build from the [Releases](https://github.com/fle
 
 If the `.exe` fails to launch on startup with a `DLL load failed` error, move the executable to a different folder, such as your Documents directory. Windows can sometimes pick up bad DLLs from the same directory as the `.exe`, and placing it elsewhere avoids that conflict.
 
+If you're on Linux and having issues with launching the GUI, please install `PortAudio` on your distro. How? Look it up.
+
 ## Requirements for Building from Source
 
 - **Windows 10+, macOS, or Linux with Sober Flatpak**
