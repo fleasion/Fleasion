@@ -121,6 +121,47 @@ def test_enabled_menu_button_press_loads_new_config_file_from_disk(tmp_path, mon
     assert app is not None
 
 
+def test_enabled_menu_uses_one_enabled_config_snapshot_per_rebuild(tmp_path, monkeypatch):
+    app = _qapp()
+    config_dir = tmp_path / 'FleasionNT'
+    configs_dir = config_dir / 'configs'
+    monkeypatch.setattr(manager_module, 'CONFIG_DIR', config_dir)
+    monkeypatch.setattr(manager_module, 'CONFIG_FILE', config_dir / 'settings.json')
+    monkeypatch.setattr(manager_module, 'CONFIGS_FOLDER', configs_dir)
+
+    config_manager = manager_module.ConfigManager()
+    names = [f'Config {i:03d}' for i in range(120)]
+    for name in names:
+        (configs_dir / f'{name}.json').write_text(
+            json.dumps({'replacement_rules': []}),
+            encoding='utf-8',
+        )
+    config_manager.refresh_config_names()
+    config_manager.enabled_configs = names[::2]
+
+    is_enabled_calls = []
+    original_is_config_enabled = config_manager.is_config_enabled
+
+    def record_is_config_enabled(name):
+        is_enabled_calls.append(name)
+        return original_is_config_enabled(name)
+
+    monkeypatch.setattr(config_manager, 'is_config_enabled', record_is_config_enabled)
+    window = ReplacerConfigWindow(config_manager)
+    try:
+        is_enabled_calls.clear()
+        monkeypatch.setattr(window, '_update_editing_button_style', lambda: None)
+        window._rebuild_enabled_menu()
+
+        assert not is_enabled_calls
+        assert window.enabled_menu.item_widgets['Config 000'].isChecked()
+        assert not window.enabled_menu.item_widgets['Config 001'].isChecked()
+    finally:
+        window.enabled_menu.hide()
+        window.close()
+    assert app is not None
+
+
 def test_replace_ids_parser_splits_multiline_pastes(tmp_path, monkeypatch):
     app = _qapp()
     config_dir = tmp_path / 'FleasionNT'

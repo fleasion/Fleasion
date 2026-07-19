@@ -1083,6 +1083,7 @@ class ReplacerConfigWindow(QDialog):
         # Clean up enabled configs that no longer exist on disk
         current_configs = self.config_manager.config_names
         enabled = self.config_manager.enabled_configs
+        enabled_set = set(enabled)
         for name in enabled[:]:  # Copy list to allow modification
             if name not in current_configs:
                 self.config_manager.set_config_enabled(name, False)
@@ -1091,7 +1092,7 @@ class ReplacerConfigWindow(QDialog):
             [
                 {
                     'name': name,
-                    'checked': self.config_manager.is_config_enabled(name),
+                    'checked': name in enabled_set,
                 }
                 for name in current_configs
             ],
@@ -1479,12 +1480,13 @@ class ReplacerConfigWindow(QDialog):
         """Rebuild the editing config menu."""
         self._sync_config_state_from_disk()
         current_configs = self.config_manager.config_names
+        enabled = set(self.config_manager.enabled_configs)
 
         entries = []
         for name in current_configs:
             # Add a small subtle red dot icon for profiles that are not enabled.
             try:
-                if not self.config_manager.is_config_enabled(name):
+                if name not in enabled:
                     icon = self._make_status_icon('#cc5555')
                 else:
                     # Mark enabled profiles with a subtle green dot
