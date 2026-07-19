@@ -14,7 +14,7 @@ To request help or request content, join our community <a href="https://discord.
 
 Download the current standalone build from the [Releases](https://github.com/fleasion/Fleasion/releases) page. No Python installation required.
 
-If the `.exe` fails to launch on startup with a `DLL load failed` error, move the executable to a different folder, such as your Documents directory. Windows can sometimes pick up bad DLLs from the same directory as the `.exe`, and placing it elsewhere avoids that conflict. Also clear your windows %temp% directory to remove any stale MEI files.
+If the `.exe` fails to launch on startup with a `DLL load failed` error, move the executable to a different folder, such as your Documents directory. Windows can sometimes pick up bad DLLs from the same directory as the `.exe`, and placing it elsewhere avoids that conflict. Also clear your windows `%temp%` directory to remove any stale MEI files.
 
 If you're on Linux and having issues with launching the GUI, please install `PortAudio` on your distro. How? Look it up.
 
