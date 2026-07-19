@@ -90,6 +90,45 @@ class ConfigManagerEncodingTests(unittest.TestCase):
 
             self.assertEqual(manager.replacement_rules, [])
 
+    def test_external_config_inspection_accepts_legacy_shapes_and_rejects_scalars(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_manager_module = self._load_manager_for(Path(tmp))
+            configs_dir = Path(tmp) / 'FleasionNT' / 'configs'
+            configs_dir.mkdir(parents=True)
+            manager = config_manager_module.ConfigManager()
+
+            root_list = configs_dir / 'root-list.txt'
+            root_list.write_text(json.dumps([{'name': 'Rule'}]), encoding='utf-8')
+            scalar = configs_dir / 'scalar.txt'
+            scalar.write_text('1', encoding='utf-8')
+            binary = configs_dir / 'binary.bin'
+            binary.write_bytes(b'\x89PNG\r\n\x1a\n\x00binary')
+            compressed = configs_dir / 'compressed.bin'
+            compressed.write_bytes(b'\xff' * 64)
+
+            self.assertEqual(manager.inspect_config_file(root_list).status, 'valid')
+            self.assertEqual(manager.inspect_config_file(scalar).status, 'invalid')
+            self.assertEqual(manager.inspect_config_file(binary).status, 'binary')
+            self.assertEqual(manager.inspect_config_file(compressed).status, 'binary')
+
+    def test_external_config_import_does_not_overwrite_destination(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_manager_module = self._load_manager_for(Path(tmp))
+            configs_dir = Path(tmp) / 'FleasionNT' / 'configs'
+            configs_dir.mkdir(parents=True)
+            manager = config_manager_module.ConfigManager()
+
+            destination = configs_dir / 'Copied.json'
+            destination.write_text(json.dumps({'replacement_rules': []}), encoding='utf-8')
+            source = configs_dir / 'Copied.txt'
+            source.write_text(json.dumps({'replacement_rules': [{'name': 'new'}]}), encoding='utf-8')
+
+            with self.assertRaises(FileExistsError):
+                manager.import_config_file(source)
+
+            self.assertTrue(source.exists())
+            self.assertEqual(json.loads(destination.read_text(encoding='utf-8')), {'replacement_rules': []})
+
     def test_large_list_root_config_is_loaded_as_replacement_rules(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_manager_module = self._load_manager_for(Path(tmp))

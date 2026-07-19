@@ -162,6 +162,51 @@ def test_enabled_menu_uses_one_enabled_config_snapshot_per_rebuild(tmp_path, mon
     assert app is not None
 
 
+def test_config_menu_buttons_do_not_rebuild_during_mouse_press(tmp_path, monkeypatch):
+    app = _qapp()
+    config_dir = tmp_path / 'FleasionNT'
+    configs_dir = config_dir / 'configs'
+    monkeypatch.setattr(manager_module, 'CONFIG_DIR', config_dir)
+    monkeypatch.setattr(manager_module, 'CONFIG_FILE', config_dir / 'settings.json')
+    monkeypatch.setattr(manager_module, 'CONFIGS_FOLDER', configs_dir)
+
+    class SpyReplacerConfigWindow(ReplacerConfigWindow):
+        def __init__(self, *args, **kwargs):
+            self.editing_rebuilds = 0
+            self.enabled_rebuilds = 0
+            super().__init__(*args, **kwargs)
+
+        def _rebuild_editing_menu(self, *args, **kwargs):
+            self.editing_rebuilds += 1
+            return super()._rebuild_editing_menu(*args, **kwargs)
+
+        def _rebuild_enabled_menu(self, *args, **kwargs):
+            self.enabled_rebuilds += 1
+            return super()._rebuild_enabled_menu(*args, **kwargs)
+
+    config_manager = manager_module.ConfigManager()
+    window = SpyReplacerConfigWindow(config_manager)
+    try:
+        window.editing_rebuilds = 0
+        window.enabled_rebuilds = 0
+        window.config_menu_btn.pressed.emit()
+        window.enabled_menu_btn.pressed.emit()
+        assert window.editing_rebuilds == 0
+        assert window.enabled_rebuilds == 0
+
+        window.config_menu.aboutToShow.emit()
+        assert window.editing_rebuilds == 1
+        assert window.enabled_rebuilds == 1
+
+        window.enabled_rebuilds = 0
+        window.enabled_menu.aboutToShow.emit()
+        assert window.enabled_rebuilds == 1
+    finally:
+        window.enabled_menu.hide()
+        window.close()
+    assert app is not None
+
+
 def test_replace_ids_parser_splits_multiline_pastes(tmp_path, monkeypatch):
     app = _qapp()
     config_dir = tmp_path / 'FleasionNT'

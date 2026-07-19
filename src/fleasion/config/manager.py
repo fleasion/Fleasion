@@ -2,11 +2,13 @@
 
 import json
 import locale
+import os
 import stat
 import threading
 from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from ..utils.paths import CONFIG_DIR, CONFIG_FILE, CONFIGS_FOLDER
 
@@ -106,6 +108,55 @@ _VIRTUAL_ANIM_TYPES = {
     'r15 animation': 'R15Animation',
     'non-player animation': 'NonPlayerAnimation',
 }
+
+ConfigFileStatus = Literal['valid', 'invalid', 'binary', 'unreadable']
+
+
+@dataclass(frozen=True)
+class ConfigFileInspection:
+    """Result of inspecting a candidate file for import into the configs folder."""
+
+    status: ConfigFileStatus
+    data: dict | None = None
+
+
+def _looks_like_utf16_or_utf32(raw: bytes) -> bool:
+    """Return whether NUL placement is consistent with a text Unicode encoding."""
+    sample = raw[:8192]
+    if not sample or b'\x00' not in sample:
+        return False
+    if sample.startswith((b'\xff\xfe', b'\xfe\xff', b'\xff\xfe\x00\x00', b'\x00\x00\xfe\xff')):
+        return True
+
+    nul_positions = [index for index, value in enumerate(sample) if value == 0]
+    if len(nul_positions) < max(2, len(sample) // 8):
+        return False
+    even_nuls = sum(index % 2 == 0 for index in nul_positions)
+    odd_nuls = len(nul_positions) - even_nuls
+    return max(even_nuls, odd_nuls) >= len(nul_positions) * 0.8
+
+
+def _is_probably_binary(raw: bytes) -> bool:
+    """Use conservative content heuristics to distinguish binary from invalid text."""
+    if not raw or _looks_like_utf16_or_utf32(raw):
+        return False
+
+    sample = raw[:8192]
+    if b'\x00' in sample:
+        return True
+
+    try:
+        sample.decode('utf-8')
+        return False
+    except UnicodeDecodeError:
+        pass
+
+    replacement_count = sample.decode('utf-8', errors='replace').count('\ufffd')
+    control_count = sum(
+        value < 0x20 and value not in (0x09, 0x0A, 0x0C, 0x0D) or value == 0x7F
+        for value in sample
+    )
+    return control_count / len(sample) > 0.1 or replacement_count / len(sample) > 0.3
 DEFAULT_SETTINGS = {
     'strip_textures': False,
     'enabled_configs': [],
@@ -375,14 +426,13 @@ class ConfigManager:
                 seen.add(normalized)
         return tuple(encodings)
 
-    def _load_json_file(self, path: Path) -> Any:
-        """Load JSON and recover legacy non-UTF files when possible."""
-        raw = path.read_bytes()
+    def _decode_json_bytes(self, raw: bytes) -> tuple[Any, bool]:
+        """Decode JSON bytes and report whether a fallback text encoding was used."""
         decode_error: UnicodeDecodeError | None = None
         json_error: json.JSONDecodeError | None = None
 
         try:
-            return _json_loads(raw)
+            return _json_loads(raw), False
         except UnicodeDecodeError as exc:
             decode_error = exc
         except json.JSONDecodeError as exc:
@@ -394,21 +444,78 @@ class ConfigManager:
                 loaded = _json_loads(text)
             except LookupError, UnicodeDecodeError, json.JSONDecodeError:
                 continue
-
-            # Normalize recovered configs back to UTF-8 JSON so future launches
-            # do not depend on locale-specific decoding.
-            try:
-                self._clear_read_only(path)
-                _write_json(path, loaded)
-            except OSError:
-                pass
-            return loaded
+            return loaded, True
 
         if decode_error is not None:
             raise decode_error
         if json_error is not None:
             raise json_error
-        return _json_loads(raw)
+        return _json_loads(raw), False
+
+    def _load_json_file(self, path: Path) -> Any:
+        """Load JSON and recover legacy non-UTF files when possible."""
+        raw = path.read_bytes()
+        loaded, recovered = self._decode_json_bytes(raw)
+
+        # Normalize recovered configs back to UTF-8 JSON so future launches
+        # do not depend on locale-specific decoding.
+        if recovered:
+            try:
+                self._clear_read_only(path)
+                _write_json(path, loaded)
+            except OSError:
+                pass
+        return loaded
+
+    def inspect_config_file(self, path: Path) -> ConfigFileInspection:
+        """Inspect an external file without modifying it or requiring a .json suffix."""
+        path = Path(path)
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            return ConfigFileInspection('unreadable')
+
+        try:
+            loaded, _recovered = self._decode_json_bytes(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            if _is_probably_binary(raw):
+                return ConfigFileInspection('binary')
+            return ConfigFileInspection('invalid')
+
+        # The existing loader accepts both the current object form and the
+        # legacy root-list form. Scalar JSON values are not Fleasion configs.
+        if not isinstance(loaded, dict | list):
+            return ConfigFileInspection('invalid')
+        return ConfigFileInspection('valid', self._normalize_config_data(loaded))
+
+    @staticmethod
+    def config_import_destination(path: Path) -> Path:
+        """Return the same path with its final extension normalized to .json."""
+        path = Path(path)
+        if path.suffix:
+            return path.with_suffix('.json')
+        return path.with_name(f'{path.name}.json')
+
+    def import_config_file(self, path: Path) -> Path:
+        """Safely adopt an inspected external config and invalidate config caches."""
+        path = Path(path)
+        destination = self.config_import_destination(path)
+        same_file = False
+        if destination.exists():
+            try:
+                same_file = os.path.samefile(path, destination)
+            except OSError:
+                same_file = path == destination
+            if not same_file:
+                raise FileExistsError(destination)
+
+        if not same_file and path != destination:
+            path.rename(destination)
+        with self._lock:
+            self._config_names_cache = None
+            self._config_names_signature = None
+            self._mark_replacements_dirty()
+        return destination
 
     @staticmethod
     def _normalize_config_data(data: Any) -> dict:

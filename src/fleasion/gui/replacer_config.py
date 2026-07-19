@@ -438,6 +438,12 @@ class _ScrollableConfigMenu(QMenu):
         self.addAction(self._content_action)
         self.aboutToShow.connect(self._guard_opening_mouse_release)
 
+    def sizeHint(self):  # noqa: N802
+        """Use the embedded scroll area's size without rebuilding the action."""
+        if self._natural_content_size.isValid() and self.scroll_area.size().isValid():
+            return self.scroll_area.size()
+        return super().sizeHint()
+
     def set_entries(self, entries: list[dict], *, minimum_width: int = 0):
         """Replace the displayed config rows."""
         old_container = self.scroll_area.takeWidget()
@@ -538,8 +544,6 @@ class _ScrollableConfigMenu(QMenu):
 
     def _reset_action_geometry(self):
         """Invalidate QMenu/QWidgetAction cached geometry after row count changes."""
-        self.removeAction(self._content_action)
-        self.addAction(self._content_action)
         self.adjustSize()
         self.resize(self.sizeHint())
         self.updateGeometry()
@@ -830,7 +834,6 @@ class ReplacerConfigWindow(QDialog):
         self.config_menu.aboutToShow.connect(self._rebuild_editing_menu)
         self.config_menu.item_selected.connect(self._on_config_select)
         self.config_menu_btn.setMenu(self.config_menu)
-        self.config_menu_btn.pressed.connect(self._rebuild_editing_menu)
         row1.addWidget(self.config_menu_btn)
 
         self._rebuild_editing_menu()
@@ -846,7 +849,6 @@ class ReplacerConfigWindow(QDialog):
         self.enabled_menu.aboutToShow.connect(self._rebuild_enabled_menu)
         self.enabled_menu.item_toggled.connect(self._on_config_toggle)
         self.enabled_menu_btn.setMenu(self.enabled_menu)
-        self.enabled_menu_btn.pressed.connect(self._rebuild_enabled_menu)
         row1.addWidget(self.enabled_menu_btn)
 
         self._rebuild_enabled_menu()
@@ -1448,6 +1450,10 @@ class ReplacerConfigWindow(QDialog):
 
     def _refresh_combo(self):
         """Refresh config controls from the current files on disk."""
+        self._sync_config_state_from_disk()
+
+    def refresh_configs_from_disk(self):
+        """Refresh config controls after an external config-folder change."""
         self._sync_config_state_from_disk()
 
     def _sync_config_state_from_disk(self, *, update_enabled_menu: bool = True) -> bool:

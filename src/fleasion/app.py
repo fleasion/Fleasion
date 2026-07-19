@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
 )
 
 from . import __version__
-from .config import ConfigManager
+from .config import ConfigFolderWatcher, ConfigManager
 from .modifications import ModificationManager
 from .prejsons import download_prejsons
 from .proxy import ProxyMaster, check_and_patch_running_roblox_ca
@@ -1958,6 +1958,24 @@ def main():
     proxy_error_invoker = _ProxyErrorInvoker()
     proxy_error_invoker.show_proxy_error.connect(proxy_error_invoker.handle_proxy_error)
     tray_ref: dict[str, SystemTray | None] = {'tray': None}
+
+    def _refresh_config_surfaces() -> None:
+        config_manager.refresh_config_names()
+        tray = tray_ref.get('tray')
+        dashboard = getattr(tray, 'dashboard_window', None)
+        if dashboard is not None:
+            try:
+                dashboard.refresh_configs_from_disk()
+            except Exception as exc:
+                log_buffer.log('Config', f'Failed to refresh Dashboard after config import: {exc}')
+
+    config_folder_watcher = ConfigFolderWatcher(
+        config_manager,
+        parent=app,
+        parent_provider=_visible_parent_widget,
+    )
+    config_folder_watcher.configs_changed.connect(_refresh_config_surfaces)
+    app.aboutToQuit.connect(config_folder_watcher.stop)
 
     def _handle_proxy_features_start_failure(reason: str):
         _disable_proxy_features_after_start_failure(config_manager, tray_ref.get('tray'), reason)

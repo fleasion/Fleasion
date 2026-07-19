@@ -1,0 +1,234 @@
+"""Watch the Fleasion config folder for externally copied configuration files."""
+
+from collections.abc import Callable
+from pathlib import Path
+
+from PyQt6.QtCore import QFileSystemWatcher, QObject, QTimer, pyqtSignal
+from PyQt6.QtWidgets import QApplication, QMessageBox, QWidget
+
+from ..utils.paths import CONFIGS_FOLDER
+from .manager import ConfigManager
+
+
+def _is_ignored_name(name: str) -> bool:
+    """Ignore hidden non-JSON files and known editor atomic-save artifacts."""
+    folded = name.casefold()
+    if not name.startswith('.'):
+        return False
+    if folded.startswith('.goutputstream-'):
+        return True
+    return not folded.endswith('.json')
+
+
+class ConfigFolderWatcher(QObject):
+    """Import newly appearing config files while Fleasion is running."""
+
+    configs_changed = pyqtSignal()
+
+    def __init__(
+        self,
+        config_manager: ConfigManager,
+        parent: QObject | None = None,
+        *,
+        folder: Path = CONFIGS_FOLDER,
+        parent_provider: Callable[[], QWidget | None] | None = None,
+    ):
+        super().__init__(parent)
+        self.config_manager = config_manager
+        self.folder = Path(folder)
+        self.folder.mkdir(parents=True, exist_ok=True)
+        self._parent_provider = parent_provider
+        self._stopped = False
+        self._scan_scheduled = False
+        self._warning_active = False
+
+        self._known_names = self._scan_names()
+        self._pending_names: set[str] = set()
+        self._ignored_names: set[str] = set()
+        self._warning_names: dict[str, str] = {}
+        self._last_import_failure: str | None = None
+
+        self._filesystem_watcher = QFileSystemWatcher([str(self.folder)], self)
+        self._filesystem_watcher.directoryChanged.connect(self._schedule_scan)
+
+        self._scan_timer = QTimer(self)
+        self._scan_timer.setSingleShot(True)
+        self._scan_timer.timeout.connect(self._run_scheduled_scan)
+
+        self._retry_timer = QTimer(self)
+        self._retry_timer.setSingleShot(True)
+        self._retry_timer.timeout.connect(self._retry_pending)
+
+    def stop(self) -> None:
+        """Stop watching and cancel pending import work."""
+        if self._stopped:
+            return
+        self._stopped = True
+        self._scan_timer.stop()
+        self._retry_timer.stop()
+        self._filesystem_watcher.removePaths(self._filesystem_watcher.directories())
+
+    def _scan_names(self) -> set[str]:
+        try:
+            return {
+                entry.name
+                for entry in self.folder.iterdir()
+                if entry.is_file() and not _is_ignored_name(entry.name)
+            }
+        except OSError:
+            return set()
+
+    def _schedule_scan(self, _path: str = '') -> None:
+        if self._stopped or self._scan_scheduled:
+            return
+        self._scan_scheduled = True
+        self._scan_timer.start(0)
+
+    def _run_scheduled_scan(self) -> None:
+        self._scan_scheduled = False
+        self._scan()
+
+    def _current_files(self) -> dict[str, Path]:
+        try:
+            return {
+                entry.name: entry
+                for entry in self.folder.iterdir()
+                if entry.is_file() and not _is_ignored_name(entry.name)
+            }
+        except OSError:
+            return {}
+
+    def _scan(self) -> None:
+        if self._stopped:
+            return
+
+        files = self._current_files()
+        current_names = set(files)
+        self._ignored_names.intersection_update(current_names)
+        self._pending_names.intersection_update(current_names)
+
+        new_names = sorted((current_names - self._known_names) - self._ignored_names)
+        self._known_names = current_names
+        for name in new_names:
+            self._check_new_file(name, files[name])
+
+        if self._pending_names:
+            self._retry_timer.start(1000)
+
+    def _check_new_file(self, name: str, path: Path) -> None:
+        # Defer every candidate until it has survived the one-second stability
+        # window. Editors write through temporary files and rename them into
+        # place; inspecting those files immediately races their atomic save.
+        self._pending_names.add(name)
+
+    def _try_import(self, name: str, path: Path) -> bool:
+        self._last_import_failure = None
+        try:
+            destination = self.config_manager.import_config_file(path)
+        except FileExistsError:
+            self._last_import_failure = 'collision'
+            return False
+        except OSError:
+            self._last_import_failure = 'import'
+            return False
+
+        self._known_names.discard(name)
+        self._known_names.add(destination.name)
+        self._pending_names.discard(name)
+        self._warning_names.pop(name, None)
+        self.config_manager.refresh_config_names()
+        self.configs_changed.emit()
+        return True
+
+    def _retry_pending(self) -> None:
+        if self._stopped:
+            return
+
+        files = self._current_files()
+        current_names = set(files)
+        self._ignored_names.intersection_update(current_names)
+        new_names = sorted((current_names - self._known_names) - self._ignored_names)
+        pending = sorted(self._pending_names)
+        self._pending_names.clear()
+        self._known_names = current_names
+
+        for name in new_names:
+            self._check_new_file(name, files[name])
+
+        for name in pending:
+            path = files.get(name)
+            if path is None or name in self._ignored_names:
+                continue
+
+            inspection = self.config_manager.inspect_config_file(path)
+            if inspection.status == 'valid':
+                if not self._try_import(name, path):
+                    self._warning_names[name] = {
+                        'collision': 'A config with the destination name already exists.',
+                        'import': 'Fleasion could not import this file.',
+                    }.get(self._last_import_failure or 'import', 'Fleasion could not import this file.')
+            elif inspection.status == 'invalid':
+                self._warning_names[name] = 'This is not valid Fleasion configuration JSON.'
+            elif inspection.status == 'unreadable':
+                self._warning_names[name] = 'Fleasion could not read this file.'
+            # Binary files are intentionally ignored after the delayed check.
+
+        if self._pending_names:
+            self._retry_timer.start(1000)
+        self._show_next_warning()
+
+    def _show_next_warning(self) -> None:
+        if self._stopped or self._warning_active or not self._warning_names:
+            return
+
+        details = dict(sorted(self._warning_names.items(), key=lambda item: item[0].casefold()))
+        self._warning_names.clear()
+        names = list(details)
+        message = self._warning_message(names, details)
+
+        self._warning_active = True
+        try:
+            dialog = QMessageBox(self._parent_widget())
+            dialog.setWindowTitle('Config Import Warning')
+            dialog.setIcon(QMessageBox.Icon.Warning)
+            dialog.setText(message)
+            ok_button = dialog.addButton('OK', QMessageBox.ButtonRole.AcceptRole)
+            dialog.setDefaultButton(ok_button)
+            result = dialog.exec()
+            if result == int(QMessageBox.DialogCode.Accepted):
+                self._ignored_names.update(names)
+        finally:
+            self._warning_active = False
+
+        # The dialog is modal, so files may have disappeared while it was open.
+        # A follow-up scan is what makes the gone-then-reappeared rule precise.
+        self._schedule_scan()
+        QTimer.singleShot(0, self._show_next_warning)
+
+    @staticmethod
+    def _warning_message(names: list[str], details: dict[str, str]) -> str:
+        quoted = [f'“{name}”' for name in names]
+        if all(reason.startswith('This is not valid') for reason in details.values()):
+            if len(quoted) == 1:
+                return f'{quoted[0]} is not a valid Fleasion config.'
+            if len(quoted) <= 3:
+                return f'{", ".join(quoted[:-1])} and {quoted[-1]} are not valid Fleasion configs.'
+            return (
+                f'{", ".join(quoted[:3])}, and {len(quoted) - 3} more '
+                'are not valid Fleasion configs.'
+            )
+
+        lines = ['Some files could not be imported into Fleasion configs:']
+        lines.extend(f'• {name}: {reason}' for name, reason in details.items())
+        return '\n'.join(lines)
+
+    def _parent_widget(self) -> QWidget | None:
+        if self._parent_provider is not None:
+            try:
+                parent = self._parent_provider()
+                if parent is not None:
+                    return parent
+            except Exception:
+                pass
+        app = QApplication.instance()
+        return app.activeWindow() if app is not None else None
