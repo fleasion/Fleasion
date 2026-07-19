@@ -6,6 +6,8 @@ import json
 import os
 import sys
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
 from pathlib import Path
 
@@ -19,6 +21,7 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import QPainter
 from PyQt6.QtWidgets import (
+    QAbstractItemDelegate,
     QAbstractItemView,
     QApplication,
     QCheckBox,
@@ -59,7 +62,7 @@ from ..modifications.platform_targets import (
     read_current_platform_original_asset,
     target_path_for_current_platform,
 )
-from ..utils import format_count, log_buffer, open_folder
+from ..utils import APP_CACHE_DIR, format_count, log_buffer, open_folder
 from ..utils.http import http_get
 from ..utils.threading import run_in_thread
 from .file_drop import FileDropLineEdit
@@ -606,8 +609,16 @@ class FastFlagValueDelegate(QStyledItemDelegate):
         if name.startswith(self._BOOLEAN_FLAG_PREFIXES):
             editor = CompactBooleanComboBox(parent)
             editor.addItems(['True', 'False'])
+            editor.activated.connect(
+                partial(self._commit_and_close_boolean_editor, editor)
+            )
             return editor
         return super().createEditor(parent, option, index)
+
+    def _commit_and_close_boolean_editor(self, editor: QComboBox, _selected_index: int):
+        """Finish the table edit as soon as a boolean is picked from its popup."""
+        self.commitData.emit(editor)
+        self.closeEditor.emit(editor, QAbstractItemDelegate.EndEditHint.NoHint)
 
     def setEditorData(self, editor, index):
         if isinstance(editor, QComboBox):
@@ -1546,9 +1557,38 @@ class FastFlagProfilesDialog(QDialog):
 
 
 class FFlagBrowserDialog(QDialog):
-    """Browse the FastFlags currently published for the Roblox desktop client."""
+    """Browse live Roblox FastFlags and client FastVariables known to the tracker."""
 
     _SETTINGS_URL = 'https://clientsettingscdn.roblox.com/v2/settings/application/PCDesktopClient'
+    _SETTINGS_APPLICATIONS = (
+        'PCDesktopClient',
+        'MacDesktopClient',
+        'PlayStationClient',
+        'XboxClient',
+        'iOSApp',
+        'UWPApp',
+        'AndroidApp',
+        'PCStudioApp',
+        'MacStudioApp',
+        'PCStudioBootstrapper',
+        'MacStudioBootstrapper',
+        'PCClientBootstrapper',
+        'MacClientBootstrapper',
+    )
+    _SETTINGS_BUCKETS = ('', '/bucket/zcanary', '/bucket/zintegration')
+    _TRACKER_VARIABLES_URL = (
+        'https://raw.githubusercontent.com/MaximumADHD/Roblox-Client-Tracker/'
+        'roblox/FVariables.txt'
+    )
+    _HISTORICAL_TRACKER_VARIABLES_URL = (
+        'https://raw.githubusercontent.com/MaximumADHD/Roblox-Client-Tracker/'
+        '03a46e5f35e7aa5d85310189b477caee20b20761/FVariables.txt'
+    )
+    _BYPASS_CUSTOM_FFLAGS_HEADER = {'X-Fleasion-Bypass-Custom-FFlags': '1'}
+    _UNPUBLISHED_VALUE = 'No value'
+    _CACHE_PATH = APP_CACHE_DIR / 'fflag_browser.json'
+    _CACHE_TTL_SECONDS = 60 * 60
+    _CACHE_VERSION = 1
     _FAMILIES = (
         'DFFlag',
         'DFInt',
@@ -1569,7 +1609,10 @@ class FFlagBrowserDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle('Browse Roblox FastFlags')
         self.setMinimumSize(820, 580)
-        self._flags: dict[str, str] = {}
+        # ``None`` means the variable is known to exist in the client, but
+        # Roblox has not published a current value through ClientSettings.
+        self._flags: dict[str, str | None] = {}
+        self._cache_loaded = False
         self.selected_flags: dict[str, str] = {}
         self._setup_ui()
         self.flags_loaded.connect(self._apply_flags)
@@ -1581,8 +1624,8 @@ class FFlagBrowserDialog(QDialog):
         layout.setSpacing(8)
 
         description = QLabel(
-            'Browse the FastFlags currently published for Roblox PC. Select one or more flags '
-            'to add them to your live custom FastFlag list with their current Roblox values.'
+            'Browse FastFlags found across Roblox ClientSettings releases and public client '
+            'tracker lists. Entries without a current PC value are added blank.'
         )
         description.setWordWrap(True)
         layout.addWidget(description)
@@ -1599,7 +1642,7 @@ class FFlagBrowserDialog(QDialog):
         controls.addWidget(self._family_filter)
 
         self._refresh_button = QPushButton('Refresh')
-        self._refresh_button.clicked.connect(self._refresh)
+        self._refresh_button.clicked.connect(lambda: self._refresh(force=True))
         controls.addWidget(self._refresh_button)
         layout.addLayout(controls)
 
@@ -1653,9 +1696,100 @@ class FFlagBrowserDialog(QDialog):
             raise ValueError('Roblox returned no usable FastFlags.')
         return flags
 
-    def _refresh(self):
+    @classmethod
+    def _extract_tracker_flags(cls, payload: bytes) -> dict[str, None]:
+        """Extract known FastVariable names from the public Client Tracker list."""
+        try:
+            lines = payload.decode('utf-8').splitlines()
+        except UnicodeDecodeError as exc:
+            raise ValueError('The FastVariable tracker returned invalid text.') from exc
+
+        flags: dict[str, None] = {}
+        for line in lines:
+            # The tracker currently writes entries as ``[C++] FFlagExample``.
+            _, marker, raw_name = line.partition('] ')
+            if not marker:
+                continue
+            name = raw_name.strip()
+            if name.startswith(cls._FAMILIES):
+                flags[name] = None
+        if not flags:
+            raise ValueError('The FastVariable tracker returned no usable FastFlags.')
+        return flags
+
+    @classmethod
+    def _settings_urls(cls) -> tuple[str, ...]:
+        """Return the live, canary, and integration endpoints used by the tracker."""
+        base_url = 'https://clientsettingscdn.roblox.com/v2/settings/application/'
+        urls = [cls._SETTINGS_URL]
+        urls.extend(
+            f'{base_url}{application}{bucket}'
+            for bucket in cls._SETTINGS_BUCKETS
+            for application in cls._SETTINGS_APPLICATIONS
+            if f'{base_url}{application}{bucket}' != cls._SETTINGS_URL
+        )
+        return tuple(urls)
+
+    @classmethod
+    def _read_cache(cls, *, now: float | None = None) -> dict[str, str | None] | None:
+        """Return the recent merged result, ignoring malformed or expired cache files."""
+        try:
+            cached = json.loads(cls._CACHE_PATH.read_text(encoding='utf-8'))
+            if cached.get('version') != cls._CACHE_VERSION:
+                return None
+            fetched_at = float(cached['fetched_at'])
+            age = (time.time() if now is None else now) - fetched_at
+            raw_flags = cached['flags']
+            if not 0 <= age < cls._CACHE_TTL_SECONDS or not isinstance(raw_flags, dict):
+                return None
+        except (OSError, ValueError, TypeError, AttributeError, KeyError, json.JSONDecodeError):
+            return None
+
+        flags: dict[str, str | None] = {}
+        for raw_name, value in raw_flags.items():
+            name = raw_name.strip() if isinstance(raw_name, str) else ''
+            if name.startswith(cls._FAMILIES) and (value is None or isinstance(value, str)):
+                flags[name] = value
+        return flags or None
+
+    @classmethod
+    def _write_cache(cls, flags: dict[str, str | None], *, now: float | None = None):
+        """Atomically persist a successfully resolved union for the next hour."""
+        temporary_path = cls._CACHE_PATH.with_name(f'.{cls._CACHE_PATH.name}.tmp')
+        try:
+            cls._CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            temporary_path.write_text(
+                json.dumps(
+                    {
+                        'version': cls._CACHE_VERSION,
+                        'fetched_at': time.time() if now is None else now,
+                        'flags': flags,
+                    },
+                    separators=(',', ':'),
+                ),
+                encoding='utf-8',
+            )
+            temporary_path.replace(cls._CACHE_PATH)
+        except OSError:
+            # The browser remains useful if its optional cache cannot be written.
+            pass
+        finally:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def _refresh(self, force: bool = False):
         if self._refresh_button.isEnabled() is False:
             return
+        if not force:
+            cached_flags = self._read_cache()
+            if cached_flags is not None:
+                self._cache_loaded = True
+                self.flags_loaded.emit(cached_flags)
+                return
+
+        self._cache_loaded = False
         self._refresh_button.setEnabled(False)
         self._count.setText('Retrieving FastFlags…')
         self._count.setStyleSheet('color: #999;')
@@ -1663,12 +1797,55 @@ class FFlagBrowserDialog(QDialog):
 
     def _fetch_flags(self):
         try:
-            payload = json.loads(http_get(self._SETTINGS_URL, timeout=20))
-            self.flags_loaded.emit(self._extract_flags(payload))
+            # Tell Fleasion's ClientSettings interceptor to pass this browser
+            # request through. Active custom flags must not look like values
+            # published by Roblox.
+            flags: dict[str, str | None] = {}
+            settings_urls = self._settings_urls()
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                futures = {
+                    executor.submit(
+                        http_get,
+                        url,
+                        20,
+                        self._BYPASS_CUSTOM_FFLAGS_HEADER,
+                    ): url
+                    for url in settings_urls
+                }
+                for future in as_completed(futures):
+                    url = futures[future]
+                    try:
+                        settings = self._extract_flags(json.loads(future.result()))
+                    except (OSError, ValueError, json.JSONDecodeError):
+                        # Some platform/channel combinations are intentionally
+                        # unavailable. The remaining published endpoints are
+                        # still useful to the browser.
+                        continue
+                    if url == self._SETTINGS_URL:
+                        flags.update(settings)
+                    else:
+                        flags.update({name: None for name in settings if name not in flags})
+
+            for tracker_url in (
+                self._TRACKER_VARIABLES_URL,
+                self._HISTORICAL_TRACKER_VARIABLES_URL,
+            ):
+                try:
+                    tracker_flags = self._extract_tracker_flags(http_get(tracker_url, timeout=20))
+                except (OSError, ValueError):
+                    # A tracker snapshot should add names when available, but a
+                    # temporary GitHub failure must not hide published values.
+                    continue
+                flags.update({name: value for name, value in tracker_flags.items() if name not in flags})
+
+            if not flags:
+                raise ValueError('No configured FastFlag source returned usable data.')
+            self._write_cache(flags)
+            self.flags_loaded.emit(flags)
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             self.load_failed.emit(f'Could not retrieve Roblox FastFlags: {exc}')
 
-    def _apply_flags(self, flags: dict[str, str]):
+    def _apply_flags(self, flags: dict[str, str | None]):
         self._flags = dict(sorted(flags.items(), key=lambda item: item[0].casefold()))
         current_family = self._family_filter.currentData()
         family_counts: dict[str, int] = {}
@@ -1700,8 +1877,9 @@ class FFlagBrowserDialog(QDialog):
         self._table.setUpdatesEnabled(False)
         try:
             for row, (name, value) in enumerate(self._flags.items()):
+                display_value = value if value is not None else self._UNPUBLISHED_VALUE
                 matches = (not family or self._family_for(name) == family) and (
-                    not query or query in name.casefold() or query in value.casefold()
+                    not query or query in name.casefold() or query in display_value.casefold()
                 )
                 self._table.setRowHidden(row, not matches)
                 visible_count += matches
@@ -1709,8 +1887,16 @@ class FFlagBrowserDialog(QDialog):
             self._table.setUpdatesEnabled(True)
 
         if self._flags:
+            no_pc_value_count = sum(value is None for value in self._flags.values())
+            source_detail = (
+                f' • {no_pc_value_count:,} without a current PC value'
+                if no_pc_value_count
+                else ' retrieved from Roblox'
+            )
+            cache_detail = ' • cached' if self._cache_loaded else ''
             self._count.setText(
-                f'Showing {visible_count:,} FastFlags • {len(self._flags):,} retrieved from Roblox'
+                f'Showing {visible_count:,} FastFlags • {len(self._flags):,}'
+                f'{source_detail}{cache_detail}'
             )
             self._count.setStyleSheet('color: #999;')
         self._update_selection_button()
@@ -1726,7 +1912,9 @@ class FFlagBrowserDialog(QDialog):
                 name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 name_item.setToolTip(name)
                 self._table.setItem(row, 0, name_item)
-                value_item = QTableWidgetItem(value)
+                value_item = QTableWidgetItem(
+                    value if value is not None else self._UNPUBLISHED_VALUE
+                )
                 value_item.setFlags(value_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self._table.setItem(row, 1, value_item)
         finally:
@@ -1749,7 +1937,10 @@ class FFlagBrowserDialog(QDialog):
 
     def _add_selected(self):
         self.selected_flags = {
-            name: self._flags[name] for name in self._selected_names() if name in self._flags
+            name: value if value is not None else ''
+            for name in self._selected_names()
+            for value in (self._flags.get(name),)
+            if name in self._flags
         }
         if self.selected_flags:
             self.accept()

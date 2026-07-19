@@ -226,6 +226,18 @@ def _without_conditional_client_settings_headers(headers: Dict[bytes, bytes]) ->
     return {key: value for key, value in headers.items() if key not in conditional_headers}
 
 
+_BROWSER_BYPASS_CUSTOM_FFLAGS_HEADER = b'x-fleasion-bypass-custom-fflags'
+
+
+def _without_internal_client_settings_headers(headers: Dict[bytes, bytes]) -> Dict[bytes, bytes]:
+    """Remove Fleasion-only ClientSettings headers before contacting Roblox."""
+    return {
+        key: value
+        for key, value in headers.items()
+        if key != _BROWSER_BYPASS_CUSTOM_FFLAGS_HEADER
+    }
+
+
 def _body_log_snippet(body: bytes, limit: int = 256) -> str:
     if not body:
         return ''
@@ -1191,16 +1203,24 @@ class FleasionProxy:
                 parts = req_first.split(b' ', 2)
                 path = parts[1].decode('ascii', errors='replace') if len(parts) > 1 else '/'
                 is_batch = host == ASSET_DELIVERY_HOST and b'/v1/assets/batch' in req_first
+                bypass_custom_fflags = (
+                    req_headers.get(_BROWSER_BYPASS_CUSTOM_FFLAGS_HEADER, b'').strip() == b'1'
+                )
                 _gamejoin_flow: Optional[ProxyFlow] = None
                 _profile_flow: Optional[ProxyFlow] = None
                 upstream_req_first = req_first
-                upstream_req_headers = req_headers
+                upstream_req_headers = (
+                    _without_internal_client_settings_headers(req_headers)
+                    if bypass_custom_fflags
+                    else req_headers
+                )
 
                 if (
                     host in CLIENT_SETTINGS_HOSTS
                     and self.custom_fflag_modifier is not None
                     and self.custom_fflag_modifier.is_enabled()
                     and self.custom_fflag_modifier.handles_path(path)
+                    and not bypass_custom_fflags
                 ):
                     encoding = req_headers.get(b'accept-encoding', b'').decode(
                         'ascii', errors='replace'
@@ -1650,6 +1670,7 @@ class FleasionProxy:
                     and self.custom_fflag_modifier is not None
                     and self.custom_fflag_modifier.is_enabled()
                     and self.custom_fflag_modifier.handles_path(path)
+                    and not bypass_custom_fflags
                     and 200 <= status_code < 300
                     and resp_body_raw
                 ):

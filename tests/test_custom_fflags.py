@@ -15,6 +15,7 @@ from fleasion.proxy.server import (
     _decompress_body,
     _decompress_dcz,
     _dcz_dictionary_sha256,
+    _without_internal_client_settings_headers,
     _without_conditional_client_settings_headers,
 )
 
@@ -178,6 +179,16 @@ def test_fresh_client_settings_request_strips_only_conditional_headers():
         b'accept-encoding': b'dcz',
     }
     assert b'if-none-match' in original
+
+
+def test_browser_bypass_header_is_never_sent_upstream():
+    original = {
+        b'accept-encoding': b'dcz',
+        b'x-fleasion-bypass-custom-fflags': b'1',
+    }
+
+    assert _without_internal_client_settings_headers(original) == {b'accept-encoding': b'dcz'}
+    assert b'x-fleasion-bypass-custom-fflags' in original
 
 
 def test_modifier_passes_the_windows_bootstrapper_through_unchanged():
