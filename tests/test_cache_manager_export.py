@@ -66,6 +66,24 @@ def test_old_image_typed_mesh_payload_is_healed_lazily(tmp_path, monkeypatch):
     assert info["type_name"] == "Mesh"
 
 
+def test_old_image_typed_mesh_payload_uses_only_a_header_for_type_detection(tmp_path, monkeypatch):
+    monkeypatch.setattr(cache_manager_module, "CONFIG_DIR", tmp_path)
+    manager = cache_manager_module.CacheManager(config_manager=_Config())
+    assert manager.store_asset("790", 1, MESH_PAYLOAD + (b"x" * 20_000))
+
+    info = manager.get_asset_info("790", 1)
+    info.pop("detected_type", None)
+    info["type_name"] = "Image"
+
+    def fail_full_asset_read(*_args, **_kwargs):
+        raise AssertionError("type detection must not read the full payload")
+
+    manager.get_asset = fail_full_asset_read
+
+    assert manager.get_type_name_for_asset("790", 1) == "Mesh"
+    assert info["detected_type"] == "Mesh"
+
+
 def test_image_typed_audio_payload_is_displayed_as_audio(tmp_path, monkeypatch):
     monkeypatch.setattr(cache_manager_module, "CONFIG_DIR", tmp_path)
     manager = cache_manager_module.CacheManager(config_manager=_Config())

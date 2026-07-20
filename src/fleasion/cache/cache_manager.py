@@ -423,6 +423,45 @@ class CacheManager:
             log_buffer.log('Scraper', f'Failed to retrieve asset {asset_id}: {e}')
             return None
 
+    def peek_asset_bytes(
+        self, asset_id: str, asset_type: int, max_bytes: int = 16
+    ) -> Optional[bytes]:
+        """Read only the beginning of an asset without populating the LRU cache.
+
+        Type correction only needs magic bytes for the formats currently
+        detected by the cache viewer. Keeping this separate from ``get_asset``
+        prevents a metadata operation from reading and retaining a full image,
+        mesh, or audio payload in memory.
+        """
+        if max_bytes <= 0:
+            return b''
+
+        try:
+            asset_path = self.get_asset_path(asset_id, asset_type)
+            if not asset_path.exists():
+                return None
+
+            asset_info = self.index['assets'].get(f'{asset_type}_{asset_id}', {})
+            if asset_info.get('compressed', False):
+                with gzip.open(asset_path, 'rb') as f:
+                    return f.read(max_bytes)
+
+            with asset_path.open('rb') as f:
+                return f.read(max_bytes)
+        except Exception as e:
+            log_buffer.log('Scraper', f'Failed to peek at asset {asset_id}: {e}')
+            return None
+
+    def detect_asset_type_from_header(self, asset_id: str, asset_type: int) -> str | None:
+        """Detect a corrected display type using only cached payload headers."""
+        if asset_type not in (1, 13):
+            return None
+
+        data = self.peek_asset_bytes(asset_id, asset_type, max_bytes=16)
+        if not data:
+            return None
+        return self._detect_payload_type(data, asset_type)
+
     def get_asset_info(self, asset_id: str, asset_type: int) -> Optional[dict]:
         """Get metadata about a cached asset."""
         asset_key = f'{asset_type}_{asset_id}'
@@ -463,12 +502,10 @@ class CacheManager:
         # Heal those persisted entries lazily so old cache indexes display
         # correctly after a restart without requiring a re-download.
         if probe_payload and asset_type in (1, 13):
-            data = self.get_asset(asset_id, asset_type)
-            if data:
-                detected_type = self._detect_payload_type(data, asset_type)
-                if detected_type:
-                    self.set_detected_type(asset_id, asset_type, detected_type)
-                    return detected_type
+            detected_type = self.detect_asset_type_from_header(asset_id, asset_type)
+            if detected_type:
+                self.set_detected_type(asset_id, asset_type, detected_type)
+                return detected_type
 
         return self.get_asset_type_name(asset_type)
 
