@@ -4,7 +4,7 @@ import ctypes
 import os
 import sys
 
-from PyQt6.QtCore import QEvent, Qt
+from PyQt6.QtCore import QEvent, Qt, QTimer
 from PyQt6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -24,7 +24,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ..gui.theme import ThemeManager
-from ..utils import CONFIG_DIR
+from ..utils import CONFIG_DIR, run_in_thread
 from ..utils.autostart import sync_autostart
 from ..utils.desktop_integration import sync_desktop_integration
 from ..utils.roblox_auth import (
@@ -68,7 +68,14 @@ class SettingsTab(QWidget):
         super().__init__(parent)
         self._config = config_manager
         self._tray = system_tray
+        self._manual_proxy_credentials_timer = QTimer(self)
+        self._manual_proxy_credentials_timer.setSingleShot(True)
+        self._manual_proxy_credentials_timer.setInterval(10_000)
+        self._manual_proxy_credentials_timer.timeout.connect(
+            self._revert_manual_proxy_without_credentials
+        )
         self._setup_ui()
+        self._sync_manual_proxy_credentials_timer()
 
     # UI construction
 
@@ -553,6 +560,7 @@ class SettingsTab(QWidget):
 
     def _on_upstream_mode_changed(self, *_args):
         self._config.upstream_transport_mode = self._upstream_mode_combo.currentData()
+        self._sync_manual_proxy_credentials_timer()
 
     def _on_wire_preserving_toggled(self, checked: bool):
         self._config.wire_preserving_passthrough = checked
@@ -564,6 +572,7 @@ class SettingsTab(QWidget):
     def _on_http_proxy_auth_changed(self):
         self._config.upstream_http_connect_username = self._http_proxy_user.text()
         self._config.upstream_http_connect_password = self._http_proxy_pass.text()
+        self._sync_manual_proxy_credentials_timer()
 
     def _on_socks5_proxy_changed(self, *_args):
         self._config.upstream_socks5_host = self._socks5_host.text()
@@ -572,6 +581,38 @@ class SettingsTab(QWidget):
     def _on_socks5_proxy_auth_changed(self):
         self._config.upstream_socks5_username = self._socks5_user.text()
         self._config.upstream_socks5_password = self._socks5_pass.text()
+        self._sync_manual_proxy_credentials_timer()
+
+    def _selected_manual_proxy_has_credentials(self) -> bool:
+        mode = self._upstream_mode_combo.currentData()
+        if mode == 'http_connect':
+            return bool(self._http_proxy_user.text().strip() or self._http_proxy_pass.text())
+        if mode == 'socks5':
+            return bool(self._socks5_user.text().strip() or self._socks5_pass.text())
+        return True
+
+    def _sync_manual_proxy_credentials_timer(self) -> None:
+        if self._selected_manual_proxy_has_credentials():
+            self._manual_proxy_credentials_timer.stop()
+        else:
+            self._manual_proxy_credentials_timer.start()
+
+    def _revert_manual_proxy_without_credentials(self) -> None:
+        if self._selected_manual_proxy_has_credentials():
+            return
+        auto_index = self._upstream_mode_combo.findData('auto')
+        self._upstream_mode_combo.blockSignals(True)
+        self._upstream_mode_combo.setCurrentIndex(auto_index)
+        self._upstream_mode_combo.blockSignals(False)
+        self._config.upstream_transport_mode = 'auto'
+        proxy_master = getattr(self._tray, 'proxy_master', None)
+        if proxy_master is not None and proxy_master.is_running:
+
+            def _restart_proxy():
+                proxy_master.stop()
+                proxy_master.start()
+
+            run_in_thread(_restart_proxy)()
 
     def _on_connection_limits_changed(self, *_args):
         self._config.vpn_compat_max_assetdelivery_connections = self._asset_limit_spin.value()

@@ -2,6 +2,7 @@
 
 import ctypes
 import ctypes.wintypes
+import hashlib
 import os
 import re
 import shlex
@@ -15,6 +16,58 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from .logging import log_buffer
 from .paths import ROBLOX_PROCESS, ROBLOX_STUDIO_PROCESS, STORAGE_DB, STORAGE_DB_GDK
+
+_FLEASION_FIREWALL_RULES = (
+    ('Fleasion Proxy TLS Inbound', 'in', 'localport'),
+    ('Fleasion Proxy TLS Outbound', 'out', 'remoteport'),
+)
+
+
+def install_fleasion_firewall_rules(executable: str | Path) -> tuple[bool, str]:
+    """Install consented, narrowly scoped Windows Firewall rules for Fleasion TLS."""
+    executable_path = Path(executable).resolve()
+    if not executable_path.is_file():
+        return False, f'Executable was not found: {executable_path}'
+
+    creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+    path_id = hashlib.sha256(str(executable_path).casefold().encode('utf-8')).hexdigest()[:12]
+    for rule_label, direction, port_key in _FLEASION_FIREWALL_RULES:
+        rule_name = f'{rule_label} [{path_id}]'
+        subprocess.run(
+            ['netsh.exe', 'advfirewall', 'firewall', 'delete', 'rule', f'name={rule_name}'],
+            capture_output=True,
+            text=True,
+            creationflags=creationflags,
+            check=False,
+        )
+        result = subprocess.run(
+            [
+                'netsh.exe',
+                'advfirewall',
+                'firewall',
+                'add',
+                'rule',
+                f'name={rule_name}',
+                f'dir={direction}',
+                'action=allow',
+                f'program={executable_path}',
+                'enable=yes',
+                'profile=private,public',
+                'protocol=TCP',
+                f'{port_key}=443',
+            ],
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            creationflags=creationflags,
+            check=False,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or 'netsh returned no details').strip()
+            return False, f'{rule_name}: {detail}'
+
+    return True, str(executable_path)
 
 
 def run_cmd(args: list[str]) -> str:

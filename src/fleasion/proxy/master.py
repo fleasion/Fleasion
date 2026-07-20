@@ -3822,6 +3822,9 @@ class ProxyMaster:
             vpn_compat_max_assetdelivery_connections=asset_connection_limit,
             vpn_compat_max_cdn_connections=cdn_connection_limit,
             custom_fflag_modifier=getattr(self, 'custom_fflag_modifier', None),
+            on_upstream_connect_failure=lambda host, error: self._emit_proxy_start_error(
+                'upstream_connect_failed', {'host': host, 'error': error}
+            ),
         )
         with self._lock:
             interceptors = list(self._module_interceptors)

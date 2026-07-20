@@ -4,6 +4,7 @@ from fleasion.app import (
     _handle_single_instance_command,
     _linux_hosts_nix_snippet,
     _looks_like_macos_fleasion_command,
+    _manual_upstream_credentials_missing,
     _should_reclaim_stale_single_instance,
     _should_sync_autostart_on_launch,
     kill_other_fleasion_instances,
@@ -112,3 +113,24 @@ def test_linux_hosts_nix_snippet_default_includes_profile_api_host():
     snippet = _linux_hosts_nix_snippet({})
 
     assert "127.0.0.1 apis.roblox.com" in snippet
+
+
+def test_manual_upstream_credentials_missing_only_for_empty_selected_manual_mode():
+    config = type(
+        "Config",
+        (),
+        {
+            "upstream_transport_mode": "http_connect",
+            "upstream_http_connect_username": "",
+            "upstream_http_connect_password": "",
+            "upstream_socks5_username": "",
+            "upstream_socks5_password": "",
+        },
+    )()
+
+    assert _manual_upstream_credentials_missing(config) is True
+    config.upstream_http_connect_username = "proxy-user"
+    assert _manual_upstream_credentials_missing(config) is False
+    config.upstream_transport_mode = "auto"
+    config.upstream_http_connect_username = ""
+    assert _manual_upstream_credentials_missing(config) is False

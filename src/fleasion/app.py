@@ -1250,6 +1250,69 @@ def _show_auth_cookie_unavailable_dialog(details: dict, tray=None):
             webbrowser.open('https://www.roblox.com/login')
 
 
+def _show_windows_upstream_firewall_dialog(details: dict) -> None:
+    """Offer a consented firewall repair after the live proxy cannot reach Roblox TLS."""
+    if sys.platform != 'win32':
+        return
+
+    host = str(details.get('host') or 'a Roblox content server')
+    msg = QMessageBox(_visible_parent_widget())
+    msg.setWindowTitle('Fleasion - Connection Blocked')
+    msg.setIcon(QMessageBox.Icon.Warning)
+    msg.setText(f'Fleasion could not connect securely to {host}.')
+    msg.setInformativeText(
+        'A Windows Firewall rule for Fleasion may fix this. It will allow the running '
+        'Fleasion executable to use TCP port 443 on Private and Public networks.\n\n'
+        'This will not bypass antivirus, VPN, WFP, or organization-managed block rules.'
+    )
+    install_button = msg.addButton(
+        'Install Firewall Rule', QMessageBox.ButtonRole.AcceptRole
+    )
+    settings_button = msg.addButton(
+        'Open Firewall Settings', QMessageBox.ButtonRole.ActionRole
+    )
+    cancel_button = msg.addButton('Not Now', QMessageBox.ButtonRole.RejectRole)
+    msg.setDefaultButton(install_button)
+    msg.exec()
+
+    if msg.clickedButton() == settings_button:
+        try:
+            subprocess.Popen(
+                [
+                    'control.exe',
+                    '/name',
+                    'Microsoft.WindowsFirewall',
+                    '/page',
+                    'pageConfigureApps',
+                ]
+            )
+        except OSError as exc:
+            QMessageBox.warning(
+                msg.parentWidget(), 'Fleasion', f'Could not open Firewall settings: {exc}'
+            )
+        return
+    if msg.clickedButton() != install_button:
+        return
+
+    from .utils.platform_windows import install_fleasion_firewall_rules
+
+    installed, result = install_fleasion_firewall_rules(sys.executable)
+    if installed:
+        log_buffer.log('Proxy', f'Installed Fleasion firewall rules for {result}')
+        QMessageBox.information(
+            msg.parentWidget(),
+            'Fleasion - Firewall Rule Installed',
+            'The Fleasion TCP 443 firewall rules were installed. Try joining again.',
+        )
+    else:
+        log_buffer.log('Proxy', f'Failed to install Fleasion firewall rules: {result}')
+        QMessageBox.critical(
+            msg.parentWidget(),
+            'Fleasion - Firewall Rule Failed',
+            f'Windows did not install the Fleasion firewall rule.\n\n{result}',
+        )
+
+
 class _ProxyErrorInvoker(QObject):
     """Main-thread bridge for proxy startup errors emitted from worker threads."""
 
@@ -1266,6 +1329,23 @@ class _ProxyErrorInvoker(QObject):
             _show_linux_hosts_read_only_dialog(details)
         elif code == 'macos_ca_patch_failed':
             _show_macos_ca_patch_failed_dialog(details)
+        elif code == 'upstream_connect_failed':
+            _show_windows_upstream_firewall_dialog(details)
+
+
+def _manual_upstream_credentials_missing(config_manager) -> bool:
+    mode = config_manager.upstream_transport_mode
+    if mode == 'http_connect':
+        return not bool(
+            config_manager.upstream_http_connect_username.strip()
+            or config_manager.upstream_http_connect_password
+        )
+    if mode == 'socks5':
+        return not bool(
+            config_manager.upstream_socks5_username.strip()
+            or config_manager.upstream_socks5_password
+        )
+    return False
 
 
 def _disable_proxy_features_after_start_failure(
@@ -1977,12 +2057,41 @@ def main():
     config_folder_watcher.configs_changed.connect(_refresh_config_surfaces)
     app.aboutToQuit.connect(config_folder_watcher.stop)
 
+    def _revert_uncredentialed_manual_upstream() -> None:
+        if not _manual_upstream_credentials_missing(config_manager):
+            return
+        previous_mode = config_manager.upstream_transport_mode
+        config_manager.upstream_transport_mode = 'auto'
+        log_buffer.log(
+            'Proxy',
+            f'Reset upstream transport from {previous_mode} to auto after '
+            '10 seconds without credentials',
+        )
+        tray = tray_ref.get('tray')
+        dashboard = getattr(tray, 'dashboard_window', None)
+        settings_tab = getattr(dashboard, '_settings_tab', None)
+        if settings_tab is not None:
+            settings_tab.refresh_from_config()
+        if proxy_master.is_running:
+
+            def _restart_proxy() -> None:
+                proxy_master.stop()
+                proxy_master.start()
+
+            run_in_thread(_restart_proxy)()
+
+    QTimer.singleShot(10_000, _revert_uncredentialed_manual_upstream)
+
     def _handle_proxy_features_start_failure(reason: str):
         _disable_proxy_features_after_start_failure(config_manager, tray_ref.get('tray'), reason)
 
     proxy_error_invoker.disable_proxy_features.connect(_handle_proxy_features_start_failure)
 
     def _on_proxy_start_error(code: str, details: dict):
+        if code == 'upstream_connect_failed':
+            if sys.platform == 'win32':
+                proxy_error_invoker.show_proxy_error.emit(code, dict(details))
+            return
         if code == 'linux_hosts_read_only':
             proxy_error_invoker.show_proxy_error.emit(code, dict(details))
             return

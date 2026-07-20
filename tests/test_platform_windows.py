@@ -3,6 +3,7 @@ import importlib.util
 import os
 import sys
 import types
+import subprocess
 from pathlib import Path
 
 
@@ -133,3 +134,26 @@ def test_roblox_launch_resolver_rejects_running_installer_target(tmp_path, monke
     )
 
     assert module.resolve_roblox_player_exe_for_launch() is None
+
+
+def test_firewall_repair_installs_scoped_inbound_and_outbound_rules(tmp_path, monkeypatch):
+    module = _load_platform_windows(monkeypatch)
+    executable = _touch(tmp_path / "Fleasion.exe", 3000)
+    calls = []
+
+    def _run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, stdout="Ok.", stderr="")
+
+    monkeypatch.setattr(module.subprocess, "run", _run)
+
+    installed, target = module.install_fleasion_firewall_rules(executable)
+
+    assert installed is True
+    assert target == str(executable.resolve())
+    add_commands = [command for command, _kwargs in calls if "add" in command]
+    assert len(add_commands) == 2
+    assert any("dir=in" in command and "localport=443" in command for command in add_commands)
+    assert any("dir=out" in command and "remoteport=443" in command for command in add_commands)
+    assert all("profile=private,public" in command for command in add_commands)
+    assert all(f"program={executable.resolve()}" in command for command in add_commands)

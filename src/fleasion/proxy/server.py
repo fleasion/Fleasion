@@ -31,7 +31,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Sequence, Tuple
 
 if TYPE_CHECKING:
     from .addons.cache_scraper import CacheScraper
@@ -653,6 +653,7 @@ class FleasionProxy:
         vpn_compat_max_assetdelivery_connections: int = 16,
         vpn_compat_max_cdn_connections: int = 32,
         custom_fflag_modifier=None,
+        on_upstream_connect_failure: Optional[Callable[[str, str], None]] = None,
     ) -> None:
         self.texture_stripper = texture_stripper
         self.cache_scraper = cache_scraper
@@ -675,6 +676,8 @@ class FleasionProxy:
         self._last_gamejoin_time: float = 0.0
         self._last_asset_traffic_time: float = 0.0
         self._asset_diag_generation: int = 0
+        self._on_upstream_connect_failure = on_upstream_connect_failure
+        self._upstream_connect_failure_notified = False
 
         asset_limit = max(1, int(vpn_compat_max_assetdelivery_connections or 16))
         cdn_limit = max(1, int(vpn_compat_max_cdn_connections or 32))
@@ -737,6 +740,20 @@ class FleasionProxy:
             log_buffer.log('TLS', message)
         except Exception:
             logger.debug(message)
+
+    def _notify_upstream_connect_failure_once(self, host: str, error: str) -> None:
+        if self._upstream_connect_failure_notified or self._on_upstream_connect_failure is None:
+            return
+        self._upstream_connect_failure_notified = True
+        try:
+            self._on_upstream_connect_failure(host, error)
+        except Exception as exc:
+            try:
+                from ..utils import log_buffer
+
+                log_buffer.log('Proxy', f'Failed to report upstream connection failure: {exc}')
+            except Exception:
+                logger.debug('Failed to report upstream connection failure: %s', exc)
 
     def _sni_callback(
         self, ssl_obj, server_name: Optional[str], initial_ctx: ssl.SSLContext
@@ -1106,6 +1123,7 @@ class FleasionProxy:
                     'Hosts/TLS interception may be working locally, but firewall, AV, VPN, or WFP filtering '
                     'may be blocking Fleasion.exe/Python outbound traffic.',
                 )
+                self._notify_upstream_connect_failure_once(host, failure_text)
 
             writer.write(
                 _make_proxy_error_response(
