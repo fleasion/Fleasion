@@ -172,10 +172,11 @@ DEFAULT_SETTINGS = {
     'custom_fflags_enabled': False,
     'custom_fflags_warning_accepted': False,
     'custom_fflags': {},
-    # Windows-only UI state.  Keeping this separate from custom_fflags means a
+    # Per-platform UI state. Keeping this separate from custom_fflags means a
     # disabled flag retains its chosen value and can be restored by a hotkey.
     'custom_fflag_disabled': [],
     'custom_fflag_keybinds': {},
+    'linux_fflag_keybind_setup_prompted': False,
     'macos_auth_source': '',
     'upstream_transport_mode': 'auto',
     'upstream_http_connect_host': '',
@@ -259,8 +260,8 @@ def _normalize_custom_fflag_disabled(value: Any) -> list[str]:
     return sorted({str(name).strip() for name in value if str(name).strip()}, key=str.casefold)
 
 
-def _normalize_custom_fflag_keybinds(value: Any) -> dict[str, dict[str, int | bool]]:
-    """Keep only physical Windows scan-code bindings used by the hotkey service."""
+def _normalize_custom_fflag_keybinds(value: Any) -> dict[str, dict[str, int | bool | str]]:
+    """Keep valid physical scan-code bindings for the platform hotkey services."""
     if not isinstance(value, dict):
         return {}
 
@@ -271,22 +272,34 @@ def _normalize_custom_fflag_keybinds(value: Any) -> dict[str, dict[str, int | bo
             continue
         scan_code = raw_binding.get('scan_code')
         modifiers = raw_binding.get('modifiers', 0)
+        platform = raw_binding.get('platform')
         extended = raw_binding.get('extended', False)
         if (
             not isinstance(scan_code, int)
             or isinstance(scan_code, bool)
             or not isinstance(modifiers, int)
             or isinstance(modifiers, bool)
-            or not isinstance(extended, bool)
-            or not 0 < scan_code <= 0xFF
+            or not 0 < scan_code <= (0x2FF if platform == 'linux_evdev' else 0xFF)
             or modifiers & ~0x0F
         ):
             continue
-        normalized[name] = {
-            'scan_code': scan_code,
-            'extended': extended,
-            'modifiers': modifiers,
-        }
+        if platform == 'linux_evdev':
+            if scan_code > 0x2FF:
+                continue
+            normalized[name] = {
+                'platform': 'linux_evdev',
+                'scan_code': scan_code,
+                'modifiers': modifiers,
+            }
+        elif platform in (None, 'windows') and isinstance(extended, bool):
+            # Untagged bindings are the Windows format used before platform
+            # tagging was added, so preserve them for existing users.
+            normalized[name] = {
+                **({'platform': 'windows'} if platform == 'windows' else {}),
+                'scan_code': scan_code,
+                'extended': extended,
+                'modifiers': modifiers,
+            }
     return normalized
 
 
@@ -702,13 +715,23 @@ class ConfigManager:
         self._save_settings()
 
     @property
-    def custom_fflag_keybinds(self) -> dict[str, dict[str, int | bool]]:
-        """Windows global hotkeys keyed by custom FastFlag name."""
+    def custom_fflag_keybinds(self) -> dict[str, dict[str, int | bool | str]]:
+        """Platform global hotkeys keyed by custom FastFlag name."""
         return _normalize_custom_fflag_keybinds(self.settings.get('custom_fflag_keybinds', {}))
 
     @custom_fflag_keybinds.setter
     def custom_fflag_keybinds(self, value):
         self.settings['custom_fflag_keybinds'] = _normalize_custom_fflag_keybinds(value)
+        self._save_settings()
+
+    @property
+    def linux_fflag_keybind_setup_prompted(self) -> bool:
+        """Whether the on-demand Linux keybind permission setup was shown."""
+        return bool(self.settings.get('linux_fflag_keybind_setup_prompted', False))
+
+    @linux_fflag_keybind_setup_prompted.setter
+    def linux_fflag_keybind_setup_prompted(self, value: bool):
+        self.settings['linux_fflag_keybind_setup_prompted'] = bool(value)
         self._save_settings()
 
     @property
