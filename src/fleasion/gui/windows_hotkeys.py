@@ -8,6 +8,7 @@ keyboard hook: it observes input but cannot consume or block the user's keys.
 from __future__ import annotations
 
 import ctypes
+import queue
 import sys
 import threading
 from collections.abc import Mapping
@@ -16,7 +17,7 @@ from ctypes import wintypes
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from ..utils import log_buffer
-from .hotkey_names import format_smu_virtual_key
+from .hotkey_names import SMU_MOUSE_WHEEL_DOWN, SMU_MOUSE_WHEEL_UP, format_smu_virtual_key
 
 
 MOD_SHIFT = 0x01
@@ -54,20 +55,40 @@ def normalize_binding(binding) -> dict[str, int | bool] | None:
     """Validate a persisted physical-key binding."""
     if not isinstance(binding, Mapping) or binding.get('platform') not in (None, 'windows'):
         return None
-    scan_code = binding.get('scan_code')
+    kind = binding.get('kind', 'key')
     modifiers = binding.get('modifiers', 0)
     extended = binding.get('extended', False)
     if (
-        not isinstance(scan_code, int)
-        or isinstance(scan_code, bool)
-        or not 0 < scan_code <= 0xFF
-        or not isinstance(modifiers, int)
+        not isinstance(modifiers, int)
         or isinstance(modifiers, bool)
         or modifiers & ~MODIFIER_MASK
-        or not isinstance(extended, bool)
     ):
         return None
-    return {'scan_code': scan_code, 'extended': extended, 'modifiers': modifiers}
+    if kind == 'mouse_wheel':
+        direction = binding.get('direction')
+        if binding.get('platform') != 'windows' or direction not in ('up', 'down'):
+            return None
+        return {
+            'platform': 'windows', 'kind': 'mouse_wheel',
+            'direction': direction, 'modifiers': modifiers,
+        }
+    scan_code = binding.get('scan_code')
+    if (
+        kind not in ('key', 'mouse_button')
+        or not isinstance(scan_code, int)
+        or isinstance(scan_code, bool)
+        or not 0 < scan_code <= 0xFF
+        or not isinstance(extended, bool)
+        or kind == 'mouse_button' and scan_code not in (1, 2, 4, 5, 6)
+    ):
+        return None
+    result: dict[str, int | bool | str] = {
+        'scan_code': scan_code, 'extended': extended, 'modifiers': modifiers,
+    }
+    if kind == 'mouse_button':
+        result['platform'] = 'windows'
+        result['kind'] = kind
+    return result
 
 
 # SMU's WinScanToVk table from platform/linux/input_evdev_uinput.cpp.  Windows
@@ -121,9 +142,16 @@ def binding_text(binding) -> str:
         label for flag, label in ((MOD_WIN, 'Win'), (MOD_CTRL, 'Ctrl'), (MOD_ALT, 'Alt'), (MOD_SHIFT, 'Shift'))
         if modifiers & flag
     ]
-    key_text = format_smu_virtual_key(
-        _virtual_key_for_binding(int(normalized['scan_code']), bool(normalized['extended']))
-    )
+    if normalized.get('kind') == 'mouse_wheel':
+        key_text = format_smu_virtual_key(
+            SMU_MOUSE_WHEEL_UP if normalized['direction'] == 'up' else SMU_MOUSE_WHEEL_DOWN
+        )
+    elif normalized.get('kind') == 'mouse_button':
+        key_text = format_smu_virtual_key(int(normalized['scan_code']))
+    else:
+        key_text = format_smu_virtual_key(
+            _virtual_key_for_binding(int(normalized['scan_code']), bool(normalized['extended']))
+        )
     return '+'.join([*labels, key_text])
 
 
@@ -140,7 +168,7 @@ class WindowsHotkeyService(QObject):
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
 
-    def set_bindings(self, bindings: Mapping[str, Mapping[str, int]]) -> None:
+    def set_bindings(self, bindings: Mapping[str, Mapping[str, object]]) -> None:
         """Replace active bindings. Bare and modifier-only keys are supported."""
         self.stop()
         if sys.platform != 'win32':
@@ -158,15 +186,22 @@ class WindowsHotkeyService(QObject):
         )
         self._thread.start()
 
-    def _run(self, bindings: Mapping[str, Mapping[str, int | bool]]) -> None:
+    def _run(self, bindings: Mapping[str, Mapping[str, int | bool | str]]) -> None:
         user32 = ctypes.windll.user32
         user32.GetAsyncKeyState.argtypes = (ctypes.c_int,)
         user32.GetAsyncKeyState.restype = ctypes.c_short
         user32.MapVirtualKeyW.argtypes = (wintypes.UINT, wintypes.UINT)
         user32.MapVirtualKeyW.restype = wintypes.UINT
         translated: dict[str, tuple[int, int]] = {}
+        wheel_bindings: dict[str, tuple[str, int]] = {}
         try:
             for name, binding in bindings.items():
+                if binding.get('kind') == 'mouse_wheel':
+                    wheel_bindings[name] = (str(binding['direction']), int(binding['modifiers']))
+                    continue
+                if binding.get('kind') == 'mouse_button':
+                    translated[name] = (int(binding['scan_code']), int(binding['modifiers']))
+                    continue
                 scan_code = int(binding['scan_code'])
                 if binding['extended']:
                     scan_code |= 0xE000
@@ -201,6 +236,9 @@ class WindowsHotkeyService(QObject):
                 modifiers & ~main_modifier
             ) == required_modifiers
 
+        wheel_events: queue.SimpleQueue[str] = queue.SimpleQueue()
+        mouse_hook = self._install_mouse_wheel_hook(wheel_events) if wheel_bindings else None
+
         # A newly started poller must treat keys that are already held as its
         # baseline, not as a new press.  This prevents a settings refresh from
         # retriggering the same hotkey until the user releases it first.
@@ -208,12 +246,63 @@ class WindowsHotkeyService(QObject):
             name: binding_is_active(virtual_key, required_modifiers)
             for name, (virtual_key, required_modifiers) in translated.items()
         }
-        while not self._stop.wait(self._POLL_SECONDS):
-            for name, (virtual_key, required_modifiers) in translated.items():
-                active = binding_is_active(virtual_key, required_modifiers)
-                if active and not was_active[name]:
-                    self.activated.emit(name)
-                was_active[name] = active
+        try:
+            while not self._stop.wait(self._POLL_SECONDS):
+                self._pump_windows_messages()
+                while not wheel_events.empty():
+                    direction = wheel_events.get_nowait()
+                    modifiers = active_modifiers()
+                    for name, (required_direction, required_modifiers) in wheel_bindings.items():
+                        if direction == required_direction and modifiers == required_modifiers:
+                            self.activated.emit(name)
+                for name, (virtual_key, required_modifiers) in translated.items():
+                    active = binding_is_active(virtual_key, required_modifiers)
+                    if active and not was_active[name]:
+                        self.activated.emit(name)
+                    was_active[name] = active
+        finally:
+            if mouse_hook is not None:
+                ctypes.windll.user32.UnhookWindowsHookEx(mouse_hook[0])
+
+    @staticmethod
+    def _pump_windows_messages() -> None:
+        if sys.platform != 'win32':
+            return
+        message = wintypes.MSG()
+        user32 = ctypes.windll.user32
+        while user32.PeekMessageW(ctypes.byref(message), None, 0, 0, 1):
+            user32.TranslateMessage(ctypes.byref(message))
+            user32.DispatchMessageW(ctypes.byref(message))
+
+    @staticmethod
+    def _install_mouse_wheel_hook(wheel_events: queue.SimpleQueue[str]):
+        """Port SMU's global wheel pseudo-keys through a passive LL mouse hook."""
+        if sys.platform != 'win32':
+            return None
+
+        class POINT(ctypes.Structure):
+            _fields_ = [('x', ctypes.c_long), ('y', ctypes.c_long)]
+
+        class MSLLHOOKSTRUCT(ctypes.Structure):
+            _fields_ = [
+                ('pt', POINT), ('mouseData', wintypes.DWORD), ('flags', wintypes.DWORD),
+                ('time', wintypes.DWORD), ('dwExtraInfo', ctypes.c_size_t),
+            ]
+
+        callback_type = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+        user32 = ctypes.windll.user32
+
+        @callback_type
+        def callback(code, message, lparam):
+            if code >= 0 and message == 0x020A:  # WM_MOUSEWHEEL
+                data = ctypes.cast(lparam, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
+                delta = ctypes.c_short((data.mouseData >> 16) & 0xFFFF).value
+                if delta:
+                    wheel_events.put('up' if delta > 0 else 'down')
+            return user32.CallNextHookEx(None, code, message, lparam)
+
+        hook = user32.SetWindowsHookExW(14, callback, ctypes.windll.kernel32.GetModuleHandleW(None), 0)
+        return (hook, callback) if hook else None
 
     def stop(self) -> None:
         self._stop.set()

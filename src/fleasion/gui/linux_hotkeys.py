@@ -21,7 +21,7 @@ from pathlib import Path
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from ..utils import log_buffer
-from .hotkey_names import format_smu_virtual_key
+from .hotkey_names import SMU_MOUSE_WHEEL_DOWN, SMU_MOUSE_WHEEL_UP, format_smu_virtual_key
 from .windows_hotkeys import MOD_ALT, MOD_CTRL, MOD_SHIFT, MOD_WIN, MODIFIER_MASK
 
 
@@ -29,6 +29,8 @@ from .windows_hotkeys import MOD_ALT, MOD_CTRL, MOD_SHIFT, MOD_WIN, MODIFIER_MAS
 # both 32-bit and 64-bit Python builds.
 _INPUT_EVENT = struct.Struct('@llHHi')
 _EV_KEY = 0x01
+_EV_REL = 0x02
+_REL_WHEEL = 0x08
 _KEY_LEFTCTRL = 29
 _KEY_LEFTSHIFT = 42
 _KEY_LEFTALT = 56
@@ -105,18 +107,37 @@ def normalize_binding(binding) -> dict[str, int | str] | None:
     """Validate a persisted Linux physical-key binding."""
     if not isinstance(binding, Mapping) or binding.get('platform') != 'linux_evdev':
         return None
-    scan_code = binding.get('scan_code')
+    kind = binding.get('kind', 'key')
     modifiers = binding.get('modifiers', 0)
     if (
-        not isinstance(scan_code, int)
-        or isinstance(scan_code, bool)
-        or not 0 < scan_code <= 0x2FF
-        or not isinstance(modifiers, int)
+        not isinstance(modifiers, int)
         or isinstance(modifiers, bool)
         or modifiers & ~MODIFIER_MASK
     ):
         return None
-    return {'platform': 'linux_evdev', 'scan_code': scan_code, 'modifiers': modifiers}
+    if kind == 'mouse_wheel':
+        direction = binding.get('direction')
+        if direction not in ('up', 'down'):
+            return None
+        return {
+            'platform': 'linux_evdev', 'kind': 'mouse_wheel',
+            'direction': direction, 'modifiers': modifiers,
+        }
+    scan_code = binding.get('scan_code')
+    if (
+        kind not in ('key', 'mouse_button')
+        or not isinstance(scan_code, int)
+        or isinstance(scan_code, bool)
+        or not 0 < scan_code <= 0x2FF
+        or kind == 'mouse_button' and scan_code not in (0x110, 0x111, 0x112, 0x113, 0x114)
+    ):
+        return None
+    result: dict[str, int | str] = {
+        'platform': 'linux_evdev', 'scan_code': scan_code, 'modifiers': modifiers,
+    }
+    if kind == 'mouse_button':
+        result['kind'] = kind
+    return result
 
 
 def binding_text(binding) -> str:
@@ -124,14 +145,19 @@ def binding_text(binding) -> str:
     normalized = normalize_binding(binding)
     if normalized is None:
         return 'Not assigned'
-    scan_code = int(normalized['scan_code'])
     modifiers = int(normalized['modifiers'])
     labels = [
         label
         for flag, label in ((MOD_WIN, 'Super'), (MOD_CTRL, 'Ctrl'), (MOD_ALT, 'Alt'), (MOD_SHIFT, 'Shift'))
         if modifiers & flag
     ]
-    key_text = format_smu_virtual_key(_SMU_EVDEV_TO_VK.get(scan_code, 0x0F))
+    if normalized.get('kind') == 'mouse_wheel':
+        key_text = format_smu_virtual_key(
+            SMU_MOUSE_WHEEL_UP if normalized['direction'] == 'up' else SMU_MOUSE_WHEEL_DOWN
+        )
+    else:
+        scan_code = int(normalized['scan_code'])
+        key_text = format_smu_virtual_key(_SMU_EVDEV_TO_VK.get(scan_code, 0x0F))
     return '+'.join([*labels, key_text])
 
 
@@ -146,6 +172,7 @@ class LinuxHotkeyService(QObject):
     activated = pyqtSignal(str)
     key_pressed = pyqtSignal(int, int)
     key_released = pyqtSignal(int)
+    wheel_scrolled = pyqtSignal(int, int)
 
     def __init__(self, parent=None, input_dir: Path = Path('/dev/input')):
         super().__init__(parent)
@@ -258,6 +285,8 @@ class LinuxHotkeyService(QObject):
                 _, _, event_type, code, value = _INPUT_EVENT.unpack_from(raw, offset)
                 if event_type == _EV_KEY and value in (0, 1):
                     self._set_key_state(fd, code, value == 1)
+                elif event_type == _EV_REL and code == _REL_WHEEL and value:
+                    self._handle_wheel(value)
 
     def _set_key_state(self, fd: int, code: int, pressed: bool) -> None:
         with self._lock:
@@ -307,7 +336,25 @@ class LinuxHotkeyService(QObject):
             result |= modifier_mask_for_evdev_code(code)
         return result
 
+    def _handle_wheel(self, delta: int) -> None:
+        with self._lock:
+            modifiers = self._active_modifiers()
+            direction = 'up' if delta > 0 else 'down'
+            activations = [
+                name
+                for name, binding in self._bindings.items()
+                if binding.get('kind') == 'mouse_wheel'
+                and binding.get('direction') == direction
+                and int(binding['modifiers']) == modifiers
+            ]
+        wheel_code = SMU_MOUSE_WHEEL_UP if delta > 0 else SMU_MOUSE_WHEEL_DOWN
+        self._emit_signal('wheel_scrolled', wheel_code, modifiers)
+        for name in activations:
+            self._emit_signal('activated', name)
+
     def _binding_is_active(self, binding: Mapping[str, int | str], modifiers: int | None = None) -> bool:
+        if binding.get('kind') == 'mouse_wheel':
+            return False
         code = int(binding['scan_code'])
         if modifiers is None:
             modifiers = self._active_modifiers()

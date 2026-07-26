@@ -36,12 +36,27 @@ def test_windows_and_linux_bindings_share_smu_key_names():
     assert binding_text({'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': 0}) == 'A'
     assert binding_text({'platform': 'linux_evdev', 'scan_code': 76, 'modifiers': 0}) == 'Numpad 5'
     assert binding_text({'platform': 'linux_evdev', 'scan_code': 105, 'modifiers': 0}) == 'Left'
+    assert windows_binding_text(
+        {'platform': 'windows', 'kind': 'mouse_button', 'scan_code': 5, 'extended': False, 'modifiers': 0}
+    ) == 'Mouse X1'
+    assert windows_binding_text(
+        {'platform': 'windows', 'kind': 'mouse_wheel', 'direction': 'down', 'modifiers': 0}
+    ) == 'Mouse Wheel Down'
 
 
 def test_linux_keybinding_rejects_windows_or_malformed_settings():
     assert normalize_binding({'scan_code': 30, 'extended': False, 'modifiers': 0}) is None
     assert normalize_binding({'platform': 'windows', 'scan_code': 30, 'modifiers': 0}) is None
     assert normalize_binding({'platform': 'linux_evdev', 'scan_code': 0, 'modifiers': 0}) is None
+
+
+def test_linux_mouse_buttons_and_wheel_use_smu_codes():
+    mouse_four = {'platform': 'linux_evdev', 'kind': 'mouse_button', 'scan_code': 0x113, 'modifiers': 0}
+    wheel_up = {'platform': 'linux_evdev', 'kind': 'mouse_wheel', 'direction': 'up', 'modifiers': 0}
+    assert normalize_binding(mouse_four) == mouse_four
+    assert binding_text(mouse_four) == 'Mouse X1'
+    assert normalize_binding(wheel_up) == wheel_up
+    assert binding_text(wheel_up) == 'Mouse Wheel Up'
 
 
 def test_linux_modifier_codes_are_combined_generically():

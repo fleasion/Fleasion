@@ -1963,6 +1963,7 @@ class WindowsHotkeyCaptureDialog(QDialog):
         self.clear_requested = False
         self._pending_modifier: dict[str, int | bool] | None = None
         self._pending_modifier_key: int | None = None
+        self._suppress_mouse_capture = False
         self.setWindowTitle('Set FastFlag Keybind')
         self.setMinimumWidth(460)
         layout = QVBoxLayout(self)
@@ -1981,6 +1982,10 @@ class WindowsHotkeyCaptureDialog(QDialog):
         clear_button = buttons.addButton('Clear Keybind', QDialogButtonBox.ButtonRole.DestructiveRole)
         clear_button.clicked.connect(self._clear)
         buttons.rejected.connect(self.reject)
+        clear_button.installEventFilter(self)
+        cancel_button = buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        if cancel_button is not None:
+            cancel_button.installEventFilter(self)
         layout.addWidget(buttons)
 
     @staticmethod
@@ -2075,6 +2080,43 @@ class WindowsHotkeyCaptureDialog(QDialog):
         self.binding = self._pending_modifier
         self.accept()
 
+    def mousePressEvent(self, event):
+        if self._suppress_mouse_capture:
+            return super().mousePressEvent(event)
+        button_map = {
+            Qt.MouseButton.LeftButton: 1,
+            Qt.MouseButton.RightButton: 2,
+            Qt.MouseButton.MiddleButton: 4,
+            Qt.MouseButton.BackButton: 5,
+            Qt.MouseButton.ForwardButton: 6,
+        }
+        if virtual_key := button_map.get(event.button()):
+            self.binding = {
+                'platform': 'windows', 'kind': 'mouse_button',
+                'scan_code': virtual_key, 'extended': False,
+                'modifiers': self._modifier_mask(event.modifiers()),
+            }
+            self.accept()
+            return
+        super().mousePressEvent(event)
+
+    def wheelEvent(self, event):
+        delta = event.angleDelta().y()
+        if delta:
+            self.binding = {
+                'platform': 'windows', 'kind': 'mouse_wheel',
+                'direction': 'up' if delta > 0 else 'down',
+                'modifiers': self._modifier_mask(event.modifiers()),
+            }
+            self.accept()
+            return
+        super().wheelEvent(event)
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.MouseButtonPress:
+            self._suppress_mouse_capture = True
+        return super().eventFilter(watched, event)
+
 
 class LinuxHotkeyCaptureDialog(QDialog):
     """Capture a physical evdev key from Fleasion's passive Linux reader."""
@@ -2085,6 +2127,7 @@ class LinuxHotkeyCaptureDialog(QDialog):
         self.clear_requested = False
         self._service = hotkey_service
         self._pending_modifier: int | None = None
+        self._suppress_mouse_capture = False
         self.setWindowTitle('Set FastFlag Keybind')
         self.setMinimumWidth(460)
         layout = QVBoxLayout(self)
@@ -2102,9 +2145,14 @@ class LinuxHotkeyCaptureDialog(QDialog):
         clear_button = buttons.addButton('Clear Keybind', QDialogButtonBox.ButtonRole.DestructiveRole)
         clear_button.clicked.connect(self._clear)
         buttons.rejected.connect(self.reject)
+        clear_button.installEventFilter(self)
+        cancel_button = buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        if cancel_button is not None:
+            cancel_button.installEventFilter(self)
         layout.addWidget(buttons)
         self._service.key_pressed.connect(self._key_pressed)
         self._service.key_released.connect(self._key_released)
+        self._service.wheel_scrolled.connect(self._wheel_scrolled)
 
     def _clear(self):
         self.clear_requested = True
@@ -2113,6 +2161,16 @@ class LinuxHotkeyCaptureDialog(QDialog):
     def _key_pressed(self, code: int, modifiers: int):
         from .linux_hotkeys import modifier_mask_for_evdev_code
 
+        # Raw evdev sees the dialog controls too. Only Clear and Cancel arm
+        # this suppression; every other mouse button remains bindable. Delay
+        # button capture a moment so Qt has time to deliver a Clear/Cancel
+        # click first; if it closes this dialog, the queued capture is ignored.
+        if code >= 0x100:
+            QTimer.singleShot(
+                25,
+                lambda code=code, modifiers=modifiers: self._capture_mouse_button(code, modifiers),
+            )
+            return
         own_modifier = modifier_mask_for_evdev_code(code)
         binding = {
             'platform': 'linux_evdev',
@@ -2128,6 +2186,24 @@ class LinuxHotkeyCaptureDialog(QDialog):
         self.binding = binding
         self.accept()
 
+    def _capture_mouse_button(self, code: int, modifiers: int):
+        if self._suppress_mouse_capture or not self.isVisible():
+            return
+        self.binding = {
+            'platform': 'linux_evdev', 'kind': 'mouse_button',
+            'scan_code': code, 'modifiers': modifiers,
+        }
+        self.accept()
+
+    def _wheel_scrolled(self, code: int, modifiers: int):
+        self.binding = {
+            'platform': 'linux_evdev',
+            'kind': 'mouse_wheel',
+            'direction': 'up' if code == 256 else 'down',
+            'modifiers': modifiers,
+        }
+        self.accept()
+
     def _key_released(self, code: int):
         if code != self._pending_modifier:
             return
@@ -2138,9 +2214,15 @@ class LinuxHotkeyCaptureDialog(QDialog):
         try:
             self._service.key_pressed.disconnect(self._key_pressed)
             self._service.key_released.disconnect(self._key_released)
+            self._service.wheel_scrolled.disconnect(self._wheel_scrolled)
         except TypeError:
             pass
         super().done(result)
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.MouseButtonPress:
+            self._suppress_mouse_capture = True
+        return super().eventFilter(watched, event)
 
 
 class CustomFFlagEditor(QWidget):

@@ -260,6 +260,35 @@ class ConfigManagerEncodingTests(unittest.TestCase):
                 },
             )
 
+    def test_custom_fflag_mouse_bindings_are_preserved_per_platform(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_manager_module = self._load_manager_for(Path(tmp))
+            manager = config_manager_module.ConfigManager()
+            manager.custom_fflag_keybinds = {
+                'WindowsMouse4': {
+                    'platform': 'windows', 'kind': 'mouse_button', 'scan_code': 5,
+                    'extended': False, 'modifiers': 0,
+                },
+                'LinuxWheelDown': {
+                    'platform': 'linux_evdev', 'kind': 'mouse_wheel',
+                    'direction': 'down', 'modifiers': 0,
+                },
+            }
+
+            self.assertEqual(
+                manager.custom_fflag_keybinds,
+                {
+                    'WindowsMouse4': {
+                        'platform': 'windows', 'kind': 'mouse_button', 'scan_code': 5,
+                        'extended': False, 'modifiers': 0,
+                    },
+                    'LinuxWheelDown': {
+                        'platform': 'linux_evdev', 'kind': 'mouse_wheel',
+                        'direction': 'down', 'modifiers': 0,
+                    },
+                },
+            )
+
     def test_dummy_replacement_ids_are_ignored(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_manager_module = self._load_manager_for(Path(tmp))

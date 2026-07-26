@@ -17,6 +17,8 @@ SMU_VK_NAMES = {
     0xBA: ';', 0xBB: '=', 0xBC: ',', 0xBD: '-', 0xBE: '.', 0xBF: '/', 0xC0: '`',
     0xDB: '[', 0xDC: '\\', 0xDD: ']', 0xDE: "'",
 }
+SMU_MOUSE_WHEEL_UP = 256
+SMU_MOUSE_WHEEL_DOWN = 257
 
 
 def format_smu_virtual_key(virtual_key: int) -> str:
@@ -27,4 +29,8 @@ def format_smu_virtual_key(virtual_key: int) -> str:
         return f'F{virtual_key - 0x70 + 1}'
     if 0x60 <= virtual_key <= 0x69:
         return f'Numpad {virtual_key - 0x60}'
+    if virtual_key == SMU_MOUSE_WHEEL_UP:
+        return 'Mouse Wheel Up'
+    if virtual_key == SMU_MOUSE_WHEEL_DOWN:
+        return 'Mouse Wheel Down'
     return SMU_VK_NAMES.get(virtual_key, f'0x{virtual_key:X}')

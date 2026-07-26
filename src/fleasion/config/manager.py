@@ -273,29 +273,53 @@ def _normalize_custom_fflag_keybinds(value: Any) -> dict[str, dict[str, int | bo
         scan_code = raw_binding.get('scan_code')
         modifiers = raw_binding.get('modifiers', 0)
         platform = raw_binding.get('platform')
+        kind = raw_binding.get('kind', 'key')
         extended = raw_binding.get('extended', False)
         if (
-            not isinstance(scan_code, int)
-            or isinstance(scan_code, bool)
-            or not isinstance(modifiers, int)
+            not isinstance(modifiers, int)
             or isinstance(modifiers, bool)
-            or not 0 < scan_code <= (0x2FF if platform == 'linux_evdev' else 0xFF)
             or modifiers & ~0x0F
         ):
             continue
-        if platform == 'linux_evdev':
-            if scan_code > 0x2FF:
+        if kind == 'mouse_wheel':
+            direction = raw_binding.get('direction')
+            if platform not in ('linux_evdev', 'windows') or direction not in ('up', 'down'):
+                continue
+            normalized[name] = {
+                'platform': platform,
+                'kind': 'mouse_wheel',
+                'direction': direction,
+                'modifiers': modifiers,
+            }
+        elif platform == 'linux_evdev':
+            if (
+                not isinstance(scan_code, int)
+                or isinstance(scan_code, bool)
+                or not 0 < scan_code <= 0x2FF
+                or kind not in ('key', 'mouse_button')
+                or kind == 'mouse_button' and scan_code not in (0x110, 0x111, 0x112, 0x113, 0x114)
+            ):
                 continue
             normalized[name] = {
                 'platform': 'linux_evdev',
+                **({'kind': 'mouse_button'} if kind == 'mouse_button' else {}),
                 'scan_code': scan_code,
                 'modifiers': modifiers,
             }
         elif platform in (None, 'windows') and isinstance(extended, bool):
+            if (
+                not isinstance(scan_code, int)
+                or isinstance(scan_code, bool)
+                or not 0 < scan_code <= 0xFF
+                or kind not in ('key', 'mouse_button')
+                or kind == 'mouse_button' and scan_code not in (1, 2, 4, 5, 6)
+            ):
+                continue
             # Untagged bindings are the Windows format used before platform
             # tagging was added, so preserve them for existing users.
             normalized[name] = {
                 **({'platform': 'windows'} if platform == 'windows' else {}),
+                **({'kind': 'mouse_button'} if kind == 'mouse_button' else {}),
                 'scan_code': scan_code,
                 'extended': extended,
                 'modifiers': modifiers,
