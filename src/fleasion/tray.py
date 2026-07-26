@@ -9,8 +9,8 @@ try:
 except ImportError:
     winreg = None
 
-from PyQt6.QtCore import Qt, QTimer, QUrl
-from PyQt6.QtGui import QAction, QDesktopServices, QIcon
+from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtGui import QAction, QColor, QDesktopServices, QIcon, QPalette
 from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSystemTrayIcon,
     QVBoxLayout,
+    QWidget,
 )
 
 from .gui import (
@@ -43,6 +44,158 @@ from .utils import (
 APP_KOFI = 'ko-fi.com/fleasion'
 _NOTIFICATION_APP_ID = f'{APP_NAME}.Notifications'
 _TOAST_TEMPLATE = '<toast><visual><binding template="ToastGeneric"></binding></visual></toast>'
+
+
+def _is_xfce_desktop() -> bool:
+    """Return whether the current desktop environment is XFCE."""
+    desktop_values = (
+        os.environ.get('XDG_CURRENT_DESKTOP', ''),
+        os.environ.get('XDG_SESSION_DESKTOP', ''),
+        os.environ.get('DESKTOP_SESSION', ''),
+    )
+    return any('xfce' in value.casefold() for value in desktop_values)
+
+
+class _XfceTrayNotification(QWidget):
+    """A readable tray notification for XFCE's inconsistent native palette."""
+
+    closed = pyqtSignal(object)
+
+    def __init__(self, title: str, message: str, icon: QIcon, dark: bool, timeout: int):
+        super().__init__(
+            None,
+            Qt.WindowType.Tool
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint,
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        # A translucent top-level surface can lose its stylesheet background under XFCE/X11.
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        self.setObjectName('FleasionXfceTrayNotification')
+        self.setWindowTitle(title)
+        self.setWindowIcon(icon)
+
+        if dark:
+            background = '#2b2b2b'
+            foreground = '#f4f4f4'
+            secondary = '#d8d8d8'
+            border = '#626262'
+        else:
+            background = '#fffdf2'
+            foreground = '#202020'
+            secondary = '#353535'
+            border = '#b7b7b7'
+
+        palette = self.palette()
+        palette.setColor(QPalette.ColorRole.Window, QColor(background))
+        palette.setColor(QPalette.ColorRole.WindowText, QColor(foreground))
+        self.setPalette(palette)
+        self.setAutoFillBackground(True)
+
+        self.setStyleSheet(
+            f"""
+            QWidget#FleasionXfceTrayNotification {{
+                background-color: {background};
+                color: {foreground};
+                border: 1px solid {border};
+                border-radius: 8px;
+            }}
+            QLabel#FleasionXfceTrayNotificationTitle {{
+                color: {foreground};
+                background: transparent;
+                border: none;
+                font-weight: 700;
+            }}
+            QLabel#FleasionXfceTrayNotificationMessage {{
+                color: {secondary};
+                background: transparent;
+                border: none;
+            }}
+            QPushButton#FleasionXfceTrayNotificationClose {{
+                color: {secondary};
+                background: transparent;
+                border: none;
+                font-size: 16px;
+                padding: 0;
+            }}
+            QPushButton#FleasionXfceTrayNotificationClose:hover {{
+                color: {foreground};
+                background: {border};
+                border-radius: 4px;
+            }}
+            """
+        )
+
+        icon_label = QLabel()
+        icon_label.setFixedSize(32, 32)
+        icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        if not icon.isNull():
+            icon_label.setPixmap(icon.pixmap(32, 32))
+
+        title_label = QLabel(title)
+        title_label.setObjectName('FleasionXfceTrayNotificationTitle')
+
+        message_label = QLabel(message)
+        message_label.setObjectName('FleasionXfceTrayNotificationMessage')
+        message_label.setWordWrap(True)
+        message_label.setMinimumWidth(320)
+        message_label.setMaximumWidth(420)
+
+        close_button = QPushButton('×')
+        close_button.setObjectName('FleasionXfceTrayNotificationClose')
+        close_button.setFixedSize(24, 24)
+        close_button.setToolTip('Close notification')
+        close_button.clicked.connect(self.close)
+
+        text_layout = QVBoxLayout()
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        text_layout.setSpacing(3)
+        text_layout.addWidget(title_label)
+        text_layout.addWidget(message_label)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 8, 8, 10)
+        layout.setSpacing(8)
+        layout.addWidget(icon_label)
+        layout.addLayout(text_layout, 1)
+        layout.addWidget(close_button, 0, Qt.AlignmentFlag.AlignTop)
+
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self.close)
+        self._timer.start(timeout)
+
+    def show_near_tray(self, tray_geometry) -> None:
+        """Show the notification beside the tray icon without taking focus."""
+        self.adjustSize()
+        screen = None
+        if not tray_geometry.isNull():
+            screen = QApplication.screenAt(tray_geometry.center())
+        if screen is None:
+            screen = QApplication.primaryScreen()
+
+        if screen is not None:
+            available = screen.availableGeometry()
+            width = self.width()
+            height = self.height()
+            if tray_geometry.isNull():
+                x = available.right() - width - 12
+                y = available.bottom() - height - 12
+            else:
+                x = tray_geometry.center().x() - width // 2
+                x = max(available.left() + 8, min(x, available.right() - width - 8))
+                if tray_geometry.center().y() >= available.center().y():
+                    y = max(available.top() + 8, tray_geometry.top() - height - 8)
+                else:
+                    y = min(available.bottom() - height - 8, tray_geometry.bottom() + 8)
+            self.move(x, y)
+
+        self.show()
+
+    def closeEvent(self, event):
+        self.closed.emit(self)
+        super().closeEvent(event)
 
 
 def _is_admin() -> bool:
@@ -82,6 +235,7 @@ class SystemTray:
         self._dashboard_close_notice_shown = False
         self._mac_beta_warning_shown = False
         self._notification_app_id = None
+        self._xfce_notification = None
         self._tray_cleaned_up = False
 
         # Create tray icon
@@ -760,6 +914,10 @@ class SystemTray:
         message = 'Fleasion is still running in the system tray. Right click and select the exit option to quit.'
         icon_path = get_icon_path()
 
+        if sys.platform.startswith('linux') and _is_xfce_desktop():
+            if self._show_xfce_notification(title, message, icon_path):
+                return
+
         if os.name != 'nt':
             if icon_path is not None:
                 self.tray.showMessage(title, message, QIcon(str(icon_path)), 10000)
@@ -774,6 +932,28 @@ class SystemTray:
             self.tray.showMessage(title, message, QIcon(str(icon_path)), 10000)
         else:
             self.tray.showMessage(title, message, QSystemTrayIcon.MessageIcon.NoIcon, 10000)
+
+    def _show_xfce_notification(self, title: str, message: str, icon_path) -> bool:
+        """Show an app-owned notification so XFCE cannot apply unreadable colors."""
+        try:
+            if self._xfce_notification is not None:
+                self._xfce_notification.close()
+
+            icon = QIcon(str(icon_path)) if icon_path is not None else QIcon()
+            dark = QApplication.palette().color(QPalette.ColorRole.Window).lightness() < 128
+            notification = _XfceTrayNotification(title, message, icon, dark, 10000)
+            notification.closed.connect(self._on_xfce_notification_closed)
+            self._xfce_notification = notification
+            notification.show_near_tray(self.tray.geometry())
+            return True
+        except Exception as exc:
+            self._xfce_notification = None
+            log_buffer.log('Tray', f'Failed to show XFCE notification: {exc}')
+            return False
+
+    def _on_xfce_notification_closed(self, notification) -> None:
+        if self._xfce_notification is notification:
+            self._xfce_notification = None
 
     def _show_windows_notification(self, title: str, message: str, icon_path) -> bool:
         """Show a silent Windows toast with the app icon and app identity."""
@@ -976,6 +1156,9 @@ class SystemTray:
             return
 
         self._tray_cleaned_up = True
+        if notification := getattr(self, '_xfce_notification', None):
+            notification.close()
+            self._xfce_notification = None
         try:
             self.tray.hide()
             self.tray.setContextMenu(None)

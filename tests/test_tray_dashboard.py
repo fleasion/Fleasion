@@ -1,12 +1,17 @@
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
-from PyQt6.QtWidgets import QSystemTrayIcon
+os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QIcon, QPalette
+from PyQt6.QtWidgets import QApplication, QSystemTrayIcon
 
 from fleasion import tray as tray_module
 from fleasion import app as app_module
 from fleasion.utils import platform_macos
-from fleasion.tray import SystemTray
+from fleasion.tray import SystemTray, _XfceTrayNotification
 
 
 class _DashboardStub:
@@ -50,6 +55,56 @@ def test_dashboard_toggle_hides_visible_window():
 
     assert dashboard.hide_calls == 1
     assert foreground_modes == [False]
+
+
+def test_xfce_desktop_detection(monkeypatch):
+    monkeypatch.delenv('XDG_CURRENT_DESKTOP', raising=False)
+    monkeypatch.delenv('XDG_SESSION_DESKTOP', raising=False)
+    monkeypatch.setenv('DESKTOP_SESSION', 'xfce')
+
+    assert tray_module._is_xfce_desktop() is True
+
+    monkeypatch.setenv('DESKTOP_SESSION', 'gnome')
+    assert tray_module._is_xfce_desktop() is False
+
+
+def test_xfce_notification_uses_an_opaque_surface():
+    app = QApplication.instance() or QApplication([])
+    notification = _XfceTrayNotification(
+        'Fleasion',
+        'Fleasion is still running in the system tray.',
+        QIcon(),
+        True,
+        1000,
+    )
+
+    assert not notification.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+    assert notification.testAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+    assert notification.autoFillBackground()
+    assert notification.palette().color(QPalette.ColorRole.Window).alpha() == 255
+
+    notification.close()
+    app.processEvents()
+
+
+def test_dashboard_close_uses_styled_notification_on_xfce(monkeypatch):
+    system_tray = SystemTray.__new__(SystemTray)
+    calls = []
+
+    class _TrayStub:
+        def showMessage(self, *args):
+            calls.append(('native', args))
+
+    system_tray._dashboard_close_notice_shown = False
+    system_tray.tray = _TrayStub()
+    system_tray._show_xfce_notification = lambda *args: calls.append(('xfce', args)) or True
+    monkeypatch.setattr(tray_module.sys, 'platform', 'linux')
+    monkeypatch.setattr(tray_module, '_is_xfce_desktop', lambda: True)
+    monkeypatch.setattr(tray_module, 'get_icon_path', lambda: None)
+
+    system_tray.notify_dashboard_closed()
+
+    assert [call[0] for call in calls] == ['xfce']
 
 
 def test_dashboard_toggle_shows_hidden_window():
