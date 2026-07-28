@@ -89,6 +89,12 @@
             "id": 72920620366355,
             "github": "https://raw.githubusercontent.com/pipluplia/Operation-One/refs/heads/main/OperationOne.json",
             "Replacement": null
+        },
+        "Sniper Duels": {
+            "Owner": "7lin",
+            "id": 109397169461300,
+            "github": "https://raw.githubusercontent.com/7-linn/scrapes/refs/heads/main/sniperduels.json",
+            "Replacement": null
         }
     }
 }
