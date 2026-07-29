@@ -1,5 +1,6 @@
 from fleasion import app as app_module
 from fleasion import __version__ as APP_VERSION
+from fleasion.utils import macos_proxy_helper
 from fleasion.app import (
     _handle_single_instance_command,
     _linux_hosts_nix_snippet,
@@ -134,3 +135,40 @@ def test_manual_upstream_credentials_missing_only_for_empty_selected_manual_mode
     config.upstream_transport_mode = "auto"
     config.upstream_http_connect_username = ""
     assert _manual_upstream_credentials_missing(config) is False
+
+
+def test_macos_relay_failure_retry_action_restarts_proxy(monkeypatch):
+    retries = []
+    invoker = app_module._ProxyErrorInvoker()
+    invoker.retry_proxy.connect(lambda: retries.append(None))
+    monkeypatch.setattr(
+        app_module,
+        "_show_macos_relay_failed_dialog",
+        lambda _details: "retry",
+    )
+
+    invoker.handle_proxy_error("macos_relay_failed", {"attempts": 3})
+
+    assert retries == [None]
+
+
+def test_macos_relay_failure_reinstall_action_replaces_helper_and_retries(monkeypatch):
+    retries = []
+    installs = []
+    invoker = app_module._ProxyErrorInvoker()
+    invoker.retry_proxy.connect(lambda: retries.append(None))
+    monkeypatch.setattr(
+        app_module,
+        "_show_macos_relay_failed_dialog",
+        lambda _details: "reinstall",
+    )
+    monkeypatch.setattr(
+        macos_proxy_helper,
+        "install_helper",
+        lambda: installs.append(None) or (True, ""),
+    )
+
+    invoker.handle_proxy_error("macos_relay_failed", {"attempts": 3})
+
+    assert installs == [None]
+    assert retries == [None]

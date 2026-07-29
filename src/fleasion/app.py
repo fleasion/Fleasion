@@ -827,6 +827,80 @@ def _show_macos_ca_patch_failed_dialog(details: dict):
     msg.exec()
 
 
+def _show_macos_relay_failed_dialog(details: dict) -> str:
+    """Explain a failed privileged relay and return the requested recovery action."""
+    from .utils.macos_proxy_helper import HELPER_LOG_DIR
+
+    _top = QApplication.topLevelWidgets()
+    _parent = next((w for w in _top if w.isVisible()), None)
+    _on_top = any(
+        w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in _top
+    )
+
+    backend_probe = details.get('backend_probe') or {}
+    reachable = bool(backend_probe.get('reachable'))
+    if reachable:
+        probe_html = (
+            'The helper can currently reach Fleasion’s backend, but TLS forwarding through '
+            '<code>127.0.0.1:443</code> still failed.'
+        )
+    else:
+        error_type = html.escape(str(backend_probe.get('error_type') or 'connection error'))
+        error_text = html.escape(str(backend_probe.get('error') or 'No details were reported.'))
+        probe_html = (
+            'The helper could not reach Fleasion’s backend on '
+            f'<code>127.0.0.1:{int(details.get("backend_port") or 58443)}</code>.<br>'
+            f'Technical details: {error_type}: {error_text}'
+        )
+
+    attempts = int(details.get('attempts') or 1)
+    while True:
+        msg = QMessageBox(_parent)
+        if _on_top:
+            msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
+        msg.setWindowTitle('macOS Proxy Relay Failed')
+        msg.setIcon(QMessageBox.Icon.Warning)
+        msg.setText('Fleasion could not start its privileged local HTTPS relay.')
+        msg.setTextFormat(Qt.TextFormat.RichText)
+        msg.setInformativeText(
+            f'The relay was tested {attempts} times and the proxy was stopped before any '
+            'Roblox hosts were redirected, so Roblox networking was left unchanged.<br><br>'
+            f'{probe_html}<br><br>'
+            'A stale helper or macOS firewall/network filter can cause this. Retry once, '
+            'or reinstall the helper to restart and replace its LaunchDaemon.'
+        )
+        retry_button = msg.addButton('Retry', QMessageBox.ButtonRole.AcceptRole)
+        reinstall_button = msg.addButton(
+            'Reinstall Helper', QMessageBox.ButtonRole.ActionRole
+        )
+        logs_button = msg.addButton('Open Helper Logs', QMessageBox.ButtonRole.ActionRole)
+        close_button = msg.addButton(QMessageBox.StandardButton.Close)
+        msg.setDefaultButton(reinstall_button)
+        if icon_path := get_icon_path():
+            from PyQt6.QtGui import QIcon
+
+            msg.setWindowIcon(QIcon(str(icon_path)))
+
+        for label in msg.findChildren(QLabel):
+            label.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextBrowserInteraction
+                | Qt.TextInteractionFlag.TextSelectableByMouse
+            )
+
+        msg.exec()
+        clicked = msg.clickedButton()
+        if clicked == retry_button:
+            return 'retry'
+        if clicked == reinstall_button:
+            return 'reinstall'
+        if clicked == logs_button:
+            open_folder(HELPER_LOG_DIR)
+            continue
+        if clicked == close_button:
+            return 'close'
+        return 'close'
+
+
 def _choose_macos_auth_source_on_launch(config_manager, tray=None, *, force: bool = False) -> str:
     """Ask macOS users which browser should be queried for Roblox auth."""
     if sys.platform != 'darwin':
@@ -1318,6 +1392,7 @@ class _ProxyErrorInvoker(QObject):
 
     show_proxy_error = pyqtSignal(str, dict)
     disable_proxy_features = pyqtSignal(str)
+    retry_proxy = pyqtSignal()
 
     @pyqtSlot(str, dict)
     def handle_proxy_error(self, code: str, details: dict):
@@ -1329,6 +1404,30 @@ class _ProxyErrorInvoker(QObject):
             _show_linux_hosts_read_only_dialog(details)
         elif code == 'macos_ca_patch_failed':
             _show_macos_ca_patch_failed_dialog(details)
+        elif code == 'macos_relay_failed':
+            action = _show_macos_relay_failed_dialog(details)
+            if action == 'retry':
+                self.retry_proxy.emit()
+            elif action == 'reinstall':
+                from .utils.macos_proxy_helper import install_helper
+
+                ok, detail = install_helper()
+                if ok:
+                    log_buffer.log(
+                        'ProxyHelper',
+                        'macOS proxy helper reinstalled after relay failure; retrying proxy startup',
+                    )
+                    self.retry_proxy.emit()
+                else:
+                    log_buffer.log(
+                        'ProxyHelper',
+                        f'macOS proxy helper reinstall failed: {detail}',
+                    )
+                    QMessageBox.warning(
+                        _visible_parent_widget(),
+                        'Fleasion - Proxy Helper Reinstall Failed',
+                        f'Fleasion could not reinstall or restart the macOS proxy helper.\n\n{detail}',
+                    )
         elif code == 'upstream_connect_failed':
             _show_windows_upstream_firewall_dialog(details)
 
@@ -2104,12 +2203,14 @@ def main():
             'port_bind_failed',
             'hosts_write_exhausted',
             'macos_ca_patch_failed',
+            'macos_relay_failed',
         ):
             return
         proxy_error_invoker.show_proxy_error.emit(code, dict(details))
 
     # Initialize proxy master
     proxy_master = ProxyMaster(config_manager, on_proxy_start_error=_on_proxy_start_error)
+    proxy_error_invoker.retry_proxy.connect(proxy_master.start)
 
     # Initialize modification manager (pass cache_scraper for asset-id resolution)
     mod_manager = ModificationManager(cache_scraper=getattr(proxy_master, 'cache_scraper', None))

@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 from cryptography import x509
@@ -12,6 +13,13 @@ from cryptography.x509.oid import NameOID
 
 from fleasion import macos_proxy_helper_daemon as daemon
 from fleasion.utils import macos_proxy_helper
+
+
+def test_client_and_daemon_require_the_same_exact_helper_identity():
+    assert macos_proxy_helper.EXPECTED_HELPER_VERSION == daemon.HELPER_VERSION
+    assert macos_proxy_helper.REQUIRED_HELPER_CAPABILITIES.issubset(
+        daemon.HELPER_CAPABILITIES
+    )
 
 
 def _reset_daemon_state(tmp_path, monkeypatch):
@@ -105,6 +113,55 @@ def test_helper_control_requires_token(tmp_path, monkeypatch):
     assert response["ok"] is True
     assert response["version"] == daemon.HELPER_VERSION
     assert "patch_ca" in response["capabilities"]
+    assert "probe_backend" in response["capabilities"]
+
+
+def test_helper_backend_probe_reports_connection_failure(monkeypatch):
+    error = ConnectionRefusedError(61, "Connection refused")
+    monkeypatch.setattr(
+        daemon.socket,
+        "create_connection",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(error),
+    )
+
+    response = daemon._probe_backend()
+
+    assert response["ok"] is True
+    assert response["reachable"] is False
+    assert response["backend_port"] == daemon._backend_port
+    assert response["error_type"] == "ConnectionRefusedError"
+    assert response["errno"] == 61
+    assert "Connection refused" in response["error"]
+
+
+def test_helper_backend_probe_reports_success(monkeypatch):
+    backend = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr(daemon.socket, "create_connection", lambda *_args, **_kwargs: backend)
+
+    response = daemon._probe_backend()
+
+    assert response["ok"] is True
+    assert response["reachable"] is True
+    assert response["backend_port"] == daemon._backend_port
+    assert response["error"] == ""
+
+
+def test_relay_logs_backend_connection_exception(monkeypatch, caplog):
+    error = ConnectionRefusedError(61, "Connection refused")
+    monkeypatch.setattr(
+        daemon.socket,
+        "create_connection",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(error),
+    )
+    handler = object.__new__(daemon._RelayHandler)
+    handler.client_address = ("127.0.0.1", 50123)
+
+    with caplog.at_level("WARNING", logger="fleasion-proxy-helper"):
+        handler.handle()
+
+    assert "relay backend connection failed" in caplog.text
+    assert "ConnectionRefusedError" in caplog.text
+    assert "errno=61" in caplog.text
 
 
 def test_installed_helper_plist_runs_root_owned_helper_copy():
@@ -393,13 +450,37 @@ def test_helper_patch_ca_rejects_symlinked_cacert(tmp_path, monkeypatch):
     assert outside.read_text(encoding="utf-8") == "outside"
 
 
-def test_helper_readiness_requires_ca_patch_capability(monkeypatch):
+def test_helper_readiness_requires_exact_helper_identity(monkeypatch):
     monkeypatch.setattr(
         macos_proxy_helper,
         "helper_status",
         lambda timeout=1.0: {
             "ok": True,
-            "version": 2,
+            "version": macos_proxy_helper.EXPECTED_HELPER_VERSION - 1,
+            "backend_port": macos_proxy_helper.MACOS_PROXY_BACKEND_PORT,
+            "capabilities": ["hosts", "relay", "patch_ca", "probe_backend"],
+        },
+    )
+    assert macos_proxy_helper.helper_is_ready() is False
+
+    monkeypatch.setattr(
+        macos_proxy_helper,
+        "helper_status",
+        lambda timeout=1.0: {
+            "ok": True,
+            "version": macos_proxy_helper.EXPECTED_HELPER_VERSION + 1,
+            "backend_port": macos_proxy_helper.MACOS_PROXY_BACKEND_PORT,
+            "capabilities": ["hosts", "relay", "patch_ca", "probe_backend"],
+        },
+    )
+    assert macos_proxy_helper.helper_is_ready() is False
+
+    monkeypatch.setattr(
+        macos_proxy_helper,
+        "helper_status",
+        lambda timeout=1.0: {
+            "ok": True,
+            "version": macos_proxy_helper.EXPECTED_HELPER_VERSION,
             "backend_port": macos_proxy_helper.MACOS_PROXY_BACKEND_PORT,
             "capabilities": ["hosts", "relay", "patch_ca"],
         },
@@ -409,11 +490,28 @@ def test_helper_readiness_requires_ca_patch_capability(monkeypatch):
     monkeypatch.setattr(
         macos_proxy_helper,
         "helper_status",
-            lambda timeout=1.0: {
-                "ok": True,
-                "version": 4,
-                "backend_port": macos_proxy_helper.MACOS_PROXY_BACKEND_PORT,
-                "capabilities": ["hosts", "relay", "patch_ca"],
-            },
+        lambda timeout=1.0: {
+            "ok": True,
+            "version": macos_proxy_helper.EXPECTED_HELPER_VERSION,
+            "backend_port": macos_proxy_helper.MACOS_PROXY_BACKEND_PORT,
+            "capabilities": ["hosts", "relay", "patch_ca", "probe_backend"],
+        },
     )
     assert macos_proxy_helper.helper_is_ready() is True
+
+
+def test_helper_probe_backend_preserves_control_error(monkeypatch):
+    monkeypatch.setattr(
+        macos_proxy_helper,
+        "_request",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ConnectionRefusedError(61, "Connection refused")
+        ),
+    )
+
+    response = macos_proxy_helper.helper_probe_backend()
+
+    assert response["ok"] is False
+    assert response["reachable"] is False
+    assert response["error_type"] == "ConnectionRefusedError"
+    assert response["errno"] == 61

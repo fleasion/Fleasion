@@ -24,8 +24,8 @@ import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-HELPER_VERSION = 5
-HELPER_CAPABILITIES = ('hosts', 'relay', 'patch_ca')
+HELPER_VERSION = 6
+HELPER_CAPABILITIES = ('hosts', 'relay', 'patch_ca', 'probe_backend')
 HOSTS_FILE = '/etc/hosts'
 HOSTS_MARKER = '# Fleasion proxy entry'
 ALLOWED_HOSTS = {
@@ -444,6 +444,35 @@ def _status():
     }
 
 
+def _probe_backend():
+    started_at = time.monotonic()
+    try:
+        backend = socket.create_connection(('127.0.0.1', _backend_port), timeout=2.0)
+    except OSError as exc:
+        return {
+            'ok': True,
+            'reachable': False,
+            'backend_port': _backend_port,
+            'elapsed_ms': round((time.monotonic() - started_at) * 1000),
+            'error_type': type(exc).__name__,
+            'errno': exc.errno,
+            'error': str(exc),
+        }
+
+    try:
+        return {
+            'ok': True,
+            'reachable': True,
+            'backend_port': _backend_port,
+            'elapsed_ms': round((time.monotonic() - started_at) * 1000),
+            'error_type': '',
+            'errno': None,
+            'error': '',
+        }
+    finally:
+        backend.close()
+
+
 def _handle_request(request):
     supplied = str(request.get('token') or '')
     if not hmac.compare_digest(supplied, _read_token()):
@@ -464,6 +493,8 @@ def _handle_request(request):
             if _active_hosts:
                 _last_heartbeat = time.monotonic()
         return _status()
+    if action == 'probe_backend':
+        return _probe_backend()
     if action == 'patch_ca':
         return _patch_ca(str(request.get('ca_pem') or ''), request.get('installs') or [])
     return {'ok': False, 'error': 'unsupported action'}
@@ -485,7 +516,16 @@ class _RelayHandler(socketserver.BaseRequestHandler):
     def handle(self):
         try:
             backend = socket.create_connection(('127.0.0.1', _backend_port), timeout=3.0)
-        except OSError:
+        except OSError as exc:
+            logger.warning(
+                'relay backend connection failed for client %r: '
+                '127.0.0.1:%d: %s: errno=%r: %s',
+                self.client_address,
+                _backend_port,
+                type(exc).__name__,
+                exc.errno,
+                exc,
+            )
             return
 
         client = self.request

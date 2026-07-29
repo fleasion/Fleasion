@@ -15,6 +15,98 @@ import fleasion.proxy.master as proxy_master
 from fleasion.utils import linux_proxy_helper, macos_proxy_helper
 
 
+def test_privileged_relay_tls_self_test_retries_representative_host(monkeypatch):
+    hosts = {"assetdelivery.roblox.com", "gamejoin.roblox.com"}
+    calls = []
+    outcomes = iter(
+        [
+            (False, ["assetdelivery.roblox.com: EOF", "gamejoin.roblox.com: EOF"]),
+            (False, ["assetdelivery.roblox.com: EOF"]),
+            (False, ["assetdelivery.roblox.com: EOF"]),
+        ]
+    )
+    logs = []
+
+    async def fake_result(probe_hosts, _ca_path, _port):
+        calls.append(set(probe_hosts))
+        return next(outcomes)
+
+    async def no_sleep(_delay):
+        return None
+
+    monkeypatch.setattr(proxy_master, "_tls_self_test_result", fake_result)
+    monkeypatch.setattr(proxy_master.asyncio, "sleep", no_sleep)
+    monkeypatch.setattr(
+        proxy_master,
+        "log_buffer",
+        SimpleNamespace(log=lambda category, message: logs.append((category, message))),
+    )
+
+    ok, failures = asyncio.run(
+        proxy_master._run_privileged_relay_tls_self_test(
+            hosts,
+            Path("ca.crt"),
+            443,
+            attempts=3,
+            retry_delay=0.01,
+        )
+    )
+
+    assert ok is False
+    assert calls == [
+        hosts,
+        {"assetdelivery.roblox.com"},
+        {"assetdelivery.roblox.com"},
+    ]
+    assert any(failure.startswith("relay retry check:") for failure in failures)
+    assert sum("retrying" in message for _category, message in logs) == 2
+
+
+def test_privileged_relay_tls_self_test_runs_full_validation_after_recovery(monkeypatch):
+    hosts = {"assetdelivery.roblox.com", "gamejoin.roblox.com"}
+    calls = []
+    outcomes = iter(
+        [
+            (False, ["assetdelivery.roblox.com: EOF"]),
+            (True, []),
+            (True, []),
+        ]
+    )
+
+    async def fake_result(probe_hosts, _ca_path, _port):
+        calls.append(set(probe_hosts))
+        return next(outcomes)
+
+    async def no_sleep(_delay):
+        return None
+
+    monkeypatch.setattr(proxy_master, "_tls_self_test_result", fake_result)
+    monkeypatch.setattr(proxy_master.asyncio, "sleep", no_sleep)
+    monkeypatch.setattr(
+        proxy_master,
+        "log_buffer",
+        SimpleNamespace(log=lambda _category, _message: None),
+    )
+
+    ok, failures = asyncio.run(
+        proxy_master._run_privileged_relay_tls_self_test(
+            hosts,
+            Path("ca.crt"),
+            443,
+            attempts=3,
+            retry_delay=0.01,
+        )
+    )
+
+    assert ok is True
+    assert failures == []
+    assert calls == [
+        hosts,
+        {"assetdelivery.roblox.com"},
+        hosts,
+    ]
+
+
 def test_proxy_ca_dir_falls_back_when_configured_dir_is_not_writable(tmp_path, monkeypatch):
     configured = tmp_path / "proxy_ca"
     fallback = tmp_path / "proxy_ca_user"
@@ -101,6 +193,152 @@ def test_macos_proxy_start_blocks_when_ca_patch_verification_fails(tmp_path, mon
     assert proxy._running is False
     assert errors and errors[0][0] == "macos_ca_patch_failed"
     assert hosts_calls == []
+
+
+def test_macos_relay_failure_emits_health_diagnostics_before_hosts_write(
+    tmp_path, monkeypatch
+):
+    errors = []
+    hosts_calls = []
+    ca_cert = tmp_path / "ca.crt"
+    ca_key = tmp_path / "ca.key"
+    leaf_cert = tmp_path / "leaf.crt"
+    leaf_key = tmp_path / "leaf.key"
+    default_cert = (tmp_path / "default.crt", tmp_path / "default.key")
+    for path in (ca_cert, ca_key, leaf_cert, leaf_key, *default_cert):
+        path.write_text("x", encoding="utf-8")
+
+    class _ProxyStub:
+        async def log_upstream_self_test(self, _hosts):
+            return None
+
+        def set_module_interceptors(self, _interceptors):
+            return None
+
+        async def start(self):
+            return None
+
+        async def stop(self):
+            return None
+
+    relay_calls = []
+
+    async def relay_failure(*_args, **_kwargs):
+        relay_calls.append(None)
+        return False, ["assetdelivery.roblox.com: SSLEOFError"]
+
+    monkeypatch.setattr(proxy_master, "IS_MACOS", True)
+    monkeypatch.setattr(proxy_master, "IS_WINDOWS", False)
+    monkeypatch.setattr(proxy_master, "IS_LINUX", False)
+    monkeypatch.setattr(proxy_master, "_use_linux_privileged_helper", lambda: False)
+    monkeypatch.setattr(macos_proxy_helper, "helper_is_ready", lambda: True)
+    monkeypatch.setattr(
+        macos_proxy_helper,
+        "helper_status",
+        lambda: {
+            "ok": True,
+            "version": macos_proxy_helper.EXPECTED_HELPER_VERSION,
+            "backend_port": proxy_master.MACOS_PROXY_BACKEND_PORT,
+        },
+    )
+    monkeypatch.setattr(
+        macos_proxy_helper,
+        "helper_probe_backend",
+        lambda: {
+            "ok": True,
+            "reachable": False,
+            "backend_port": proxy_master.MACOS_PROXY_BACKEND_PORT,
+            "elapsed_ms": 1,
+            "error_type": "ConnectionRefusedError",
+            "errno": 61,
+            "error": "[Errno 61] Connection refused",
+        },
+    )
+    monkeypatch.setattr(proxy_master, "generate_ca", lambda _dir: (ca_cert, ca_key))
+    monkeypatch.setattr(
+        proxy_master,
+        "generate_host_cert",
+        lambda *_args, **_kwargs: (leaf_cert, leaf_key),
+    )
+    monkeypatch.setattr(
+        proxy_master,
+        "generate_multi_host_cert",
+        lambda *_args, **_kwargs: default_cert,
+    )
+    monkeypatch.setattr(proxy_master, "get_ca_pem", lambda _path: "ca")
+    monkeypatch.setattr(proxy_master, "_install_ca_into_roblox", lambda _pem: (True, {}))
+    monkeypatch.setattr(proxy_master, "_other_proxy_owner_alive", lambda: False)
+    monkeypatch.setattr(proxy_master, "_delete_watchdog_task", lambda: None)
+    monkeypatch.setattr(
+        proxy_master,
+        "_remove_hosts_entries",
+        lambda *_args, **_kwargs: hosts_calls.append("remove") or True,
+    )
+    monkeypatch.setattr(
+        proxy_master,
+        "_add_hosts_entries",
+        lambda *_args, **_kwargs: hosts_calls.append("add") or True,
+    )
+    monkeypatch.setattr(proxy_master, "_flush_dns", lambda: None)
+    monkeypatch.setattr(proxy_master, "_resolve_real_endpoints", lambda _hosts: {})
+    monkeypatch.setattr(
+        proxy_master,
+        "detect_windows_proxy",
+        lambda: SimpleNamespace(
+            macos_http_enabled=False,
+            macos_https_enabled=False,
+            macos_http_proxy_server="",
+            macos_https_proxy_server="",
+            macos_auto_config_url="",
+        ),
+    )
+    monkeypatch.setattr(proxy_master, "detected_http_proxy", lambda _info: None)
+    monkeypatch.setattr(
+        proxy_master,
+        "_run_tls_self_test",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result=True),
+    )
+    monkeypatch.setattr(
+        proxy_master,
+        "_run_privileged_relay_tls_self_test",
+        relay_failure,
+    )
+    monkeypatch.setattr(proxy_master, "FleasionProxy", lambda **_kwargs: _ProxyStub())
+    monkeypatch.setattr(
+        proxy_master.ProxyMaster,
+        "_startup_intercept_hosts",
+        lambda _self: set(proxy_master.BASE_INTERCEPT_HOSTS),
+    )
+
+    proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
+    proxy.config_manager = SimpleNamespace(
+        custom_fflags_enabled=False,
+        clear_cache_on_launch=False,
+        settings={},
+        upstream_transport_mode="auto",
+        vpn_compat_max_assetdelivery_connections=16,
+        vpn_compat_max_cdn_connections=32,
+    )
+    proxy.cache_scraper = SimpleNamespace(set_real_ips=lambda _ips: None)
+    proxy.custom_fflag_modifier = None
+    proxy._module_interceptors = []
+    proxy._on_proxy_start_error = lambda code, details: errors.append((code, details))
+    proxy._running = False
+    proxy._lock = threading.Lock()
+    proxy._loop = None
+
+    asyncio.run(asyncio.wait_for(proxy._run_proxy(), timeout=2.0))
+
+    assert proxy._running is False
+    assert relay_calls == [None]
+    assert hosts_calls == ["remove"]
+    assert len(errors) == 1
+    code, details = errors[0]
+    assert code == "macos_relay_failed"
+    assert details["attempts"] == 3
+    assert details["tls_failures"] == ["assetdelivery.roblox.com: SSLEOFError"]
+    assert details["backend_probe"]["reachable"] is False
+    assert details["helper_status"]["version"] == macos_proxy_helper.EXPECTED_HELPER_VERSION
 
 
 def test_linux_roblox_ca_patch_reseeds_truncated_bundle_even_when_current_ca_exists(tmp_path, monkeypatch):

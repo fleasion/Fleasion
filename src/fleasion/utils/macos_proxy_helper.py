@@ -32,8 +32,8 @@ HELPER_LOG_DIR = Path('/Library/Logs')
 HELPER_LOG_PATH = HELPER_LOG_DIR / 'Fleasion.proxy-helper.log'
 HELPER_STDOUT_LOG_PATH = HELPER_LOG_DIR / 'Fleasion.proxy-helper.stdout.log'
 HELPER_STDERR_LOG_PATH = HELPER_LOG_DIR / 'Fleasion.proxy-helper.stderr.log'
-REQUIRED_HELPER_VERSION = 4
-REQUIRED_HELPER_CAPABILITIES = {'patch_ca'}
+EXPECTED_HELPER_VERSION = 6
+REQUIRED_HELPER_CAPABILITIES = {'relay', 'patch_ca', 'probe_backend'}
 # A first launch of a root-owned helper can be held briefly by macOS execution
 # policy checks even after launchd has spawned it.  Keep this comfortably above
 # that cold-start window, while still giving a real installation failure a
@@ -92,18 +92,18 @@ def helper_status(timeout: float = 1.0) -> dict | None:
         return None
 
 
-def helper_has_required_ca_patch(status: dict | None) -> bool:
+def helper_has_expected_identity(status: dict | None) -> bool:
     if not status:
         return False
     try:
-        version_ok = int(status.get('version', 0)) >= REQUIRED_HELPER_VERSION
+        version_ok = int(status.get('version', 0)) == EXPECTED_HELPER_VERSION
     except TypeError, ValueError:
         version_ok = False
     capabilities = {str(value) for value in status.get('capabilities') or []}
     return version_ok and REQUIRED_HELPER_CAPABILITIES.issubset(capabilities)
 
 
-def helper_is_ready(*, require_ca_patch: bool = True) -> bool:
+def helper_is_ready() -> bool:
     status = helper_status()
     if not status:
         return False
@@ -113,10 +113,11 @@ def helper_is_ready(*, require_ca_patch: bool = True) -> bool:
         backend_ok = False
     if not backend_ok:
         return False
-    if require_ca_patch and not helper_has_required_ca_patch(status):
+    if not helper_has_expected_identity(status):
         log_buffer.log(
             'ProxyHelper',
-            'Installed macOS proxy helper is missing CA patch support; reinstalling/upgrading helper',
+            'Installed macOS proxy helper identity does not match this app build; '
+            f'expected version {EXPECTED_HELPER_VERSION}, got {status.get("version")!r}',
         )
         return False
     return True
@@ -139,11 +140,12 @@ def _helper_readiness_diagnostic() -> tuple[bool, str]:
             'Helper reported an unexpected backend port: '
             f'{status.get("backend_port")!r} (expected {MACOS_PROXY_BACKEND_PORT})',
         )
-    if not helper_has_required_ca_patch(status):
+    if not helper_has_expected_identity(status):
         return (
             False,
-            'Helper is missing required CA patch support: '
-            f'version={status.get("version")!r}, capabilities={status.get("capabilities")!r}',
+            'Helper identity does not match this app build: '
+            f'version={status.get("version")!r} (expected {EXPECTED_HELPER_VERSION}), '
+            f'capabilities={status.get("capabilities")!r}',
         )
     return True, ''
 
@@ -172,6 +174,20 @@ def helper_heartbeat() -> bool:
         return True
     except Exception:
         return False
+
+
+def helper_probe_backend() -> dict:
+    try:
+        return _request('probe_backend', timeout=3.0)
+    except Exception as exc:
+        return {
+            'ok': False,
+            'reachable': False,
+            'backend_port': MACOS_PROXY_BACKEND_PORT,
+            'error_type': type(exc).__name__,
+            'errno': getattr(exc, 'errno', None),
+            'error': str(exc),
+        }
 
 
 def helper_patch_ca(ca_pem: str, installs: list[dict]) -> dict | None:

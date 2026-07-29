@@ -664,23 +664,92 @@ def _run_tls_self_test_sync(
 
 
 async def _run_tls_self_test(hosts: set[str], ca_cert_path: Path, port: int) -> bool:
+    ok, failures = await _tls_self_test_result(hosts, ca_cert_path, port)
+    if ok:
+        _log_tls_self_test_passed(hosts)
+        return True
+    _log_tls_self_test_failures(failures)
+    return False
+
+
+async def _tls_self_test_result(
+    hosts: set[str], ca_cert_path: Path, port: int
+) -> tuple[bool, list[str]]:
     loop = asyncio.get_running_loop()
-    ok, failures = await loop.run_in_executor(
+    return await loop.run_in_executor(
         None,
         _run_tls_self_test_sync,
         set(hosts),
         ca_cert_path,
         port,
     )
-    if ok:
-        log_buffer.log(
-            'TLS',
-            f'Startup TLS self-test passed for {format_count(hosts, "intercept host")}',
-        )
-        return True
+
+
+def _log_tls_self_test_passed(hosts: set[str]) -> None:
+    log_buffer.log(
+        'TLS',
+        f'Startup TLS self-test passed for {format_count(hosts, "intercept host")}',
+    )
+
+
+def _log_tls_self_test_failures(failures: list[str]) -> None:
     for failure in failures:
         log_buffer.log('TLS', f'Startup TLS self-test failed: {failure}')
-    return False
+
+
+async def _run_privileged_relay_tls_self_test(
+    hosts: set[str],
+    ca_cert_path: Path,
+    port: int,
+    *,
+    attempts: int = 3,
+    retry_delay: float = 0.5,
+) -> tuple[bool, list[str]]:
+    """Test the relay, retrying a small representative probe before giving up."""
+    attempts = max(1, int(attempts))
+    ok, failures = await _tls_self_test_result(hosts, ca_cert_path, port)
+    if ok:
+        _log_tls_self_test_passed(hosts)
+        return True, []
+
+    representative_hosts = {sorted(hosts)[0]} if hosts else set()
+    full_failures = list(failures)
+    last_failures = list(failures)
+    for attempt in range(2, attempts + 1):
+        log_buffer.log(
+            'ProxyHelper',
+            f'Privileged relay TLS probe attempt {attempt - 1}/{attempts} failed; '
+            f'retrying in {retry_delay:.1f}s',
+        )
+        await asyncio.sleep(retry_delay)
+        recovered, retry_failures = await _tls_self_test_result(
+            representative_hosts,
+            ca_cert_path,
+            port,
+        )
+        last_failures = list(retry_failures)
+        if not recovered:
+            continue
+
+        ok, failures = await _tls_self_test_result(hosts, ca_cert_path, port)
+        if ok:
+            log_buffer.log(
+                'ProxyHelper',
+                f'Privileged relay TLS probe recovered on attempt {attempt}/{attempts}',
+            )
+            _log_tls_self_test_passed(hosts)
+            return True, []
+        full_failures = list(failures)
+        last_failures = list(failures)
+
+    final_failures = full_failures
+    if last_failures != full_failures:
+        final_failures = [
+            *full_failures,
+            *(f'relay retry check: {failure}' for failure in last_failures),
+        ]
+    _log_tls_self_test_failures(final_failures)
+    return False, final_failures
 
 
 def _directory_is_writable(path: Path) -> bool:
@@ -3922,9 +3991,45 @@ class ProxyMaster:
                     stop_helper()
                     self._running = False
                     return
-        if (IS_MACOS or use_linux_helper) and not await _run_tls_self_test(
-            set(INTERCEPT_HOSTS), ca_cert_path, PROXY_PORT
-        ):
+        if IS_MACOS or use_linux_helper:
+            relay_ok, relay_failures = await _run_privileged_relay_tls_self_test(
+                set(INTERCEPT_HOSTS),
+                ca_cert_path,
+                PROXY_PORT,
+            )
+        else:
+            relay_ok, relay_failures = True, []
+        if not relay_ok:
+            relay_details: dict = {
+                'relay_port': PROXY_PORT,
+                'backend_port': listen_port,
+                'attempts': 3,
+                'tls_failures': relay_failures,
+            }
+            if IS_MACOS:
+                from ..utils.macos_proxy_helper import (
+                    helper_probe_backend,
+                    helper_status,
+                )
+
+                # _run_proxy itself runs on Fleasion's dedicated proxy thread,
+                # so these bounded control-socket calls do not block the GUI.
+                helper_state = helper_status()
+                backend_probe = helper_probe_backend()
+                relay_details['helper_status'] = helper_state or {}
+                relay_details['backend_probe'] = backend_probe
+                reachable = bool(backend_probe.get('reachable'))
+                probe_summary = (
+                    f'reachable={"yes" if reachable else "no"}; '
+                    f'backend=127.0.0.1:{backend_probe.get("backend_port", listen_port)}; '
+                    f'elapsed_ms={backend_probe.get("elapsed_ms", "unknown")}'
+                )
+                if backend_probe.get('error'):
+                    probe_summary += (
+                        f'; error={backend_probe.get("error_type") or "OSError"}: '
+                        f'{backend_probe.get("error")}'
+                    )
+                log_buffer.log('ProxyHelper', f'macOS helper backend health probe: {probe_summary}')
             log_buffer.log('ProxyHelper', 'Privileged port-443 relay TLS self-test failed')
             await self._proxy.stop()
             _set_active_hosts_loopbacks(None)
@@ -3933,6 +4038,8 @@ class ProxyMaster:
 
                 stop_helper()
             self._running = False
+            if IS_MACOS:
+                self._emit_proxy_start_error('macos_relay_failed', relay_details)
             return
 
         # ── Write hosts file entries ──────────────────────────────────────
