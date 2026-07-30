@@ -11,7 +11,8 @@ from PyQt6.QtWidgets import QApplication, QSystemTrayIcon
 from fleasion import tray as tray_module
 from fleasion import app as app_module
 from fleasion.utils import platform_macos
-from fleasion.tray import SystemTray, _XfceTrayNotification
+from fleasion.gui.xfce_notification import XfceTrayNotification
+from fleasion.tray import SystemTray
 
 
 class _DashboardStub:
@@ -70,7 +71,7 @@ def test_xfce_desktop_detection(monkeypatch):
 
 def test_xfce_notification_uses_an_opaque_surface():
     app = QApplication.instance() or QApplication([])
-    notification = _XfceTrayNotification(
+    notification = XfceTrayNotification(
         'Fleasion',
         'Fleasion is still running in the system tray.',
         QIcon(),
@@ -105,6 +106,25 @@ def test_dashboard_close_uses_styled_notification_on_xfce(monkeypatch):
     system_tray.notify_dashboard_closed()
 
     assert [call[0] for call in calls] == ['xfce']
+
+
+def test_dashboard_close_uses_native_notification_off_xfce(monkeypatch):
+    system_tray = SystemTray.__new__(SystemTray)
+    calls = []
+
+    class _TrayStub:
+        def showMessage(self, *args):
+            calls.append(args)
+
+    system_tray._dashboard_close_notice_shown = False
+    system_tray.tray = _TrayStub()
+    monkeypatch.setattr(tray_module.sys, 'platform', 'linux')
+    monkeypatch.setattr(tray_module, '_is_xfce_desktop', lambda: False)
+    monkeypatch.setattr(tray_module, 'get_icon_path', lambda: None)
+
+    system_tray.notify_dashboard_closed()
+
+    assert len(calls) == 1
 
 
 def test_dashboard_toggle_shows_hidden_window():
