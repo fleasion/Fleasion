@@ -983,7 +983,7 @@ class ReplacerConfigWindow(QDialog):
         replace_layout.addWidget(label2)
         self.replacement_entry = FileDropLineEdit()
         self.replacement_entry.setPlaceholderText(
-            'ID, URL, file path, or /StickObj/stick.obj'
+            'ID, URL, file path, or /ExampleOBJ/Example.obj'
         )
         self.replacement_entry.setToolTip(_replacement_path_tooltip())
         self.replacement_entry.fileDropped.connect(self._store_dropped_replacement_path)
