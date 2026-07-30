@@ -2,8 +2,19 @@
 
 from __future__ import annotations
 
+import sys
+
 from PyQt6.QtCore import QDir, QMimeData, pyqtSignal
 from PyQt6.QtWidgets import QLineEdit
+
+
+def local_file_path_example() -> str:
+    """Return a recognizable local path example for the current OS."""
+    if sys.platform == 'win32':
+        return r'C:\Mods\file.ext'
+    if sys.platform == 'darwin':
+        return '/Users/name/Mods/file.ext'
+    return '/home/name/Mods/file.ext'
 
 
 def local_file_path_from_mime_data(mime_data: QMimeData) -> str | None:

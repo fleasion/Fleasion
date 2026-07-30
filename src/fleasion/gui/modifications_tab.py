@@ -65,7 +65,7 @@ from ..modifications.platform_targets import (
 from ..utils import APP_CACHE_DIR, format_count, log_buffer, open_folder
 from ..utils.http import http_get
 from ..utils.threading import run_in_thread
-from .file_drop import FileDropLineEdit
+from .file_drop import FileDropLineEdit, local_file_path_example
 from .theme import ThemeManager
 
 # ---------------------------------------------------------------------------
@@ -698,7 +698,7 @@ class ModRowWidget(QWidget):
         # Source text field (expands to fill remaining row space)
         self._source_edit = FileDropLineEdit()
         self._source_edit.setPlaceholderText(
-            'ID, URL (http://...), path (C:\\...), or "remove" to remove'
+            f'ID, URL, path ({local_file_path_example()}), or "remove"'
         )
         self._source_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         layout.addWidget(self._source_edit)
@@ -3792,7 +3792,7 @@ class _CustomModDialog(QDialog):
         row3.addWidget(QLabel('Source:'))
         self._source_edit = FileDropLineEdit()
         self._source_edit.setPlaceholderText(
-            'ID, URL (http://...), path (C:\\...), or "remove" to remove'
+            f'ID, URL, path ({local_file_path_example()}), or "remove"'
         )
         row3.addWidget(self._source_edit)
         browse_btn = QPushButton('Browse\u2026')

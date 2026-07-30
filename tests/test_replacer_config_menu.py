@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -227,6 +228,34 @@ def test_replace_ids_parser_splits_multiline_pastes(tmp_path, monkeypatch):
 
         assert config_manager.replacement_rules[0]['replace_ids'] == [101, 202, 303]
         assert window.tree.topLevelItem(0).text(3) == '3 IDs'
+    finally:
+        window.close()
+    assert app is not None
+
+
+def test_replacer_explains_portable_configs_asset_path(tmp_path, monkeypatch):
+    app = _qapp()
+    config_dir = tmp_path / 'FleasionNT'
+    configs_dir = config_dir / 'configs'
+    monkeypatch.setattr(manager_module, 'CONFIG_DIR', config_dir)
+    monkeypatch.setattr(manager_module, 'CONFIG_FILE', config_dir / 'settings.json')
+    monkeypatch.setattr(manager_module, 'CONFIGS_FOLDER', configs_dir)
+
+    config_manager = manager_module.ConfigManager()
+    window = ReplacerConfigWindow(config_manager)
+    try:
+        assert '/StickObj/stick.obj' in window.replacement_entry.placeholderText()
+        tooltip = window.replacement_entry.toolTip()
+        assert 'Configs/StickObj/stick.obj' in tooltip
+        assert '10 folders deep' in tooltip
+        if sys.platform == 'win32':
+            assert r'C:\Mods\file.ext' in tooltip
+        elif sys.platform == 'darwin':
+            assert '/Users/name/Mods/file.ext' in tooltip
+            assert r'C:\Mods\file.ext' not in tooltip
+        else:
+            assert '/home/name/Mods/file.ext' in tooltip
+            assert r'C:\Mods\file.ext' not in tooltip
     finally:
         window.close()
     assert app is not None

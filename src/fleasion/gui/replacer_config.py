@@ -61,7 +61,11 @@ from ..utils import (
     open_folder,
 )
 from ..utils.http import http_head_status
-from .file_drop import FileDropLineEdit
+from ..config.manager import (
+    local_replacement_path_for_storage,
+    resolve_local_replacement_path,
+)
+from .file_drop import FileDropLineEdit, local_file_path_example
 from .json_viewer import JsonTreeViewer
 from .proxy_gate import ProxyGate
 
@@ -90,6 +94,19 @@ _CONFIG_MENU_SCREEN_MARGIN_PX = 12
 _CONFIG_MENU_OPEN_RELEASE_GRACE_SEC = 0.25
 _CONFIG_MENU_BUTTON_POPUP_EXTRA_WIDTH_PX = 24
 _ID_SPLIT_RE = re.compile(r'[,\s;]+')
+
+
+def _replacement_path_tooltip(*, empty_removes: bool = True) -> str:
+    lines = [
+        'For a config that comes with files, click Open Configs below, create a folder there, '
+        'and put the files in that folder.',
+        'For example, /StickObj/stick.obj loads the file at Configs/StickObj/stick.obj.',
+        'Asset folders can be nested up to 10 folders deep.',
+        f'You can also use a normal path such as {local_file_path_example()}.',
+    ]
+    if empty_removes:
+        lines.append('Leave this empty to remove the selected assets.')
+    return '\n'.join(lines)
 
 
 class UndoManager:
@@ -966,8 +983,11 @@ class ReplacerConfigWindow(QDialog):
         replace_layout.addWidget(label2)
         self.replacement_entry = FileDropLineEdit()
         self.replacement_entry.setPlaceholderText(
-            'ID, URL (http://...), path (C:\\...), or empty to remove'
+            'ID, URL, file path, or /StickObj/stick.obj'
         )
+        self.replacement_entry.setToolTip(_replacement_path_tooltip())
+        self.replacement_entry.fileDropped.connect(self._store_dropped_replacement_path)
+        label2.setToolTip(_replacement_path_tooltip())
         replace_layout.addWidget(self.replacement_entry)
         browse_btn = QPushButton('Browse...')
         browse_btn.clicked.connect(self._browse_local_file)
@@ -1587,9 +1607,9 @@ class ReplacerConfigWindow(QDialog):
         current_val = self.replacement_entry.text().strip(' \t"\'')
         initial_dir = ''
         if current_val:
-            path = Path(current_val)
+            path = resolve_local_replacement_path(current_val)
             if path.parent.exists():
-                initial_dir = str(path)
+                initial_dir = str(path.parent)
 
         file_path, _ = QFileDialog.getOpenFileName(
             self,
@@ -1598,7 +1618,11 @@ class ReplacerConfigWindow(QDialog):
             'All Files (*)',
         )
         if file_path:
-            self.replacement_entry.setText(file_path)
+            self.replacement_entry.setText(local_replacement_path_for_storage(file_path))
+
+    def _store_dropped_replacement_path(self, file_path: str) -> None:
+        """Make dropped Configs assets portable while preserving external paths."""
+        self.replacement_entry.setText(local_replacement_path_for_storage(file_path))
 
     def _config_action(self, action: str):
         """Handle config management actions."""
@@ -2100,6 +2124,12 @@ class ReplacerConfigWindow(QDialog):
 
         line_edit = FileDropLineEdit()
         line_edit.setText(old_value)
+        line_edit.setToolTip(_replacement_path_tooltip())
+
+        def _store_dropped_path(file_path: str) -> None:
+            line_edit.setText(local_replacement_path_for_storage(file_path))
+
+        line_edit.fileDropped.connect(_store_dropped_path)
         layout.addWidget(line_edit)
 
         btn_layout = QHBoxLayout()
@@ -2112,9 +2142,9 @@ class ReplacerConfigWindow(QDialog):
             current_val = line_edit.text().strip(' \t"\'')
             initial_dir = ''
             if current_val:
-                path = Path(current_val)
+                path = resolve_local_replacement_path(current_val)
                 if path.parent.exists():
-                    initial_dir = str(path)
+                    initial_dir = str(path.parent)
 
             path, _ = QFileDialog.getOpenFileName(
                 dialog,
@@ -2123,7 +2153,7 @@ class ReplacerConfigWindow(QDialog):
                 'All Files (*)',
             )
             if path:
-                line_edit.setText(path)
+                line_edit.setText(local_replacement_path_for_storage(path))
                 dialog.accept()
 
         browse_btn.clicked.connect(_on_browse)
@@ -2156,7 +2186,7 @@ class ReplacerConfigWindow(QDialog):
             return
 
         if new_mode == 'local' and 'local_path' in extra:
-            if not Path(extra['local_path']).exists():
+            if not resolve_local_replacement_path(extra['local_path']).is_file():
                 QMessageBox.critical(self, 'Error', f'File not found: {extra["local_path"]}')
                 return
 
@@ -2388,7 +2418,7 @@ class ReplacerConfigWindow(QDialog):
             rule['cdn_url'] = cdn_url
         elif mode == 'local':
             local_path = extra['local_path']
-            if not Path(local_path).exists():
+            if not resolve_local_replacement_path(local_path).is_file():
                 QMessageBox.critical(self, 'Error', f'File not found: {local_path}')
                 return None
             rule['local_path'] = local_path

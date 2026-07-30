@@ -367,6 +367,28 @@ Settings are stored in:
 | `logs/fleasion.log` | Persistent application and proxy log |
 | `Temp/ConvertedMeshes/` | Temporary directory for OBJ/mesh conversions |
 
+### Sharing Configs with Files
+
+Replacement config JSON files live directly inside `configs/`. If a config needs its own files,
+such as an OBJ model, put those files in a folder inside `configs/`:
+
+```text
+configs/
+├── Replace all weapons with sticks.json
+└── StickObj/
+    └── stick.obj
+```
+
+In the replacement field, `/StickObj/stick.obj` means “use `stick.obj` from the `StickObj`
+folder inside Fleasion's Configs folder.” This notation works unchanged on Windows, macOS, and
+Linux. The **Browse** button and drag-and-drop automatically use this shareable notation when
+the selected file is inside a Configs subfolder.
+
+Asset folders may be nested up to 10 folders deep. Config JSON files remain at the root of
+`configs/`; JSON files inside asset subfolders are not listed as configs. Normal operating-system
+file paths remain supported. On macOS and Linux, when both a Configs asset and an absolute path
+could match the same `/Folder/file` text, the file inside Configs takes priority.
+
 ## Community
 
 - **Discord**: [discord.gg/hXyhKehEZF](https://discord.gg/hXyhKehEZF)

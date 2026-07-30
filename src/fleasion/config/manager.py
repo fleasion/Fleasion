@@ -14,6 +14,7 @@ from ..utils.paths import CONFIG_DIR, CONFIG_FILE, CONFIGS_FOLDER
 
 # Windows forbids these characters in file and folder names.
 _INVALID_FILENAME_CHARS = frozenset('\\/:*?"<>|')
+MAX_CONFIG_ASSET_FOLDER_DEPTH = 10
 _FALLBACK_JSON_ENCODINGS = (
     'utf-8-sig',
     'utf-16',
@@ -24,6 +25,68 @@ _FALLBACK_JSON_ENCODINGS = (
     'utf-32-be',
     'cp1252',
 )
+
+
+def _config_asset_parts(value: str | Path) -> tuple[str, ...] | None:
+    """Return valid portable Configs asset parts, or ``None`` for a normal path."""
+    text = str(value or '').strip()
+    if not text.startswith('/') or text.startswith('//') or '\\' in text:
+        return None
+
+    parts = tuple(text[1:].split('/'))
+    # Assets must live below at least one folder in Configs.  The final part is
+    # the filename, so the number of folders is one less than the part count.
+    folder_depth = len(parts) - 1
+    if (
+        folder_depth < 1
+        or folder_depth > MAX_CONFIG_ASSET_FOLDER_DEPTH
+        or any(part in {'', '.', '..'} for part in parts)
+    ):
+        return None
+    return parts
+
+
+def resolve_local_replacement_path(value: str | Path) -> Path:
+    """Resolve a portable ``/Folder/file`` replacement path.
+
+    A matching file below the Configs folder takes priority.  If it is absent,
+    an existing operating-system absolute path keeps its historical meaning.
+    Otherwise the Configs candidate is returned so missing-file diagnostics
+    point users at the portable layout they requested.
+    """
+    text = str(value or '').strip()
+    parts = _config_asset_parts(text)
+    if parts is None:
+        return Path(text)
+
+    configs_candidate = CONFIGS_FOLDER.joinpath(*parts)
+    if configs_candidate.is_file():
+        return configs_candidate
+
+    os_path = Path(text)
+    if os_path.is_file():
+        return os_path
+    return configs_candidate
+
+
+def local_replacement_path_for_storage(value: str | Path) -> str:
+    """Use portable ``/Folder/file`` notation for files inside Configs."""
+    path = Path(value)
+    try:
+        relative = path.resolve().relative_to(CONFIGS_FOLDER.resolve())
+    except (OSError, ValueError):
+        return str(path)
+
+    folder_depth = len(relative.parts) - 1
+    if (
+        folder_depth < 1
+        or folder_depth > MAX_CONFIG_ASSET_FOLDER_DEPTH
+        or any(part in {'', '.', '..'} for part in relative.parts)
+    ):
+        return str(path)
+    return f'/{relative.as_posix()}'
+
+
 _ASSET_TYPE_IDS = {
     'image': 1,
     'tshirt': 2,
@@ -374,6 +437,10 @@ class ConfigManager:
     def _mark_replacements_dirty(self) -> None:
         self._all_replacements_cache_signature = None
         self._all_replacements_cache = None
+
+    def invalidate_replacements_cache(self) -> None:
+        """Invalidate resolved replacement mappings after an external asset change."""
+        self._mark_replacements_dirty()
 
     def _refresh_config_names_cache(self) -> list[str]:
         names, signature = self._scan_config_files()
@@ -1472,7 +1539,8 @@ class ConfigManager:
                 elif mode == 'local':
                     local_path = rule.get('local_path')
                     if local_path:
-                        local_replacements.update(dict.fromkeys(parsed_ids, local_path))
+                        resolved_path = str(resolve_local_replacement_path(local_path))
+                        local_replacements.update(dict.fromkeys(parsed_ids, resolved_path))
                     else:
                         # Empty local path means remove
                         removals.update(parsed_ids)

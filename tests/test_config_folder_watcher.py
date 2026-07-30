@@ -3,6 +3,7 @@ import os
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
+from PyQt6.QtCore import QFileSystemWatcher
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from fleasion.config import ConfigFolderWatcher
@@ -113,6 +114,107 @@ def test_existing_files_are_not_processed_at_startup(tmp_path, monkeypatch):
         watcher._scan()
         assert source.exists()
         assert not watcher._pending_names
+    finally:
+        watcher.stop()
+    assert app is not None
+
+
+def test_asset_directories_are_watched_through_depth_ten(tmp_path, monkeypatch):
+    app = _qapp()
+    manager, configs_dir = _manager(tmp_path, monkeypatch)
+    levels = [f'level-{index}' for index in range(11)]
+    deepest = configs_dir.joinpath(*levels)
+    deepest.mkdir(parents=True)
+
+    watcher = ConfigFolderWatcher(manager, folder=configs_dir)
+    try:
+        watched = set(watcher._filesystem_watcher.directories())
+        depth_ten = configs_dir.joinpath(*levels[:10])
+        depth_eleven = configs_dir.joinpath(*levels)
+
+        assert str(depth_ten) in watched
+        assert str(depth_eleven) not in watched
+    finally:
+        watcher.stop()
+    assert app is not None
+
+
+def test_asset_directory_change_invalidates_replacements_cache(tmp_path, monkeypatch):
+    app = _qapp()
+    manager, configs_dir = _manager(tmp_path, monkeypatch)
+    asset_dir = configs_dir / 'StickObj'
+    asset_dir.mkdir()
+    manager.enabled_configs = ['Default']
+    manager.replacement_rules = [
+        {
+            'name': 'Sticks',
+            'enabled': True,
+            'replace_ids': ['100'],
+            'mode': 'local',
+            'local_path': '/StickObj/stick.obj',
+        }
+    ]
+    manager.get_all_replacements()
+    assert manager._all_replacements_cache is not None
+
+    watcher = ConfigFolderWatcher(manager, folder=configs_dir)
+    try:
+        watcher._on_directory_changed(str(asset_dir))
+
+        assert manager._all_replacements_cache is None
+    finally:
+        watcher.stop()
+    assert app is not None
+
+
+def test_new_asset_directories_are_added_to_watcher(tmp_path, monkeypatch):
+    app = _qapp()
+    manager, configs_dir = _manager(tmp_path, monkeypatch)
+    watcher = ConfigFolderWatcher(manager, folder=configs_dir)
+    new_asset_dir = configs_dir / 'Pack' / 'Models'
+    try:
+        new_asset_dir.mkdir(parents=True)
+        watcher._on_directory_changed(str(configs_dir))
+        watcher._run_scheduled_scan()
+
+        assert str(new_asset_dir) in watcher._filesystem_watcher.directories()
+    finally:
+        watcher.stop()
+    assert app is not None
+
+
+def test_watcher_registration_failure_uses_cache_invalidation_fallback(tmp_path, monkeypatch):
+    app = _qapp()
+    manager, configs_dir = _manager(tmp_path, monkeypatch)
+    manager.enabled_configs = ['Default']
+    manager.get_all_replacements()
+    assert manager._all_replacements_cache is not None
+
+    registration_fails = True
+    original_add_paths = QFileSystemWatcher.addPaths
+
+    def controlled_add_paths(watcher, paths):
+        if registration_fails:
+            return list(paths)
+        return original_add_paths(watcher, paths)
+
+    monkeypatch.setattr(QFileSystemWatcher, 'addPaths', controlled_add_paths)
+    watcher = ConfigFolderWatcher(manager, folder=configs_dir)
+    try:
+        assert watcher._unwatched_directories == {str(configs_dir)}
+        assert watcher._watch_retry_timer.isActive()
+
+        watcher._retry_incomplete_watches()
+
+        assert manager._all_replacements_cache is None
+        assert watcher._watch_retry_timer.isActive()
+
+        registration_fails = False
+        watcher._retry_incomplete_watches()
+
+        assert watcher._unwatched_directories == set()
+        assert not watcher._watch_retry_timer.isActive()
+        assert str(configs_dir) in watcher._filesystem_watcher.directories()
     finally:
         watcher.stop()
     assert app is not None

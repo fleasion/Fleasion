@@ -1,13 +1,17 @@
 """Watch the Fleasion config folder for externally copied configuration files."""
 
+import os
 from collections.abc import Callable
 from pathlib import Path
 
 from PyQt6.QtCore import QFileSystemWatcher, QObject, QTimer, pyqtSignal
 from PyQt6.QtWidgets import QApplication, QMessageBox, QWidget
 
+from ..utils import log_buffer
 from ..utils.paths import CONFIGS_FOLDER
-from .manager import ConfigManager
+from .manager import MAX_CONFIG_ASSET_FOLDER_DEPTH, ConfigManager
+
+_WATCH_RETRY_INTERVAL_MS = 2000
 
 
 def _is_ignored_name(name: str) -> bool:
@@ -47,9 +51,8 @@ class ConfigFolderWatcher(QObject):
         self._ignored_names: set[str] = set()
         self._warning_names: dict[str, str] = {}
         self._last_import_failure: str | None = None
-
-        self._filesystem_watcher = QFileSystemWatcher([str(self.folder)], self)
-        self._filesystem_watcher.directoryChanged.connect(self._schedule_scan)
+        self._unwatched_directories: set[str] = set()
+        self._watch_fallback_logged = False
 
         self._scan_timer = QTimer(self)
         self._scan_timer.setSingleShot(True)
@@ -59,6 +62,14 @@ class ConfigFolderWatcher(QObject):
         self._retry_timer.setSingleShot(True)
         self._retry_timer.timeout.connect(self._retry_pending)
 
+        self._watch_retry_timer = QTimer(self)
+        self._watch_retry_timer.setInterval(_WATCH_RETRY_INTERVAL_MS)
+        self._watch_retry_timer.timeout.connect(self._retry_incomplete_watches)
+
+        self._filesystem_watcher = QFileSystemWatcher(self)
+        self._filesystem_watcher.directoryChanged.connect(self._on_directory_changed)
+        self._sync_watched_directories()
+
     def stop(self) -> None:
         """Stop watching and cancel pending import work."""
         if self._stopped:
@@ -66,6 +77,7 @@ class ConfigFolderWatcher(QObject):
         self._stopped = True
         self._scan_timer.stop()
         self._retry_timer.stop()
+        self._watch_retry_timer.stop()
         self._filesystem_watcher.removePaths(self._filesystem_watcher.directories())
 
     def _scan_names(self) -> set[str]:
@@ -78,6 +90,65 @@ class ConfigFolderWatcher(QObject):
         except OSError:
             return set()
 
+    def _directories_to_watch(self) -> set[str]:
+        """Return Configs and asset directories through the supported depth."""
+        watched = {str(self.folder)}
+        try:
+            for current_root, directory_names, _file_names in os.walk(self.folder):
+                current = Path(current_root)
+                try:
+                    depth = len(current.relative_to(self.folder).parts)
+                except ValueError:
+                    directory_names[:] = []
+                    continue
+                if depth >= MAX_CONFIG_ASSET_FOLDER_DEPTH:
+                    directory_names[:] = []
+                    continue
+                watched.update(str(current / name) for name in directory_names)
+        except OSError:
+            pass
+        return watched
+
+    def _sync_watched_directories(self) -> None:
+        """Keep QFileSystemWatcher aligned with the current asset folder tree."""
+        desired = self._directories_to_watch()
+        current = set(self._filesystem_watcher.directories())
+        failed_additions: set[str] = set()
+        if removed := sorted(current - desired):
+            self._filesystem_watcher.removePaths(removed)
+        if added := sorted(desired - current):
+            failed_additions.update(self._filesystem_watcher.addPaths(added))
+        self._unwatched_directories = failed_additions | (
+            desired - set(self._filesystem_watcher.directories())
+        )
+        if self._unwatched_directories:
+            if not self._watch_fallback_logged:
+                log_buffer.log(
+                    'Config',
+                    'Recursive asset watching is incomplete; '
+                    f'{len(self._unwatched_directories)} Configs '
+                    'directories will use the polling fallback.',
+                )
+                self._watch_fallback_logged = True
+            self._watch_retry_timer.start()
+        else:
+            self._watch_retry_timer.stop()
+            self._watch_fallback_logged = False
+
+    def _retry_incomplete_watches(self) -> None:
+        """Keep asset resolution current while OS watcher capacity is exhausted."""
+        if self._stopped:
+            return
+        self.config_manager.invalidate_replacements_cache()
+        self._sync_watched_directories()
+
+    def _on_directory_changed(self, _path: str = '') -> None:
+        """Invalidate resolved assets and process any root-level config changes."""
+        if self._stopped:
+            return
+        self.config_manager.invalidate_replacements_cache()
+        self._schedule_scan()
+
     def _schedule_scan(self, _path: str = '') -> None:
         if self._stopped or self._scan_scheduled:
             return
@@ -86,6 +157,7 @@ class ConfigFolderWatcher(QObject):
 
     def _run_scheduled_scan(self) -> None:
         self._scan_scheduled = False
+        self._sync_watched_directories()
         self._scan()
 
     def _current_files(self) -> dict[str, Path]:
