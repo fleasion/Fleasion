@@ -613,7 +613,13 @@ class ConfigManager:
             if not same_file:
                 raise FileExistsError(destination)
 
-        if not same_file and path != destination:
+        if (
+            same_file
+            and path.name != destination.name
+            and path.name.casefold() == destination.name.casefold()
+        ):
+            path.rename(destination)
+        elif not same_file and path != destination:
             path.rename(destination)
         with self._lock:
             self._config_names_cache = None

@@ -29,9 +29,42 @@ ROBLOX_STUDIO_APP_CANDIDATES = (
     Path('/Applications/RobloxStudio.app'),
     USER_HOME / 'Applications' / 'RobloxStudio.app',
 )
+FROSTSTRAP_VERSIONS_DIR = (
+    USER_HOME / 'Library' / 'Application Support' / 'Froststrap' / 'Versions'
+)
+FROSTSTRAP_MOD_BACKUP_DIR = (
+    USER_HOME / 'Library' / 'Application Support' / 'Froststrap' / 'ModBackup'
+)
+APPLEBLOX_DATA_DIR = USER_HOME / 'Library' / 'Application Support' / 'AppleBlox'
+APPLEBLOX_ROBLOX_CONFIG = APPLEBLOX_DATA_DIR / 'config' / 'roblox.json'
+APPLEBLOX_MOD_BACKUP_RESOURCES = APPLEBLOX_DATA_DIR / 'cache' / 'mods' / 'Resources'
 
 _NS_APPLICATION_ACTIVATION_POLICY_REGULAR = 0
 _NS_APPLICATION_ACTIVATION_POLICY_ACCESSORY = 1
+
+
+def _appleblox_custom_app_path() -> Path | None:
+    """Return AppleBlox's configured Roblox bundle, when present and valid."""
+    try:
+        payload = json.loads(APPLEBLOX_ROBLOX_CONFIG.read_text(encoding='utf-8'))
+        raw_path = payload.get('installation', {}).get('custom_path')
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            return None
+        app_path = Path(raw_path).expanduser()
+        return app_path if app_path.suffix == '.app' else None
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def _froststrap_player_apps() -> list[Path]:
+    if not FROSTSTRAP_VERSIONS_DIR.is_dir():
+        return []
+    apps = list(FROSTSTRAP_VERSIONS_DIR.glob('version-*/RobloxPlayer.app'))
+    try:
+        apps.sort(key=lambda path: path.stat().st_mtime_ns, reverse=True)
+    except OSError:
+        apps.sort(reverse=True)
+    return apps
 
 
 def set_application_icon(icon_path: Path) -> bool:
@@ -243,7 +276,12 @@ def _resource_root_from_executable(exe_path: Path) -> Path | None:
 
 
 def _known_player_executable() -> Path | None:
-    for app_path in ROBLOX_APP_CANDIDATES:
+    candidates = list(ROBLOX_APP_CANDIDATES)
+    custom_appleblox_app = _appleblox_custom_app_path()
+    if custom_appleblox_app is not None:
+        candidates.append(custom_appleblox_app)
+    candidates.extend(_froststrap_player_apps())
+    for app_path in candidates:
         exe = _app_executable(app_path, ROBLOX_PROCESS)
         if exe.is_file():
             return exe
@@ -439,6 +477,52 @@ def delete_cache() -> list[str]:
     return messages
 
 
+def find_appleblox_mod_backup_resource_dirs() -> list[Path]:
+    """Return AppleBlox's live Resources snapshot, if its mod cycle created one."""
+    backup = APPLEBLOX_MOD_BACKUP_RESOURCES
+    if not backup.is_dir():
+        return []
+    # AppleBlox copies the complete Resources tree and later replaces the live
+    # app Resources directory with it. Require characteristic Roblox content
+    # so an unrelated directory cannot enter Fleasion's modification set.
+    if not ((backup / 'ssl' / 'cacert.pem').is_file() or (backup / 'content').is_dir()):
+        return []
+    return [backup]
+
+
+def find_froststrap_mod_backup_resource_dirs() -> list[Path]:
+    """Return Froststrap's complete per-version Resources snapshots."""
+    root = FROSTSTRAP_MOD_BACKUP_DIR
+    if not root.is_dir():
+        return []
+
+    backups: list[Path] = []
+    for backup in root.glob('version-*'):
+        if not backup.is_dir():
+            continue
+        # Froststrap copies the *contents* of Resources directly into the
+        # version directory, then restores individual former mod-manifest
+        # entries from it. Require characteristic Roblox content so an
+        # unrelated directory cannot enter Fleasion's modification set.
+        if not ((backup / 'ssl' / 'cacert.pem').is_file() or (backup / 'content').is_dir()):
+            continue
+        backups.append(backup)
+
+    try:
+        backups.sort(key=lambda path: path.stat().st_mtime_ns, reverse=True)
+    except OSError:
+        backups.sort(reverse=True)
+    return backups
+
+
+def find_bootstrapper_restore_resource_dirs() -> list[Path]:
+    """Return user-owned Resources snapshots that bootstrapper code restores."""
+    return [
+        *find_appleblox_mod_backup_resource_dirs(),
+        *find_froststrap_mod_backup_resource_dirs(),
+    ]
+
+
 def find_roblox_resource_dirs(include_studio: bool = True) -> list[Path]:
     """Return Roblox resource roots used by patch/modification code."""
     found: list[Path] = []
@@ -454,6 +538,19 @@ def find_roblox_resource_dirs(include_studio: bool = True) -> list[Path]:
         found.append(path)
 
     for app_path in ROBLOX_APP_CANDIDATES:
+        exe = _app_executable(app_path, ROBLOX_PROCESS)
+        resources = _app_resources(app_path)
+        if exe.is_file() and resources.is_dir():
+            _add(resources)
+
+    custom_appleblox_app = _appleblox_custom_app_path()
+    if custom_appleblox_app is not None:
+        exe = _app_executable(custom_appleblox_app, ROBLOX_PROCESS)
+        resources = _app_resources(custom_appleblox_app)
+        if exe.is_file() and resources.is_dir():
+            _add(resources)
+
+    for app_path in _froststrap_player_apps():
         exe = _app_executable(app_path, ROBLOX_PROCESS)
         resources = _app_resources(app_path)
         if exe.is_file() and resources.is_dir():

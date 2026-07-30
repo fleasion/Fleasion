@@ -13,6 +13,7 @@ import stat
 from pathlib import Path
 
 from ..utils import log_buffer
+from .stash_paths import resource_stash_dir
 
 # Recognised font magic bytes (first 4 bytes of the file).
 FONT_HEADERS: dict[str, bytes] = {
@@ -67,7 +68,8 @@ def apply_custom_font(
         dst_font = roblox_dir / CUSTOM_FONT_REL
         dst_font.parent.mkdir(parents=True, exist_ok=True)
 
-        stash_font = stash_dir / roblox_dir.name / CUSTOM_FONT_REL
+        install_stash = resource_stash_dir(stash_dir, roblox_dir)
+        stash_font = install_stash / CUSTOM_FONT_REL
         if dst_font.exists() and not stash_font.exists():
             stash_font.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(dst_font, stash_font)
@@ -81,7 +83,7 @@ def apply_custom_font(
             continue
 
         for json_path in families_dir.glob('*.json'):
-            stash_json = stash_dir / roblox_dir.name / FAMILIES_REL / json_path.name
+            stash_json = install_stash / FAMILIES_REL / json_path.name
             # Stash the original once
             if not stash_json.exists():
                 stash_json.parent.mkdir(parents=True, exist_ok=True)
@@ -115,7 +117,8 @@ def restore_font_families(
     for roblox_dir in roblox_dirs:
         # Restore font file
         dst_font = roblox_dir / CUSTOM_FONT_REL
-        stash_font = stash_dir / roblox_dir.name / CUSTOM_FONT_REL
+        install_stash = resource_stash_dir(stash_dir, roblox_dir)
+        stash_font = install_stash / CUSTOM_FONT_REL
         if stash_font.exists():
             _clear_read_only(dst_font)
             shutil.copy2(stash_font, dst_font)
@@ -127,7 +130,7 @@ def restore_font_families(
 
         # Restore family JSONs
         families_dir = roblox_dir / FAMILIES_REL
-        stash_families = stash_dir / roblox_dir.name / FAMILIES_REL
+        stash_families = install_stash / FAMILIES_REL
         if stash_families.is_dir():
             for stash_json in stash_families.glob('*.json'):
                 dst_json = families_dir / stash_json.name

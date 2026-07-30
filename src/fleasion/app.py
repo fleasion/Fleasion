@@ -827,6 +827,34 @@ def _show_macos_ca_patch_failed_dialog(details: dict):
     msg.exec()
 
 
+def _show_macos_ca_trust_failed_dialog(details: dict):
+    """Explain why launcher traffic cannot be intercepted safely."""
+    raw_error = html.escape(str(details.get('error') or 'unknown helper error'))
+    _top = QApplication.topLevelWidgets()
+    _parent = next((w for w in _top if w.isVisible()), None)
+
+    msg = QMessageBox(_parent)
+    msg.setWindowTitle('macOS Launcher CA Trust Failed')
+    msg.setIcon(QMessageBox.Icon.Warning)
+    msg.setText(
+        'Fleasion could not establish macOS trust for launcher network traffic, '
+        'so the proxy was not started.'
+    )
+    msg.setTextFormat(Qt.TextFormat.RichText)
+    msg.setInformativeText(
+        'Froststrap and AppleBlox can contact intercepted Roblox endpoints before '
+        'Roblox starts. Their HTTP clients require the same Fleasion CA to be trusted '
+        'by macOS.<br><br>Unlock the login keychain if prompted, then restart Fleasion.'
+        f'<br><br>Technical details:<br>{raw_error}'
+    )
+    msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+    if icon_path := get_icon_path():
+        from PyQt6.QtGui import QIcon
+
+        msg.setWindowIcon(QIcon(str(icon_path)))
+    msg.exec()
+
+
 def _show_macos_relay_failed_dialog(details: dict) -> str:
     """Explain a failed privileged relay and return the requested recovery action."""
     from .utils.macos_proxy_helper import HELPER_LOG_DIR
@@ -1404,6 +1432,8 @@ class _ProxyErrorInvoker(QObject):
             _show_linux_hosts_read_only_dialog(details)
         elif code == 'macos_ca_patch_failed':
             _show_macos_ca_patch_failed_dialog(details)
+        elif code == 'macos_ca_trust_failed':
+            _show_macos_ca_trust_failed_dialog(details)
         elif code == 'macos_relay_failed':
             action = _show_macos_relay_failed_dialog(details)
             if action == 'retry':
@@ -1522,7 +1552,7 @@ class RobloxExitMonitor(QObject):
             if sys.platform.startswith('linux'):
                 exe_path = Path('org.vinegarhq.Sober')
                 if self._mod_manager is not None:
-                    self._mod_manager.refresh_roblox_dirs()
+                    self._mod_manager.refresh_roblox_dirs(reapply_if_changed=True)
                 proxy_features_enabled = self.config_manager.proxy_features_enabled
                 if self._proxy_master is not None and proxy_features_enabled:
                     run_in_thread(self._proxy_master.refresh_and_restart_roblox)(exe_path)
@@ -1545,7 +1575,7 @@ class RobloxExitMonitor(QObject):
                 if exe_path is not None:
                     proxy_features_enabled = self.config_manager.proxy_features_enabled
                     if self._mod_manager is not None:
-                        self._mod_manager.refresh_roblox_dirs()
+                        self._mod_manager.refresh_roblox_dirs(reapply_if_changed=True)
                     if self._proxy_master is not None and proxy_features_enabled:
                         run_in_thread(self._proxy_master.refresh_and_restart_roblox)(exe_path)
                     elif self._proxy_master is None and proxy_features_enabled:
@@ -2203,6 +2233,7 @@ def main():
             'port_bind_failed',
             'hosts_write_exhausted',
             'macos_ca_patch_failed',
+            'macos_ca_trust_failed',
             'macos_relay_failed',
         ):
             return
@@ -2214,6 +2245,12 @@ def main():
 
     # Initialize modification manager (pass cache_scraper for asset-id resolution)
     mod_manager = ModificationManager(cache_scraper=getattr(proxy_master, 'cache_scraper', None))
+    macos_bootstrapper_bridge = None
+    if sys.platform == 'darwin':
+        from .modifications.macos_bootstrapper_bridge import MacBootstrapperBridge
+
+        macos_bootstrapper_bridge = MacBootstrapperBridge(mod_manager, app)
+        app.aboutToQuit.connect(macos_bootstrapper_bridge.stop)
 
     def _current_roblox_ca_paths() -> list[Path]:
         return [roblox_dir / 'ssl' / 'cacert.pem' for roblox_dir in mod_manager.roblox_dirs]

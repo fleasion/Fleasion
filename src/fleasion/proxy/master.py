@@ -2390,6 +2390,62 @@ def _upsert_fleasion_ca_in_cacert(ca_file: Path, ca_pem: str) -> tuple[bool, int
             _restore_cacert_read_only(ca_file)
 
 
+def _patch_bootstrapper_ca_backups(ca_pem: str) -> tuple[bool, list[dict]]:
+    """Normalize bootstrapper snapshots that may restore managed Roblox files."""
+    if not IS_MACOS:
+        return True, []
+
+    from ..utils.platform_macos import find_bootstrapper_restore_resource_dirs
+
+    details: list[dict] = []
+    ok = True
+    for resource_dir in find_bootstrapper_restore_resource_dirs():
+        ca_file = resource_dir / 'ssl' / 'cacert.pem'
+        bootstrapper = (
+            'AppleBlox' if 'AppleBlox' in resource_dir.parts else 'Froststrap'
+        )
+        try:
+            changed, _fleasion_count, _current_count = _upsert_fleasion_ca_in_cacert(
+                ca_file, ca_pem
+            )
+            state = _log_cacert_state(
+                ca_file,
+                ca_pem,
+                f'{bootstrapper} backup cacert.pem after normalization',
+            )
+            healthy = bool(state.get('healthy'))
+            ok = ok and healthy
+            details.append(
+                {
+                    'resource_dir': str(resource_dir),
+                    'ca_file': str(ca_file),
+                    'changed': changed,
+                    'healthy': healthy,
+                }
+            )
+            log_buffer.log(
+                'Certificate',
+                f'Normalized {bootstrapper} restore snapshot CA'
+                if changed
+                else f'{bootstrapper} restore snapshot CA already current',
+            )
+        except (PermissionError, OSError, UnicodeDecodeError) as exc:
+            ok = False
+            details.append(
+                {
+                    'resource_dir': str(resource_dir),
+                    'ca_file': str(ca_file),
+                    'error': str(exc),
+                    'healthy': False,
+                }
+            )
+            log_buffer.log(
+                'Certificate',
+                f'Failed to normalize {bootstrapper} restore snapshot CA: {exc}',
+            )
+    return ok, details
+
+
 def _cacert_has_only_current_fleasion_ca(cacert_text: str, current_ca_pem: str) -> bool:
     """Return True when cacert contains exactly one Fleasion CA and it is current.
 
@@ -2547,7 +2603,10 @@ def _install_ca_into_roblox(ca_pem: str) -> tuple[bool, dict]:
     )
 
     if IS_MACOS and not _is_admin():
-        return _install_ca_into_roblox_with_helper(ca_pem, dirs)
+        ok, details = _install_ca_into_roblox_with_helper(ca_pem, dirs)
+        backup_ok, backup_details = _patch_bootstrapper_ca_backups(ca_pem)
+        details['bootstrapper_backups'] = backup_details
+        return ok and backup_ok, details
 
     ok = True
     details = {'patched': [], 'failed': [], 'verified': []}
@@ -2593,7 +2652,9 @@ def _install_ca_into_roblox(ca_pem: str) -> tuple[bool, dict]:
                 {'resource_dir': str(d), 'ca_file': str(ca_file), 'error': str(exc)}
             )
             ok = False
-    return ok, details
+    backup_ok, backup_details = _patch_bootstrapper_ca_backups(ca_pem)
+    details['bootstrapper_backups'] = backup_details
+    return ok and backup_ok, details
 
 
 def _ca_thumbprint_sha1(ca_pem: str) -> str:
@@ -2864,6 +2925,72 @@ def _install_ca_into_macos_system_keychain(ca_cert_path: Path, ca_pem: str) -> N
     )
 
 
+def _install_ca_into_macos_login_keychain(
+    ca_cert_path: Path, ca_pem: str
+) -> tuple[bool, dict]:
+    """Trust Fleasion's CA for HTTP clients launched by the signed-in user."""
+    thumbprint = _ca_thumbprint_sha1(ca_pem).upper()
+    keychain = str(Path.home() / 'Library' / 'Keychains' / 'login.keychain-db')
+    stored_thumbprints = _macos_fleasion_keychain_thumbprints(keychain)
+    stale_thumbprints = [
+        stored for stored in stored_thumbprints if stored != thumbprint
+    ]
+    removed = sum(
+        1
+        for stored in stale_thumbprints
+        if _macos_delete_keychain_certificate(keychain, stored)
+    )
+    if thumbprint in stored_thumbprints:
+        return True, {
+            'trusted': True,
+            'changed': False,
+            'removed_stale': removed,
+            'keychain': keychain,
+        }
+
+    try:
+        result = subprocess.run(
+            [
+                '/usr/bin/security',
+                'add-trusted-cert',
+                '-r',
+                'trustRoot',
+                '-k',
+                keychain,
+                str(ca_cert_path),
+            ],
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            timeout=30,
+        )
+    except Exception as exc:
+        return False, {
+            'trusted': False,
+            'changed': False,
+            'removed_stale': removed,
+            'keychain': keychain,
+            'error': f'{type(exc).__name__}: {exc}',
+        }
+
+    if result.returncode == 0:
+        return True, {
+            'trusted': True,
+            'changed': True,
+            'removed_stale': removed,
+            'keychain': keychain,
+        }
+    error = (result.stderr or result.stdout or '').strip()
+    return False, {
+        'trusted': False,
+        'changed': False,
+        'removed_stale': removed,
+        'keychain': keychain,
+        'error': error or f'security exited with {result.returncode}',
+    }
+
+
 def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
     """Check if the currently running Roblox instance has our CA in its cacert.pem.
 
@@ -2883,8 +3010,9 @@ def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
             f'Skipping macOS Roblox Studio CA patch for {Path(exe_path).name}',
         )
         return False
-
     ca_pem = get_ca_pem(ca_cert_path)
+    if IS_MACOS:
+        _patch_bootstrapper_ca_backups(ca_pem)
     if IS_MACOS:
         from ..utils.platform_macos import _resource_root_from_executable
 
@@ -3772,6 +3900,26 @@ class ProxyMaster:
             self._emit_proxy_start_error('macos_ca_patch_failed', ca_patch_details)
             self._running = False
             return
+        if IS_MACOS:
+            trust_ok, trust_details = _install_ca_into_macos_login_keychain(
+                ca_cert_path, ca_pem
+            )
+            if not trust_ok:
+                details = dict(trust_details)
+                details.setdefault('error', 'Could not trust Fleasion CA in login keychain')
+                log_buffer.log(
+                    'Certificate',
+                    'macOS CA trust verification failed; proxy startup aborted before writing hosts entries',
+                )
+                self._emit_proxy_start_error('macos_ca_trust_failed', details)
+                self._running = False
+                return
+            log_buffer.log(
+                'Certificate',
+                'macOS login keychain CA trust installed'
+                if trust_details.get('changed')
+                else 'macOS login keychain CA trust already current',
+            )
         if IS_WINDOWS:
             _install_ca_into_windows_root(ca_cert_path, ca_pem)
         elif IS_LINUX:

@@ -24,7 +24,7 @@ import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-HELPER_VERSION = 6
+HELPER_VERSION = 7
 HELPER_CAPABILITIES = ('hosts', 'relay', 'patch_ca', 'probe_backend')
 HOSTS_FILE = '/etc/hosts'
 HOSTS_MARKER = '# Fleasion proxy entry'
@@ -46,6 +46,7 @@ _ALLOWED_ROBLOX_APPS = {
     'Roblox.app': 'RobloxPlayer',
     'RobloxStudio.app': 'RobloxStudio',
 }
+_USERS_ROOT = Path('/Users')
 
 _state_lock = threading.Lock()
 _active_hosts = set()
@@ -222,12 +223,36 @@ def _validate_resource_root(raw_resource_dir):
     if resource_root.name != 'Resources' or contents_dir.name != 'Contents':
         raise ValueError('resource_dir is not a Roblox app Resources directory')
     executable_name = _ALLOWED_ROBLOX_APPS.get(app_root.name)
+    if app_root.name == 'RobloxPlayer.app' and _is_froststrap_player_bundle(app_root):
+        executable_name = 'RobloxPlayer'
     if executable_name is None:
         raise ValueError('resource_dir is not under a supported Roblox app bundle')
     executable = app_root / 'Contents' / 'MacOS' / executable_name
     if not executable.is_file():
         raise ValueError('Roblox app executable was not found')
     return resource_root
+
+
+def _is_froststrap_player_bundle(app_root):
+    """Only admit Froststrap's version-managed RobloxPlayer.app layout."""
+    try:
+        relative = app_root.relative_to(_USERS_ROOT)
+    except ValueError:
+        return False
+    parts = relative.parts
+    return (
+        len(parts) == 7
+        and bool(parts[0])
+        and parts[1:5] == (
+            'Library',
+            'Application Support',
+            'Froststrap',
+            'Versions',
+        )
+        and parts[5].startswith('version-')
+        and len(parts[5]) > len('version-')
+        and parts[6] == 'RobloxPlayer.app'
+    )
 
 
 def _safe_cacert_path(resource_root):

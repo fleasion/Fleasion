@@ -12,7 +12,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
 import fleasion.proxy.master as proxy_master
-from fleasion.utils import linux_proxy_helper, macos_proxy_helper
+from fleasion.utils import linux_proxy_helper, macos_proxy_helper, platform_macos
 
 
 def test_privileged_relay_tls_self_test_retries_representative_host(monkeypatch):
@@ -267,6 +267,11 @@ def test_macos_relay_failure_emits_health_diagnostics_before_hosts_write(
     )
     monkeypatch.setattr(proxy_master, "get_ca_pem", lambda _path: "ca")
     monkeypatch.setattr(proxy_master, "_install_ca_into_roblox", lambda _pem: (True, {}))
+    monkeypatch.setattr(
+        proxy_master,
+        "_install_ca_into_macos_login_keychain",
+        lambda _path, _pem: (True, {"trusted": True, "changed": False}),
+    )
     monkeypatch.setattr(proxy_master, "_other_proxy_owner_alive", lambda: False)
     monkeypatch.setattr(proxy_master, "_delete_watchdog_task", lambda: None)
     monkeypatch.setattr(
@@ -542,6 +547,7 @@ def test_linux_custom_fflags_wait_for_sober_engine_bootstrap_window(monkeypatch)
     from fleasion.utils import platform_linux
 
     monkeypatch.setattr(proxy_master, "IS_LINUX", True)
+    monkeypatch.setattr(proxy_master, "IS_MACOS", False)
     monkeypatch.setattr(
         proxy_master.ProxyMaster,
         "_sober_boottime",
@@ -863,6 +869,7 @@ def test_macos_running_player_ca_repair_uses_privileged_helper(tmp_path, monkeyp
     monkeypatch.setattr(proxy_master, "_current_proxy_ca_dir", lambda: ca_dir)
     monkeypatch.setattr(proxy_master, "get_ca_pem", lambda _path: "-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----\n")
     monkeypatch.setattr("fleasion.utils.platform_macos._resource_root_from_executable", lambda _path: resources)
+    monkeypatch.setattr(platform_macos, "find_bootstrapper_restore_resource_dirs", lambda: [])
     monkeypatch.setattr(macos_proxy_helper, "helper_patch_ca", fake_helper_patch)
     monkeypatch.setattr(proxy_master, "_log_cacert_state", lambda *_args, **_kwargs: states.pop(0))
     monkeypatch.setattr(proxy_master, "_upsert_fleasion_ca_in_cacert", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should use helper")))

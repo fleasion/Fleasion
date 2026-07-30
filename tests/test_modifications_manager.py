@@ -3,6 +3,7 @@ import stat
 import types
 import threading
 from io import BytesIO
+from pathlib import Path
 
 import pytest
 from PIL import Image
@@ -12,6 +13,7 @@ from fleasion.modifications import fflag_manager
 from fleasion.cache.tools.rgba_ktx2 import read_rgba8_ktx2
 from fleasion.modifications.fflag_manager import FastFlagManager
 from fleasion.modifications.manager import ModificationManager, normalise_target_path
+from fleasion.modifications.stash_paths import resource_stash_dir
 
 
 class _SignalSpy:
@@ -73,9 +75,7 @@ def test_stash_write_and_restore_use_normalised_target_paths(tmp_path):
     assert target.read_bytes() == b"modified"
     assert not (roblox_dir / r"content\textures\MouseLockedCursor.png").exists()
     assert (
-        tmp_path
-        / "stash"
-        / roblox_dir.name
+        resource_stash_dir(tmp_path / "stash", roblox_dir)
         / "content"
         / "textures"
         / "MouseLockedCursor.png"
@@ -178,7 +178,12 @@ def test_stash_write_does_not_preserve_guarded_read_only_mode(tmp_path):
 
     manager._stash_and_write(target_path, b"modified")
 
-    stash = manager._stash_dir / roblox_dir.name / "content" / "textures" / "MouseLockedCursor.png"
+    stash = (
+        resource_stash_dir(manager._stash_dir, roblox_dir)
+        / "content"
+        / "textures"
+        / "MouseLockedCursor.png"
+    )
     assert target.read_bytes() == b"modified"
     assert not (target.stat().st_mode & stat.S_IWRITE)
     assert not (cacert.stat().st_mode & stat.S_IWRITE)
@@ -274,6 +279,102 @@ def test_fast_flags_write_to_clientsettings_under_resource_root(tmp_path):
     assert json.loads(settings_path.read_text(encoding="utf-8")) == {
         "FFlagDebugSkyGray": "True",
     }
+
+
+def test_macos_fast_flags_cover_resource_and_appleblox_locations(tmp_path, monkeypatch):
+    roblox_dir = tmp_path / "Roblox.app" / "Contents" / "Resources"
+    roblox_dir.mkdir(parents=True)
+    monkeypatch.setattr(fflag_manager.sys, "platform", "darwin")
+    manager = FastFlagManager([roblox_dir], tmp_path / "stash")
+
+    manager.write({"grey_sky": True})
+
+    expected = {"FFlagDebugSkyGray": "True"}
+    assert json.loads(
+        (roblox_dir / "ClientSettings" / "ClientAppSettings.json").read_text(
+            encoding="utf-8"
+        )
+    ) == expected
+    assert json.loads(
+        (
+            roblox_dir.parent
+            / "MacOS"
+            / "ClientSettings"
+            / "ClientAppSettings.json"
+        ).read_text(encoding="utf-8")
+    ) == expected
+
+    manager.restore()
+    assert not (roblox_dir / "ClientSettings" / "ClientAppSettings.json").exists()
+    assert not (
+        roblox_dir.parent
+        / "MacOS"
+        / "ClientSettings"
+        / "ClientAppSettings.json"
+    ).exists()
+
+
+def test_macos_reassert_merges_fleasion_flags_into_appleblox_launch_file(
+    tmp_path, monkeypatch
+):
+    roblox_dir = tmp_path / "Roblox.app" / "Contents" / "Resources"
+    launch_settings = (
+        roblox_dir.parent
+        / "MacOS"
+        / "ClientSettings"
+        / "ClientAppSettings.json"
+    )
+    launch_settings.parent.mkdir(parents=True)
+    launch_settings.write_text(
+        json.dumps(
+            {
+                "DFFlagDisableDPIScale": True,
+                "FFlagDebugSkyGray": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(fflag_manager.sys, "platform", "darwin")
+    manager = FastFlagManager([roblox_dir], tmp_path / "stash")
+
+    assert manager.reassert_macos_bootstrapper_flags({"grey_sky": True}) == 1
+    assert json.loads(launch_settings.read_text(encoding="utf-8")) == {
+        "DFFlagDisableDPIScale": True,
+        "FFlagDebugSkyGray": "True",
+    }
+    assert not (tmp_path / "stash").exists()
+    assert manager.reassert_macos_bootstrapper_flags({"grey_sky": True}) == 0
+
+
+def test_macos_same_named_resource_roots_have_distinct_stashes(tmp_path, monkeypatch):
+    monkeypatch.setattr(modifications_manager.sys, "platform", "darwin")
+    first = tmp_path / "Roblox.app" / "Contents" / "Resources"
+    second = tmp_path / "RobloxPlayer.app" / "Contents" / "Resources"
+    relative = Path("content") / "textures" / "cursor.png"
+    for root, original in ((first, b"regular"), (second, b"froststrap")):
+        target = root / relative
+        target.parent.mkdir(parents=True)
+        target.write_bytes(original)
+
+    manager = ModificationManager.__new__(ModificationManager)
+    manager._roblox_dirs = [first, second]
+    manager._stash_dir = tmp_path / "stash"
+    manager._fs_lock = threading.Lock()
+    manager._data = {"entries": []}
+    manager._read_only_original_modes = {}
+    manager._read_only_extra_paths = set()
+
+    manager._stash_and_write(str(relative), b"modified")
+
+    first_stash = resource_stash_dir(manager._stash_dir, first) / relative
+    second_stash = resource_stash_dir(manager._stash_dir, second) / relative
+    assert first_stash != second_stash
+    assert first_stash.read_bytes() == b"regular"
+    assert second_stash.read_bytes() == b"froststrap"
+
+    manager._restore_entry({"target_path": str(relative)})
+    assert (first / relative).read_bytes() == b"regular"
+    assert (second / relative).read_bytes() == b"froststrap"
 
 
 def test_fast_flags_write_to_sober_config(tmp_path, monkeypatch):

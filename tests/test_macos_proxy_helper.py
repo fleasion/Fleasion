@@ -305,6 +305,26 @@ def _fake_roblox_resources(tmp_path: Path) -> Path:
     return resources
 
 
+def _fake_froststrap_resources(tmp_path: Path, monkeypatch) -> Path:
+    monkeypatch.setattr(daemon, "_USERS_ROOT", tmp_path)
+    app = (
+        tmp_path
+        / "test-user"
+        / "Library"
+        / "Application Support"
+        / "Froststrap"
+        / "Versions"
+        / "version-deadbeef"
+        / "RobloxPlayer.app"
+    )
+    resources = app / "Contents" / "Resources"
+    macos = app / "Contents" / "MacOS"
+    resources.mkdir(parents=True)
+    macos.mkdir(parents=True)
+    (macos / "RobloxPlayer").write_text("#!/bin/sh\n", encoding="utf-8")
+    return resources
+
+
 def _make_self_signed_ca_pem(common_name: str = "Fleasion Proxy CA", organization: str = "Fleasion") -> str:
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     name = x509.Name([
@@ -346,6 +366,49 @@ def test_helper_patch_ca_writes_only_roblox_cacert_path(tmp_path, monkeypatch):
     assert response["patched"][0]["ca_file"] == str(ca_file)
     assert ca_file.read_text(encoding="utf-8") == f"MOZILLA ROOT\n{current_ca}"
     assert oct(ca_file.stat().st_mode & 0o777) == "0o644"
+
+
+def test_helper_patch_ca_accepts_froststrap_managed_player_bundle(tmp_path, monkeypatch):
+    _hosts_file, token_file = _reset_daemon_state(tmp_path, monkeypatch)
+    resources = _fake_froststrap_resources(tmp_path, monkeypatch)
+    ca_file = resources / "ssl" / "cacert.pem"
+    ca_file.parent.mkdir()
+    ca_file.write_text("MOZILLA ROOT\n", encoding="utf-8")
+    current_ca = "-----BEGIN CERTIFICATE-----\nCURRENT\n-----END CERTIFICATE-----\n"
+
+    response = daemon._handle_request({
+        "token": token_file.read_text(),
+        "action": "patch_ca",
+        "ca_pem": current_ca,
+        "installs": [{"resource_dir": str(resources), "remove_pems": []}],
+    })
+
+    assert response["ok"] is True
+    assert response["patched"][0]["ca_file"] == str(ca_file)
+    assert current_ca in ca_file.read_text(encoding="utf-8")
+
+
+def test_helper_rejects_robloxplayer_bundle_outside_froststrap_versions(
+    tmp_path, monkeypatch
+):
+    _hosts_file, token_file = _reset_daemon_state(tmp_path, monkeypatch)
+    monkeypatch.setattr(daemon, "_USERS_ROOT", tmp_path)
+    app = tmp_path / "test-user" / "Downloads" / "RobloxPlayer.app"
+    resources = app / "Contents" / "Resources"
+    macos = app / "Contents" / "MacOS"
+    resources.mkdir(parents=True)
+    macos.mkdir(parents=True)
+    (macos / "RobloxPlayer").write_text("#!/bin/sh\n", encoding="utf-8")
+
+    response = daemon._handle_request({
+        "token": token_file.read_text(),
+        "action": "patch_ca",
+        "ca_pem": "-----BEGIN CERTIFICATE-----\nCURRENT\n-----END CERTIFICATE-----\n",
+        "installs": [{"resource_dir": str(resources), "remove_pems": []}],
+    })
+
+    assert response["ok"] is False
+    assert "supported Roblox app bundle" in response["failed"][0]["error"]
 
 
 def test_helper_patch_ca_strips_all_fleasion_cas_when_requesting_full_cleanup(tmp_path, monkeypatch):
@@ -458,7 +521,7 @@ def test_helper_readiness_requires_exact_helper_identity(monkeypatch):
             "ok": True,
             "version": macos_proxy_helper.EXPECTED_HELPER_VERSION - 1,
             "backend_port": macos_proxy_helper.MACOS_PROXY_BACKEND_PORT,
-            "capabilities": ["hosts", "relay", "patch_ca", "probe_backend"],
+            "capabilities": ["hosts", "relay", "patch_ca", "probe_backend", "trust_ca"],
         },
     )
     assert macos_proxy_helper.helper_is_ready() is False
@@ -470,7 +533,7 @@ def test_helper_readiness_requires_exact_helper_identity(monkeypatch):
             "ok": True,
             "version": macos_proxy_helper.EXPECTED_HELPER_VERSION + 1,
             "backend_port": macos_proxy_helper.MACOS_PROXY_BACKEND_PORT,
-            "capabilities": ["hosts", "relay", "patch_ca", "probe_backend"],
+            "capabilities": ["hosts", "relay", "patch_ca", "probe_backend", "trust_ca"],
         },
     )
     assert macos_proxy_helper.helper_is_ready() is False
@@ -494,7 +557,7 @@ def test_helper_readiness_requires_exact_helper_identity(monkeypatch):
             "ok": True,
             "version": macos_proxy_helper.EXPECTED_HELPER_VERSION,
             "backend_port": macos_proxy_helper.MACOS_PROXY_BACKEND_PORT,
-            "capabilities": ["hosts", "relay", "patch_ca", "probe_backend"],
+            "capabilities": ["hosts", "relay", "patch_ca", "probe_backend", "trust_ca"],
         },
     )
     assert macos_proxy_helper.helper_is_ready() is True

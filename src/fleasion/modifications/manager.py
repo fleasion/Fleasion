@@ -38,7 +38,7 @@ from ..utils.roblox_dirs import (
     save_saved_roblox_dirs,
 )
 from ..utils.threading import run_in_thread
-from .fflag_manager import CLIENT_SETTINGS_REL, FastFlagManager
+from .fflag_manager import FastFlagManager, client_settings_paths_for_resource_dir
 from .font_utils import (
     CUSTOM_FONT_REL,
     FAMILIES_REL,
@@ -51,6 +51,7 @@ from .platform_targets import (
     read_current_platform_original_asset,
     target_path_for_current_platform,
 )
+from .stash_paths import resource_stash_dir
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -149,6 +150,13 @@ def _find_roblox_dirs() -> list[Path]:
         for cached_dir in load_saved_roblox_dirs():
             _add(cached_dir)
         save_saved_roblox_dirs(found)
+        if sys.platform == 'darwin':
+            from ..utils.platform_macos import find_bootstrapper_restore_resource_dirs
+
+            # Bootstrapper snapshots are transient mirrors, not installations:
+            # manage them while present, but never persist them as Roblox dirs.
+            for backup_dir in find_bootstrapper_restore_resource_dirs():
+                _add(backup_dir)
         return found
 
     import winreg
@@ -398,6 +406,7 @@ class ModificationManager(QObject):
         # Ensure directories exist
         MOD_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         self._stash_dir.mkdir(parents=True, exist_ok=True)
+        self._migrate_legacy_macos_stash()
 
         # Lock that serialises all file-system writes/restores.  Prevents
         # a background apply thread from writing to dst after the main thread
@@ -424,8 +433,39 @@ class ModificationManager(QObject):
     def roblox_dirs(self) -> list[Path]:
         return list(self._roblox_dirs)
 
-    def _active_managed_resource_files(self, extra_paths: Iterable[Path] = ()) -> list[Path]:
-        """Return existing Roblox-version files Fleasion currently owns."""
+    def _migrate_legacy_macos_stash(self) -> None:
+        """Assign the old shared ``Resources`` stash to the primary install."""
+        if sys.platform != 'darwin' or not self._roblox_dirs:
+            return
+        legacy = self._stash_dir / 'Resources'
+        if not legacy.is_dir():
+            return
+        primary = next(
+            (path for path in self._roblox_dirs if path.name == 'Resources'),
+            None,
+        )
+        if primary is None:
+            return
+        destination = resource_stash_dir(self._stash_dir, primary)
+        if destination.exists():
+            log_buffer.log(
+                'Modifications',
+                f'Legacy stash retained because {destination.name} already exists',
+            )
+            return
+        shutil.move(str(legacy), str(destination))
+        log_buffer.log(
+            'Modifications',
+            f'Migrated legacy macOS stash to {destination.name}',
+        )
+
+    def _active_managed_resource_files(
+        self,
+        extra_paths: Iterable[Path] = (),
+        *,
+        existing_only: bool = True,
+    ) -> list[Path]:
+        """Return Roblox-version paths Fleasion currently owns."""
         files: list[Path] = []
         seen: set[str] = set()
 
@@ -467,12 +507,17 @@ class ModificationManager(QObject):
                     )
 
             if isinstance(data, dict) and data.get('fast_flags_enabled'):
-                _add(roblox_dir / CLIENT_SETTINGS_REL)
+                for settings_path in client_settings_paths_for_resource_dir(roblox_dir):
+                    _add(settings_path)
 
         for raw_path in extra_paths:
             _add(Path(raw_path))
 
-        return [path for path in files if path.is_file()]
+        return [path for path in files if path.is_file()] if existing_only else files
+
+    def managed_resource_paths(self) -> list[Path]:
+        """Return live and snapshot paths Fleasion must keep authoritative."""
+        return self._active_managed_resource_files(existing_only=False)
 
     def protect_managed_files(self, extra_paths: Iterable[Path] = ()) -> None:
         """Mark Fleasion-managed Roblox files read-only until Fleasion needs to write."""
@@ -1000,7 +1045,7 @@ class ModificationManager(QObject):
                 for roblox_dir in self._roblox_dirs:
                     target_path = normalise_target_path(target_path_rel)
                     dst = roblox_dir / target_path
-                    stash = self._stash_dir / roblox_dir.name / target_path
+                    stash = resource_stash_dir(self._stash_dir, roblox_dir) / target_path
                     marker = stash.with_name(stash.name + self._NEW_FILE_MARKER_SUFFIX)
 
                     # Stash original ONCE (idempotent)
@@ -1045,7 +1090,7 @@ class ModificationManager(QObject):
         with self._fs_lock:
             for roblox_dir in self._roblox_dirs:
                 dst = roblox_dir / target_path
-                stash = self._stash_dir / roblox_dir.name / target_path
+                stash = resource_stash_dir(self._stash_dir, roblox_dir) / target_path
                 marker = stash.with_name(stash.name + self._NEW_FILE_MARKER_SUFFIX)
                 if stash.exists():
                     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -1084,7 +1129,7 @@ class ModificationManager(QObject):
             restored = False
             for roblox_dir in self._roblox_dirs:
                 dst = roblox_dir / target_rel
-                stash = self._stash_dir / roblox_dir.name / target_rel
+                stash = resource_stash_dir(self._stash_dir, roblox_dir) / target_rel
                 marker = stash.with_name(stash.name + self._NEW_FILE_MARKER_SUFFIX)
                 if stash.exists():
                     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -1246,14 +1291,32 @@ class ModificationManager(QObject):
                 self._protect_managed_files_locked()
         self.sync_saved_global_settings()
 
-    def refresh_roblox_dirs(self) -> None:
+    def reassert_macos_bootstrapper_fast_flags(self) -> int:
+        """Restore Fleasion's flags after a bootstrapper rewrites launch settings."""
+        if not self._data.get('fast_flags_enabled') or not self._data.get('fast_flags'):
+            return 0
+        with self._fs_lock:
+            updated = self.fflag_manager.reassert_macos_bootstrapper_flags(
+                self._data['fast_flags']
+            )
+            if updated:
+                self._protect_managed_files_locked()
+            return updated
+
+    def refresh_roblox_dirs(self, *, reapply_if_changed: bool = False) -> bool:
         """Re-discover Roblox directories (e.g. after an update)."""
+        previous = {str(path.resolve()).lower() for path in self._roblox_dirs}
         self._roblox_dirs = _find_roblox_dirs()
         self.fflag_manager._roblox_dirs = self._roblox_dirs
+        current = {str(path.resolve()).lower() for path in self._roblox_dirs}
         log_buffer.log(
             'Modifications',
             f'Refreshed: {format_count(self._roblox_dirs, "Roblox dir")}',
         )
+        changed = current != previous
+        if changed and reapply_if_changed:
+            self.reapply_all()
+        return changed
 
     def apply_pending_modifications(self) -> None:
         """Apply all pending modifications that were queued while Roblox was running."""

@@ -60,9 +60,9 @@ def main(arguments: list[str] | None = None) -> int:
     # Build macOS
     # Slice subprocesses bypass orchestration and run PyInstaller exactly once
     if sys.platform == 'darwin' and os.environ.get(MACOS_SLICE_BUILD_ENV) != '1':
-        from .macos_build import MacOSBuilder
+        from .macos_build import build_macos_release
 
-        MacOSBuilder().build()
+        build_macos_release()
         return 0
     else:
         # Build Windows and Linux

@@ -32,7 +32,7 @@ HELPER_LOG_DIR = Path('/Library/Logs')
 HELPER_LOG_PATH = HELPER_LOG_DIR / 'Fleasion.proxy-helper.log'
 HELPER_STDOUT_LOG_PATH = HELPER_LOG_DIR / 'Fleasion.proxy-helper.stdout.log'
 HELPER_STDERR_LOG_PATH = HELPER_LOG_DIR / 'Fleasion.proxy-helper.stderr.log'
-EXPECTED_HELPER_VERSION = 6
+EXPECTED_HELPER_VERSION = 7
 REQUIRED_HELPER_CAPABILITIES = {'relay', 'patch_ca', 'probe_backend'}
 # A first launch of a root-owned helper can be held briefly by macOS execution
 # policy checks even after launchd has spawned it.  Keep this comfortably above

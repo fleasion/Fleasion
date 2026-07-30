@@ -59,8 +59,9 @@ def test_uppercase_extension_is_normalized_without_overwriting_collisions(tmp_pa
         uppercase.write_text(json.dumps({'replacement_rules': []}), encoding='utf-8')
         watcher._scan()
         watcher._retry_pending()
-        assert (configs_dir / 'Upper.json').exists()
-        assert not uppercase.exists()
+        exact_names = {entry.name for entry in configs_dir.iterdir()}
+        assert 'Upper.json' in exact_names
+        assert 'Upper.JSON' not in exact_names
 
         collision = configs_dir / 'Existing.txt'
         collision.write_text(json.dumps({'replacement_rules': [{'name': 'new'}]}), encoding='utf-8')

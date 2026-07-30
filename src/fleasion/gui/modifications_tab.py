@@ -2953,8 +2953,8 @@ class FFlagSection(QWidget):
         layout.addWidget(warn)
 
         warn2 = QLabel(
-            'If you are using a bootstrapper, you must disable its fflag management,'
-            ' else it will overwrite Fleasion.'
+            'Fleasion synchronizes detected bootstrapper launch settings. If both '
+            'apps set the same flag, Fleasion takes precedence while it is running.'
         )
         warn2.setWordWrap(True)
         warn2.setStyleSheet('color: #c90; padding: 4px;')
