@@ -474,6 +474,72 @@ def _relaunch_as_admin(extra_args: str = '', parent_hwnd: int | None = None) -> 
     return bool(ok)
 
 
+def restart_fleasion_normally() -> bool:
+    """Relaunch Fleasion as a normal (non-elevated) process and return
+    whether the new process was spawned - used when a setting change (e.g.
+    switching the proxy mode back to Hosts File) needs a full restart to
+    apply cleanly. Unlike ``_relaunch_as_admin``, this never triggers an
+    OS elevation prompt, and is implemented for all three platforms (the
+    admin version is a no-op stub on Linux). The caller is responsible for
+    then exiting this process - it isn't done here, same as
+    ``_relaunch_as_admin``.
+
+    Reuses the frozen-vs-dev relaunch-command logic from
+    ``_relaunch_as_admin`` (locating ``uv``/``launcher.py`` as needed) minus
+    the ``runas``/``osascript administrator`` elevation wrapping, and passes
+    ``--kill-others`` so the new process' own single-instance startup check
+    asks this one to exit if there's ever a timing race between the two.
+    """
+    existing_args = sys.argv[1:]
+    if '--kill-others' not in existing_args:
+        existing_args.append('--kill-others')
+
+    creationflags = 0
+    popen_kwargs = {}
+
+    if getattr(sys, 'frozen', False):
+        launch = [sys.executable, *existing_args]
+        if sys.platform != 'win32':
+            popen_kwargs['start_new_session'] = True
+    elif sys.platform == 'win32':
+        import shutil
+
+        uv_exe = shutil.which('uv') or shutil.which('uv.exe')
+        if uv_exe:
+            cwd = os.path.dirname(os.path.abspath(sys.argv[0]))
+            check = cwd
+            for _ in range(6):
+                if os.path.exists(os.path.join(check, 'pyproject.toml')):
+                    cwd = check
+                    break
+                check = os.path.dirname(check)
+            launch = [uv_exe, '--project', cwd, 'run', 'fleasion', *existing_args]
+        else:
+            launch = [sys.executable, sys.argv[0], *existing_args]
+        # A dev/uv relaunch is a console app under the hood - avoid flashing
+        # a visible console window for what should look like a GUI restart.
+        creationflags = subprocess.CREATE_NO_WINDOW
+    else:
+        project_root = Path(__file__).resolve().parents[2]
+        launcher = project_root / 'launcher.py'
+        if launcher.exists():
+            launch = [sys.executable, str(launcher), *existing_args]
+        else:
+            launch = [sys.executable, sys.argv[0], *existing_args]
+        popen_kwargs['start_new_session'] = True
+
+    if sys.platform == 'win32':
+        popen_kwargs['creationflags'] = creationflags
+
+    try:
+        subprocess.Popen(launch, **popen_kwargs)
+    except Exception as exc:
+        log_buffer.log('Restart', f'Failed to relaunch Fleasion: {exc}')
+        return False
+    log_buffer.log('Restart', 'Relaunching Fleasion normally to apply a setting change')
+    return True
+
+
 def _attempt_silent_elevation(extra_args: str = '', parent_hwnd: int | None = None) -> bool:
     """Try to elevate silently on startup.
 
@@ -1527,9 +1593,11 @@ class RobloxExitMonitor(QObject):
         self._mod_manager = mod_manager
         self.was_running = False
         self._player_was_running = False
+        self._suppress_next_player_exit_cache_delete = False
         self._studio_was_running = False
         self._studio_notified = False
         self._studio_suppress_session = False
+        self._suppress_next_studio_relaunch_notify = False
         self._studio_detected.connect(self._on_studio_detected)
 
     def is_player_running(self) -> bool:
@@ -1554,7 +1622,18 @@ class RobloxExitMonitor(QObject):
                 if self._mod_manager is not None:
                     self._mod_manager.refresh_roblox_dirs(reapply_if_changed=True)
                 proxy_features_enabled = self.config_manager.proxy_features_enabled
-                if self._proxy_master is not None and proxy_features_enabled:
+                if (
+                    self.config_manager.proxy_mode == 'env'
+                    and self._proxy_master is not None
+                    and proxy_features_enabled
+                ):
+                    from .utils.platform_linux import relaunch_roblox_with_proxy_env
+
+                    self._suppress_next_player_exit_cache_delete = True
+                    run_in_thread(relaunch_roblox_with_proxy_env)(
+                        self._proxy_master.roblox_env_proxy_url()
+                    )
+                elif self._proxy_master is not None and proxy_features_enabled:
                     run_in_thread(self._proxy_master.refresh_and_restart_roblox)(exe_path)
                 elif self._proxy_master is None and proxy_features_enabled:
                     run_in_thread(check_and_patch_running_roblox_ca)(exe_path)
@@ -1576,7 +1655,19 @@ class RobloxExitMonitor(QObject):
                     proxy_features_enabled = self.config_manager.proxy_features_enabled
                     if self._mod_manager is not None:
                         self._mod_manager.refresh_roblox_dirs(reapply_if_changed=True)
-                    if self._proxy_master is not None and proxy_features_enabled:
+                    if (
+                        sys.platform == 'win32'
+                        and self.config_manager.proxy_mode == 'env'
+                        and self._proxy_master is not None
+                        and proxy_features_enabled
+                    ):
+                        from .utils.platform_windows import relaunch_roblox_with_proxy_env
+
+                        self._suppress_next_player_exit_cache_delete = True
+                        run_in_thread(relaunch_roblox_with_proxy_env)(
+                            self._proxy_master.roblox_env_proxy_url()
+                        )
+                    elif self._proxy_master is not None and proxy_features_enabled:
                         run_in_thread(self._proxy_master.refresh_and_restart_roblox)(exe_path)
                     elif self._proxy_master is None and proxy_features_enabled:
                         run_in_thread(check_and_patch_running_roblox_ca)(exe_path)
@@ -1595,8 +1686,15 @@ class RobloxExitMonitor(QObject):
         # --- Roblox Player: auto cache deletion on exit ---
         if self.config_manager.auto_delete_cache_on_exit:
             if self.was_running and not is_running:
-                log_buffer.log('Cache', 'Roblox exited, deleting cache...')
-                run_in_thread(self._delete_cache_background)()
+                if self._suppress_next_player_exit_cache_delete:
+                    self._suppress_next_player_exit_cache_delete = False
+                    log_buffer.log(
+                        'Cache',
+                        'Roblox exited during env-proxy relaunch; skipping auto cache deletion',
+                    )
+                else:
+                    log_buffer.log('Cache', 'Roblox exited, deleting cache...')
+                    run_in_thread(self._delete_cache_background)()
             self.was_running = is_running
         else:
             self.was_running = False
@@ -1613,7 +1711,18 @@ class RobloxExitMonitor(QObject):
                     if studio_exe_path is not None:
                         break
             if studio_exe_path is not None and self.config_manager.proxy_features_enabled:
-                if sys.platform == 'darwin':
+                if (
+                    sys.platform == 'win32'
+                    and self.config_manager.proxy_mode == 'env'
+                    and self._proxy_master is not None
+                ):
+                    from .utils.platform_windows import relaunch_roblox_studio_with_proxy_env
+
+                    self._suppress_next_studio_relaunch_notify = True
+                    run_in_thread(relaunch_roblox_studio_with_proxy_env)(
+                        self._proxy_master.roblox_env_proxy_url()
+                    )
+                elif sys.platform == 'darwin':
                     log_buffer.log(
                         'Certificate',
                         'Studio launch detected on macOS: skipping proxy CA refresh',
@@ -1636,7 +1745,10 @@ class RobloxExitMonitor(QObject):
                 self._studio_detected.emit()
 
         if self._studio_was_running and not studio_running:
-            self._studio_notified = False
+            if self._suppress_next_studio_relaunch_notify:
+                self._suppress_next_studio_relaunch_notify = False
+            else:
+                self._studio_notified = False
 
         self._studio_was_running = studio_running
 
@@ -2184,9 +2296,12 @@ def main():
     # show UAC as a taskbar item instead of foregrounding it, so startup must
     # block here until UAC is accepted, denied, or fails.
     _admin_prompt_needed = (
-        sys.platform == 'win32' and config_manager.proxy_features_enabled and not _is_admin()
+        sys.platform == 'win32'
+        and config_manager.proxy_features_enabled
+        and config_manager.proxy_mode != 'env'
+        and not _is_admin()
     )
-    if sys.platform == 'darwin':
+    if sys.platform == 'darwin' and config_manager.proxy_mode != 'env':
         from .utils.macos_proxy_helper import helper_is_ready
 
         start_proxy = config_manager.proxy_features_enabled and helper_is_ready()

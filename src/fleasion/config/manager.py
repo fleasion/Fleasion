@@ -232,6 +232,7 @@ DEFAULT_SETTINGS = {
     'auto_delete_cache_on_exit': True,
     'clear_cache_on_launch': True,
     'proxy_features_enabled': True,
+    'proxy_mode': 'hosts',
     'custom_fflags_enabled': False,
     'custom_fflags_warning_accepted': False,
     'custom_fflags': {},
@@ -272,6 +273,10 @@ DEFAULT_SETTINGS = {
         'url': False,
     },
     'scraper_column_widths': {},
+    'proxy_traffic_column_widths': {},
+    'proxy_traffic_preserve': False,
+    'auto_replace_rules': [],
+    'auto_replace_rules_column_widths': {},
     'time_wasted_seconds': 0,
     'auto_convert_anim_rig': False,
     'skip_non_player_anim_replace': False,
@@ -769,6 +774,18 @@ class ConfigManager:
     def proxy_features_enabled(self, value: bool):
         """Set proxy feature toggle."""
         self.settings['proxy_features_enabled'] = value
+        self._save_settings()
+
+    @property
+    def proxy_mode(self) -> str:
+        """How Roblox traffic is routed into Fleasion's local proxy."""
+        mode = str(self.settings.get('proxy_mode', 'hosts') or 'hosts').lower()
+        return mode if mode in {'hosts', 'env'} else 'hosts'
+
+    @proxy_mode.setter
+    def proxy_mode(self, value: str):
+        value = str(value or 'hosts').lower()
+        self.settings['proxy_mode'] = value if value in {'hosts', 'env'} else 'hosts'
         self._save_settings()
 
     @property

@@ -61,6 +61,64 @@ def _run_on_boot_requires_admin() -> bool:
     return sys.platform == 'win32'
 
 
+class EnvProxyWarningDialog(QMessageBox):
+    """Shown when switching to the Roblox Env Proxy mode - can't be closed
+    for a few seconds so the warning actually gets read. A real QMessageBox
+    (not a hand-rebuilt QDialog) so it looks exactly like every other
+    warning dialog in the app - same icon, same size, same layout, for free.
+    """
+
+    LOCK_SECONDS = 10
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('Roblox Env Proxy')
+        self.setIcon(QMessageBox.Icon.Warning)
+        self.setText(
+            'This proxy is experimental and may not function as expected.\n'
+            'BUT if you have any issues with the proxy not working/nothing getting replaced. '
+            'This setting MIGHT fix it.\n\n'
+            'Currently there is a low chance that you will get signed out of Roblox when it is '
+            'launched if it is not via the browser when using this proxy method, this is '
+            'because it relaunches Roblox and for some reason that might log you out.'
+        )
+        self._seconds_remaining = self.LOCK_SECONDS
+        self._close_button = self.addButton('', QMessageBox.ButtonRole.AcceptRole)
+        self._close_button.setEnabled(False)
+
+        self._timer = QTimer(self)
+        self._timer.setInterval(1000)
+        self._timer.timeout.connect(self._tick)
+        self._update_close_text()
+        self._timer.start()
+
+    def _update_close_text(self):
+        if self._seconds_remaining > 0:
+            self._close_button.setText(f'Close ({self._seconds_remaining}s)')
+        else:
+            self._close_button.setText('Close')
+
+    def _tick(self):
+        self._seconds_remaining = max(0, self._seconds_remaining - 1)
+        self._update_close_text()
+        if self._seconds_remaining == 0:
+            self._timer.stop()
+            self._close_button.setEnabled(True)
+
+    def reject(self):
+        # Escape key (and any other path that ends up calling reject())
+        # shouldn't close the dialog early either.
+        if self._seconds_remaining > 0:
+            return
+        super().reject()
+
+    def closeEvent(self, event):
+        if self._seconds_remaining > 0:
+            event.ignore()
+        else:
+            super().closeEvent(event)
+
+
 class SettingsTab(QWidget):
     """Settings tab exposing all options found in the system tray Settings menu."""
 
@@ -213,6 +271,22 @@ class SettingsTab(QWidget):
         mode_widget = QWidget()
         mode_widget.setLayout(mode_row)
         section.add_widget(mode_widget)
+
+        proxy_mode_row = QHBoxLayout()
+        proxy_mode_row.setContentsMargins(0, 0, 0, 0)
+        proxy_mode_row.addWidget(QLabel('Proxy Mode'))
+        self._proxy_mode_combo = DropdownComboBox()
+        self._proxy_mode_combo.addItem('Hosts File', 'hosts')
+        self._proxy_mode_combo.addItem('Roblox Env Proxy', 'env')
+        current_proxy_mode = self._config.proxy_mode
+        proxy_mode_idx = self._proxy_mode_combo.findData(current_proxy_mode)
+        self._proxy_mode_combo.setCurrentIndex(max(0, proxy_mode_idx))
+        self._proxy_mode_combo.activated.connect(self._on_proxy_mode_changed)
+        proxy_mode_row.addWidget(self._proxy_mode_combo)
+        proxy_mode_row.addStretch()
+        proxy_mode_widget = QWidget()
+        proxy_mode_widget.setLayout(proxy_mode_row)
+        section.add_widget(proxy_mode_widget)
 
         self._wire_preserving_chk = QCheckBox(
             'Enable Wire-Preserving Passthrough (Advanced compatibility mode)'
@@ -477,6 +551,11 @@ class SettingsTab(QWidget):
         self._upstream_mode_combo.setCurrentIndex(max(0, idx))
         self._upstream_mode_combo.blockSignals(False)
 
+        idx = self._proxy_mode_combo.findData(self._config.proxy_mode)
+        self._proxy_mode_combo.blockSignals(True)
+        self._proxy_mode_combo.setCurrentIndex(max(0, idx))
+        self._proxy_mode_combo.blockSignals(False)
+
         for widget, value in [
             (self._http_proxy_host, self._config.upstream_http_connect_host),
             (self._http_proxy_user, self._config.upstream_http_connect_username),
@@ -561,6 +640,27 @@ class SettingsTab(QWidget):
     def _on_upstream_mode_changed(self, *_args):
         self._config.upstream_transport_mode = self._upstream_mode_combo.currentData()
         self._sync_manual_proxy_credentials_timer()
+
+    def _on_proxy_mode_changed(self, *_args):
+        previous_mode = self._config.proxy_mode
+        new_mode = self._proxy_mode_combo.currentData()
+        self._config.proxy_mode = new_mode
+        if new_mode == 'env' and previous_mode != 'env':
+            EnvProxyWarningDialog(self).exec()
+            # Env mode needs nothing this process doesn't already have, so
+            # swap the running proxy over live instead of restarting the app.
+            proxy_master = getattr(self._tray, 'proxy_master', None) if self._tray else None
+            if proxy_master is not None and hasattr(proxy_master, 'restart_for_mode_switch'):
+                proxy_master.restart_for_mode_switch()
+        if new_mode == 'hosts' and previous_mode != 'hosts':
+            # Hosts mode may need admin this process doesn't hold - restart
+            # the app instead of live-swapping so the new process's own
+            # startup flow can request elevation if needed.
+            if self._tray and hasattr(self._tray, 'restart_fleasion'):
+                self._tray.restart_fleasion()
+                return
+        if self._tray and hasattr(self._tray, 'notify_proxy_mode_changed'):
+            self._tray.notify_proxy_mode_changed()
 
     def _on_wire_preserving_toggled(self, checked: bool):
         self._config.wire_preserving_passthrough = checked

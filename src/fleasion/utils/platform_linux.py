@@ -506,6 +506,48 @@ def launch_as_standard_user(target: str | Path) -> bool:
     return False
 
 
+def relaunch_roblox_with_proxy_env(proxy_url: str) -> bool:
+    """Relaunch Sober through Fleasion's explicit (env) proxy.
+
+    Sets the conventional Unix proxy env vars (http_proxy/https_proxy/
+    all_proxy, plus their uppercase forms for tools that only check those -
+    the same set Windows already sets for RobloxPlayerBeta.exe, since it's
+    the same cross-platform Roblox client engine). Flatpak apps don't
+    inherit the host's environment by default, so each var has to be passed
+    through the sandbox explicitly via ``flatpak run --env=KEY=VALUE``.
+    """
+    flatpak = shutil.which('flatpak')
+    if not flatpak:
+        log_buffer.log('Launcher', 'Env Proxy relaunch skipped: flatpak command not found')
+        return False
+
+    if is_roblox_running():
+        terminate_roblox()
+        if not wait_for_roblox_exit():
+            log_buffer.log('Launcher', 'Sober did not exit before env-proxy relaunch')
+            return False
+
+    proxy_env = {
+        'ALL_PROXY': proxy_url,
+        'HTTPS_PROXY': proxy_url,
+        'HTTP_PROXY': proxy_url,
+        'all_proxy': proxy_url,
+        'https_proxy': proxy_url,
+        'http_proxy': proxy_url,
+        'NO_PROXY': 'localhost,127.0.0.1,::1',
+        'no_proxy': 'localhost,127.0.0.1,::1',
+        'FLEASION_PROXY_RELAUNCHED': '1',
+    }
+    env_args = [f'--env={key}={value}' for key, value in proxy_env.items()]
+    try:
+        _standard_user_popen([flatpak, 'run', *env_args, SOBER_APP_ID])
+    except Exception as exc:
+        log_buffer.log('Launcher', f'Sober Env Proxy relaunch failed: {exc}')
+        return False
+    log_buffer.log('Launcher', 'Relaunched Sober through Fleasion env proxy')
+    return True
+
+
 def _find_project_root() -> Path | None:
     check = Path(__file__).resolve().parent
     for _ in range(8):

@@ -613,6 +613,11 @@ class SystemTray:
             self.dashboard_window.set_proxy_features_enabled(enabled)
         self._refresh_settings_tab()
 
+    def notify_proxy_mode_changed(self) -> None:
+        """Let the dashboard's Proxy tab know hosts/env mode was switched in Settings."""
+        if self.dashboard_window and hasattr(self.dashboard_window, 'refresh_env_proxy_gate'):
+            self.dashboard_window.refresh_env_proxy_gate()
+
     def _set_theme(self, theme: str):
         """Set the application theme."""
         # Update checkmarks
@@ -1073,6 +1078,18 @@ class SystemTray:
         import webbrowser
 
         webbrowser.open(f'https://{APP_KOFI}')
+
+    def restart_fleasion(self):
+        """Relaunch Fleasion (no admin prompt) and exit this process - used
+        when a setting change needs a full restart to apply (e.g. switching
+        the proxy mode back to Hosts File).
+        """
+        from .app import restart_fleasion_normally
+
+        if not restart_fleasion_normally():
+            log_buffer.log('Restart', 'Could not relaunch Fleasion automatically')
+            return
+        self._exit_app()
 
     def _exit_app(self):
         """Exit the application."""

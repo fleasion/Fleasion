@@ -102,6 +102,10 @@ LOG_FILE = LOGS_DIR / 'fleasion.log'
 # Proxy CA cert directory (replaces MITMPROXY_DIR)
 PROXY_CA_DIR = CONFIG_DIR / 'proxy_ca'
 
+# Preserved Proxy tab traffic (rows/requests/responses/highlight state),
+# written when the tab's "Preserve" checkbox is on.
+PROXY_TRAFFIC_FILE = CONFIG_DIR / 'proxy_traffic.json'
+
 # PreJsons
 CLOG_URL = 'https://raw.githubusercontent.com/fleasion/Fleasion/refs/heads/clog/CLOG.json'
 PREJSONS_DIR = CONFIG_DIR / 'PreJsons'

@@ -199,6 +199,19 @@ class ConfigManagerEncodingTests(unittest.TestCase):
             manager.settings['wire_preserving_passthrough'] = 'true'
             self.assertTrue(manager.wire_preserving_passthrough)
 
+    def test_proxy_mode_defaults_to_hosts_and_accepts_env(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_manager_module = self._load_manager_for(Path(tmp))
+
+            manager = config_manager_module.ConfigManager()
+            self.assertEqual(manager.proxy_mode, 'hosts')
+
+            manager.proxy_mode = 'env'
+            self.assertEqual(manager.proxy_mode, 'env')
+
+            manager.proxy_mode = 'invalid'
+            self.assertEqual(manager.proxy_mode, 'hosts')
+
     def test_requested_defaults_for_boot_and_export_naming(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_manager_module = self._load_manager_for(Path(tmp))

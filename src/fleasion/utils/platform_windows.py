@@ -11,7 +11,7 @@ import subprocess
 import time
 import winreg
 from pathlib import Path
-from typing import Optional, cast
+from typing import Any, Optional, cast
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .logging import log_buffer
@@ -21,6 +21,8 @@ _FLEASION_FIREWALL_RULES = (
     ('Fleasion Proxy TLS Inbound', 'in', 'localport'),
     ('Fleasion Proxy TLS Outbound', 'out', 'remoteport'),
 )
+_ENV_PROXY_RELAUNCH_TTL_SECONDS = 45.0
+_env_proxy_relaunches: dict[str, float] = {}
 
 
 def install_fleasion_firewall_rules(executable: str | Path) -> tuple[bool, str]:
@@ -195,6 +197,201 @@ def get_roblox_player_exe_path() -> Optional[Path]:
     """Return the full executable path of the running RobloxPlayerBeta.exe, or None."""
     pid = _find_pid(ROBLOX_PROCESS)
     return _query_exe_path(pid) if pid is not None else None
+
+
+def _query_roblox_processes(exe_name: str) -> list[dict[str, Any]]:
+    ps_script = (
+        f"$p=Get-CimInstance Win32_Process -Filter \"Name='{exe_name}'\" | "
+        "Select-Object ProcessId,ExecutablePath,CommandLine; "
+        "if($p){$p|ConvertTo-Json -Compress}"
+    )
+    try:
+        result = subprocess.run(
+            [
+                'powershell.exe',
+                '-NoProfile',
+                '-NonInteractive',
+                '-ExecutionPolicy',
+                'Bypass',
+                '-Command',
+                ps_script,
+            ],
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            timeout=5,
+        )
+    except Exception as exc:
+        log_buffer.log('Launcher', f'Could not query Roblox command line: {exc}')
+        return []
+    if result.returncode != 0 or not (result.stdout or '').strip():
+        return []
+    try:
+        import json
+
+        data = json.loads(result.stdout)
+    except Exception as exc:
+        log_buffer.log('Launcher', f'Could not parse Roblox command line query: {exc}')
+        return []
+    if isinstance(data, dict):
+        return [data]
+    if isinstance(data, list):
+        return [entry for entry in data if isinstance(entry, dict)]
+    return []
+
+
+def _query_roblox_player_processes() -> list[dict[str, Any]]:
+    return _query_roblox_processes('RobloxPlayerBeta.exe')
+
+
+def _query_roblox_studio_processes() -> list[dict[str, Any]]:
+    return _query_roblox_processes('RobloxStudioBeta.exe')
+
+
+def _extract_roblox_deeplink(command_line: str, marker: str = 'roblox-player:') -> str:
+    idx = command_line.find(marker)
+    if idx < 0:
+        return ''
+    return command_line[idx:].strip().strip('"')
+
+
+_ROBLOX_STUDIO_PLACE_EXTENSIONS = ('.rbxl', '.rbxlx')
+
+
+def _extract_roblox_studio_reopen_arg(command_line: str) -> str:
+    """Return the deeplink or place-file argument Studio was launched with.
+
+    Opening a .rbxl/.rbxlx file (double-click, "Open with Studio", a recent-files
+    entry) launches Studio with the file path as a plain command-line argument,
+    not a `roblox-studio:` URI, so the deeplink marker alone would miss it and a
+    relaunch would silently drop the place being opened.
+    """
+    deeplink = _extract_roblox_deeplink(command_line, 'roblox-studio:')
+    if deeplink:
+        return deeplink
+    try:
+        tokens = shlex.split(command_line, posix=False)
+    except ValueError:
+        return ''
+    for token in reversed(tokens[1:]):
+        cleaned = token.strip('"')
+        if cleaned.lower().endswith(_ROBLOX_STUDIO_PLACE_EXTENSIONS):
+            return cleaned
+    return ''
+
+
+def _relaunch_roblox_exe_with_proxy_env(
+    proxy_url: str,
+    *,
+    label: str,
+    query_processes,
+    extract_launch_arg,
+    wait_pid_exe_name: str,
+    fallback_exe_path,
+) -> bool:
+    """Relaunch a browser/shortcut-started Roblox process with proxy environment variables."""
+    now = time.monotonic()
+    for key, timestamp in list(_env_proxy_relaunches.items()):
+        if now - timestamp > _ENV_PROXY_RELAUNCH_TTL_SECONDS:
+            _env_proxy_relaunches.pop(key, None)
+
+    for proc in query_processes():
+        try:
+            pid = int(proc.get('ProcessId') or 0)
+        except TypeError, ValueError:
+            pid = 0
+        command_line = str(proc.get('CommandLine') or '')
+        launch_arg = extract_launch_arg(command_line)
+        exe_text = str(proc.get('ExecutablePath') or '')
+        exe_path = Path(exe_text) if exe_text else fallback_exe_path()
+        if pid <= 0 or exe_path is None or not exe_path.is_file():
+            continue
+
+        relaunch_key = hashlib.sha256(
+            f'{str(exe_path).casefold()}\n{launch_arg or "<no-arg>"}'.encode(
+                'utf-8', errors='replace'
+            )
+        ).hexdigest()
+        if relaunch_key in _env_proxy_relaunches:
+            log_buffer.log(
+                'Launcher', f'{label} Env Proxy relaunch already handled for this launch'
+            )
+            return False
+
+        if not launch_arg:
+            launch_kind = 'plain executable'
+        elif launch_arg.lower().endswith(_ROBLOX_STUDIO_PLACE_EXTENSIONS):
+            launch_kind = 'place file'
+        else:
+            launch_kind = 'deeplink'
+        log_buffer.log(
+            'Launcher',
+            f'Relaunching {label} through Fleasion env proxy ({launch_kind}): {exe_path}',
+        )
+        run_cmd(['taskkill', '/F', '/PID', str(pid)])
+        deadline = time.time() + 8.0
+        while time.time() < deadline and _find_pid(wait_pid_exe_name) == pid:
+            time.sleep(0.2)
+
+        env = os.environ.copy()
+        env.update(
+            {
+                'ALL_PROXY': proxy_url,
+                'HTTPS_PROXY': proxy_url,
+                'HTTP_PROXY': proxy_url,
+                'all_proxy': proxy_url,
+                'https_proxy': proxy_url,
+                'http_proxy': proxy_url,
+                'NO_PROXY': 'localhost,127.0.0.1,::1',
+                'no_proxy': 'localhost,127.0.0.1,::1',
+                'FLEASION_PROXY_RELAUNCHED': '1',
+            }
+        )
+        try:
+            args = [str(exe_path), launch_arg] if launch_arg else [str(exe_path)]
+            subprocess.Popen(
+                args,
+                cwd=str(exe_path.parent),
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        except OSError as exc:
+            log_buffer.log('Launcher', f'{label} Env Proxy relaunch failed: {exc}')
+            return False
+        _env_proxy_relaunches[relaunch_key] = time.monotonic()
+        return True
+
+    log_buffer.log('Launcher', f'{label} Env Proxy relaunch skipped: no {label} executable found')
+    return False
+
+
+def relaunch_roblox_with_proxy_env(proxy_url: str) -> bool:
+    """Relaunch a browser-started Roblox Player process with proxy environment variables."""
+    return _relaunch_roblox_exe_with_proxy_env(
+        proxy_url,
+        label='Roblox',
+        query_processes=_query_roblox_player_processes,
+        extract_launch_arg=lambda cmd: _extract_roblox_deeplink(cmd, 'roblox-player:'),
+        wait_pid_exe_name=ROBLOX_PROCESS,
+        fallback_exe_path=get_roblox_player_exe_path,
+    )
+
+
+def relaunch_roblox_studio_with_proxy_env(proxy_url: str) -> bool:
+    """Relaunch a Roblox Studio process with proxy environment variables."""
+    return _relaunch_roblox_exe_with_proxy_env(
+        proxy_url,
+        label='Roblox Studio',
+        query_processes=_query_roblox_studio_processes,
+        extract_launch_arg=_extract_roblox_studio_reopen_arg,
+        wait_pid_exe_name=ROBLOX_STUDIO_PROCESS,
+        fallback_exe_path=get_roblox_studio_exe_path,
+    )
 
 
 def get_roblox_studio_exe_path() -> Optional[Path]:

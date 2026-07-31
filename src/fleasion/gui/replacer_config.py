@@ -628,6 +628,7 @@ class ReplacerConfigWindow(QDialog):
         self._dialog_asset_types_popup_last_closed = 0.0
         self._prejsons_dialog: QDialog | None = None
         self._proxy_gates: list[ProxyGate] = []
+        self._env_proxy_gates: list[ProxyGate] = []
 
         self.setWindowTitle('Dashboard')
         self.resize(900, 750)
@@ -743,6 +744,15 @@ class ReplacerConfigWindow(QDialog):
             self.proxy_master.register_module_interceptor(self._rando_stuff_tab)
             self._registered_module_interceptors.append(self._rando_stuff_tab)
 
+        # Create Proxy tab
+        from .proxy_tab import ProxyTrafficTab
+
+        self._proxy_traffic_tab = ProxyTrafficTab(
+            config_manager=self.config_manager,
+            proxy_master=self.proxy_master,
+        )
+        self.tab_widget.addTab(self._env_proxy_required(self._proxy_traffic_tab), 'Proxy')
+
         # Create Settings tab
         from .settings_tab import SettingsTab
 
@@ -774,6 +784,28 @@ class ReplacerConfigWindow(QDialog):
         self._proxy_gates.append(gate)
         return gate
 
+    def _env_proxy_required(self, widget: QWidget) -> ProxyGate:
+        gate = ProxyGate(
+            widget,
+            message=(
+                'This section is closed because Roblox Env Proxy mode is not '
+                'selected in Settings.'
+            ),
+        )
+        self._env_proxy_gates.append(gate)
+        return gate
+
+    def _env_proxy_effective_enabled(self) -> bool:
+        return bool(
+            self.config_manager.proxy_features_enabled
+            and self.config_manager.proxy_mode == 'env'
+        )
+
+    def refresh_env_proxy_gate(self):
+        enabled = self._env_proxy_effective_enabled()
+        for gate in self._env_proxy_gates:
+            gate.set_proxy_enabled(enabled)
+
     def set_proxy_features_enabled(self, enabled: bool):
         for gate in self._proxy_gates:
             gate.set_proxy_enabled(enabled)
@@ -785,6 +817,7 @@ class ReplacerConfigWindow(QDialog):
             self._rando_stuff_tab, 'set_proxy_features_enabled'
         ):
             self._rando_stuff_tab.set_proxy_features_enabled(enabled)
+        self.refresh_env_proxy_gate()
 
     def _create_replacer_tab(self):
         """Create the replacer configuration tab."""

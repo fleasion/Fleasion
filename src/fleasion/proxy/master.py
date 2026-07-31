@@ -633,6 +633,35 @@ def _connect_tls_for_self_test(host: str | None, ca_cert_path: Path, port: int) 
             return cert if isinstance(cert, dict) else {}
 
 
+def _connect_explicit_proxy_tls_for_self_test(
+    host: str | None, ca_cert_path: Path, port: int
+) -> dict:
+    if host is None:
+        return _connect_tls_for_self_test(host, ca_cert_path, port)
+    ctx = ssl.create_default_context(cafile=str(ca_cert_path))
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    with socket.create_connection(('127.0.0.1', port), timeout=5.0) as raw_sock:
+        request = (
+            f'CONNECT {host}:443 HTTP/1.1\r\n'
+            f'Host: {host}:443\r\n'
+            'Proxy-Connection: keep-alive\r\n'
+            '\r\n'
+        ).encode('ascii')
+        raw_sock.sendall(request)
+        response = b''
+        while b'\r\n\r\n' not in response and len(response) < 4096:
+            chunk = raw_sock.recv(4096)
+            if not chunk:
+                break
+            response += chunk
+        first_line = response.split(b'\r\n', 1)[0]
+        if b' 200 ' not in first_line:
+            raise OSError(f'CONNECT self-test failed: {first_line!r}')
+        with ctx.wrap_socket(raw_sock, server_hostname=host) as tls_sock:
+            cert = tls_sock.getpeercert()
+            return cert if isinstance(cert, dict) else {}
+
+
 def _cert_dict_san_hosts(cert: dict) -> set[str]:
     names: set[str] = set()
     for kind, value in cert.get('subjectAltName', ()):
@@ -642,38 +671,35 @@ def _cert_dict_san_hosts(cert: dict) -> set[str]:
 
 
 def _run_tls_self_test_sync(
-    hosts: set[str], ca_cert_path: Path, port: int
+    hosts: set[str], ca_cert_path: Path, port: int, explicit_proxy: bool = False
 ) -> tuple[bool, list[str]]:
     failures: list[str] = []
+    connector = (
+        _connect_explicit_proxy_tls_for_self_test
+        if explicit_proxy
+        else _connect_tls_for_self_test
+    )
     for host in sorted(hosts):
         try:
-            _connect_tls_for_self_test(host, ca_cert_path, port)
+            connector(host, ca_cert_path, port)
         except Exception as exc:
             failures.append(f'{host}: {type(exc).__name__}: {exc}')
 
-    try:
-        default_cert = _connect_tls_for_self_test(None, ca_cert_path, port)
-        san_hosts = _cert_dict_san_hosts(default_cert)
-        missing = sorted(host for host in hosts if host.lower() not in san_hosts)
-        if missing:
-            failures.append(f'default cert missing SAN hosts: {", ".join(missing)}')
-    except Exception as exc:
-        failures.append(f'default cert without SNI: {type(exc).__name__}: {exc}')
+    if not explicit_proxy:
+        try:
+            default_cert = _connect_tls_for_self_test(None, ca_cert_path, port)
+            san_hosts = _cert_dict_san_hosts(default_cert)
+            missing = sorted(host for host in hosts if host.lower() not in san_hosts)
+            if missing:
+                failures.append(f'default cert missing SAN hosts: {", ".join(missing)}')
+        except Exception as exc:
+            failures.append(f'default cert without SNI: {type(exc).__name__}: {exc}')
 
     return not failures, failures
 
 
-async def _run_tls_self_test(hosts: set[str], ca_cert_path: Path, port: int) -> bool:
-    ok, failures = await _tls_self_test_result(hosts, ca_cert_path, port)
-    if ok:
-        _log_tls_self_test_passed(hosts)
-        return True
-    _log_tls_self_test_failures(failures)
-    return False
-
-
 async def _tls_self_test_result(
-    hosts: set[str], ca_cert_path: Path, port: int
+    hosts: set[str], ca_cert_path: Path, port: int, explicit_proxy: bool = False
 ) -> tuple[bool, list[str]]:
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
@@ -682,19 +708,32 @@ async def _tls_self_test_result(
         set(hosts),
         ca_cert_path,
         port,
+        explicit_proxy,
     )
 
 
-def _log_tls_self_test_passed(hosts: set[str]) -> None:
+def _log_tls_self_test_passed(hosts: set[str], explicit_proxy: bool = False) -> None:
+    mode = 'explicit proxy TLS' if explicit_proxy else 'TLS'
     log_buffer.log(
         'TLS',
-        f'Startup TLS self-test passed for {format_count(hosts, "intercept host")}',
+        f'Startup {mode} self-test passed for {format_count(hosts, "intercept host")}',
     )
 
 
 def _log_tls_self_test_failures(failures: list[str]) -> None:
     for failure in failures:
         log_buffer.log('TLS', f'Startup TLS self-test failed: {failure}')
+
+
+async def _run_tls_self_test(
+    hosts: set[str], ca_cert_path: Path, port: int, explicit_proxy: bool = False
+) -> bool:
+    ok, failures = await _tls_self_test_result(hosts, ca_cert_path, port, explicit_proxy)
+    if ok:
+        _log_tls_self_test_passed(hosts, explicit_proxy)
+        return True
+    _log_tls_self_test_failures(failures)
+    return False
 
 
 async def _run_privileged_relay_tls_self_test(
@@ -3141,7 +3180,12 @@ class ProxyMaster:
         self._running = False
         self._lock = threading.Lock()
         self._hosts_installed: bool = False
+        self._active_env_proxy_mode: bool = False
         self._active_intercept_hosts: set[str] = set(BASE_INTERCEPT_HOSTS)
+        self._env_proxy_intercept_match: str = ''
+        # In-memory only, on purpose - never read from or written to
+        # config_manager, so it always resets to False on every app launch.
+        self._env_proxy_intercept_all: bool = False
         self._roblox_player_running: bool = False
         self._watchdog_stop: Optional[threading.Event] = None
         self._watchdog_thread: Optional[threading.Thread] = None
@@ -3168,6 +3212,121 @@ class ProxyMaster:
         if self._proxy_debug_enabled() and self._proxy_debug_mode() == 'e':
             return UpstreamMode.SYSTEM_PROXY.value
         return self.config_manager.upstream_transport_mode
+
+    def _use_env_proxy_mode(self) -> bool:
+        return str(getattr(self.config_manager, 'proxy_mode', 'hosts') or 'hosts') == 'env'
+
+    def roblox_env_proxy_url(self) -> str:
+        return f'http://127.0.0.1:{MACOS_PROXY_BACKEND_PORT}'
+
+    def get_env_proxy_traffic(self) -> list[dict]:
+        """Every request/tunnel the explicit proxy has logged, intercepted or not."""
+        if self._proxy is None:
+            return []
+        get_log = getattr(self._proxy, 'get_request_log', None)
+        return get_log() if callable(get_log) else []
+
+    def clear_env_proxy_traffic(self) -> None:
+        if self._proxy is None:
+            return
+        clear_log = getattr(self._proxy, 'clear_request_log', None)
+        if callable(clear_log):
+            clear_log()
+
+    def format_env_proxy_request_preview(self, entry: dict) -> str:
+        if self._proxy is None:
+            return ''
+        fmt = getattr(self._proxy, 'format_request_preview', None)
+        return fmt(entry) if callable(fmt) else ''
+
+    def format_env_proxy_response_preview(self, entry: dict) -> str:
+        if self._proxy is None:
+            return ''
+        fmt = getattr(self._proxy, 'format_response_preview', None)
+        return fmt(entry) if callable(fmt) else ''
+
+    def set_env_proxy_intercept_match(self, text: str) -> None:
+        """Interception is armed purely by this being non-empty text - nothing else gates it."""
+        self._env_proxy_intercept_match = text
+        if self._proxy is not None:
+            setter = getattr(self._proxy, 'set_intercept_match', None)
+            if callable(setter):
+                setter(text)
+
+    def set_env_proxy_intercept_all(self, enabled: bool) -> None:
+        """Toggle whether hosts outside Fleasion's own feature set also get
+        decrypted/logged. Deliberately not persisted anywhere - this always
+        starts back at False on every launch, regardless of what it was
+        last set to.
+        """
+        self._env_proxy_intercept_all = bool(enabled)
+        if self._proxy is not None:
+            setter = getattr(self._proxy, 'set_intercept_all_hosts', None)
+            if callable(setter):
+                setter(enabled)
+
+    def get_auto_replace_rules(self) -> list:
+        """Auto Replace rules, persisted to config (unlike the env-proxy
+        toggles above) so they survive a restart without the dialog needing
+        to have been opened.
+        """
+        return list(self.config_manager.settings.get('auto_replace_rules', []))
+
+    def set_auto_replace_rules(self, rules: list) -> None:
+        self.config_manager.settings['auto_replace_rules'] = list(rules)
+        self.config_manager.save()
+        if self._proxy is not None:
+            setter = getattr(self._proxy, 'set_auto_replace_rules', None)
+            if callable(setter):
+                setter(rules)
+
+    def get_env_proxy_pending_intercepts(self) -> list:
+        if self._proxy is None:
+            return []
+        getter = getattr(self._proxy, 'get_pending_intercepts', None)
+        return getter() if callable(getter) else []
+
+    def get_env_proxy_pending_data(self, entry_id: int, stage: str):
+        if self._proxy is None:
+            return None
+        getter = getattr(self._proxy, 'get_pending_data', None)
+        return getter(entry_id, stage) if callable(getter) else None
+
+    def submit_env_proxy_pending(
+        self, entry_id: int, stage: str, action: str, edited_text: Optional[str] = None
+    ) -> bool:
+        if self._proxy is None:
+            return False
+        submitter = getattr(self._proxy, 'submit_pending', None)
+        return submitter(entry_id, stage, action, edited_text) if callable(submitter) else False
+
+    def replay_env_proxy_request(self, entry_id: int, edited_text: Optional[str] = None) -> bool:
+        """Resend a captured/edited request fresh, overwriting that SAME
+        entry's request/response fields in place - not a new row.
+        Fire-and-forget from the GUI's side; the row updates once the
+        round-trip completes.
+        """
+        if self._proxy is None or self._loop is None or not self._loop.is_running():
+            return False
+        entries = {e['id']: e for e in self._proxy.get_request_log()}
+        entry = entries.get(entry_id)
+        if entry is None:
+            return False
+        host = entry.get('host')
+        if not host:
+            return False
+        if edited_text is not None:
+            from .server import rebuild_edited_message
+
+            raw = rebuild_edited_message(edited_text)
+        else:
+            raw = entry.get('request_raw')
+        if not raw:
+            return False
+        asyncio.run_coroutine_threadsafe(
+            self._proxy.replay_request(entry_id, bytes(raw), host), self._loop
+        )
+        return True
 
     def _effective_wire_preserving_passthrough(self) -> bool:
         if self._proxy_debug_enabled() and self._proxy_debug_mode() == 'd':
@@ -3371,8 +3530,27 @@ class ProxyMaster:
         """Refresh hosts entries for optional proxy-backed features."""
         desired_hosts = self._desired_intercept_hosts()
         self._log_intercept_configuration('Refresh requested', desired_hosts)
+
         with self._lock:
             if desired_hosts == self._active_intercept_hosts:
+                return
+            if self._active_env_proxy_mode and self._proxy is not None:
+                previous_hosts = set(self._active_intercept_hosts)
+                added_hosts = desired_hosts - previous_hosts
+                retained_hosts = previous_hosts & desired_hosts
+                real_endpoints = self._proxy.upstream_endpoints_for_hosts(retained_hosts)
+                added_endpoints = _resolve_real_endpoints(added_hosts) if added_hosts else {}
+                real_endpoints.update(added_endpoints)
+                self._proxy.set_upstream_endpoints(real_endpoints)
+                self._proxy.set_intercept_hosts(desired_hosts)
+                scraper_ips = _first_endpoint_ips(real_endpoints)
+                if scraper_ips:
+                    self.cache_scraper.set_real_ips(scraper_ips)
+                self._active_intercept_hosts = set(desired_hosts)
+                log_buffer.log(
+                    'InterceptConfig',
+                    f'Env proxy intercepts updated: {", ".join(sorted(desired_hosts))}',
+                )
                 return
             if not self._hosts_installed or self._proxy is None:
                 self._active_intercept_hosts = set(desired_hosts)
@@ -3757,12 +3935,32 @@ class ProxyMaster:
             self._thread = threading.Thread(target=_run, daemon=True, name='fleasion-proxy')
             self._thread.start()
 
+    def restart_for_mode_switch(self) -> None:
+        """Live-swap the running proxy to a new mode without restarting the
+        app. The mode change (self.config_manager.proxy_mode) must already
+        be persisted by the caller before this runs; stop() cleans up
+        whatever the old mode had in place (hosts entries, port bindings),
+        then start() picks the new mode back up from config. Only safe to
+        call when the new mode needs nothing this process doesn't already
+        have - callers should restart the whole app instead when the new
+        mode might require elevation this process doesn't hold.
+        """
+
+        def _do_restart() -> None:
+            self.stop()
+            self.start()
+
+        threading.Thread(
+            target=_do_restart, daemon=True, name='fleasion-proxy-mode-switch'
+        ).start()
+
     def stop(self) -> None:
         self._stop_linux_sober_custom_fflag_timer()
         with self._lock:
             if not self._running and not (self._thread and self._thread.is_alive()):
                 return
             log_buffer.log('Proxy', 'Stopping proxy...')
+            self._active_env_proxy_mode = False
 
             # Clean up hosts file first so Roblox stops routing to us immediately
             if self._hosts_installed:
@@ -3802,9 +4000,10 @@ class ProxyMaster:
     async def _run_proxy(self) -> None:
         self._running = True
         self._loop = asyncio.get_running_loop()
+        env_proxy_mode = self._use_env_proxy_mode()
 
         # ── Privileged proxy endpoint check ───────────────────────────────
-        if IS_MACOS:
+        if not env_proxy_mode and IS_MACOS:
             from ..utils.macos_proxy_helper import helper_is_ready
 
             if not helper_is_ready():
@@ -3812,7 +4011,7 @@ class ProxyMaster:
                 self._emit_proxy_start_error('macos_helper_unavailable', {})
                 self._running = False
                 return
-        elif not _is_admin() and not _use_linux_privileged_helper():
+        elif not env_proxy_mode and not _is_admin() and not _use_linux_privileged_helper():
             log_buffer.log(
                 'Error',
                 (
@@ -3827,7 +4026,13 @@ class ProxyMaster:
         custom_fflags_active = bool(
             getattr(self.config_manager, 'custom_fflags_enabled', False)
         )
-        if custom_fflags_active and is_roblox_running():
+        if env_proxy_mode and is_roblox_running():
+            log_buffer.log(
+                'Cleanup',
+                'Roblox Env Proxy mode detected Roblox already running; '
+                'skipping cache clear to preserve the launch deeplink',
+            )
+        elif custom_fflags_active and is_roblox_running():
             log_buffer.log(
                 'Cleanup',
                 'Custom FastFlags are active and Roblox is already running; skipping cache clear',
@@ -3920,7 +4125,7 @@ class ProxyMaster:
                 if trust_details.get('changed')
                 else 'macOS login keychain CA trust already current',
             )
-        if IS_WINDOWS:
+        if IS_WINDOWS and not env_proxy_mode:
             _install_ca_into_windows_root(ca_cert_path, ca_pem)
         elif IS_LINUX:
             from ..utils.linux_proxy_helper import install_ca_into_linux_trust
@@ -3934,7 +4139,35 @@ class ProxyMaster:
         # Skip cleanup entirely if another elevated Fleasion instance already
         # owns the proxy.  Deleting its watchdog task or hosts entries while it
         # is running would break it silently.
-        if _use_linux_privileged_helper():
+        if env_proxy_mode:
+            if not _other_proxy_owner_alive():
+                # A previous hosts-mode session may have left entries behind
+                # (e.g. a crash without a clean stop()). Env mode doesn't
+                # need the hosts file at all, but leaving stale "# Fleasion
+                # proxy entry" lines around would keep redirecting those
+                # hosts to 127.0.0.1 for every app on the system, not just
+                # Roblox through our proxy - so clean them up here too.
+                # Unlike the hosts-mode branch below, a failure here doesn't
+                # abort startup: env mode doesn't depend on the hosts file
+                # working.
+                stale_hosts_error_details: dict = {}
+                if _remove_hosts_entries(
+                    set(INTERCEPT_HOSTS), error_details=stale_hosts_error_details
+                ):
+                    _flush_dns()
+                else:
+                    log_buffer.log(
+                        'Error',
+                        'Failed to remove stale proxy hosts entries while starting Roblox '
+                        'Env Proxy mode - they may still redirect some hosts to 127.0.0.1. '
+                        'If this causes problems, manually remove "# Fleasion proxy entry" '
+                        f'lines from {HOSTS_FILE}.',
+                    )
+            log_buffer.log(
+                'Proxy',
+                'Roblox Env Proxy mode active; skipping privileged relay startup',
+            )
+        elif _use_linux_privileged_helper():
             log_buffer.log(
                 'ProxyHelper',
                 'Linux user-mode GUI active; privileged helper will own port 443 and hosts entries',
@@ -4015,10 +4248,13 @@ class ProxyMaster:
             pass
 
         # ── Start TLS proxy server ────────────────────────────────────────
-        use_linux_helper = _use_linux_privileged_helper()
-        listen_port = MACOS_PROXY_BACKEND_PORT if IS_MACOS or use_linux_helper else PROXY_PORT
+        use_linux_helper = (not env_proxy_mode) and _use_linux_privileged_helper()
+        listen_port = (
+            MACOS_PROXY_BACKEND_PORT if env_proxy_mode or IS_MACOS or use_linux_helper else PROXY_PORT
+        )
         if (
             IS_LINUX
+            and not env_proxy_mode
             and not use_linux_helper
             and not _ensure_linux_system_trust_for_hosts(active_hosts, ca_cert_path)
         ):
@@ -4036,6 +4272,13 @@ class ProxyMaster:
             manual_http_proxy=manual_http_proxy,
             manual_socks5_proxy=manual_socks5_proxy,
             wire_preserving_passthrough=self._effective_wire_preserving_passthrough(),
+            explicit_proxy=env_proxy_mode,
+            intercept_hosts=active_hosts,
+            intercept_all_hosts=getattr(self, '_env_proxy_intercept_all', False),
+            auto_replace_rules=self.get_auto_replace_rules(),
+            ca_cert_path=ca_cert_path,
+            ca_key_path=ca_key_path,
+            cert_cache_dir=proxy_ca_dir,
             vpn_compat_max_assetdelivery_connections=asset_connection_limit,
             vpn_compat_max_cdn_connections=cdn_connection_limit,
             custom_fflag_modifier=getattr(self, 'custom_fflag_modifier', None),
@@ -4046,6 +4289,8 @@ class ProxyMaster:
         with self._lock:
             interceptors = list(self._module_interceptors)
         self._proxy.set_module_interceptors(interceptors)
+        if hasattr(self._proxy, 'set_intercept_match'):
+            self._proxy.set_intercept_match(self._env_proxy_intercept_match)
         await self._proxy.log_upstream_self_test(active_hosts)
         try:
             await self._proxy.start()
@@ -4096,10 +4341,39 @@ class ProxyMaster:
         # Probe every intercepted host with SNI plus one no-SNI connection before
         # the hosts file points Roblox at us. This catches certificate/SNI failures
         # that otherwise happen before normal request logs exist.
-        if not await _run_tls_self_test(set(INTERCEPT_HOSTS), ca_cert_path, listen_port):
+        if not await _run_tls_self_test(
+            set(INTERCEPT_HOSTS), ca_cert_path, listen_port, explicit_proxy=env_proxy_mode
+        ):
             await self._proxy.stop()
             _set_active_hosts_loopbacks(None)
             self._running = False
+            return
+        if env_proxy_mode:
+            _set_active_hosts_loopbacks(None)
+            self._active_env_proxy_mode = True
+            # The self-test above just probed every intercept host itself; wipe
+            # that from the log so the traffic tab only ever shows genuine
+            # client requests, not Fleasion's own startup TLS probe.
+            self._proxy.clear_request_log()
+            self._start_linux_sober_custom_fflag_timer()
+
+            log_buffer.log('Info', '=' * 50)
+            log_buffer.log('Info', 'Fleasion Proxy Active')
+            log_buffer.log('Info', f'Proxy mode: Roblox Env Proxy ({self.roblox_env_proxy_url()})')
+            log_buffer.log('Info', f'Intercepting: {", ".join(sorted(active_hosts))}')
+            log_buffer.log('Info', f'Port: {listen_port}')
+            log_buffer.log('Info', 'Launch Roblox through Fleasion or let Fleasion relaunch it')
+            log_buffer.log('Info', '=' * 50)
+
+            if self._texture_stripper is not None:
+                _precheck_thread = threading.Thread(
+                    target=self._texture_stripper.precheck_replacements,
+                    name='ReplacementPrecheck',
+                    daemon=True,
+                )
+                _precheck_thread.start()
+
+            await self._proxy.serve_forever()
             return
         if use_linux_helper:
             from ..utils.linux_proxy_helper import (
