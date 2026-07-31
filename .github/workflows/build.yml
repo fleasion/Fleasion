@@ -134,6 +134,15 @@ jobs:
             exit 1
           fi
 
+      - name: Verify Linux compiled Python dependencies
+        if: runner.os == 'Linux'
+        run: |
+          archive_listing="$(uv run pyi-archive_viewer -b -l dist/Fleasion-v*-Linux)"
+          if ! grep -q 'DracoPy' <<< "$archive_listing"; then
+            echo "Linux package is missing the bundled DracoPy extension." >&2
+            exit 1
+          fi
+
       - name: Upload package
         uses: actions/upload-artifact@v7
         with:

@@ -261,7 +261,10 @@ class SystemTray:
         elif not self.tray.isVisible():
             log_buffer.log('Tray', 'System tray/menu-bar icon did not become visible')
         else:
-            log_buffer.log('Tray', 'System tray/menu-bar icon is visible')
+            log_buffer.log(
+                'Tray',
+                'System tray/menu-bar host is available and icon visibility was requested',
+            )
 
     def _set_icon(self):
         """Set the tray icon."""

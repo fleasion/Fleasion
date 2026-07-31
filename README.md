@@ -18,6 +18,12 @@ If the `.exe` fails to launch on startup with a `DLL load failed` error, move th
 
 If you're on Linux and having issues with launching the GUI, please install `PortAudio` on your distro. How? Look it up.
 
+Arch-based Linux systems also require Qt's native Widgets/runtime package:
+
+```bash
+sudo pacman -S --needed qt6-base
+```
+
 ## Requirements for Building from Source
 
 - **Windows 10+, macOS 11+, or Linux with Sober Flatpak**

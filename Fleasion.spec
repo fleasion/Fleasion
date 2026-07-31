@@ -45,6 +45,7 @@ _OPENGL_HIDDEN_IMPORTS = [
 ]
 
 _COMPILED_HIDDEN_IMPORTS = [
+    'DracoPy',
     'certifi',
     'orjson',
     'zstandard',

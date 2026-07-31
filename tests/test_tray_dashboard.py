@@ -43,6 +43,38 @@ class _TrayIconStub:
         self.delete_later_calls += 1
 
 
+def test_linux_gui_dependency_check_reports_install_command(monkeypatch):
+    from fleasion.utils import platform_linux
+
+    critical_calls = []
+    log_calls = []
+    monkeypatch.setattr(app_module.sys, 'platform', 'linux')
+    monkeypatch.setattr(platform_linux, 'missing_linux_gui_packages', lambda: ['qt6-base'])
+    monkeypatch.setattr(
+        app_module.QMessageBox,
+        'critical',
+        lambda *args: critical_calls.append(args),
+    )
+    monkeypatch.setattr(
+        app_module.log_buffer,
+        'log',
+        lambda category, message: log_calls.append((category, message)),
+    )
+
+    assert app_module._check_linux_gui_dependencies() is False
+    assert 'sudo pacman -S --needed qt6-base' in critical_calls[0][2]
+    assert 'qt6-base' in log_calls[0][1]
+
+
+def test_linux_gui_dependency_check_accepts_complete_runtime(monkeypatch):
+    from fleasion.utils import platform_linux
+
+    monkeypatch.setattr(app_module.sys, 'platform', 'linux')
+    monkeypatch.setattr(platform_linux, 'missing_linux_gui_packages', lambda: [])
+
+    assert app_module._check_linux_gui_dependencies() is True
+
+
 def test_dashboard_toggle_hides_visible_window():
     system_tray = SystemTray.__new__(SystemTray)
     dashboard = _DashboardStub(visible=True)

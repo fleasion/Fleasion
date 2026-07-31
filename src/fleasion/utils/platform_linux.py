@@ -47,6 +47,68 @@ LINUX_DEPRECATED_DESKTOP_ENTRY_PATHS = (
     LINUX_APPLICATIONS_DIR / 'fleasion-read-only.desktop',
     LINUX_APPLICATIONS_DIR / 'fleasion-proxy.desktop',
 )
+OS_RELEASE_PATH = Path('/etc/os-release')
+ARCH_LINUX_IDS = frozenset(
+    {
+        'arch',
+        'cachyos',
+        'endeavouros',
+        'garuda',
+        'manjaro',
+        'steamos',
+    }
+)
+ARCH_LINUX_GUI_PACKAGES = ('qt6-base',)
+
+
+def _os_release_ids(path: Path = OS_RELEASE_PATH) -> set[str]:
+    """Return normalized distro IDs from os-release."""
+    try:
+        lines = path.read_text(encoding='utf-8', errors='replace').splitlines()
+    except OSError:
+        return set()
+
+    values: dict[str, str] = {}
+    for line in lines:
+        key, separator, value = line.partition('=')
+        if not separator or key not in {'ID', 'ID_LIKE'}:
+            continue
+        values[key] = value.strip().strip('"').strip("'")
+
+    return {
+        distro_id.casefold()
+        for value in values.values()
+        for distro_id in value.split()
+        if distro_id
+    }
+
+
+def missing_linux_gui_packages(
+    *,
+    os_release_path: Path = OS_RELEASE_PATH,
+) -> list[str]:
+    """Return missing native GUI packages on supported package-managed distros."""
+    if not (_os_release_ids(os_release_path) & ARCH_LINUX_IDS):
+        return []
+    if shutil.which('pacman') is None:
+        return []
+
+    missing: list[str] = []
+    for package in ARCH_LINUX_GUI_PACKAGES:
+        try:
+            result = subprocess.run(
+                ['pacman', '-Q', package],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except Exception:
+            # A failed package query should not block an otherwise working
+            # desktop when its package manager cannot be inspected.
+            continue
+        if result.returncode != 0:
+            missing.append(package)
+    return missing
 
 
 def run_cmd(args: list[str]) -> str:

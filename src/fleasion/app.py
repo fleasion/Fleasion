@@ -1944,6 +1944,36 @@ def _configure_opengl_for_legacy_viewers() -> None:
         log_buffer.log('OpenGL', f'Could not configure default OpenGL format: {exc}')
 
 
+def _check_linux_gui_dependencies() -> bool:
+    """Report native Linux GUI dependencies that Python packaging cannot supply."""
+    if not sys.platform.startswith('linux'):
+        return True
+
+    from .utils.platform_linux import missing_linux_gui_packages
+
+    missing = missing_linux_gui_packages()
+    if not missing:
+        return True
+
+    package_list = ' '.join(missing)
+    install_command = f'sudo pacman -S --needed {package_list}'
+    log_buffer.log(
+        'Tray',
+        f'Missing Arch Linux GUI dependencies: {package_list}. Install with: {install_command}',
+    )
+    QMessageBox.critical(
+        None,
+        f'{APP_NAME} - Missing Linux GUI Dependency',
+        'Fleasion cannot create a reliable Qt system tray on this Arch-based system '
+        f'because the following native package is missing:\n\n{package_list}\n\n'
+        'PyQt6 can still create a tray object in this state, but the desktop may never '
+        'publish its icon.\n\n'
+        f'Install the dependency and restart Fleasion:\n{install_command}',
+        QMessageBox.StandardButton.Ok,
+    )
+    return False
+
+
 def main():
     """Main application entry point."""
     import argparse as _ap
@@ -2032,6 +2062,9 @@ def main():
             from .utils.platform_macos import set_application_icon
 
             set_application_icon(icon_path)
+
+    if not _check_linux_gui_dependencies():
+        sys.exit(1)
 
     if sys.platform == 'darwin' and _is_admin():
         QMessageBox.critical(

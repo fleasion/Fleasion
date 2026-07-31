@@ -4,6 +4,54 @@ from fleasion.utils import platform_linux
 from fleasion.utils.roblox_dirs import _normalise_roblox_dir
 
 
+def test_arch_gui_dependency_check_reports_missing_qt6_base(tmp_path, monkeypatch):
+    os_release = tmp_path / "os-release"
+    os_release.write_text('ID=cachyos\nID_LIKE="arch"\n', encoding="utf-8")
+    calls = []
+
+    monkeypatch.setattr(platform_linux.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return platform_linux.subprocess.CompletedProcess(command, 1, "", "not installed")
+
+    monkeypatch.setattr(platform_linux.subprocess, "run", run)
+
+    assert platform_linux.missing_linux_gui_packages(
+        os_release_path=os_release
+    ) == ["qt6-base"]
+    assert calls[0][0] == ["pacman", "-Q", "qt6-base"]
+
+
+def test_arch_gui_dependency_check_accepts_installed_qt6_base(tmp_path, monkeypatch):
+    os_release = tmp_path / "os-release"
+    os_release.write_text("ID=arch\n", encoding="utf-8")
+    monkeypatch.setattr(platform_linux.shutil, "which", lambda _name: "/usr/bin/pacman")
+    monkeypatch.setattr(
+        platform_linux.subprocess,
+        "run",
+        lambda command, **_kwargs: platform_linux.subprocess.CompletedProcess(
+            command, 0, "qt6-base 6.11.1-1\n", ""
+        ),
+    )
+
+    assert platform_linux.missing_linux_gui_packages(os_release_path=os_release) == []
+
+
+def test_non_arch_gui_dependency_check_does_not_query_pacman(tmp_path, monkeypatch):
+    os_release = tmp_path / "os-release"
+    os_release.write_text("ID=fedora\n", encoding="utf-8")
+    monkeypatch.setattr(
+        platform_linux.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("unexpected pacman query")
+        ),
+    )
+
+    assert platform_linux.missing_linux_gui_packages(os_release_path=os_release) == []
+
+
 def _detached_kwargs_with_env(env: dict[str, str] | None = None) -> dict:
     kwargs = dict(platform_linux._DETACHED_POPEN_KWARGS)
     kwargs["env"] = env or platform_linux._host_subprocess_env()
