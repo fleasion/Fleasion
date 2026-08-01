@@ -86,3 +86,156 @@ def test_discovers_only_valid_froststrap_mod_restore_snapshots(tmp_path, monkeyp
     monkeypatch.setattr(platform_macos, "FROSTSTRAP_MOD_BACKUP_DIR", root)
 
     assert platform_macos.find_froststrap_mod_backup_resource_dirs() == [valid]
+
+
+def _reset_env_proxy_relaunch_state(monkeypatch):
+    monkeypatch.setattr(platform_macos, "_env_proxy_relaunch_at", None)
+    monkeypatch.setattr(platform_macos, "_env_proxy_relaunch_in_progress", False)
+
+
+def test_relaunch_roblox_with_env_proxy_uses_detected_bundle_and_open_env(
+    tmp_path, monkeypatch
+):
+    calls = []
+    proxy_url = "http://127.0.0.1:58443"
+    app = tmp_path / "Froststrap" / "Versions" / "version-current" / "RobloxPlayer.app"
+    _make_player_app(app)
+    exe = app / "Contents" / "MacOS" / "RobloxPlayer"
+    _reset_env_proxy_relaunch_state(monkeypatch)
+    monkeypatch.setattr(platform_macos, "get_roblox_player_exe_path", lambda: exe)
+    monkeypatch.setattr(
+        platform_macos,
+        "_wait_for_local_proxy",
+        lambda url: calls.append(("wait", url)) or True,
+    )
+    monkeypatch.setattr(platform_macos, "is_roblox_running", lambda: True)
+    monkeypatch.setattr(
+        platform_macos,
+        "terminate_roblox",
+        lambda: calls.append("terminate") or True,
+    )
+    monkeypatch.setattr(
+        platform_macos,
+        "wait_for_roblox_exit",
+        lambda timeout=10.0: calls.append("wait_for_exit") or True,
+    )
+    monkeypatch.setattr(
+        platform_macos,
+        "wait_for_roblox_window",
+        lambda timeout=60.0: calls.append(("wait_for_start", timeout)) or True,
+    )
+
+    class Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(
+        platform_macos.subprocess,
+        "run",
+        lambda args, **kwargs: calls.append(("run", args, kwargs)) or Result(),
+    )
+
+    assert platform_macos.relaunch_roblox_with_proxy_env(proxy_url)
+
+    assert calls[:3] == [("wait", proxy_url), "terminate", "wait_for_exit"]
+    args = calls[3][1]
+    assert args[0] == "open"
+    assert f"HTTPS_PROXY={proxy_url}" in args
+    assert f"HTTP_PROXY={proxy_url}" in args
+    assert "FLEASION_PROXY_RELAUNCHED=1" in args
+    assert args[-2:] == ["-a", str(app)]
+    assert calls[4] == ("wait_for_start", 15.0)
+
+
+def test_relaunch_roblox_with_env_proxy_retries_launchservices_600(
+    tmp_path, monkeypatch
+):
+    calls = []
+    app = tmp_path / "Roblox.app"
+    _make_player_app(app)
+    exe = app / "Contents" / "MacOS" / "RobloxPlayer"
+    _reset_env_proxy_relaunch_state(monkeypatch)
+    monkeypatch.setattr(platform_macos, "get_roblox_player_exe_path", lambda: exe)
+    monkeypatch.setattr(platform_macos, "_wait_for_local_proxy", lambda *_args: True)
+    monkeypatch.setattr(platform_macos, "is_roblox_running", lambda: False)
+    monkeypatch.setattr(platform_macos, "wait_for_roblox_window", lambda **_kwargs: True)
+    monkeypatch.setattr(platform_macos.time, "sleep", lambda delay: calls.append(("sleep", delay)))
+
+    class Result:
+        def __init__(self, returncode, stderr=""):
+            self.returncode = returncode
+            self.stdout = ""
+            self.stderr = stderr
+
+    results = iter(
+        [
+            Result(1, "_LSOpenURLsWithCompletionHandler() failed with error -600."),
+            Result(0),
+        ]
+    )
+    monkeypatch.setattr(
+        platform_macos.subprocess,
+        "run",
+        lambda args, **kwargs: calls.append(("run", args)) or next(results),
+    )
+
+    assert platform_macos.relaunch_roblox_with_proxy_env(
+        "http://127.0.0.1:58443"
+    )
+    assert [call[0] for call in calls] == ["run", "sleep", "run"]
+    assert calls[1] == ("sleep", 0.5)
+
+
+def test_relaunch_roblox_with_env_proxy_does_not_repeat_recent_launch(
+    tmp_path, monkeypatch
+):
+    calls = []
+    app = tmp_path / "Roblox.app"
+    _make_player_app(app)
+    exe = app / "Contents" / "MacOS" / "RobloxPlayer"
+    _reset_env_proxy_relaunch_state(monkeypatch)
+    monkeypatch.setattr(
+        platform_macos,
+        "_env_proxy_relaunch_at",
+        platform_macos.time.monotonic(),
+    )
+    monkeypatch.setattr(platform_macos, "get_roblox_player_exe_path", lambda: exe)
+    monkeypatch.setattr(
+        platform_macos,
+        "_wait_for_local_proxy",
+        lambda *_args: calls.append("wait") or True,
+    )
+    monkeypatch.setattr(
+        platform_macos,
+        "wait_for_roblox_window",
+        lambda *_args: calls.append("popen"),
+    )
+
+    assert not platform_macos.relaunch_roblox_with_proxy_env(
+        "http://127.0.0.1:58443"
+    )
+    assert calls == []
+
+
+def test_relaunch_roblox_with_env_proxy_does_not_kill_when_proxy_is_not_ready(
+    tmp_path, monkeypatch
+):
+    calls = []
+    app = tmp_path / "Roblox.app"
+    _make_player_app(app)
+    exe = app / "Contents" / "MacOS" / "RobloxPlayer"
+    _reset_env_proxy_relaunch_state(monkeypatch)
+    monkeypatch.setattr(platform_macos, "get_roblox_player_exe_path", lambda: exe)
+    monkeypatch.setattr(platform_macos, "_wait_for_local_proxy", lambda *_args: False)
+    monkeypatch.setattr(platform_macos, "is_roblox_running", lambda: True)
+    monkeypatch.setattr(
+        platform_macos,
+        "terminate_roblox",
+        lambda: calls.append("terminate") or True,
+    )
+
+    assert not platform_macos.relaunch_roblox_with_proxy_env(
+        "http://127.0.0.1:58443"
+    )
+    assert calls == []

@@ -1682,6 +1682,18 @@ class RobloxExitMonitor(QObject):
                         run_in_thread(relaunch_roblox_with_proxy_env)(
                             self._proxy_master.roblox_env_proxy_url()
                         )
+                    elif (
+                        sys.platform == 'darwin'
+                        and self.config_manager.proxy_mode == 'env'
+                        and self._proxy_master is not None
+                        and proxy_features_enabled
+                    ):
+                        from .utils.platform_macos import relaunch_roblox_with_proxy_env
+
+                        self._suppress_next_player_exit_cache_delete = True
+                        run_in_thread(relaunch_roblox_with_proxy_env)(
+                            self._proxy_master.roblox_env_proxy_url()
+                        )
                     elif self._proxy_master is not None and proxy_features_enabled:
                         run_in_thread(self._proxy_master.refresh_and_restart_roblox)(exe_path)
                     elif self._proxy_master is None and proxy_features_enabled:

@@ -6,10 +6,13 @@ import ctypes
 import ctypes.util
 import json
 import shutil
+import socket
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit
 
 from .logging import log_buffer
 from .paths import (
@@ -38,6 +41,12 @@ FROSTSTRAP_MOD_BACKUP_DIR = (
 APPLEBLOX_DATA_DIR = USER_HOME / 'Library' / 'Application Support' / 'AppleBlox'
 APPLEBLOX_ROBLOX_CONFIG = APPLEBLOX_DATA_DIR / 'config' / 'roblox.json'
 APPLEBLOX_MOD_BACKUP_RESOURCES = APPLEBLOX_DATA_DIR / 'cache' / 'mods' / 'Resources'
+
+_ENV_PROXY_RELAUNCH_TTL_SECONDS = 45.0
+_LOCAL_PROXY_HOSTS = frozenset({'127.0.0.1', '::1', 'localhost'})
+_env_proxy_relaunch_lock = threading.Lock()
+_env_proxy_relaunch_in_progress = False
+_env_proxy_relaunch_at: float | None = None
 
 _NS_APPLICATION_ACTIVATION_POLICY_REGULAR = 0
 _NS_APPLICATION_ACTIVATION_POLICY_ACCESSORY = 1
@@ -587,6 +596,62 @@ def _app_for_executable(path: Path) -> Path | None:
     return None
 
 
+def _wait_for_local_proxy(proxy_url: str, timeout: float = 10.0) -> bool:
+    """Wait until Fleasion's local explicit proxy accepts connections."""
+    try:
+        parsed = urlsplit(proxy_url)
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return False
+
+    if host not in _LOCAL_PROXY_HOSTS:
+        return True
+    if port is None:
+        return False
+
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining < 0:
+            return False
+        try:
+            with socket.create_connection(
+                (host, port), timeout=min(0.5, max(0.1, remaining))
+            ):
+                return True
+        except OSError:
+            if remaining <= 0:
+                return False
+            time.sleep(min(0.1, remaining))
+
+
+def _claim_env_proxy_relaunch() -> bool:
+    """Allow only one macOS env-proxy relaunch per launch window."""
+    global _env_proxy_relaunch_in_progress
+
+    now = time.monotonic()
+    with _env_proxy_relaunch_lock:
+        if _env_proxy_relaunch_in_progress:
+            return False
+        if (
+            _env_proxy_relaunch_at is not None
+            and now - _env_proxy_relaunch_at < _ENV_PROXY_RELAUNCH_TTL_SECONDS
+        ):
+            return False
+        _env_proxy_relaunch_in_progress = True
+        return True
+
+
+def _finish_env_proxy_relaunch(success: bool) -> None:
+    global _env_proxy_relaunch_at, _env_proxy_relaunch_in_progress
+
+    with _env_proxy_relaunch_lock:
+        _env_proxy_relaunch_in_progress = False
+        if success:
+            _env_proxy_relaunch_at = time.monotonic()
+
+
 _DETACHED_POPEN_KWARGS = {
     'stdin': subprocess.DEVNULL,
     'stdout': subprocess.DEVNULL,
@@ -597,6 +662,109 @@ _DETACHED_POPEN_KWARGS = {
 
 def _detached_popen(args: list[str]) -> subprocess.Popen:
     return subprocess.Popen(args, **_DETACHED_POPEN_KWARGS)
+
+
+def relaunch_roblox_with_proxy_env(proxy_url: str) -> bool:
+    """Relaunch the running macOS Roblox Player through Fleasion's env proxy.
+
+    LaunchServices does not retrofit environment variables onto an existing
+    application process. Stop the browser/bootstrapper-started player first,
+    then use ``open --env`` so the newly launched app inherits the conventional
+    proxy variables while retaining normal macOS bundle launch behavior.
+    """
+    exe_path = get_roblox_player_exe_path()
+    app_path = _app_for_executable(exe_path) if exe_path is not None else None
+    if exe_path is None or app_path is None:
+        log_buffer.log(
+            'Launcher',
+            'Roblox Env Proxy relaunch skipped: no macOS Roblox app bundle found',
+        )
+        return False
+
+    if not _claim_env_proxy_relaunch():
+        log_buffer.log('Launcher', 'Roblox Env Proxy relaunch already handled for this launch')
+        return False
+
+    success = False
+    try:
+        if not _wait_for_local_proxy(proxy_url):
+            log_buffer.log(
+                'Launcher',
+                f'Roblox Env Proxy relaunch skipped: local proxy is not ready at {proxy_url}',
+            )
+            return False
+
+        log_buffer.log(
+            'Launcher',
+            f'Relaunching Roblox through Fleasion env proxy: {app_path}',
+        )
+        if is_roblox_running():
+            terminate_roblox()
+            if not wait_for_roblox_exit():
+                log_buffer.log(
+                    'Launcher',
+                    'Roblox did not exit before macOS env-proxy relaunch',
+                )
+                return False
+
+        proxy_env = {
+            'ALL_PROXY': proxy_url,
+            'HTTPS_PROXY': proxy_url,
+            'HTTP_PROXY': proxy_url,
+            'all_proxy': proxy_url,
+            'https_proxy': proxy_url,
+            'http_proxy': proxy_url,
+            'NO_PROXY': 'localhost,127.0.0.1,::1',
+            'no_proxy': 'localhost,127.0.0.1,::1',
+            'FLEASION_PROXY_RELAUNCHED': '1',
+        }
+        open_args = ['open']
+        for key, value in proxy_env.items():
+            open_args.extend(['--env', f'{key}={value}'])
+        open_args.extend(['-a', str(app_path)])
+
+        launch_error = ''
+        for attempt in range(3):
+            launch_result = subprocess.run(
+                open_args,
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                timeout=10,
+            )
+            if launch_result.returncode == 0:
+                break
+            launch_error = (launch_result.stderr or launch_result.stdout or '').strip()
+            if '-600' not in launch_error or attempt == 2:
+                log_buffer.log(
+                    'Launcher',
+                    f'Roblox Env Proxy relaunch failed: '
+                    f'{launch_error or launch_result.returncode}',
+                )
+                return False
+            time.sleep(0.5)
+        else:
+            log_buffer.log(
+                'Launcher',
+                f'Roblox Env Proxy relaunch failed: {launch_error or "LaunchServices error"}',
+            )
+            return False
+        if not wait_for_roblox_window(timeout=15.0):
+            log_buffer.log(
+                'Launcher',
+                'Roblox Env Proxy relaunch failed: Roblox process did not start',
+            )
+            return False
+        success = True
+    except (OSError, subprocess.SubprocessError) as exc:
+        log_buffer.log('Launcher', f'Roblox Env Proxy relaunch failed: {exc}')
+        return False
+    finally:
+        _finish_env_proxy_relaunch(success)
+
+    log_buffer.log('Launcher', 'Relaunched Roblox through Fleasion env proxy on macOS')
+    return True
 
 
 def launch_as_standard_user(target: str | Path) -> bool:
