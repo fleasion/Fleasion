@@ -4384,7 +4384,15 @@ class ProxyMaster:
                 )
                 _precheck_thread.start()
 
-            await self._proxy.serve_forever()
+            try:
+                await self._proxy.serve_forever()
+            except asyncio.CancelledError:
+                # Stopping the proxy cancels its serve_forever future. That is
+                # the normal Env Proxy shutdown path, not a thread failure.
+                pass
+            finally:
+                self._stop_linux_sober_custom_fflag_timer()
+                self._running = False
             return
         if use_linux_helper:
             from ..utils.linux_proxy_helper import (

@@ -615,7 +615,7 @@ def test_proxy_startup_self_tests_only_active_intercept_routes(tmp_path, monkeyp
             pass
 
         async def serve_forever(self):
-            pass
+            raise asyncio.CancelledError
 
     async def tls_self_test(hosts, *_args, **_kwargs):
         self_test_hosts.append(set(hosts))
@@ -702,6 +702,8 @@ def test_proxy_startup_self_tests_only_active_intercept_routes(tmp_path, monkeyp
     proxy._active_intercept_hosts = set()
     proxy._hosts_installed = False
     proxy._active_env_proxy_mode = False
+    proxy._sober_fflag_timer_stop = None
+    proxy._sober_fflag_timer_thread = None
     monkeypatch.setattr(
         proxy_master.ProxyMaster,
         "_startup_intercept_hosts",
