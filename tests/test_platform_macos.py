@@ -148,6 +148,35 @@ def test_relaunch_roblox_with_env_proxy_uses_detected_bundle_and_open_env(
     assert calls[4] == ("wait_for_start", 15.0)
 
 
+def test_relaunch_roblox_with_env_proxy_preserves_launch_target(tmp_path, monkeypatch):
+    calls = []
+    app = tmp_path / "Roblox.app"
+    _make_player_app(app)
+    exe = app / "Contents" / "MacOS" / "RobloxPlayer"
+    _reset_env_proxy_relaunch_state(monkeypatch)
+    monkeypatch.setattr(platform_macos, "get_roblox_player_exe_path", lambda: exe)
+    monkeypatch.setattr(platform_macos, "_wait_for_local_proxy", lambda *_args: True)
+    monkeypatch.setattr(platform_macos, "is_roblox_running", lambda: False)
+    monkeypatch.setattr(platform_macos, "wait_for_roblox_window", lambda **_kwargs: True)
+
+    class Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(
+        platform_macos.subprocess,
+        "run",
+        lambda args, **_kwargs: calls.append(args) or Result(),
+    )
+
+    target = "roblox://experiences/start?placeId=121814103864070"
+    assert platform_macos.relaunch_roblox_with_proxy_env(
+        "http://127.0.0.1:58443", target
+    )
+    assert calls[0][-1] == target
+
+
 def test_relaunch_roblox_with_env_proxy_retries_launchservices_600(
     tmp_path, monkeypatch
 ):
@@ -216,6 +245,36 @@ def test_relaunch_roblox_with_env_proxy_does_not_repeat_recent_launch(
         "http://127.0.0.1:58443"
     )
     assert calls == []
+
+
+def test_explicit_roblox_uri_launch_can_replace_recent_env_proxy_launch(tmp_path, monkeypatch):
+    calls = []
+    app = tmp_path / "Roblox.app"
+    _make_player_app(app)
+    exe = app / "Contents" / "MacOS" / "RobloxPlayer"
+    _reset_env_proxy_relaunch_state(monkeypatch)
+    monkeypatch.setattr(platform_macos, "_env_proxy_relaunch_at", platform_macos.time.monotonic())
+    monkeypatch.setattr(platform_macos, "get_roblox_player_exe_path", lambda: exe)
+    monkeypatch.setattr(platform_macos, "_wait_for_local_proxy", lambda *_args: True)
+    monkeypatch.setattr(platform_macos, "is_roblox_running", lambda: False)
+    monkeypatch.setattr(platform_macos, "wait_for_roblox_window", lambda **_kwargs: True)
+
+    class Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(
+        platform_macos.subprocess,
+        "run",
+        lambda args, **_kwargs: calls.append(args) or Result(),
+    )
+
+    target = "roblox://experiences/start?placeId=2"
+    assert platform_macos.relaunch_roblox_with_proxy_env(
+        "http://127.0.0.1:58443", target
+    )
+    assert calls[0][-1] == target
 
 
 def test_relaunch_roblox_with_env_proxy_does_not_kill_when_proxy_is_not_ready(

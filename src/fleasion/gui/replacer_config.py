@@ -730,7 +730,11 @@ class ReplacerConfigWindow(QDialog):
         # Create Subplace Joiner tab
         from .subplace_joiner_tab import SubplaceJoinerTab
 
-        self._subplace_tab = SubplaceJoinerTab(rando_tab=self._rando_stuff_tab)
+        self._subplace_tab = SubplaceJoinerTab(
+            rando_tab=self._rando_stuff_tab,
+            config_manager=self.config_manager,
+            proxy_master=self.proxy_master,
+        )
         self._rando_stuff_tab.selected_account_changed.connect(
             self._subplace_tab.set_selected_account
         )

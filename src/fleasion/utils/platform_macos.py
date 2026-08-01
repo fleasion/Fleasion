@@ -8,6 +8,7 @@ import json
 import shutil
 import socket
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -50,6 +51,97 @@ _env_proxy_relaunch_at: float | None = None
 
 _NS_APPLICATION_ACTIVATION_POLICY_REGULAR = 0
 _NS_APPLICATION_ACTIVATION_POLICY_ACCESSORY = 1
+_CF_STRING_ENCODING_UTF8 = 0x08000100
+
+
+def _launch_services_framework():
+    if sys.platform != 'darwin':
+        return None
+    try:
+        return ctypes.CDLL(
+            '/System/Library/Frameworks/CoreServices.framework/CoreServices'
+        )
+    except OSError:
+        return None
+
+
+def _cf_string(core_foundation, value: str):
+    create = core_foundation.CFStringCreateWithCString
+    create.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]
+    create.restype = ctypes.c_void_p
+    return create(None, value.encode('utf-8'), _CF_STRING_ENCODING_UTF8)
+
+
+def _cf_string_value(core_foundation, value_ref) -> str | None:
+    if not value_ref:
+        return None
+    get_cstring = core_foundation.CFStringGetCString
+    get_cstring.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_long, ctypes.c_uint32]
+    get_cstring.restype = ctypes.c_bool
+    buffer = ctypes.create_string_buffer(4096)
+    if not get_cstring(value_ref, buffer, len(buffer), _CF_STRING_ENCODING_UTF8):
+        return None
+    return buffer.value.decode('utf-8', errors='replace')
+
+
+def _cf_release(core_foundation, value_ref) -> None:
+    if value_ref:
+        release = core_foundation.CFRelease
+        release.argtypes = [ctypes.c_void_p]
+        release.restype = None
+        release(value_ref)
+
+
+def get_default_url_handler(scheme: str) -> str | None:
+    """Return macOS's current preferred bundle for a URL scheme."""
+    launch_services = _launch_services_framework()
+    if launch_services is None:
+        return None
+    core_foundation = ctypes.CDLL(
+        '/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation'
+    )
+    scheme_ref = _cf_string(core_foundation, scheme)
+    if not scheme_ref:
+        return None
+    try:
+        copy_default = launch_services.LSCopyDefaultHandlerForURLScheme
+        copy_default.argtypes = [ctypes.c_void_p]
+        copy_default.restype = ctypes.c_void_p
+        handler_ref = copy_default(scheme_ref)
+        try:
+            return _cf_string_value(core_foundation, handler_ref)
+        finally:
+            _cf_release(core_foundation, handler_ref)
+    except (AttributeError, OSError):
+        return None
+    finally:
+        _cf_release(core_foundation, scheme_ref)
+
+
+def set_default_url_handler(scheme: str, bundle_id: str) -> bool:
+    """Set a macOS URL scheme's preferred bundle handler."""
+    launch_services = _launch_services_framework()
+    if launch_services is None:
+        return False
+    core_foundation = ctypes.CDLL(
+        '/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation'
+    )
+    scheme_ref = _cf_string(core_foundation, scheme)
+    bundle_ref = _cf_string(core_foundation, bundle_id)
+    if not scheme_ref or not bundle_ref:
+        _cf_release(core_foundation, scheme_ref)
+        _cf_release(core_foundation, bundle_ref)
+        return False
+    try:
+        set_default = launch_services.LSSetDefaultHandlerForURLScheme
+        set_default.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        set_default.restype = ctypes.c_int32
+        return set_default(scheme_ref, bundle_ref) == 0
+    except (AttributeError, OSError):
+        return False
+    finally:
+        _cf_release(core_foundation, scheme_ref)
+        _cf_release(core_foundation, bundle_ref)
 
 
 def _appleblox_custom_app_path() -> Path | None:
@@ -626,7 +718,7 @@ def _wait_for_local_proxy(proxy_url: str, timeout: float = 10.0) -> bool:
             time.sleep(min(0.1, remaining))
 
 
-def _claim_env_proxy_relaunch() -> bool:
+def _claim_env_proxy_relaunch(*, force: bool = False) -> bool:
     """Allow only one macOS env-proxy relaunch per launch window."""
     global _env_proxy_relaunch_in_progress
 
@@ -635,6 +727,8 @@ def _claim_env_proxy_relaunch() -> bool:
         if _env_proxy_relaunch_in_progress:
             return False
         if (
+            not force
+            and
             _env_proxy_relaunch_at is not None
             and now - _env_proxy_relaunch_at < _ENV_PROXY_RELAUNCH_TTL_SECONDS
         ):
@@ -664,7 +758,7 @@ def _detached_popen(args: list[str]) -> subprocess.Popen:
     return subprocess.Popen(args, **_DETACHED_POPEN_KWARGS)
 
 
-def relaunch_roblox_with_proxy_env(proxy_url: str) -> bool:
+def relaunch_roblox_with_proxy_env(proxy_url: str, launch_target: str | None = None) -> bool:
     """Relaunch the running macOS Roblox Player through Fleasion's env proxy.
 
     LaunchServices does not retrofit environment variables onto an existing
@@ -681,7 +775,7 @@ def relaunch_roblox_with_proxy_env(proxy_url: str) -> bool:
         )
         return False
 
-    if not _claim_env_proxy_relaunch():
+    if not _claim_env_proxy_relaunch(force=bool(launch_target)):
         log_buffer.log('Launcher', 'Roblox Env Proxy relaunch already handled for this launch')
         return False
 
@@ -722,6 +816,8 @@ def relaunch_roblox_with_proxy_env(proxy_url: str) -> bool:
         for key, value in proxy_env.items():
             open_args.extend(['--env', f'{key}={value}'])
         open_args.extend(['-a', str(app_path)])
+        if launch_target:
+            open_args.append(str(launch_target))
 
         launch_error = ''
         for attempt in range(3):

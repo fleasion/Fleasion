@@ -32,6 +32,7 @@ SOBER_CGROUP_MARKER = 'app-flatpak-org.vinegarhq.Sober'
 PROC_ROOT = Path('/proc')
 _ENV_PROXY_RELAUNCH_TTL_SECONDS = 45.0
 _LOCAL_PROXY_HOSTS = frozenset({'127.0.0.1', '::1', 'localhost'})
+_ROBLOX_URI_SCHEMES = ('x-scheme-handler/roblox', 'x-scheme-handler/roblox-player')
 _env_proxy_relaunch_lock = threading.Lock()
 _env_proxy_relaunch_in_progress = False
 _env_proxy_relaunch_at: float | None = None
@@ -321,7 +322,7 @@ def _wait_for_local_proxy(proxy_url: str, timeout: float = 10.0) -> bool:
             time.sleep(min(0.1, remaining))
 
 
-def _claim_env_proxy_relaunch() -> bool:
+def _claim_env_proxy_relaunch(*, force: bool = False) -> bool:
     """Allow only one Linux/Sober env-proxy relaunch per launch window."""
     global _env_proxy_relaunch_in_progress
 
@@ -330,6 +331,8 @@ def _claim_env_proxy_relaunch() -> bool:
         if _env_proxy_relaunch_in_progress:
             return False
         if (
+            not force
+            and
             _env_proxy_relaunch_at is not None
             and now - _env_proxy_relaunch_at < _ENV_PROXY_RELAUNCH_TTL_SECONDS
         ):
@@ -576,7 +579,7 @@ def launch_as_standard_user(target: str | Path) -> bool:
     return False
 
 
-def relaunch_roblox_with_proxy_env(proxy_url: str) -> bool:
+def relaunch_roblox_with_proxy_env(proxy_url: str, launch_target: str | None = None) -> bool:
     """Relaunch Sober through Fleasion's explicit (env) proxy.
 
     Sets the conventional Unix proxy env vars (http_proxy/https_proxy/
@@ -585,13 +588,17 @@ def relaunch_roblox_with_proxy_env(proxy_url: str) -> bool:
     the same cross-platform Roblox client engine). Flatpak apps don't
     inherit the host's environment by default, so each var has to be passed
     through the sandbox explicitly via ``flatpak run --env=KEY=VALUE``.
+
+    ``launch_target`` is kept on the same Flatpak invocation. This matters for
+    browser and subplace joins: starting Sober once for the URI and then
+    restarting it separately for proxy injection loses the join request.
     """
     flatpak = shutil.which('flatpak')
     if not flatpak:
         log_buffer.log('Launcher', 'Env Proxy relaunch skipped: flatpak command not found')
         return False
 
-    if not _claim_env_proxy_relaunch():
+    if not _claim_env_proxy_relaunch(force=bool(launch_target)):
         log_buffer.log('Launcher', 'Env Proxy relaunch skipped: Sober launch already handled')
         return False
 
@@ -622,7 +629,10 @@ def relaunch_roblox_with_proxy_env(proxy_url: str) -> bool:
             'FLEASION_PROXY_RELAUNCHED': '1',
         }
         env_args = [f'--env={key}={value}' for key, value in proxy_env.items()]
-        _standard_user_popen([flatpak, 'run', *env_args, SOBER_APP_ID])
+        launch_args = [flatpak, 'run', *env_args, SOBER_APP_ID]
+        if launch_target:
+            launch_args.append(str(launch_target))
+        _standard_user_popen(launch_args)
         success = True
     except Exception as exc:
         log_buffer.log('Launcher', f'Sober Env Proxy relaunch failed: {exc}')
@@ -631,6 +641,48 @@ def relaunch_roblox_with_proxy_env(proxy_url: str) -> bool:
         _finish_env_proxy_relaunch(success)
     log_buffer.log('Launcher', 'Relaunched Sober through Fleasion env proxy')
     return True
+
+
+def _set_default_roblox_uri_handler(desktop_id: str) -> bool:
+    """Set Fleasion as the user-session handler for Roblox URI schemes."""
+    xdg_mime = shutil.which('xdg-mime')
+    if not xdg_mime:
+        log_buffer.log('DesktopIntegration', 'xdg-mime not found; Roblox URI handler unchanged')
+        return False
+
+    ok = True
+    env = _host_subprocess_env()
+    env['HOME'] = str(USER_HOME)
+    for scheme in _ROBLOX_URI_SCHEMES:
+        try:
+            result = subprocess.run(
+                [xdg_mime, 'default', desktop_id, scheme],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except Exception as exc:
+            log_buffer.log(
+                'DesktopIntegration',
+                f'Failed to set Fleasion as the {scheme} handler: {exc}',
+            )
+            ok = False
+            continue
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip()
+            log_buffer.log(
+                'DesktopIntegration',
+                f'Failed to set Fleasion as the {scheme} handler'
+                + (f': {detail}' if detail else ''),
+            )
+            ok = False
+    return ok
+
+
+def _restore_sober_uri_handler() -> bool:
+    """Restore Sober as the URI handler when Fleasion integration is removed."""
+    return _set_default_roblox_uri_handler(f'{SOBER_APP_ID}.desktop')
 
 
 def _find_project_root() -> Path | None:
@@ -736,10 +788,11 @@ exec {command_literal} "$@"
         'Type=Application\n'
         f'Name={APP_NAME}\n'
         'Comment=Roblox asset interceptor and replacer for Sober\n'
-        f'Exec={shlex.quote(str(LINUX_LAUNCHER_PATH))}\n'
+        f'Exec={shlex.quote(str(LINUX_LAUNCHER_PATH))} %U\n'
         f'{icon_line}'
         'Terminal=false\n'
         'Categories=Game;Utility;\n'
+        'MimeType=x-scheme-handler/roblox;x-scheme-handler/roblox-player;\n'
         'StartupNotify=true\n'
     )
     LINUX_APPLICATIONS_DIR.mkdir(parents=True, exist_ok=True)
@@ -760,12 +813,17 @@ exec {command_literal} "$@"
             timeout=10,
         )
 
+    uri_handler_configured = _set_default_roblox_uri_handler(
+        LINUX_DESKTOP_ENTRY_PATH.name
+    )
+
     return {
         'desktop_entry': str(LINUX_DESKTOP_ENTRY_PATH),
         'launcher': str(LINUX_LAUNCHER_PATH),
         'installed_app': str(installed_app) if installed_app is not None else None,
         'installed_icon': str(installed_icon) if installed_icon is not None else None,
         'removed_deprecated_entries': removed,
+        'roblox_uri_handler_configured': uri_handler_configured,
     }
 
 

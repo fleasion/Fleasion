@@ -7,6 +7,7 @@ between packaged builds and ``uv run`` development sessions.
 
 from __future__ import annotations
 
+import json
 import os
 import plistlib
 import shlex
@@ -28,6 +29,7 @@ WINDOWS_START_MENU_SHORTCUT_PATH = (
 )
 MACOS_APPLICATION_PATH = USER_HOME / 'Applications' / f'{APP_NAME}.app'
 _MACOS_MARKER_NAME = '.fleasion-managed-launcher'
+_MACOS_URL_HANDLER_BACKUP_NAME = '.fleasion-url-handler-backup.json'
 _DESCRIPTION = 'Roblox asset interceptor and replacer'
 
 
@@ -122,6 +124,24 @@ def _macos_launcher_script(
     return '\n'.join(lines) + '\n'
 
 
+def _register_macos_application(app_path: Path) -> None:
+    """Register a generated app bundle before assigning URL handlers to it."""
+    lsregister = Path(
+        '/System/Library/Frameworks/CoreServices.framework/Frameworks/'
+        'LaunchServices.framework/Support/lsregister'
+    )
+    if not lsregister.is_file():
+        return
+    try:
+        subprocess.run(
+            [str(lsregister), '-f', str(app_path)],
+            capture_output=True,
+            timeout=10,
+        )
+    except OSError as exc:
+        _log(f'Failed to register macOS launcher app with Launch Services: {exc}')
+
+
 def _remove_macos_app() -> bool:
     if not MACOS_APPLICATION_PATH.exists():
         return True
@@ -130,6 +150,17 @@ def _remove_macos_app() -> bool:
         _log(f'Refusing to remove unmarked macOS app: {MACOS_APPLICATION_PATH}')
         return True
     try:
+        backup_path = MACOS_APPLICATION_PATH / 'Contents' / _MACOS_URL_HANDLER_BACKUP_NAME
+        if backup_path.is_file():
+            try:
+                from .platform_macos import set_default_url_handler
+
+                backup = json.loads(backup_path.read_text(encoding='utf-8'))
+                for scheme, bundle_id in backup.items():
+                    if isinstance(scheme, str) and isinstance(bundle_id, str) and bundle_id:
+                        set_default_url_handler(scheme, bundle_id)
+            except Exception as exc:
+                _log(f'Failed to restore macOS Roblox URL handlers: {exc}')
         shutil.rmtree(MACOS_APPLICATION_PATH)
         return True
     except OSError as exc:
@@ -181,11 +212,34 @@ def _create_macos_app() -> bool:
             'CFBundleVersion': APP_VERSION,
             'LSApplicationCategoryType': 'public.app-category.utilities',
             'NSHumanReadableCopyright': _DESCRIPTION,
+            'CFBundleURLTypes': [
+                {
+                    'CFBundleURLName': 'Roblox launch links',
+                    'CFBundleTypeRole': 'Viewer',
+                    'CFBundleURLSchemes': ['roblox', 'roblox-player'],
+                }
+            ],
         }
         if icon_name:
             info['CFBundleIconFile'] = icon_name
         with (contents / 'Info.plist').open('wb') as f:
             plistlib.dump(info, f)
+        _register_macos_application(MACOS_APPLICATION_PATH)
+        try:
+            from .platform_macos import get_default_url_handler, set_default_url_handler
+
+            backup_path = contents / _MACOS_URL_HANDLER_BACKUP_NAME
+            if not backup_path.exists():
+                backup = {
+                    scheme: get_default_url_handler(scheme)
+                    for scheme in ('roblox', 'roblox-player')
+                }
+                backup_path.write_text(json.dumps(backup), encoding='utf-8')
+            for scheme in ('roblox', 'roblox-player'):
+                if not set_default_url_handler(scheme, 'com.fleasion.launcher'):
+                    _log(f'Could not set Fleasion as the macOS {scheme} handler')
+        except Exception as exc:
+            _log(f'Failed to configure macOS Roblox URL handlers: {exc}')
         marker.write_text('Managed by Fleasion desktop integration.\n', encoding='utf-8')
         _log(f'macOS launcher app updated: {MACOS_APPLICATION_PATH}')
         return True
@@ -196,10 +250,17 @@ def _create_macos_app() -> bool:
 
 def _remove_linux_desktop_entries() -> bool:
     try:
-        from .platform_linux import LINUX_DESKTOP_ENTRY_PATH, LINUX_LAUNCHER_PATH
+        from .platform_linux import (
+            LINUX_APPLICATIONS_DIR,
+            LINUX_DESKTOP_ENTRY_PATH,
+            LINUX_LAUNCHER_PATH,
+            _restore_sober_uri_handler,
+        )
 
         for path in (LINUX_DESKTOP_ENTRY_PATH, LINUX_LAUNCHER_PATH):
             path.unlink(missing_ok=True)
+        if LINUX_DESKTOP_ENTRY_PATH.parent == LINUX_APPLICATIONS_DIR:
+            _restore_sober_uri_handler()
         return True
     except Exception as exc:
         _log(f'Failed to remove Linux desktop integration: {exc}')

@@ -70,6 +70,10 @@ def test_macos_launcher_app_contains_metadata_icon_and_current_launch(tmp_path, 
     assert info["CFBundleDisplayName"] == "Fleasion"
     assert info["CFBundleIconFile"] == "fleasionlogoHR"
     assert info["NSHumanReadableCopyright"] == "Roblox asset interceptor and replacer"
+    assert info["CFBundleURLTypes"][0]["CFBundleURLSchemes"] == [
+        "roblox",
+        "roblox-player",
+    ]
     assert "exec /usr/bin/uv --project" in script
     assert "run fleasion" in script
     assert (app_path / "Contents" / "Resources" / "fleasionlogoHR.icns").read_bytes() == b"icon"

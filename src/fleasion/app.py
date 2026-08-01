@@ -12,7 +12,7 @@ import sys
 import time
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, QSharedMemory, Qt, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QEvent, QObject, QSharedMemory, Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWidgets import (
     QApplication,
@@ -1593,6 +1593,47 @@ class _AuthCheckInvoker(QObject):
     completed = pyqtSignal(bool, dict)
 
 
+class _RobloxUrlEventFilter(QObject):
+    """Receive Roblox URL open events delivered to the macOS app bundle."""
+
+    roblox_uri_received = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._ready = False
+        self._pending: list[str] = []
+
+    @staticmethod
+    def _event_target(event: QEvent) -> str | None:
+        if event.type() != QEvent.Type.FileOpen:
+            return None
+        try:
+            url = event.url()
+            target = url.toString() if url.isValid() else ''
+        except AttributeError:
+            target = ''
+        target = str(target).strip()
+        if target.startswith(('roblox:', 'roblox-player:')):
+            return target
+        return None
+
+    def eventFilter(self, _watched, event):
+        target = self._event_target(event)
+        if target is not None:
+            if self._ready:
+                self.roblox_uri_received.emit(target)
+            else:
+                self._pending.append(target)
+        return False
+
+    def start(self) -> None:
+        self._ready = True
+        pending = self._pending
+        self._pending = []
+        for target in pending:
+            self.roblox_uri_received.emit(target)
+
+
 class RobloxExitMonitor(QObject):
     """Monitors Roblox process and triggers cache deletion on exit."""
 
@@ -1984,6 +2025,54 @@ def _request_running_instance_exit(timeout_ms: int = 2000) -> bool:
         return False
 
 
+def _roblox_uri_from_argv() -> str | None:
+    """Return a Roblox deeplink passed by a desktop URI handler, if any."""
+    for argument in sys.argv[1:]:
+        target = str(argument).strip()
+        if target.startswith(('roblox:', 'roblox-player:')):
+            return target
+    return None
+
+
+def _request_running_instance_launch(target: str, timeout_ms: int = 5000) -> bool:
+    """Forward a Roblox deeplink to the already-running Fleasion instance."""
+    try:
+        socket = QLocalSocket()
+        socket.connectToServer(_SINGLE_INSTANCE_CONTROL_SERVER)
+        if not socket.waitForConnected(timeout_ms):
+            return False
+
+        socket.write(f'launch-roblox\n{target}\n'.encode('utf-8'))
+        socket.waitForBytesWritten(1000)
+        socket.disconnectFromServer()
+        socket.waitForDisconnected(1000)
+        return True
+    except Exception:
+        return False
+
+
+def _launch_roblox_uri_for_instance(tray: SystemTray, target: str) -> bool:
+    """Launch a URI through the active proxy mode on Linux/Sober."""
+    config = tray.config_manager
+    proxy_master = tray.proxy_master
+    if (
+        (sys.platform.startswith('linux') or sys.platform == 'darwin')
+        and getattr(config, 'proxy_mode', 'hosts') == 'env'
+        and getattr(config, 'proxy_features_enabled', False)
+        and proxy_master is not None
+    ):
+        if sys.platform.startswith('linux'):
+            from .utils.platform_linux import relaunch_roblox_with_proxy_env
+        else:
+            from .utils.platform_macos import relaunch_roblox_with_proxy_env
+
+        return relaunch_roblox_with_proxy_env(
+            proxy_master.roblox_env_proxy_url(), target
+        )
+
+    return launch_as_standard_user(target)
+
+
 def _wait_for_other_fleasion_instances_to_exit(timeout_seconds: float = 8.0) -> bool:
     """Wait until no other Fleasion processes remain."""
     deadline = time.monotonic() + timeout_seconds
@@ -2005,9 +2094,13 @@ def _request_other_fleasion_instances_exit(timeout_seconds: float = 8.0) -> bool
 
 def _handle_single_instance_command(socket: QLocalSocket, tray: SystemTray):
     try:
-        command = bytes(socket.readAll()).decode('utf-8', errors='replace').strip().lower()
-        if command == 'quit':
+        command = bytes(socket.readAll()).decode('utf-8', errors='replace').strip()
+        if command.lower() == 'quit':
             tray._exit_app()
+        elif command.lower().startswith('launch-roblox\n'):
+            target = command.split('\n', 1)[1].strip()
+            if target.startswith(('roblox:', 'roblox-player:')):
+                run_in_thread(_launch_roblox_uri_for_instance)(tray, target)
     except Exception:
         pass
 
@@ -2146,6 +2239,7 @@ def main():
         help='Allow active sudo/wheel users to run the Linux proxy helper without future prompts',
     )
     _args, _ = _parser.parse_known_args()
+    pending_roblox_uri = _roblox_uri_from_argv()
     if _args.install_linux_privileged_helper:
         if not sys.platform.startswith('linux'):
             print(
@@ -2186,6 +2280,8 @@ def main():
 
     # Create Qt application
     app = QApplication(sys.argv)
+    roblox_url_event_filter = _RobloxUrlEventFilter(app)
+    app.installEventFilter(roblox_url_event_filter)
     # Qt normally follows each desktop's dialog conventions (GNOME/KDE/Windows),
     # which changes the visual order of standard buttons. Fleasion uses the
     # Windows order everywhere so confirmations have a stable layout.
@@ -2247,6 +2343,8 @@ def main():
     if not _shared_memory_created:
         if shared_memory.error() == QSharedMemory.SharedMemoryError.AlreadyExists:
             # Another instance is already running.
+            if pending_roblox_uri and _request_running_instance_launch(pending_roblox_uri):
+                sys.exit(0)
             if _suppress_dashboard:
                 sys.exit(0)
             # Non-admin processes cannot use taskkill on elevated processes — it
@@ -2508,6 +2606,19 @@ def main():
     tray_ref['tray'] = tray
     app.aboutToQuit.connect(tray.cleanup_tray_icon)
     single_instance_control_server = _start_single_instance_control_server(app, tray)
+
+    def _handle_roblox_uri_event(target: str) -> None:
+        run_in_thread(_launch_roblox_uri_for_instance)(tray, target)
+
+    roblox_url_event_filter.roblox_uri_received.connect(_handle_roblox_uri_event)
+    roblox_url_event_filter.start()
+    if pending_roblox_uri:
+        QTimer.singleShot(
+            0,
+            lambda target=pending_roblox_uri: run_in_thread(
+                _launch_roblox_uri_for_instance
+            )(tray, target),
+        )
     log_buffer.log('App', f'Persistent log file: {LOG_FILE}')
     if _autostart_launch_sync_failed:
         QTimer.singleShot(0, lambda: _show_run_on_boot_failure(_visible_parent_widget()))

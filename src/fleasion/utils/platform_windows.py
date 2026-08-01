@@ -251,10 +251,16 @@ def _query_roblox_studio_processes() -> list[dict[str, Any]]:
 
 
 def _extract_roblox_deeplink(command_line: str, marker: str = 'roblox-player:') -> str:
-    idx = command_line.find(marker)
-    if idx < 0:
+    """Return a Roblox launch URI from a Windows process command line."""
+    markers = (marker,)
+    if marker == 'roblox-player:':
+        markers = ('roblox-player:', 'roblox://', 'roblox:')
+    lowered = command_line.lower()
+    offsets = [lowered.find(candidate.lower()) for candidate in markers]
+    offsets = [offset for offset in offsets if offset >= 0]
+    if not offsets:
         return ''
-    return command_line[idx:].strip().strip('"')
+    return command_line[min(offsets) :].strip().strip('"')
 
 
 _ROBLOX_STUDIO_PLACE_EXTENSIONS = ('.rbxl', '.rbxlx')

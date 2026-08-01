@@ -244,9 +244,9 @@ def test_replacer_explains_portable_configs_asset_path(tmp_path, monkeypatch):
     config_manager = manager_module.ConfigManager()
     window = ReplacerConfigWindow(config_manager)
     try:
-        assert '/StickObj/stick.obj' in window.replacement_entry.placeholderText()
+        assert '/ExampleOBJ/Example.obj' in window.replacement_entry.placeholderText()
         tooltip = window.replacement_entry.toolTip()
-        assert 'Configs/StickObj/stick.obj' in tooltip
+        assert 'Configs/ExampleOBJ/Example.obj' in tooltip
         assert '10 folders deep' in tooltip
         if sys.platform == 'win32':
             assert r'C:\Mods\file.ext' in tooltip

@@ -4,6 +4,7 @@ import json
 import os
 import random
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -551,9 +552,11 @@ class SubplaceJoinerTab(QWidget):
         '/v1/join-game-instance',
     )
 
-    def __init__(self, parent=None, rando_tab=None):
+    def __init__(self, parent=None, rando_tab=None, config_manager=None, proxy_master=None):
         super().__init__(parent)
         self._rando_tab = rando_tab
+        self._config_manager = config_manager
+        self._proxy_master = proxy_master
         self._qt_destroyed = False
         self.destroyed.connect(self._on_qt_destroyed)
         self._invoker = _Invoker(self)
@@ -1518,15 +1521,35 @@ class SubplaceJoinerTab(QWidget):
                         'subplace',
                         f'Launching Roblox URI to placeId={place_id} (multi-instance)',
                     )
-                    if not launch_as_standard_user(roblox_player_uri):
+                    if not self._launch_roblox_uri(roblox_player_uri):
                         log_buffer.log('subplace', 'Failed to launch Roblox URI without elevation')
 
                 threading.Thread(target=_launch_with_uri, daemon=True).start()
                 return
         self.joining_place = True
         log_buffer.log('subplace', f'Launching Roblox deeplink to placeId={place_id}')
-        if not launch_as_standard_user(f'roblox://experiences/start?placeId={place_id}'):
+        if not self._launch_roblox_uri(
+            f'roblox://experiences/start?placeId={place_id}'
+        ):
             log_buffer.log('subplace', 'Failed to launch Roblox deeplink without elevation')
+
+    def _launch_roblox_uri(self, target: str) -> bool:
+        """Launch a join URI with Linux Env Proxy injected from the outset."""
+        if (
+            (sys.platform.startswith('linux') or sys.platform == 'darwin')
+            and getattr(self._config_manager, 'proxy_mode', 'hosts') == 'env'
+            and getattr(self._config_manager, 'proxy_features_enabled', False)
+            and self._proxy_master is not None
+        ):
+            if sys.platform.startswith('linux'):
+                from ..utils.platform_linux import relaunch_roblox_with_proxy_env
+            else:
+                from ..utils.platform_macos import relaunch_roblox_with_proxy_env
+
+            return relaunch_roblox_with_proxy_env(
+                self._proxy_master.roblox_env_proxy_url(), target
+            )
+        return launch_as_standard_user(target)
 
     def _join_root(self, root_place_id: int, cookie: str | None = None) -> bool:
         try:

@@ -2,6 +2,7 @@ from fleasion import app as app_module
 from fleasion import __version__ as APP_VERSION
 from fleasion.utils import macos_proxy_helper
 from fleasion.app import (
+    _RobloxUrlEventFilter,
     _handle_single_instance_command,
     _linux_hosts_nix_snippet,
     _looks_like_macos_fleasion_command,
@@ -10,7 +11,7 @@ from fleasion.app import (
     _should_sync_autostart_on_launch,
     kill_other_fleasion_instances,
 )
-from PyQt6.QtCore import QSharedMemory
+from PyQt6.QtCore import QEvent, QSharedMemory, QUrl
 
 
 def test_macos_fleasion_process_matching_accepts_real_launch_forms():
@@ -90,6 +91,46 @@ def test_single_instance_quit_command_exits_tray():
     _handle_single_instance_command(_SocketStub(), tray)
 
     assert tray.exit_calls == 1
+
+
+def test_roblox_url_event_filter_queues_until_application_is_ready():
+    received = []
+    event_filter = _RobloxUrlEventFilter()
+    event_filter.roblox_uri_received.connect(received.append)
+
+    class _Event:
+        def type(self):
+            return QEvent.Type.FileOpen
+
+        def url(self):
+            return QUrl('roblox://experiences/start?placeId=1')
+
+    assert event_filter.eventFilter(None, _Event()) is False
+    assert received == []
+    event_filter.start()
+    assert received == ['roblox://experiences/start?placeId=1']
+
+
+def test_single_instance_launch_command_preserves_uri(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        app_module,
+        'run_in_thread',
+        lambda function: lambda *args: calls.append((function, args)),
+    )
+
+    class _SocketStub:
+        def readAll(self):
+            return b'launch-roblox\nroblox://experiences/start?placeId=1\n'
+
+    class _TrayStub:
+        config_manager = type('Config', (), {'proxy_mode': 'hosts', 'proxy_features_enabled': False})()
+        proxy_master = None
+
+    _handle_single_instance_command(_SocketStub(), _TrayStub())
+
+    assert len(calls) == 1
+    assert calls[0][1][1] == 'roblox://experiences/start?placeId=1'
 
 
 def test_autostart_resync_includes_linux_normal_user(monkeypatch):

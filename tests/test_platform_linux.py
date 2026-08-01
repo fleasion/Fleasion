@@ -326,6 +326,28 @@ def test_relaunch_sober_with_env_proxy_waits_for_proxy_and_passes_flatpak_env(mo
     assert args[-1] == platform_linux.SOBER_APP_ID
 
 
+def test_relaunch_sober_with_env_proxy_preserves_launch_target(monkeypatch):
+    calls = []
+    proxy_url = "http://127.0.0.1:58443"
+    _reset_env_proxy_relaunch_state(monkeypatch)
+    monkeypatch.setattr(
+        platform_linux.shutil,
+        "which",
+        lambda name: "flatpak" if name == "flatpak" else None,
+    )
+    monkeypatch.setattr(platform_linux, "_wait_for_local_proxy", lambda _url: True)
+    monkeypatch.setattr(platform_linux, "is_roblox_running", lambda: False)
+    monkeypatch.setattr(
+        platform_linux,
+        "_standard_user_popen",
+        lambda args: calls.append(args),
+    )
+
+    target = "roblox://experiences/start?placeId=121814103864070"
+    assert platform_linux.relaunch_roblox_with_proxy_env(proxy_url, target)
+    assert calls[0][-1] == target
+
+
 def test_relaunch_sober_with_env_proxy_does_not_repeat_recent_launch(monkeypatch):
     calls = []
     _reset_env_proxy_relaunch_state(monkeypatch)
@@ -352,6 +374,34 @@ def test_relaunch_sober_with_env_proxy_does_not_repeat_recent_launch(monkeypatch
 
     assert not platform_linux.relaunch_roblox_with_proxy_env("http://127.0.0.1:58443")
     assert calls == []
+
+
+def test_explicit_sober_uri_launch_can_replace_recent_env_proxy_launch(monkeypatch):
+    calls = []
+    _reset_env_proxy_relaunch_state(monkeypatch)
+    monkeypatch.setattr(
+        platform_linux,
+        "_env_proxy_relaunch_at",
+        platform_linux.time.monotonic(),
+    )
+    monkeypatch.setattr(
+        platform_linux.shutil,
+        "which",
+        lambda name: "flatpak" if name == "flatpak" else None,
+    )
+    monkeypatch.setattr(platform_linux, "_wait_for_local_proxy", lambda *_args: True)
+    monkeypatch.setattr(platform_linux, "is_roblox_running", lambda: False)
+    monkeypatch.setattr(
+        platform_linux,
+        "_standard_user_popen",
+        lambda args: calls.append(args),
+    )
+
+    target = "roblox://experiences/start?placeId=2"
+    assert platform_linux.relaunch_roblox_with_proxy_env(
+        "http://127.0.0.1:58443", target
+    )
+    assert calls[0][-1] == target
 
 
 def test_relaunch_sober_with_env_proxy_does_not_kill_when_proxy_is_not_ready(monkeypatch):

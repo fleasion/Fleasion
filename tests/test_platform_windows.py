@@ -62,6 +62,17 @@ def _touch(path: Path, mtime: float) -> Path:
     return path
 
 
+def test_windows_relaunch_extractor_preserves_both_roblox_uri_forms(monkeypatch):
+    module = _load_platform_windows(monkeypatch)
+
+    assert module._extract_roblox_deeplink(
+        'RobloxPlayerBeta.exe roblox-player:1+launchmode:play'
+    ) == 'roblox-player:1+launchmode:play'
+    assert module._extract_roblox_deeplink(
+        'RobloxPlayerBeta.exe roblox://experiences/start?placeId=1'
+    ) == 'roblox://experiences/start?placeId=1'
+
+
 def test_roblox_launch_resolver_upgrades_registry_path_when_versions_scan_finds_it(tmp_path, monkeypatch):
     local_appdata = tmp_path / "LocalAppData"
     versions = local_appdata / "Roblox" / "Versions"
