@@ -4085,7 +4085,7 @@ class CacheViewerTab(QWidget):
             self._copy_creator_info('id')
         elif action == open_creator_action:
             self._open_creator_in_browser()
-        elif action == copy_converted_action:
+        elif copy_converted_action is not None and action == copy_converted_action:
             self._copy_converted()
         elif action == copy_dump_action:
             self._export_as_game_dump()
