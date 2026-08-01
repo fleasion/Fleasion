@@ -3432,6 +3432,22 @@ class ProxyMaster:
         _pid, started_at = process
         return self._sober_boottime() - started_at >= SOBER_CUSTOM_FFLAG_ROUTE_ARM_DELAY_SECONDS
 
+    def _set_linux_sober_clientsettings_passthrough(self, enabled: bool) -> None:
+        """Keep Sober's pinned ClientSettings bootstrap outside TLS interception."""
+        if self._proxy is None:
+            return
+        excluded_hosts = set(
+            getattr(self, '_env_proxy_intercept_excluded_hosts', set())
+        )
+        if enabled:
+            excluded_hosts.update(CUSTOM_FFLAGS_INTERCEPT_HOSTS)
+        else:
+            excluded_hosts.difference_update(CUSTOM_FFLAGS_INTERCEPT_HOSTS)
+        self._env_proxy_intercept_excluded_hosts = excluded_hosts
+        setter = getattr(self._proxy, 'set_intercept_excluded_hosts', None)
+        if callable(setter):
+            setter(excluded_hosts)
+
     def _start_linux_sober_custom_fflag_timer(self) -> None:
         """Arm Linux ClientSettings interception after Sober's bootstrap window."""
         if not IS_LINUX or (
@@ -3447,13 +3463,18 @@ class ProxyMaster:
 
             previous_process: tuple[int, float] | None = None
             previous_ready: bool | None = None
+            previous_custom_fflags_enabled: bool | None = None
             while not stop_event.is_set():
                 process = sober_main_process()
+                custom_fflags_enabled = bool(
+                    getattr(self.config_manager, 'custom_fflags_enabled', False)
+                )
                 ready = False
                 if process is not None:
                     _pid, started_at = process
                     ready = (
-                        self._sober_boottime() - started_at
+                        custom_fflags_enabled
+                        and self._sober_boottime() - started_at
                         >= SOBER_CUSTOM_FFLAG_ROUTE_ARM_DELAY_SECONDS
                     )
 
@@ -3476,15 +3497,20 @@ class ProxyMaster:
                         )
                     previous_process = process
 
-                if ready != previous_ready:
+                if (
+                    ready != previous_ready
+                    or custom_fflags_enabled != previous_custom_fflags_enabled
+                ):
                     if ready:
                         log_buffer.log(
                             'CustomFFlags',
                             'Linux ClientSettings interception armed; custom FastFlags will '
                             'arrive on Sober\'s 120-second dynamic refresh',
                         )
+                    self._set_linux_sober_clientsettings_passthrough(not ready)
                     self.refresh_username_spoofer_interception()
                     previous_ready = ready
+                    previous_custom_fflags_enabled = custom_fflags_enabled
                 stop_event.wait(_SOBER_CUSTOM_FFLAG_POLL_SECONDS)
 
         self._sober_fflag_timer_thread = threading.Thread(
@@ -4248,6 +4274,17 @@ class ProxyMaster:
 
         # ── Start TLS proxy server ────────────────────────────────────────
         use_linux_helper = (not env_proxy_mode) and _use_linux_privileged_helper()
+        env_proxy_intercept_excluded_hosts: set[str] = set()
+        if env_proxy_mode and IS_LINUX:
+            from ..utils.platform_linux import SOBER_ENV_PROXY_PASSTHROUGH_HOSTS
+
+            env_proxy_intercept_excluded_hosts.update(SOBER_ENV_PROXY_PASSTHROUGH_HOSTS)
+            # Sober's first ClientSettings request is made by its pinned
+            # bootstrap client. Keep it tunneled until the Roblox engine has
+            # passed the bootstrap window and custom FastFlag interception is
+            # safe to arm.
+            env_proxy_intercept_excluded_hosts.update(CUSTOM_FFLAGS_INTERCEPT_HOSTS)
+        self._env_proxy_intercept_excluded_hosts = set(env_proxy_intercept_excluded_hosts)
         listen_port = (
             MACOS_PROXY_BACKEND_PORT if env_proxy_mode or IS_MACOS or use_linux_helper else PROXY_PORT
         )
@@ -4274,6 +4311,7 @@ class ProxyMaster:
             explicit_proxy=env_proxy_mode,
             intercept_hosts=active_hosts,
             intercept_all_hosts=getattr(self, '_env_proxy_intercept_all', False),
+            intercept_excluded_hosts=env_proxy_intercept_excluded_hosts,
             auto_replace_rules=self.get_auto_replace_rules(),
             ca_cert_path=ca_cert_path,
             ca_key_path=ca_key_path,
@@ -4362,6 +4400,12 @@ class ProxyMaster:
         if env_proxy_mode:
             _set_active_hosts_loopbacks(None)
             self._active_env_proxy_mode = True
+            if env_proxy_intercept_excluded_hosts:
+                log_buffer.log(
+                    'Proxy',
+                    'Linux/Sober pinned bootstrap hosts remain tunneled even when '
+                    f'Proxy-tab intercept-all is enabled: {", ".join(sorted(SOBER_ENV_PROXY_PASSTHROUGH_HOSTS))}',
+                )
             # The self-test above just probed every active intercept host itself;
             # wipe that from the log so the traffic tab only ever shows genuine
             # client requests, not Fleasion's own startup TLS probe.

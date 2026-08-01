@@ -424,5 +424,30 @@ def test_explicit_proxy_tunnels_non_intercept_hosts(tmp_path):
     asyncio.run(run_test())
 
 
+def test_explicit_proxy_excludes_pinned_bootstrap_hosts_from_intercept_all(tmp_path):
+    ca_cert, ca_key = generate_ca(tmp_path)
+    default_cert = generate_multi_host_cert(
+        'default',
+        {ASSET_DELIVERY_HOST},
+        ca_cert,
+        ca_key,
+        tmp_path,
+    )
+    proxy = FleasionProxy(
+        texture_stripper=SimpleNamespace(),
+        cache_scraper=SimpleNamespace(enabled=False),
+        host_certs={},
+        default_cert=default_cert,
+        upstream_endpoints={},
+        explicit_proxy=True,
+        intercept_all_hosts=True,
+        intercept_excluded_hosts={'SOBER.VINEGARHQ.ORG.'},
+    )
+
+    assert not proxy._should_intercept_explicit_host('sober.vinegarhq.org', 443)
+    assert proxy._should_intercept_explicit_host('api.example.test', 443)
+    assert not proxy._should_intercept_explicit_host('sober.vinegarhq.org', 80)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1073,6 +1073,7 @@ class FleasionProxy:
         ca_key_path: Optional[Path] = None,
         cert_cache_dir: Optional[Path] = None,
         intercept_all_hosts: bool = False,
+        intercept_excluded_hosts: Optional[Iterable[str]] = None,
         auto_replace_rules: Optional[Iterable[dict]] = None,
     ) -> None:
         self.texture_stripper = texture_stripper
@@ -1098,6 +1099,11 @@ class FleasionProxy:
             frozenset(intercept_hosts) if intercept_hosts is not None else INTERCEPT_HOSTS
         )
         self._intercept_all_hosts = bool(intercept_all_hosts)
+        self._intercept_excluded_hosts = frozenset(
+            str(host).strip().lower().rstrip('.')
+            for host in (intercept_excluded_hosts or ())
+            if str(host).strip()
+        )
         self._auto_replace_rules: List[dict] = list(auto_replace_rules) if auto_replace_rules else []
         self._ca_cert_path = ca_cert_path
         self._ca_key_path = ca_key_path
@@ -1195,6 +1201,12 @@ class FleasionProxy:
         self, ssl_obj, server_name: Optional[str], initial_ctx: ssl.SSLContext
     ) -> None:
         name = (server_name or '').lower()
+        if name in self._intercept_excluded_hosts:
+            self._log_sni_once(
+                f'excluded:{name}',
+                f'SNI {name} is excluded from interception; using tunnel passthrough',
+            )
+            return
         if name in self._host_ssl_ctxs:
             ssl_obj.context = self._host_ssl_ctxs[name]
             self._log_sni_once(
@@ -1438,6 +1450,23 @@ class FleasionProxy:
         this only widens or narrows what ELSE is visible/interceptable.
         """
         self._intercept_all_hosts = bool(enabled)
+
+    def set_intercept_excluded_hosts(self, hosts: Iterable[str]) -> None:
+        """Update hosts that must remain CONNECT tunnels in explicit-proxy mode."""
+        self._intercept_excluded_hosts = frozenset(
+            str(host).strip().lower().rstrip('.')
+            for host in hosts
+            if str(host).strip()
+        )
+
+    def _should_intercept_explicit_host(self, host: str, port: int) -> bool:
+        """Return whether an explicit-proxy CONNECT should be TLS-terminated."""
+        normalized_host = (host or '').strip().lower().rstrip('.')
+        return (
+            port == 443
+            and normalized_host not in self._intercept_excluded_hosts
+            and (self._intercept_all_hosts or normalized_host in self._intercept_hosts)
+        )
 
     def set_auto_replace_rules(self, rules: Iterable[dict]) -> None:
         """Replace the live set of Auto Replace rules (see apply_auto_replace_rules)."""
@@ -1782,9 +1811,7 @@ class FleasionProxy:
                 writer.close()
             return
 
-        should_intercept = port == 443 and (
-            self._intercept_all_hosts or host in self._intercept_hosts
-        )
+        should_intercept = self._should_intercept_explicit_host(host, port)
         if not should_intercept:
             # Feature hosts (self._intercept_hosts) always work regardless of
             # this toggle - that's Fleasion's own texture stripper/custom

@@ -29,6 +29,13 @@ SOBER_LEGACY_EXE_DIR = SOBER_DATA_DIR / 'exe'
 SOBER_CACHE_STORAGE_DIR = SOBER_CACHE_DIR / 'rbx-storage'
 SOBER_PROCESS_NAMES = ('sober', 'Sober', SOBER_APP_ID)
 SOBER_CGROUP_MARKER = 'app-flatpak-org.vinegarhq.Sober'
+# Sober fetches its update/feature manifest before the Roblox engine starts.
+# That bootstrap client uses certificate pinning and does not trust Fleasion's
+# generated CA, so these connections must remain tunneled when the Proxy tab's
+# intercept-all switch is enabled. Roblox traffic is still intercepted normally.
+SOBER_ENV_PROXY_PASSTHROUGH_HOSTS = frozenset(
+    {'sober.vinegarhq.org', 'raw.githubusercontent.com'}
+)
 PROC_ROOT = Path('/proc')
 _ENV_PROXY_RELAUNCH_TTL_SECONDS = 45.0
 _LOCAL_PROXY_HOSTS = frozenset({'127.0.0.1', '::1', 'localhost'})

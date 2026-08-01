@@ -574,6 +574,23 @@ def test_linux_custom_fflags_wait_for_sober_engine_bootstrap_window(monkeypatch)
     assert proxy._desired_intercept_hosts() == set(proxy_master.BASE_INTERCEPT_HOSTS)
 
 
+def test_linux_sober_clientsettings_stays_tunneled_until_route_is_armed():
+    excluded_updates = []
+    proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
+    proxy._proxy = SimpleNamespace(
+        set_intercept_excluded_hosts=lambda hosts: excluded_updates.append(set(hosts))
+    )
+    proxy._env_proxy_intercept_excluded_hosts = {'sober.vinegarhq.org'}
+
+    proxy._set_linux_sober_clientsettings_passthrough(True)
+    assert set(proxy_master.CUSTOM_FFLAGS_INTERCEPT_HOSTS) <= excluded_updates[-1]
+    assert 'sober.vinegarhq.org' in excluded_updates[-1]
+
+    proxy._set_linux_sober_clientsettings_passthrough(False)
+    assert not set(proxy_master.CUSTOM_FFLAGS_INTERCEPT_HOSTS) & excluded_updates[-1]
+    assert 'sober.vinegarhq.org' in excluded_updates[-1]
+
+
 def test_proxy_startup_self_tests_only_active_intercept_routes(tmp_path, monkeypatch):
     self_test_hosts = []
     logs = []
