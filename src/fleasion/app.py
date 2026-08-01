@@ -1481,6 +1481,19 @@ def _show_windows_upstream_firewall_dialog(details: dict) -> None:
         )
 
 
+def _show_tls_self_test_failed_dialog(details: dict) -> None:
+    """Show a user-facing error when the proxy cannot pass startup TLS checks."""
+    hosts = details.get('hosts') or []
+    host_text = ', '.join(str(host) for host in hosts) or 'the configured Roblox routes'
+    QMessageBox.critical(
+        _visible_parent_widget(),
+        'Fleasion - Proxy Startup Failed',
+        'Fleasion could not start its local proxy because its TLS self-test failed.\n\n'
+        f'Routes tested: {host_text}\n\n'
+        'Check the Fleasion log for the certificate or network error, then restart Fleasion.',
+    )
+
+
 class _ProxyErrorInvoker(QObject):
     """Main-thread bridge for proxy startup errors emitted from worker threads."""
 
@@ -1526,6 +1539,8 @@ class _ProxyErrorInvoker(QObject):
                     )
         elif code == 'upstream_connect_failed':
             _show_windows_upstream_firewall_dialog(details)
+        elif code == 'tls_self_test_failed':
+            _show_tls_self_test_failed_dialog(details)
 
 
 def _manual_upstream_credentials_missing(config_manager) -> bool:
@@ -2376,6 +2391,9 @@ def main():
             proxy_error_invoker.disable_proxy_features.emit(
                 'Linux Polkit approval was denied or the proxy helper could not start'
             )
+            return
+        if code == 'tls_self_test_failed':
+            proxy_error_invoker.show_proxy_error.emit(code, dict(details))
             return
         if code not in (
             'port_bind_failed',

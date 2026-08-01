@@ -289,6 +289,91 @@ def test_launch_as_standard_user_aborts_uri_when_running_sober_does_not_exit(mon
     assert calls == ["terminate", "wait"]
 
 
+def _reset_env_proxy_relaunch_state(monkeypatch):
+    monkeypatch.setattr(platform_linux, "_env_proxy_relaunch_at", None)
+    monkeypatch.setattr(platform_linux, "_env_proxy_relaunch_in_progress", False)
+
+
+def test_relaunch_sober_with_env_proxy_waits_for_proxy_and_passes_flatpak_env(monkeypatch):
+    calls = []
+    proxy_url = "http://127.0.0.1:58443"
+    _reset_env_proxy_relaunch_state(monkeypatch)
+    monkeypatch.setattr(
+        platform_linux.shutil,
+        "which",
+        lambda name: "flatpak" if name == "flatpak" else None,
+    )
+    monkeypatch.setattr(
+        platform_linux,
+        "_wait_for_local_proxy",
+        lambda url: calls.append(("wait", url)) or True,
+    )
+    monkeypatch.setattr(platform_linux, "is_roblox_running", lambda: False)
+    monkeypatch.setattr(
+        platform_linux,
+        "_standard_user_popen",
+        lambda args: calls.append(("popen", args)),
+    )
+
+    assert platform_linux.relaunch_roblox_with_proxy_env(proxy_url)
+
+    assert calls[0] == ("wait", proxy_url)
+    args = calls[1][1]
+    assert args[:2] == ["flatpak", "run"]
+    assert f"--env=HTTPS_PROXY={proxy_url}" in args
+    assert f"--env=HTTP_PROXY={proxy_url}" in args
+    assert "--env=FLEASION_PROXY_RELAUNCHED=1" in args
+    assert args[-1] == platform_linux.SOBER_APP_ID
+
+
+def test_relaunch_sober_with_env_proxy_does_not_repeat_recent_launch(monkeypatch):
+    calls = []
+    _reset_env_proxy_relaunch_state(monkeypatch)
+    monkeypatch.setattr(
+        platform_linux,
+        "_env_proxy_relaunch_at",
+        platform_linux.time.monotonic(),
+    )
+    monkeypatch.setattr(
+        platform_linux.shutil,
+        "which",
+        lambda name: "flatpak" if name == "flatpak" else None,
+    )
+    monkeypatch.setattr(
+        platform_linux,
+        "_wait_for_local_proxy",
+        lambda *_args: calls.append("wait") or True,
+    )
+    monkeypatch.setattr(
+        platform_linux,
+        "_standard_user_popen",
+        lambda *_args: calls.append("popen"),
+    )
+
+    assert not platform_linux.relaunch_roblox_with_proxy_env("http://127.0.0.1:58443")
+    assert calls == []
+
+
+def test_relaunch_sober_with_env_proxy_does_not_kill_when_proxy_is_not_ready(monkeypatch):
+    calls = []
+    _reset_env_proxy_relaunch_state(monkeypatch)
+    monkeypatch.setattr(
+        platform_linux.shutil,
+        "which",
+        lambda name: "flatpak" if name == "flatpak" else None,
+    )
+    monkeypatch.setattr(platform_linux, "_wait_for_local_proxy", lambda *_args: False)
+    monkeypatch.setattr(platform_linux, "is_roblox_running", lambda: True)
+    monkeypatch.setattr(
+        platform_linux,
+        "terminate_roblox",
+        lambda: calls.append("terminate") or True,
+    )
+
+    assert not platform_linux.relaunch_roblox_with_proxy_env("http://127.0.0.1:58443")
+    assert calls == []
+
+
 def test_open_folder_uses_detached_standard_user_launch(tmp_path, monkeypatch):
     calls = []
 

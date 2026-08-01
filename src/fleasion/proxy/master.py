@@ -3390,9 +3390,8 @@ class ProxyMaster:
     def _log_intercept_configuration(self, reason: str, hosts: set[str]) -> None:
         """Log the feature state that selected the currently routed host set.
 
-        A TLS self-test intentionally covers every supported hostname, so it
-        cannot establish that a feature actually routed that hostname through
-        the proxy.  Keep that distinction explicit in support logs.
+        The startup TLS self-test covers this same active route set, so the
+        log reports the routes that were actually tested and selected.
         """
         custom_modifier = getattr(self, 'custom_fflag_modifier', None)
         custom_fflags_enabled = (
@@ -3534,7 +3533,7 @@ class ProxyMaster:
         with self._lock:
             if desired_hosts == self._active_intercept_hosts:
                 return
-            if self._active_env_proxy_mode and self._proxy is not None:
+            if getattr(self, '_active_env_proxy_mode', False) and self._proxy is not None:
                 previous_hosts = set(self._active_intercept_hosts)
                 added_hosts = desired_hosts - previous_hosts
                 retained_hosts = previous_hosts & desired_hosts
@@ -4338,12 +4337,24 @@ class ProxyMaster:
         )
 
         # ── TLS startup self-test ───────────────────────────────────────────
-        # Probe every intercepted host with SNI plus one no-SNI connection before
-        # the hosts file points Roblox at us. This catches certificate/SNI failures
-        # that otherwise happen before normal request logs exist.
+        # Probe every active intercepted host with SNI plus one no-SNI connection
+        # before the hosts file points Roblox at us. In particular, do not probe
+        # delayed Sober ClientSettings routes before their bootstrap window has
+        # elapsed: those hosts are intentionally not active yet.
         if not await _run_tls_self_test(
-            set(INTERCEPT_HOSTS), ca_cert_path, listen_port, explicit_proxy=env_proxy_mode
+            set(active_hosts), ca_cert_path, listen_port, explicit_proxy=env_proxy_mode
         ):
+            log_buffer.log(
+                'Error',
+                'Proxy startup aborted: TLS self-test failed for active intercept hosts',
+            )
+            self._emit_proxy_start_error(
+                'tls_self_test_failed',
+                {
+                    'hosts': sorted(active_hosts),
+                    'proxy_mode': 'env' if env_proxy_mode else 'hosts',
+                },
+            )
             await self._proxy.stop()
             _set_active_hosts_loopbacks(None)
             self._running = False
@@ -4351,8 +4362,8 @@ class ProxyMaster:
         if env_proxy_mode:
             _set_active_hosts_loopbacks(None)
             self._active_env_proxy_mode = True
-            # The self-test above just probed every intercept host itself; wipe
-            # that from the log so the traffic tab only ever shows genuine
+            # The self-test above just probed every active intercept host itself;
+            # wipe that from the log so the traffic tab only ever shows genuine
             # client requests, not Fleasion's own startup TLS probe.
             self._proxy.clear_request_log()
             self._start_linux_sober_custom_fflag_timer()

@@ -574,6 +574,146 @@ def test_linux_custom_fflags_wait_for_sober_engine_bootstrap_window(monkeypatch)
     assert proxy._desired_intercept_hosts() == set(proxy_master.BASE_INTERCEPT_HOSTS)
 
 
+def test_proxy_startup_self_tests_only_active_intercept_routes(tmp_path, monkeypatch):
+    self_test_hosts = []
+    logs = []
+    ca_cert = tmp_path / "ca.crt"
+    ca_key = tmp_path / "ca.key"
+    leaf_cert = tmp_path / "leaf.crt"
+    leaf_key = tmp_path / "leaf.key"
+    default_cert = (tmp_path / "default.crt", tmp_path / "default.key")
+    for path in (ca_cert, ca_key, leaf_cert, leaf_key, *default_cert):
+        path.write_text("x", encoding="utf-8")
+
+    class _TextureStripper:
+        def __init__(self, _config):
+            pass
+
+        def set_cache_scraper(self, _scraper):
+            pass
+
+        def precheck_replacements(self):
+            pass
+
+    class _ProxyStub:
+        async def log_upstream_self_test(self, _hosts):
+            pass
+
+        def set_module_interceptors(self, _interceptors):
+            pass
+
+        def set_intercept_match(self, _match):
+            pass
+
+        async def start(self):
+            pass
+
+        async def stop(self):
+            pass
+
+        def clear_request_log(self):
+            pass
+
+        async def serve_forever(self):
+            pass
+
+    async def tls_self_test(hosts, *_args, **_kwargs):
+        self_test_hosts.append(set(hosts))
+        return True
+
+    monkeypatch.setattr(proxy_master, "IS_MACOS", False)
+    monkeypatch.setattr(proxy_master, "IS_WINDOWS", False)
+    monkeypatch.setattr(proxy_master, "IS_LINUX", True)
+    monkeypatch.setattr(proxy_master, "_use_linux_privileged_helper", lambda: False)
+    monkeypatch.setattr(proxy_master, "generate_ca", lambda _dir: (ca_cert, ca_key))
+    monkeypatch.setattr(
+        proxy_master,
+        "generate_host_cert",
+        lambda *_args, **_kwargs: (leaf_cert, leaf_key),
+    )
+    monkeypatch.setattr(
+        proxy_master,
+        "generate_multi_host_cert",
+        lambda *_args, **_kwargs: default_cert,
+    )
+    monkeypatch.setattr(proxy_master, "get_ca_pem", lambda _path: "ca")
+    monkeypatch.setattr(proxy_master, "_install_ca_into_roblox", lambda _pem: (True, {}))
+    monkeypatch.setattr(proxy_master, "_other_proxy_owner_alive", lambda: False)
+    monkeypatch.setattr(proxy_master, "_remove_hosts_entries", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(proxy_master, "_add_hosts_entries", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(proxy_master, "_verify_hosts_entries", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(proxy_master, "_flush_dns", lambda: None)
+    monkeypatch.setattr(proxy_master, "_resolve_real_endpoints", lambda _hosts: {})
+    monkeypatch.setattr(
+        proxy_master,
+        "detect_windows_proxy",
+        lambda: SimpleNamespace(
+            wininet_enabled=False,
+            wininet_proxy_server="",
+            wininet_auto_config_url="",
+            winhttp_proxy_server="",
+            macos_http_enabled=False,
+            macos_https_enabled=False,
+            macos_http_proxy_server="",
+            macos_https_proxy_server="",
+            macos_auto_config_url="",
+        ),
+    )
+    monkeypatch.setattr(proxy_master, "detected_http_proxy", lambda _info: None)
+    monkeypatch.setattr(proxy_master, "TextureStripper", _TextureStripper)
+    monkeypatch.setattr(proxy_master, "FleasionProxy", lambda **_kwargs: _ProxyStub())
+    monkeypatch.setattr(proxy_master, "_run_tls_self_test", tls_self_test)
+    monkeypatch.setattr(proxy_master.ProxyMaster, "_start_watchdog", lambda _self: None)
+    monkeypatch.setattr(
+        proxy_master.ProxyMaster,
+        "_start_linux_sober_custom_fflag_timer",
+        lambda _self: None,
+    )
+    monkeypatch.setattr(
+        proxy_master,
+        "log_buffer",
+        SimpleNamespace(log=lambda category, message: logs.append((category, message))),
+    )
+
+    proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
+    proxy.config_manager = SimpleNamespace(
+        proxy_mode="env",
+        custom_fflags_enabled=True,
+        clear_cache_on_launch=False,
+        settings={},
+        upstream_transport_mode="direct",
+        vpn_compat_max_assetdelivery_connections=0,
+        vpn_compat_max_cdn_connections=0,
+        wire_preserving_passthrough=False,
+    )
+    proxy.cache_scraper = SimpleNamespace(set_real_ips=lambda _ips: None)
+    proxy.username_spoofer = SimpleNamespace(is_enabled=lambda: False)
+    proxy.custom_fflag_modifier = SimpleNamespace(
+        is_enabled=lambda: True,
+        prime_windows_flag_cache=lambda: False,
+    )
+    proxy._module_interceptors = []
+    proxy._on_proxy_start_error = lambda *_args: None
+    proxy._running = False
+    proxy._lock = threading.Lock()
+    proxy._loop = None
+    proxy._env_proxy_intercept_match = ""
+    proxy._env_proxy_intercept_all = False
+    proxy._active_intercept_hosts = set()
+    proxy._hosts_installed = False
+    proxy._active_env_proxy_mode = False
+    monkeypatch.setattr(
+        proxy_master.ProxyMaster,
+        "_startup_intercept_hosts",
+        lambda _self: set(proxy_master.BASE_INTERCEPT_HOSTS),
+    )
+
+    asyncio.run(proxy._run_proxy())
+
+    assert self_test_hosts == [set(proxy_master.BASE_INTERCEPT_HOSTS)]
+    assert proxy._active_env_proxy_mode is True
+
+
 def test_linux_startup_treats_manual_profile_api_hosts_entry_as_active(monkeypatch, tmp_path):
     hosts_file = tmp_path / "hosts"
     hosts_file.write_text(

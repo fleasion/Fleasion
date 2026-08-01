@@ -6,11 +6,14 @@ import os
 import pwd
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit
 
 from .logging import log_buffer
 from .metadata import APP_NAME
@@ -27,6 +30,11 @@ SOBER_CACHE_STORAGE_DIR = SOBER_CACHE_DIR / 'rbx-storage'
 SOBER_PROCESS_NAMES = ('sober', 'Sober', SOBER_APP_ID)
 SOBER_CGROUP_MARKER = 'app-flatpak-org.vinegarhq.Sober'
 PROC_ROOT = Path('/proc')
+_ENV_PROXY_RELAUNCH_TTL_SECONDS = 45.0
+_LOCAL_PROXY_HOSTS = frozenset({'127.0.0.1', '::1', 'localhost'})
+_env_proxy_relaunch_lock = threading.Lock()
+_env_proxy_relaunch_in_progress = False
+_env_proxy_relaunch_at: float | None = None
 DESKTOP_OPENERS = (
     ('xdg-open', ()),
     ('gio', ('open',)),
@@ -277,6 +285,68 @@ def wait_for_roblox_exit(timeout: float = 10.0) -> bool:
     return False
 
 
+def _wait_for_local_proxy(proxy_url: str, timeout: float = 10.0) -> bool:
+    """Wait until a local explicit proxy endpoint accepts connections.
+
+    Sober fetches its own remote manifest before it starts the Roblox engine.
+    Launching it while Fleasion is still switching proxy modes makes that
+    bootstrap request fail, which looks like a Sober networking failure and
+    can trigger a relaunch loop in the process monitor.
+    """
+    try:
+        parsed = urlsplit(proxy_url)
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return False
+
+    if host not in _LOCAL_PROXY_HOSTS:
+        return True
+    if port is None:
+        return False
+
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining < 0:
+            return False
+        try:
+            with socket.create_connection(
+                (host, port), timeout=min(0.5, max(0.1, remaining))
+            ):
+                return True
+        except OSError:
+            if remaining <= 0:
+                return False
+            time.sleep(min(0.1, remaining))
+
+
+def _claim_env_proxy_relaunch() -> bool:
+    """Allow only one Linux/Sober env-proxy relaunch per launch window."""
+    global _env_proxy_relaunch_in_progress
+
+    now = time.monotonic()
+    with _env_proxy_relaunch_lock:
+        if _env_proxy_relaunch_in_progress:
+            return False
+        if (
+            _env_proxy_relaunch_at is not None
+            and now - _env_proxy_relaunch_at < _ENV_PROXY_RELAUNCH_TTL_SECONDS
+        ):
+            return False
+        _env_proxy_relaunch_in_progress = True
+        return True
+
+
+def _finish_env_proxy_relaunch(success: bool) -> None:
+    global _env_proxy_relaunch_at, _env_proxy_relaunch_in_progress
+
+    with _env_proxy_relaunch_lock:
+        _env_proxy_relaunch_in_progress = False
+        if success:
+            _env_proxy_relaunch_at = time.monotonic()
+
+
 def _delete_path(path: Path, messages: list[str], label: str) -> None:
     if not path.exists():
         messages.append(f'{label} already deleted')
@@ -521,29 +591,44 @@ def relaunch_roblox_with_proxy_env(proxy_url: str) -> bool:
         log_buffer.log('Launcher', 'Env Proxy relaunch skipped: flatpak command not found')
         return False
 
-    if is_roblox_running():
-        terminate_roblox()
-        if not wait_for_roblox_exit():
-            log_buffer.log('Launcher', 'Sober did not exit before env-proxy relaunch')
+    if not _claim_env_proxy_relaunch():
+        log_buffer.log('Launcher', 'Env Proxy relaunch skipped: Sober launch already handled')
+        return False
+
+    success = False
+    try:
+        if not _wait_for_local_proxy(proxy_url):
+            log_buffer.log(
+                'Launcher',
+                f'Env Proxy relaunch skipped: local proxy is not ready at {proxy_url}',
+            )
             return False
 
-    proxy_env = {
-        'ALL_PROXY': proxy_url,
-        'HTTPS_PROXY': proxy_url,
-        'HTTP_PROXY': proxy_url,
-        'all_proxy': proxy_url,
-        'https_proxy': proxy_url,
-        'http_proxy': proxy_url,
-        'NO_PROXY': 'localhost,127.0.0.1,::1',
-        'no_proxy': 'localhost,127.0.0.1,::1',
-        'FLEASION_PROXY_RELAUNCHED': '1',
-    }
-    env_args = [f'--env={key}={value}' for key, value in proxy_env.items()]
-    try:
+        if is_roblox_running():
+            terminate_roblox()
+            if not wait_for_roblox_exit():
+                log_buffer.log('Launcher', 'Sober did not exit before env-proxy relaunch')
+                return False
+
+        proxy_env = {
+            'ALL_PROXY': proxy_url,
+            'HTTPS_PROXY': proxy_url,
+            'HTTP_PROXY': proxy_url,
+            'all_proxy': proxy_url,
+            'https_proxy': proxy_url,
+            'http_proxy': proxy_url,
+            'NO_PROXY': 'localhost,127.0.0.1,::1',
+            'no_proxy': 'localhost,127.0.0.1,::1',
+            'FLEASION_PROXY_RELAUNCHED': '1',
+        }
+        env_args = [f'--env={key}={value}' for key, value in proxy_env.items()]
         _standard_user_popen([flatpak, 'run', *env_args, SOBER_APP_ID])
+        success = True
     except Exception as exc:
         log_buffer.log('Launcher', f'Sober Env Proxy relaunch failed: {exc}')
         return False
+    finally:
+        _finish_env_proxy_relaunch(success)
     log_buffer.log('Launcher', 'Relaunched Sober through Fleasion env proxy')
     return True
 
