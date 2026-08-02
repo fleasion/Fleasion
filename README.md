@@ -62,7 +62,8 @@ uv version --bump patch
 # or: uv version <new-version>
 ```
 
-Runtime code, PyInstaller naming, and GitHub release workflows read that value from `pyproject.toml`.
+Source runs, PyInstaller naming, and GitHub release workflows read that value from `pyproject.toml`.
+PyInstaller packages the matching distribution metadata for runtime version checks.
 
 ## System Tray
 

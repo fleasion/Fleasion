@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tomllib
+from importlib.metadata import PackageNotFoundError, version as distribution_version
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -241,6 +242,15 @@ def _build_macos_helper(target_arch: str | None) -> None:
 
 _version = _read_app_version()
 _exe_name = f'Fleasion-v{_version}'
+try:
+    _distribution_version = distribution_version('Fleasion')
+except PackageNotFoundError:
+    raise SystemExit('Fleasion distribution metadata is missing. Run uv sync before building.')
+if _distribution_version != _version:
+    raise SystemExit(
+        f'Fleasion distribution metadata is {_distribution_version}, but pyproject.toml '
+        f'declares {_version}. Run uv sync before building.'
+    )
 if sys.platform == 'win32':
     _exe_name = f'{_exe_name}-Windows'
 elif sys.platform.startswith('linux'):
