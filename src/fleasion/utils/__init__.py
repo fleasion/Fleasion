@@ -44,6 +44,7 @@ from .threading import run_in_thread
 from .time_tracker import TimeTracker, time_tracker
 from .windows import (
     delete_cache,
+    get_roblox_process_identity,
     get_roblox_player_exe_path,
     get_roblox_studio_exe_path,
     is_roblox_running,
@@ -104,6 +105,7 @@ __all__ = [
     'get_icon_path',
     'format_count',
     'get_roblox_player_exe_path',
+    'get_roblox_process_identity',
     'get_roblox_studio_exe_path',
     'is_roblox_running',
     'is_studio_running',

@@ -168,6 +168,7 @@ def test_launch_as_standard_user_runs_sober_flatpak_for_roblox_uri(monkeypatch):
 
     monkeypatch.setattr(platform_linux.os, "geteuid", lambda: 1000)
     monkeypatch.setattr(platform_linux, "is_roblox_running", lambda: False)
+    monkeypatch.setattr(platform_linux, "wait_for_roblox_window", lambda timeout=15.0: True)
     monkeypatch.setattr(
         platform_linux.shutil,
         "which",
@@ -197,6 +198,7 @@ def test_launch_as_standard_user_strips_pyinstaller_env_for_sober_uri(monkeypatc
 
     monkeypatch.setattr(platform_linux.os, "geteuid", lambda: 1000)
     monkeypatch.setattr(platform_linux, "is_roblox_running", lambda: False)
+    monkeypatch.setattr(platform_linux, "wait_for_roblox_window", lambda timeout=15.0: True)
     monkeypatch.setattr(platform_linux.sys, "_MEIPASS", str(bundle_root), raising=False)
     monkeypatch.setenv("LD_LIBRARY_PATH", f"{bundle_root}:{host_libs}")
     monkeypatch.delenv("LD_LIBRARY_PATH_ORIG", raising=False)
@@ -292,6 +294,9 @@ def test_launch_as_standard_user_aborts_uri_when_running_sober_does_not_exit(mon
 def _reset_env_proxy_relaunch_state(monkeypatch):
     monkeypatch.setattr(platform_linux, "_env_proxy_relaunch_at", None)
     monkeypatch.setattr(platform_linux, "_env_proxy_relaunch_in_progress", False)
+    monkeypatch.setattr(
+        platform_linux, "wait_for_roblox_window", lambda timeout=15.0: True
+    )
 
 
 def test_relaunch_sober_with_env_proxy_waits_for_proxy_and_passes_flatpak_env(monkeypatch):
@@ -309,6 +314,7 @@ def test_relaunch_sober_with_env_proxy_waits_for_proxy_and_passes_flatpak_env(mo
         lambda url: calls.append(("wait", url)) or True,
     )
     monkeypatch.setattr(platform_linux, "is_roblox_running", lambda: False)
+    monkeypatch.setattr(platform_linux, "wait_for_roblox_window", lambda timeout=15.0: True)
     monkeypatch.setattr(
         platform_linux,
         "_standard_user_popen",

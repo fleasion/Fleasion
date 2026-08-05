@@ -100,7 +100,8 @@ def _replacement_path_tooltip(*, empty_removes: bool = True) -> str:
     lines = [
         'For a config that comes with files, click Open Configs below, create a folder there, '
         'and put the files in that folder.',
-        'For example, /StickObj/stick.obj loads the file at Configs/StickObj/stick.obj.',
+        'For example, /ExampleOBJ/Example.obj loads the file at '
+        'Configs/ExampleOBJ/Example.obj.',
         'Asset folders can be nested up to 10 folders deep.',
         f'You can also use a normal path such as {local_file_path_example()}.',
     ]
@@ -321,7 +322,9 @@ class _ConfigMenuRow(QWidget):
         checked: bool = False,
         icon: QIcon | None = None,
     ):
-        super().__init__()
+        # QWidget construction may call the Python sizeHint override before
+        # QWidget.__init__ returns, so every field used by sizeHint/style
+        # calculation must exist first.
         self._name = name
         self._parent_menu = parent_menu
         self._checkable = checkable
@@ -329,6 +332,7 @@ class _ConfigMenuRow(QWidget):
         self._icon = icon or QIcon()
         self._pressed = False
         self._hovered = False
+        super().__init__()
         self.setMouseTracking(True)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         self.setFixedHeight(_CONFIG_MENU_ROW_HEIGHT_PX)

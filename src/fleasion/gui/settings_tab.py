@@ -1,8 +1,7 @@
 """Settings tab – mirrors all settings available in the system tray menu."""
 
-import ctypes
-import os
 import sys
+from pathlib import Path
 
 from PyQt6.QtCore import QEvent, Qt, QTimer
 from PyQt6.QtWidgets import (
@@ -48,75 +47,19 @@ _MACOS_AUTH_SOURCES = (
 )
 
 
-def _is_admin() -> bool:
-    if sys.platform == 'darwin' or sys.platform.startswith('linux'):
-        return hasattr(os, 'geteuid') and os.geteuid() == 0
-    try:
-        return bool(ctypes.windll.shell32.IsUserAnAdmin())
-    except Exception:
-        return False
-
-
-def _run_on_boot_requires_admin() -> bool:
-    return sys.platform == 'win32'
-
-
 class EnvProxyWarningDialog(QMessageBox):
-    """Shown when switching to the Roblox Env Proxy mode - can't be closed
-    for a few seconds so the warning actually gets read. A real QMessageBox
-    (not a hand-rebuilt QDialog) so it looks exactly like every other
-    warning dialog in the app - same icon, same size, same layout, for free.
-    """
-
-    LOCK_SECONDS = 10
+    """Explain the Player-only relaunch behavior when Env Proxy is selected."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle('Roblox Env Proxy')
-        self.setIcon(QMessageBox.Icon.Warning)
+        self.setIcon(QMessageBox.Icon.Information)
         self.setText(
-            'This proxy is experimental and may not function as expected.\n'
-            'BUT if you have any issues with the proxy not working/nothing getting replaced. '
-            'This setting MIGHT fix it.\n\n'
-            'Currently there is a low chance that you will get signed out of Roblox when it is '
-            'launched if it is not via the browser when using this proxy method, this is '
-            'because it relaunches Roblox and for some reason that might log you out.'
+            'Fleasion will relaunch Roblox Player with a local proxy environment.\n\n'
+            'Roblox Studio is left untouched. Switching back to Hosts File mode may require '
+            'administrator permission.'
         )
-        self._seconds_remaining = self.LOCK_SECONDS
-        self._close_button = self.addButton('', QMessageBox.ButtonRole.AcceptRole)
-        self._close_button.setEnabled(False)
-
-        self._timer = QTimer(self)
-        self._timer.setInterval(1000)
-        self._timer.timeout.connect(self._tick)
-        self._update_close_text()
-        self._timer.start()
-
-    def _update_close_text(self):
-        if self._seconds_remaining > 0:
-            self._close_button.setText(f'Close ({self._seconds_remaining}s)')
-        else:
-            self._close_button.setText('Close')
-
-    def _tick(self):
-        self._seconds_remaining = max(0, self._seconds_remaining - 1)
-        self._update_close_text()
-        if self._seconds_remaining == 0:
-            self._timer.stop()
-            self._close_button.setEnabled(True)
-
-    def reject(self):
-        # Escape key (and any other path that ends up calling reject())
-        # shouldn't close the dialog early either.
-        if self._seconds_remaining > 0:
-            return
-        super().reject()
-
-    def closeEvent(self, event):
-        if self._seconds_remaining > 0:
-            event.ignore()
-        else:
-            super().closeEvent(event)
+        self.setStandardButtons(QMessageBox.StandardButton.Ok)
 
 
 class SettingsTab(QWidget):
@@ -388,8 +331,6 @@ class SettingsTab(QWidget):
     def _build_convenience_section(self) -> CollapsibleSection:
         section = CollapsibleSection('Convenience', expanded=True)
 
-        boot_allowed = _is_admin() or not _run_on_boot_requires_admin()
-
         self._open_dashboard_chk = QCheckBox('Open Dashboard on Start')
         self._open_dashboard_chk.setChecked(self._config.open_dashboard_on_launch)
         self._open_dashboard_chk.toggled.connect(self._on_open_dashboard_toggled)
@@ -405,10 +346,26 @@ class SettingsTab(QWidget):
         self._clear_cache_launch_chk.toggled.connect(self._on_clear_cache_launch_toggled)
         section.add_widget(self._clear_cache_launch_chk)
 
-        boot_label = 'Run on Boot' if boot_allowed else 'Run on Boot  (requires administrator)'
-        self._run_on_boot_chk = QCheckBox(boot_label)
+        self._lock_roblox_files_chk = QCheckBox('Lock Roblox Files to Read-Only')
+        self._lock_roblox_files_chk.setChecked(self._config.lock_roblox_files_read_only)
+        self._lock_roblox_files_chk.setToolTip(
+            'Stops Roblox from overwriting active Fleasion modification files in rare cases. '
+            'This can interfere with Roblox updates, so it is off by default.'
+        )
+        self._lock_roblox_files_chk.toggled.connect(self._on_lock_roblox_files_toggled)
+        section.add_widget(self._lock_roblox_files_chk)
+
+        self._close_env_roblox_chk = QCheckBox('Close Env-Proxied Roblox Player on Exit')
+        self._close_env_roblox_chk.setChecked(self._config.close_env_proxy_roblox_on_exit)
+        self._close_env_roblox_chk.setToolTip(
+            'Roblox Player and Sober depend on Fleasion while Env Proxy is active. '
+            'Turn this off only if you intentionally want Player left open without Fleasion.'
+        )
+        self._close_env_roblox_chk.toggled.connect(self._on_close_env_roblox_toggled)
+        section.add_widget(self._close_env_roblox_chk)
+
+        self._run_on_boot_chk = QCheckBox('Run on Boot')
         self._run_on_boot_chk.setChecked(self._config.run_on_boot)
-        self._run_on_boot_chk.setEnabled(boot_allowed)
         self._run_on_boot_chk.toggled.connect(self._on_run_on_boot_toggled)
         section.add_widget(self._run_on_boot_chk)
 
@@ -525,6 +482,8 @@ class SettingsTab(QWidget):
             (self._wire_preserving_chk, self._config.wire_preserving_passthrough),
             (self._auto_clear_cache_chk, self._config.auto_delete_cache_on_exit),
             (self._clear_cache_launch_chk, self._config.clear_cache_on_launch),
+            (self._lock_roblox_files_chk, self._config.lock_roblox_files_read_only),
+            (self._close_env_roblox_chk, self._config.close_env_proxy_roblox_on_exit),
             (self._run_on_boot_chk, self._config.run_on_boot),
             (self._desktop_integration_chk, self._config.desktop_integration),
             (self._close_scraped_games_chk, self._config.close_scraped_games_on_open),
@@ -652,6 +611,20 @@ class SettingsTab(QWidget):
             proxy_master = getattr(self._tray, 'proxy_master', None) if self._tray else None
             if proxy_master is not None and hasattr(proxy_master, 'restart_for_mode_switch'):
                 proxy_master.restart_for_mode_switch()
+            monitor = getattr(self._tray, 'roblox_monitor', None) if self._tray else None
+            lifecycle = getattr(monitor, 'env_lifecycle', None)
+            if (
+                lifecycle is not None
+                and self._config.proxy_features_enabled
+                and monitor.is_player_running()
+            ):
+                if sys.platform.startswith('linux'):
+                    exe_path = Path('org.vinegarhq.Sober')
+                else:
+                    from ..utils import get_roblox_player_exe_path
+
+                    exe_path = get_roblox_player_exe_path()
+                run_in_thread(lifecycle.handle_player_launch)(exe_path)
         if new_mode == 'hosts' and previous_mode != 'hosts':
             # Hosts mode may need admin this process doesn't hold - restart
             # the app instead of live-swapping so the new process's own
@@ -719,12 +692,6 @@ class SettingsTab(QWidget):
         self._config.vpn_compat_max_cdn_connections = self._cdn_limit_spin.value()
 
     def _on_run_on_boot_toggled(self, checked: bool):
-        if _run_on_boot_requires_admin() and not _is_admin():
-            self._run_on_boot_chk.blockSignals(True)
-            self._run_on_boot_chk.setChecked(not checked)
-            self._run_on_boot_chk.blockSignals(False)
-            return
-
         ok = sync_autostart(checked, CONFIG_DIR)
         if ok:
             self._config.run_on_boot = checked
@@ -739,9 +706,17 @@ class SettingsTab(QWidget):
                 'Run on Boot Failed',
                 'Failed to register the autostart task.\n'
                 'Check the application log for details.\n\n'
-                'Turn off Run on Boot to stop this error from appearing.\n\n'
-                'On Windows, ensure Fleasion is running as Administrator.',
+                'Turn off Run on Boot to stop this error from appearing.',
             )
+
+    def _on_lock_roblox_files_toggled(self, checked: bool):
+        self._config.lock_roblox_files_read_only = checked
+        mod_manager = getattr(self._tray, 'mod_manager', None)
+        if mod_manager is not None and hasattr(mod_manager, 'set_read_only_lock_enabled'):
+            mod_manager.set_read_only_lock_enabled(checked)
+
+    def _on_close_env_roblox_toggled(self, checked: bool):
+        self._config.close_env_proxy_roblox_on_exit = checked
 
     def _on_desktop_integration_toggled(self, checked: bool):
         ok = sync_desktop_integration(checked)

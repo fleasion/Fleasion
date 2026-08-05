@@ -227,6 +227,15 @@ def is_roblox_running() -> bool:
     return _first_sober_pid() is not None
 
 
+def get_roblox_process_identity() -> tuple[str, int, float] | tuple[str, int] | None:
+    """Return Sober's engine generation, falling back to its launcher PID."""
+    engine = sober_main_process()
+    if engine is not None:
+        return 'engine', engine[0], engine[1]
+    pid = _first_sober_pid()
+    return ('launcher', pid) if pid is not None else None
+
+
 def is_studio_running() -> bool:
     """Roblox Studio is not supported through Sober."""
     return False
@@ -586,7 +595,13 @@ def launch_as_standard_user(target: str | Path) -> bool:
     return False
 
 
-def relaunch_roblox_with_proxy_env(proxy_url: str, launch_target: str | None = None) -> bool:
+def relaunch_roblox_with_proxy_env(
+    proxy_url: str,
+    launch_target: str | None = None,
+    *,
+    force: bool = False,
+    cancel_event: threading.Event | None = None,
+) -> bool:
     """Relaunch Sober through Fleasion's explicit (env) proxy.
 
     Sets the conventional Unix proxy env vars (http_proxy/https_proxy/
@@ -605,7 +620,7 @@ def relaunch_roblox_with_proxy_env(proxy_url: str, launch_target: str | None = N
         log_buffer.log('Launcher', 'Env Proxy relaunch skipped: flatpak command not found')
         return False
 
-    if not _claim_env_proxy_relaunch(force=bool(launch_target)):
+    if not _claim_env_proxy_relaunch(force=bool(launch_target) or force):
         log_buffer.log('Launcher', 'Env Proxy relaunch skipped: Sober launch already handled')
         return False
 
@@ -617,12 +632,16 @@ def relaunch_roblox_with_proxy_env(proxy_url: str, launch_target: str | None = N
                 f'Env Proxy relaunch skipped: local proxy is not ready at {proxy_url}',
             )
             return False
+        if cancel_event is not None and cancel_event.is_set():
+            return False
 
         if is_roblox_running():
             terminate_roblox()
             if not wait_for_roblox_exit():
                 log_buffer.log('Launcher', 'Sober did not exit before env-proxy relaunch')
                 return False
+        if cancel_event is not None and cancel_event.is_set():
+            return False
 
         proxy_env = {
             'ALL_PROXY': proxy_url,
@@ -640,6 +659,11 @@ def relaunch_roblox_with_proxy_env(proxy_url: str, launch_target: str | None = N
         if launch_target:
             launch_args.append(str(launch_target))
         _standard_user_popen(launch_args)
+        if not wait_for_roblox_window(timeout=15.0):
+            log_buffer.log(
+                'Launcher', 'Sober Env Proxy relaunch failed: Sober process did not start'
+            )
+            return False
         success = True
     except Exception as exc:
         log_buffer.log('Launcher', f'Sober Env Proxy relaunch failed: {exc}')

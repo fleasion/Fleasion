@@ -1823,8 +1823,8 @@ def _remove_hosts_entries(hosts: Set[str], error_details: Optional[dict] = None)
 # ---------------------------------------------------------------------------
 
 
-def _find_roblox_dirs() -> list:
-    """Locate every RobloxPlayerBeta.exe and RobloxStudioBeta.exe installation.
+def _find_roblox_dirs(*, include_studio: bool = True) -> list:
+    """Locate Roblox resource directories, optionally including Studio.
 
     Methods used (combined):
       1. Main Registry   — HKCU\\Software (two levels) for REG_SZ "PlayerPath"/"StudioPath"
@@ -1871,6 +1871,8 @@ def _find_roblox_dirs() -> list:
     seen: set = set()
 
     def _add(path: Path) -> bool:
+        if not include_studio and is_roblox_studio_resource_dir(path):
+            return False
         key = str(path)
         if key not in seen:
             found.append(path)
@@ -2625,10 +2627,12 @@ def _patch_roblox_ca_with_macos_helper(ca_pem: str, roblox_dir: Path) -> tuple[b
     return bool(response.get('ok')), changed, response
 
 
-def _install_ca_into_roblox(ca_pem: str) -> tuple[bool, dict]:
+def _install_ca_into_roblox(
+    ca_pem: str, *, include_studio: bool = True
+) -> tuple[bool, dict]:
     """Ensure each Roblox ssl/cacert.pem has exactly one current Fleasion CA cert."""
     t0 = time.perf_counter()
-    dirs = _find_roblox_dirs()
+    dirs = _find_roblox_dirs(include_studio=include_studio)
     elapsed_ms = int((time.perf_counter() - t0) * 1000)
     if not dirs:
         log_buffer.log(
@@ -2641,14 +2645,9 @@ def _install_ca_into_roblox(ca_pem: str) -> tuple[bool, dict]:
         f'Found {format_count(dirs, "Roblox install")} to patch (scanned in {elapsed_ms} ms)',
     )
 
-    if IS_MACOS and not _is_admin():
-        ok, details = _install_ca_into_roblox_with_helper(ca_pem, dirs)
-        backup_ok, backup_details = _patch_bootstrapper_ca_backups(ca_pem)
-        details['bootstrapper_backups'] = backup_details
-        return ok and backup_ok, details
-
     ok = True
     details = {'patched': [], 'failed': [], 'verified': []}
+    helper_fallback_dirs: list[Path] = []
     for d in dirs:
         ssl_dir = d / 'ssl'
         ca_file = ssl_dir / 'cacert.pem'
@@ -2662,7 +2661,8 @@ def _install_ca_into_roblox(ca_pem: str) -> tuple[bool, dict]:
                 ca_file, ca_pem, f'cacert.pem after startup patch for {d.name}'
             )
             details['verified'].append(post_state)
-            ok = ok and bool(post_state.get('healthy'))
+            post_healthy = bool(post_state.get('healthy'))
+            ok = ok and post_healthy
             already_current = (
                 fleasion_count == 1 and current_count == 1 and bool(post_state.get('healthy'))
             )
@@ -2685,12 +2685,44 @@ def _install_ca_into_roblox(ca_pem: str) -> tuple[bool, dict]:
             details['patched'].append(
                 {'resource_dir': str(d), 'ca_file': str(ca_file), 'changed': changed}
             )
+            if not post_healthy:
+                details['failed'].append(
+                    {
+                        'resource_dir': str(d),
+                        'ca_file': str(ca_file),
+                        'error': 'cacert.pem was not launch-healthy after direct patch',
+                    }
+                )
+                if IS_MACOS and not _is_admin():
+                    helper_fallback_dirs.append(d)
         except (PermissionError, OSError, UnicodeDecodeError) as exc:
             log_buffer.log('Certificate', f'Failed to write CA for {d.name}: {exc}')
             details['failed'].append(
                 {'resource_dir': str(d), 'ca_file': str(ca_file), 'error': str(exc)}
             )
             ok = False
+            if IS_MACOS and not _is_admin():
+                helper_fallback_dirs.append(d)
+
+    if helper_fallback_dirs:
+        direct_failures = list(details['failed'])
+        helper_ok, helper_details = _install_ca_into_roblox_with_helper(
+            ca_pem, helper_fallback_dirs
+        )
+        details['direct_failures'] = direct_failures
+        details['helper'] = helper_details
+        details['helper_required'] = not helper_ok
+        fallback_keys = {str(path.resolve()).lower() for path in helper_fallback_dirs}
+        details['failed'] = [
+            item
+            for item in details['failed']
+            if str(Path(item['resource_dir']).resolve()).lower() not in fallback_keys
+        ]
+        details['patched'].extend(helper_details.get('patched') or [])
+        details['patched'].extend(helper_details.get('skipped') or [])
+        details['failed'].extend(helper_details.get('failed') or [])
+        details['verified'].extend(helper_details.get('verified') or [])
+        ok = helper_ok and not details['failed']
     backup_ok, backup_details = _patch_bootstrapper_ca_backups(ca_pem)
     details['bootstrapper_backups'] = backup_details
     return ok and backup_ok, details
@@ -3073,8 +3105,30 @@ def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
             f'cacert.pem before running-instance patch for {roblox_dir.name}',
         )
         pre_state_readable = bool(pre_state.get('exists')) and not bool(pre_state.get('error'))
-        if IS_MACOS and not _is_admin():
-            request_ok, changed, helper_details = _patch_roblox_ca_with_macos_helper(
+        direct_error: Exception | None = None
+        try:
+            _prepare_cacert_target_for_write(ca_file)
+            changed, fleasion_count, current_count = _upsert_fleasion_ca_in_cacert(ca_file, ca_pem)
+        except (PermissionError, OSError, UnicodeDecodeError) as exc:
+            direct_error = exc
+            changed = False
+            fleasion_count = int(pre_state.get('fleasion_certs') or 0)
+            current_count = int(pre_state.get('current_fleasion_certs') or 0)
+
+        post_state = _log_cacert_state(
+            ca_file,
+            ca_pem,
+            f'cacert.pem after running-instance patch for {roblox_dir.name}',
+        )
+        if IS_MACOS and not _is_admin() and (
+            direct_error is not None or not bool(post_state.get('healthy'))
+        ):
+            if direct_error is not None:
+                log_buffer.log(
+                    'Certificate',
+                    f'Direct macOS cacert.pem patch needs helper fallback for {roblox_dir.name}: {direct_error}',
+                )
+            request_ok, helper_changed, helper_details = _patch_roblox_ca_with_macos_helper(
                 ca_pem, roblox_dir
             )
             if not request_ok:
@@ -3083,21 +3137,17 @@ def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
                     f'Failed to inject CA into running Roblox instance through macOS helper: {helper_details}',
                 )
                 return False
-            fleasion_count = int(pre_state.get('fleasion_certs') or 0) if pre_state_readable else 0
-            current_count = (
-                int(pre_state.get('current_fleasion_certs') or 0) if pre_state_readable else 0
+            changed = changed or helper_changed
+            post_state = _log_cacert_state(
+                ca_file,
+                ca_pem,
+                f'cacert.pem after running-instance helper patch for {roblox_dir.name}',
             )
-        else:
-            _prepare_cacert_target_for_write(ca_file)
-            changed, fleasion_count, current_count = _upsert_fleasion_ca_in_cacert(ca_file, ca_pem)
-        post_state = _log_cacert_state(
-            ca_file,
-            ca_pem,
-            f'cacert.pem after running-instance patch for {roblox_dir.name}',
-        )
-        if IS_MACOS and not _is_admin() and not pre_state_readable:
-            fleasion_count = int(post_state.get('fleasion_certs') or 0)
-            current_count = int(post_state.get('current_fleasion_certs') or 0)
+            if not pre_state_readable:
+                fleasion_count = int(post_state.get('fleasion_certs') or 0)
+                current_count = int(post_state.get('current_fleasion_certs') or 0)
+        elif direct_error is not None:
+            raise direct_error
     except (PermissionError, OSError) as exc:
         log_buffer.log('Certificate', f'Failed to inject CA into running Roblox instance: {exc}')
         return False
@@ -3179,6 +3229,7 @@ class ProxyMaster:
         self._thread: Optional[threading.Thread] = None
         self._running = False
         self._lock = threading.Lock()
+        self._env_proxy_ready = threading.Event()
         self._hosts_installed: bool = False
         self._active_env_proxy_mode: bool = False
         self._active_intercept_hosts: set[str] = set(BASE_INTERCEPT_HOSTS)
@@ -3218,6 +3269,99 @@ class ProxyMaster:
 
     def roblox_env_proxy_url(self) -> str:
         return f'http://127.0.0.1:{MACOS_PROXY_BACKEND_PORT}'
+
+    def wait_for_env_proxy_ready(self, timeout: float = 15.0) -> bool:
+        """Wait for bind and TLS self-test, not merely proxy thread startup."""
+        return self._env_proxy_ready.wait(max(0.0, timeout))
+
+    def _roblox_ca_target(self, exe_path: Path) -> tuple[Path, str] | None:
+        ca_cert_path = _current_proxy_ca_dir() / 'ca.crt'
+        if not ca_cert_path.exists():
+            return None
+        exe_path = Path(exe_path)
+        if _is_macos_studio_bundle_path(exe_path):
+            return None
+        ca_pem = get_ca_pem(ca_cert_path)
+        if IS_MACOS:
+            from ..utils.platform_macos import _resource_root_from_executable
+
+            roblox_dir = _resource_root_from_executable(exe_path) or exe_path.parent
+        elif IS_LINUX:
+            from ..utils.platform_linux import find_roblox_resource_dirs
+
+            dirs = find_roblox_resource_dirs(include_studio=False)
+            roblox_dir = dirs[0] if dirs else exe_path.parent
+        else:
+            roblox_dir = exe_path.parent
+        return roblox_dir / 'ssl' / 'cacert.pem', ca_pem
+
+    def inspect_env_proxy_roblox_ca(self, exe_path: Path, reason: str) -> dict:
+        target = self._roblox_ca_target(exe_path)
+        if target is None:
+            return {'healthy': False, 'error': 'Roblox CA target is unavailable'}
+        ca_file, ca_pem = target
+        return _log_cacert_state(ca_file, ca_pem, reason)
+
+    def ensure_env_proxy_roblox_ca(
+        self, exe_path: Path, *, settle: bool = False
+    ) -> dict:
+        """Settle, directly repair, and fully verify Player's CA bundle."""
+        if settle:
+            time.sleep(_CACERT_LAUNCH_SETTLE_SECONDS)
+        before = self.inspect_env_proxy_roblox_ca(
+            exe_path, f'Env Proxy cacert.pem before launch preparation for {Path(exe_path).name}'
+        )
+        if not before.get('healthy'):
+            check_and_patch_running_roblox_ca(Path(exe_path))
+        after = self.inspect_env_proxy_roblox_ca(
+            exe_path, f'Env Proxy cacert.pem after launch preparation for {Path(exe_path).name}'
+        )
+        return {
+            'success': bool(after.get('healthy')),
+            'healthy': bool(after.get('healthy')),
+            'changed': before.get('sha256') != after.get('sha256'),
+            'path': after.get('path'),
+            'error': after.get('error'),
+            'state': after,
+        }
+
+    def monitor_env_proxy_roblox_ca(
+        self,
+        exe_path: Path,
+        cancel_event: threading.Event,
+        *,
+        duration: float = _CACERT_LAUNCH_POLL_SECONDS,
+    ) -> dict:
+        """Require CA health for the complete post-launch observation window."""
+        deadline = time.monotonic() + max(0.0, duration)
+        unhealthy_samples = 0
+        last_state: dict = {}
+        while time.monotonic() < deadline:
+            if cancel_event.is_set():
+                return {'success': False, 'cancelled': True, 'state': last_state}
+            last_state = self.inspect_env_proxy_roblox_ca(
+                exe_path, f'Env Proxy post-launch cacert.pem health for {Path(exe_path).name}'
+            )
+            if last_state.get('healthy'):
+                unhealthy_samples = 0
+            else:
+                unhealthy_samples += 1
+                if unhealthy_samples >= 2:
+                    return {
+                        'success': False,
+                        'healthy': False,
+                        'path': last_state.get('path'),
+                        'error': last_state.get('error') or 'cacert.pem became unhealthy',
+                        'state': last_state,
+                    }
+            cancel_event.wait(_CACERT_LAUNCH_POLL_INTERVAL_SECONDS)
+        return {
+            'success': bool(last_state.get('healthy')),
+            'healthy': bool(last_state.get('healthy')),
+            'path': last_state.get('path'),
+            'error': last_state.get('error'),
+            'state': last_state,
+        }
 
     def get_env_proxy_traffic(self) -> list[dict]:
         """Every request/tunnel the explicit proxy has logged, intercepted or not."""
@@ -3949,6 +4093,7 @@ class ProxyMaster:
         with self._lock:
             if self._running:
                 return
+            self._env_proxy_ready.clear()
 
             def _run():
                 try:
@@ -3980,6 +4125,9 @@ class ProxyMaster:
         ).start()
 
     def stop(self) -> None:
+        ready_event = getattr(self, '_env_proxy_ready', None)
+        if ready_event is not None:
+            ready_event.clear()
         self._stop_linux_sober_custom_fflag_timer()
         with self._lock:
             if not self._running and not (self._thread and self._thread.is_alive()):
@@ -4121,13 +4269,23 @@ class ProxyMaster:
 
         # Install CA into Roblox ssl dirs
         ca_pem = get_ca_pem(ca_cert_path)
-        ca_patch_ok, ca_patch_details = _install_ca_into_roblox(ca_pem)
+        ca_patch_ok, ca_patch_details = _install_ca_into_roblox(
+            ca_pem, include_studio=not env_proxy_mode
+        )
         if IS_MACOS and not ca_patch_ok:
             log_buffer.log(
                 'Certificate',
                 'macOS Roblox CA patch verification failed; proxy startup aborted before writing hosts entries',
             )
             self._emit_proxy_start_error('macos_ca_patch_failed', ca_patch_details)
+            self._running = False
+            return
+        if env_proxy_mode and not ca_patch_ok:
+            log_buffer.log(
+                'Certificate',
+                'Roblox CA patch verification failed; Env Proxy startup aborted before relaunch',
+            )
+            self._emit_proxy_start_error('roblox_ca_patch_failed', ca_patch_details)
             self._running = False
             return
         if IS_MACOS:
@@ -4320,7 +4478,13 @@ class ProxyMaster:
             vpn_compat_max_cdn_connections=cdn_connection_limit,
             custom_fflag_modifier=getattr(self, 'custom_fflag_modifier', None),
             on_upstream_connect_failure=lambda host, error: self._emit_proxy_start_error(
-                'upstream_connect_failed', {'host': host, 'error': error}
+                'upstream_connect_failed',
+                {
+                    'host': host,
+                    'error': error,
+                    'proxy_mode': 'env' if env_proxy_mode else 'hosts',
+                    'listen_port': listen_port,
+                },
             ),
         )
         with self._lock:
@@ -4400,6 +4564,9 @@ class ProxyMaster:
         if env_proxy_mode:
             _set_active_hosts_loopbacks(None)
             self._active_env_proxy_mode = True
+            ready_event = getattr(self, '_env_proxy_ready', None)
+            if ready_event is not None:
+                ready_event.set()
             if env_proxy_intercept_excluded_hosts:
                 log_buffer.log(
                     'Proxy',
@@ -4435,6 +4602,9 @@ class ProxyMaster:
                 # the normal Env Proxy shutdown path, not a thread failure.
                 pass
             finally:
+                ready_event = getattr(self, '_env_proxy_ready', None)
+                if ready_event is not None:
+                    ready_event.clear()
                 self._stop_linux_sober_custom_fflag_timer()
                 self._running = False
             return

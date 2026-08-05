@@ -177,7 +177,7 @@ def test_macos_proxy_start_blocks_when_ca_patch_verification_fails(tmp_path, mon
     monkeypatch.setattr(
         proxy_master,
         "_install_ca_into_roblox",
-        lambda _pem: (False, {"failed": [{"resource_dir": "/Applications/Roblox.app/Contents/Resources"}]}),
+        lambda _pem, **_kwargs: (False, {"failed": [{"resource_dir": "/Applications/Roblox.app/Contents/Resources"}]}),
     )
     monkeypatch.setattr(proxy_master, "_add_hosts_entries", lambda *args, **kwargs: hosts_calls.append("add") or True)
     monkeypatch.setattr(proxy_master, "_remove_hosts_entries", lambda *args, **kwargs: hosts_calls.append("remove") or True)
@@ -266,7 +266,7 @@ def test_macos_relay_failure_emits_health_diagnostics_before_hosts_write(
         lambda *_args, **_kwargs: default_cert,
     )
     monkeypatch.setattr(proxy_master, "get_ca_pem", lambda _path: "ca")
-    monkeypatch.setattr(proxy_master, "_install_ca_into_roblox", lambda _pem: (True, {}))
+    monkeypatch.setattr(proxy_master, "_install_ca_into_roblox", lambda _pem, **_kwargs: (True, {}))
     monkeypatch.setattr(
         proxy_master,
         "_install_ca_into_macos_login_keychain",
@@ -373,7 +373,11 @@ def test_linux_roblox_ca_patch_reseeds_truncated_bundle_even_when_current_ca_exi
 
     monkeypatch.setattr(proxy_master, "IS_MACOS", False)
     monkeypatch.setattr(proxy_master, "IS_LINUX", True)
-    monkeypatch.setattr(proxy_master, "_find_roblox_dirs", lambda: [roblox_dir, healthy_dir])
+    monkeypatch.setattr(
+        proxy_master,
+        "_find_roblox_dirs",
+        lambda **_kwargs: [roblox_dir, healthy_dir],
+    )
     monkeypatch.setattr(certifi, "where", lambda: (_ for _ in ()).throw(AssertionError("should prefer local healthy bundle")))
     monkeypatch.setattr(proxy_master, "log_buffer", SimpleNamespace(log=lambda category, message: logs.append((category, message))))
 
@@ -500,7 +504,7 @@ def test_linux_proxy_start_emits_read_only_hosts_error(tmp_path, monkeypatch):
     monkeypatch.setattr(proxy_master, "generate_host_cert", lambda *_args, **_kwargs: (leaf_cert, leaf_key))
     monkeypatch.setattr(proxy_master, "generate_multi_host_cert", lambda *_args, **_kwargs: default_cert)
     monkeypatch.setattr(proxy_master, "get_ca_pem", lambda _path: "ca")
-    monkeypatch.setattr(proxy_master, "_install_ca_into_roblox", lambda _pem: (True, {}))
+    monkeypatch.setattr(proxy_master, "_install_ca_into_roblox", lambda _pem, **_kwargs: (True, {}))
     monkeypatch.setattr(proxy_master, "_resolve_real_endpoints", lambda _hosts: {})
     monkeypatch.setattr(proxy_master, "_run_tls_self_test", lambda *_args, **_kwargs: asyncio.sleep(0, result=True))
     monkeypatch.setattr(proxy_master, "FleasionProxy", lambda **_kwargs: _ProxyStub())
@@ -654,7 +658,7 @@ def test_proxy_startup_self_tests_only_active_intercept_routes(tmp_path, monkeyp
         lambda *_args, **_kwargs: default_cert,
     )
     monkeypatch.setattr(proxy_master, "get_ca_pem", lambda _path: "ca")
-    monkeypatch.setattr(proxy_master, "_install_ca_into_roblox", lambda _pem: (True, {}))
+    monkeypatch.setattr(proxy_master, "_install_ca_into_roblox", lambda _pem, **_kwargs: (True, {}))
     monkeypatch.setattr(proxy_master, "_other_proxy_owner_alive", lambda: False)
     monkeypatch.setattr(proxy_master, "_remove_hosts_entries", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(proxy_master, "_add_hosts_entries", lambda *_args, **_kwargs: True)
@@ -982,7 +986,7 @@ def test_macos_studio_launch_skips_ca_patch(tmp_path, monkeypatch):
     assert any("Skipping macOS Roblox Studio CA patch" in message for _category, message in logs)
 
 
-def test_macos_running_player_ca_repair_uses_privileged_helper(tmp_path, monkeypatch):
+def test_macos_running_player_ca_repair_uses_direct_write_first(tmp_path, monkeypatch):
     ca_dir = tmp_path / "proxy_ca"
     ca_dir.mkdir()
     (ca_dir / "ca.crt").write_text("ca", encoding="utf-8")
@@ -1031,15 +1035,14 @@ def test_macos_running_player_ca_repair_uses_privileged_helper(tmp_path, monkeyp
     monkeypatch.setattr(platform_macos, "find_bootstrapper_restore_resource_dirs", lambda: [])
     monkeypatch.setattr(macos_proxy_helper, "helper_patch_ca", fake_helper_patch)
     monkeypatch.setattr(proxy_master, "_log_cacert_state", lambda *_args, **_kwargs: states.pop(0))
-    monkeypatch.setattr(proxy_master, "_upsert_fleasion_ca_in_cacert", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should use helper")))
+    monkeypatch.setattr(
+        proxy_master,
+        "_upsert_fleasion_ca_in_cacert",
+        lambda *_args, **_kwargs: (True, 0, 0),
+    )
 
     assert proxy_master.check_and_patch_running_roblox_ca(exe_path) is True
-    assert helper_calls == [
-        (
-            "-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----\n",
-            [{"resource_dir": str(resources), "remove_pems": [], "strip_all_fleasion_ca": False}],
-        )
-    ]
+    assert helper_calls == []
 
 
 def test_macos_running_player_ca_repair_requests_full_strip_when_pre_read_fails(tmp_path, monkeypatch):

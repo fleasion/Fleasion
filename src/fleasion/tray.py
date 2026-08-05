@@ -3,6 +3,7 @@
 import ctypes
 import os
 import sys
+from pathlib import Path
 
 try:
     import winreg
@@ -205,10 +206,6 @@ def _is_admin() -> bool:
         return bool(ctypes.windll.shell32.IsUserAnAdmin()) if hasattr(ctypes, 'windll') else False
     except Exception:
         return False
-
-
-def _run_on_boot_requires_admin() -> bool:
-    return sys.platform == 'win32'
 
 
 class SystemTray:
@@ -441,15 +438,12 @@ class SystemTray:
         convenience_menu.addAction(self.clear_cache_action)
 
         # Run on Boot
-        _admin = _is_admin()
-        _boot_enabled = _admin or not _run_on_boot_requires_admin()
         self.run_on_boot_action = QAction(
-            'Run on Boot' if _boot_enabled else 'Run on Boot (admin required)',
+            'Run on Boot',
             convenience_menu,
         )
         self.run_on_boot_action.setCheckable(True)
         self.run_on_boot_action.setChecked(self.config_manager.run_on_boot)
-        self.run_on_boot_action.setEnabled(_boot_enabled)
         self.run_on_boot_action.triggered.connect(self._toggle_run_on_boot)
         convenience_menu.addAction(self.run_on_boot_action)
 
@@ -567,7 +561,20 @@ class SystemTray:
         self.config_manager.proxy_features_enabled = enabled
 
         if enabled:
-            if sys.platform == 'darwin':
+            if self.config_manager.proxy_mode == 'env':
+                # Env Proxy binds only a loopback high port. Any protected
+                # macOS cacert.pem fallback is requested only if direct patching fails.
+                self.proxy_master.start()
+                lifecycle = getattr(self.roblox_monitor, 'env_lifecycle', None)
+                if lifecycle is not None and self.roblox_monitor.is_player_running():
+                    if sys.platform.startswith('linux'):
+                        exe_path = Path('org.vinegarhq.Sober')
+                    else:
+                        from .utils import get_roblox_player_exe_path
+
+                        exe_path = get_roblox_player_exe_path()
+                    run_in_thread(lifecycle.handle_player_launch)(exe_path)
+            elif sys.platform == 'darwin':
                 from .utils.macos_proxy_helper import helper_is_ready, install_helper
 
                 if helper_is_ready():
@@ -673,9 +680,6 @@ class SystemTray:
 
     def _toggle_run_on_boot(self):
         """Toggle run-on-boot for the current platform."""
-        if _run_on_boot_requires_admin() and not _is_admin():
-            self.run_on_boot_action.setChecked(not self.run_on_boot_action.isChecked())
-            return
         from .utils import CONFIG_DIR
         from .utils.autostart import sync_autostart
 
@@ -1086,26 +1090,57 @@ class SystemTray:
         """
         from .app import restart_fleasion_normally
 
-        if not restart_fleasion_normally():
+        lifecycle = getattr(self.roblox_monitor, 'env_lifecycle', None)
+        preserve_player = bool(
+            self.config_manager.proxy_mode == 'env'
+            and lifecycle is not None
+            and lifecycle.owns_player
+            and self.roblox_monitor.is_player_running()
+        )
+        if not restart_fleasion_normally(
+            preserve_env_proxy_player=preserve_player
+        ):
             log_buffer.log('Restart', 'Could not relaunch Fleasion automatically')
             return
-        self._exit_app()
+        self._exit_app(
+            preserve_roblox=preserve_player,
+            force_close_roblox=not preserve_player,
+        )
 
-    def _exit_app(self):
+    def _exit_app(
+        self,
+        *,
+        preserve_roblox: bool = False,
+        force_close_roblox: bool = False,
+    ):
         """Exit the application."""
+        if getattr(self, '_exiting', False):
+            return
         self._exiting = True
         self.cleanup_tray_icon()
-        # Stop proxy: always attempt to stop so startup failures (e.g., UAC rejected)
-        # that leave background threads or waiters won't be skipped.
+
+        lifecycle = getattr(getattr(self, 'roblox_monitor', None), 'env_lifecycle', None)
         try:
-            # Stop proxy asynchronously to avoid blocking the UI/tray menu
-            run_in_thread(self.proxy_master.stop)()
+            if lifecycle is not None:
+                if preserve_roblox:
+                    lifecycle.preserve_owned_player_for_restart()
+                elif force_close_roblox or getattr(
+                    getattr(self, 'config_manager', None),
+                    'close_env_proxy_roblox_on_exit',
+                    True,
+                ):
+                    lifecycle.close_owned_player_for_exit()
+                else:
+                    lifecycle.cancel()
+        except Exception as exc:
+            log_buffer.log('Launcher', f'Env Proxy Player exit cleanup failed: {exc}')
+
+        # Player must be closed (or explicitly preserved) before its loopback
+        # proxy disappears.
+        try:
+            self.proxy_master.stop()
         except Exception:
-            # Fall back to synchronous stop if async invocation fails
-            try:
-                self.proxy_master.stop()
-            except Exception:
-                pass
+            pass
 
         # Quit Qt app
         self.app.quit()

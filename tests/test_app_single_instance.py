@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from fleasion import app as app_module
 from fleasion import __version__ as APP_VERSION
 from fleasion.utils import macos_proxy_helper
@@ -11,7 +13,7 @@ from fleasion.app import (
     _should_sync_autostart_on_launch,
     kill_other_fleasion_instances,
 )
-from PyQt6.QtCore import QEvent, QSharedMemory, QUrl
+from PyQt6.QtCore import QCoreApplication, QEvent, QSharedMemory, QUrl
 
 
 def test_macos_fleasion_process_matching_accepts_real_launch_forms():
@@ -93,6 +95,25 @@ def test_single_instance_quit_command_exits_tray():
     assert tray.exit_calls == 1
 
 
+def test_single_instance_preserve_command_keeps_env_player():
+    class _SocketStub:
+        def readAll(self):
+            return b'quit-preserve-env-player\n'
+
+    class _TrayStub:
+        def __init__(self):
+            self.exit_kwargs = []
+
+        def _exit_app(self, **kwargs):
+            self.exit_kwargs.append(kwargs)
+
+    tray = _TrayStub()
+
+    _handle_single_instance_command(_SocketStub(), tray)
+
+    assert tray.exit_kwargs == [{'preserve_roblox': True}]
+
+
 def test_roblox_url_event_filter_queues_until_application_is_ready():
     received = []
     event_filter = _RobloxUrlEventFilter()
@@ -138,18 +159,43 @@ def test_autostart_resync_includes_linux_normal_user(monkeypatch):
     monkeypatch.setattr(app_module, "_is_admin", lambda: False)
 
     assert _should_sync_autostart_on_launch(True)
+    monkeypatch.setattr(app_module, "_is_admin", lambda: True)
+    assert _should_sync_autostart_on_launch(True)
     assert not _should_sync_autostart_on_launch(False)
 
 
-def test_autostart_resync_still_requires_admin_on_windows(monkeypatch):
+def test_autostart_resync_runs_without_admin_on_windows(monkeypatch):
     monkeypatch.setattr(app_module.sys, "platform", "win32")
     monkeypatch.setattr(app_module, "_is_admin", lambda: False)
 
-    assert not _should_sync_autostart_on_launch(True)
-
-    monkeypatch.setattr(app_module, "_is_admin", lambda: True)
     assert _should_sync_autostart_on_launch(True)
 
+
+def test_env_proxy_studio_launch_is_completely_untouched(monkeypatch):
+    qt_app = QCoreApplication.instance() or QCoreApplication([])
+    config = SimpleNamespace(
+        proxy_mode="env",
+        proxy_features_enabled=True,
+        auto_delete_cache_on_exit=False,
+    )
+    monitor = app_module.RobloxExitMonitor(config)
+    monitor._studio_detected.disconnect(monitor._on_studio_detected)
+    notifications = []
+    monitor._studio_detected.connect(lambda: notifications.append(True))
+
+    monkeypatch.setattr(app_module, "is_roblox_running", lambda: False)
+    monkeypatch.setattr(app_module, "is_studio_running", lambda: True)
+    monkeypatch.setattr(
+        app_module,
+        "get_roblox_studio_exe_path",
+        lambda: (_ for _ in ()).throw(AssertionError("Env mode must not inspect Studio")),
+    )
+
+    monitor._check_roblox_status_locked()
+
+    assert notifications == []
+    assert monitor._studio_was_running is True
+    assert qt_app is not None
 
 def test_linux_hosts_nix_snippet_default_includes_profile_api_host():
     snippet = _linux_hosts_nix_snippet({})

@@ -212,6 +212,14 @@ class ConfigManagerEncodingTests(unittest.TestCase):
             manager.proxy_mode = 'invalid'
             self.assertEqual(manager.proxy_mode, 'hosts')
 
+            self.assertFalse(manager.lock_roblox_files_read_only)
+            manager.lock_roblox_files_read_only = True
+            self.assertTrue(manager.lock_roblox_files_read_only)
+
+            self.assertTrue(manager.close_env_proxy_roblox_on_exit)
+            manager.close_env_proxy_roblox_on_exit = False
+            self.assertFalse(manager.close_env_proxy_roblox_on_exit)
+
     def test_requested_defaults_for_boot_and_export_naming(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_manager_module = self._load_manager_for(Path(tmp))

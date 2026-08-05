@@ -1,6 +1,29 @@
 import plistlib
+from pathlib import Path
+from types import SimpleNamespace
 
 from fleasion.utils import autostart
+
+
+def test_windows_autostart_task_runs_at_least_privilege(monkeypatch):
+    xml_text = []
+
+    def fake_run(args, **_kwargs):
+        if "/Create" in args:
+            xml_path = Path(args[args.index("/XML") + 1])
+            xml_text.append(xml_path.read_text(encoding="utf-16"))
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(autostart.sys, "platform", "win32")
+    monkeypatch.setenv("USERNAME", "TestUser")
+    monkeypatch.setenv("USERDOMAIN", "TestDomain")
+    monkeypatch.setattr(autostart.subprocess, "CREATE_NO_WINDOW", 0, raising=False)
+    monkeypatch.setattr(autostart.subprocess, "run", fake_run)
+
+    assert autostart._create_task({"mode": "exe", "path": r"C:\Fleasion\Fleasion.exe"})
+    assert "<RunLevel>LeastPrivilege</RunLevel>" in xml_text[0]
+    assert "<LogonType>InteractiveToken</LogonType>" in xml_text[0]
+    assert "TestDomain\\TestUser" in xml_text[0]
 
 
 def test_macos_launch_agent_update_does_not_start_second_instance(tmp_path, monkeypatch):

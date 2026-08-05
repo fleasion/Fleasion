@@ -60,6 +60,7 @@ from .stash_paths import resource_stash_dir
 MODIFICATIONS_JSON = CONFIG_DIR / 'modifications.json'
 MOD_ORIGINALS_DIR = CONFIG_DIR / 'ModOriginals'
 MOD_CACHE_DIR = CONFIG_DIR / 'ModCache'
+READ_ONLY_STATE_FILE = CONFIG_DIR / 'read_only_modes.json'
 
 
 def normalise_target_path(target_path: str | Path) -> Path:
@@ -392,7 +393,7 @@ class ModificationManager(QObject):
     apply_finished = pyqtSignal(str)  # entry_id
     restore_finished = pyqtSignal()
 
-    def __init__(self, cache_scraper=None):
+    def __init__(self, cache_scraper=None, *, read_only_lock_enabled: bool = False):
         super().__init__()
         self._cache_scraper = cache_scraper
         self._roblox_dirs: list[Path] = _find_roblox_dirs()
@@ -412,7 +413,9 @@ class ModificationManager(QObject):
         # a background apply thread from writing to dst after the main thread
         # has already restored the original (Apply → Reset race condition).
         self._fs_lock = threading.Lock()
-        self._read_only_original_modes: dict[Path, int] = {}
+        self._read_only_lock_enabled = bool(read_only_lock_enabled)
+        self._read_only_state_file = READ_ONLY_STATE_FILE
+        self._read_only_original_modes = self._load_read_only_original_modes()
         self._read_only_extra_paths: set[Path] = set()
 
         # Load persisted data
@@ -515,12 +518,58 @@ class ModificationManager(QObject):
 
         return [path for path in files if path.is_file()] if existing_only else files
 
+    def _load_read_only_original_modes(self) -> dict[Path, int]:
+        state_file = _instance_attr(self, '_read_only_state_file')
+        if state_file is None:
+            return {}
+        try:
+            payload = json.loads(Path(state_file).read_text(encoding='utf-8'))
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        modes: dict[Path, int] = {}
+        for raw_path, raw_mode in payload.items():
+            try:
+                modes[Path(raw_path)] = int(raw_mode)
+            except (TypeError, ValueError):
+                continue
+        return modes
+
+    def _save_read_only_original_modes_locked(self) -> None:
+        state_file = _instance_attr(self, '_read_only_state_file')
+        if state_file is None:
+            return
+        protected = _instance_attr(self, '_read_only_original_modes') or {}
+        path = Path(state_file)
+        if not protected:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temp_path = path.with_suffix(path.suffix + '.tmp')
+            temp_path.write_text(
+                json.dumps(
+                    {str(file_path): stat.S_IMODE(mode) for file_path, mode in protected.items()},
+                    indent=2,
+                ),
+                encoding='utf-8',
+            )
+            temp_path.replace(path)
+        except OSError as exc:
+            log_buffer.log('Modifications', f'Failed to persist read-only guard state: {exc}')
+
     def managed_resource_paths(self) -> list[Path]:
         """Return live and snapshot paths Fleasion must keep authoritative."""
         return self._active_managed_resource_files(existing_only=False)
 
     def protect_managed_files(self, extra_paths: Iterable[Path] = ()) -> None:
         """Mark Fleasion-managed Roblox files read-only until Fleasion needs to write."""
+        if not bool(_instance_attr(self, '_read_only_lock_enabled', False)):
+            return
         lock = _instance_attr(self, '_fs_lock')
         if lock is None:
             self._protect_managed_files_locked(extra_paths)
@@ -529,6 +578,8 @@ class ModificationManager(QObject):
             self._protect_managed_files_locked(extra_paths)
 
     def _protect_managed_files_locked(self, extra_paths: Iterable[Path] = ()) -> None:
+        if not bool(_instance_attr(self, '_read_only_lock_enabled', False)):
+            return
         protected = _instance_attr(self, '_read_only_original_modes')
         if protected is None:
             protected = {}
@@ -551,21 +602,67 @@ class ModificationManager(QObject):
             _set_read_only(path)
 
         if newly_protected:
+            self._save_read_only_original_modes_locked()
             log_buffer.log(
                 'Modifications',
                 f'Read-only guarded {format_count(newly_protected, "managed Roblox file")}',
             )
 
-    def clear_managed_file_read_only(self) -> None:
+    def _unlock_managed_files_locked(self) -> None:
+        """Temporarily make guarded files writable without forgetting modes."""
+        protected = _instance_attr(self, '_read_only_original_modes') or {}
+        for path in protected:
+            try:
+                if path.exists():
+                    _clear_read_only(path)
+            except OSError as exc:
+                log_buffer.log(
+                    'Modifications',
+                    f'Failed to temporarily unlock managed file {path}: {exc}',
+                )
+
+    def clear_managed_file_read_only(
+        self,
+        extra_paths: Iterable[Path] = (),
+        *,
+        clear_untracked: bool = False,
+    ) -> None:
         """Clear Fleasion's read-only guard from managed Roblox files."""
         lock = _instance_attr(self, '_fs_lock')
         if lock is None:
-            self._clear_managed_file_read_only_locked()
+            self._clear_managed_file_read_only_locked(
+                extra_paths, clear_untracked=clear_untracked
+            )
             return
         with lock:
-            self._clear_managed_file_read_only_locked()
+            self._clear_managed_file_read_only_locked(
+                extra_paths, clear_untracked=clear_untracked
+            )
 
-    def _clear_managed_file_read_only_locked(self) -> None:
+    def set_read_only_lock_enabled(self, enabled: bool) -> None:
+        """Apply or remove the optional persistent modification-file guard."""
+        enabled = bool(enabled)
+        lock = _instance_attr(self, '_fs_lock')
+        if lock is None:
+            self._read_only_lock_enabled = enabled
+            if enabled:
+                self._protect_managed_files_locked()
+            else:
+                self._clear_managed_file_read_only_locked()
+            return
+        with lock:
+            self._read_only_lock_enabled = enabled
+            if enabled:
+                self._protect_managed_files_locked()
+            else:
+                self._clear_managed_file_read_only_locked()
+
+    def _clear_managed_file_read_only_locked(
+        self,
+        extra_paths: Iterable[Path] = (),
+        *,
+        clear_untracked: bool = False,
+    ) -> None:
         protected = _instance_attr(self, '_read_only_original_modes')
         if protected is None:
             protected = {}
@@ -590,14 +687,23 @@ class ModificationManager(QObject):
 
         for path in protected:
             _add(path)
-        for path in self._active_managed_resource_files(registered_extra_paths):
-            _add(path)
+        if clear_untracked:
+            for path in self._active_managed_resource_files(registered_extra_paths):
+                _add(path)
+            for path in extra_paths:
+                _add(Path(path))
 
         cleared = 0
         for path in paths:
             try:
                 if path.exists():
-                    _clear_read_only(path)
+                    original_mode = protected.get(path)
+                    if original_mode is None:
+                        # This may be a stale guard left by an older Fleasion
+                        # build, before original modes were restored exactly.
+                        _clear_read_only(path)
+                    else:
+                        path.chmod(stat.S_IMODE(original_mode))
                     cleared += 1
             except OSError as exc:
                 log_buffer.log(
@@ -605,6 +711,8 @@ class ModificationManager(QObject):
                     f'Failed to clear read-only guard for {path}: {exc}',
                 )
         protected.clear()
+        registered_extra_paths.clear()
+        self._save_read_only_original_modes_locked()
         if cleared:
             log_buffer.log(
                 'Modifications',
@@ -837,7 +945,7 @@ class ModificationManager(QObject):
                 if not validate_font_bytes(data):
                     raise ValueError('Not a valid font file (invalid header)')
                 with self._fs_lock:
-                    self._clear_managed_file_read_only_locked()
+                    self._unlock_managed_files_locked()
                     try:
                         apply_custom_font(data, self._roblox_dirs, self._stash_dir)
                     finally:
@@ -1040,7 +1148,7 @@ class ModificationManager(QObject):
     def _stash_and_write(self, target_path_rel: str, new_bytes: bytes) -> None:
         """Stash the original file and write the mod in every Roblox dir."""
         with self._fs_lock:
-            self._clear_managed_file_read_only_locked()
+            self._unlock_managed_files_locked()
             try:
                 for roblox_dir in self._roblox_dirs:
                     target_path = normalise_target_path(target_path_rel)
@@ -1190,7 +1298,7 @@ class ModificationManager(QObject):
 
         if self._data.get('fast_flags_enabled') and self._data.get('fast_flags'):
             with self._fs_lock:
-                self._clear_managed_file_read_only_locked()
+                self._unlock_managed_files_locked()
                 try:
                     self.fflag_manager.write(self._data['fast_flags'])
                 finally:
@@ -1214,7 +1322,7 @@ class ModificationManager(QObject):
         self._data['fast_flags_enabled'] = value
         if not value:
             with self._fs_lock:
-                self._clear_managed_file_read_only_locked()
+                self._unlock_managed_files_locked()
                 try:
                     self.fflag_manager.restore()
                 except Exception:
@@ -1284,7 +1392,7 @@ class ModificationManager(QObject):
         self._data['fast_flags_enabled'] = True
         self._save_json()
         with self._fs_lock:
-            self._clear_managed_file_read_only_locked()
+            self._unlock_managed_files_locked()
             try:
                 self.fflag_manager.write(settings)
             finally:

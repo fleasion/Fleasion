@@ -109,6 +109,7 @@ def test_read_only_guard_protects_managed_files_and_clears_on_close(tmp_path):
         "fast_flags_enabled": True,
     }
     manager._read_only_original_modes = {}
+    manager._read_only_lock_enabled = True
 
     manager.protect_managed_files([cacert])
 
@@ -116,14 +117,86 @@ def test_read_only_guard_protects_managed_files_and_clears_on_close(tmp_path):
     assert not (settings.stat().st_mode & stat.S_IWRITE)
     assert not (cacert.stat().st_mode & stat.S_IWRITE)
 
-    manager.clear_managed_file_read_only()
+    manager.clear_managed_file_read_only(clear_untracked=True)
 
     assert target.stat().st_mode & stat.S_IWRITE
     assert settings.stat().st_mode & stat.S_IWRITE
-    assert cacert.stat().st_mode & stat.S_IWRITE
+    assert not (cacert.stat().st_mode & stat.S_IWRITE)
 
 
-def test_restore_all_finishes_with_guarded_cacert_writable(tmp_path):
+def test_read_only_guard_is_off_until_explicitly_enabled(tmp_path):
+    roblox_dir = tmp_path / "Roblox" / "Resources"
+    target = roblox_dir / "content" / "textures" / "Cursor.png"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"original")
+
+    manager = ModificationManager.__new__(ModificationManager)
+    manager._roblox_dirs = [roblox_dir]
+    manager._data = {
+        "entries": [
+            {
+                "target_path": r"content\textures\Cursor.png",
+                "source_type": "local_file",
+                "source_value": "cursor.png",
+            }
+        ]
+    }
+    manager._fs_lock = threading.Lock()
+    manager._read_only_original_modes = {}
+    manager._read_only_extra_paths = set()
+    manager._read_only_lock_enabled = False
+
+    manager.protect_managed_files()
+    assert target.stat().st_mode & stat.S_IWRITE
+
+    manager.set_read_only_lock_enabled(True)
+    assert not (target.stat().st_mode & stat.S_IWRITE)
+
+    manager.set_read_only_lock_enabled(False)
+    assert target.stat().st_mode & stat.S_IWRITE
+
+
+def test_read_only_guard_restores_modes_after_unclean_restart(tmp_path):
+    roblox_dir = tmp_path / "Roblox" / "Resources"
+    target = roblox_dir / "content" / "textures" / "Cursor.png"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"original")
+    state_file = tmp_path / "read_only_modes.json"
+
+    manager = ModificationManager.__new__(ModificationManager)
+    manager._roblox_dirs = [roblox_dir]
+    manager._data = {
+        "entries": [
+            {
+                "target_path": r"content\textures\Cursor.png",
+                "source_type": "local_file",
+                "source_value": "cursor.png",
+            }
+        ]
+    }
+    manager._fs_lock = threading.Lock()
+    manager._read_only_state_file = state_file
+    manager._read_only_original_modes = {}
+    manager._read_only_extra_paths = set()
+    manager._read_only_lock_enabled = True
+    manager.protect_managed_files()
+    assert state_file.exists()
+    assert not (target.stat().st_mode & stat.S_IWRITE)
+
+    restarted = ModificationManager.__new__(ModificationManager)
+    restarted._roblox_dirs = [roblox_dir]
+    restarted._data = manager._data
+    restarted._fs_lock = threading.Lock()
+    restarted._read_only_state_file = state_file
+    restarted._read_only_original_modes = restarted._load_read_only_original_modes()
+    restarted._read_only_extra_paths = set()
+    restarted._read_only_lock_enabled = False
+    restarted.clear_managed_file_read_only(clear_untracked=False)
+
+    assert target.stat().st_mode & stat.S_IWRITE
+    assert not state_file.exists()
+
+def test_restore_all_restores_guarded_cacert_original_mode(tmp_path):
     roblox_dir = tmp_path / "Fishstrap" / "Versions" / "WindowsPlayer"
     cacert = roblox_dir / "ssl" / "cacert.pem"
     cacert.parent.mkdir(parents=True)
@@ -137,6 +210,7 @@ def test_restore_all_finishes_with_guarded_cacert_writable(tmp_path):
     manager._data = {"entries": [], "fast_flags_enabled": False}
     manager._read_only_original_modes = {}
     manager._read_only_extra_paths = set()
+    manager._read_only_lock_enabled = True
     manager.global_settings_manager = types.SimpleNamespace(restore=lambda: None)
     manager.restore_finished = _SignalSpy()
 
@@ -145,7 +219,7 @@ def test_restore_all_finishes_with_guarded_cacert_writable(tmp_path):
 
     manager.restore_all()
 
-    assert cacert.stat().st_mode & stat.S_IWRITE
+    assert not (cacert.stat().st_mode & stat.S_IWRITE)
     assert manager.restore_finished.calls == [()]
 
 
@@ -171,6 +245,7 @@ def test_stash_write_does_not_preserve_guarded_read_only_mode(tmp_path):
     manager._data = {"entries": [entry]}
     manager._read_only_original_modes = {}
     manager._read_only_extra_paths = set()
+    manager._read_only_lock_enabled = True
 
     manager.protect_managed_files([cacert])
     assert not (target.stat().st_mode & stat.S_IWRITE)

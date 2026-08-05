@@ -38,7 +38,7 @@ LINUX_AUTOSTART_PATH = USER_HOME / '.config' / 'autostart' / 'fleasion.desktop'
 
 
 # Bump this whenever the task XML format changes to force recreation on next launch.
-_TASK_FORMAT_VERSION = 7
+_TASK_FORMAT_VERSION = 8
 
 
 def _ps_single_quote(value: str) -> str:
@@ -136,7 +136,7 @@ def _task_exists() -> bool:
         return False
 
 
-def _delete_task() -> None:
+def _delete_task() -> bool:
     if sys.platform == 'darwin':
         try:
             subprocess.run(
@@ -150,26 +150,27 @@ def _delete_task() -> None:
             LAUNCH_AGENT_PATH.unlink(missing_ok=True)
         except OSError:
             pass
-        return
+        return not LAUNCH_AGENT_PATH.exists()
     if sys.platform.startswith('linux'):
         try:
             LINUX_AUTOSTART_PATH.unlink(missing_ok=True)
         except OSError:
             pass
-        return
+        return not LINUX_AUTOSTART_PATH.exists()
     try:
-        subprocess.run(
+        result = subprocess.run(
             ['schtasks', '/Delete', '/TN', TASK_NAME, '/F'],
             capture_output=True,
             creationflags=subprocess.CREATE_NO_WINDOW,
             timeout=10,
         )
+        return result.returncode == 0 and not _task_exists()
     except Exception:
-        pass
+        return False
 
 
 def _create_task(launch_info: dict) -> bool:
-    """Create the scheduled task with highest privileges (no UAC on logon)."""
+    """Create a per-user autostart entry without elevation."""
     if sys.platform == 'darwin':
         try:
             if launch_info['mode'] == 'exe':
@@ -296,7 +297,8 @@ def _create_task(launch_info: dict) -> bool:
         command = 'powershell.exe'
         args = _html.escape(ps_cmd)
 
-    # We use an XML task definition so we can set RunLevel=HighestAvailable.
+    # Use a per-user interactive task. Env Proxy does not need elevation, and
+    # hosts mode can request it only when the user explicitly selects that mode.
     # Both <Principal> and <LogonTrigger> must carry <UserId> so that:
     #   - The task is owned by (and runs as) the correct user account.
     #   - The logon trigger fires only when that specific user logs on.
@@ -313,7 +315,7 @@ def _create_task(launch_info: dict) -> bool:
             <Principal id="Author">
               <UserId>{user_id}</UserId>
               <LogonType>InteractiveToken</LogonType>
-              <RunLevel>HighestAvailable</RunLevel>
+              <RunLevel>LeastPrivilege</RunLevel>
             </Principal>
           </Principals>
           <Settings>
@@ -384,7 +386,7 @@ def sync_autostart(enabled: bool, config_dir: Path) -> bool:
     """
     if not enabled:
         if _task_exists():
-            _delete_task()
+            return _delete_task()
         return True
 
     current = _get_launch_info()

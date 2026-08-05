@@ -233,6 +233,9 @@ DEFAULT_SETTINGS = {
     'clear_cache_on_launch': True,
     'proxy_features_enabled': True,
     'proxy_mode': 'hosts',
+    'lock_roblox_files_read_only': False,
+    'read_only_lock_migration_v1_complete': False,
+    'close_env_proxy_roblox_on_exit': True,
     'custom_fflags_enabled': False,
     'custom_fflags_warning_accepted': False,
     'custom_fflags': {},
@@ -786,6 +789,35 @@ class ConfigManager:
     def proxy_mode(self, value: str):
         value = str(value or 'hosts').lower()
         self.settings['proxy_mode'] = value if value in {'hosts', 'env'} else 'hosts'
+        self._save_settings()
+
+    @property
+    def lock_roblox_files_read_only(self) -> bool:
+        """Whether active modification targets should remain read-only."""
+        return bool(self.settings.get('lock_roblox_files_read_only', False))
+
+    @lock_roblox_files_read_only.setter
+    def lock_roblox_files_read_only(self, value: bool):
+        self.settings['lock_roblox_files_read_only'] = bool(value)
+        self._save_settings()
+
+    @property
+    def read_only_lock_migration_v1_complete(self) -> bool:
+        return bool(self.settings.get('read_only_lock_migration_v1_complete', False))
+
+    @read_only_lock_migration_v1_complete.setter
+    def read_only_lock_migration_v1_complete(self, value: bool):
+        self.settings['read_only_lock_migration_v1_complete'] = bool(value)
+        self._save_settings()
+
+    @property
+    def close_env_proxy_roblox_on_exit(self) -> bool:
+        """Whether Fleasion should close its Env-proxied Player on exit."""
+        return bool(self.settings.get('close_env_proxy_roblox_on_exit', True))
+
+    @close_env_proxy_roblox_on_exit.setter
+    def close_env_proxy_roblox_on_exit(self, value: bool):
+        self.settings['close_env_proxy_roblox_on_exit'] = bool(value)
         self._save_settings()
 
     @property

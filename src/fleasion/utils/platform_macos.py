@@ -25,6 +25,11 @@ from .paths import (
     USER_HOME,
 )
 
+# This module may be imported by cross-platform tests and tooling; keep its
+# process names macOS-specific rather than inheriting the host platform's names.
+ROBLOX_PROCESS = 'RobloxPlayer'
+ROBLOX_STUDIO_PROCESS = 'RobloxStudio'
+
 ROBLOX_APP_CANDIDATES = (
     Path('/Applications/Roblox.app'),
     USER_HOME / 'Applications' / 'Roblox.app',
@@ -453,6 +458,15 @@ def is_roblox_running() -> bool:
     return _first_process_pid(ROBLOX_PROCESS) is not None
 
 
+def get_roblox_process_identity() -> tuple[int, str] | None:
+    """Return a token identifying the current Player process."""
+    pid = _first_process_pid(ROBLOX_PROCESS)
+    if pid is None:
+        return None
+    command = _process_command(pid)
+    return pid, str(command or '')
+
+
 def is_studio_running() -> bool:
     """Check if Roblox Studio is currently running."""
     return _first_process_pid(ROBLOX_STUDIO_PROCESS) is not None
@@ -758,7 +772,13 @@ def _detached_popen(args: list[str]) -> subprocess.Popen:
     return subprocess.Popen(args, **_DETACHED_POPEN_KWARGS)
 
 
-def relaunch_roblox_with_proxy_env(proxy_url: str, launch_target: str | None = None) -> bool:
+def relaunch_roblox_with_proxy_env(
+    proxy_url: str,
+    launch_target: str | None = None,
+    *,
+    force: bool = False,
+    cancel_event: threading.Event | None = None,
+) -> bool:
     """Relaunch the running macOS Roblox Player through Fleasion's env proxy.
 
     LaunchServices does not retrofit environment variables onto an existing
@@ -775,7 +795,7 @@ def relaunch_roblox_with_proxy_env(proxy_url: str, launch_target: str | None = N
         )
         return False
 
-    if not _claim_env_proxy_relaunch(force=bool(launch_target)):
+    if not _claim_env_proxy_relaunch(force=bool(launch_target) or force):
         log_buffer.log('Launcher', 'Roblox Env Proxy relaunch already handled for this launch')
         return False
 
@@ -786,6 +806,8 @@ def relaunch_roblox_with_proxy_env(proxy_url: str, launch_target: str | None = N
                 'Launcher',
                 f'Roblox Env Proxy relaunch skipped: local proxy is not ready at {proxy_url}',
             )
+            return False
+        if cancel_event is not None and cancel_event.is_set():
             return False
 
         log_buffer.log(
@@ -800,6 +822,8 @@ def relaunch_roblox_with_proxy_env(proxy_url: str, launch_target: str | None = N
                     'Roblox did not exit before macOS env-proxy relaunch',
                 )
                 return False
+        if cancel_event is not None and cancel_event.is_set():
+            return False
 
         proxy_env = {
             'ALL_PROXY': proxy_url,
@@ -821,6 +845,8 @@ def relaunch_roblox_with_proxy_env(proxy_url: str, launch_target: str | None = N
 
         launch_error = ''
         for attempt in range(3):
+            if cancel_event is not None and cancel_event.is_set():
+                return False
             launch_result = subprocess.run(
                 open_args,
                 capture_output=True,
