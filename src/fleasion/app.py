@@ -2778,7 +2778,13 @@ def main():
     if sys.platform == 'darwin':
         from .modifications.macos_bootstrapper_bridge import MacBootstrapperBridge
 
-        macos_bootstrapper_bridge = MacBootstrapperBridge(mod_manager, app)
+        macos_bootstrapper_bridge = MacBootstrapperBridge(
+            mod_manager,
+            app,
+            custom_fflag_seed=lambda: proxy_master.prime_custom_fflag_cache(
+                allow_running=True
+            ),
+        )
         app.aboutToQuit.connect(macos_bootstrapper_bridge.stop)
 
     def _refresh_managed_read_only_guard() -> None:

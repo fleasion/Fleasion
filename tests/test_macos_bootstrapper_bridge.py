@@ -101,3 +101,28 @@ def test_launch_guard_reapplies_changed_managed_resource(tmp_path, monkeypatch):
     assert bridge._managed_reapply_passes == 2
     assert reapply_requests == [True]
     bridge.stop()
+
+
+def test_resource_guard_reseeds_custom_flags_after_reapply(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    resources = tmp_path / 'Roblox.app' / 'Contents' / 'Resources'
+    macos = resources.parent / 'MacOS'
+    managed_file = resources / 'content' / 'textures' / 'cursor.png'
+    managed_file.parent.mkdir(parents=True)
+    managed_file.write_bytes(b'fleasion')
+    macos.mkdir(parents=True)
+    manager = _ManagerStub(resources, managed_file)
+    seed_calls = []
+    bridge = MacBootstrapperBridge(
+        manager,
+        app,
+        custom_fflag_seed=lambda: seed_calls.append(True),
+    )
+    bridge._settings_timer.stop()
+    bridge._topology_timer.stop()
+
+    thread = bridge._trigger_managed_reapply()
+    thread.join(timeout=2)
+
+    assert seed_calls == [True]
+    bridge.stop()

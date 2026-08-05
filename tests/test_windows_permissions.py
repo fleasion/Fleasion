@@ -1,7 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from fleasion.utils import windows_permissions
+from fleasion.utils import roblox_dirs, windows_permissions
 
 
 def _player_install(tmp_path: Path) -> Path:
@@ -16,6 +16,9 @@ def test_grant_uses_only_current_user_sid_and_modify_inheritance(tmp_path, monke
     calls = []
 
     monkeypatch.setattr(windows_permissions, 'sys', SimpleNamespace(platform='win32'))
+    monkeypatch.setattr(roblox_dirs.sys, 'platform', 'win32')
+    monkeypatch.setattr(roblox_dirs, 'ROBLOX_PROCESS', 'RobloxPlayerBeta.exe')
+    monkeypatch.setattr(roblox_dirs, 'ROBLOX_STUDIO_PROCESS', 'RobloxStudioBeta.exe')
     monkeypatch.setattr(windows_permissions, '_current_user_sid', lambda: 'S-1-5-21-1234')
     monkeypatch.setattr(
         windows_permissions.subprocess,
@@ -39,6 +42,9 @@ def test_grant_rejects_non_install_and_studio_paths(tmp_path, monkeypatch):
     install = _player_install(tmp_path)
     (install / 'RobloxStudioBeta.exe').write_bytes(b'')
     monkeypatch.setattr(windows_permissions, 'sys', SimpleNamespace(platform='win32'))
+    monkeypatch.setattr(roblox_dirs.sys, 'platform', 'win32')
+    monkeypatch.setattr(roblox_dirs, 'ROBLOX_PROCESS', 'RobloxPlayerBeta.exe')
+    monkeypatch.setattr(roblox_dirs, 'ROBLOX_STUDIO_PROCESS', 'RobloxStudioBeta.exe')
 
     result = windows_permissions.grant_current_user_modify_access([install])
 

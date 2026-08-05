@@ -3823,16 +3823,36 @@ class ProxyMaster:
         self.prime_custom_fflag_cache()
         self.refresh_username_spoofer_interception()
 
-    def prime_custom_fflag_cache(self) -> bool:
-        """Preload startup-only custom FastFlags while Roblox is closed."""
+    def prepare_custom_fflags_for_player_launch(self) -> None:
+        """Arm one fresh custom-FFlag response for the next Player launch."""
+        custom_modifier = getattr(self, 'custom_fflag_modifier', None)
+        if custom_modifier is None or not custom_modifier.is_enabled():
+            return
+        custom_modifier.prepare_for_player_launch()
+        seed_startup_flags = getattr(custom_modifier, 'prime_startup_flag_cache', None)
+        if not callable(seed_startup_flags):
+            seed_startup_flags = getattr(custom_modifier, 'prime_windows_flag_cache', None)
+        if callable(seed_startup_flags):
+            seed_startup_flags()
+        log_buffer.log(
+            'CustomFFlags',
+            'Armed a fresh ClientSettings response for Roblox Player launch',
+        )
+
+    def prime_custom_fflag_cache(self, *, allow_running: bool = False) -> bool:
+        """Preload startup-only custom FastFlags for the next Player launch."""
         custom_modifier = getattr(self, 'custom_fflag_modifier', None)
         if (
             custom_modifier is None
-            or not custom_modifier.is_enabled()
-            or is_roblox_running()
+            or (is_roblox_running() and not allow_running)
         ):
             return False
-        return custom_modifier.prime_windows_flag_cache()
+        seed_startup_flags = getattr(custom_modifier, 'prime_startup_flag_cache', None)
+        if not callable(seed_startup_flags):
+            seed_startup_flags = getattr(custom_modifier, 'prime_windows_flag_cache', None)
+        if not callable(seed_startup_flags):
+            return False
+        return bool(seed_startup_flags())
 
     def _emit_proxy_start_error(self, code: str, details: dict) -> None:
         """Forward startup failures to the app layer for user-facing dialogs."""

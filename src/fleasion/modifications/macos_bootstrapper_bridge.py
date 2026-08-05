@@ -38,9 +38,15 @@ class MacBootstrapperBridge(QObject):
     bootstrappers can later restore.
     """
 
-    def __init__(self, modification_manager, parent: QObject | None = None):
+    def __init__(
+        self,
+        modification_manager,
+        parent: QObject | None = None,
+        custom_fflag_seed=None,
+    ):
         super().__init__(parent)
         self._manager = modification_manager
+        self._custom_fflag_seed = custom_fflag_seed
         self._stopped = False
         self._settings_signatures: dict[Path, tuple[int, int] | None] = {}
         self._restore_signature: tuple[str, ...] = ()
@@ -237,6 +243,14 @@ class MacBootstrapperBridge(QObject):
         try:
             self._internal_reapply_active = True
             self._manager.reapply_all()
+            if callable(self._custom_fflag_seed):
+                try:
+                    self._custom_fflag_seed()
+                except Exception as exc:
+                    log_buffer.log(
+                        'CustomFFlags',
+                        f'Failed to re-seed custom FastFlags after bootstrapper rewrite: {exc}',
+                    )
             self._managed_signatures = self._path_signatures(
                 self._manager.managed_resource_paths()
             )

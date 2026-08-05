@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import sys
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ BOOTSTRAPPER_CLIENT_SETTINGS_PLATFORM = 'PCClientBootstrapper'
 DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG = 'DFIntSecondsBetweenDynamicVariableReloading'
 DYNAMIC_VARIABLE_RELOAD_INTERVAL_SECONDS = '1'
 WINDOWS_FLAG_CACHE_PATH = LOCAL_APPDATA / 'Temp' / 'Roblox' / 'cache' / 'flag_cache.dat'
+MACOS_CLIENT_SETTINGS_REL = Path('ClientSettings') / 'ClientAppSettings.json'
 
 
 def normalize_flag_value(value: Any) -> str:
@@ -49,7 +51,7 @@ def normalize_custom_fflags(value: Any) -> dict[str, str]:
 
 
 class CustomFFlagModifier:
-    """Merge user-defined flags into Roblox's remote application settings."""
+    """Merge user-defined flags into Roblox's remote and startup settings."""
 
     def __init__(
         self,
@@ -57,9 +59,14 @@ class CustomFFlagModifier:
         flag_cache_path: Path | None = None,
         settings_path: Path | None = None,
         reload_settings_from_disk: bool = False,
+        macos_resource_dirs: list[Path] | None = None,
     ):
         self.config_manager = config_manager
         self._flag_cache_path = flag_cache_path
+        self._macos_resource_dirs = (
+            list(macos_resource_dirs) if macos_resource_dirs is not None else None
+        )
+        self._macos_seeded_flag_names: set[str] = set()
         self._last_fresh_response_flags: tuple[tuple[str, str], ...] | None = None
         self._settings_path = settings_path or (CONFIG_FILE if reload_settings_from_disk else None)
         self._settings_signature: tuple[int, int] | None = None
@@ -153,6 +160,18 @@ class CustomFFlagModifier:
         self._last_fresh_response_flags = active_flags
         return True
 
+    def prepare_for_player_launch(self) -> None:
+        """Force a fresh ClientSettings response for the next Player instance.
+
+        The proxy modifier outlives Roblox Player across Env Proxy relaunches.
+        Roblox can therefore send the new process a conditional request for a
+        flag set that this modifier has already seen, which would otherwise
+        allow a cached 304 response through until Roblox performs its next
+        normal refresh.  Reset the per-process delivery marker so the first
+        ClientSettings request of every relaunch gets one fresh response.
+        """
+        self._last_fresh_response_flags = None
+
     def prime_windows_flag_cache(self) -> bool:
         """Write active overrides into Roblox's uncompressed Windows flag cache.
 
@@ -202,6 +221,134 @@ class CustomFFlagModifier:
             f'Pre-seeded Roblox flag cache with {len(flags)} custom FastFlag(s)',
         )
         return True
+
+    def _macos_client_settings_paths(self) -> list[Path]:
+        """Return live Player ClientSettings files used during macOS startup."""
+        resource_dirs = self._macos_resource_dirs
+        if resource_dirs is None:
+            if sys.platform != 'darwin':
+                return []
+            try:
+                from ...utils.platform_macos import find_roblox_resource_dirs
+
+                resource_dirs = find_roblox_resource_dirs(include_studio=False)
+            except Exception:
+                return []
+
+        paths: list[Path] = []
+        for resource_dir in resource_dirs:
+            if not (
+                resource_dir.name == 'Resources'
+                and resource_dir.parent.name == 'Contents'
+                and resource_dir.parent.parent.suffix == '.app'
+            ):
+                continue
+            paths.append(resource_dir / MACOS_CLIENT_SETTINGS_REL)
+        return paths
+
+    @staticmethod
+    def _clear_read_only(path: Path) -> None:
+        """Make a locally-owned Roblox settings file writable for one atomic update."""
+        try:
+            mode = path.stat().st_mode
+            if not mode & stat.S_IWRITE:
+                path.chmod(mode | stat.S_IWRITE)
+        except OSError:
+            pass
+
+    def prime_macos_client_settings(self) -> bool:
+        """Seed custom flags into Player's local macOS startup settings.
+
+        Roblox loads the Resources ClientSettings file before its first remote
+        ClientSettings request.  Seeding the file makes startup-only custom
+        flags available immediately; the proxy response path remains in place
+        for live changes after launch.
+        """
+        paths = self._macos_client_settings_paths()
+        if not paths:
+            return False
+
+        enabled = self.is_enabled()
+        flags = self.runtime_flags() if enabled else {}
+        desired_names = set(flags)
+        saved_names = set()
+        if not enabled:
+            self._refresh_settings_from_disk()
+            saved_flags = (
+                self._disk_flags
+                if self._disk_flags is not None
+                else getattr(self.config_manager, 'custom_fflags', {})
+            )
+            saved_names = set(normalize_custom_fflags(saved_flags))
+            saved_names.add(DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG)
+        stale_names = (self._macos_seeded_flag_names | saved_names) - desired_names
+        updated_paths = 0
+
+        for target in paths:
+            try:
+                existing: dict[str, Any]
+                if target.exists():
+                    try:
+                        loaded = json.loads(target.read_text(encoding='utf-8'))
+                    except json.JSONDecodeError:
+                        log_buffer.log(
+                            'CustomFFlags',
+                            f'Could not decode macOS ClientSettings file; left unchanged: {target}',
+                        )
+                        continue
+                    if not isinstance(loaded, dict):
+                        log_buffer.log(
+                            'CustomFFlags',
+                            f'macOS ClientSettings root was not an object; left unchanged: {target}',
+                        )
+                        continue
+                    existing = loaded
+                else:
+                    existing = {}
+
+                merged = dict(existing)
+                for name in stale_names:
+                    merged.pop(name, None)
+                merged.update(flags)
+                if merged == existing:
+                    continue
+
+                original_mode = None
+                if target.exists():
+                    original_mode = stat.S_IMODE(target.stat().st_mode)
+                    self._clear_read_only(target)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                temporary = target.with_name(
+                    f'.{target.name}.fleasion-{os.getpid()}.tmp'
+                )
+                try:
+                    temporary.write_text(json.dumps(merged, indent=2), encoding='utf-8')
+                    if original_mode is not None:
+                        temporary.chmod(original_mode)
+                    temporary.replace(target)
+                finally:
+                    temporary.unlink(missing_ok=True)
+                updated_paths += 1
+            except (OSError, UnicodeDecodeError, TypeError, ValueError) as exc:
+                log_buffer.log(
+                    'CustomFFlags',
+                    f'Failed to seed macOS ClientSettings file {target}: {exc}',
+                )
+
+        self._macos_seeded_flag_names = desired_names
+        if updated_paths:
+            log_buffer.log(
+                'CustomFFlags',
+                f'Pre-seeded macOS Roblox ClientSettings with {len(flags)} '
+                f'custom FastFlag(s) into {updated_paths} Player file(s)',
+            )
+        return bool(updated_paths)
+
+    def prime_startup_flag_cache(self) -> bool:
+        """Seed the platform-specific local flag source used before networking."""
+        if self._macos_resource_dirs is not None or sys.platform == 'darwin':
+            return self.prime_macos_client_settings()
+        return self.prime_windows_flag_cache()
 
     def modify_response(self, path: str, body: bytes) -> bytes:
         """Return a ClientSettings JSON response with configured overrides merged in."""

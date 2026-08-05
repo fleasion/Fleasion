@@ -10,12 +10,16 @@ class _ProxyStub:
         self.health_results = list(health_results)
         self.prepares = []
         self.monitors = 0
+        self.fflag_launch_preparations = 0
 
     def wait_for_env_proxy_ready(self, timeout=15.0):
         return True
 
     def roblox_env_proxy_url(self):
         return "http://127.0.0.1:58443"
+
+    def prepare_custom_fflags_for_player_launch(self):
+        self.fflag_launch_preparations += 1
 
     def ensure_env_proxy_roblox_ca(self, exe_path, *, settle=False):
         self.prepares.append((Path(exe_path), settle))
@@ -64,6 +68,7 @@ def test_env_lifecycle_converts_once_when_ca_stays_healthy():
     assert controller.handle_player_launch(Path("/Roblox/RobloxPlayerBeta.exe"))
     assert calls == [("http://127.0.0.1:58443", None, False)]
     assert proxy.monitors == 1
+    assert proxy.fflag_launch_preparations == 1
     assert controller.owns_player
 
 
@@ -80,6 +85,7 @@ def test_env_lifecycle_allows_exactly_two_ca_repair_relaunches():
     assert [call[2] for call in calls] == [False, True, True]
     assert proxy.monitors == 3
     assert len(proxy.prepares) == 3
+    assert proxy.fflag_launch_preparations == 3
 
 
 def test_env_lifecycle_never_attempts_a_third_ca_repair():

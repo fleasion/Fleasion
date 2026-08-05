@@ -100,6 +100,15 @@ class EnvProxyLifecycleController:
             and getattr(self._config, 'proxy_mode', 'hosts') == 'env'
         )
 
+    def _prepare_custom_fflags_for_relaunch(self) -> None:
+        prepare = getattr(
+            self._proxy_master,
+            'prepare_custom_fflags_for_player_launch',
+            None,
+        )
+        if callable(prepare):
+            prepare()
+
     def handle_player_launch(
         self,
         exe_path: Path | None = None,
@@ -131,6 +140,7 @@ class EnvProxyLifecycleController:
 
             if not self._enabled():
                 return False
+            self._prepare_custom_fflags_for_relaunch()
             self._mark_intentional_relaunch()
             try:
                 relaunched = self._relaunch_player(
@@ -186,6 +196,7 @@ class EnvProxyLifecycleController:
                     return False
                 if not self._enabled():
                     return False
+                self._prepare_custom_fflags_for_relaunch()
                 self._mark_intentional_relaunch()
                 try:
                     relaunched = self._relaunch_player(

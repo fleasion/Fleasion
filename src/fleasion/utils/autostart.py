@@ -114,7 +114,10 @@ def _get_launch_info() -> dict:
     import shutil
 
     found_uv = shutil.which('uv') or shutil.which('uv.exe')
-    uv = str(Path(found_uv).resolve()) if found_uv else 'uv'
+    # Keep the path returned by shutil.which intact.  In particular, a
+    # Windows path must not be resolved by pathlib while this module is being
+    # exercised from a different host platform.
+    uv = found_uv or 'uv'
     # Find project root (dir containing pyproject.toml)
     check = _project_root()
     return {
