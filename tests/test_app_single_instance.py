@@ -9,6 +9,10 @@ from fleasion.app import (
     _linux_hosts_nix_snippet,
     _looks_like_macos_fleasion_command,
     _manual_upstream_credentials_missing,
+    _repair_autostart_once,
+    _repair_roblox_permissions_once,
+    _show_roblox_permission_failure,
+    _show_run_on_boot_failure,
     _should_reclaim_stale_single_instance,
     _should_sync_autostart_on_launch,
     kill_other_fleasion_instances,
@@ -169,6 +173,194 @@ def test_autostart_resync_runs_without_admin_on_windows(monkeypatch):
     monkeypatch.setattr(app_module, "_is_admin", lambda: False)
 
     assert _should_sync_autostart_on_launch(True)
+
+
+def test_run_on_boot_failure_can_launch_one_time_admin_repair(monkeypatch):
+    selected = []
+
+    class _MessageBox:
+        class Icon:
+            Warning = object()
+
+        class ButtonRole:
+            AcceptRole = object()
+            RejectRole = object()
+
+        def __init__(self, _parent):
+            self._buttons = []
+
+        def setWindowTitle(self, _title):
+            pass
+
+        def setIcon(self, _icon):
+            pass
+
+        def setText(self, text):
+            selected.append(text)
+
+        def setWindowIcon(self, _icon):
+            pass
+
+        def addButton(self, text, _role):
+            button = object()
+            self._buttons.append((text, button))
+            if text == 'Relaunch as administrator':
+                self._clicked = button
+            return button
+
+        def setDefaultButton(self, _button):
+            pass
+
+        def exec(self):
+            pass
+
+        def clickedButton(self):
+            return self._clicked
+
+    relaunches = []
+    monkeypatch.setattr(app_module, 'QMessageBox', _MessageBox)
+    monkeypatch.setattr(app_module, 'get_icon_path', lambda: None)
+    monkeypatch.setattr(
+        app_module,
+        '_relaunch_as_admin',
+        lambda **kwargs: relaunches.append(kwargs) or True,
+    )
+
+    _show_run_on_boot_failure(None)
+
+    assert 'try again on the next launch' in selected[0]
+    assert relaunches == [{'extra_args': '--repair-autostart', 'parent_hwnd': None}]
+
+
+def test_repair_autostart_once_syncs_only_from_admin(monkeypatch, tmp_path):
+    calls = []
+
+    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(app_module, '_is_admin', lambda: True)
+    monkeypatch.setattr(
+        app_module,
+        'log_buffer',
+        type('Log', (), {'log': staticmethod(lambda *args: None)})(),
+    )
+    monkeypatch.setattr(app_module, 'CONFIG_DIR', tmp_path)
+
+    from fleasion.utils import autostart
+
+    monkeypatch.setattr(
+        autostart,
+        'sync_autostart',
+        lambda enabled, config_dir: calls.append((enabled, config_dir)) or True,
+    )
+
+    assert _repair_autostart_once() == 0
+    assert calls == [(True, tmp_path)]
+
+
+def test_roblox_permission_prompt_requests_targeted_elevation(monkeypatch, tmp_path):
+    selected = []
+    relaunches = []
+
+    class _MessageBox:
+        class Icon:
+            Warning = object()
+
+        class ButtonRole:
+            AcceptRole = object()
+            RejectRole = object()
+
+        def __init__(self, _parent):
+            self._clicked = None
+
+        def setWindowTitle(self, _title):
+            pass
+
+        def setIcon(self, _icon):
+            pass
+
+        def setText(self, text):
+            selected.append(text)
+
+        def setWindowIcon(self, _icon):
+            pass
+
+        def addButton(self, text, _role):
+            button = object()
+            if text.startswith('Grant access'):
+                self._clicked = button
+            return button
+
+        def setDefaultButton(self, _button):
+            pass
+
+        def exec(self):
+            pass
+
+        def clickedButton(self):
+            return self._clicked
+
+    monkeypatch.setattr(app_module, 'QMessageBox', _MessageBox)
+    monkeypatch.setattr(app_module, 'get_icon_path', lambda: None)
+    monkeypatch.setattr(app_module, 'CONFIG_DIR', tmp_path)
+    monkeypatch.setattr(
+        app_module,
+        '_relaunch_as_admin',
+        lambda **kwargs: relaunches.append(kwargs) or True,
+    )
+
+    from fleasion.utils import windows_permissions
+
+    pending = []
+    monkeypatch.setattr(
+        windows_permissions,
+        'write_pending_repair',
+        lambda paths, config_dir: pending.extend(paths) or True,
+    )
+    monkeypatch.setattr(windows_permissions, 'clear_repair_result', lambda _path: None)
+
+    _show_roblox_permission_failure(None, [tmp_path / 'Roblox' / 'version-old'])
+
+    assert 'current Windows account' in selected[0]
+    assert pending == [tmp_path / 'Roblox' / 'version-old']
+    assert relaunches == [
+        {'extra_args': '--repair-roblox-permissions', 'parent_hwnd': None}
+    ]
+
+
+def test_repair_roblox_permissions_once_writes_result_and_clears_pending(monkeypatch, tmp_path):
+    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(app_module, '_is_admin', lambda: True)
+    monkeypatch.setattr(app_module, 'CONFIG_DIR', tmp_path)
+    monkeypatch.setattr(
+        app_module,
+        'log_buffer',
+        type('Log', (), {'log': staticmethod(lambda *args: None)})(),
+    )
+
+    from fleasion.utils import windows_permissions
+
+    paths = [tmp_path / 'Roblox' / 'version-old']
+    monkeypatch.setattr(windows_permissions, 'read_pending_repair', lambda _path: paths)
+    monkeypatch.setattr(
+        windows_permissions,
+        'grant_current_user_modify_access',
+        lambda values: {'ok': True, 'granted': [str(values[0])], 'failed': []},
+    )
+    results = []
+    monkeypatch.setattr(
+        windows_permissions,
+        'write_repair_result',
+        lambda result, _path: results.append(result),
+    )
+    cleared = []
+    monkeypatch.setattr(
+        windows_permissions,
+        'clear_pending_repair',
+        lambda path: cleared.append(path),
+    )
+
+    assert _repair_roblox_permissions_once() == 0
+    assert results == [{'ok': True, 'granted': [str(paths[0])], 'failed': []}]
+    assert cleared == [tmp_path]
 
 
 def test_env_proxy_studio_launch_is_completely_untouched(monkeypatch):

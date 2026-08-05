@@ -192,13 +192,121 @@ def _show_run_on_boot_failure(parent) -> None:
     msg.setIcon(QMessageBox.Icon.Warning)
     msg.setText(
         'Failed to register autostart.\n'
-        'Check the application log for details.\n\n'
-        'Turn off Run on Boot to stop this error from appearing.'
+        'A legacy task may have been created with administrator permissions.\n\n'
+        'Choose Ignore to leave Run on Boot enabled and try again on the next '
+        'launch, or choose Relaunch as administrator for a one-time task repair.'
     )
     if icon_path := get_icon_path():
         from PyQt6.QtGui import QIcon
 
         msg.setWindowIcon(QIcon(str(icon_path)))
+
+    repair_button = msg.addButton(
+        'Relaunch as administrator', QMessageBox.ButtonRole.AcceptRole
+    )
+    ignore_button = msg.addButton('Ignore', QMessageBox.ButtonRole.RejectRole)
+    msg.setDefaultButton(ignore_button)
+    msg.exec()
+
+    if msg.clickedButton() == repair_button:
+        _relaunch_as_admin(extra_args='--repair-autostart', parent_hwnd=_window_handle(parent))
+
+
+def _show_roblox_permission_failure(parent, denied_dirs, mod_manager=None) -> None:
+    """Ask before permanently granting this Windows user access to failed installs."""
+    paths = sorted({Path(path).resolve() for path in denied_dirs}, key=lambda value: str(value).lower())
+    if not paths:
+        return
+
+    msg = QMessageBox(parent)
+    msg.setWindowTitle('Roblox Installation Permission Required')
+    msg.setIcon(QMessageBox.Icon.Warning)
+    listed_paths = '\n'.join(f'- {path}' for path in paths)
+    msg.setText(
+        'Fleasion could not write configured modifications or FastFlags to these Roblox '
+        f'Player installations:\n\n{listed_paths}\n\n'
+        'Would you like to permanently grant your current Windows account Modify access '
+        'to only these installation folders? Existing permissions are preserved. '
+        'This requires a one-time administrator prompt.'
+    )
+    if icon_path := get_icon_path():
+        from PyQt6.QtGui import QIcon
+
+        msg.setWindowIcon(QIcon(str(icon_path)))
+
+    grant_button = msg.addButton(
+        'Grant access for this Windows user', QMessageBox.ButtonRole.AcceptRole
+    )
+    ignore_button = msg.addButton('Ignore', QMessageBox.ButtonRole.RejectRole)
+    msg.setDefaultButton(ignore_button)
+    msg.exec()
+
+    if msg.clickedButton() != grant_button:
+        return
+
+    from .utils.windows_permissions import (
+        clear_repair_result,
+        clear_pending_repair,
+        write_pending_repair,
+    )
+
+    try:
+        clear_repair_result(CONFIG_DIR)
+        if not write_pending_repair(paths, CONFIG_DIR):
+            raise OSError('No valid Roblox installation folders were selected')
+        relaunched = _relaunch_as_admin(
+            extra_args='--repair-roblox-permissions',
+            parent_hwnd=_window_handle(parent),
+        )
+    except Exception as exc:
+        clear_pending_repair(CONFIG_DIR)
+        log_buffer.log('RobloxPermissions', f'Could not start elevated ACL repair: {exc}')
+        return
+
+    if relaunched:
+        log_buffer.log(
+            'RobloxPermissions',
+            'Elevated ACL repair started for the selected Roblox installations',
+        )
+        if mod_manager is not None:
+            QTimer.singleShot(500, lambda: _poll_roblox_permission_repair(mod_manager))
+    else:
+        clear_pending_repair(CONFIG_DIR)
+
+
+def _poll_roblox_permission_repair(mod_manager) -> None:
+    """Consume a one-shot elevated ACL result and retry the normal write path."""
+    from .utils.windows_permissions import (
+        clear_pending_repair,
+        clear_repair_result,
+        read_repair_result,
+    )
+
+    result = read_repair_result(CONFIG_DIR)
+    if result is None:
+        QTimer.singleShot(500, lambda: _poll_roblox_permission_repair(mod_manager))
+        return
+
+    clear_repair_result(CONFIG_DIR)
+    clear_pending_repair(CONFIG_DIR)
+    if result.get('ok'):
+        log_buffer.log(
+            'RobloxPermissions',
+            f"Granted Modify access to {len(result.get('granted', []))} Roblox installation(s)",
+        )
+        run_in_thread(mod_manager.reapply_all)()
+        return
+
+    detail = result.get('error') or result.get('failed') or 'icacls could not update the ACL'
+    log_buffer.log('RobloxPermissions', f'ACL repair failed: {detail}')
+    msg = QMessageBox(_visible_parent_widget())
+    msg.setWindowTitle('Roblox Permission Repair Failed')
+    msg.setIcon(QMessageBox.Icon.Warning)
+    msg.setText(
+        'Fleasion could not update the permissions for one or more Roblox installations.\n\n'
+        f'{detail}'
+    )
+    msg.setStandardButtons(QMessageBox.StandardButton.Ok)
     msg.exec()
 
 
@@ -395,14 +503,7 @@ def _relaunch_as_admin(extra_args: str = '', parent_hwnd: int | None = None) -> 
             # Reconstruct:  uv run fleasion  (the original entry-point)
             exe = uv_exe
             # Pass the project directory so uv finds pyproject.toml correctly
-            cwd = os.path.dirname(os.path.abspath(sys.argv[0]))
-            # Walk up from the script to find the dir containing pyproject.toml
-            check = cwd
-            for _ in range(6):
-                if os.path.exists(os.path.join(check, 'pyproject.toml')):
-                    cwd = check
-                    break
-                check = os.path.dirname(check)
+            cwd = str(Path(__file__).resolve().parents[2])
             # ShellExecuteW doesn't let us set cwd directly for the child, but
             # we can pass --project to tell uv where to look.
             params = subprocess.list2cmdline(['--project', cwd, 'run', 'fleasion', *existing_args])
@@ -477,6 +578,69 @@ def _relaunch_as_admin(extra_args: str = '', parent_hwnd: int | None = None) -> 
     return bool(ok)
 
 
+def _repair_autostart_once() -> int:
+    """Repair the Windows autostart task from a one-shot elevated process."""
+    if sys.platform != 'win32' or not _is_admin():
+        log_buffer.log('Autostart', 'Elevated autostart repair rejected: administrator access is required')
+        return 1
+
+    from .utils.autostart import sync_autostart
+
+    if sync_autostart(True, CONFIG_DIR):
+        log_buffer.log('Autostart', 'Elevated autostart repair completed')
+        return 0
+
+    log_buffer.log('Autostart', 'Elevated autostart repair failed')
+    return 1
+
+
+def _repair_roblox_permissions_once() -> int:
+    """Apply a pending targeted Roblox ACL repair from a one-shot UAC child."""
+    from .utils.windows_permissions import (
+        clear_pending_repair,
+        grant_current_user_modify_access,
+        read_pending_repair,
+        write_repair_result,
+    )
+
+    if sys.platform != 'win32' or not _is_admin():
+        log_buffer.log(
+            'RobloxPermissions',
+            'Elevated Roblox ACL repair rejected: administrator access is required',
+        )
+        return 1
+
+    paths = read_pending_repair(CONFIG_DIR)
+    if not paths:
+        result = {
+            'ok': False,
+            'granted': [],
+            'failed': [],
+            'error': 'No pending Roblox installation permission repair was found',
+        }
+    else:
+        try:
+            result = grant_current_user_modify_access(paths)
+        except Exception as exc:
+            result = {
+                'ok': False,
+                'granted': [],
+                'failed': [],
+                'error': f'Unexpected ACL repair error: {exc}',
+            }
+
+    try:
+        write_repair_result(result, CONFIG_DIR)
+    finally:
+        clear_pending_repair(CONFIG_DIR)
+
+    if result.get('ok'):
+        log_buffer.log('RobloxPermissions', 'Elevated Roblox ACL repair completed')
+        return 0
+    log_buffer.log('RobloxPermissions', f"Elevated Roblox ACL repair failed: {result}")
+    return 1
+
+
 def restart_fleasion_normally(*, preserve_env_proxy_player: bool = False) -> bool:
     """Relaunch Fleasion as a normal (non-elevated) process and return
     whether the new process was spawned - used when a setting change (e.g.
@@ -513,13 +677,7 @@ def restart_fleasion_normally(*, preserve_env_proxy_player: bool = False) -> boo
 
         uv_exe = shutil.which('uv') or shutil.which('uv.exe')
         if uv_exe:
-            cwd = os.path.dirname(os.path.abspath(sys.argv[0]))
-            check = cwd
-            for _ in range(6):
-                if os.path.exists(os.path.join(check, 'pyproject.toml')):
-                    cwd = check
-                    break
-                check = os.path.dirname(check)
+            cwd = str(Path(__file__).resolve().parents[2])
             launch = [uv_exe, '--project', cwd, 'run', 'fleasion', *existing_args]
         else:
             launch = [sys.executable, sys.argv[0], *existing_args]
@@ -2289,6 +2447,8 @@ def main():
         help=_ap.SUPPRESS,
     )
     _parser.add_argument('--fleasion-user-localappdata', help=_ap.SUPPRESS)
+    _parser.add_argument('--repair-autostart', action='store_true', help=_ap.SUPPRESS)
+    _parser.add_argument('--repair-roblox-permissions', action='store_true', help=_ap.SUPPRESS)
     _parser.add_argument(
         '--install-linux-privileged-helper',
         action='store_true',
@@ -2300,6 +2460,10 @@ def main():
         help='Allow active sudo/wheel users to run the Linux proxy helper without future prompts',
     )
     _args, _ = _parser.parse_known_args()
+    if _args.repair_autostart:
+        sys.exit(_repair_autostart_once())
+    if _args.repair_roblox_permissions:
+        sys.exit(_repair_roblox_permissions_once())
     pending_roblox_uri = _roblox_uri_from_argv()
     if _args.install_linux_privileged_helper:
         if not sys.platform.startswith('linux'):
@@ -2773,6 +2937,16 @@ def main():
         QTimer.singleShot(0, lambda: _show_run_on_boot_failure(_visible_parent_widget()))
     if _desktop_integration_launch_sync_failed:
         QTimer.singleShot(0, lambda: _show_desktop_integration_failure(_visible_parent_widget()))
+
+    def _check_roblox_permission_failures() -> None:
+        denied_dirs = mod_manager.take_permission_denied_dirs()
+        if denied_dirs:
+            _show_roblox_permission_failure(
+                _visible_parent_widget(), denied_dirs, mod_manager
+            )
+        QTimer.singleShot(500, _check_roblox_permission_failures)
+
+    QTimer.singleShot(500, _check_roblox_permission_failures)
     _admin_prompt_shown = False
 
     def _request_admin_once():

@@ -86,6 +86,38 @@ def test_stash_write_and_restore_use_normalised_target_paths(tmp_path):
     assert target.read_bytes() == b"original"
 
 
+def test_stash_write_records_permission_denials_and_continues(tmp_path, monkeypatch):
+    denied_dir = tmp_path / 'denied'
+    writable_dir = tmp_path / 'writable'
+    for path in (denied_dir, writable_dir):
+        (path / 'RobloxPlayerBeta.exe').parent.mkdir(parents=True)
+        (path / 'RobloxPlayerBeta.exe').write_bytes(b'')
+
+    manager = ModificationManager.__new__(ModificationManager)
+    manager._roblox_dirs = [denied_dir, writable_dir]
+    manager._stash_dir = tmp_path / 'stash'
+    manager._fs_lock = threading.Lock()
+    manager._permission_denied_lock = threading.Lock()
+    manager._permission_denied_dirs = set()
+    manager._unlock_managed_files_locked = lambda: None
+    manager._protect_managed_files_locked = lambda: None
+
+    original_write_bytes = Path.write_bytes
+
+    def fake_write_bytes(path, data):
+        if path.is_relative_to(denied_dir):
+            raise PermissionError('protected install')
+        return original_write_bytes(path, data)
+
+    monkeypatch.setattr(Path, 'write_bytes', fake_write_bytes)
+
+    with pytest.raises(PermissionError, match='denied'):
+        manager._stash_and_write('content/example.bin', b'modified')
+
+    assert manager.take_permission_denied_dirs() == [denied_dir.resolve()]
+    assert (writable_dir / 'content' / 'example.bin').read_bytes() == b'modified'
+
+
 def test_read_only_guard_protects_managed_files_and_clears_on_close(tmp_path):
     roblox_dir = tmp_path / "Roblox.app" / "Contents" / "Resources"
     target = roblox_dir / "content" / "textures" / "MouseLockedCursor.png"
@@ -354,6 +386,24 @@ def test_fast_flags_write_to_clientsettings_under_resource_root(tmp_path):
     assert json.loads(settings_path.read_text(encoding="utf-8")) == {
         "FFlagDebugSkyGray": "True",
     }
+
+
+def test_fast_flags_reports_permission_denied_installations(tmp_path, monkeypatch):
+    roblox_dir = tmp_path / 'Roblox' / 'Versions' / 'version-protected'
+    monkeypatch.setattr(fflag_manager.sys, 'platform', 'win32')
+
+    original_write_bytes = Path.write_bytes
+
+    def fake_write_bytes(path, data):
+        if path.is_relative_to(roblox_dir):
+            raise PermissionError('protected install')
+        return original_write_bytes(path, data)
+
+    monkeypatch.setattr(Path, 'write_bytes', fake_write_bytes)
+
+    failed_dirs = FastFlagManager([roblox_dir], tmp_path / 'stash').write({'grey_sky': True})
+
+    assert failed_dirs == {roblox_dir}
 
 
 def test_macos_fast_flags_cover_resource_and_appleblox_locations(tmp_path, monkeypatch):

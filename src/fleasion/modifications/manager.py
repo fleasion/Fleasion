@@ -417,6 +417,8 @@ class ModificationManager(QObject):
         self._read_only_state_file = READ_ONLY_STATE_FILE
         self._read_only_original_modes = self._load_read_only_original_modes()
         self._read_only_extra_paths: set[Path] = set()
+        self._permission_denied_lock = threading.Lock()
+        self._permission_denied_dirs: set[Path] = set()
 
         # Load persisted data
         self._data = self._load_json()
@@ -461,6 +463,32 @@ class ModificationManager(QObject):
             'Modifications',
             f'Migrated legacy macOS stash to {destination.name}',
         )
+
+    def _record_permission_denied_dir(self, roblox_dir: Path) -> None:
+        """Remember a protected Roblox install for the user-facing repair prompt."""
+        try:
+            path = roblox_dir.resolve()
+        except OSError:
+            path = roblox_dir
+        lock = _instance_attr(self, '_permission_denied_lock')
+        if lock is None:
+            self._permission_denied_lock = threading.Lock()
+            lock = self._permission_denied_lock
+        with lock:
+            self._permission_denied_dirs.add(path)
+
+    def take_permission_denied_dirs(self) -> list[Path]:
+        """Return and clear protected installs recorded since the last poll."""
+        lock = _instance_attr(self, '_permission_denied_lock')
+        if lock is None:
+            return []
+        denied_dirs = _instance_attr(self, '_permission_denied_dirs')
+        if denied_dirs is None:
+            return []
+        with lock:
+            paths = sorted(denied_dirs, key=lambda value: str(value).lower())
+            denied_dirs.clear()
+        return paths
 
     def _active_managed_resource_files(
         self,
@@ -1150,29 +1178,37 @@ class ModificationManager(QObject):
         with self._fs_lock:
             self._unlock_managed_files_locked()
             try:
+                failures: list[tuple[Path, PermissionError]] = []
                 for roblox_dir in self._roblox_dirs:
-                    target_path = normalise_target_path(target_path_rel)
-                    dst = roblox_dir / target_path
-                    stash = resource_stash_dir(self._stash_dir, roblox_dir) / target_path
-                    marker = stash.with_name(stash.name + self._NEW_FILE_MARKER_SUFFIX)
+                    try:
+                        target_path = normalise_target_path(target_path_rel)
+                        dst = roblox_dir / target_path
+                        stash = resource_stash_dir(self._stash_dir, roblox_dir) / target_path
+                        marker = stash.with_name(stash.name + self._NEW_FILE_MARKER_SUFFIX)
 
-                    # Stash original ONCE (idempotent)
-                    if dst.exists() and not stash.exists():
-                        stash.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(dst, stash)
-                        # Remove any stale new-file marker from a previous run
-                        if marker.exists():
-                            marker.unlink(missing_ok=True)
-                    elif not dst.exists() and not stash.exists() and not marker.exists():
-                        # Target is brand-new (no original to stash); leave a marker
-                        # so _restore_entry knows it is safe to delete the file later.
-                        stash.parent.mkdir(parents=True, exist_ok=True)
-                        marker.touch()
+                        # Stash original ONCE (idempotent)
+                        if dst.exists() and not stash.exists():
+                            stash.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(dst, stash)
+                            # Remove any stale new-file marker from a previous run
+                            if marker.exists():
+                                marker.unlink(missing_ok=True)
+                        elif not dst.exists() and not stash.exists() and not marker.exists():
+                            # Target is brand-new (no original to stash); leave a marker
+                            # so _restore_entry knows it is safe to delete the file later.
+                            stash.parent.mkdir(parents=True, exist_ok=True)
+                            marker.touch()
 
-                    # Write mod
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    _clear_read_only(dst)
-                    dst.write_bytes(new_bytes)
+                        # Write mod
+                        dst.parent.mkdir(parents=True, exist_ok=True)
+                        _clear_read_only(dst)
+                        dst.write_bytes(new_bytes)
+                    except PermissionError as exc:
+                        self._record_permission_denied_dir(roblox_dir)
+                        failures.append((roblox_dir, exc))
+                if failures:
+                    failed_paths = ', '.join(str(path) for path, _exc in failures)
+                    raise PermissionError(f'Permission denied in Roblox installation(s): {failed_paths}')
             finally:
                 self._protect_managed_files_locked()
 
@@ -1300,7 +1336,9 @@ class ModificationManager(QObject):
             with self._fs_lock:
                 self._unlock_managed_files_locked()
                 try:
-                    self.fflag_manager.write(self._data['fast_flags'])
+                    failed_dirs = self.fflag_manager.write(self._data['fast_flags'])
+                    for roblox_dir in failed_dirs:
+                        self._record_permission_denied_dir(roblox_dir)
                 finally:
                     self._protect_managed_files_locked()
 
@@ -1394,7 +1432,9 @@ class ModificationManager(QObject):
         with self._fs_lock:
             self._unlock_managed_files_locked()
             try:
-                self.fflag_manager.write(settings)
+                failed_dirs = self.fflag_manager.write(settings)
+                for roblox_dir in failed_dirs:
+                    self._record_permission_denied_dir(roblox_dir)
             finally:
                 self._protect_managed_files_locked()
         self.sync_saved_global_settings()

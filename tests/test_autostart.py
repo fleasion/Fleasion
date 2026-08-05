@@ -1,4 +1,5 @@
 import plistlib
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -24,6 +25,18 @@ def test_windows_autostart_task_runs_at_least_privilege(monkeypatch):
     assert "<RunLevel>LeastPrivilege</RunLevel>" in xml_text[0]
     assert "<LogonType>InteractiveToken</LogonType>" in xml_text[0]
     assert "TestDomain\\TestUser" in xml_text[0]
+
+
+def test_windows_uv_launch_info_uses_checkout_project_root(monkeypatch):
+    monkeypatch.setattr(autostart.sys, 'platform', 'win32')
+    monkeypatch.delattr(autostart.sys, 'frozen', raising=False)
+    monkeypatch.setattr(shutil, 'which', lambda _name: r'C:\Tools\uv.exe')
+
+    launch_info = autostart._get_launch_info()
+
+    assert launch_info['mode'] == 'uv'
+    assert launch_info['path'] == r'C:\Tools\uv.exe'
+    assert Path(launch_info['project']) == Path(__file__).resolve().parents[1]
 
 
 def test_macos_launch_agent_update_does_not_start_second_instance(tmp_path, monkeypatch):

@@ -41,6 +41,16 @@ LINUX_AUTOSTART_PATH = USER_HOME / '.config' / 'autostart' / 'fleasion.desktop'
 _TASK_FORMAT_VERSION = 8
 
 
+def _project_root() -> Path:
+    """Return the checkout root when running from a development environment."""
+    check = Path(__file__).resolve().parent
+    for _ in range(8):
+        if (check / 'pyproject.toml').exists():
+            return check
+        check = check.parent
+    return Path(__file__).resolve().parent
+
+
 def _ps_single_quote(value: str) -> str:
     """Return *value* as a PowerShell single-quoted string literal."""
     return "'" + value.replace("'", "''") + "'"
@@ -106,11 +116,7 @@ def _get_launch_info() -> dict:
     found_uv = shutil.which('uv') or shutil.which('uv.exe')
     uv = str(Path(found_uv).resolve()) if found_uv else 'uv'
     # Find project root (dir containing pyproject.toml)
-    check = Path(sys.argv[0]).resolve().parent
-    for _ in range(8):
-        if (check / 'pyproject.toml').exists():
-            break
-        check = check.parent
+    check = _project_root()
     return {
         'mode': 'uv',
         'path': uv,

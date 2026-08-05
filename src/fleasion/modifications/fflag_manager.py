@@ -205,13 +205,14 @@ class FastFlagManager:
 
         return flags
 
-    def write(self, settings: dict) -> None:
-        """Build flags and write ``ClientAppSettings.json`` in every Roblox dir."""
+    def write(self, settings: dict) -> set[Path]:
+        """Build flags and write settings, returning dirs blocked by permissions."""
         flags = self.build_json(settings)
         content = json.dumps(flags, indent=2).encode('utf-8') if flags else b'{}'
 
         written_dirs = 0
         failed = 0
+        failed_dirs: set[Path] = set()
 
         for roblox_dir in self._roblox_dirs:
             install_stash = resource_stash_dir(self._stash_dir, roblox_dir)
@@ -230,6 +231,7 @@ class FastFlagManager:
                     wrote_dir = True
                 except PermissionError as exc:
                     failed += 1
+                    failed_dirs.add(roblox_dir)
                     log_buffer.log('FastFlags', f'Permission denied writing {dst}: {exc}')
             if wrote_dir:
                 written_dirs += 1
@@ -264,6 +266,7 @@ class FastFlagManager:
                             _restore_read_only(sober_config)
                 except PermissionError as exc:
                     failed += 1
+                    failed_dirs.add(roblox_dir)
                     log_buffer.log(
                         'FastFlags',
                         f'Permission denied writing Sober config {sober_config}: {exc}',
@@ -282,6 +285,7 @@ class FastFlagManager:
         if failed:
             message += f'; skipped {format_count(failed, "Roblox dir")} due to permission errors'
         log_buffer.log('FastFlags', message)
+        return failed_dirs
 
     def reassert_macos_bootstrapper_flags(self, settings: dict) -> int:
         """Merge Fleasion flags into settings rewritten just before a macOS launch.
