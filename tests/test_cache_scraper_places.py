@@ -4,7 +4,16 @@ from fleasion.proxy.addons.cache_scraper import CacheScraper
 
 
 class _CacheManager:
-    pass
+    def __init__(self):
+        self.clear_count = 0
+        self.stored = []
+
+    def clear_memory_cache(self):
+        self.clear_count += 1
+
+    def store_asset(self, **kwargs):
+        self.stored.append(kwargs)
+        return True
 
 
 def _make_scraper():
@@ -74,3 +83,30 @@ def test_user_place_lookup_finds_prison_life_places_with_limit_50():
         scraper._executor.shutdown(wait=False, cancel_futures=True)
 
     assert calls
+
+
+def test_reset_for_cache_clear_invalidates_old_background_work():
+    scraper = _make_scraper()
+    manager = scraper.cache_manager
+    scraper.cache_logs['old'] = {'assetTypeId': 1}
+    scraper._url_to_asset['old-url'] = ['old']
+    old_generation = scraper._work_generation
+    old_executor = scraper._executor
+
+    try:
+        scraper.reset_for_cache_clear()
+
+        assert scraper._work_generation == old_generation + 1
+        assert scraper.cache_logs == {}
+        assert scraper._url_to_asset == {}
+        assert manager.clear_count == 1
+        assert not scraper._store_asset_if_current(
+            old_generation,
+            asset_id='old',
+            asset_type=1,
+            data=b'stale',
+        )
+        assert manager.stored == []
+        assert scraper._executor is not old_executor
+    finally:
+        scraper._executor.shutdown(wait=False, cancel_futures=True)

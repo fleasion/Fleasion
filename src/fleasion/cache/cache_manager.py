@@ -423,6 +423,13 @@ class CacheManager:
             log_buffer.log('Scraper', f'Failed to retrieve asset {asset_id}: {e}')
             return None
 
+    def clear_memory_cache(self) -> int:
+        """Evict all in-memory asset payloads and return the number removed."""
+        with self._asset_cache_lock:
+            count = len(self._asset_cache)
+            self._asset_cache.clear()
+        return count
+
     def peek_asset_bytes(
         self, asset_id: str, asset_type: int, max_bytes: int = 16
     ) -> Optional[bytes]:

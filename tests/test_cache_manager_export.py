@@ -95,3 +95,14 @@ def test_image_typed_audio_payload_is_displayed_as_audio(tmp_path, monkeypatch):
     assert info["detected_type"] == "Audio"
     assert info["type_name"] == "Audio"
     assert manager._detect_extension(AUDIO_PAYLOAD, 3) == ".ogg"
+
+
+def test_clear_memory_cache_evicts_loaded_asset_payloads(tmp_path, monkeypatch):
+    monkeypatch.setattr(cache_manager_module, "CONFIG_DIR", tmp_path)
+    manager = cache_manager_module.CacheManager(config_manager=_Config())
+    assert manager.store_asset("102", 9, MODEL_XML)
+    assert manager.get_asset("102", 9) == MODEL_XML
+    assert manager._asset_cache
+
+    assert manager.clear_memory_cache() == 1
+    assert manager._asset_cache == {}

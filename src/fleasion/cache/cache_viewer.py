@@ -3705,6 +3705,31 @@ class CacheViewerTab(QWidget):
             try:
                 import shutil
 
+                # Stop any header probes before replacing the database.  A
+                # worker that finishes against the old index can otherwise
+                # repopulate the viewer while the reset is in progress.
+                if hasattr(self, '_type_probe_debounce'):
+                    self._type_probe_debounce.stop()
+                type_probe_worker = self._type_probe_worker
+                if type_probe_worker is not None:
+                    type_probe_worker.stop()
+                    type_probe_worker.wait()
+                    self._type_probe_worker = None
+                self._type_probe_pending.clear()
+                self._type_probe_inflight.clear()
+                self._type_probe_checked.clear()
+
+                # Delete DB is also a process-state reset: evict payloads
+                # retained by CacheManager and invalidate/cancel scraper work
+                # that was queued for the old database.
+                self.cache_manager.clear_memory_cache()
+                if self.cache_scraper:
+                    reset_scraper = getattr(self.cache_scraper, 'reset_for_cache_clear', None)
+                    if callable(reset_scraper):
+                        reset_scraper()
+                    else:
+                        self.cache_scraper.clear_tracking()
+
                 cache_dir = self.cache_manager.cache_dir
                 if cache_dir.exists():
                     shutil.rmtree(cache_dir)
@@ -3714,9 +3739,6 @@ class CacheViewerTab(QWidget):
                 self.cache_manager._save_index()
                 self._last_asset_count = 0
                 self._asset_info.clear()
-                # Clear scraper tracking so assets can be re-scraped
-                if self.cache_scraper:
-                    self.cache_scraper.clear_tracking()
                 self._refresh_assets()
                 log_buffer.log('Scraper', 'Database deleted and reset')
                 QMessageBox.information(self, 'Success', 'Database deleted successfully')
