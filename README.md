@@ -87,17 +87,23 @@ After applying any changes in the Dashboard, you must **clear your Roblox cache*
 
 ## How It Works
 
-Fleasion runs a lightweight custom asyncio HTTPS proxy on `127.0.0.1:443`. On startup it redirects `assetdelivery.roblox.com` and `fts.rbxcdn.com` to localhost via the system hosts file, installs a locally-generated CA certificate into Roblox's `ssl/cacert.pem` trust bundle so the TLS handshake succeeds, and intercepts all asset traffic. When custom FastFlags are enabled, it also intercepts Roblox ClientSettings requests so those overrides can be applied before the client receives them. When Roblox requests assets from its CDN, Fleasion can:
+Fleasion runs a lightweight custom asyncio HTTPS proxy and supports two routing modes:
+
+- **Roblox Env Proxy** listens only on the loopback high port `58443` and relaunches Roblox Player with proxy environment variables. It does not modify the system hosts file or bind privileged port 443. Roblox Player's own `ssl/cacert.pem` still receives Fleasion's local CA so Player trusts the intercepted TLS traffic. Roblox Studio is not relaunched, intercepted, patched, or closed by this mode.
+- **Hosts File** is the legacy compatibility path. It redirects the intercepted Roblox hosts to localhost and uses local port 443, so it still requires the platform's administrator/helper path.
+
+When custom FastFlags are enabled, Fleasion also intercepts Roblox ClientSettings requests and pre-seeds platform startup settings so overrides needed early in Player startup are available immediately. When Roblox requests assets from its CDN, Fleasion can:
 
 - **Replace** assets by ID &mdash; swap one asset for another (different texture, audio, etc.)
 - **Remove** assets &mdash; strip textures from the batch request entirely
 - **Redirect** to CDN URLs or local files &mdash; serve your own content
 - **Cache** original assets &mdash; browse, preview, and export everything Roblox downloads
 
-All interception happens locally on your machine. Windows runs Fleasion elevated. On macOS, Fleasion installs a small root-owned relay/hosts/CA-patching helper with one administrator approval; the dashboard and menu-bar app always run as the normal user.
-On Linux, Fleasion targets the Sober Flatpak client (`org.vinegarhq.Sober`). It uses Sober's asset overlay at `~/.var/app/org.vinegarhq.Sober/data/sober/asset_overlay` and writes Sober FFlags to `~/.var/app/org.vinegarhq.Sober/config/sober/config.json`. Proxy interception needs root permission because Fleasion updates `/etc/hosts` and listens on local port 443.
+All interception happens locally on your machine. Env Proxy runs the Fleasion GUI and proxy as the normal user on Windows, macOS, and Linux. A one-time administrator prompt can still be needed to repair an unusually protected Player installation or an inaccessible legacy Windows autostart task. Hosts File mode retains its existing administrator/helper requirements.
 
-**VPN compatibility:** Because interception uses the system's hosts file (application layer), it should be compatible with most VPN software, as long as it respects the hosts file.
+On Linux, Fleasion targets the Sober Flatpak client (`org.vinegarhq.Sober`). It uses Sober's asset overlay at `~/.var/app/org.vinegarhq.Sober/data/sober/asset_overlay` and writes Sober FFlags to `~/.var/app/org.vinegarhq.Sober/config/sober/config.json`.
+
+**VPN compatibility:** Env Proxy is scoped to the Player process and normally coexists with system VPN settings. Hosts File mode depends on the VPN respecting local hosts-file resolution.
 
 **Roblox policy and moderation:** Fleasion's normal asset replacement is client-side, so only you see the changes. The project has no known detections or reported warnings/bans for local asset replacement at the time of writing, but Roblox has stated that these modifications are not permitted and game moderators may still take action. Use your own judgment.
 
@@ -199,8 +205,8 @@ Every asset type Roblox uses &mdash; images, decals, audio, meshes, animations, 
 On first launch, Fleasion will:
 
 - Generate a local CA certificate and install it into Roblox's SSL trust bundle
-- On macOS, offer to install the root-owned proxy helper with one administrator approval. The helper owns local port 443, updates `/etc/hosts`, and patches Roblox `ssl/cacert.pem`.
-- On Linux, use the installed desktop launcher or startup prompt to relaunch through Polkit; the desktop installer intentionally creates only the proxy-capable launcher, not the deprecated non-admin/read-only entry.
+- In Env Proxy mode, run as the normal user and relaunch only Roblox Player with the local proxy environment
+- In Hosts File mode, request the existing Windows elevation, macOS helper, or Linux Polkit helper needed for hosts-file and port-443 access
 - Show a welcome dialog explaining how the proxy works
 - Open the Dashboard automatically
 
@@ -213,7 +219,7 @@ On first launch, Fleasion will:
 
 ### Run on Boot
 
-Fleasion can be configured to launch automatically via **Settings -> Run on Boot**. On Windows this creates a Task Scheduler task with `RunLevel=HighestAvailable`. On macOS this creates an unprivileged LaunchAgent; the already-installed proxy helper starts separately as a LaunchDaemon, so boot launches do not request an administrator password. **Settings -> Create desktop/start menu integration on boot** adds or refreshes the OS launcher entry on Windows, macOS, and Linux. On Linux, packaged builds are copied into `~/.local/share/Fleasion`, and the launcher starts through Polkit so proxy interception can update `/etc/hosts` and bind local port 443.
+Fleasion can be configured to launch automatically via **Settings -> Run on Boot**. Windows creates a per-user Task Scheduler task with `InteractiveToken` and `LeastPrivilege`; macOS creates an unprivileged per-user LaunchAgent; Linux creates a per-user XDG autostart entry. Env Proxy boot launches do not elevate the GUI. If a user selects Hosts File mode, Fleasion can still request the platform-specific helper or administrator access after launch. **Settings -> Create desktop/start menu integration on boot** adds or refreshes the OS launcher entry on Windows, macOS, and Linux.
 
 ## Project Structure
 

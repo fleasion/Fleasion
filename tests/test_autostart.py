@@ -27,6 +27,29 @@ def test_windows_autostart_task_runs_at_least_privilege(monkeypatch):
     assert "TestDomain\\TestUser" in xml_text[0]
 
 
+def test_elevated_windows_autostart_targets_requesting_user(monkeypatch):
+    xml_text = []
+
+    def fake_run(args, **_kwargs):
+        if "/Create" in args:
+            xml_path = Path(args[args.index("/XML") + 1])
+            xml_text.append(xml_path.read_text(encoding="utf-16"))
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(autostart.sys, "platform", "win32")
+    monkeypatch.setenv("USERNAME", "ElevatedAdmin")
+    monkeypatch.setenv("USERDOMAIN", "AdminDomain")
+    monkeypatch.setattr(autostart.subprocess, "CREATE_NO_WINDOW", 0, raising=False)
+    monkeypatch.setattr(autostart.subprocess, "run", fake_run)
+
+    assert autostart._create_task(
+        {"mode": "exe", "path": r"C:\Fleasion\Fleasion.exe"},
+        windows_user_id=r"DesktopDomain\OriginalUser",
+    )
+    assert r"DesktopDomain\OriginalUser" in xml_text[0]
+    assert "ElevatedAdmin" not in xml_text[0]
+
+
 def test_windows_uv_launch_info_uses_checkout_project_root(monkeypatch):
     monkeypatch.setattr(autostart.sys, 'platform', 'win32')
     monkeypatch.delattr(autostart.sys, 'frozen', raising=False)

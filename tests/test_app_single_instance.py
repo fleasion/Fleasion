@@ -177,6 +177,7 @@ def test_autostart_resync_runs_without_admin_on_windows(monkeypatch):
 
 def test_run_on_boot_failure_can_launch_one_time_admin_repair(monkeypatch):
     selected = []
+    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
 
     class _MessageBox:
         class Icon:
@@ -232,6 +233,93 @@ def test_run_on_boot_failure_can_launch_one_time_admin_repair(monkeypatch):
     assert relaunches == [{'extra_args': '--repair-autostart', 'parent_hwnd': None}]
 
 
+def test_nonwindows_run_on_boot_failure_never_offers_admin_repair(monkeypatch):
+    calls = []
+
+    class _MessageBox:
+        class Icon:
+            Warning = object()
+
+        class StandardButton:
+            Ok = object()
+
+        def __init__(self, _parent):
+            pass
+
+        def setWindowTitle(self, _title):
+            pass
+
+        def setIcon(self, _icon):
+            pass
+
+        def setText(self, text):
+            calls.append(('text', text))
+
+        def setWindowIcon(self, _icon):
+            pass
+
+        def setStandardButtons(self, button):
+            calls.append(('buttons', button))
+
+        def exec(self):
+            pass
+
+    monkeypatch.setattr(app_module.sys, 'platform', 'darwin')
+    monkeypatch.setattr(app_module, 'QMessageBox', _MessageBox)
+    monkeypatch.setattr(app_module, 'get_icon_path', lambda: None)
+    monkeypatch.setattr(
+        app_module,
+        '_relaunch_as_admin',
+        lambda **_kwargs: calls.append(('relaunch', True)),
+    )
+
+    _show_run_on_boot_failure(None)
+
+    assert any('Check the application log' in value for kind, value in calls if kind == 'text')
+    assert not any(kind == 'relaunch' for kind, _value in calls)
+
+
+def test_nonwindows_permission_failure_does_not_offer_windows_acl(monkeypatch, tmp_path):
+    monkeypatch.setattr(app_module.sys, 'platform', 'darwin')
+    monkeypatch.setattr(
+        app_module,
+        'QMessageBox',
+        lambda *_args: (_ for _ in ()).throw(AssertionError('Windows dialog opened')),
+    )
+
+    _show_roblox_permission_failure(None, [tmp_path])
+
+
+def test_permission_repair_poll_times_out_and_cleans_state(monkeypatch, tmp_path):
+    from fleasion.utils import windows_permissions
+
+    cleared = []
+    warnings = []
+    monkeypatch.setattr(app_module, 'CONFIG_DIR', tmp_path)
+    monkeypatch.setattr(app_module.time, 'monotonic', lambda: 20.0)
+    monkeypatch.setattr(windows_permissions, 'read_repair_result', lambda _path: None)
+    monkeypatch.setattr(
+        windows_permissions,
+        'clear_pending_repair',
+        lambda path: cleared.append(('pending', path)),
+    )
+    monkeypatch.setattr(
+        windows_permissions,
+        'clear_repair_result',
+        lambda path: cleared.append(('result', path)),
+    )
+    monkeypatch.setattr(
+        app_module.QMessageBox,
+        'warning',
+        lambda *args: warnings.append(args),
+    )
+
+    app_module._poll_roblox_permission_repair(object(), deadline=10.0)
+
+    assert cleared == [('pending', tmp_path), ('result', tmp_path)]
+    assert len(warnings) == 1
+
+
 def test_repair_autostart_once_syncs_only_from_admin(monkeypatch, tmp_path):
     calls = []
 
@@ -245,20 +333,56 @@ def test_repair_autostart_once_syncs_only_from_admin(monkeypatch, tmp_path):
     monkeypatch.setattr(app_module, 'CONFIG_DIR', tmp_path)
 
     from fleasion.utils import autostart
+    from fleasion.utils import windows_permissions
+
+    monkeypatch.setattr(
+        windows_permissions,
+        'windows_user_id_from_sid',
+        lambda sid: 'TestDomain\\OriginalUser' if sid == 'S-1-5-21-1234' else '',
+    )
 
     monkeypatch.setattr(
         autostart,
         'sync_autostart',
-        lambda enabled, config_dir: calls.append((enabled, config_dir)) or True,
+        lambda enabled, config_dir, **kwargs: calls.append(
+            (enabled, config_dir, kwargs)
+        )
+        or True,
     )
 
-    assert _repair_autostart_once() == 0
-    assert calls == [(True, tmp_path)]
+    assert _repair_autostart_once('S-1-5-21-1234') == 0
+    assert calls == [
+        (
+            True,
+            tmp_path,
+            {'windows_user_id': 'TestDomain\\OriginalUser'},
+        )
+    ]
+
+
+def test_windows_elevation_carries_original_desktop_sid(monkeypatch):
+    from fleasion.utils import windows_permissions
+
+    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(
+        windows_permissions,
+        'current_windows_user_identity',
+        lambda: ('S-1-5-21-1234', r'DesktopDomain\OriginalUser'),
+    )
+    args = ['--repair-autostart']
+
+    assert app_module._append_windows_requesting_user_args(args)
+
+    assert args == [
+        '--repair-autostart',
+        '--fleasion-requesting-user-sid=S-1-5-21-1234',
+    ]
 
 
 def test_roblox_permission_prompt_requests_targeted_elevation(monkeypatch, tmp_path):
     selected = []
     relaunches = []
+    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
 
     class _MessageBox:
         class Icon:
@@ -343,7 +467,11 @@ def test_repair_roblox_permissions_once_writes_result_and_clears_pending(monkeyp
     monkeypatch.setattr(
         windows_permissions,
         'grant_current_user_modify_access',
-        lambda values: {'ok': True, 'granted': [str(values[0])], 'failed': []},
+        lambda values, **kwargs: {
+            'ok': kwargs.get('user_sid') == 'S-1-5-21-1234',
+            'granted': [str(values[0])],
+            'failed': [],
+        },
     )
     results = []
     monkeypatch.setattr(
@@ -358,7 +486,7 @@ def test_repair_roblox_permissions_once_writes_result_and_clears_pending(monkeyp
         lambda path: cleared.append(path),
     )
 
-    assert _repair_roblox_permissions_once() == 0
+    assert _repair_roblox_permissions_once('S-1-5-21-1234') == 0
     assert results == [{'ok': True, 'granted': [str(paths[0])], 'failed': []}]
     assert cleared == [tmp_path]
 

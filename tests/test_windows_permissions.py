@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,7 +20,11 @@ def test_grant_uses_only_current_user_sid_and_modify_inheritance(tmp_path, monke
     monkeypatch.setattr(roblox_dirs.sys, 'platform', 'win32')
     monkeypatch.setattr(roblox_dirs, 'ROBLOX_PROCESS', 'RobloxPlayerBeta.exe')
     monkeypatch.setattr(roblox_dirs, 'ROBLOX_STUDIO_PROCESS', 'RobloxStudioBeta.exe')
-    monkeypatch.setattr(windows_permissions, '_current_user_sid', lambda: 'S-1-5-21-1234')
+    monkeypatch.setattr(
+        windows_permissions,
+        '_validated_user_sid',
+        lambda requested=None: requested or 'S-1-5-21-1234',
+    )
     monkeypatch.setattr(
         windows_permissions.subprocess,
         'run',
@@ -27,7 +32,10 @@ def test_grant_uses_only_current_user_sid_and_modify_inheritance(tmp_path, monke
         or SimpleNamespace(returncode=0, stdout='', stderr=''),
     )
 
-    result = windows_permissions.grant_current_user_modify_access([install])
+    result = windows_permissions.grant_current_user_modify_access(
+        [install],
+        user_sid='S-1-5-21-1234',
+    )
 
     assert result['ok'] is True
     assert result['granted'] == [str(install.resolve())]
@@ -51,3 +59,18 @@ def test_grant_rejects_non_install_and_studio_paths(tmp_path, monkeypatch):
     assert result['ok'] is False
     assert result['granted'] == []
     assert result['failed'][0]['path'] == str(install)
+
+
+def test_windows_user_id_is_derived_from_original_sid(monkeypatch):
+    fake_security = SimpleNamespace(
+        SidTypeUser=1,
+        ConvertStringSidToSid=lambda value: ('sid', value),
+        ConvertSidToStringSid=lambda sid: sid[1],
+        LookupAccountSid=lambda _system, _sid: ('OriginalUser', 'DesktopDomain', 1),
+    )
+    monkeypatch.setitem(sys.modules, 'win32security', fake_security)
+
+    assert (
+        windows_permissions.windows_user_id_from_sid('S-1-5-21-1234')
+        == r'DesktopDomain\OriginalUser'
+    )

@@ -138,17 +138,48 @@ def _validated_install_dirs(paths: Iterable[Path]) -> tuple[list[Path], list[dic
     return valid, rejected
 
 
-def _current_user_sid() -> str:
-    """Return the SID of the interactive account running Fleasion."""
+def current_windows_user_identity() -> tuple[str, str]:
+    """Return the current process account as ``(SID, DOMAIN\\name)``."""
     import win32api
     import win32security
 
     username = win32api.GetUserName()
-    sid, _domain, _account_type = win32security.LookupAccountName(None, username)
-    return str(win32security.ConvertSidToStringSid(sid))
+    sid, domain, _account_type = win32security.LookupAccountName(None, username)
+    sid_text = str(win32security.ConvertSidToStringSid(sid))
+    account_name = f'{domain}\\{username}' if domain else username
+    return sid_text, account_name
 
 
-def grant_current_user_modify_access(paths: Iterable[Path]) -> dict:
+def _validated_user_sid(requested_sid: str | None = None) -> str:
+    """Validate an initiating user's SID or resolve the current process SID."""
+    import win32security
+
+    if not requested_sid:
+        return current_windows_user_identity()[0]
+
+    sid = win32security.ConvertStringSidToSid(str(requested_sid))
+    canonical = str(win32security.ConvertSidToStringSid(sid))
+    _name, _domain, account_type = win32security.LookupAccountSid(None, sid)
+    if account_type != win32security.SidTypeUser:
+        raise ValueError('The requested Windows identity is not a user account')
+    return canonical
+
+
+def windows_user_id_from_sid(requested_sid: str) -> str:
+    """Return canonical ``DOMAIN\\name`` for a validated Windows user SID."""
+    import win32security
+
+    canonical = _validated_user_sid(requested_sid)
+    sid = win32security.ConvertStringSidToSid(canonical)
+    name, domain, _account_type = win32security.LookupAccountSid(None, sid)
+    return f'{domain}\\{name}' if domain else name
+
+
+def grant_current_user_modify_access(
+    paths: Iterable[Path],
+    *,
+    user_sid: str | None = None,
+) -> dict:
     """Grant only the current user's Modify access on validated install dirs.
 
     Existing ACL entries are preserved.  ``/grant:r`` replaces only an
@@ -168,7 +199,7 @@ def grant_current_user_modify_access(paths: Iterable[Path]) -> dict:
         }
 
     try:
-        sid = _current_user_sid()
+        sid = _validated_user_sid(user_sid)
     except Exception as exc:
         return {
             'ok': False,

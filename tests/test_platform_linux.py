@@ -1,5 +1,9 @@
 from pathlib import Path
 
+import pytest
+
+pytest.importorskip('pwd', reason='Linux platform tests require the POSIX pwd module')
+
 from fleasion.utils import platform_linux
 from fleasion.utils.roblox_dirs import _normalise_roblox_dir
 

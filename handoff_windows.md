@@ -1,256 +1,148 @@
-# Fleasion Env Proxy — Windows final-readiness handoff
+# Fleasion Env Proxy — Windows release gate (round 2)
 
 ## Mission
 
-You are the Windows validation and repair owner for Fleasion's new Roblox Env Proxy path. You have no prior conversation context. Work from the current checkout; it contains the candidate implementation and may contain intentional uncommitted changes.
+You are the Windows validation-and-repair owner. You have no prior chat context. Work from the current checkout and decide whether its Roblox Env Proxy implementation is safe for an automatic Hosts File → Env Proxy migration in the following release.
 
-Your job is to:
+Test real behavior, fix reproducible in-scope defects, add regression coverage, rebuild, and retest. Write the result to `report_windows_round2.md`.
 
-1. Test the candidate on a real Windows 10/11 desktop with Roblox Player and Roblox Studio installed.
-2. Diagnose and fix every reproducible in-scope problem you find.
-3. Add regression tests for fixes whenever practical.
-4. Rebuild and repeat the affected live tests after every fix.
-5. Write the final results to `report_windows.md` in the repository root.
+Do **not** implement automatic migration. That is the final change after this report and the macOS report are reviewed.
 
-Do **not** implement automatic migration from Hosts File mode to Env Proxy. That is deliberately the final step after Windows and macOS validation reports are reviewed.
+## Read this before doing anything
 
-## Safety and repository rules
+- Read `AGENTS.md`, this file, and the current diff. `report_windows.md` is historical evidence, not a substitute for retesting.
+- Preserve existing worktree changes. Do not reset or overwrite them.
+- Do not commit, push, create a branch, or open a PR.
+- Test the packaged build after source tests. A source-only pass is insufficient.
+- Do not inspect or report cookies, auth tickets, private keys, usernames, or other secrets.
+- Keep a backup of every Roblox/Fleasion file you deliberately change until the report is accepted.
 
-- Read `AGENTS.md` before working.
-- Preserve all existing worktree changes. Never reset, discard, or overwrite changes you did not create.
-- Do not commit, push, or open a PR unless the user separately asks.
-- Before touching Roblox files, back up the exact files, modes/attributes, ownership, hashes, and relevant Fleasion settings.
-- Use a disposable Roblox test account and a harmless test experience. Do not expose cookies, authentication tickets, certificate private keys, usernames, or other secrets in the report.
-- Do not remove Fleasion's CA from Roblox or Windows as final cleanup. The intended behavior is to keep installed certificates.
-- Do not leave temporary firewall rules, read-only attributes, test modifications, watchers, scheduled tasks, or forced permissions behind.
-- An unexpected UAC prompt in Env mode is a failure to investigate. Do not approve it blindly.
-- If a destructive or system-wide test is necessary, obtain user approval first.
+## The user explicitly authorizes these controlled tests
 
-## Candidate behavior that must remain true
+These are requested release tests, not reasons to mark the task blocked:
 
-- Env Proxy runs as the ordinary desktop user and binds only the loopback proxy at `127.0.0.1:58443`.
-- Env Proxy still patches and verifies Roblox Player's `ssl/cacert.pem`; it does not install a Windows root certificate for Env mode.
-- The proxy is considered ready only after bind and TLS self-test.
-- Player launch performs CA preparation, then one controlled Env relaunch.
-- If Roblox overwrites the CA during startup, Fleasion performs at most **two** automatic CA repair/relaunches. There must never be a third.
-- Persistent read-only locking is off by default. Its scope is active modification/FastFlag files, not `cacert.pem`.
-- `Close Env-Proxied Roblox Player on Exit` defaults on. It closes only the Player Fleasion owns. The off setting leaves Player open.
-- Fleasion restart preserves the exact owned Player process when possible. A different/replacement Player must never be killed as if it were owned.
-- Roblox Studio is unsupported by Fleasion interception in Env mode, but fully compatible: no Studio warning, relaunch, environment injection, CA modification, or exit cleanup.
-- Run on Boot uses the per-user `Fleasion_Autostart` task with `InteractiveToken` and `LeastPrivilege`.
-- Fleasion never installs Windows Firewall rules. Its blocked-connection dialog may open Windows Firewall settings.
-- Switching back to Hosts File mode may request UAC and may close Player because the proxy mechanism changes.
-- The Env-mode information dialog can be dismissed immediately; there is no ten-second timer.
+- Start, restart, and close Fleasion, Roblox **Player**, and Roblox Studio.
+- Ask the user to sign in, click through Roblox, or join a harmless experience when human interaction is needed. Continue other tests while waiting.
+- Toggle Fleasion settings and switch Env/Hosts modes.
+- Back up Player `ssl\cacert.pem`, then remove **only Fleasion certificate blocks** from that file to simulate a Roblox overwrite. Never delete or truncate the Mozilla/root bundle. Restore from backup if the test aborts.
+- Add and remove one harmless test modification and custom FastFlag.
+- Toggle Fleasion's read-only setting on those managed test files, inspect attributes, force-close the test Fleasion process once, and restore exact original attributes afterward.
+- Create, run, inspect, and remove/recreate the Fleasion per-user scheduled task.
+- Accept one UAC prompt when deliberately testing the narrowly scoped legacy-task or protected-install repair. An ordinary Env launch must not request UAC.
 
-Relevant implementation areas:
+Do not create firewall rules, alter unrelated ACLs, modify Studio files, create Windows users, or reboot/sign out. Those are not required for this gate.
 
-- `src/fleasion/proxy/env_lifecycle.py`
-- `src/fleasion/proxy/master.py`
-- `src/fleasion/utils/platform_windows.py`
-- `src/fleasion/utils/autostart.py`
-- `src/fleasion/modifications/manager.py`
-- `src/fleasion/app.py`
-- `src/fleasion/tray.py`
-- `src/fleasion/gui/settings_tab.py`
+## Required behavior
 
-## Test environment record
+- Env Proxy runs as the desktop user and listens only on `127.0.0.1:58443` and/or `[::1]:58443`.
+- Env mode never edits the system hosts file and never needs an inbound public/private firewall exception.
+- Player `cacert.pem` still receives and retains exactly one current Fleasion CA. Env mode does not depend on persistent CA read-only locking.
+- Player is relaunched with the proxy environment. Studio is never relaunched, injected, CA-patched, warned about, or closed.
+- A startup CA overwrite permits at most two repair/relaunches. A third overwrite must stop safely without another relaunch loop.
+- `Lock Roblox Files to Read-Only` is off by default and covers only active modification/FastFlag targets, never `cacert.pem` or the entire installation.
+- `Close Env-Proxied Roblox Player on Exit` remains a setting and defaults on. It affects Player only.
+- Clean Fleasion restarts preserve an owned Env Player when safe. Switching Env → Hosts may close Player because its Env proxy is going away.
+- Run on Boot uses `InteractiveToken` + `LeastPrivilege` for the original desktop user.
+- Empty-credential manual HTTP CONNECT/SOCKS5 selections revert to Auto after ten seconds so an accidental selection does not leave Fleasion offline.
 
-Record these at the top of `report_windows.md`:
+## Baseline and rollback
 
-- Windows edition, version, and OS build (`winver` and `Get-ComputerInfo`).
-- CPU architecture.
-- Roblox Player version and installation path.
-- Roblox Studio version and installation path.
-- Fleasion commit/branch and initial `git status --short`.
-- Whether testing source, packaged build, or both.
-- Whether a legacy elevated `Fleasion_Autostart` task existed.
-- Whether the initial Fleasion settings came from a legacy Hosts File installation or a clean test profile.
+Before live testing, record:
 
-## Phase 1 — static and automated gates
+- Windows version, account privilege level, branch/commit, and initial `git status --short`.
+- Source and packaged Fleasion paths; Player and Studio versions/paths.
+- Hash and attributes of Player and Studio `cacert.pem`.
+- Fleasion settings backup and current proxy/read-only/close-on-exit/run-on-boot values.
+- Existing `Fleasion_Autostart` task XML and Fleasion-named firewall rules.
+- Player and Studio PIDs before each lifecycle test.
 
-From a normal, non-elevated PowerShell in the repository root:
+Make a timestamped backup outside the checkout. Restore temporary test changes at the end. Keep Fleasion CA installation itself; certificates are intentionally persistent.
 
-```powershell
-uv sync --dev
-uv run ruff check .
-uv run pytest -q
-uv run build
-```
+## Gate 1 — automated and packaged checks
 
-The pre-handoff baseline was 455 passed and 1 skipped. The exact count may increase if you add tests, but there must be no failures, hangs, fatal Qt errors, or abnormal process exit.
+Run the repository-prescribed dependency, Ruff, full pytest, and build commands. Do not accept collection failures as “Linux-only”; the current tree is intended to collect on Windows and skip POSIX-only tests cleanly.
 
-Locate and run the packaged `dist/Fleasion-v*.exe`. Live acceptance must be repeated against the packaged executable; source-only success is insufficient.
+Then launch the newly built package non-elevated in Env mode and verify:
 
-## Phase 2 — baseline and backups
+1. No UAC prompt.
+2. Proxy readiness/TLS self-test succeeds.
+3. Only loopback port 58443 is listening; nothing public and no port 443 listener from Env mode.
+4. No hosts-file or firewall-rule mutation.
+5. The Env information dialog can be dismissed immediately.
 
-1. Back up `%LOCALAPPDATA%\FleasionNT` and record the current `settings.json`.
-2. Locate Player and Studio `ssl\cacert.pem` files. Back them up separately and record SHA-256 and file attributes.
-3. Record Player and Studio PIDs before each lifecycle test.
-4. Record existing Fleasion Task Scheduler XML and Fleasion-named firewall rules.
-5. Start with `Lock Roblox Files to Read-Only` off.
-6. Explicitly select Env Proxy in Settings. A fresh profile still defaulting to Hosts mode is expected in this candidate; automatic migration is intentionally absent.
+If any command fails, diagnose it. Fix product defects and tests in scope; do not merely list them.
 
-Useful checks:
+## Gate 2 — real Player traffic and startup flags
 
-```powershell
-Get-FileHash -Algorithm SHA256 'C:\path\to\cacert.pem'
-(Get-Item 'C:\path\to\cacert.pem').Attributes
-Get-CimInstance Win32_Process -Filter "Name='RobloxPlayerBeta.exe'" |
-  Select-Object ProcessId, ExecutablePath, CommandLine
-Get-CimInstance Win32_Process -Filter "Name='RobloxStudioBeta.exe'" |
-  Select-Object ProcessId, ExecutablePath, CommandLine
-Get-NetTCPConnection -LocalPort 58443 -State Listen
-```
+Using the packaged build:
 
-To inspect CA health using Fleasion's own parser, set `FLEASION_CACERT` to the Player bundle path and run:
+1. Enable Env Proxy and a harmless replacement plus a harmless custom FastFlag.
+2. Launch Player normally, then once through a Roblox deeplink. Ask the user to join a harmless experience if needed.
+3. Prove Player networking works and the proxy observes real Roblox traffic.
+4. Prove the replacement is served or visibly applied.
+5. Before Player consumes startup settings, prove the Windows flag cache contains the active custom override. Confirm the intercepted ClientSettings response also contains it.
+6. Disable the custom flag and confirm Fleasion does not keep re-inserting it.
 
-```powershell
-$env:FLEASION_CACERT = 'C:\path\to\Roblox\ssl\cacert.pem'
-uv run python -c "import json,os; from pathlib import Path; from fleasion.proxy.master import _describe_cacert_state,get_ca_pem; from fleasion.utils.paths import PROXY_CA_DIR; p=Path(os.environ['FLEASION_CACERT']); print(json.dumps(_describe_cacert_state(p,get_ca_pem(PROXY_CA_DIR/'ca.crt')),indent=2))"
-```
+Discovery or startup logs alone are not enough for Player networking. Do not read Roblox authentication stores.
 
-A healthy Player bundle has `healthy: true`, `fleasion_certs: 1`, and `current_fleasion_certs: 1`.
+## Gate 3 — controlled CA overwrite ceiling
 
-## Phase 3 — mandatory live acceptance matrix
+Use the current Fleasion CA and the repository's `_analyze_and_strip_fleasion_cas` helper to remove only Fleasion CA blocks. Use a temporary watcher/script capped at three injections and delete it afterward.
 
-Mark every item PASS, FAIL, or BLOCKED and attach concrete evidence.
+1. Back up Player `cacert.pem`; verify its non-Fleasion certificate count/hash baseline.
+2. Start Player through packaged Env Proxy.
+3. After each newly launched Player instance reaches the monitored startup window, strip only Fleasion CA blocks:
+   - first injection → repair/relaunch 1;
+   - second injection → repair/relaunch 2;
+   - third injection → no third relaunch; Fleasion stops the owned Player and reports failure.
+4. Verify no infinite loop, no duplicate Fleasion CA, and no loss of unrelated CA entries.
+5. Start Player again normally and prove final CA health and networking recover.
 
-### A. Ordinary-user startup and proxy function
+If the file is protected, use only the product's explicit targeted repair path or one exact-file elevated write after the backup. Never grant broad access to `Roblox`, `Program Files`, or all users.
 
-1. Run source Fleasion from a non-elevated PowerShell. Confirm no UAC prompt.
-2. Confirm port 58443 is listening only on loopback and owned by Fleasion.
-3. Launch Roblox Player normally and by a browser/deeplink join.
-4. Confirm Fleasion relaunches Player once with proxy environment variables and preserves the requested join target.
-5. Confirm Player networking, login, joining, and ordinary asset loading work.
-6. Exercise at least one harmless known replacement through Fleasion and verify the replacement in Roblox plus the corresponding Proxy-tab/log traffic.
-7. Repeat against the packaged `.exe` from a normal Explorer/PowerShell launch.
-8. Confirm the Env information dialog closes immediately without a countdown.
+## Gate 4 — locking, updates, and exit ownership
 
-Failure conditions include UAC, a public-interface listener, a lost join request, a relaunch loop, Player starting without proxy variables, TLS errors, or proxy traffic without actual replacement behavior.
+1. With read-only locking off, apply the test modification/FastFlag and verify Fleasion does not set their files read-only. Verify an unrelated Player file remains writable/replaceable while Fleasion is open.
+2. Turn locking on. Only active managed targets should become read-only; `cacert.pem`, directories, executables, and unrelated files must not.
+3. Turn it off and verify exact original attributes return.
+4. Force-close Fleasion once while locking is on, relaunch with it off, and verify persisted mode recovery cleans up the locks.
+5. With close-on-exit on, normal Fleasion exit closes only the Player owned by this Env lifecycle.
+6. With it off, Player remains open; record that it can no longer depend on the stopped local proxy.
+7. Restart Fleasion from its own UI and verify an owned Player is preserved/adopted when no CA repair or mode switch requires a Player restart.
+8. Switch Env → Hosts and confirm required cleanup occurs without touching Studio.
 
-### B. CA health, overwrite repair, and hard ceiling
+An actual Roblox update is useful if one is naturally available, but it is not required. The required proof is that default-off locking does not broadly prevent file replacement/update operations.
 
-Use recoverable backups. A temporary watcher/script may use Fleasion's `_analyze_and_strip_fleasion_cas` helper to remove only Fleasion CA blocks from the Player bundle. Keep that watcher outside the repository and delete it afterward.
+## Gate 5 — Studio, autostart, ACL identity, and firewall
 
-1. Healthy path: verify one current Fleasion CA before and after Player's full startup window, with exactly one normal Env relaunch.
-2. One-overwrite path: remove only Fleasion's CA immediately after the Env Player starts. Verify Fleasion detects the unhealthy state, repairs it, relaunches, and reaches a healthy stable Player.
-3. Two-overwrite path: remove the CA after the initial Env launch and again after repair relaunch 1. Verify exactly two repair relaunches occur, repair 2 becomes healthy, and no third relaunch occurs. Logs should include `Env Proxy CA repair relaunch 1/2` and `2/2`.
-4. Ceiling path: in a separate run, remove the CA after the initial launch and after both repair relaunches. Verify Fleasion makes no third repair attempt, reports the failure, and terminates only the owned unusable Player.
-5. Protected-path path: make a backed-up test Player CA unwritable to the ordinary user. Verify Fleasion does not relaunch Player through a CA it cannot verify and shows a useful protected-installation popup. Restore the exact original ACL/attributes afterward.
-6. Verify disabling proxy features and exiting Fleasion leaves the valid CA installed.
+1. Keep Studio open while starting/stopping Player and restarting/exiting Fleasion. Studio PID and CA hash must remain unchanged, no Studio warning may appear, and Studio networking must continue normally. Opening a place is enough; publishing is not required.
+2. Toggle Run on Boot on. Inspect XML for the original desktop user, `InteractiveToken`, and `LeastPrivilege`; manually run the task, then toggle it off and verify removal. No sign-out is required.
+3. If a legacy elevated task exists, exercise the one-time repair. If UAC uses a different administrator credential, verify the task still targets the original desktop user.
+4. If a protected Player folder triggers the optional ACL repair, verify only explicitly failed Player install directories receive `Modify` for the original desktop-user SID. Existing ACLs remain, Studio is rejected, and the credential administrator is not granted instead.
+5. Confirm Fleasion creates no firewall rule. A connection-failure action may open Windows Firewall settings, but must not mutate policy itself.
+6. Select a blank-credential manual HTTP or SOCKS proxy and verify it reverts to Auto after ten seconds. Repeat with credentials and verify that configured selection remains active.
 
-For every repair test, report Player PID transitions, timestamps, CA health snapshots, and the relevant lifecycle log lines.
+## Fix/retest rule
 
-### C. Read-only behavior and Roblox update compatibility
+For every product defect:
 
-1. Confirm both new settings defaults: read-only lock off; close-on-exit on.
-2. With the lock off, apply a harmless modification and FastFlag, then verify Fleasion does not set their targets read-only.
-3. Trigger a real Roblox update/reinstall while Fleasion remains open and Player is closed. It must complete successfully.
-4. Launch updated Player and verify CA repair plus Env interception still work.
-5. Enable `Lock Roblox Files to Read-Only`. Verify only active modification/FastFlag targets become read-only. `cacert.pem` must not change attributes because of this toggle.
-6. Disable the toggle and verify every tracked target returns to its exact recorded original attributes/mode.
-7. Test one-time legacy cleanup using backed-up legacy-read-only Player modification, FastFlag, and CA files. With the new toggle off and migration marker absent, launch once and verify stale locks clear safely; subsequent launches must not broadly rewrite unrelated attributes.
-8. Force-close Fleasion once while the toggle is enabled, then relaunch with the setting disabled. Verify `read_only_modes.json` restores exact recorded modes and is cleaned up.
+1. Capture exact reproduction and logs.
+2. Find the root cause.
+3. Implement the narrow fix without weakening CA verification, widening elevation/ACL scope, touching Studio, raising the two-repair ceiling, or restoring persistent CA locks.
+4. Add regression coverage where practical.
+5. Re-run focused tests, full pytest, Ruff, build, and the affected packaged live test.
 
-### D. Player ownership, exit, and restart
+If user interaction is the only missing piece, ask for it plainly. Do not replace an available live test with speculation because it feels invasive; the controlled operations above are authorized and backed up.
 
-1. With default close-on-exit enabled, launch an Env-proxied Player, exit Fleasion, and verify that owned Player closes before port 58443 disappears.
-2. Disable close-on-exit, repeat, and verify Player remains open while Fleasion and its listener exit.
-3. Start Fleasion again and return the setting to its default.
-4. With an owned Env Player running, start a replacement Fleasion process with `--kill-others --preserve-env-proxy-player`. Verify the old Fleasion exits, the new one adopts the same Player PID, and Player is neither killed nor relaunched.
-5. Replace/close the owned Player outside Fleasion and start a different Player generation. Exit Fleasion and verify it does not kill a process whose ownership token no longer matches.
-6. Switch Env to Hosts mode. Verify the intentional mode-switch restart can close Player and requests UAC for Hosts operation.
+## Report contract
 
-### E. Roblox Studio isolation
+Create `report_windows_round2.md` with:
 
-1. Record Studio PID, command line, environment if accessible, and Studio `cacert.pem` hash.
-2. Run Studio before and during Env Proxy operation.
-3. Launch/close Player and restart/exit Fleasion while Studio stays open.
-4. Verify Studio is never relaunched or terminated, receives no Env proxy injection, shows no Fleasion Studio warning, and its CA hash does not change.
-5. Verify Studio can open a place and use its network normally throughout.
+- `READY_FOR_AUTOMATIC_MIGRATION: YES` or `NO` as the first verdict.
+- Environment and exact commit/diff tested.
+- One compact table for Gates 1–5 with PASS/FAIL and evidence.
+- Defects, root causes, fixes, regression tests, and packaged retest evidence.
+- Any remaining blocker stated precisely. A skipped required gate means `NO`.
+- Final worktree diff summary and cleanup/rollback proof.
 
-### F. Run on Boot without elevation
-
-1. If possible, begin with a copy of the legacy highest-available task to test upgrade behavior safely.
-2. Toggle Run on Boot on from a non-elevated Fleasion.
-3. Export the task XML and verify `InteractiveToken` plus `<RunLevel>LeastPrivilege</RunLevel>`.
-4. Confirm the task points at the current source/package launch method.
-5. Run the task manually, then perform a real sign-out/sign-in or reboot test. Fleasion must start without UAC.
-6. Toggle Run on Boot off and verify the task is actually gone. A failure to delete an inaccessible legacy elevated task must be reported to the user rather than silently claiming success.
-
-```powershell
-schtasks /Query /TN Fleasion_Autostart /XML
-schtasks /Run /TN Fleasion_Autostart
-```
-
-### G. Firewall behavior
-
-1. Snapshot Fleasion-named Windows Firewall rules before testing.
-2. Exercise Env Proxy normally and verify no new inbound or outbound Fleasion rules appear.
-3. Confirm loopback proxy operation does not depend on a public/private inbound exception.
-4. Through a safe mocked UI test or a temporary, approved outbound-block scenario, verify the failure dialog offers Windows Firewall settings and never offers/executes automatic `netsh` rule installation.
-5. Remove any temporary block immediately and prove the final firewall state matches the baseline.
-
-## Phase 4 — fix policy
-
-If anything fails:
-
-1. Reproduce it at least twice and capture exact logs/state.
-2. Determine whether it is Fleasion, Roblox, packaging, permissions, or test-environment specific.
-3. Fix in scope without weakening CA verification, adding broad elevation, touching Studio, increasing the two-repair ceiling, or reintroducing persistent CA locking/firewall mutation.
-4. Add a focused regression test.
-5. Run the focused tests, `uv run ruff check .`, and `uv run pytest -q`.
-6. Rebuild with `uv run build` and repeat the failed live scenario against the package.
-7. Document every changed file and why in `report_windows.md`.
-
-Do not paper over a failure by increasing sleeps or retries without state-based evidence.
-
-## Required `report_windows.md` structure
-
-```markdown
-# Windows Env Proxy validation report
-
-## Verdict
-READY_FOR_AUTOMATIC_MIGRATION: YES | NO
-
-## Environment
-...
-
-## Initial repository state
-...
-
-## Automated gates
-- Ruff: ...
-- Pytest: ...
-- Package build: ...
-
-## Live acceptance results
-| ID | Test | Result | Evidence |
-|---|---|---|---|
-| A1 | Non-elevated startup | PASS/FAIL/BLOCKED | ... |
-...
-
-## Defects found
-### DEFECT-WIN-001: ...
-- Reproduction
-- Root cause
-- User impact
-
-## Fixes made
-### FIX-WIN-001: ...
-- Files changed
-- Implementation
-- Regression test
-- Live retest evidence
-
-## Remaining risks or blockers
-...
-
-## Final git diff summary
-...
-
-## Cleanup performed
-...
-```
-
-Only write `READY_FOR_AUTOMATIC_MIGRATION: YES` if every mandatory live section passes on the packaged build, all automated gates are green, all temporary system changes are cleaned up, and no unresolved Env Proxy blocker remains. Otherwise write `NO` and state the exact blocker.
+Say `YES` only if every required gate passes after all fixes.

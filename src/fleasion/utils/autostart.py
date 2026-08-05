@@ -178,7 +178,11 @@ def _delete_task() -> bool:
         return False
 
 
-def _create_task(launch_info: dict) -> bool:
+def _create_task(
+    launch_info: dict,
+    *,
+    windows_user_id: str | None = None,
+) -> bool:
     """Create a per-user autostart entry without elevation."""
     if sys.platform == 'darwin':
         try:
@@ -268,9 +272,13 @@ def _create_task(launch_info: dict) -> bool:
     # Resolve the current user so the task is scoped to them specifically.
     # Without an explicit <UserId> in the XML, Windows may not associate the
     # task with the correct user and can silently discard it after a restart.
-    _username = os.environ.get('USERNAME', '')
-    _domain = os.environ.get('USERDOMAIN', os.environ.get('COMPUTERNAME', ''))
-    user_id = _html.escape(f'{_domain}\\{_username}' if _domain else _username)
+    if windows_user_id:
+        raw_user_id = str(windows_user_id)
+    else:
+        _username = os.environ.get('USERNAME', '')
+        _domain = os.environ.get('USERDOMAIN', os.environ.get('COMPUTERNAME', ''))
+        raw_user_id = f'{_domain}\\{_username}' if _domain else _username
+    user_id = _html.escape(raw_user_id)
 
     if launch_info['mode'] == 'exe':
         command = _html.escape(launch_info['path'])
@@ -387,7 +395,12 @@ def _save_launch_info(config_dir: Path, info: dict) -> None:
         pass
 
 
-def sync_autostart(enabled: bool, config_dir: Path) -> bool:
+def sync_autostart(
+    enabled: bool,
+    config_dir: Path,
+    *,
+    windows_user_id: str | None = None,
+) -> bool:
     """Ensure the scheduled task matches the desired state.
 
     Called on startup (to update if launch method changed) and when the
@@ -408,7 +421,7 @@ def sync_autostart(enabled: bool, config_dir: Path) -> bool:
     # the old task.  If we deleted first and creation failed, the task would be
     # permanently gone while run_on_boot remains True in settings.
     if not _task_exists() or stored != current:
-        ok = _create_task(current)
+        ok = _create_task(current, windows_user_id=windows_user_id)
         if ok:
             _save_launch_info(config_dir, current)
         return ok

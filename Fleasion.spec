@@ -56,6 +56,7 @@ _WINDOWS_HIDDEN_IMPORTS = [
     'win32crypt',
     'win32api',
     'win32con',
+    'win32security',
     'pywintypes',
     'winreg',
 ]

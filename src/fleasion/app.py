@@ -57,6 +57,7 @@ from .utils import (
 
 _SINGLE_INSTANCE_KEY = 'FleasionSingleInstance'
 _SINGLE_INSTANCE_CONTROL_SERVER = 'FleasionSingleInstanceControl'
+_WINDOWS_REPAIR_RESULT_TIMEOUT_SECONDS = 120.0
 
 
 class _FirstTimeSetupMessageBox(QMessageBox):
@@ -190,30 +191,43 @@ def _show_run_on_boot_failure(parent) -> None:
     msg = QMessageBox(parent)
     msg.setWindowTitle('Run on Boot Failed')
     msg.setIcon(QMessageBox.Icon.Warning)
-    msg.setText(
-        'Failed to register autostart.\n'
-        'A legacy task may have been created with administrator permissions.\n\n'
-        'Choose Ignore to leave Run on Boot enabled and try again on the next '
-        'launch, or choose Relaunch as administrator for a one-time task repair.'
-    )
+    if sys.platform == 'win32':
+        msg.setText(
+            'Failed to register autostart.\n'
+            'A legacy task may have been created with administrator permissions.\n\n'
+            'Choose Ignore to leave Run on Boot enabled and try again on the next '
+            'launch, or choose Relaunch as administrator for a one-time task repair.'
+        )
+    else:
+        msg.setText(
+            'Failed to register autostart.\n'
+            'Check the application log for details.\n\n'
+            'Turn off Run on Boot to stop this error from appearing.'
+        )
     if icon_path := get_icon_path():
         from PyQt6.QtGui import QIcon
 
         msg.setWindowIcon(QIcon(str(icon_path)))
 
-    repair_button = msg.addButton(
-        'Relaunch as administrator', QMessageBox.ButtonRole.AcceptRole
-    )
-    ignore_button = msg.addButton('Ignore', QMessageBox.ButtonRole.RejectRole)
-    msg.setDefaultButton(ignore_button)
+    repair_button = None
+    if sys.platform == 'win32':
+        repair_button = msg.addButton(
+            'Relaunch as administrator', QMessageBox.ButtonRole.AcceptRole
+        )
+        ignore_button = msg.addButton('Ignore', QMessageBox.ButtonRole.RejectRole)
+        msg.setDefaultButton(ignore_button)
+    else:
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
     msg.exec()
 
-    if msg.clickedButton() == repair_button:
+    if repair_button is not None and msg.clickedButton() == repair_button:
         _relaunch_as_admin(extra_args='--repair-autostart', parent_hwnd=_window_handle(parent))
 
 
 def _show_roblox_permission_failure(parent, denied_dirs, mod_manager=None) -> None:
     """Ask before permanently granting this Windows user access to failed installs."""
+    if sys.platform != 'win32':
+        return
     paths = sorted({Path(path).resolve() for path in denied_dirs}, key=lambda value: str(value).lower())
     if not paths:
         return
@@ -269,12 +283,16 @@ def _show_roblox_permission_failure(parent, denied_dirs, mod_manager=None) -> No
             'Elevated ACL repair started for the selected Roblox installations',
         )
         if mod_manager is not None:
-            QTimer.singleShot(500, lambda: _poll_roblox_permission_repair(mod_manager))
+            deadline = time.monotonic() + _WINDOWS_REPAIR_RESULT_TIMEOUT_SECONDS
+            QTimer.singleShot(
+                500,
+                lambda: _poll_roblox_permission_repair(mod_manager, deadline),
+            )
     else:
         clear_pending_repair(CONFIG_DIR)
 
 
-def _poll_roblox_permission_repair(mod_manager) -> None:
+def _poll_roblox_permission_repair(mod_manager, deadline: float) -> None:
     """Consume a one-shot elevated ACL result and retry the normal write path."""
     from .utils.windows_permissions import (
         clear_pending_repair,
@@ -284,7 +302,24 @@ def _poll_roblox_permission_repair(mod_manager) -> None:
 
     result = read_repair_result(CONFIG_DIR)
     if result is None:
-        QTimer.singleShot(500, lambda: _poll_roblox_permission_repair(mod_manager))
+        if time.monotonic() < deadline:
+            QTimer.singleShot(
+                500,
+                lambda: _poll_roblox_permission_repair(mod_manager, deadline),
+            )
+            return
+        clear_pending_repair(CONFIG_DIR)
+        clear_repair_result(CONFIG_DIR)
+        log_buffer.log(
+            'RobloxPermissions',
+            'Timed out waiting for the elevated Roblox permission repair',
+        )
+        QMessageBox.warning(
+            _visible_parent_widget(),
+            'Roblox Permission Repair Timed Out',
+            'Fleasion did not receive a result from the administrator process. '
+            'No additional permission repair will be attempted automatically.',
+        )
         return
 
     clear_repair_result(CONFIG_DIR)
@@ -353,7 +388,10 @@ def _prompt_first_time_startup_options(config_manager: ConfigManager, tray=None)
         'Fleasion to your operating system launcher and is refreshed on each launch.'
     )
     if sys.platform == 'win32':
-        message += '\n\nOn this OS, boot launches will be auto-elevated.'
+        message += (
+            '\n\nRun on Boot uses a normal per-user task. Hosts File mode may still '
+            'request administrator permission after Fleasion starts.'
+        )
     label.setText(message)
     layout.addWidget(label)
 
@@ -409,6 +447,27 @@ def _prompt_first_time_startup_options(config_manager: ConfigManager, tray=None)
         _show_run_on_boot_failure(dialog.parentWidget())
     if enable_desktop_integration and not desktop_ok:
         _show_desktop_integration_failure(dialog.parentWidget())
+
+
+def _append_windows_requesting_user_args(existing_args: list[str]) -> bool:
+    """Carry the pre-UAC desktop identity into a one-shot elevated child."""
+    if sys.platform != 'win32':
+        return True
+    if any(arg.startswith('--fleasion-requesting-user-sid=') for arg in existing_args):
+        return True
+    try:
+        from .utils.windows_permissions import current_windows_user_identity
+
+        sid, _account_name = current_windows_user_identity()
+    except Exception as exc:
+        log_buffer.log('UAC', f'Could not capture requesting Windows identity: {exc}')
+        return False
+    existing_args.extend(
+        [
+            f'--fleasion-requesting-user-sid={sid}',
+        ]
+    )
+    return True
 
 
 def _relaunch_as_admin(extra_args: str = '', parent_hwnd: int | None = None) -> bool:
@@ -479,6 +538,11 @@ def _relaunch_as_admin(extra_args: str = '', parent_hwnd: int | None = None) -> 
         existing_args.append(f'--fleasion-user-localappdata={local_appdata}')
     if extra_args.strip():
         existing_args.extend(extra_args.strip().split())
+    requesting_identity_captured = _append_windows_requesting_user_args(existing_args)
+    if extra_args.strip().startswith(('--repair-autostart', '--repair-roblox-permissions')) and not (
+        requesting_identity_captured
+    ):
+        return False
     # ShellExecuteEx returns as soon as the elevated child is created, while
     # this normal-user Qt process can still own the single-instance slot.  Let
     # the elevated copy request a clean exit from that parent before it tries
@@ -578,15 +642,26 @@ def _relaunch_as_admin(extra_args: str = '', parent_hwnd: int | None = None) -> 
     return bool(ok)
 
 
-def _repair_autostart_once() -> int:
+def _repair_autostart_once(requesting_user_sid: str | None = None) -> int:
     """Repair the Windows autostart task from a one-shot elevated process."""
     if sys.platform != 'win32' or not _is_admin():
         log_buffer.log('Autostart', 'Elevated autostart repair rejected: administrator access is required')
         return 1
 
     from .utils.autostart import sync_autostart
+    from .utils.windows_permissions import windows_user_id_from_sid
 
-    if sync_autostart(True, CONFIG_DIR):
+    if not requesting_user_sid:
+        log_buffer.log('Autostart', 'Elevated autostart repair has no requesting user identity')
+        return 1
+
+    try:
+        requesting_user_id = windows_user_id_from_sid(requesting_user_sid)
+    except Exception as exc:
+        log_buffer.log('Autostart', f'Invalid requesting Windows identity: {exc}')
+        return 1
+
+    if sync_autostart(True, CONFIG_DIR, windows_user_id=requesting_user_id):
         log_buffer.log('Autostart', 'Elevated autostart repair completed')
         return 0
 
@@ -594,7 +669,7 @@ def _repair_autostart_once() -> int:
     return 1
 
 
-def _repair_roblox_permissions_once() -> int:
+def _repair_roblox_permissions_once(requesting_user_sid: str | None = None) -> int:
     """Apply a pending targeted Roblox ACL repair from a one-shot UAC child."""
     from .utils.windows_permissions import (
         clear_pending_repair,
@@ -610,6 +685,13 @@ def _repair_roblox_permissions_once() -> int:
         )
         return 1
 
+    if not requesting_user_sid:
+        log_buffer.log(
+            'RobloxPermissions',
+            'Elevated Roblox ACL repair has no requesting user identity',
+        )
+        return 1
+
     paths = read_pending_repair(CONFIG_DIR)
     if not paths:
         result = {
@@ -620,7 +702,10 @@ def _repair_roblox_permissions_once() -> int:
         }
     else:
         try:
-            result = grant_current_user_modify_access(paths)
+            result = grant_current_user_modify_access(
+                paths,
+                user_sid=requesting_user_sid,
+            )
         except Exception as exc:
             result = {
                 'ok': False,
@@ -2447,6 +2532,7 @@ def main():
         help=_ap.SUPPRESS,
     )
     _parser.add_argument('--fleasion-user-localappdata', help=_ap.SUPPRESS)
+    _parser.add_argument('--fleasion-requesting-user-sid', help=_ap.SUPPRESS)
     _parser.add_argument('--repair-autostart', action='store_true', help=_ap.SUPPRESS)
     _parser.add_argument('--repair-roblox-permissions', action='store_true', help=_ap.SUPPRESS)
     _parser.add_argument(
@@ -2461,9 +2547,13 @@ def main():
     )
     _args, _ = _parser.parse_known_args()
     if _args.repair_autostart:
-        sys.exit(_repair_autostart_once())
+        sys.exit(_repair_autostart_once(_args.fleasion_requesting_user_sid))
     if _args.repair_roblox_permissions:
-        sys.exit(_repair_roblox_permissions_once())
+        sys.exit(
+            _repair_roblox_permissions_once(
+                _args.fleasion_requesting_user_sid
+            )
+        )
     pending_roblox_uri = _roblox_uri_from_argv()
     if _args.install_linux_privileged_helper:
         if not sys.platform.startswith('linux'):
@@ -2952,7 +3042,8 @@ def main():
             )
         QTimer.singleShot(500, _check_roblox_permission_failures)
 
-    QTimer.singleShot(500, _check_roblox_permission_failures)
+    if sys.platform == 'win32':
+        QTimer.singleShot(500, _check_roblox_permission_failures)
     _admin_prompt_shown = False
 
     def _request_admin_once():

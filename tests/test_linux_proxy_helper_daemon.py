@@ -5,6 +5,10 @@ import json
 import subprocess
 from types import SimpleNamespace
 
+import pytest
+
+pytest.importorskip('pwd', reason='Linux helper tests require the POSIX pwd module')
+
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa

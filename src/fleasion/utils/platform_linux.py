@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import os
-import pwd
+try:
+    import pwd
+except ModuleNotFoundError:  # pragma: no cover - exercised by Windows collection
+    pwd = None
 import shlex
 import shutil
 import socket
@@ -515,6 +518,8 @@ def _standard_user_popen(args: list[str]) -> subprocess.Popen:
         stat = user_home.stat()
         uid = stat.st_uid
         gid = stat.st_gid
+        if pwd is None:
+            raise KeyError(uid)
         pw_entry = pwd.getpwuid(uid)
     except Exception:
         return subprocess.Popen(args, env=env, **_DETACHED_POPEN_KWARGS)
