@@ -13,10 +13,10 @@
             "replacement": null
         },          
         "Phantom Forces": {
-            "Owner": "T4T",
+            "Owner": "creamcheeese279",
             "id": 292439477,
-            "github": "https://raw.githubusercontent.com/qrhrqiohj/PFTEST/refs/heads/main/PhantomForces.json",
-            "replacement": "https://raw.githubusercontent.com/qrhrqiohj/PFTEST/refs/heads/main/PfReplacement.json"
+            "github": "https://raw.githubusercontent.com/creamnio/Fleasion-Phantom-Forces/refs/heads/main/PhantomForces.json",
+            "replacement": "https://raw.githubusercontent.com/creamnio/Fleasion-Phantom-Forces/refs/heads/main/Replacements.json"
         },
         "AR2": {
             "Owner": "tinyperruzo",
@@ -37,9 +37,9 @@
             "replacement": null
         },
         "Rivals": {
-            "Owner": "Fleasion Staff Team Archive",
+            "Owner": "7lin",
             "id": 17625359962,
-            "github": "https://raw.githubusercontent.com/VanillaMeow/Rivals.json-Archive/refs/heads/main/Rivals.json",
+            "github": "https://raw.githubusercontent.com/7-linn/scrapes/refs/heads/main/Rivals.json",
             "replacement": null
         },
         "Town": {
