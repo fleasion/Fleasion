@@ -26,6 +26,17 @@ log = logging.getLogger(__name__)
 # Maps md5 hash -> base64-encoded content.
 _shared_string_registry: dict[str, str] = {}
 
+# RBXM uses one binary STRING property format for both textual strings and raw
+# byte strings.  These engine properties must retain their BinaryString XML
+# type even when their payload is empty or happens to be valid UTF-8.
+_BINARY_STRING_PROPERTIES = frozenset(
+    {
+        'AttributesSerialize',
+        'GuidBinaryString',
+        'Tags',
+    }
+)
+
 
 def write_rbxmx(doc: RbxDocument) -> bytes:
     """Convert an RbxDocument to RBXMX (XML) bytes."""
@@ -198,11 +209,12 @@ def _has_invalid_xml_chars(s: str) -> bool:
 
 def _write_string_prop(parent: Element, tag: str, prop: RbxProperty) -> None:
     val = prop.value
-    if isinstance(val, bytes):
+    if isinstance(val, bytes) or prop.name in _BINARY_STRING_PROPERTIES:
         # Binary data -> base64 encode it
+        raw = val if isinstance(val, bytes) else str(val).encode('utf-8')
         el = SubElement(parent, 'BinaryString')
         el.set('name', prop.name)
-        el.text = base64.b64encode(val).decode('ascii')
+        el.text = base64.b64encode(raw).decode('ascii')
         return
 
     if not isinstance(val, str):
