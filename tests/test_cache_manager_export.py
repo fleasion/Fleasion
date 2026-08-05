@@ -1,4 +1,5 @@
 from fleasion.cache import cache_manager as cache_manager_module
+from fleasion.cache import mesh_rig
 
 
 MODEL_XML = b"""<roblox version="4">
@@ -106,3 +107,27 @@ def test_clear_memory_cache_evicts_loaded_asset_payloads(tmp_path, monkeypatch):
 
     assert manager.clear_memory_cache() == 1
     assert manager._asset_cache == {}
+
+
+def test_rigged_glb_is_only_offered_for_payloads_with_embedded_skinning(tmp_path, monkeypatch):
+    monkeypatch.setattr(cache_manager_module, 'CONFIG_DIR', tmp_path)
+    manager = cache_manager_module.CacheManager(config_manager=_Config())
+    assert manager.store_asset('rigged', 4, b'rigged mesh')
+    assert manager.store_asset('static', 4, b'static mesh')
+    monkeypatch.setattr(mesh_rig, 'has_embedded_rig', lambda data: data == b'rigged mesh')
+
+    assert 'converted_rigged_glb' in manager.get_available_export_formats_for_asset('rigged', 4)
+    assert 'converted_rigged_glb' not in manager.get_available_export_formats_for_asset('static', 4)
+
+
+def test_rigged_glb_exports_as_a_separate_converted_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(cache_manager_module, 'CONFIG_DIR', tmp_path)
+    manager = cache_manager_module.CacheManager(config_manager=_Config())
+    assert manager.store_asset('123', 4, b'rigged mesh')
+    monkeypatch.setattr(mesh_rig, 'export_glb', lambda _data: b'glTF rig data')
+
+    exported = manager.export_asset('123', 4, export_format='converted_rigged_glb')
+
+    assert exported is not None
+    assert exported.suffix == '.glb'
+    assert exported.read_bytes() == b'glTF rig data'

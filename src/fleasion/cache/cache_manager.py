@@ -598,6 +598,11 @@ class CacheManager:
         if not data:
             return formats
 
+        from .mesh_rig import has_embedded_rig
+
+        if has_embedded_rig(data) and 'converted_rigged_glb' not in formats:
+            formats.insert(0, 'converted_rigged_glb')
+
         document_formats = get_roblox_document_export_formats(data, asset_type=asset_type)
         for fmt in reversed(document_formats):
             if fmt not in formats:
@@ -712,6 +717,14 @@ class CacheManager:
                     return output_path
 
                 # Converted export - convert to usable format
+                if export_format == 'converted_rigged_glb':
+                    from .mesh_rig import export_glb
+
+                    glb_data = export_glb(data)
+                    output_path = export_type_dir / f'{filename}.glb'
+                    output_path.write_bytes(glb_data)
+                    return output_path
+
                 if export_format == 'converted_obj' and asset_type == 4:  # Mesh - convert to OBJ
                     from . import mesh_processing
 

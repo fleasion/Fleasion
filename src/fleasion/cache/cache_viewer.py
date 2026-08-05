@@ -3978,6 +3978,7 @@ class CacheViewerTab(QWidget):
         # Add format options
         export_actions = {}
         format_labels = {
+            'converted_rigged_glb': 'Rigged Mesh (.glb)',
             'converted_obj': 'Converted (.obj)',
             'converted_rbxmx': 'Converted - KeyframeSequence (.rbxmx)',
             'converted_rbxmx_curve': 'Converted - CurveAnimation (.rbxmx)',
@@ -4002,6 +4003,7 @@ class CacheViewerTab(QWidget):
             'converted_document_rbxm',
             'converted_document_rbxmx',
             'slot_ktx2',
+            'converted_rigged_glb',
             'converted_obj',
             'converted_rbxmx_model',
             'converted_rbxmx',
