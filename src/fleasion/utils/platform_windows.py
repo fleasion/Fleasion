@@ -16,10 +16,11 @@ from typing import Any, Optional, cast
 from urllib.parse import parse_qs, unquote, urlparse, urlsplit
 
 from .logging import log_buffer
-from .paths import ROBLOX_PROCESS, ROBLOX_STUDIO_PROCESS, STORAGE_DB, STORAGE_DB_GDK
+from .paths import LOCAL_APPDATA, ROBLOX_PROCESS, ROBLOX_STUDIO_PROCESS, STORAGE_DB, STORAGE_DB_GDK
 
 _ENV_PROXY_RELAUNCH_TTL_SECONDS = 45.0
 _env_proxy_relaunches: dict[str, float] = {}
+_env_proxy_owned_process: tuple[int, str] | None = None
 _LOCAL_PROXY_HOSTS = {'127.0.0.1', 'localhost', '::1'}
 
 
@@ -135,20 +136,204 @@ def _query_exe_path(pid: int) -> Optional[Path]:
 _WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
 
 
-def wait_for_roblox_window(timeout: float = 60.0) -> bool:
+_WM_CLOSE = 0x0010
+_FILE_ATTRIBUTE_READONLY = 0x00000001
+_INVALID_FILE_ATTRIBUTES = 0xFFFFFFFF
+
+
+def _request_process_window_close(pid: int) -> bool:
+    """Ask every top-level window owned by *pid* to close normally."""
+    user32 = ctypes.windll.user32
+    user32.EnumWindows.argtypes = [_WNDENUMPROC, ctypes.wintypes.LPARAM]
+    user32.EnumWindows.restype = ctypes.wintypes.BOOL
+    user32.GetWindowThreadProcessId.argtypes = [
+        ctypes.wintypes.HWND,
+        ctypes.POINTER(ctypes.wintypes.DWORD),
+    ]
+    user32.GetWindowThreadProcessId.restype = ctypes.wintypes.DWORD
+    user32.PostMessageW.argtypes = [
+        ctypes.wintypes.HWND,
+        ctypes.wintypes.UINT,
+        ctypes.wintypes.WPARAM,
+        ctypes.wintypes.LPARAM,
+    ]
+    user32.PostMessageW.restype = ctypes.wintypes.BOOL
+    requested = False
+
+    def _cb(hwnd, _):
+        nonlocal requested
+        window_pid = ctypes.wintypes.DWORD(0)
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(window_pid))
+        if window_pid.value == pid and user32.PostMessageW(hwnd, _WM_CLOSE, 0, 0):
+            requested = True
+        return True
+
+    user32.EnumWindows(_WNDENUMPROC(_cb), 0)
+    return requested
+
+
+def _get_windows_file_attributes(path: Path) -> int | None:
+    kernel32 = ctypes.windll.kernel32
+    kernel32.GetFileAttributesW.argtypes = [ctypes.wintypes.LPCWSTR]
+    kernel32.GetFileAttributesW.restype = ctypes.wintypes.DWORD
+    value = int(kernel32.GetFileAttributesW(str(path)))
+    return None if value == _INVALID_FILE_ATTRIBUTES else value
+
+
+def _set_windows_file_attributes(path: Path, attributes: int) -> bool:
+    kernel32 = ctypes.windll.kernel32
+    kernel32.SetFileAttributesW.argtypes = [
+        ctypes.wintypes.LPCWSTR,
+        ctypes.wintypes.DWORD,
+    ]
+    kernel32.SetFileAttributesW.restype = ctypes.wintypes.BOOL
+    return bool(kernel32.SetFileAttributesW(str(path), attributes))
+
+
+def _pid_is_running(pid: int, exe_name: str) -> bool:
+    target = exe_name.casefold()
+    return any(process_pid == pid and name == target for process_pid, name in _iter_processes())
+
+
+def _wait_for_pid_exit(
+    pid: int,
+    exe_name: str,
+    timeout: float,
+    cancel_event: threading.Event | None = None,
+) -> bool:
+    deadline = time.monotonic() + max(0.0, timeout)
+    while _pid_is_running(pid, exe_name):
+        if cancel_event is not None and cancel_event.is_set():
+            return False
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.2)
+    return True
+
+
+def _guarded_force_close_process_for_env_relaunch(
+    pid: int,
+    exe_name: str,
+    *,
+    cancel_event: threading.Event | None = None,
+) -> bool | None:
+    """Force-close Env-owned Player while protecting its local session state."""
+    if cancel_event is not None and cancel_event.is_set():
+        return False
+
+    state_file = Path(LOCAL_APPDATA) / 'Roblox' / 'LocalStorage' / 'RobloxCookies.dat'
+    original_attributes = _get_windows_file_attributes(state_file)
+    if original_attributes is None:
+        log_buffer.log(
+            'Launcher',
+            'Roblox relaunch state guard is unavailable; using a normal window close',
+        )
+        return None
+
+    guarded_attributes = original_attributes | _FILE_ATTRIBUTE_READONLY
+    if not _set_windows_file_attributes(state_file, guarded_attributes):
+        log_buffer.log(
+            'Launcher',
+            'Roblox relaunch state guard could not be armed; using a normal window close',
+        )
+        return None
+
+    exited = False
+    restored = False
+    try:
+        log_buffer.log('Launcher', 'Roblox relaunch state guard armed for exact Player exit')
+        run_cmd(['taskkill', '/F', '/PID', str(pid)])
+        exited = _wait_for_pid_exit(pid, exe_name, 15.0)
+    except Exception as exc:
+        log_buffer.log(
+            'Launcher',
+            f'Roblox guarded restart request failed: {type(exc).__name__}',
+        )
+    finally:
+        restored = _set_windows_file_attributes(state_file, original_attributes)
+        if restored:
+            log_buffer.log('Launcher', 'Roblox relaunch state guard restored exact attributes')
+        else:
+            log_buffer.log(
+                'Launcher',
+                'Roblox relaunch state guard could not restore exact attributes; refusing relaunch',
+            )
+
+    return bool(exited and restored)
+
+
+def _close_process_for_env_relaunch(
+    pid: int,
+    exe_name: str,
+    *,
+    label: str,
+    cancel_event: threading.Event | None = None,
+) -> bool:
+    """Close the exact Player without an unguarded forced exit."""
+    guarded_result = _guarded_force_close_process_for_env_relaunch(
+        pid,
+        exe_name,
+        cancel_event=cancel_event,
+    )
+    if guarded_result is not None:
+        if not guarded_result:
+            log_buffer.log(
+                'Launcher',
+                f'{label} Env Proxy relaunch failed during guarded Player exit',
+            )
+        return guarded_result
+
+    window_ready = wait_for_roblox_window(
+        timeout=60.0,
+        pid=pid,
+        cancel_event=cancel_event,
+    )
+    if not window_ready:
+        if cancel_event is not None and cancel_event.is_set():
+            return False
+        log_buffer.log(
+            'Launcher',
+            f'{label} Env Proxy relaunch skipped: Player window did not appear',
+        )
+        return False
+
+    if not _request_process_window_close(pid):
+        log_buffer.log(
+            'Launcher',
+            f'{label} Env Proxy relaunch skipped: normal Player close was unavailable',
+        )
+        return False
+    if _wait_for_pid_exit(pid, exe_name, 20.0, cancel_event):
+        return True
+
+    log_buffer.log(
+        'Launcher',
+        f'{label} Env Proxy relaunch skipped: Player did not close normally',
+    )
+    return False
+
+
+def wait_for_roblox_window(
+    timeout: float = 60.0,
+    *,
+    pid: int | None = None,
+    cancel_event: threading.Event | None = None,
+) -> bool:
     """Wait until RobloxPlayerBeta has a visible top-level window."""
     user32 = ctypes.windll.user32
     deadline = time.time() + timeout
     while time.time() < deadline:
-        pid = _find_pid(ROBLOX_PROCESS)
-        if pid is not None:
+        if cancel_event is not None and cancel_event.is_set():
+            return False
+        target_pid = pid if pid is not None else _find_pid(ROBLOX_PROCESS)
+        if target_pid is not None:
             found = []
 
             def _cb(hwnd, _):
                 if user32.IsWindowVisible(hwnd):
                     lp = ctypes.wintypes.DWORD(0)
                     user32.GetWindowThreadProcessId(hwnd, ctypes.byref(lp))
-                    if lp.value == pid:
+                    if lp.value == target_pid:
                         found.append(hwnd)
                         return False
                 return True
@@ -156,7 +341,10 @@ def wait_for_roblox_window(timeout: float = 60.0) -> bool:
             user32.EnumWindows(_WNDENUMPROC(_cb), 0)
             if found:
                 return True
-        time.sleep(0.25)
+        if cancel_event is None:
+            time.sleep(0.25)
+        elif cancel_event.wait(0.25):
+            return False
     return False
 
 
@@ -167,6 +355,10 @@ def is_roblox_running() -> bool:
 
 def get_roblox_process_identity() -> tuple[int, str] | None:
     """Return a stable-enough token for the current Player process."""
+    if _env_proxy_owned_process is not None:
+        owned_pid, owned_path = _env_proxy_owned_process
+        if _pid_is_running(owned_pid, ROBLOX_PROCESS):
+            return owned_pid, owned_path
     pid = _find_pid(ROBLOX_PROCESS)
     if pid is None:
         return None
@@ -257,6 +449,7 @@ def _relaunch_roblox_exe_with_proxy_env(
     cancel_event: threading.Event | None = None,
 ) -> bool:
     """Relaunch a browser/shortcut-started Roblox process with proxy environment variables."""
+    global _env_proxy_owned_process
     now = time.monotonic()
     for key, timestamp in list(_env_proxy_relaunches.items()):
         if now - timestamp > _ENV_PROXY_RELAUNCH_TTL_SECONDS:
@@ -301,12 +494,13 @@ def _relaunch_roblox_exe_with_proxy_env(
             return False
         if cancel_event is not None and cancel_event.is_set():
             return False
-        run_cmd(['taskkill', '/F', '/PID', str(pid)])
-        deadline = time.time() + 8.0
-        while time.time() < deadline and _find_pid(wait_pid_exe_name) == pid:
-            if cancel_event is not None and cancel_event.is_set():
-                return False
-            time.sleep(0.2)
+        if not _close_process_for_env_relaunch(
+            pid,
+            wait_pid_exe_name,
+            label=label,
+            cancel_event=cancel_event,
+        ):
+            return False
 
         env = os.environ.copy()
         env.update(
@@ -326,7 +520,7 @@ def _relaunch_roblox_exe_with_proxy_env(
             if cancel_event is not None and cancel_event.is_set():
                 return False
             args = [str(exe_path), launch_arg] if launch_arg else [str(exe_path)]
-            subprocess.Popen(
+            replacement = subprocess.Popen(
                 args,
                 cwd=str(exe_path.parent),
                 env=env,
@@ -335,6 +529,7 @@ def _relaunch_roblox_exe_with_proxy_env(
                 stderr=subprocess.DEVNULL,
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
+            _env_proxy_owned_process = (int(replacement.pid), str(exe_path))
         except OSError as exc:
             log_buffer.log('Launcher', f'{label} Env Proxy relaunch failed: {exc}')
             return False
@@ -389,6 +584,41 @@ def terminate_roblox() -> bool:
         return False
     run_cmd(['taskkill', '/F', '/IM', ROBLOX_PROCESS])
     return True
+
+
+def close_roblox_for_env_lifecycle() -> bool:
+    """Close Env-owned Player normally, with the guarded exact-PID fallback."""
+    global _env_proxy_owned_process
+
+    pid = (
+        _env_proxy_owned_process[0]
+        if _env_proxy_owned_process is not None
+        else _find_pid(ROBLOX_PROCESS)
+    )
+    if pid is None:
+        return False
+
+    if _request_process_window_close(pid) and _wait_for_pid_exit(
+        pid,
+        ROBLOX_PROCESS,
+        20.0,
+    ):
+        _env_proxy_owned_process = None
+        return True
+
+    guarded_result = _guarded_force_close_process_for_env_relaunch(
+        pid,
+        ROBLOX_PROCESS,
+    )
+    if guarded_result is None:
+        log_buffer.log(
+            'Launcher',
+            'Env-owned Roblox Player could not be closed without an unguarded forced exit',
+        )
+        return False
+    if guarded_result:
+        _env_proxy_owned_process = None
+    return guarded_result
 
 
 def wait_for_roblox_exit(timeout: float = 10.0) -> bool:

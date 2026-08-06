@@ -847,15 +847,20 @@ class SystemTray:
         """Show Logs window — only one instance allowed."""
         for w in self.open_windows:
             if isinstance(w, LogsWindow):
+                w.showNormal()
                 w.show()
                 w.raise_()
                 w.activateWindow()
                 return
         window = LogsWindow()
-        window.destroyed.connect(lambda: self._remove_window(window))
+        window.destroyed.connect(
+            lambda _obj=None, _self=self, _window=window: _self._remove_window(_window)
+        )
         self.open_windows.append(window)
         self._apply_always_on_top_to_window(window)
         window.show()
+        window.raise_()
+        window.activateWindow()
 
     def _show_replacer_config(self):
         """Show Replacer Config window (Dashboard)."""

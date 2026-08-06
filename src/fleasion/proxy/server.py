@@ -1270,6 +1270,9 @@ class FleasionProxy:
             backlog=256,
             reuse_address=True,
         )
+        # Port 0 is used by the Windows Env Proxy fallback. Capture the
+        # kernel-assigned port before opening the IPv6 companion listener.
+        self.port = int(self._server.sockets[0].getsockname()[1])
         self._servers = [self._server]
         self._listening_loopbacks = {'127.0.0.1'}
         mode = 'HTTP CONNECT' if self._explicit_proxy else 'TLS'

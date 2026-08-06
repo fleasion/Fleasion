@@ -672,7 +672,7 @@ class CacheScraper:
                 ssl_sock = ctx.wrap_socket(raw_sock, server_hostname=cur_hostname)
             except Exception as exc:
                 log_buffer.log('Cache', f'Socket connect failed {cur_hostname} ({real_ip}): {exc}')
-                return None
+                return (None, None) if return_status else None
 
             try:
                 conn = http.client.HTTPConnection.__new__(http.client.HTTPSConnection)
@@ -700,7 +700,7 @@ class CacheScraper:
                     resp.read()
                     ssl_sock.close()
                     if not location:
-                        return None
+                        return (None, resp.status) if return_status else None
                     parsed = urlparse(location)
                     cur_hostname = (parsed.hostname or cur_hostname).lower()
                     cur_path = parsed.path

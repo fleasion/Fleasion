@@ -67,6 +67,7 @@ class CustomFFlagModifier:
             list(macos_resource_dirs) if macos_resource_dirs is not None else None
         )
         self._macos_seeded_flag_names: set[str] = set()
+        self._windows_seeded_flag_names: set[str] = set()
         self._last_fresh_response_flags: tuple[tuple[str, str], ...] | None = None
         self._settings_path = settings_path or (CONFIG_FILE if reload_settings_from_disk else None)
         self._settings_signature: tuple[int, int] | None = None
@@ -173,16 +174,16 @@ class CustomFFlagModifier:
         self._last_fresh_response_flags = None
 
     def prime_windows_flag_cache(self) -> bool:
-        """Write active overrides into Roblox's uncompressed Windows flag cache.
+        """Synchronize active overrides into Roblox's uncompressed Windows flag cache.
 
         Some flags, including the task-scheduler target FPS, are consumed before
         the dynamic reloader's first network request.  Roblox's current cache
         layout is a four-byte signature length, that many signature bytes, one
-        compression byte, then the ClientSettings JSON.  We preserve the header
-        and replace the JSON atomically only for the known uncompressed layout.
+        compression byte, then the ClientSettings JSON.  We preserve the header,
+        remove stale overrides when disabled, and replace the JSON atomically
+        only for the known uncompressed layout.  Disabled mode never adds flags;
+        it only clears values previously seeded by Fleasion.
         """
-        if not self.is_enabled():
-            return False
         if self._flag_cache_path is None and sys.platform != 'win32':
             return False
 
@@ -202,11 +203,30 @@ class CustomFFlagModifier:
             if not isinstance(application_settings, dict):
                 return False
 
-            flags = self.runtime_flags()
+            enabled = self.is_enabled()
+            flags = self.runtime_flags() if enabled else {}
+            self._refresh_settings_from_disk()
+            saved_flags = (
+                self._disk_flags
+                if self._disk_flags is not None
+                else getattr(self.config_manager, 'custom_fflags', {})
+            )
+            saved_names = set(normalize_custom_fflags(saved_flags))
+            stale_names = (
+                self._windows_seeded_flag_names
+                | saved_names
+                | {DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG}
+            ) - set(flags)
+            removed_names = {
+                name for name in stale_names if application_settings.pop(name, None) is not None
+            }
             application_settings.update(flags)
             updated = raw[:payload_offset] + json.dumps(
                 payload, separators=(',', ':'), ensure_ascii=False
             ).encode('utf-8')
+            self._windows_seeded_flag_names = set(flags)
+            if updated == raw:
+                return False
             temporary_path = cache_path.with_name(f'.{cache_path.name}.{os.getpid()}.tmp')
             try:
                 temporary_path.write_bytes(updated)
@@ -216,10 +236,16 @@ class CustomFFlagModifier:
         except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
             return False
 
-        log_buffer.log(
-            'CustomFFlags',
-            f'Pre-seeded Roblox flag cache with {len(flags)} custom FastFlag(s)',
-        )
+        if flags:
+            log_buffer.log(
+                'CustomFFlags',
+                f'Pre-seeded Roblox flag cache with {len(flags)} custom FastFlag(s)',
+            )
+        elif removed_names:
+            log_buffer.log(
+                'CustomFFlags',
+                f'Removed {len(removed_names)} disabled custom FastFlag(s) from Roblox flag cache',
+            )
         return True
 
     def _macos_client_settings_paths(self) -> list[Path]:

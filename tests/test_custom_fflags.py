@@ -115,6 +115,49 @@ def test_modifier_primes_the_uncompressed_windows_flag_cache(tmp_path):
     assert DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG not in config.custom_fflags
 
 
+def test_modifier_removes_disabled_override_from_windows_flag_cache(tmp_path):
+    config = SimpleNamespace(
+        custom_fflags_enabled=True,
+        custom_fflags={'FFlagFleasionGateMarker': 'True'},
+        custom_fflag_disabled=[],
+    )
+    cache_path = tmp_path / 'flag_cache.dat'
+    cache_path.write_bytes(
+        b'\x00\x00\x00\x00\x00'
+        + json.dumps({'applicationSettings': {'Existing': 'True'}}).encode()
+    )
+    modifier = CustomFFlagModifier(config, flag_cache_path=cache_path)
+
+    assert modifier.prime_windows_flag_cache()
+    config.custom_fflag_disabled = ['FFlagFleasionGateMarker']
+    assert modifier.prime_windows_flag_cache()
+
+    payload = json.loads(cache_path.read_bytes()[5:])['applicationSettings']
+    assert 'FFlagFleasionGateMarker' not in payload
+    assert payload[DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG] == '1'
+
+
+def test_modifier_removes_all_saved_overrides_when_windows_feature_is_disabled(tmp_path):
+    config = SimpleNamespace(
+        custom_fflags_enabled=True,
+        custom_fflags={'FFlagFleasionGateMarker': 'True'},
+        custom_fflag_disabled=[],
+    )
+    cache_path = tmp_path / 'flag_cache.dat'
+    cache_path.write_bytes(
+        b'\x00\x00\x00\x00\x00'
+        + json.dumps({'applicationSettings': {'Existing': 'True'}}).encode()
+    )
+    modifier = CustomFFlagModifier(config, flag_cache_path=cache_path)
+
+    assert modifier.prime_windows_flag_cache()
+    config.custom_fflags_enabled = False
+    assert modifier.prime_windows_flag_cache()
+
+    payload = json.loads(cache_path.read_bytes()[5:])['applicationSettings']
+    assert payload == {'Existing': 'True'}
+
+
 def test_modifier_primes_macos_player_client_settings(tmp_path):
     config = SimpleNamespace(
         custom_fflags_enabled=True,
@@ -384,3 +427,17 @@ def test_master_launch_preparation_seeds_startup_flags_before_relaunch(monkeypat
     proxy.prepare_custom_fflags_for_player_launch()
 
     assert calls == ['armed', 'seeded']
+
+
+def test_master_launch_preparation_cleans_startup_cache_when_custom_flags_are_off(monkeypatch):
+    calls = []
+    proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
+    proxy.custom_fflag_modifier = SimpleNamespace(
+        is_enabled=lambda: False,
+        prepare_for_player_launch=lambda: calls.append('armed'),
+        prime_startup_flag_cache=lambda: calls.append('seeded') or True,
+    )
+
+    proxy.prepare_custom_fflags_for_player_launch()
+
+    assert calls == ['seeded']

@@ -151,6 +151,40 @@ def test_dashboard_toggle_shows_hidden_window():
     assert show_calls == [True]
 
 
+def test_show_logs_raises_and_activates_new_window(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    calls = []
+
+    class _RecordingLogsWindow(tray_module.LogsWindow):
+        def show(self):
+            calls.append('show')
+            super().show()
+
+        def raise_(self):
+            calls.append('raise')
+            super().raise_()
+
+        def activateWindow(self):
+            calls.append('activate')
+            super().activateWindow()
+
+    system_tray = SystemTray.__new__(SystemTray)
+    system_tray.open_windows = []
+    system_tray._apply_always_on_top_to_window = lambda _window: None
+    monkeypatch.setattr(tray_module, 'LogsWindow', _RecordingLogsWindow)
+
+    system_tray._show_logs()
+    app.processEvents()
+
+    assert calls[:3] == ['show', 'raise', 'activate']
+    assert len(system_tray.open_windows) == 1
+    assert system_tray.open_windows[0].isVisible()
+
+    system_tray.open_windows[0].close()
+    app.processEvents()
+    assert system_tray.open_windows == []
+
+
 def test_show_dashboard_enables_foreground_mode_before_showing_existing_window():
     system_tray = SystemTray.__new__(SystemTray)
     calls = []

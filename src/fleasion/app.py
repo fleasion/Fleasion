@@ -869,9 +869,10 @@ def _show_admin_required_dialog(parent=None):
 
 
 def _show_proxy_bind_error_dialog(details: dict):
-    """Show a user-facing popup when Fleasion cannot bind proxy port 443."""
+    """Show a user-facing popup when Fleasion cannot bind its proxy port."""
     port = int(details.get('port') or 443)
     owners = details.get('owners') or []
+    bind_reason = str(details.get('bind_reason') or '')
 
     _top = QApplication.topLevelWidgets()
     _parent = next((w for w in _top if w.isVisible()), None)
@@ -886,7 +887,12 @@ def _show_proxy_bind_error_dialog(details: dict):
     msg.setIcon(QMessageBox.Icon.Warning)
     msg.setText(f'Fleasion could not start its local proxy on port {port}.')
 
-    if owners:
+    if bind_reason == 'access_denied_or_reserved':
+        owners_html = (
+            f'Windows denied access to port {port}; it may be reserved or excluded even though '
+            'no listening process appears in netstat.<br><br>'
+        )
+    elif owners:
         owner_lines = '<br>'.join(
             f'- {html.escape(str(owner.get("process_name") or "Unknown"))} '
             f'(PID {int(owner.get("pid") or 0)}) on '
@@ -2953,7 +2959,10 @@ def main():
     from .proxy.env_lifecycle import EnvProxyLifecycleController
 
     if sys.platform == 'win32':
-        from .utils.platform_windows import relaunch_roblox_with_proxy_env
+        from .utils.platform_windows import (
+            close_roblox_for_env_lifecycle,
+            relaunch_roblox_with_proxy_env,
+        )
 
         def _relaunch_env_player(
             proxy_url: str,
@@ -2964,6 +2973,8 @@ def main():
             return relaunch_roblox_with_proxy_env(
                 proxy_url, force=force, cancel_event=cancel_event
             )
+
+        _terminate_env_player = close_roblox_for_env_lifecycle
 
     elif sys.platform == 'darwin':
         from .utils.platform_macos import relaunch_roblox_with_proxy_env
@@ -2978,6 +2989,8 @@ def main():
                 proxy_url, target, force=force, cancel_event=cancel_event
             )
 
+        _terminate_env_player = terminate_roblox
+
     else:
         from .utils.platform_linux import relaunch_roblox_with_proxy_env
 
@@ -2991,6 +3004,8 @@ def main():
                 proxy_url, target, force=force, cancel_event=cancel_event
             )
 
+        _terminate_env_player = terminate_roblox
+
     env_lifecycle = EnvProxyLifecycleController(
         config_manager=config_manager,
         proxy_master=proxy_master,
@@ -2998,7 +3013,7 @@ def main():
         relaunch_player=_relaunch_env_player,
         is_player_running=is_roblox_running,
         get_player_identity=get_roblox_process_identity,
-        terminate_player=terminate_roblox,
+        terminate_player=_terminate_env_player,
         wait_for_player_exit=wait_for_roblox_exit,
         adopted_player=_args.preserve_env_proxy_player,
         max_repairs=2,

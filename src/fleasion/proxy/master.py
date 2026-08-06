@@ -3228,6 +3228,7 @@ class ProxyMaster:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
         self._running = False
+        self._active_proxy_port: Optional[int] = None
         self._lock = threading.Lock()
         self._env_proxy_ready = threading.Event()
         self._hosts_installed: bool = False
@@ -3268,7 +3269,8 @@ class ProxyMaster:
         return str(getattr(self.config_manager, 'proxy_mode', 'hosts') or 'hosts') == 'env'
 
     def roblox_env_proxy_url(self) -> str:
-        return f'http://127.0.0.1:{MACOS_PROXY_BACKEND_PORT}'
+        port = self._active_proxy_port or MACOS_PROXY_BACKEND_PORT
+        return f'http://127.0.0.1:{port}'
 
     def wait_for_env_proxy_ready(self, timeout: float = 15.0) -> bool:
         """Wait for bind and TLS self-test, not merely proxy thread startup."""
@@ -3826,18 +3828,21 @@ class ProxyMaster:
     def prepare_custom_fflags_for_player_launch(self) -> None:
         """Arm one fresh custom-FFlag response for the next Player launch."""
         custom_modifier = getattr(self, 'custom_fflag_modifier', None)
-        if custom_modifier is None or not custom_modifier.is_enabled():
+        if custom_modifier is None:
             return
-        custom_modifier.prepare_for_player_launch()
+        enabled = custom_modifier.is_enabled()
+        if enabled:
+            custom_modifier.prepare_for_player_launch()
         seed_startup_flags = getattr(custom_modifier, 'prime_startup_flag_cache', None)
         if not callable(seed_startup_flags):
             seed_startup_flags = getattr(custom_modifier, 'prime_windows_flag_cache', None)
         if callable(seed_startup_flags):
             seed_startup_flags()
-        log_buffer.log(
-            'CustomFFlags',
-            'Armed a fresh ClientSettings response for Roblox Player launch',
-        )
+        if enabled:
+            log_buffer.log(
+                'CustomFFlags',
+                'Armed a fresh ClientSettings response for Roblox Player launch',
+            )
 
     def prime_custom_fflag_cache(self, *, allow_running: bool = False) -> bool:
         """Preload startup-only custom FastFlags for the next Player launch."""
@@ -4114,6 +4119,7 @@ class ProxyMaster:
             if self._running:
                 return
             self._env_proxy_ready.clear()
+            self._active_proxy_port = None
 
             def _run():
                 try:
@@ -4242,8 +4248,7 @@ class ProxyMaster:
         else:
             log_buffer.log('Cleanup', 'Cache clear on launch disabled - skipping')
 
-        if custom_fflags_active:
-            self.prime_custom_fflag_cache()
+        self.prime_custom_fflag_cache()
 
         # ── Certificate setup ─────────────────────────────────────────────
         log_buffer.log('Certificate', 'Generating/loading CA certificates...')
@@ -4517,14 +4522,48 @@ class ProxyMaster:
             await self._proxy.start()
         except OSError as exc:
             err_text = str(exc).lower()
-            if (
+            native_error = getattr(exc, 'winerror', None)
+            bind_error = (
                 exc.errno in (10013, 10048)
+                or native_error in (10013, 10048)
                 or 'access' in err_text
                 or 'address already in use' in err_text
                 or 'only one usage of each socket address' in err_text
                 or (str(listen_port) in err_text and 'bind' in err_text)
-            ):
-                owners = _list_port_listeners(listen_port)
+            )
+            owners = _list_port_listeners(listen_port) if bind_error else []
+
+            if bind_error and env_proxy_mode and IS_WINDOWS and not owners:
+                fixed_port = listen_port
+                try:
+                    self._proxy.port = 0
+                    await self._proxy.start()
+                    listen_port = int(self._proxy.port)
+                    self._active_proxy_port = listen_port
+                    log_buffer.log(
+                        'Proxy',
+                        f'Fixed Env Proxy port {fixed_port} was unavailable; '
+                        f'using free loopback port {listen_port}',
+                    )
+                except OSError as fallback_exc:
+                    log_buffer.log(
+                        'Error',
+                        f'Failed to bind Env Proxy fallback port after {fixed_port}: '
+                        f'{fallback_exc}',
+                    )
+                    self._emit_proxy_start_error(
+                        'port_bind_failed',
+                        {
+                            'port': fixed_port,
+                            'owners': owners,
+                            'bind_error': str(exc),
+                            'fallback_error': str(fallback_exc),
+                            'bind_reason': 'access_denied_or_reserved',
+                        },
+                    )
+                    self._running = False
+                    return
+            elif bind_error:
                 log_buffer.log(
                     'Error',
                     (
@@ -4542,16 +4581,30 @@ class ProxyMaster:
                     {
                         'port': listen_port,
                         'owners': owners,
+                        'bind_error': str(exc),
+                        'bind_reason': (
+                            'access_denied_or_reserved'
+                            if exc.errno == 10013
+                            or native_error == 10013
+                            or 'access' in err_text
+                            else 'already_in_use'
+                        ),
                     },
                 )
+                self._running = False
+                return
             else:
                 log_buffer.log('Error', f'Failed to start proxy: {exc}')
-            self._running = False
-            return
+                self._running = False
+                return
         except Exception as exc:
             log_buffer.log('Error', f'Failed to start proxy: {exc}')
             self._running = False
             return
+
+        if env_proxy_mode:
+            self._active_proxy_port = int(self._proxy.port)
+            listen_port = self._active_proxy_port
 
         loopback_ips_for_hosts = getattr(self._proxy, 'loopback_ips_for_hosts', None)
         _set_active_hosts_loopbacks(

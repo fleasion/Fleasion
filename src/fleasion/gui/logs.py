@@ -24,6 +24,7 @@ class LogsWindow(QDialog):
 
     def __init__(self):
         super().__init__()
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.setWindowTitle('Logs')
         self.resize(600, 400)
         self.setWindowFlags(

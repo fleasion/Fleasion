@@ -1,4 +1,5 @@
 import json
+import socket
 
 from fleasion.proxy.addons.cache_scraper import CacheScraper
 
@@ -108,5 +109,22 @@ def test_reset_for_cache_clear_invalidates_old_background_work():
         )
         assert manager.stored == []
         assert scraper._executor is not old_executor
+    finally:
+        scraper._executor.shutdown(wait=False, cancel_futures=True)
+
+
+def test_https_get_status_failure_always_returns_unpackable_tuple(monkeypatch):
+    scraper = _make_scraper()
+
+    def fail_connect(*_args, **_kwargs):
+        raise OSError('offline')
+
+    monkeypatch.setattr(socket, 'create_connection', fail_connect)
+    try:
+        assert scraper._https_get(
+            'assetdelivery.roblox.com',
+            '/v1/asset/?id=123',
+            return_status=True,
+        ) == (None, None)
     finally:
         scraper._executor.shutdown(wait=False, cancel_futures=True)
