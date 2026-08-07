@@ -51,6 +51,8 @@ def test_appleblox_launch_rewrite_starts_resource_guard(tmp_path, monkeypatch):
         macos / "ClientSettings" / "ClientAppSettings.json": None
     }
     reapply_requests = []
+    prepare_calls = []
+    bridge._custom_fflag_prepare = lambda: prepare_calls.append(True)
     monkeypatch.setattr(bridge, "_trigger_managed_reapply", lambda: reapply_requests.append(True))
     monkeypatch.setattr(
         "fleasion.modifications.macos_bootstrapper_bridge.is_roblox_running",
@@ -70,6 +72,7 @@ def test_appleblox_launch_rewrite_starts_resource_guard(tmp_path, monkeypatch):
     assert bridge._launch_guard_timer.isActive()
     assert bridge._managed_reapply_passes == 2
     assert reapply_requests == [True]
+    assert prepare_calls == [True]
     bridge.stop()
 
 

@@ -2978,6 +2978,7 @@ def main():
             custom_fflag_seed=lambda: proxy_master.prime_custom_fflag_cache(
                 allow_running=True
             ),
+            custom_fflag_prepare=proxy_master.prepare_custom_fflags_for_player_launch,
         )
         app.aboutToQuit.connect(macos_bootstrapper_bridge.stop)
 

@@ -1144,7 +1144,11 @@ def _relaunch_roblox_exe_with_proxy_env(
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                creationflags=subprocess.CREATE_NO_WINDOW,
+                # The constant is only defined by the Windows build of
+                # ``subprocess``.  Keeping the fallback at zero also lets
+                # cross-platform lifecycle tests exercise the Windows launch
+                # path without importing a host-specific constant.
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
             )
         except OSError as exc:
             log_buffer.log('Launcher', f'{label} Env Proxy relaunch failed: {exc}')

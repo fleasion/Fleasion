@@ -623,6 +623,8 @@ def test_proxy_startup_self_tests_only_active_intercept_routes(tmp_path, monkeyp
             pass
 
     class _ProxyStub:
+        port = proxy_master.MACOS_PROXY_BACKEND_PORT
+
         async def log_upstream_self_test(self, _hosts):
             pass
 

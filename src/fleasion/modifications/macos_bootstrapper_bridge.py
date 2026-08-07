@@ -43,10 +43,12 @@ class MacBootstrapperBridge(QObject):
         modification_manager,
         parent: QObject | None = None,
         custom_fflag_seed=None,
+        custom_fflag_prepare=None,
     ):
         super().__init__(parent)
         self._manager = modification_manager
         self._custom_fflag_seed = custom_fflag_seed
+        self._custom_fflag_prepare = custom_fflag_prepare
         self._stopped = False
         self._settings_signatures: dict[Path, tuple[int, int] | None] = {}
         self._restore_signature: tuple[str, ...] = ()
@@ -189,6 +191,14 @@ class MacBootstrapperBridge(QObject):
                 self._settings_signatures[target] = self._file_signature(target)
             self._sync_watches()
             if launch_rewrite:
+                if callable(self._custom_fflag_prepare):
+                    try:
+                        self._custom_fflag_prepare()
+                    except Exception as exc:
+                        log_buffer.log(
+                            'CustomFFlags',
+                            f'Failed to arm a fresh response after bootstrapper rewrite: {exc}',
+                        )
                 self._start_launch_guard()
 
     @staticmethod
