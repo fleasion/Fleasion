@@ -12,8 +12,14 @@ def test_arch_gui_dependency_check_reports_missing_qt6_base(tmp_path, monkeypatc
     os_release = tmp_path / "os-release"
     os_release.write_text('ID=cachyos\nID_LIKE="arch"\n', encoding="utf-8")
     calls = []
+    log_calls = []
 
     monkeypatch.setattr(platform_linux.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        platform_linux.log_buffer,
+        'log',
+        lambda category, message: log_calls.append((category, message)),
+    )
 
     def run(command, **kwargs):
         calls.append((command, kwargs))
@@ -24,7 +30,14 @@ def test_arch_gui_dependency_check_reports_missing_qt6_base(tmp_path, monkeypatc
     assert platform_linux.missing_linux_gui_packages(
         os_release_path=os_release
     ) == ["qt6-base"]
-    assert calls[0][0] == ["pacman", "-Q", "qt6-base"]
+    assert calls[0][0] == ['/usr/bin/pacman', '-Q', 'qt6-base']
+    assert log_calls == [
+        (
+            'Linux GUI',
+            'Arch package query reports qt6-base as unavailable '
+            '(pacman exit 1). Details: not installed',
+        )
+    ]
 
 
 def test_arch_gui_dependency_check_accepts_installed_qt6_base(tmp_path, monkeypatch):
@@ -40,6 +53,30 @@ def test_arch_gui_dependency_check_accepts_installed_qt6_base(tmp_path, monkeypa
     )
 
     assert platform_linux.missing_linux_gui_packages(os_release_path=os_release) == []
+
+
+def test_arch_gui_dependency_check_uses_host_libraries_when_frozen(tmp_path, monkeypatch):
+    os_release = tmp_path / 'os-release'
+    os_release.write_text('ID=arch\n', encoding='utf-8')
+    bundle_root = tmp_path / '_MEI12345'
+    host_libs = tmp_path / 'host-libs'
+    calls = []
+
+    monkeypatch.setattr(platform_linux.shutil, 'which', lambda _name: '/usr/bin/pacman')
+    monkeypatch.setattr(platform_linux.sys, '_MEIPASS', str(bundle_root), raising=False)
+    monkeypatch.setenv('LD_LIBRARY_PATH', f'{bundle_root}:{host_libs}')
+    monkeypatch.setenv('LD_LIBRARY_PATH_ORIG', str(host_libs))
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return platform_linux.subprocess.CompletedProcess(command, 0, 'qt6-base 6.11.1-1\n', '')
+
+    monkeypatch.setattr(platform_linux.subprocess, 'run', run)
+
+    assert platform_linux.missing_linux_gui_packages(os_release_path=os_release) == []
+    assert calls[0][0] == ['/usr/bin/pacman', '-Q', 'qt6-base']
+    assert calls[0][1]['env']['LD_LIBRARY_PATH'] == str(host_libs)
+    assert 'LD_LIBRARY_PATH_ORIG' not in calls[0][1]['env']
 
 
 def test_non_arch_gui_dependency_check_does_not_query_pacman(tmp_path, monkeypatch):

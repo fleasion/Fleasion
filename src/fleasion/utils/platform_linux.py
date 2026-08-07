@@ -109,23 +109,36 @@ def missing_linux_gui_packages(
     """Return missing native GUI packages on supported package-managed distros."""
     if not (_os_release_ids(os_release_path) & ARCH_LINUX_IDS):
         return []
-    if shutil.which('pacman') is None:
+    pacman = shutil.which('pacman')
+    if pacman is None:
         return []
 
     missing: list[str] = []
     for package in ARCH_LINUX_GUI_PACKAGES:
         try:
             result = subprocess.run(
-                ['pacman', '-Q', package],
+                [pacman, '-Q', package],
                 capture_output=True,
                 text=True,
                 timeout=5,
+                # PyInstaller adds its Ubuntu-built shared libraries to
+                # LD_LIBRARY_PATH.  pacman must instead load the Arch host
+                # libraries, or an ABI/load failure looks like a missing
+                # package to this check.
+                env=_host_subprocess_env(),
             )
         except Exception:
             # A failed package query should not block an otherwise working
             # desktop when its package manager cannot be inspected.
             continue
         if result.returncode != 0:
+            diagnostics = (result.stderr or result.stdout).strip()
+            detail = f' Details: {diagnostics}' if diagnostics else ''
+            log_buffer.log(
+                'Linux GUI',
+                f'Arch package query reports {package} as unavailable '
+                f'(pacman exit {result.returncode}).{detail}',
+            )
             missing.append(package)
     return missing
 

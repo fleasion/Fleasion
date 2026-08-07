@@ -2699,17 +2699,20 @@ def _check_linux_gui_dependencies() -> bool:
     package_list = ' '.join(missing)
     install_command = f'sudo pacman -S --needed {package_list}'
     log_buffer.log(
-        'Tray',
-        f'Missing Arch Linux GUI dependencies: {package_list}. Install with: {install_command}',
+        'Linux GUI',
+        'A required Arch Linux GUI package is missing.\n'
+        f'  Package: {package_list}\n'
+        f'  Impact: Fleasion cannot reliably publish its system tray icon.\n'
+        f'  Install: {install_command}',
     )
     QMessageBox.critical(
         None,
-        f'{APP_NAME} - Missing Linux GUI Dependency',
-        'Fleasion cannot create a reliable Qt system tray on this Arch-based system '
-        f'because the following native package is missing:\n\n{package_list}\n\n'
-        'PyQt6 can still create a tray object in this state, but the desktop may never '
-        'publish its icon.\n\n'
-        f'Install the dependency and restart Fleasion:\n{install_command}',
+        f'{APP_NAME} - System Package Required',
+        'Fleasion needs a system package before its tray icon can work reliably.\n\n'
+        f'Required package:\n  • {package_list}\n\n'
+        f'Install it with:\n  {install_command}\n\n'
+        'Restart Fleasion after installation. Without this package, PyQt6 may create a '
+        'tray object but your desktop may never show its icon.',
         QMessageBox.StandardButton.Ok,
     )
     return False

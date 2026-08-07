@@ -63,7 +63,16 @@ def test_linux_gui_dependency_check_reports_install_command(monkeypatch):
 
     assert app_module._check_linux_gui_dependencies() is False
     assert 'sudo pacman -S --needed qt6-base' in critical_calls[0][2]
-    assert 'qt6-base' in log_calls[0][1]
+    assert 'Required package:\n  • qt6-base' in critical_calls[0][2]
+    assert log_calls == [
+        (
+            'Linux GUI',
+            'A required Arch Linux GUI package is missing.\n'
+            '  Package: qt6-base\n'
+            '  Impact: Fleasion cannot reliably publish its system tray icon.\n'
+            '  Install: sudo pacman -S --needed qt6-base',
+        )
+    ]
 
 
 def test_linux_gui_dependency_check_accepts_complete_runtime(monkeypatch):
