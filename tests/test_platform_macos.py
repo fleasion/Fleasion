@@ -1,6 +1,12 @@
+import sys
 from pathlib import Path
 
+import pytest
+
 from fleasion.utils import platform_macos
+
+
+pytestmark = pytest.mark.skipif(sys.platform == 'win32', reason='macOS-only platform tests')
 
 
 def _make_player_app(path: Path) -> Path:

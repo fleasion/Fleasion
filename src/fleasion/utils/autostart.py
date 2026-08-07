@@ -56,6 +56,16 @@ def _ps_single_quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def windows_autostart_privilege_hint(proxy_mode: str | None) -> str:
+    """Describe proxy-mode elevation without conflating it with autostart."""
+    if proxy_mode == 'hosts':
+        return (
+            'Hosts File mode requires administrator permission for proxy startup. '
+            'The Run on Boot task itself remains a per-user task.'
+        )
+    return 'Env Proxy mode uses a normal per-user task and does not require Administrator.'
+
+
 def _desktop_exec_quote(value: str) -> str:
     """Quote a single Exec token for a .desktop entry."""
     if not value:
@@ -178,6 +188,112 @@ def _delete_task() -> bool:
         return False
 
 
+def _windows_launch_action(launch_info: dict) -> tuple[str, str]:
+    """Return the executable and arguments used by the Windows task."""
+    if launch_info['mode'] == 'exe':
+        return launch_info['path'], '--no-dashboard'
+
+    # For uv, wrap in PowerShell with -WindowStyle Hidden to suppress the
+    # console window that uv.exe would otherwise show at logon.
+    uv_path = launch_info['path']
+    proj_path = launch_info['project']
+    uv_args = subprocess.list2cmdline(
+        ['--project', proj_path, 'run', 'fleasion', '--no-dashboard']
+    )
+    log_path = launch_info.get('log')
+    ps_script = (
+        'try{'
+        f'Start-Process -FilePath {_ps_single_quote(uv_path)} '
+        f'-ArgumentList {_ps_single_quote(uv_args)} '
+        '-WindowStyle Hidden -ErrorAction Stop'
+        '}catch{'
+    )
+    if log_path:
+        ps_script += (
+            f'New-Item -ItemType Directory -Force -Path '
+            f'{_ps_single_quote(str(Path(log_path).parent))}|Out-Null;'
+            f'Add-Content -LiteralPath {_ps_single_quote(log_path)} '
+            "-Value ((Get-Date -Format o)+' '+($_|Out-String));"
+        )
+    ps_script += 'exit 1}'
+    ps_encoded = base64.b64encode(ps_script.encode('utf-16-le')).decode('ascii')
+    return (
+        'powershell.exe',
+        f'-WindowStyle Hidden -NoProfile -NonInteractive '
+        f'-ExecutionPolicy Bypass -EncodedCommand {ps_encoded}',
+    )
+
+
+def _create_windows_task_as_current_user(launch_info: dict) -> bool:
+    """Create/update the per-user task without requiring elevation.
+
+    ``schtasks /Create`` rejects standard-user task creation on current Windows
+    builds, even when the requested task is limited to the interactive user.
+    The Task Scheduler COM API supports the intended per-user interactive-token
+    task without that elevation requirement.
+    """
+    import textwrap
+
+    command, args = _windows_launch_action(launch_info)
+    script = textwrap.dedent(
+        f"""
+        $ErrorActionPreference = 'Stop'
+        $userId = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+        $service = New-Object -ComObject 'Schedule.Service'
+        $service.Connect()
+        $folder = $service.GetFolder('\')
+        $definition = $service.NewTask(0)
+        $definition.RegistrationInfo.Description = 'Fleasion per-user autostart'
+        $definition.Settings.Enabled = $true
+        $definition.Settings.Hidden = $true
+        $definition.Settings.MultipleInstances = 2
+        $trigger = $definition.Triggers.Create(9)
+        $trigger.Enabled = $true
+        $trigger.UserId = $userId
+        $principal = $definition.Principal
+        $principal.UserId = $userId
+        $principal.LogonType = 3
+        $principal.RunLevel = 0
+        $action = $definition.Actions.Create(0)
+        $action.Path = {_ps_single_quote(command)}
+        $action.Arguments = {_ps_single_quote(args)}
+        $registered = $folder.RegisterTaskDefinition(
+            {_ps_single_quote(TASK_NAME)}, $definition, 6, $userId, $null, 3, $null
+        )
+        if ($registered.Definition.Principal.LogonType -ne 3 -or
+            $registered.Definition.Principal.RunLevel -ne 0) {{
+            throw 'Task Scheduler returned a task with an unexpected privilege level'
+        }}
+        """
+    ).strip()
+    encoded = base64.b64encode(script.encode('utf-16-le')).decode('ascii')
+    try:
+        result = subprocess.run(
+            [
+                'powershell.exe',
+                '-NoProfile',
+                '-NonInteractive',
+                '-ExecutionPolicy',
+                'Bypass',
+                '-EncodedCommand',
+                encoded,
+            ],
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            timeout=15,
+        )
+        if result.returncode != 0:
+            _log(
+                f'PowerShell Task Scheduler registration failed (rc={result.returncode}): '
+                f'{result.stdout.decode(errors="replace").strip()} '
+                f'{result.stderr.decode(errors="replace").strip()}'
+            )
+        return result.returncode == 0
+    except Exception as exc:
+        _log(f'Failed to create per-user scheduled task: {exc}')
+        return False
+
+
 def _create_task(
     launch_info: dict,
     *,
@@ -264,6 +380,9 @@ def _create_task(
         except Exception as e:
             _log(f'Failed to create XDG autostart entry: {e}')
             return False
+
+    if not windows_user_id:
+        return _create_windows_task_as_current_user(launch_info)
 
     import html as _html
     import tempfile
@@ -400,6 +519,7 @@ def sync_autostart(
     config_dir: Path,
     *,
     windows_user_id: str | None = None,
+    proxy_mode: str | None = None,
 ) -> bool:
     """Ensure the scheduled task matches the desired state.
 
@@ -414,6 +534,11 @@ def sync_autostart(
     current = _get_launch_info()
     if current.get('mode') == 'uv':
         current['log'] = str(config_dir / 'autostart_launch_error.log')
+    if proxy_mode is not None:
+        # Persist the mode so switching Hosts <-> Env forces a task refresh.
+        # This also repairs stale legacy HighestAvailable tasks when the user
+        # moves into Env Proxy mode.
+        current['proxy_mode'] = proxy_mode
     stored = _get_stored_launch_info(config_dir)
 
     # Recreate if: task missing, or launch method changed since last save.

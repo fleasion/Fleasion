@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +14,9 @@ from cryptography.x509.oid import NameOID
 
 from fleasion import macos_proxy_helper_daemon as daemon
 from fleasion.utils import macos_proxy_helper
+
+
+pytestmark = pytest.mark.skipif(sys.platform == 'win32', reason='macOS-only proxy helper tests')
 
 
 def test_client_and_daemon_require_the_same_exact_helper_identity():

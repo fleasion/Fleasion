@@ -1,3 +1,7 @@
+import sys
+
+import pytest
+
 from fleasion.gui.linux_hotkeys import (
     MOD_ALT,
     MOD_CTRL,
@@ -7,6 +11,9 @@ from fleasion.gui.linux_hotkeys import (
     normalize_binding,
 )
 from fleasion.gui.windows_hotkeys import binding_text as windows_binding_text
+
+
+pytestmark = pytest.mark.skipif(sys.platform == 'win32', reason='Linux-only hotkey translation tests')
 
 
 def test_linux_keybinding_uses_tagged_evdev_codes():

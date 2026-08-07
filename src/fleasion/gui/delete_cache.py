@@ -12,6 +12,8 @@ from ..utils import delete_cache, get_icon_path, log_buffer
 class DeleteCacheWindow(QDialog):
     """Delete cache result window."""
 
+    _CLOSE_AFTER_DONE_MS = 500
+
     log_signal = pyqtSignal(str)
     done_signal = pyqtSignal()
 
@@ -76,6 +78,10 @@ class DeleteCacheWindow(QDialog):
     def _on_done(self):
         """Called when deletion is complete."""
         self.status_text.append('\nDone.')
+        # Keep the completion message visible briefly, then dismiss the
+        # transient progress window.  This window is normally modeless, so
+        # merely appending "Done." otherwise leaves it open indefinitely.
+        QTimer.singleShot(self._CLOSE_AFTER_DONE_MS, self.accept)
 
     def _start_deletion(self):
         """Start the cache deletion in a background thread."""

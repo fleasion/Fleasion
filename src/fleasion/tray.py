@@ -681,10 +681,14 @@ class SystemTray:
     def _toggle_run_on_boot(self):
         """Toggle run-on-boot for the current platform."""
         from .utils import CONFIG_DIR
-        from .utils.autostart import sync_autostart
+        from .utils.autostart import sync_autostart, windows_autostart_privilege_hint
 
         checked = self.run_on_boot_action.isChecked()
-        ok = sync_autostart(checked, CONFIG_DIR)
+        ok = sync_autostart(
+            checked,
+            CONFIG_DIR,
+            proxy_mode=self.config_manager.proxy_mode,
+        )
         if ok:
             self.config_manager.run_on_boot = checked
             self._refresh_settings_tab()
@@ -703,12 +707,16 @@ class SystemTray:
             _warn = QMessageBox(_parent)
             _warn.setWindowTitle('Run on Boot Failed')
             _warn.setIcon(QMessageBox.Icon.Warning)
-            _warn.setText(
+            message = (
                 'Failed to register autostart.\n'
                 'Check the application log for details (autostart errors are logged at ERROR level).\n\n'
-                'Turn off Run on Boot to stop this error from appearing.\n\n'
-                'On Windows, ensure Fleasion is running as Administrator.'
+                'Turn off Run on Boot to stop this error from appearing.'
             )
+            if sys.platform == 'win32':
+                message += '\n\n' + windows_autostart_privilege_hint(
+                    self.config_manager.proxy_mode
+                )
+            _warn.setText(message)
             if _on_top:
                 _warn.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
             _warn.exec()
@@ -725,7 +733,11 @@ class SystemTray:
                 from .utils import CONFIG_DIR
                 from .utils.autostart import sync_autostart
 
-                if not sync_autostart(True, CONFIG_DIR):
+                if not sync_autostart(
+                    True,
+                    CONFIG_DIR,
+                    proxy_mode=self.config_manager.proxy_mode,
+                ):
                     from PyQt6.QtWidgets import QApplication, QMessageBox
 
                     _top = QApplication.topLevelWidgets()

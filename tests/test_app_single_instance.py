@@ -327,6 +327,11 @@ def test_repair_autostart_once_syncs_only_from_admin(monkeypatch, tmp_path):
     monkeypatch.setattr(app_module, '_is_admin', lambda: True)
     monkeypatch.setattr(
         app_module,
+        'ConfigManager',
+        lambda: SimpleNamespace(proxy_mode='env'),
+    )
+    monkeypatch.setattr(
+        app_module,
         'log_buffer',
         type('Log', (), {'log': staticmethod(lambda *args: None)})(),
     )
@@ -355,7 +360,10 @@ def test_repair_autostart_once_syncs_only_from_admin(monkeypatch, tmp_path):
         (
             True,
             tmp_path,
-            {'windows_user_id': 'TestDomain\\OriginalUser'},
+            {
+                'windows_user_id': 'TestDomain\\OriginalUser',
+                'proxy_mode': 'env',
+            },
         )
     ]
 

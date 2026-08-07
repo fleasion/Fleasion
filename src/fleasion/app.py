@@ -187,16 +187,19 @@ def _refresh_desktop_integration_ui(tray, enabled: bool) -> None:
         tray._refresh_settings_tab()
 
 
-def _show_run_on_boot_failure(parent) -> None:
+def _show_run_on_boot_failure(parent, proxy_mode: str | None = None) -> None:
     msg = QMessageBox(parent)
     msg.setWindowTitle('Run on Boot Failed')
     msg.setIcon(QMessageBox.Icon.Warning)
     if sys.platform == 'win32':
+        from .utils.autostart import windows_autostart_privilege_hint
+
         msg.setText(
             'Failed to register autostart.\n'
             'A legacy task may have been created with administrator permissions.\n\n'
             'Choose Ignore to leave Run on Boot enabled and try again on the next '
-            'launch, or choose Relaunch as administrator for a one-time task repair.'
+            'launch, or choose Relaunch as administrator for a one-time task repair.\n\n'
+            f'{windows_autostart_privilege_hint(proxy_mode)}'
         )
     else:
         msg.setText(
@@ -433,7 +436,11 @@ def _prompt_first_time_startup_options(config_manager: ConfigManager, tray=None)
     try:
         from .utils.autostart import sync_autostart
 
-        boot_ok = sync_autostart(enable_run_on_boot, CONFIG_DIR)
+        boot_ok = sync_autostart(
+            enable_run_on_boot,
+            CONFIG_DIR,
+            proxy_mode=config_manager.proxy_mode,
+        )
     except Exception as exc:
         boot_ok = False
         log_buffer.log('Autostart', f'First-time run-on-boot prompt failed: {exc}')
@@ -444,7 +451,7 @@ def _prompt_first_time_startup_options(config_manager: ConfigManager, tray=None)
     _refresh_desktop_integration_ui(tray, config_manager.desktop_integration)
 
     if enable_run_on_boot and not boot_ok:
-        _show_run_on_boot_failure(dialog.parentWidget())
+        _show_run_on_boot_failure(dialog.parentWidget(), config_manager.proxy_mode)
     if enable_desktop_integration and not desktop_ok:
         _show_desktop_integration_failure(dialog.parentWidget())
 
@@ -661,7 +668,16 @@ def _repair_autostart_once(requesting_user_sid: str | None = None) -> int:
         log_buffer.log('Autostart', f'Invalid requesting Windows identity: {exc}')
         return 1
 
-    if sync_autostart(True, CONFIG_DIR, windows_user_id=requesting_user_id):
+    try:
+        proxy_mode = ConfigManager().proxy_mode
+    except Exception:
+        proxy_mode = None
+    if sync_autostart(
+        True,
+        CONFIG_DIR,
+        windows_user_id=requesting_user_id,
+        proxy_mode=proxy_mode,
+    ):
         log_buffer.log('Autostart', 'Elevated autostart repair completed')
         return 0
 
@@ -2025,25 +2041,55 @@ class RobloxExitMonitor(QObject):
                         and self._proxy_master is not None
                         and proxy_features_enabled
                     ):
-                        from .utils.platform_windows import relaunch_roblox_with_proxy_env
+                        from .utils.platform_windows import (
+                            is_roblox_gdk_env_proxy_armed,
+                            is_gdk_env_proxy_activation_in_progress,
+                            is_env_proxy_relaunched_player_running,
+                            is_roblox_gdk_exe_path,
+                            relaunch_roblox_with_proxy_env,
+                        )
 
-                        self._suppress_next_player_exit_cache_delete = True
-
-                        def _prepare_env_proxy_launch(path: Path) -> bool:
-                            result = self._proxy_master.ensure_env_proxy_roblox_ca(
-                                path, settle=True
+                        if is_roblox_gdk_exe_path(exe_path):
+                            if (
+                                is_roblox_gdk_env_proxy_armed()
+                                or is_gdk_env_proxy_activation_in_progress()
+                            ):
+                                log_buffer.log(
+                                    'Launcher',
+                                    'Xbox/GDK Env Proxy package activation is armed; '
+                                    'leaving the initial package Player running',
+                                )
+                            else:
+                                log_buffer.log(
+                                    'Launcher',
+                                    'Xbox/GDK Env Proxy package activation is unavailable; '
+                                    'leaving the initial package Player untouched',
+                                )
+                            self._suppress_next_player_exit_cache_delete = False
+                        elif is_env_proxy_relaunched_player_running():
+                            log_buffer.log(
+                                'Launcher',
+                                'Roblox Env Proxy Player already running; skipping duplicate launch handling',
                             )
-                            return bool(result.get('success'))
+                            self._suppress_next_player_exit_cache_delete = False
+                        else:
+                            self._suppress_next_player_exit_cache_delete = True
 
-                        def _relaunch_env_proxy_player() -> None:
-                            started = relaunch_roblox_with_proxy_env(
-                                self._proxy_master.roblox_env_proxy_url(),
-                                prepare_launch=_prepare_env_proxy_launch,
-                            )
-                            if not started:
-                                self._suppress_next_player_exit_cache_delete = False
+                            def _prepare_env_proxy_launch(path: Path) -> bool:
+                                result = self._proxy_master.ensure_env_proxy_roblox_ca(
+                                    path, settle=True
+                                )
+                                return bool(result.get('success'))
 
-                        run_in_thread(_relaunch_env_proxy_player)()
+                            def _relaunch_env_proxy_player() -> None:
+                                started = relaunch_roblox_with_proxy_env(
+                                    self._proxy_master.roblox_env_proxy_url(),
+                                    prepare_launch=_prepare_env_proxy_launch,
+                                )
+                                if not started:
+                                    self._suppress_next_player_exit_cache_delete = False
+
+                            run_in_thread(_relaunch_env_proxy_player)()
                     elif (
                         self.config_manager.proxy_mode == 'env'
                         and self._proxy_master is not None
@@ -2568,6 +2614,7 @@ def main():
     _parser.add_argument('--fleasion-requesting-user-sid', help=_ap.SUPPRESS)
     _parser.add_argument('--repair-autostart', action='store_true', help=_ap.SUPPRESS)
     _parser.add_argument('--repair-roblox-permissions', action='store_true', help=_ap.SUPPRESS)
+    _parser.add_argument('--fleasion-gdk-debugger', action='store_true', help=_ap.SUPPRESS)
     _parser.add_argument(
         '--install-linux-privileged-helper',
         action='store_true',
@@ -2579,6 +2626,10 @@ def main():
         help='Allow active sudo/wheel users to run the Linux proxy helper without future prompts',
     )
     _args, _ = _parser.parse_known_args()
+    if _args.fleasion_gdk_debugger:
+        from .utils.platform_windows import run_gdk_debugger_command_line
+
+        sys.exit(run_gdk_debugger_command_line())
     if _args.repair_autostart:
         sys.exit(_repair_autostart_once(_args.fleasion_requesting_user_sid))
     if _args.repair_roblox_permissions:
@@ -2966,7 +3017,11 @@ def main():
         try:
             from .utils.autostart import sync_autostart
 
-            _autostart_launch_sync_failed = not sync_autostart(True, CONFIG_DIR)
+            _autostart_launch_sync_failed = not sync_autostart(
+                True,
+                CONFIG_DIR,
+                proxy_mode=config_manager.proxy_mode,
+            )
         except Exception as exc:
             _autostart_launch_sync_failed = True
             log_buffer.log('Autostart', f'Launch autostart sync failed: {exc}')
@@ -2981,6 +3036,26 @@ def main():
         log_buffer.log('Proxy', 'Waiting for the macOS proxy helper before starting interception')
     else:
         log_buffer.log('Proxy', 'Read-only mode: proxy not started (no admin rights)')
+
+    if (
+        sys.platform == 'win32'
+        and start_proxy
+        and config_manager.proxy_mode == 'env'
+        and config_manager.proxy_features_enabled
+    ):
+        from .utils.platform_windows import (
+            arm_roblox_gdk_env_proxy,
+            disarm_roblox_gdk_env_proxy,
+        )
+
+        if arm_roblox_gdk_env_proxy(proxy_master.roblox_env_proxy_url()):
+            atexit.register(disarm_roblox_gdk_env_proxy)
+        else:
+            log_buffer.log(
+                'Launcher',
+                'Xbox/GDK package activation could not be armed before launch; '
+                'reactive relaunch fallback remains available',
+            )
 
     # Env Proxy owns Player/Sober lifecycle independently of Studio.
     from .proxy.env_lifecycle import EnvProxyLifecycleController
@@ -3072,7 +3147,12 @@ def main():
         )
     log_buffer.log('App', f'Persistent log file: {LOG_FILE}')
     if _autostart_launch_sync_failed:
-        QTimer.singleShot(0, lambda: _show_run_on_boot_failure(_visible_parent_widget()))
+        QTimer.singleShot(
+            0,
+            lambda: _show_run_on_boot_failure(
+                _visible_parent_widget(), config_manager.proxy_mode
+            ),
+        )
     if _desktop_integration_launch_sync_failed:
         QTimer.singleShot(0, lambda: _show_desktop_integration_failure(_visible_parent_widget()))
 

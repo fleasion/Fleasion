@@ -1,5 +1,6 @@
 import json
 import stat
+import sys
 import types
 import threading
 from io import BytesIO
@@ -59,6 +60,7 @@ def test_normalise_target_path_rejects_escape_paths(target):
         normalise_target_path(target)
 
 
+@pytest.mark.skipif(sys.platform == 'win32', reason='POSIX path-separator fixture')
 def test_stash_write_and_restore_use_normalised_target_paths(tmp_path):
     roblox_dir = tmp_path / "Roblox.app" / "Contents" / "Resources"
     target = roblox_dir / "content" / "textures" / "MouseLockedCursor.png"

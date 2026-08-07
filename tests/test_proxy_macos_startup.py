@@ -2,6 +2,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 import certifi
 import stat
+import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,8 +12,13 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
+import pytest
+
 import fleasion.proxy.master as proxy_master
 from fleasion.utils import linux_proxy_helper, macos_proxy_helper, platform_macos
+
+
+pytestmark = pytest.mark.skipif(sys.platform == 'win32', reason='Linux/macOS proxy startup tests')
 
 
 def test_privileged_relay_tls_self_test_retries_representative_host(monkeypatch):

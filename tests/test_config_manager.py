@@ -353,6 +353,7 @@ class ConfigManagerEncodingTests(unittest.TestCase):
 
             self.assertEqual(local_replacements, {100: str(asset)})
 
+    @unittest.skipIf(sys.platform == 'win32', 'POSIX portable-path fixture')
     def test_configs_asset_takes_priority_then_falls_back_to_absolute_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_manager_module = self._load_manager_for(Path(tmp))
@@ -376,6 +377,7 @@ class ConfigManagerEncodingTests(unittest.TestCase):
                 absolute_asset,
             )
 
+    @unittest.skipIf(sys.platform == 'win32', 'POSIX portable-path fixture')
     def test_invalidated_replacements_notice_when_priority_configs_asset_appears(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_manager_module = self._load_manager_for(Path(tmp))

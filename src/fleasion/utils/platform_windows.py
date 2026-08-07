@@ -7,9 +7,12 @@ import os
 import re
 import stat
 import subprocess
+import sys
 import threading
 import time
 import winreg
+import xml.etree.ElementTree as ET
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional, cast
 from urllib.parse import parse_qs, unquote, urlparse
@@ -18,8 +21,43 @@ from .logging import log_buffer
 from .paths import LOCAL_APPDATA, ROBLOX_PROCESS, ROBLOX_STUDIO_PROCESS, STORAGE_DB, STORAGE_DB_GDK
 
 _ENV_PROXY_RELAUNCH_TTL_SECONDS = 45.0
+_GDK_INITIAL_LAUNCH_SETTLE_SECONDS = 3.0
 _env_proxy_relaunches: dict[str, float] = {}
 _env_proxy_owned_process: tuple[int, str] | None = None
+_env_proxy_gdk_activation_in_progress = False
+_gdk_env_proxy_armed_package: tuple[str, str] | None = None
+
+_COINIT_APARTMENTTHREADED = 0x2
+_COINIT_CHANGED_MODE = -2147417850  # RPC_E_CHANGED_MODE
+_CLSCTX_ALL = 0x17
+_AO_NONE = 0
+_THREAD_SUSPEND_RESUME = 0x0002
+_GDK_DEBUGGER_SWITCH = '--fleasion-gdk-debugger'
+
+
+class _GUID(ctypes.Structure):
+    _fields_ = [
+        ('Data1', ctypes.wintypes.DWORD),
+        ('Data2', ctypes.wintypes.WORD),
+        ('Data3', ctypes.wintypes.WORD),
+        ('Data4', ctypes.wintypes.BYTE * 8),
+    ]
+
+
+def _guid(value: str) -> _GUID:
+    parsed = uuid.UUID(value)
+    data1, data2, data3 = (
+        int.from_bytes(parsed.bytes_le[0:4], 'little'),
+        int.from_bytes(parsed.bytes_le[4:6], 'little'),
+        int.from_bytes(parsed.bytes_le[6:8], 'little'),
+    )
+    return _GUID(data1, data2, data3, (ctypes.wintypes.BYTE * 8).from_buffer_copy(parsed.bytes[8:]))
+
+
+_CLSID_PACKAGE_DEBUG_SETTINGS = _guid('B1AEC16F-2383-4852-B0E9-8F0B1DC66B4D')
+_IID_PACKAGE_DEBUG_SETTINGS = _guid('F27C3930-8029-4AD1-94E3-3DBA417810C1')
+_CLSID_APPLICATION_ACTIVATION_MANAGER = _guid('45BA127D-10A8-46EA-8AB7-56EA9078943C')
+_IID_APPLICATION_ACTIVATION_MANAGER = _guid('2E941141-7F97-4756-BA1D-9DECDE894A3D')
 
 
 def run_cmd(args: list[str]) -> str:
@@ -32,6 +70,117 @@ def run_cmd(args: list[str]) -> str:
         errors='replace',
         creationflags=subprocess.CREATE_NO_WINDOW,
     ).stdout
+
+
+def run_gdk_debugger_command_line(arguments: list[str] | None = None) -> int:
+    """Resume the suspended package thread used by GDK activation.
+
+    ``IPackageDebugSettings.EnableDebugging`` starts the activated package
+    suspended and invokes the configured debugger with ``-p <pid> -tid
+    <thread-id>``.  This intentionally tiny debugger command is also exposed
+    through the main executable so the standalone build does not need another
+    shipped binary.
+    """
+    args = list(arguments if arguments is not None else sys.argv[1:])
+    try:
+        thread_id_index = next(
+            index
+            for index, value in enumerate(args)
+            if value.casefold() in {'-tid', '--tid'}
+        )
+        thread_id = int(args[thread_id_index + 1])
+    except (StopIteration, IndexError, TypeError, ValueError):
+        return 2
+    if thread_id <= 0:
+        return 2
+
+    kernel32 = ctypes.windll.kernel32
+    kernel32.OpenThread.argtypes = [
+        ctypes.wintypes.DWORD,
+        ctypes.wintypes.BOOL,
+        ctypes.wintypes.DWORD,
+    ]
+    kernel32.OpenThread.restype = ctypes.wintypes.HANDLE
+    kernel32.ResumeThread.argtypes = [ctypes.wintypes.HANDLE]
+    kernel32.ResumeThread.restype = ctypes.wintypes.DWORD
+    kernel32.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
+    kernel32.CloseHandle.restype = ctypes.wintypes.BOOL
+
+    thread_handle = kernel32.OpenThread(_THREAD_SUSPEND_RESUME, False, thread_id)
+    if not thread_handle:
+        return 1
+    try:
+        previous_count = kernel32.ResumeThread(thread_handle)
+        if previous_count == 0xFFFFFFFF:
+            return 1
+        # A debugger can be attached while another diagnostic tool has also
+        # suspended the thread.  Fully resume it without looping forever.
+        for _ in range(min(int(previous_count), 8)):
+            if kernel32.ResumeThread(thread_handle) == 0xFFFFFFFF:
+                return 1
+        return 0
+    finally:
+        kernel32.CloseHandle(thread_handle)
+
+
+def _gdk_debugger_command_line() -> str:
+    """Return the command line Windows will use for the package dummy debugger."""
+    if getattr(sys, 'frozen', False):
+        command = [sys.executable, _GDK_DEBUGGER_SWITCH]
+    else:
+        command = [sys.executable, '-m', 'fleasion.app', _GDK_DEBUGGER_SWITCH]
+    return subprocess.list2cmdline(command)
+
+
+def _hresult_failed(value: int) -> bool:
+    return int(value) < 0
+
+
+def _format_hresult(value: int) -> str:
+    return f'0x{int(value) & 0xFFFFFFFF:08X}'
+
+
+def _com_method(interface: ctypes.c_void_p, index: int, restype, *argtypes):
+    vtable = ctypes.cast(
+        interface,
+        ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p)),
+    ).contents
+    function_type = ctypes.WINFUNCTYPE(restype, ctypes.c_void_p, *argtypes)
+    return function_type(vtable[index])
+
+
+def _create_com_instance(clsid: _GUID, iid: _GUID) -> ctypes.c_void_p | None:
+    ole32 = ctypes.windll.ole32
+    ole32.CoCreateInstance.argtypes = [
+        ctypes.POINTER(_GUID),
+        ctypes.c_void_p,
+        ctypes.wintypes.DWORD,
+        ctypes.POINTER(_GUID),
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    ole32.CoCreateInstance.restype = ctypes.c_long
+    interface = ctypes.c_void_p()
+    result = ole32.CoCreateInstance(
+        ctypes.byref(clsid),
+        None,
+        _CLSCTX_ALL,
+        ctypes.byref(iid),
+        ctypes.byref(interface),
+    )
+    if _hresult_failed(result):
+        return None
+    return interface
+
+
+def _release_com_instance(interface: ctypes.c_void_p | None) -> None:
+    if interface:
+        _com_method(interface, 2, ctypes.c_ulong)(interface)
+
+
+def _package_environment_block(environment: dict[str, str]) -> ctypes.Array:
+    """Build the double-NUL-terminated UTF-16 block required by PZZWSTR."""
+    entries = [f'{key}={value}' for key, value in sorted(environment.items()) if '\x00' not in key and '\x00' not in value]
+    return ctypes.create_unicode_buffer('\x00'.join(entries) + '\x00')
 
 
 # CreateToolhelp32Snapshot goes directly to the kernel and does not touch WMI.
@@ -167,6 +316,26 @@ def _pid_is_running(pid: int, exe_name: str) -> bool:
     return any(process_pid == pid and name == target for process_pid, name in _iter_processes())
 
 
+def _env_proxy_owned_pid_if_running() -> int | None:
+    """Return the PID of the current Env Proxy-owned Player, if it is alive."""
+    global _env_proxy_owned_process
+
+    if _env_proxy_owned_process is None:
+        return None
+    owned_pid = _env_proxy_owned_process[0]
+    if _pid_is_running(owned_pid, ROBLOX_PROCESS):
+        return owned_pid
+    # A crashed/failed proxy relaunch must not poison the next real launch.
+    _env_proxy_owned_process = None
+    return None
+
+
+def is_env_proxy_relaunched_player_running() -> bool:
+    """Return whether the current Player is the process Fleasion relaunched."""
+    owned_pid = _env_proxy_owned_pid_if_running()
+    return owned_pid is not None and _find_pid(ROBLOX_PROCESS) == owned_pid
+
+
 def _wait_for_pid_exit(
     pid: int,
     exe_name: str,
@@ -180,6 +349,14 @@ def _wait_for_pid_exit(
         if time.monotonic() >= deadline:
             return False
         time.sleep(0.2)
+    return True
+
+
+def _wait_for_gdk_initial_launch_settle(cancel_event: threading.Event | None) -> bool:
+    """Give a freshly activated GDK Player time to finish its fragile bootstrap."""
+    if cancel_event is not None:
+        return not cancel_event.wait(_GDK_INITIAL_LAUNCH_SETTLE_SECONDS)
+    time.sleep(_GDK_INITIAL_LAUNCH_SETTLE_SECONDS)
     return True
 
 
@@ -274,12 +451,409 @@ def is_roblox_running() -> bool:
     return _find_pid(ROBLOX_PROCESS) is not None
 
 
+def is_roblox_gdk_exe_path(exe_path: Path | str | None) -> bool:
+    """Return whether *exe_path* is the Xbox/Store GDK Roblox client.
+
+    The GDK client is an AppX/Xbox-launched game.  Its package launcher does
+    not propagate a caller's scoped environment to the Player child, so Env
+    Proxy uses package-aware activation for it instead of a direct child launch.
+    """
+    if not exe_path:
+        return False
+    normalized = str(exe_path).replace('/', '\\').casefold()
+    return '\\windowsapps\\' in normalized and 'robloxgdk' in normalized
+
+
+def is_gdk_env_proxy_activation_in_progress() -> bool:
+    """Return whether Fleasion is currently activating a GDK client with Env Proxy."""
+    return _env_proxy_gdk_activation_in_progress
+
+
+def _get_roblox_gdk_package_identity(exe_path: Path) -> tuple[str, str] | None:
+    """Return ``(package_full_name, AUMID)`` for a packaged Roblox executable."""
+    package_root = exe_path.parent
+    package_full_name = package_root.name
+    if not package_full_name or '__' not in package_full_name:
+        return None
+
+    try:
+        package_name = package_full_name.split('_', 1)[0]
+        publisher_id = package_full_name.split('__', 1)[1]
+        application_id = 'Game'
+        manifest = ET.parse(package_root / 'AppxManifest.xml').getroot()
+        for application in manifest.iter():
+            if application.tag.rsplit('}', 1)[-1] != 'Application':
+                continue
+            candidate = application.attrib.get('Id')
+            executable = application.attrib.get('Executable', '')
+            if candidate and (candidate == 'Game' or executable.casefold() == 'gamelaunchhelper.exe'):
+                application_id = candidate
+                break
+        return package_full_name, f'{package_name}_{publisher_id}!{application_id}'
+    except (ET.ParseError, OSError, UnicodeError, ValueError):
+        return None
+
+
+def _find_installed_roblox_gdk_package_identity() -> tuple[str, str] | None:
+    """Find the installed Store package before its Player process exists."""
+    try:
+        result = subprocess.run(
+            [
+                'powershell.exe',
+                '-NoProfile',
+                '-NonInteractive',
+                '-ExecutionPolicy',
+                'Bypass',
+                '-Command',
+                "(Get-AppxPackage -Name 'ROBLOXCorporation.RobloxGDK' | "
+                "Sort-Object Version -Descending | Select-Object -First 1 -ExpandProperty InstallLocation)",
+            ],
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    install_location = next(
+        (line.strip() for line in result.stdout.splitlines() if line.strip()),
+        '',
+    )
+    if result.returncode != 0 or not install_location:
+        return None
+    return _get_roblox_gdk_package_identity(Path(install_location) / ROBLOX_PROCESS)
+
+
+def _enable_gdk_package_debugging(
+    package_full_name: str,
+    environment_block: ctypes.Array,
+    debugger_command_line: str,
+    label: str,
+) -> bool:
+    """Arm package-aware activation and immediately release temporary COM state."""
+    ole32 = ctypes.windll.ole32
+    ole32.CoInitializeEx.argtypes = [ctypes.c_void_p, ctypes.wintypes.DWORD]
+    ole32.CoInitializeEx.restype = ctypes.c_long
+    ole32.CoUninitialize.argtypes = []
+    ole32.CoUninitialize.restype = None
+    init_result = ole32.CoInitializeEx(None, _COINIT_APARTMENTTHREADED)
+    if _hresult_failed(init_result) and int(init_result) != _COINIT_CHANGED_MODE:
+        log_buffer.log(
+            'Launcher',
+            f'{label} Env Proxy GDK activation could not initialize COM: {_format_hresult(init_result)}',
+        )
+        return False
+    com_initialized = not _hresult_failed(init_result)
+    debug_settings = None
+    try:
+        debug_settings = _create_com_instance(
+            _CLSID_PACKAGE_DEBUG_SETTINGS,
+            _IID_PACKAGE_DEBUG_SETTINGS,
+        )
+        if debug_settings is None:
+            log_buffer.log(
+                'Launcher',
+                f'{label} Env Proxy GDK activation could not create PackageDebugSettings',
+            )
+            return False
+        enable_debugging = _com_method(
+            debug_settings,
+            3,
+            ctypes.c_long,
+            ctypes.c_wchar_p,
+            ctypes.c_wchar_p,
+            ctypes.c_void_p,
+        )
+        result = enable_debugging(
+            debug_settings,
+            package_full_name,
+            debugger_command_line,
+            ctypes.cast(environment_block, ctypes.c_void_p),
+        )
+        if _hresult_failed(result):
+            log_buffer.log(
+                'Launcher',
+                f'{label} Env Proxy GDK activation could not enable package debugging: {_format_hresult(result)}',
+            )
+            return False
+        return True
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        log_buffer.log(
+            'Launcher',
+            f'{label} Env Proxy GDK activation failed while enabling package debugging: '
+            f'{type(exc).__name__}: {exc}',
+        )
+        return False
+    finally:
+        _release_com_instance(debug_settings)
+        if com_initialized:
+            ole32.CoUninitialize()
+
+
+def _disable_gdk_package_debugging(package_full_name: str, label: str) -> bool:
+    """Remove package debugging after Env Proxy is no longer active."""
+    ole32 = ctypes.windll.ole32
+    ole32.CoInitializeEx.argtypes = [ctypes.c_void_p, ctypes.wintypes.DWORD]
+    ole32.CoInitializeEx.restype = ctypes.c_long
+    ole32.CoUninitialize.argtypes = []
+    ole32.CoUninitialize.restype = None
+    init_result = ole32.CoInitializeEx(None, _COINIT_APARTMENTTHREADED)
+    if _hresult_failed(init_result) and int(init_result) != _COINIT_CHANGED_MODE:
+        return False
+    com_initialized = not _hresult_failed(init_result)
+    debug_settings = None
+    try:
+        debug_settings = _create_com_instance(
+            _CLSID_PACKAGE_DEBUG_SETTINGS,
+            _IID_PACKAGE_DEBUG_SETTINGS,
+        )
+        if debug_settings is None:
+            return False
+        disable_debugging = _com_method(
+            debug_settings,
+            4,
+            ctypes.c_long,
+            ctypes.c_wchar_p,
+        )
+        result = disable_debugging(debug_settings, package_full_name)
+        if _hresult_failed(result):
+            log_buffer.log(
+                'Launcher',
+                f'{label} Env Proxy GDK package debugging cleanup failed: {_format_hresult(result)}',
+            )
+            return False
+        return True
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        log_buffer.log(
+            'Launcher',
+            f'{label} Env Proxy GDK package debugging cleanup failed: {type(exc).__name__}: {exc}',
+        )
+        return False
+    finally:
+        _release_com_instance(debug_settings)
+        if com_initialized:
+            ole32.CoUninitialize()
+
+
+def is_roblox_gdk_env_proxy_armed() -> bool:
+    """Return whether future Store Roblox activations inherit Env Proxy."""
+    return _gdk_env_proxy_armed_package is not None
+
+
+def arm_roblox_gdk_env_proxy(proxy_url: str) -> bool:
+    """Arm package-aware Env Proxy before the user activates Store Roblox."""
+    global _gdk_env_proxy_armed_package
+
+    identity = _find_installed_roblox_gdk_package_identity()
+    if identity is None:
+        return False
+    if _gdk_env_proxy_armed_package == identity:
+        return True
+    if _gdk_env_proxy_armed_package is not None:
+        disarm_roblox_gdk_env_proxy()
+
+    if not _enable_gdk_package_debugging(
+        identity[0],
+        _package_environment_block(_proxy_environment(proxy_url)),
+        _gdk_debugger_command_line(),
+        'Roblox',
+    ):
+        return False
+    _gdk_env_proxy_armed_package = identity
+    log_buffer.log(
+        'Launcher',
+        f'Xbox/GDK Env Proxy package activation armed before launch: {identity[1]}',
+    )
+    return True
+
+
+def disarm_roblox_gdk_env_proxy() -> None:
+    """Restore normal Store package activation after Env Proxy shuts down."""
+    global _gdk_env_proxy_armed_package
+
+    identity = _gdk_env_proxy_armed_package
+    _gdk_env_proxy_armed_package = None
+    if identity is not None:
+        _disable_gdk_package_debugging(identity[0], 'Roblox')
+
+
+def _proxy_environment(proxy_url: str) -> dict[str, str]:
+    environment = os.environ.copy()
+    environment.update(
+        {
+            'ALL_PROXY': proxy_url,
+            'HTTPS_PROXY': proxy_url,
+            'HTTP_PROXY': proxy_url,
+            'all_proxy': proxy_url,
+            'https_proxy': proxy_url,
+            'http_proxy': proxy_url,
+            'NO_PROXY': 'localhost,127.0.0.1,::1',
+            'no_proxy': 'localhost,127.0.0.1,::1',
+            'FLEASION_PROXY_RELAUNCHED': '1',
+        }
+    )
+    return environment
+
+
+def _activate_roblox_gdk_with_proxy_env(
+    proxy_url: str,
+    *,
+    label: str,
+    pid: int,
+    exe_path: Path,
+    launch_arg: str,
+    query_processes,
+    prepare_launch: Callable[[Path], bool] | None,
+    cancel_event: threading.Event | None,
+) -> tuple[int, str] | None:
+    """Activate the Store package with a real package-scoped environment block."""
+    global _env_proxy_gdk_activation_in_progress
+
+    identity = _get_roblox_gdk_package_identity(exe_path)
+    if identity is None:
+        log_buffer.log(
+            'Launcher',
+            f'{label} Env Proxy relaunch skipped: could not read the Xbox/GDK package manifest',
+        )
+        return None
+    package_full_name, app_user_model_id = identity
+    environment = _proxy_environment(proxy_url)
+    environment_block = _package_environment_block(environment)
+    debugger_command_line = _gdk_debugger_command_line()
+
+    if cancel_event is not None and cancel_event.is_set():
+        return None
+
+    _env_proxy_gdk_activation_in_progress = True
+    activation_manager = None
+    debugging_enabled = False
+    try:
+        if not _wait_for_gdk_initial_launch_settle(cancel_event):
+            return None
+        package_is_armed = _gdk_env_proxy_armed_package == identity
+        if not package_is_armed:
+            if not _enable_gdk_package_debugging(
+                package_full_name,
+                environment_block,
+                debugger_command_line,
+                label,
+            ):
+                return None
+            debugging_enabled = True
+
+        if not _pid_is_running(pid, ROBLOX_PROCESS):
+            log_buffer.log(
+                'Launcher',
+                f'{label} Env Proxy GDK activation continuing after the initial Player exited during startup settle',
+            )
+
+        log_buffer.log(
+            'Launcher',
+            f'Relaunching {label} through Fleasion env proxy (Xbox/GDK package activation): {app_user_model_id}',
+        )
+        run_cmd(['taskkill', '/F', '/PID', str(pid)])
+        if not _wait_for_pid_exit(pid, ROBLOX_PROCESS, 8.0, cancel_event):
+            log_buffer.log(
+                'Launcher',
+                f'{label} Env Proxy GDK activation aborted: the original Player did not exit',
+            )
+            return None
+
+        if prepare_launch is not None:
+            try:
+                if not prepare_launch(exe_path):
+                    log_buffer.log(
+                        'Launcher',
+                        f'{label} Env Proxy GDK activation skipped: launch CA preparation failed',
+                    )
+                    return None
+            except Exception as exc:
+                log_buffer.log(
+                    'Launcher',
+                    f'{label} Env Proxy GDK launch CA preparation failed: {type(exc).__name__}: {exc}',
+                )
+                return None
+
+        activation_manager = _create_com_instance(
+            _CLSID_APPLICATION_ACTIVATION_MANAGER,
+            _IID_APPLICATION_ACTIVATION_MANAGER,
+        )
+        if activation_manager is None:
+            log_buffer.log(
+                'Launcher',
+                f'{label} Env Proxy GDK activation could not create ApplicationActivationManager',
+            )
+            return None
+
+        activate_application = _com_method(
+            activation_manager,
+            3,
+            ctypes.c_long,
+            ctypes.c_wchar_p,
+            ctypes.c_wchar_p,
+            ctypes.wintypes.DWORD,
+            ctypes.POINTER(ctypes.wintypes.DWORD),
+        )
+        activated_pid = ctypes.wintypes.DWORD(0)
+        result = activate_application(
+            activation_manager,
+            app_user_model_id,
+            launch_arg or None,
+            _AO_NONE,
+            ctypes.byref(activated_pid),
+        )
+        if _hresult_failed(result):
+            log_buffer.log(
+                'Launcher',
+                f'{label} Env Proxy GDK package activation failed: {_format_hresult(result)}',
+            )
+            return None
+
+        deadline = time.monotonic() + 12.0
+        while time.monotonic() < deadline:
+            if cancel_event is not None and cancel_event.is_set():
+                return None
+            for process in query_processes():
+                try:
+                    candidate_pid = int(process.get('ProcessId') or 0)
+                except (TypeError, ValueError):
+                    continue
+                candidate_path = Path(str(process.get('ExecutablePath') or ''))
+                if (
+                    candidate_pid > 0
+                    and candidate_pid != pid
+                    and is_roblox_gdk_exe_path(candidate_path)
+                    and candidate_path.name.casefold() == ROBLOX_PROCESS.casefold()
+                ):
+                    return candidate_pid, str(candidate_path)
+            time.sleep(0.2)
+
+        log_buffer.log(
+            'Launcher',
+            f'{label} Env Proxy GDK activation returned PID {activated_pid.value} but no Player process appeared',
+        )
+        return None
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        log_buffer.log(
+            'Launcher',
+            f'{label} Env Proxy GDK activation failed: {type(exc).__name__}: {exc}',
+        )
+        return None
+    finally:
+        if debugging_enabled:
+            _disable_gdk_package_debugging(package_full_name, label)
+        _release_com_instance(activation_manager)
+        _env_proxy_gdk_activation_in_progress = False
+
+
 def get_roblox_process_identity() -> tuple[int, str] | None:
     """Return a stable-enough token for the current Player process."""
     if _env_proxy_owned_process is not None:
-        owned_pid, owned_path = _env_proxy_owned_process
-        if _pid_is_running(owned_pid, ROBLOX_PROCESS):
-            return owned_pid, owned_path
+        owned_pid = _env_proxy_owned_pid_if_running()
+        if owned_pid is not None:
+            return owned_pid, _env_proxy_owned_process[1]
     pid = _find_pid(ROBLOX_PROCESS)
     if pid is None:
         return None
@@ -379,7 +953,7 @@ def _relaunch_roblox_exe_with_proxy_env(
     for proc in query_processes():
         try:
             pid = int(proc.get('ProcessId') or 0)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             pid = 0
         command_line = str(proc.get('CommandLine') or '')
         launch_arg = extract_launch_arg(command_line)
@@ -394,10 +968,49 @@ def _relaunch_roblox_exe_with_proxy_env(
             )
         ).hexdigest()
         if not force and relaunch_key in _env_proxy_relaunches:
-            log_buffer.log(
-                'Launcher', f'{label} Env Proxy relaunch already handled for this launch'
+            owned_pid = _env_proxy_owned_pid_if_running()
+            if owned_pid == pid:
+                log_buffer.log(
+                    'Launcher',
+                    f'{label} Env Proxy relaunch already handled for this launch',
+                )
+                return False
+            # The previous process is gone, or this is a new process generation
+            # from the same executable. Do not carry a crashed launch's guard
+            # into the next launch.
+            _env_proxy_relaunches.pop(relaunch_key, None)
+
+        if is_roblox_gdk_exe_path(exe_path):
+            if not force:
+                log_buffer.log(
+                    'Launcher',
+                    f'{label} Env Proxy normal GDK relaunch suppressed; '
+                    'package activation must remain untouched after launch',
+                )
+                return False
+            if is_gdk_env_proxy_activation_in_progress():
+                log_buffer.log(
+                    'Launcher',
+                    f'{label} Env Proxy GDK activation already in progress; skipping duplicate handling',
+                )
+                return False
+            activated_process = _activate_roblox_gdk_with_proxy_env(
+                proxy_url,
+                label=label,
+                pid=pid,
+                exe_path=exe_path,
+                launch_arg=launch_arg,
+                query_processes=query_processes,
+                prepare_launch=prepare_launch,
+                cancel_event=cancel_event,
             )
-            return False
+            if activated_process is None:
+                return False
+            global _env_proxy_owned_process
+
+            _env_proxy_owned_process = activated_process
+            _env_proxy_relaunches[relaunch_key] = time.monotonic()
+            return True
 
         if not launch_arg:
             launch_kind = 'plain executable'
@@ -409,6 +1022,7 @@ def _relaunch_roblox_exe_with_proxy_env(
         )
         if cancel_event is not None and cancel_event.is_set():
             return False
+
         run_cmd(['taskkill', '/F', '/PID', str(pid)])
         deadline = time.time() + 8.0
         while time.time() < deadline and _find_pid(wait_pid_exe_name) == pid:
@@ -434,25 +1048,12 @@ def _relaunch_roblox_exe_with_proxy_env(
                 )
                 return False
 
-        env = os.environ.copy()
-        env.update(
-            {
-                'ALL_PROXY': proxy_url,
-                'HTTPS_PROXY': proxy_url,
-                'HTTP_PROXY': proxy_url,
-                'all_proxy': proxy_url,
-                'https_proxy': proxy_url,
-                'http_proxy': proxy_url,
-                'NO_PROXY': 'localhost,127.0.0.1,::1',
-                'no_proxy': 'localhost,127.0.0.1,::1',
-                'FLEASION_PROXY_RELAUNCHED': '1',
-            }
-        )
+        env = _proxy_environment(proxy_url)
         try:
             if cancel_event is not None and cancel_event.is_set():
                 return False
             args = [str(exe_path), launch_arg] if launch_arg else [str(exe_path)]
-            subprocess.Popen(
+            child = subprocess.Popen(
                 args,
                 cwd=str(exe_path.parent),
                 env=env,
@@ -464,6 +1065,7 @@ def _relaunch_roblox_exe_with_proxy_env(
         except OSError as exc:
             log_buffer.log('Launcher', f'{label} Env Proxy relaunch failed: {exc}')
             return False
+        _env_proxy_owned_process = (int(child.pid), str(exe_path))
         _env_proxy_relaunches[relaunch_key] = time.monotonic()
         return True
 
@@ -516,6 +1118,15 @@ def close_roblox_for_env_lifecycle() -> bool:
         else _find_pid(ROBLOX_PROCESS)
     )
     if pid is None:
+        return False
+
+    exe_path = _query_exe_path(pid)
+    if is_roblox_gdk_exe_path(exe_path):
+        log_buffer.log(
+            'Launcher',
+            'Env Proxy lifecycle skipped closing the Xbox/GDK Roblox client; '
+            'its Windows/Xbox activation must be preserved',
+        )
         return False
 
     if _request_process_window_close(pid) and _wait_for_pid_exit(

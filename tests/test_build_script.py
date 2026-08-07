@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
 from pytest import MonkeyPatch
 
 from fleasion.scripts import build, macos_build
@@ -65,7 +66,10 @@ def test_universal_verification_ignores_helper_symlink_targets(
         framework_helper = frameworks / helper_name
         framework_helper.touch()
         resource_helper = resources / helper_name
-        resource_helper.symlink_to(framework_helper)
+        try:
+            resource_helper.symlink_to(framework_helper)
+        except OSError as exc:
+            pytest.skip(f'helper symlinks require Windows developer-mode privileges: {exc}')
         helper_paths[helper_name] = resource_helper
         framework_helpers.append(framework_helper)
 

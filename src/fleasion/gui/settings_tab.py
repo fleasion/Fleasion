@@ -24,7 +24,7 @@ from PyQt6.QtWidgets import (
 
 from ..gui.theme import ThemeManager
 from ..utils import CONFIG_DIR, run_in_thread
-from ..utils.autostart import sync_autostart
+from ..utils.autostart import sync_autostart, windows_autostart_privilege_hint
 from ..utils.desktop_integration import sync_desktop_integration
 from ..utils.roblox_auth import (
     notify_auth_source_changed,
@@ -56,8 +56,11 @@ class EnvProxyWarningDialog(QMessageBox):
         self.setIcon(QMessageBox.Icon.Information)
         self.setText(
             'Fleasion will relaunch Roblox Player with a local proxy environment.\n\n'
-            'Roblox Studio is left untouched. Switching back to Hosts File mode may require '
-            'administrator permission.'
+            'Roblox Studio is left untouched. Microsoft Store/Xbox (GDK) Roblox uses '
+            'package-aware activation so its Player child receives Fleasion\'s scoped '
+            'environment. If Windows rejects that activation, the client is left untouched; '
+            'Hosts File mode remains the fallback for GDK traffic. Switching back to Hosts '
+            'File mode may require administrator permission.'
         )
         self.setStandardButtons(QMessageBox.StandardButton.Ok)
 
@@ -604,6 +607,30 @@ class SettingsTab(QWidget):
         previous_mode = self._config.proxy_mode
         new_mode = self._proxy_mode_combo.currentData()
         self._config.proxy_mode = new_mode
+        if self._config.run_on_boot:
+            try:
+                boot_ok = sync_autostart(
+                    True,
+                    CONFIG_DIR,
+                    proxy_mode=new_mode,
+                )
+            except Exception as exc:
+                boot_ok = False
+                log_message = f'Run on Boot mode refresh failed: {exc}'
+                try:
+                    from ..utils.logging import log_buffer
+
+                    log_buffer.log('Autostart', log_message)
+                except Exception:
+                    pass
+            if not boot_ok:
+                QMessageBox.warning(
+                    self,
+                    'Run on Boot Update Failed',
+                    'Proxy mode changed, but the Run on Boot task could not be refreshed.\n\n'
+                    f'{windows_autostart_privilege_hint(new_mode)}\n\n'
+                    'Check the application log and repair the task before relying on this mode at sign-in.',
+                )
         if new_mode == 'env' and previous_mode != 'env':
             EnvProxyWarningDialog(self).exec()
             # Env mode needs nothing this process doesn't already have, so
@@ -692,7 +719,11 @@ class SettingsTab(QWidget):
         self._config.vpn_compat_max_cdn_connections = self._cdn_limit_spin.value()
 
     def _on_run_on_boot_toggled(self, checked: bool):
-        ok = sync_autostart(checked, CONFIG_DIR)
+        ok = sync_autostart(
+            checked,
+            CONFIG_DIR,
+            proxy_mode=self._config.proxy_mode,
+        )
         if ok:
             self._config.run_on_boot = checked
             if self._tray and hasattr(self._tray, 'run_on_boot_action'):
@@ -725,7 +756,11 @@ class SettingsTab(QWidget):
             if self._tray and hasattr(self._tray, 'desktop_integration_action'):
                 self._tray.desktop_integration_action.setChecked(checked)
             if sys.platform.startswith('linux') and self._config.run_on_boot:
-                if not sync_autostart(True, CONFIG_DIR):
+                if not sync_autostart(
+                    True,
+                    CONFIG_DIR,
+                    proxy_mode=self._config.proxy_mode,
+                ):
                     QMessageBox.warning(
                         self,
                         'Run on Boot Failed',

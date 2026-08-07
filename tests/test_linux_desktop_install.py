@@ -1,7 +1,13 @@
+import sys
 from pathlib import Path
+
+import pytest
 
 from fleasion import __version__ as APP_VERSION
 from fleasion.utils import platform_linux
+
+
+pytestmark = pytest.mark.skipif(sys.platform == 'win32', reason='Linux-only desktop integration tests')
 
 
 def test_install_desktop_entries_writes_user_launcher_and_removes_deprecated(tmp_path, monkeypatch):

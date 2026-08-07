@@ -1,18 +1,23 @@
+import base64
+import json
 import plistlib
 import shutil
+import sys
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from fleasion.utils import autostart
 
 
 def test_windows_autostart_task_runs_at_least_privilege(monkeypatch):
-    xml_text = []
+    script_text = []
 
     def fake_run(args, **_kwargs):
-        if "/Create" in args:
-            xml_path = Path(args[args.index("/XML") + 1])
-            xml_text.append(xml_path.read_text(encoding="utf-16"))
+        if "-EncodedCommand" in args:
+            encoded = args[args.index("-EncodedCommand") + 1]
+            script_text.append(base64.b64decode(encoded).decode("utf-16-le"))
         return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
 
     monkeypatch.setattr(autostart.sys, "platform", "win32")
@@ -22,9 +27,56 @@ def test_windows_autostart_task_runs_at_least_privilege(monkeypatch):
     monkeypatch.setattr(autostart.subprocess, "run", fake_run)
 
     assert autostart._create_task({"mode": "exe", "path": r"C:\Fleasion\Fleasion.exe"})
-    assert "<RunLevel>LeastPrivilege</RunLevel>" in xml_text[0]
-    assert "<LogonType>InteractiveToken</LogonType>" in xml_text[0]
-    assert "TestDomain\\TestUser" in xml_text[0]
+    assert "$principal.LogonType = 3" in script_text[0]
+    assert "$principal.RunLevel = 0" in script_text[0]
+    assert "RegisterTaskDefinition" in script_text[0]
+
+
+def test_windows_autostart_hint_distinguishes_proxy_mode():
+    assert "normal per-user task" in autostart.windows_autostart_privilege_hint("env")
+    assert "requires administrator permission" in autostart.windows_autostart_privilege_hint(
+        "hosts"
+    )
+
+
+def test_windows_autostart_refreshes_when_proxy_mode_changes(tmp_path, monkeypatch):
+    monkeypatch.setattr(autostart.sys, "platform", "win32")
+    monkeypatch.setattr(
+        autostart,
+        "_get_launch_info",
+        lambda: {"mode": "exe", "path": r"C:\Fleasion\Fleasion.exe", "_fmt": 8},
+    )
+    monkeypatch.setattr(autostart, "_task_exists", lambda: True)
+    (tmp_path / "autostart_info.json").write_text(
+        json.dumps(
+            {
+                "mode": "exe",
+                "path": r"C:\Fleasion\Fleasion.exe",
+                "_fmt": 8,
+                "proxy_mode": "hosts",
+            }
+        ),
+        encoding="utf-8",
+    )
+    created = []
+    monkeypatch.setattr(
+        autostart,
+        "_create_task",
+        lambda info, **kwargs: created.append((info, kwargs)) or True,
+    )
+
+    assert autostart.sync_autostart(True, tmp_path, proxy_mode="env")
+    assert created == [
+        (
+            {
+                "mode": "exe",
+                "path": r"C:\Fleasion\Fleasion.exe",
+                "_fmt": 8,
+                "proxy_mode": "env",
+            },
+            {"windows_user_id": None},
+        )
+    ]
 
 
 def test_elevated_windows_autostart_targets_requesting_user(monkeypatch):
@@ -78,6 +130,7 @@ def test_macos_launch_agent_update_does_not_start_second_instance(tmp_path, monk
     assert launch_calls == []
 
 
+@pytest.mark.skipif(sys.platform == 'win32', reason='Linux desktop-entry path semantics')
 def test_linux_autostart_quotes_exec_tokens(tmp_path, monkeypatch):
     autostart_path = tmp_path / ".config" / "autostart" / "fleasion.desktop"
     project = tmp_path / "Project Folder"
@@ -99,6 +152,7 @@ def test_linux_autostart_quotes_exec_tokens(tmp_path, monkeypatch):
     assert 'launcher.py" --no-dashboard' in desktop_entry
 
 
+@pytest.mark.skipif(sys.platform == 'win32', reason='Linux desktop-entry path semantics')
 def test_linux_autostart_prefers_installed_launcher(tmp_path, monkeypatch):
     autostart_path = tmp_path / ".config" / "autostart" / "fleasion.desktop"
     launcher = tmp_path / ".local" / "bin" / "fleasion-launch"

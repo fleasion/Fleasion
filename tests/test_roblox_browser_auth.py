@@ -2,8 +2,11 @@ from http.cookiejar import Cookie, CookieJar
 import json
 import os
 import stat
+import sys
 import threading
 import time
+
+import pytest
 
 from fleasion.utils import roblox_auth
 
@@ -113,6 +116,7 @@ def test_prompt_capable_browser_list_includes_chrome_and_safari(monkeypatch):
     assert prompt_capable[:2] == ["Chrome", "Safari"]
 
 
+@pytest.mark.skipif(sys.platform != 'darwin', reason='macOS keychain browser selection')
 def test_macos_configured_lookup_can_request_selected_keychain_browser(monkeypatch):
     _reset(monkeypatch)
     calls = []
@@ -132,6 +136,7 @@ def test_macos_configured_lookup_can_request_selected_keychain_browser(monkeypat
     assert calls == [(True, "Chrome")]
 
 
+@pytest.mark.skipif(sys.platform != 'darwin', reason='macOS keychain browser selection')
 def test_macos_default_lookup_is_prompt_free_by_default(monkeypatch):
     _reset(monkeypatch)
     calls = []
@@ -379,6 +384,7 @@ def test_prompt_capable_browser_discovery_is_single_flight(monkeypatch):
     assert calls == [True]
 
 
+@pytest.mark.skipif(sys.platform != 'darwin', reason='macOS credential-storage fixture')
 def test_manual_token_storage_is_encrypted_and_used_when_selected(tmp_path, monkeypatch):
     _reset(monkeypatch)
     token_path = tmp_path / "manual_auth_token.json"
@@ -396,6 +402,7 @@ def test_manual_token_storage_is_encrypted_and_used_when_selected(tmp_path, monk
     assert roblox_auth.get_roblosecurity(include_keychain_browsers=True) == "manual-secret"
 
 
+@pytest.mark.skipif(sys.platform != 'darwin', reason='macOS credential-storage fixture')
 def test_macos_invalid_manual_token_is_not_used(tmp_path, monkeypatch):
     _reset(monkeypatch)
     token_path = tmp_path / "manual_auth_token.json"
@@ -434,6 +441,7 @@ def test_macos_wait_for_token_retries_until_notified(monkeypatch):
     assert calls == [True, True]
 
 
+@pytest.mark.skipif(sys.platform != 'darwin', reason='macOS credential-storage fixture')
 def test_macos_chrome_cookie_is_cached_encrypted_and_reused(tmp_path, monkeypatch):
     _reset(monkeypatch, disable_persistent_cache=False)
     cache_path = tmp_path / "browser_auth_cache.json"
