@@ -182,10 +182,14 @@ def test_run_on_boot_failure_can_launch_one_time_admin_repair(monkeypatch):
     class _MessageBox:
         class Icon:
             Warning = object()
+            Information = object()
 
         class ButtonRole:
             AcceptRole = object()
             RejectRole = object()
+
+        class StandardButton:
+            Ok = object()
 
         def __init__(self, _parent):
             self._buttons = []
@@ -202,10 +206,13 @@ def test_run_on_boot_failure_can_launch_one_time_admin_repair(monkeypatch):
         def setWindowIcon(self, _icon):
             pass
 
+        def setStandardButtons(self, _buttons):
+            pass
+
         def addButton(self, text, _role):
             button = object()
             self._buttons.append((text, button))
-            if text == 'Relaunch as administrator':
+            if text == 'Repair as administrator':
                 self._clicked = button
             return button
 
@@ -230,6 +237,7 @@ def test_run_on_boot_failure_can_launch_one_time_admin_repair(monkeypatch):
     _show_run_on_boot_failure(None)
 
     assert 'try again on the next launch' in selected[0]
+    assert 'started successfully' in selected[1]
     assert relaunches == [{'extra_args': '--repair-autostart', 'parent_hwnd': None}]
 
 

@@ -51,6 +51,24 @@ def _project_root() -> Path:
     return Path(__file__).resolve().parent
 
 
+def _windows_uv_executable() -> str:
+    """Return a stable absolute uv path for Windows task registration."""
+    import shutil
+
+    for name in ('uv', 'uv.exe'):
+        found = shutil.which(name)
+        if found:
+            if os.name == 'nt' and not os.path.isabs(found):
+                found = os.path.abspath(found)
+            return found
+
+    user_profile = os.environ.get('USERPROFILE') or str(Path.home())
+    installed_uv = Path(user_profile) / '.local' / 'bin' / 'uv.exe'
+    if installed_uv.is_file():
+        return str(installed_uv)
+    return 'uv'
+
+
 def _ps_single_quote(value: str) -> str:
     """Return *value* as a PowerShell single-quoted string literal."""
     return "'" + value.replace("'", "''") + "'"
@@ -121,13 +139,12 @@ def _get_launch_info() -> dict:
         }
 
     # Dev / uv run
-    import shutil
+    if sys.platform == 'win32':
+        uv = _windows_uv_executable()
+    else:
+        import shutil
 
-    found_uv = shutil.which('uv') or shutil.which('uv.exe')
-    # Keep the path returned by shutil.which intact.  In particular, a
-    # Windows path must not be resolved by pathlib while this module is being
-    # exercised from a different host platform.
-    uv = found_uv or 'uv'
+        uv = shutil.which('uv') or shutil.which('uv.exe') or 'uv'
     # Find project root (dir containing pyproject.toml)
     check = _project_root()
     return {
@@ -291,6 +308,59 @@ def _create_windows_task_as_current_user(launch_info: dict) -> bool:
         return result.returncode == 0
     except Exception as exc:
         _log(f'Failed to create per-user scheduled task: {exc}')
+        return False
+
+
+def _grant_windows_task_user_control(windows_user_id: str) -> bool:
+    """Grant the requesting user control of an elevated-created task.
+
+    An elevated ``schtasks /Create /XML`` call can leave the task owned by
+    Administrators even when its principal is an interactive, least-privilege
+    user.  Preserve the task's existing ACL and add full control for the user
+    that will update it on future normal launches.
+    """
+    import textwrap
+
+    script = textwrap.dedent(
+        f"""
+        $ErrorActionPreference = 'Stop'
+        $service = New-Object -ComObject 'Schedule.Service'
+        $service.Connect()
+        $task = $service.GetFolder('\\').GetTask({_ps_single_quote(TASK_NAME)})
+        $account = New-Object System.Security.Principal.NTAccount({_ps_single_quote(str(windows_user_id))})
+        $sid = $account.Translate([System.Security.Principal.SecurityIdentifier]).Value
+        $descriptor = $task.GetSecurityDescriptor(15)
+        $ace = '(A;;FA;;;' + $sid + ')'
+        if ($descriptor.IndexOf($ace, [System.StringComparison]::Ordinal) -lt 0) {{
+            $task.SetSecurityDescriptor($descriptor + $ace, 0)
+        }}
+        """
+    ).strip()
+    encoded = base64.b64encode(script.encode('utf-16-le')).decode('ascii')
+    try:
+        result = subprocess.run(
+            [
+                'powershell.exe',
+                '-NoProfile',
+                '-NonInteractive',
+                '-ExecutionPolicy',
+                'Bypass',
+                '-EncodedCommand',
+                encoded,
+            ],
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            timeout=15,
+        )
+        if result.returncode != 0:
+            _log(
+                f'PowerShell Task Scheduler ACL repair failed (rc={result.returncode}): '
+                f'{result.stdout.decode(errors="replace").strip()} '
+                f'{result.stderr.decode(errors="replace").strip()}'
+            )
+        return result.returncode == 0
+    except Exception as exc:
+        _log(f'Failed to repair scheduled task permissions: {exc}')
         return False
 
 
@@ -488,7 +558,8 @@ def _create_task(
                 f'{r.stdout.decode(errors="replace").strip()} '
                 f'{r.stderr.decode(errors="replace").strip()}'
             )
-        return r.returncode == 0
+            return False
+        return _grant_windows_task_user_control(raw_user_id)
     except Exception as e:
         _log(f'Failed to create scheduled task: {e}')
         return False

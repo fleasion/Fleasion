@@ -22,6 +22,10 @@ from .paths import LOCAL_APPDATA, ROBLOX_PROCESS, ROBLOX_STUDIO_PROCESS, STORAGE
 
 _ENV_PROXY_RELAUNCH_TTL_SECONDS = 45.0
 _GDK_INITIAL_LAUNCH_SETTLE_SECONDS = 3.0
+_ROBLOX_COOKIES_SETTLE_TIMEOUT_SECONDS = 15.0
+_ROBLOX_COOKIES_MINIMUM_SETTLE_SECONDS = 3.0
+_ROBLOX_COOKIES_STABLE_SECONDS = 1.0
+_ROBLOX_COOKIES_POLL_SECONDS = 0.2
 _env_proxy_relaunches: dict[str, float] = {}
 _env_proxy_owned_process: tuple[int, str] | None = None
 _env_proxy_gdk_activation_in_progress = False
@@ -258,8 +262,6 @@ _WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wi
 
 
 _WM_CLOSE = 0x0010
-_FILE_ATTRIBUTE_READONLY = 0x00000001
-_INVALID_FILE_ATTRIBUTES = 0xFFFFFFFF
 
 
 def _request_process_window_close(pid: int) -> bool:
@@ -291,24 +293,6 @@ def _request_process_window_close(pid: int) -> bool:
 
     user32.EnumWindows(_WNDENUMPROC(_cb), 0)
     return requested
-
-
-def _get_windows_file_attributes(path: Path) -> int | None:
-    kernel32 = ctypes.windll.kernel32
-    kernel32.GetFileAttributesW.argtypes = [ctypes.wintypes.LPCWSTR]
-    kernel32.GetFileAttributesW.restype = ctypes.wintypes.DWORD
-    value = int(kernel32.GetFileAttributesW(str(path)))
-    return None if value == _INVALID_FILE_ATTRIBUTES else value
-
-
-def _set_windows_file_attributes(path: Path, attributes: int) -> bool:
-    kernel32 = ctypes.windll.kernel32
-    kernel32.SetFileAttributesW.argtypes = [
-        ctypes.wintypes.LPCWSTR,
-        ctypes.wintypes.DWORD,
-    ]
-    kernel32.SetFileAttributesW.restype = ctypes.wintypes.BOOL
-    return bool(kernel32.SetFileAttributesW(str(path), attributes))
 
 
 def _pid_is_running(pid: int, exe_name: str) -> bool:
@@ -360,55 +344,105 @@ def _wait_for_gdk_initial_launch_settle(cancel_event: threading.Event | None) ->
     return True
 
 
-def _guarded_force_close_process_for_env_relaunch(
+def _roblox_cookies_path() -> Path:
+    return Path(LOCAL_APPDATA) / 'Roblox' / 'LocalStorage' / 'RobloxCookies.dat'
+
+
+def _roblox_cookies_signature(path: Path) -> tuple[int, int] | None:
+    """Return metadata used to detect an in-progress Roblox cookie write."""
+    try:
+        state = path.stat()
+    except OSError:
+        return None
+    return int(state.st_mtime_ns), int(state.st_size)
+
+
+def _wait_for_roblox_cookies_write_settle(
+    *,
+    label: str = 'Roblox',
+    timeout: float = _ROBLOX_COOKIES_SETTLE_TIMEOUT_SECONDS,
+    cancel_event: threading.Event | None = None,
+) -> bool:
+    """Wait until RobloxCookies.dat metadata has stopped changing.
+
+    Roblox may rewrite its local session state shortly after the Player process
+    appears. A forced taskkill during that rewrite can leave the encrypted
+    cookie file unusable and sign the user out. We do not change its attributes;
+    we wait through a short startup window and require a stable metadata sample
+    before allowing a forced exit.
+    """
+    path = _roblox_cookies_path()
+    started = time.monotonic()
+    deadline = started + max(0.0, timeout)
+    last_signature = _roblox_cookies_signature(path)
+    stable_since = started
+    observed_change = False
+
+    while True:
+        if cancel_event is not None and cancel_event.is_set():
+            return False
+
+        now = time.monotonic()
+        signature = _roblox_cookies_signature(path)
+        if signature != last_signature:
+            last_signature = signature
+            stable_since = now
+            observed_change = True
+
+        if (
+            now - started >= _ROBLOX_COOKIES_MINIMUM_SETTLE_SECONDS
+            and now - stable_since >= _ROBLOX_COOKIES_STABLE_SECONDS
+        ):
+            detail = 'updated and stable' if observed_change else 'stable'
+            log_buffer.log(
+                'Launcher',
+                f'{label} RobloxCookies.dat metadata {detail}; forced exit is permitted',
+            )
+            return True
+
+        if now >= deadline:
+            log_buffer.log(
+                'Launcher',
+                f'{label} RobloxCookies.dat metadata did not settle before the forced-exit deadline',
+            )
+            return False
+
+        if cancel_event is None:
+            time.sleep(_ROBLOX_COOKIES_POLL_SECONDS)
+        elif cancel_event.wait(_ROBLOX_COOKIES_POLL_SECONDS):
+            return False
+
+
+def _force_close_process_after_cookie_settle(
     pid: int,
     exe_name: str,
     *,
+    label: str,
+    timeout: float = 15.0,
     cancel_event: threading.Event | None = None,
-) -> bool | None:
-    """Force-close Env-owned Player while protecting its local session state."""
+) -> bool:
+    """Force-close an exact Player only after its local session state settles."""
     if cancel_event is not None and cancel_event.is_set():
         return False
 
-    state_file = Path(LOCAL_APPDATA) / 'Roblox' / 'LocalStorage' / 'RobloxCookies.dat'
-    original_attributes = _get_windows_file_attributes(state_file)
-    if original_attributes is None:
+    if not _wait_for_roblox_cookies_write_settle(label=label, cancel_event=cancel_event):
         log_buffer.log(
             'Launcher',
-            'Roblox relaunch state guard is unavailable; using a normal window close',
+            f'{label} Env Proxy relaunch skipped: refusing forced Player exit while '
+            'RobloxCookies.dat is unsettled',
         )
-        return None
+        return False
 
-    guarded_attributes = original_attributes | _FILE_ATTRIBUTE_READONLY
-    if not _set_windows_file_attributes(state_file, guarded_attributes):
-        log_buffer.log(
-            'Launcher',
-            'Roblox relaunch state guard could not be armed; using a normal window close',
-        )
-        return None
-
-    exited = False
-    restored = False
     try:
-        log_buffer.log('Launcher', 'Roblox relaunch state guard armed for exact Player exit')
+        log_buffer.log('Launcher', f'{label} forcing exact Player exit after cookie settle')
         run_cmd(['taskkill', '/F', '/PID', str(pid)])
-        exited = _wait_for_pid_exit(pid, exe_name, 15.0)
+        return _wait_for_pid_exit(pid, exe_name, timeout, cancel_event)
     except Exception as exc:
         log_buffer.log(
             'Launcher',
-            f'Roblox guarded restart request failed: {type(exc).__name__}',
+            f'{label} forced Player exit failed: {type(exc).__name__}',
         )
-    finally:
-        restored = _set_windows_file_attributes(state_file, original_attributes)
-        if restored:
-            log_buffer.log('Launcher', 'Roblox relaunch state guard restored exact attributes')
-        else:
-            log_buffer.log(
-                'Launcher',
-                'Roblox relaunch state guard could not restore exact attributes; refusing relaunch',
-            )
-
-    return bool(exited and restored)
+        return False
 
 
 def wait_for_roblox_window(
@@ -715,6 +749,11 @@ def _activate_roblox_gdk_with_proxy_env(
     global _env_proxy_gdk_activation_in_progress
 
     identity = _get_roblox_gdk_package_identity(exe_path)
+    if identity is None and is_roblox_gdk_exe_path(exe_path):
+        # Xbox/GDK may expose the active executable through the user-facing
+        # C:\XboxGames tree instead of its WindowsApps package root. Resolve
+        # the registered package for repair/relaunch activation in that case.
+        identity = _find_installed_roblox_gdk_package_identity()
     if identity is None:
         log_buffer.log(
             'Launcher',
@@ -756,8 +795,13 @@ def _activate_roblox_gdk_with_proxy_env(
             'Launcher',
             f'Relaunching {label} through Fleasion env proxy (Xbox/GDK package activation): {app_user_model_id}',
         )
-        run_cmd(['taskkill', '/F', '/PID', str(pid)])
-        if not _wait_for_pid_exit(pid, ROBLOX_PROCESS, 8.0, cancel_event):
+        if not _force_close_process_after_cookie_settle(
+            pid,
+            ROBLOX_PROCESS,
+            label=label,
+            timeout=8.0,
+            cancel_event=cancel_event,
+        ):
             log_buffer.log(
                 'Launcher',
                 f'{label} Env Proxy GDK activation aborted: the original Player did not exit',
@@ -772,6 +816,29 @@ def _activate_roblox_gdk_with_proxy_env(
                         f'{label} Env Proxy GDK activation skipped: launch CA preparation failed',
                     )
                     return None
+                related_exes: list[Path] = []
+                package_exe = (
+                    Path(os.environ.get('ProgramFiles', r'C:\Program Files'))
+                    / 'WindowsApps'
+                    / package_full_name
+                    / ROBLOX_PROCESS
+                )
+                xbox_exe = Path(r'C:\XboxGames\Roblox\Content') / ROBLOX_PROCESS
+                for candidate in (package_exe, xbox_exe):
+                    if (
+                        candidate.is_file()
+                        and str(candidate).casefold() != str(exe_path).casefold()
+                        and str(candidate).casefold()
+                        not in {str(path).casefold() for path in related_exes}
+                    ):
+                        related_exes.append(candidate)
+                for related_exe in related_exes:
+                    if not prepare_launch(related_exe):
+                        log_buffer.log(
+                            'Launcher',
+                            f'{label} Env Proxy GDK launch CA preparation failed: {related_exe}',
+                        )
+                        return None
             except Exception as exc:
                 log_buffer.log(
                     'Launcher',
@@ -1038,12 +1105,14 @@ def _relaunch_roblox_exe_with_proxy_env(
         if cancel_event is not None and cancel_event.is_set():
             return False
 
-        run_cmd(['taskkill', '/F', '/PID', str(pid)])
-        deadline = time.time() + 8.0
-        while time.time() < deadline and _find_pid(wait_pid_exe_name) == pid:
-            if cancel_event is not None and cancel_event.is_set():
-                return False
-            time.sleep(0.2)
+        if not _force_close_process_after_cookie_settle(
+            pid,
+            wait_pid_exe_name,
+            label=label,
+            timeout=8.0,
+            cancel_event=cancel_event,
+        ):
+            return False
 
         # Fishstrap can finish replacing the active version after the first
         # Player process appears. Repair the bundle only now, after that
@@ -1119,12 +1188,14 @@ def terminate_roblox() -> bool:
     """Terminate Roblox if it's running. Returns True if it was running."""
     if not is_roblox_running():
         return False
+    if not _wait_for_roblox_cookies_write_settle(label='Roblox termination'):
+        return False
     run_cmd(['taskkill', '/F', '/IM', ROBLOX_PROCESS])
     return True
 
 
 def close_roblox_for_env_lifecycle() -> bool:
-    """Close Env-owned Player normally, with the guarded exact-PID fallback."""
+    """Close Env-owned Player normally, with a cookie-safe exact-PID fallback."""
     global _env_proxy_owned_process
 
     pid = (
@@ -1139,10 +1210,9 @@ def close_roblox_for_env_lifecycle() -> bool:
     if is_roblox_gdk_exe_path(exe_path):
         log_buffer.log(
             'Launcher',
-            'Env Proxy lifecycle skipped closing the Xbox/GDK Roblox client; '
-            'its Windows/Xbox activation must be preserved',
+            'Env Proxy lifecycle closing the owned Xbox/GDK Roblox client '
+            'with the cookie-safe exact-PID path',
         )
-        return False
 
     if _request_process_window_close(pid) and _wait_for_pid_exit(
         pid,
@@ -1152,19 +1222,14 @@ def close_roblox_for_env_lifecycle() -> bool:
         _env_proxy_owned_process = None
         return True
 
-    guarded_result = _guarded_force_close_process_for_env_relaunch(
+    forced_result = _force_close_process_after_cookie_settle(
         pid,
         ROBLOX_PROCESS,
+        label='Roblox',
     )
-    if guarded_result is None:
-        log_buffer.log(
-            'Launcher',
-            'Env-owned Roblox Player could not be closed without an unguarded forced exit',
-        )
-        return False
-    if guarded_result:
+    if forced_result:
         _env_proxy_owned_process = None
-    return guarded_result
+    return forced_result
 
 
 def wait_for_roblox_exit(timeout: float = 10.0) -> bool:

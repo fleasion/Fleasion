@@ -120,6 +120,26 @@ def test_env_lifecycle_adopts_package_player_without_synthetic_relaunch():
     assert controller.owns_player
 
 
+def test_env_lifecycle_relaunches_gdk_player_after_ca_repair(monkeypatch):
+    monkeypatch.setattr(
+        'fleasion.proxy.env_lifecycle._is_gdk_repair_path',
+        lambda _path: True,
+    )
+    controller, proxy, calls, _running, _identity = _controller(
+        [
+            {"success": False, "path": "cacert.pem"},
+            {"success": False, "path": "cacert.pem"},
+            {"success": True},
+        ]
+    )
+
+    assert controller.handle_adopted_player_launch(
+        Path(r'C:\XboxGames\Roblox\Content\RobloxPlayerBeta.exe')
+    )
+    assert [call[2] for call in calls if len(call) == 3] == [True, True]
+    assert proxy.monitors == 3
+
+
 def test_cancelled_env_lifecycle_cannot_relaunch_player():
     controller, _proxy, calls, _running, _identity = _controller([{"success": True}])
     controller.cancel()

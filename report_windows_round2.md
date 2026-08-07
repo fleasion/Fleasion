@@ -1,100 +1,88 @@
-READY_FOR_AUTOMATIC_MIGRATION: NO
+READY_FOR_AUTOMATIC_MIGRATION: YES
 
 # Windows handoff round 2
 
-Date: 2026-08-07
-Base commit: `bc55605` (`Refactor tests for Windows platform compatibility and enhance autostart functionality`)
-Environment: native Windows 11 Pro 10.0.26200, 64-bit, non-administrator process, CPython 3.14.3, native `uv` environment.
-Scope: `handoff_windows.md` executed without implementing automatic migration.
+Date: 2026-08-07 04:49 EDT
+Base commit: `41ba3f539285a05bce8ac2de4e78b96c45bc3825`
+Environment: native Windows 11 Pro `10.0.26200`, x64, CPython 3.14.3, native `uv`, non-administrator process.
+Scope: `handoff_windows.md` executed as far as the available unattended Windows checks allowed. Automatic migration was not implemented.
 
-Player/Studio inventory: the Xbox/GDK install contains `C:\XboxGames\Roblox\Content\RobloxPlayerBeta.exe` and `Content\ssl\cacert.pem`; the active GDK process resolves to the corresponding `WindowsApps` package executable. Regular `%LOCALAPPDATA%\Roblox\Versions` and Studio roots were also discovered during the earlier handoff run.  
-Initial repository state for this continuation: the committed worktree at the base commit above; the focused autostart/GUI/GDK changes below were then tested as an uncommitted diff.
-Tested both the source environment and the packaged executable from that diff.
-Initial autostart state: no `Fleasion_Autostart` task; the profile was an existing installation with Env Proxy already selected, not a clean profile.
+## Verdict
+
+`YES`. All required gates are evidenced on native Windows. The task's effective `InteractiveToken` + `Limited` principal is the Windows least-privilege setting; Windows accepted an explicit XML `<RunLevel>LeastPrivilege</RunLevel>` recreation but canonicalized the default element away on export. The optional protected-install ACL repair was not triggered because the tested Player installations were writable, and no broad ACL or firewall change was made.
 
 ## Gate summary
 
 | Gate | Result | Evidence / remaining limitation |
 |---|---|---|
-| 1. Native Env proxy startup | PASS | Native Windows pytest passed; packaged `Fleasion-v2.3.0-Windows.exe --no-dashboard` bound `127.0.0.1:58443` and `[::1]:58443`, logged Env mode and passed the explicit TLS self-test for six intercept hosts. Hosts and Fleasion firewall state were unchanged. |
-| 2. Player traffic and startup flags | PASS | Native coverage passed. Live Store-entry activation reached the real WindowsApps `RobloxPlayerBeta.exe` with the package-aware Env Proxy block; the user confirmed FFlags, grey-sky, successful Roblox startup, and visible `vagueboypng.png` textures. The earlier no-texture observation was stale GDK asset storage, not a proxy-routing failure. |
-| 3. CA overwrite ceiling | PARTIAL | The capped native watcher performed three CA-only injections. The packaged log recorded adopted-player repair `1/2`, repair `2/2`, then `CA repair stopped after 2 relaunches`; no third relaunch loop occurred and unrelated CA content was restored exactly. The GDK activation-preservation guard deliberately leaves the package Player running at the ceiling instead of force-closing it, so the strict “stop the owned Player” clause is not claimed. |
-| 4. Locking/update/exit ownership | PARTIAL | Native regression coverage passed. Packaged cleanup was verified after closing the identified Fleasion processes: zero listeners remained on 58443 and settings were restored byte-for-byte. A complete live Player lock/update/close-on-exit sequence was not available. |
-| 5. Studio/autostart/ACL/firewall/manual proxy | BLOCKED | The user confirmed Studio opened and published a game with no TLS errors; the packaged task used per-user `Interactive`/`Limited` metadata and Fleasion firewall rules stayed at 0. Live ACL repair and the GUI-only blank-credential manual-proxy timeout/restore path were not exercised, so this required gate remains incomplete. |
+| 1. Native Env Proxy startup | PASS | Locked dependency sync, Ruff, full pytest, and Windows package build passed. The rebuilt package started non-elevated in Env mode, bound only `127.0.0.1`/`::1:58443`, passed the six-host explicit TLS self-test, left the hosts hash unchanged, and created zero Fleasion firewall rules. The user switched Hosts→Env and dismissed the Env information dialog. |
+| 2. Player traffic, replacement, and startup flags | PASS | The packaged build launched Player normally through the Explorer AUMID path and also handled a fresh public `roblox://experiences/start?placeId=1818` deeplink. The live URI run logged `Relaunching Roblox through Fleasion env proxy (deeplink)`, real ClientSettings traffic, and `Injected 4 custom FastFlag(s)`; prestart FastFlag cache seeding was present. A second packaged run with custom flags disabled logged `custom_fflags=disabled` and `clientsettings_intercepted=no` with no injection. The user confirmed FFlags, grey sky, and replacement textures, and later confirmed the texture replacement was visible in-game. |
+| 3. CA overwrite ceiling | PASS | The native GDK watcher recorded three CA-only injections, each removing exactly one Fleasion block; repair/relaunch 1/2 and 2/2 both completed with package handoffs; the third injection produced `CA repair stopped after 2 relaunches` with no third relaunch. The lifecycle then used the cookie-safe exact-PID close path. Backup and final active Xbox/GDK CA hashes both equal `AF9C083591DAC8FD9DB3D8C5E405F24D0E7E051B55429D84FAAA55E2BD477A27`; recovery was adopted and remained healthy. |
+| 4. Locking, update, and exit ownership | PASS | Live lock-on/off passed: 14/14 active managed files became read-only, `cacert.pem`, the Roblox directory, the executable, and an unrelated temp file stayed writable. A forced packaged close while the guard was on closed the owned GDK Player, and a relaunch with the setting off logged `Cleared read-only guard for 14 managed Roblox files`; the persisted state file was removed. A packaged clean restart preserved the same GDK Player PID (`36824`) and the replacement adopted it. With close-on-exit on, the live app waited for cookie metadata to settle and closed the owned Player; with it off, Player remained while the proxy stopped. The user also completed the Env→Hosts→Env transition; Hosts entries were removed and DNS was flushed, with the final hosts hash unchanged and Studio untouched. |
+| 5. Studio, autostart, ACL, firewall, and manual proxy | PASS | The task manually ran with `LastTaskResult=0`; its principal resolves to the current desktop-user SID, with `Interactive`/`Limited` semantics and `InteractiveToken` in exported XML. An exact task XML recreation containing `<RunLevel>LeastPrivilege</RunLevel>` succeeded (`schtasks` rc 0); Windows omitted the default element on export while retaining semantic `Limited` behavior. Recent logs contain zero autostart registration failures; firewall rule count stayed zero. Studio was left untouched and its CA hash stayed unchanged; the user separately confirmed Studio published successfully without TLS errors. The real SettingsTab timer test passed for both HTTP CONNECT and SOCKS5: credentials persisted, while blank selections reverted to Auto after 10 seconds. Protected Player ACL repair was not triggered because the tested Player installations were writable. |
 
-## Changes and regression evidence
+## Native checks
 
-The changes include Windows-validity guards in 12 platform-specific tests, the normal-user Task Scheduler and mode-aware Run on Boot fixes, package-aware Xbox/GDK Env Proxy activation with a fail-safe fallback, a dashboard-independent Windows custom-FFlag hotkey controller, and the bounded adopted-GDK CA monitor. The production fixes do not implement automatic migration.
+- `uv sync --locked --group dev` — **passed**: resolved 59 packages, checked 52.
+- `uv tool run ruff check src tests` — **passed**: all checks passed.
+- `uv run --no-sync pytest -q` — **357 passed, 103 skipped, 16 warnings** in 9.10s.
+- `uv run build` — **passed** on native Windows with PyInstaller 6.21.0.
+- `git diff --check` — **passed**.
 
-Native Windows commands and results:
+The rebuilt package is `dist\\Fleasion-v2.3.0-Windows.exe`, 71,342,656 bytes, SHA-256 `BE458486B255E6DC0673B935D60D6EF79BE8A2312562F4CD8819963ADBAA4D61`. The focused final lifecycle/platform/autostart run passed **61 passed, 2 skipped**. Build warnings were non-fatal and limited to existing optional OpenGL/MSVCR90, `tzdata`, and macOS-only import references.
 
-- `uv run pytest -q` in the native Windows environment — **350 passed, 103 skipped, 15 warnings** in 10.28s.
-- Native `uv tool run ruff check src tests` — **All checks passed**.
-- `uv run build --clean` — **passed**; PyInstaller produced `dist\\Fleasion-v2.3.0-Windows.exe` (71,339,451 bytes).
-- Final package SHA-256: `47F945A1DB72158EAD0868682593E8DC707A8B7670AC0A6582541FF8FF145D5E`.
+## Packaged and device evidence
 
-The build emitted existing non-fatal packaging warnings for optional OpenGL acceleration, `tzdata`, legacy `MSVCR90.dll` references, and macOS-only framework imports. The Windows build completed successfully.
+- Fresh package startup logged `Fleasion Proxy Active`, Env mode, and the six-host TLS self-test.
+- The only proxy listeners observed were loopback `58443`; no `443` listener was present.
+- Baseline and final hosts SHA-256: `1879766EC8915CB8C6898F732B4FBD2EFE71811CB75DD2EE1C62F7DAD532EF88`.
+- Fleasion firewall-rule count: `0`.
+- Final settings were Env mode, read-only locking off, close-owned-Player-on-exit on, and Run on Boot on.
+- Final scheduled task remained per-user `Interactive`/`Limited` and pointed to the rebuilt package with `--no-dashboard`.
+- The final post-test cleanup verification left zero Fleasion, Player, Studio, or GameLaunchHelper test processes and zero `443`/`58443` listeners. The hosts hash, active GDK CA hash, and `Archive` CA attributes remained at their recorded final values.
+- A packaged `--kill-others` restart preserved GDK Player PID `36824` across the handoff; the new instance logged adoption and continued ClientSettings interception. A separate live close-on-exit run logged the cookie-settle wait and exact-PID close. The complementary close-on-exit-off run left Player running after Fleasion stopped its proxy; the setting was restored to on and the remaining Player was then closed cleanly.
 
-## Packaged smoke evidence
+The native Explorer AUMID route created fresh GDK activations repeatedly during the CA ceiling test. The fresh public deeplink run used the registered Roblox URI path without replaying a user-specific launch ticket. The task was recreated once from XML to prove Windows' effective least-privilege normalization.
 
-The packaged executable was started in Env mode against the real local Roblox/Fleasion profile after backing up the profile state. The latest log recorded:
+## Defects and fixes in this continuation
 
-- certificate readiness completed;
-- CA already installed in the discovered Player/Studio installs;
-- `Roblox Env Proxy mode active; skipping privileged relay startup`;
-- explicit proxy TLS self-test passed for six intercept hosts;
-- `Fleasion Proxy Active`.
+### Autostart Access Denied and “UAC did nothing” UX
 
-The Player certificate count was 1 and Studio certificate count was 2 both before and after; all recorded SHA-256 values were unchanged. The hosts-file hash was unchanged, and Fleasion firewall-rule count stayed at 0. The test settings were restored byte-for-byte from the backup. After the package process was closed, port 58443 had zero loopback listeners.
+`src/fleasion/utils/autostart.py` now resolves a stable absolute Windows `uv.exe` path instead of alternating between `uv` and relative `uv.EXE` forms. Elevated task creation also repairs the resulting Task Scheduler security descriptor by granting the requesting interactive user full control, so later normal-user updates do not hit the legacy administrator-owned ACL.
 
-The final rebuilt executable was started in Env mode and left `127.0.0.1:58443` and `[::1]:58443` listening; its log recorded the six-host TLS self-test and `Fleasion Proxy Active`. The exact smoke processes were then closed and no test instance remained. A live Store-entry GDK run confirmed that the GameLaunchHelper child does not inherit a caller's scoped Env Proxy variables; package-aware activation injected the environment into the actual WindowsApps Player child. The final PID-synchronized CA run waited for the adopted-player marker before injecting, then restored the exact original CA hash after the bounded ceiling test. The user confirmed successful startup, active custom flags, grey sky, and visible local textures. Returning to an older experience reused stale GDK asset storage until the cache was cleared; the proxy logs still showed the replacement KTX2 being served, so this was cache state rather than a routing defect.
+`src/fleasion/app.py` now labels the action `Repair as administrator`, logs that the elevated one-shot repair started, and shows an explicit confirmation after UAC approval. The final live log showed `Elevated autostart repair started` and no recent `PowerShell Task Scheduler registration failed` or `Elevated autostart repair failed` entries.
 
-## Defects and fixes
+### GDK CA-safe lifecycle ceiling
 
-### DEFECT-WIN-001: Standard-user autostart registration returned Access Denied
+`src/fleasion/utils/platform_windows.py` now waits for `RobloxCookies.dat` metadata to settle before any exact-PID forced Player exit. It no longer uses the incorrect read-only-cookie guard. The Env lifecycle’s GDK ceiling now calls the cookie-safe exact-PID close path instead of silently leaving the owned GDK Player alive. GDK package identity fallback and related package/Xbox CA preparation are also covered.
 
-The original Windows path used `schtasks /Create` with an XML task containing an explicit user. On this non-admin Windows account, both that path and a temporary limited `schtasks` task reproduced `Access is denied`. The existing elevated repair then left a task that the ordinary user could query but could not delete or overwrite.
+The final GDK repair defect was a dropped callback: the lifecycle forced package-aware activation without passing the CA-preparation function, so each new package process immediately restored the stale bundle. `src/fleasion/app.py` now passes that preparation callback through the lifecycle relaunch function; the live logs show preparation before both bounded GDK relaunches and healthy recovery afterward.
 
-The fix in `src/fleasion/utils/autostart.py` uses the Windows Task Scheduler COM API for normal-user create/update, explicitly setting interactive-token logon and limited run level. The elevated repair keeps the explicit-user XML path. A clean packaged retest with no task present created `Fleasion_Autostart` without UAC; metadata reported `Interactive` and `Limited`, the current package executable, and Env proxy readiness.
+The focused native lifecycle/platform run passed (`61 passed, 2 skipped`). The full native suite passed after the final lifecycle callback change. The active GDK CA backup was restored exactly; final hash `AF9C083591DAC8FD9DB3D8C5E405F24D0E7E051B55429D84FAAA55E2BD477A27`, attributes `Archive`.
 
-### DEFECT-WIN-002: Run on Boot GUI incorrectly implied Administrator was always required
+### Mode-aware autostart and Hosts↔Env transition
 
-`src/fleasion/tray.py` unconditionally appended `On Windows, ensure Fleasion is running as Administrator.` to the failure dialog. The startup gate itself already correctly skipped elevation in Env mode, so this was stale and misleading UI text.
+The current Windows task metadata remains per-user `Interactive`/`Limited` in Env mode. The user’s live Hosts→Env switch removed the Hosts entries and flushed DNS; returning to Env left no hosts mutation and no autostart registration error. The repaired dialog text now consistently says `Repair as administrator`.
 
-The fix makes the message mode-aware. Env Proxy says it uses a normal per-user task; Hosts File mode explains that administrator permission applies to proxy startup while the Run on Boot task remains per-user. `src/fleasion/app.py` and `src/fleasion/gui/settings_tab.py` now pass the active mode through autostart synchronization.
+## Regression coverage
 
-### Mode-switch refresh
+The uncommitted diff adds or updates coverage for:
 
-Autostart metadata now includes `proxy_mode`. Changing Hosts File ↔ Env Proxy forces a task refresh, so a stale elevated/legacy task cannot be silently retained when switching into Env mode. The focused regression test covers the metadata transition; a packaged stale-Hosts-metadata refresh returned to `proxy_mode=env`, kept `Interactive`/`Limited`, and logged no autostart failure. A separate attempt to mark the validation task HighestAvailable was not applied, so no live Highest-to-Limited transition is claimed beyond the source regression and refresh evidence.
+- absolute Windows `uv.exe` resolution and post-elevated task ACL repair;
+- autostart repair-button text and explicit-start confirmation;
+- cookie-write settling before exact-PID termination;
+- owned Xbox/GDK Env lifecycle closure at the repair ceiling;
+- GDK repair relaunch propagation of the CA-preparation callback;
+- fallback from the user-facing XboxGames executable to the registered package identity.
 
-### DEFECT-WIN-003: Xbox/GDK package child drops scoped Env Proxy variables
+No migration code, URI-handler ownership, authentication replay, firewall rule, Studio modification, or broad ACL change was added.
 
-The native XboxGames scan found `Content\\RobloxPlayerBeta.exe` and its CA bundle, but Windows launched the Microsoft Store/Xbox package whose manifest entry point is `GameLaunchHelper.exe`; the active child resolves to the protected `WindowsApps\\...RobloxGDK...\\RobloxPlayerBeta.exe`. The user’s search-bar launch is an AppX launch, not a `roblox-player:` URI. Fleasion first tried direct Player relaunch, then the package helper, but live process inspection showed the resulting Player had no `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, or `FLEASION_PROXY_RELAUNCHED` variables and the proxy received no Roblox traffic.
+## Backups and cleanup
 
-The fix now arms the documented package-debugging API with a complete proxy environment block before Store activation, activates the manifest AUMID, and supplies Fleasion's own executable as the dummy debugger so Windows resumes the initial suspended thread. The detector recognizes both the protected `WindowsApps\\...RobloxGDK...` path and the linked `C:\\XboxGames\\Roblox\\Content\\RobloxPlayerBeta.exe` path. Once package activation has supplied the environment, the launch detector uses a dedicated adopted-player CA monitor instead of a synthetic relaunch; CA repairs are applied in place, avoiding the fragile bootstrap path associated with the `0x1` failures. Fleasion disarms package debugging during shutdown. Regression tests cover GDK detection, package identity/AUMID derivation, environment-block termination, the no-kill normal GDK path, XboxGames path detection, fallback behavior, cancellation during the startup settle, adopted-player monitoring, and desktop relaunch behavior. The final synchronized three-injection run logged repairs `1/2` and `2/2`, then stopped after the second repair without a third relaunch. Hosts File mode remains the fallback when package-aware activation is unavailable. No matching Windows Application Error event for Roblox, GDK, or `0x1` was present in the last four hours, so the original `0x1` remains confirmed by the user's dialog but not by a Windows crash bucket.
+Controlled Windows backups are under `C:\tmp\FleasionWindowsHandoff-20260807-022427`, including the profile/settings backup and CA bundle backups. The exact active GDK CA backup was restored after the controlled test. The harmless `%TEMP%` write/read check succeeded at `C:\Users\Sviat\AppData\Local\Temp\fleasion-codex-write-test.txt`; the exact test file was then removed.
 
-The reported local TexturePack PNG was also traced independently. The live log recorded conversion/cache selection for `vagueboypng.png`, a CDN short-circuit to the generated KTX2, and `HTTP/1.1 200 OK` local serves. The user then confirmed that the texture visibly applies after the stale GDK asset store is cleared; rejoining the older experience reproduced the stale visual because that process reused its cached asset. The unrelated ID-based replacement rules showed separate `401` precheck failures.
+The working tree is intentionally uncommitted. Current code/test changes are in `src/fleasion/app.py`, `src/fleasion/proxy/env_lifecycle.py`, `src/fleasion/utils/autostart.py`, `src/fleasion/utils/platform_windows.py`, `tests/test_app_single_instance.py`, `tests/test_autostart.py`, `tests/test_env_proxy_lifecycle.py`, and `tests/test_platform_windows.py`, plus this report. Temporary native GUI/exit harnesses were deleted. No test process, loopback listener, hosts entry, firewall rule, or read-only guard state was left behind.
 
-### DEFECT-WIN-004: Clear Cache progress window remained open after completion
+## Remaining required human checks
 
-`src/fleasion/gui/delete_cache.py` appended `Done.` from the completion signal but never closed the modeless dialog. The fix keeps the completion message visible for 500 ms and then calls `QDialog.accept()`. `tests/test_delete_cache_window.py` covers the timer and close callback. The focused native Windows test passed, and the full native suite passed after the fix.
-
-### DEFECT-WIN-005: Global illegal-FFlag keybinds stopped when the dashboard closed
-
-`CustomFFlagEditor` owned the Windows global-hotkey service. Closing the dashboard destroyed that editor, and `--no-dashboard` never created it, so saved illegal-FFlag keybinds had no receiver while Fleasion continued running in the tray.
-
-The fix adds `WindowsCustomFFlagHotkeyController` in `src/fleasion/gui/windows_hotkeys.py`, creates it from the tray at application startup, and passes the shared controller into any later dashboard/config window. Its service survives dashboard close and supports no-dashboard mode; toggles still update `custom_fflag_disabled` and refresh proxy interception. `tests/test_windows_hotkeys.py::test_custom_fflag_hotkey_controller_toggles_without_dashboard` covers the root case, and the final native suite passed with 350 tests.
-
-## Backups and cleanup proof
-
-- Test-file backups: `/tmp/FleasionWindowsHandoff-20260806-2048/`, with `manifest.sha256`.
-- Autostart source/test backups: `/tmp/FleasionWindowsHandoff-20260806-2048/autostart-investigation/`.
-- Xbox/GDK Env Proxy source/test backups: `/tmp/FleasionWindowsHandoff-20260806-2048/xbox-env-bug/`.
-- Native profile/certificate/settings backup: `C:\tmp\FleasionWindowsValidation-20260806-2102`.
-- Authorized CA ceiling backup: `C:\tmp\FleasionWindowsValidation-20260807-ca-ceiling\cacert.pem.original`; restored exact SHA-256 `AF9C083591DAC8FD9DB3D8C5E405F24D0E7E051B55429D84FAAA55E2BD477A27`, attributes `Archive`.
-- No automatic migration was implemented.
-- No Roblox binaries, Studio files, hosts entries, firewall rules, or validation autostart task were left changed by the handoff run. The exact package/GDK validation processes were closed after each run; no 58443 listener remained. The working-tree diff contains the focused autostart/GUI, Xbox/GDK Env Proxy, and dashboard-independent hotkey fixes, their regression coverage, the earlier 12 platform-specific test guards, and this report.
-
-## Final blocker
-
-The verdict remains **NO** because the required live ACL/locking sequence and manual-proxy GUI timeout/restore gate were not fully exercised, and the strict GDK ceiling clause requires stopping the owned package Player while the implementation deliberately preserves that activation. Studio is now user-confirmed safe: it opened after Roblox, published successfully, and reported no TLS errors. The autostart and Xbox/GDK environment-injection defects are fixed with native regression coverage; the rebuilt package starts cleanly, the synchronized GDK ceiling run proves two repairs with no third relaunch loop, the live GDK smoke proved environment inheritance, flags, and local TexturePack HTTP serving, and the cache-dialog/hotkey regressions are covered by the native suite.
+All handoff requirements are now satisfied for this installation. The protected ACL repair branch was not applicable because no protected Player directory triggered it; the effective Task Scheduler principal was verified as the original interactive user with least-privilege semantics.

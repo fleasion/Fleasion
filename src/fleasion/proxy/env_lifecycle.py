@@ -10,6 +10,16 @@ from typing import Callable
 from ..utils.logging import log_buffer
 
 
+def _is_gdk_repair_path(path: Path) -> bool:
+    """Avoid importing Windows-only process helpers on non-Windows builds."""
+    try:
+        from ..utils.platform_windows import is_roblox_gdk_exe_path
+
+        return is_roblox_gdk_exe_path(path)
+    except (ImportError, OSError):
+        return False
+
+
 class EnvProxyLifecycleController:
     """Own Env conversion, bounded CA repair relaunches, and ordered exit."""
 
@@ -208,7 +218,15 @@ class EnvProxyLifecycleController:
                 'Certificate',
                 'Env Proxy adopted Player ownership assigned; CA monitoring started',
             )
-            return self._monitor_owned_player(Path(current_exe), relaunch_on_repair=False)
+            # The initial Xbox/GDK package activation already supplied the
+            # environment, so it must not be synthetically relaunched. If the
+            # package overwrites cacert.pem later, however, an in-place write
+            # loses immediately; repair through package-aware activation so
+            # the next process starts with the prepared CA.
+            gdk_repair_relaunch = _is_gdk_repair_path(Path(current_exe))
+            return self._monitor_owned_player(
+                Path(current_exe), relaunch_on_repair=gdk_repair_relaunch
+            )
 
         except Exception as exc:
             log_buffer.log(

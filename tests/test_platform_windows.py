@@ -64,6 +64,14 @@ def _touch(path: Path, mtime: float) -> Path:
     return path
 
 
+def _skip_cookie_settle_for_relaunch_test(monkeypatch, module):
+    monkeypatch.setattr(
+        module,
+        "_force_close_process_after_cookie_settle",
+        lambda *_args, **_kwargs: True,
+    )
+
+
 def test_windows_relaunch_extractor_preserves_both_roblox_uri_forms(monkeypatch):
     module = _load_platform_windows(monkeypatch)
 
@@ -111,6 +119,69 @@ def test_windows_reads_store_package_full_name_and_aumid(monkeypatch, tmp_path):
     )
 
 
+def test_gdk_repair_activation_falls_back_to_registered_package(monkeypatch):
+    module = _load_platform_windows(monkeypatch)
+    exe = Path(r'C:\XboxGames\Roblox\Content\RobloxPlayerBeta.exe')
+    package = (
+        'ROBLOXCorporation.RobloxGDK_2.733.988.0_x64__55nm5eh3cm0pr',
+        'ROBLOXCorporation.RobloxGDK_55nm5eh3cm0pr!Game',
+    )
+    calls = []
+    monkeypatch.setattr(module, '_get_roblox_gdk_package_identity', lambda _path: None)
+    monkeypatch.setattr(
+        module,
+        '_find_installed_roblox_gdk_package_identity',
+        lambda: calls.append('lookup') or package,
+    )
+
+    result = module._activate_roblox_gdk_with_proxy_env(
+        'http://127.0.0.1:58443',
+        label='Roblox',
+        pid=100,
+        exe_path=exe,
+        launch_arg='',
+        query_processes=lambda: [],
+        prepare_launch=None,
+        cancel_event=SimpleNamespace(is_set=lambda: True),
+    )
+    assert result is None
+    assert calls == ['lookup']
+
+
+def test_forced_gdk_relaunch_receives_ca_preparation_callback(monkeypatch, tmp_path):
+    module = _load_platform_windows(monkeypatch)
+    exe = _touch(
+        tmp_path
+        / 'Program Files'
+        / 'WindowsApps'
+        / 'ROBLOXCorporation.RobloxGDK_2.733.988.0_x64__55nm5eh3cm0pr'
+        / 'RobloxPlayerBeta.exe',
+        3000,
+    )
+    prepare = lambda _path: True
+    calls = []
+
+    def activate(*_args, **kwargs):
+        calls.append(kwargs)
+        return 200, str(exe)
+
+    monkeypatch.setattr(module, '_activate_roblox_gdk_with_proxy_env', activate)
+
+    assert module._relaunch_roblox_exe_with_proxy_env(
+        'http://127.0.0.1:58443',
+        label='Roblox',
+        query_processes=lambda: [
+            {'ProcessId': 100, 'ExecutablePath': str(exe), 'CommandLine': ''}
+        ],
+        extract_launch_arg=lambda _cmd: '',
+        wait_pid_exe_name='RobloxPlayerBeta.exe',
+        fallback_exe_path=lambda: exe,
+        force=True,
+        prepare_launch=prepare,
+    )
+    assert calls and calls[0]['prepare_launch'] is prepare
+
+
 def test_windows_proxy_environment_block_is_double_nul_terminated(monkeypatch):
     module = _load_platform_windows(monkeypatch)
 
@@ -126,6 +197,52 @@ def test_gdk_initial_launch_settle_honors_cancellation(monkeypatch):
     cancelled = SimpleNamespace(wait=lambda _timeout: True)
 
     assert not module._wait_for_gdk_initial_launch_settle(cancelled)
+
+
+def test_roblox_cookie_settle_waits_for_a_stable_metadata_sample(monkeypatch, tmp_path):
+    module = _load_platform_windows(monkeypatch)
+    module.LOCAL_APPDATA = str(tmp_path)
+    clock = [0.0]
+    signatures = iter([(1, 10), (2, 20)])
+
+    monkeypatch.setattr(module, "_roblox_cookies_signature", lambda _path: next(signatures, (2, 20)))
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+
+    assert module._wait_for_roblox_cookies_write_settle(timeout=5.0)
+    assert clock[0] >= module._ROBLOX_COOKIES_MINIMUM_SETTLE_SECONDS
+
+
+def test_force_close_waits_for_cookie_settle_before_taskkill(monkeypatch):
+    module = _load_platform_windows(monkeypatch)
+    events = []
+
+    monkeypatch.setattr(
+        module,
+        "_wait_for_roblox_cookies_write_settle",
+        lambda **_kwargs: events.append("cookie_settle") or True,
+    )
+    monkeypatch.setattr(
+        module,
+        "run_cmd",
+        lambda args: events.append(tuple(args)) or "",
+    )
+    monkeypatch.setattr(
+        module,
+        "_wait_for_pid_exit",
+        lambda *_args, **_kwargs: events.append("pid_exit") or True,
+    )
+
+    assert module._force_close_process_after_cookie_settle(
+        100,
+        "RobloxPlayerBeta.exe",
+        label="Roblox",
+    )
+    assert events == [
+        "cookie_settle",
+        ("taskkill", "/F", "/PID", "100"),
+        "pid_exit",
+    ]
 
 
 def test_env_proxy_relaunch_leaves_store_gdk_player_untouched(monkeypatch, tmp_path):
@@ -185,6 +302,36 @@ def test_env_proxy_relaunch_adopts_armed_store_gdk_player(monkeypatch, tmp_path)
     assert module._env_proxy_owned_process == (100, str(exe))
 
 
+def test_env_proxy_lifecycle_closes_owned_store_gdk_player(monkeypatch, tmp_path):
+    module = _load_platform_windows(monkeypatch)
+    exe = _touch(
+        tmp_path
+        / 'Program Files'
+        / 'WindowsApps'
+        / 'ROBLOXCorporation.RobloxGDK_2.733.988.0_x64__55nm5eh3cm0pr'
+        / 'RobloxPlayerBeta.exe',
+        3000,
+    )
+    module._env_proxy_owned_process = (100, str(exe))
+    events = []
+
+    monkeypatch.setattr(module, '_query_exe_path', lambda _pid: exe)
+    monkeypatch.setattr(
+        module,
+        '_request_process_window_close',
+        lambda _pid: events.append('window_close') or True,
+    )
+    monkeypatch.setattr(
+        module,
+        '_wait_for_pid_exit',
+        lambda *_args, **_kwargs: events.append('pid_exit') or True,
+    )
+
+    assert module.close_roblox_for_env_lifecycle()
+    assert events == ['window_close', 'pid_exit']
+    assert module._env_proxy_owned_process is None
+
+
 def test_env_proxy_relaunch_skips_gdk_even_when_helper_exists(monkeypatch, tmp_path):
     module = _load_platform_windows(monkeypatch)
     install_dir = (
@@ -221,6 +368,7 @@ def test_env_proxy_relaunch_skips_gdk_even_when_helper_exists(monkeypatch, tmp_p
 
 def test_env_proxy_relaunch_skips_the_proxy_owned_process(monkeypatch, tmp_path):
     module = _load_platform_windows(monkeypatch)
+    _skip_cookie_settle_for_relaunch_test(monkeypatch, module)
     exe = _touch(tmp_path / "Content" / "RobloxPlayerBeta.exe", 3000)
     running_pids = {100}
     current = {"pid": 100}
@@ -265,6 +413,7 @@ def test_env_proxy_relaunch_skips_the_proxy_owned_process(monkeypatch, tmp_path)
 
 def test_env_proxy_relaunch_allows_new_process_after_crash(monkeypatch, tmp_path):
     module = _load_platform_windows(monkeypatch)
+    _skip_cookie_settle_for_relaunch_test(monkeypatch, module)
     exe = _touch(tmp_path / "Content" / "RobloxPlayerBeta.exe", 3000)
     running_pids = {100}
     current = {"pid": 100}

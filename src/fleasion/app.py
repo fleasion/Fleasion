@@ -198,7 +198,7 @@ def _show_run_on_boot_failure(parent, proxy_mode: str | None = None) -> None:
             'Failed to register autostart.\n'
             'A legacy task may have been created with administrator permissions.\n\n'
             'Choose Ignore to leave Run on Boot enabled and try again on the next '
-            'launch, or choose Relaunch as administrator for a one-time task repair.\n\n'
+            'launch, or choose Repair as administrator for a one-time task repair.\n\n'
             f'{windows_autostart_privilege_hint(proxy_mode)}'
         )
     else:
@@ -215,7 +215,7 @@ def _show_run_on_boot_failure(parent, proxy_mode: str | None = None) -> None:
     repair_button = None
     if sys.platform == 'win32':
         repair_button = msg.addButton(
-            'Relaunch as administrator', QMessageBox.ButtonRole.AcceptRole
+            'Repair as administrator', QMessageBox.ButtonRole.AcceptRole
         )
         ignore_button = msg.addButton('Ignore', QMessageBox.ButtonRole.RejectRole)
         msg.setDefaultButton(ignore_button)
@@ -224,7 +224,22 @@ def _show_run_on_boot_failure(parent, proxy_mode: str | None = None) -> None:
     msg.exec()
 
     if repair_button is not None and msg.clickedButton() == repair_button:
-        _relaunch_as_admin(extra_args='--repair-autostart', parent_hwnd=_window_handle(parent))
+        if _relaunch_as_admin(
+            extra_args='--repair-autostart', parent_hwnd=_window_handle(parent)
+        ):
+            log_buffer.log('Autostart', 'Elevated autostart repair started')
+            msg.setWindowTitle('Autostart Repair Started')
+            msg.setIcon(QMessageBox.Icon.Information)
+            msg.setText(
+                'The one-time administrator repair has started successfully.\n\n'
+                'Fleasion will remain open while the repair finishes in the background. '
+                'The scheduled task will use the current per-user launch configuration '
+                'on the next launch.'
+            )
+            msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+            msg.exec()
+        else:
+            log_buffer.log('Autostart', 'Elevated autostart repair was not started')
 
 
 def _show_roblox_permission_failure(parent, denied_dirs, mod_manager=None) -> None:
@@ -3071,6 +3086,10 @@ def main():
             relaunch_roblox_with_proxy_env,
         )
 
+        def _prepare_env_proxy_launch(path: Path) -> bool:
+            result = proxy_master.ensure_env_proxy_roblox_ca(path, settle=True)
+            return bool(result.get('success'))
+
         def _relaunch_env_player(
             proxy_url: str,
             _target: str | None,
@@ -3078,7 +3097,10 @@ def main():
             cancel_event: threading.Event,
         ) -> bool:
             return relaunch_roblox_with_proxy_env(
-                proxy_url, force=force, cancel_event=cancel_event
+                proxy_url,
+                force=force,
+                cancel_event=cancel_event,
+                prepare_launch=_prepare_env_proxy_launch,
             )
 
         _terminate_env_player = close_roblox_for_env_lifecycle

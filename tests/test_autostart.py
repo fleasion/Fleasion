@@ -81,11 +81,15 @@ def test_windows_autostart_refreshes_when_proxy_mode_changes(tmp_path, monkeypat
 
 def test_elevated_windows_autostart_targets_requesting_user(monkeypatch):
     xml_text = []
+    acl_script = []
 
     def fake_run(args, **_kwargs):
         if "/Create" in args:
             xml_path = Path(args[args.index("/XML") + 1])
             xml_text.append(xml_path.read_text(encoding="utf-16"))
+        elif "-EncodedCommand" in args:
+            encoded = args[args.index("-EncodedCommand") + 1]
+            acl_script.append(base64.b64decode(encoded).decode("utf-16-le"))
         return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
 
     monkeypatch.setattr(autostart.sys, "platform", "win32")
@@ -100,6 +104,8 @@ def test_elevated_windows_autostart_targets_requesting_user(monkeypatch):
     )
     assert r"DesktopDomain\OriginalUser" in xml_text[0]
     assert "ElevatedAdmin" not in xml_text[0]
+    assert "SetSecurityDescriptor" in acl_script[0]
+    assert "DesktopDomain\\OriginalUser" in acl_script[0]
 
 
 def test_windows_uv_launch_info_uses_checkout_project_root(monkeypatch):
@@ -112,6 +118,22 @@ def test_windows_uv_launch_info_uses_checkout_project_root(monkeypatch):
     assert launch_info['mode'] == 'uv'
     assert launch_info['path'] == r'C:\Tools\uv.exe'
     assert Path(launch_info['project']) == Path(__file__).resolve().parents[1]
+
+
+def test_windows_uv_launch_info_finds_the_per_user_install_when_path_lookup_fails(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(autostart.sys, 'platform', 'win32')
+    monkeypatch.delattr(autostart.sys, 'frozen', raising=False)
+    monkeypatch.setattr(shutil, 'which', lambda _name: None)
+    installed_uv = tmp_path / '.local' / 'bin' / 'uv.exe'
+    installed_uv.parent.mkdir(parents=True)
+    installed_uv.write_bytes(b'uv')
+    monkeypatch.setenv('USERPROFILE', str(tmp_path))
+
+    launch_info = autostart._get_launch_info()
+
+    assert launch_info['path'] == str(installed_uv)
 
 
 def test_macos_launch_agent_update_does_not_start_second_instance(tmp_path, monkeypatch):
