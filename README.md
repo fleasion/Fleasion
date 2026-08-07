@@ -45,7 +45,7 @@ uv run fleasion
 uv run build
 ```
 
-`uv run build` is the build command on Windows, Linux, and macOS. On macOS, it builds a universal release app by default. The output is copied to `dist/Fleasion-v{APP_VERSION}.app`, mirrored at `dist/Fleasion.app`, and zipped as `dist/Fleasion-v{APP_VERSION}-MacOS-Universal.zip`.
+`uv run build` is the build command on Windows, Linux, and macOS. Stable artifact filenames use the project version unchanged. Prerelease filenames add `+local` for local builds or `+g<short-sha>` on GitHub Actions; this provenance is not included in Fleasion's runtime version metadata. On macOS, the command builds a universal release app by default. The output is copied to `dist/Fleasion-v{ARTIFACT_VERSION}.app`, mirrored at `dist/Fleasion.app`, and zipped as `dist/Fleasion-v{ARTIFACT_VERSION}-MacOS-Universal.zip`.
 
 On Apple Silicon, the command builds the arm64 slice with the normal `uv` environment, bootstraps an ignored x86_64 build environment under `.tools/`, and resolves Python for both from the tracked `.python-version` pin. It builds the Intel slice under Rosetta, merges the app with `lipo`, signs it ad hoc, and verifies every Mach-O binary contains both `arm64` and `x86_64`. Rosetta must be installed for the Intel build:
 
@@ -55,15 +55,25 @@ softwareupdate --install-rosetta --agree-to-license
 
 For local single-architecture builds, set `MACOS_TARGET_ARCH=arm64` or `MACOS_TARGET_ARCH=x86_64`.
 
-To bump Fleasion for a release, update the project version once:
+Use `uv version` to update the canonical version in `pyproject.toml` and `uv.lock`:
 
 ```bash
+# Stable patch: 2.4.0 -> 2.4.1
 uv version --bump patch
-# or: uv version <new-version>
+
+# First beta of the next minor: 2.4.0 -> 2.5.0b1
+uv version --bump minor --bump beta
+
+# Subsequent beta: 2.5.0b1 -> 2.5.0b2
+uv version --bump beta
+
+# Promote a prerelease: 2.5.0b2 -> 2.5.0
+uv version --bump stable
 ```
 
-Source runs, PyInstaller naming, and GitHub release workflows read that value from `pyproject.toml`.
-PyInstaller packages the matching distribution metadata for runtime version checks.
+Source runs, packaged distribution metadata, and stable GitHub releases use the canonical version. PyInstaller and GitHub Actions derive only the artifact filename label when building a prerelease.
+
+The draft-release workflow accepts stable and prerelease project versions. Prereleases keep a clean version tag such as `v2.5.0b1`, publish artifacts containing their Git commit label, and are marked as GitHub prereleases. Stable installations check GitHub's latest stable release; prerelease installations follow newer published prereleases and automatically return to the stable channel after installing the final release. Draft releases are never offered by the updater.
 
 ## System Tray
 
