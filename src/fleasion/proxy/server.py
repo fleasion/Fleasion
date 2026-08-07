@@ -27,6 +27,7 @@ import hashlib
 import json
 import logging
 import re
+import socket
 import ssl
 import threading
 import time
@@ -533,6 +534,105 @@ def apply_auto_replace_query_rules(
 def _format_exc(exc: Exception) -> str:
     text = str(exc)
     return f'{type(exc).__name__}: {text}' if text else type(exc).__name__
+
+
+@dataclass
+class _ExplicitTunnelConnectResult:
+    reader: Optional[asyncio.StreamReader]
+    writer: Optional[asyncio.StreamWriter]
+    endpoint: Optional[str] = None
+    error: Optional[str] = None
+
+
+_EXPLICIT_TUNNEL_CONNECT_TIMEOUT = 10.0
+_EXPLICIT_TUNNEL_PER_CANDIDATE_TIMEOUT = 3.0
+_EXPLICIT_TUNNEL_MAX_CANDIDATES = 3
+
+
+async def _open_explicit_proxy_tunnel(
+    host: str,
+    port: int,
+    *,
+    timeout: float = _EXPLICIT_TUNNEL_CONNECT_TIMEOUT,
+) -> _ExplicitTunnelConnectResult:
+    """Open a plain-TCP upstream for a CONNECT tunnel.
+
+    The client, not Fleasion, performs the TLS handshake after it receives the
+    CONNECT 200 response. Resolve here so transient/broken IPv6 routes do not
+    consume the entire connection budget before a usable IPv4 candidate is
+    tried.
+    """
+    started = time.monotonic()
+    loop = asyncio.get_running_loop()
+    try:
+        addr_info = await asyncio.wait_for(
+            loop.getaddrinfo(host, port, type=socket.SOCK_STREAM), timeout=timeout
+        )
+    except Exception as exc:
+        elapsed_ms = round((time.monotonic() - started) * 1000)
+        return _ExplicitTunnelConnectResult(
+            reader=None,
+            writer=None,
+            error=(
+                f'phase=dns host={host} port={port} elapsed_ms={elapsed_ms} '
+                f'exception={_format_exc(exc)} repr={exc!r}'
+            ),
+        )
+
+    candidates: list[tuple[int, str]] = []
+    seen: set[tuple[int, str]] = set()
+    for family, socktype, _protocol, _canonname, sockaddr in addr_info:
+        if family not in (socket.AF_INET, socket.AF_INET6) or socktype != socket.SOCK_STREAM:
+            continue
+        address = sockaddr[0]
+        key = (family, address)
+        if key not in seen:
+            seen.add(key)
+            candidates.append(key)
+    candidates.sort(key=lambda candidate: candidate[0] != socket.AF_INET)
+
+    if not candidates:
+        elapsed_ms = round((time.monotonic() - started) * 1000)
+        return _ExplicitTunnelConnectResult(
+            reader=None,
+            writer=None,
+            error=f'phase=dns host={host} port={port} elapsed_ms={elapsed_ms} no_stream_candidates',
+        )
+
+    failures: list[str] = []
+    for family, address in candidates[:_EXPLICIT_TUNNEL_MAX_CANDIDATES]:
+        remaining = timeout - (time.monotonic() - started)
+        if remaining <= 0:
+            failures.append('phase=connect budget_exhausted')
+            break
+        attempt_started = time.monotonic()
+        attempt_timeout = min(_EXPLICIT_TUNNEL_PER_CANDIDATE_TIMEOUT, remaining)
+        family_name = 'IPv4' if family == socket.AF_INET else 'IPv6'
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(address, port, family=family), timeout=attempt_timeout
+            )
+            return _ExplicitTunnelConnectResult(
+                reader=reader,
+                writer=writer,
+                endpoint=f'{family_name} {address}',
+            )
+        except Exception as exc:
+            elapsed_ms = round((time.monotonic() - attempt_started) * 1000)
+            failures.append(
+                f'phase=connect family={family_name} ip={address} elapsed_ms={elapsed_ms} '
+                f'exception={_format_exc(exc)} repr={exc!r}'
+            )
+
+    total_elapsed_ms = round((time.monotonic() - started) * 1000)
+    return _ExplicitTunnelConnectResult(
+        reader=None,
+        writer=None,
+        error=(
+            f'host={host} port={port} total_elapsed_ms={total_elapsed_ms} '
+            f'candidates={len(candidates)} attempts=[{"; ".join(failures)}]'
+        ),
+    )
 
 
 def _parse_status_code(status_line: bytes) -> int:
@@ -1891,13 +1991,12 @@ class FleasionProxy:
 
         start = time.time()
 
-        try:
-            upstream_reader, upstream_writer = await asyncio.wait_for(
-                asyncio.open_connection(host, port),
-                timeout=10.0,
+        result = await _open_explicit_proxy_tunnel(host, port)
+        if result.writer is None or result.reader is None:
+            log_buffer.log(
+                'Proxy',
+                f'Explicit proxy tunnel failed for {host}:{port}: {result.error or "unknown error"}',
             )
-        except Exception as exc:
-            log_buffer.log('Proxy', f'Explicit proxy tunnel failed for {host}:{port}: {exc}')
             client_writer.write(b'HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n')
             if log_entry is not None:
                 log_entry['status'] = 502
@@ -1909,6 +2008,8 @@ class FleasionProxy:
             finally:
                 client_writer.close()
             return
+        upstream_reader = result.reader
+        upstream_writer = result.writer
 
         client_writer.write(b'HTTP/1.1 200 Connection Established\r\nProxy-Agent: Fleasion\r\n\r\n')
         try:

@@ -1,4 +1,5 @@
 import asyncio
+import socket
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,6 +11,7 @@ from fleasion.proxy.server import (
     FleasionProxy,
     _build_modified_request,
     _is_empty_json_array,
+    _open_explicit_proxy_tunnel,
     _read_body_wire,
     _read_headers_raw,
     _serve_local_file,
@@ -420,6 +422,73 @@ def test_explicit_proxy_tunnels_non_intercept_hosts(tmp_path):
             await proxy.stop()
             upstream.close()
             await upstream.wait_closed()
+
+    asyncio.run(run_test())
+
+
+def test_explicit_tunnel_dialer_prefers_ipv4_and_falls_back(monkeypatch):
+    async def run_test():
+        loop = asyncio.get_running_loop()
+
+        async def fake_getaddrinfo(*_args, **_kwargs):
+            return [
+                (socket.AF_INET6, socket.SOCK_STREAM, 6, '', ('2001:db8::1', 443, 0, 0)),
+                (socket.AF_INET, socket.SOCK_STREAM, 6, '', ('192.0.2.1', 443)),
+                (socket.AF_INET, socket.SOCK_STREAM, 6, '', ('192.0.2.2', 443)),
+            ]
+
+        calls = []
+
+        async def fake_open_connection(host, port, *, family=0, **_kwargs):
+            calls.append((host, port, family))
+            if host == '192.0.2.1':
+                raise asyncio.TimeoutError()
+            return asyncio.StreamReader(), _FakeUpstreamWriter()
+
+        monkeypatch.setattr(loop, 'getaddrinfo', fake_getaddrinfo)
+        monkeypatch.setattr(asyncio, 'open_connection', fake_open_connection)
+
+        result = await _open_explicit_proxy_tunnel('silver.roblox.com', 443)
+
+        assert result.writer is not None
+        assert result.endpoint == 'IPv4 192.0.2.2'
+        assert calls == [
+            ('192.0.2.1', 443, socket.AF_INET),
+            ('192.0.2.2', 443, socket.AF_INET),
+        ]
+
+    asyncio.run(run_test())
+
+
+def test_explicit_tunnel_dialer_falls_back_to_ipv6(monkeypatch):
+    async def run_test():
+        loop = asyncio.get_running_loop()
+
+        async def fake_getaddrinfo(*_args, **_kwargs):
+            return [
+                (socket.AF_INET6, socket.SOCK_STREAM, 6, '', ('2001:db8::1', 443, 0, 0)),
+                (socket.AF_INET, socket.SOCK_STREAM, 6, '', ('192.0.2.1', 443)),
+            ]
+
+        calls = []
+
+        async def fake_open_connection(host, port, *, family=0, **_kwargs):
+            calls.append((host, port, family))
+            if family == socket.AF_INET:
+                raise OSError('network unreachable')
+            return asyncio.StreamReader(), _FakeUpstreamWriter()
+
+        monkeypatch.setattr(loop, 'getaddrinfo', fake_getaddrinfo)
+        monkeypatch.setattr(asyncio, 'open_connection', fake_open_connection)
+
+        result = await _open_explicit_proxy_tunnel('silver.roblox.com', 443)
+
+        assert result.writer is not None
+        assert result.endpoint == 'IPv6 2001:db8::1'
+        assert calls == [
+            ('192.0.2.1', 443, socket.AF_INET),
+            ('2001:db8::1', 443, socket.AF_INET6),
+        ]
 
     asyncio.run(run_test())
 
