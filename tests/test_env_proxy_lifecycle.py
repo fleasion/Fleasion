@@ -36,8 +36,8 @@ def _controller(health_results, *, adopted=False):
     running = {"value": True}
     identity = {"value": (100, "player")}
 
-    def relaunch(url, target, force, _cancel_event):
-        calls.append((url, target, force))
+    def relaunch(url, target, force, _cancel_event, source_exe_path, already_stopped):
+        calls.append((url, target, force, Path(source_exe_path), already_stopped))
         running["value"] = True
         return True
 
@@ -66,10 +66,38 @@ def test_env_lifecycle_converts_once_when_ca_stays_healthy():
     controller, proxy, calls, _running, _identity = _controller([{"success": True}])
 
     assert controller.handle_player_launch(Path("/Roblox/RobloxPlayerBeta.exe"))
-    assert calls == [("http://127.0.0.1:58443", None, False)]
+    assert calls == [
+        (
+            "http://127.0.0.1:58443",
+            None,
+            False,
+            Path("/Roblox/RobloxPlayerBeta.exe"),
+            False,
+        )
+    ]
     assert proxy.monitors == 1
     assert proxy.fflag_launch_preparations == 1
     assert controller.owns_player
+
+
+def test_intercepted_launch_uses_source_bundle_without_waiting_for_running_player():
+    controller, proxy, calls, running, _identity = _controller([{"success": True}])
+    running["value"] = False
+    source = Path("/Roblox/Custom/RobloxPlayer")
+    target = "roblox-player:1+launchmode:play+gameinfo:test"
+
+    assert controller.handle_intercepted_player_launch(source, target)
+
+    assert proxy.prepares == [(source, False)]
+    assert calls == [
+        (
+            "http://127.0.0.1:58443",
+            target,
+            False,
+            source,
+            True,
+        )
+    ]
 
 
 def test_env_lifecycle_allows_exactly_two_ca_repair_relaunches():
@@ -88,6 +116,17 @@ def test_env_lifecycle_allows_exactly_two_ca_repair_relaunches():
     assert proxy.fflag_launch_preparations == 3
 
 
+def test_lifecycle_drops_one_time_target_before_ca_repair_relaunch():
+    controller, _proxy, calls, _running, _identity = _controller(
+        [{"success": False, "path": "cacert.pem"}, {"success": True}]
+    )
+    target = "roblox-player:1+launchmode:play+gameinfo:test"
+
+    assert controller.handle_player_launch(Path("/Roblox/RobloxPlayerBeta.exe"), target)
+
+    assert [call[1] for call in calls] == [target, None]
+
+
 def test_env_lifecycle_never_attempts_a_third_ca_repair():
     controller, proxy, calls, running, _identity = _controller(
         [
@@ -98,7 +137,7 @@ def test_env_lifecycle_never_attempts_a_third_ca_repair():
     )
 
     assert not controller.handle_player_launch(Path("/Roblox/RobloxPlayerBeta.exe"))
-    assert [call[2] for call in calls if len(call) == 3] == [False, True, True]
+    assert [call[2] for call in calls if len(call) == 5] == [False, True, True]
     assert calls[-1] == ("terminate",)
     assert proxy.monitors == 3
     assert not running["value"]
@@ -136,7 +175,7 @@ def test_env_lifecycle_relaunches_gdk_player_after_ca_repair(monkeypatch):
     assert controller.handle_adopted_player_launch(
         Path(r'C:\XboxGames\Roblox\Content\RobloxPlayerBeta.exe')
     )
-    assert [call[2] for call in calls if len(call) == 3] == [True, True]
+    assert [call[2] for call in calls if len(call) == 5] == [True, True]
     assert proxy.monitors == 3
 
 

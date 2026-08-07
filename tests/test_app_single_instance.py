@@ -1,3 +1,4 @@
+from pathlib import Path
 from types import SimpleNamespace
 
 from fleasion import app as app_module
@@ -531,6 +532,56 @@ def test_env_proxy_studio_launch_is_completely_untouched(monkeypatch):
 
     assert notifications == []
     assert monitor._studio_was_running is True
+    assert qt_app is not None
+
+
+def test_macos_uri_watcher_handoff_passes_target_to_special_lifecycle(monkeypatch, tmp_path):
+    qt_app = QCoreApplication.instance() or QCoreApplication([])
+    monkeypatch.setattr(app_module.sys, "platform", "darwin")
+    config = SimpleNamespace(
+        proxy_mode="env",
+        proxy_features_enabled=True,
+        auto_delete_cache_on_exit=False,
+    )
+    lifecycle_calls = []
+
+    class _Lifecycle:
+        owns_player = False
+        operation_in_progress = False
+
+        def handle_intercepted_player_launch(self, *args):
+            lifecycle_calls.append(args)
+
+    class _Interceptor:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def start(self):
+            return True
+
+        def stop(self):
+            return None
+
+    proxy_master = SimpleNamespace(
+        set_roblox_player_running=lambda _running: None,
+        wait_for_env_proxy_ready=lambda timeout=0.0: True,
+    )
+    from fleasion.utils import platform_macos
+
+    monkeypatch.setattr(platform_macos, "MacOSRobloxUriInterceptor", _Interceptor)
+    monitor = app_module.RobloxExitMonitor(
+        config, proxy_master=proxy_master, env_lifecycle=_Lifecycle()
+    )
+    monitor._studio_detected.disconnect(monitor._on_studio_detected)
+    target = "roblox-player:1+launchmode:play+placeId:6484006319"
+    launch = SimpleNamespace(
+        pid=123,
+        executable_path=tmp_path / "Roblox.app" / "Contents" / "MacOS" / "RobloxPlayer",
+    )
+
+    monitor._handle_macos_uri_interception(launch, target)
+
+    assert lifecycle_calls == [(Path(launch.executable_path), target)]
     assert qt_app is not None
 
 def test_linux_hosts_nix_snippet_default_includes_profile_api_host():

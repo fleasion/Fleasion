@@ -29,7 +29,9 @@ class EnvProxyLifecycleController:
         config_manager,
         proxy_master,
         resolve_player_exe: Callable[[], Path | None],
-        relaunch_player: Callable[[str, str | None, bool, threading.Event], bool],
+        relaunch_player: Callable[
+            [str, str | None, bool, threading.Event, Path | None, bool], bool
+        ],
         is_player_running: Callable[[], bool],
         get_player_identity: Callable[[], object | None],
         terminate_player: Callable[[], bool],
@@ -123,22 +125,36 @@ class EnvProxyLifecycleController:
         self,
         exe_path: Path | None = None,
         launch_target: str | None = None,
+        *,
+        player_already_stopped: bool = False,
     ) -> bool:
         """Convert one Player launch and keep its CA healthy for ten seconds."""
         if not self._enabled() or not self._operation_lock.acquire(blocking=False):
             return False
+        intentional_relaunch_marked = False
         try:
+            if player_already_stopped:
+                # The macOS URI watcher already issued SIGKILL.  Mark the exit
+                # before any preparation/replay work so the slower status timer
+                # cannot classify it as an unexpected Player shutdown.
+                self._mark_intentional_relaunch()
+                intentional_relaunch_marked = True
             if not self._proxy_master.wait_for_env_proxy_ready(timeout=15.0):
                 log_buffer.log('Launcher', 'Env Proxy launch skipped: proxy did not become ready')
                 return False
 
-            current_exe = self._resolve_player_exe() or exe_path
+            current_exe = (
+                exe_path
+                if player_already_stopped and exe_path is not None
+                else self._resolve_player_exe() or exe_path
+            )
             if current_exe is None:
                 log_buffer.log('Launcher', 'Env Proxy launch skipped: Player path is unavailable')
                 return False
 
             prepared = self._proxy_master.ensure_env_proxy_roblox_ca(
-                Path(current_exe), settle=self._is_player_running()
+                Path(current_exe),
+                settle=not player_already_stopped and self._is_player_running(),
             )
             if not prepared.get('success'):
                 log_buffer.log(
@@ -151,16 +167,21 @@ class EnvProxyLifecycleController:
             if not self._enabled():
                 return False
             self._prepare_custom_fflags_for_relaunch()
-            self._mark_intentional_relaunch()
+            if not intentional_relaunch_marked:
+                self._mark_intentional_relaunch()
+                intentional_relaunch_marked = True
             try:
                 relaunched = self._relaunch_player(
                     self._proxy_master.roblox_env_proxy_url(),
                     launch_target,
                     False,
                     self._cancel_event,
+                    Path(current_exe),
+                    player_already_stopped,
                 )
             finally:
                 self._finish_intentional_relaunch()
+                intentional_relaunch_marked = False
             if not relaunched:
                 return False
             log_buffer.log(
@@ -173,9 +194,11 @@ class EnvProxyLifecycleController:
                 'Env Proxy Player ownership assigned; CA monitoring started',
             )
 
-            return self._monitor_owned_player(
-                Path(current_exe), relaunch_on_repair=True, launch_target=launch_target
-            )
+            # A browser URI can carry a one-time credential.  LaunchServices
+            # has consumed the in-memory target by this point; never retain it
+            # for later CA-repair attempts.
+            launch_target = None
+            return self._monitor_owned_player(Path(current_exe), relaunch_on_repair=True)
         except Exception as exc:
             log_buffer.log(
                 'Launcher',
@@ -183,7 +206,21 @@ class EnvProxyLifecycleController:
             )
             return False
         finally:
+            if intentional_relaunch_marked:
+                self._finish_intentional_relaunch()
             self._operation_lock.release()
+
+    def handle_intercepted_player_launch(
+        self,
+        exe_path: Path,
+        launch_target: str,
+    ) -> bool:
+        """Relaunch a macOS URI Player that the fast watcher already stopped."""
+        return self.handle_player_launch(
+            exe_path,
+            launch_target,
+            player_already_stopped=True,
+        )
 
     def handle_adopted_player_launch(self, exe_path: Path | None = None) -> bool:
         """Monitor a package-activated Player without synthetic relaunch."""
@@ -302,6 +339,8 @@ class EnvProxyLifecycleController:
                     launch_target,
                     True,
                     self._cancel_event,
+                    Path(current_exe),
+                    False,
                 )
             finally:
                 self._finish_intentional_relaunch()

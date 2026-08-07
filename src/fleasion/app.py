@@ -58,6 +58,7 @@ from .utils import (
 _SINGLE_INSTANCE_KEY = 'FleasionSingleInstance'
 _SINGLE_INSTANCE_CONTROL_SERVER = 'FleasionSingleInstanceControl'
 _WINDOWS_REPAIR_RESULT_TIMEOUT_SECONDS = 120.0
+_MACOS_PLAIN_LAUNCH_CLASSIFICATION_SECONDS = 2.0
 
 
 class _FirstTimeSetupMessageBox(QMessageBox):
@@ -1980,11 +1981,118 @@ class RobloxExitMonitor(QObject):
         self._studio_was_running = False
         self._studio_notified = False
         self._studio_suppress_session = False
+        self._macos_uri_interceptor = None
+        self._macos_plain_launch_lock = threading.Lock()
+        self._macos_plain_launches: dict[int, Path] = {}
+        if (
+            sys.platform == 'darwin'
+            and env_lifecycle is not None
+            and proxy_master is not None
+            and config_manager.proxy_mode == 'env'
+            and config_manager.proxy_features_enabled
+            and callable(getattr(proxy_master, 'wait_for_env_proxy_ready', None))
+        ):
+            try:
+                from .utils.platform_macos import MacOSRobloxUriInterceptor
+
+                self._macos_uri_interceptor = MacOSRobloxUriInterceptor(
+                    is_armed=self._macos_uri_interception_armed,
+                    on_intercepted=self._handle_macos_uri_interception,
+                )
+                self._macos_uri_interceptor.start()
+            except Exception as exc:
+                log_buffer.log(
+                    'Launcher',
+                    f'Could not start macOS Roblox URI watcher: {type(exc).__name__}: {exc}',
+                )
         self._studio_detected.connect(self._on_studio_detected)
 
     def is_player_running(self) -> bool:
         """Return whether Roblox Player is currently running."""
         return is_roblox_running()
+
+    def stop(self) -> None:
+        """Release the macOS URI watcher during normal application shutdown."""
+        with self._macos_plain_launch_lock:
+            self._macos_plain_launches.clear()
+        interceptor = self._macos_uri_interceptor
+        if interceptor is not None:
+            interceptor.stop()
+
+    def _macos_uri_interception_armed(self) -> bool:
+        """Return whether it is safe to stop and replay a browser URI launch."""
+        if (
+            sys.platform != 'darwin'
+            or self._proxy_master is None
+            or self.env_lifecycle is None
+            or self.config_manager.proxy_mode != 'env'
+            or not self.config_manager.proxy_features_enabled
+            or self.env_lifecycle.owns_player
+            or self.env_lifecycle.operation_in_progress
+        ):
+            return False
+        ready = getattr(self._proxy_master, 'wait_for_env_proxy_ready', None)
+        try:
+            return bool(callable(ready) and ready(timeout=0.0))
+        except Exception:
+            return False
+
+    def _handle_macos_uri_interception(self, launch, target: str) -> None:
+        """Run after the watcher has already SIGKILLed the original Player."""
+        if self.env_lifecycle is None:
+            return
+        self._suppress_next_player_exit_cache_delete = True
+        with self._macos_plain_launch_lock:
+            self._macos_plain_launches.pop(int(launch.pid), None)
+        self.env_lifecycle.handle_intercepted_player_launch(
+            Path(launch.executable_path), target
+        )
+
+    def _schedule_macos_plain_launch_fallback(self, exe_path: Path) -> None:
+        """Keep ordinary Dock/Finder launches on the existing Env Proxy path."""
+        if self._macos_uri_interceptor is None:
+            return
+        identity = get_roblox_process_identity()
+        if not isinstance(identity, tuple) or not identity:
+            return
+        try:
+            pid = int(identity[0])
+        except (TypeError, ValueError):
+            return
+        with self._macos_plain_launch_lock:
+            if pid in self._macos_plain_launches:
+                return
+            self._macos_plain_launches[pid] = Path(exe_path)
+
+        def _fallback() -> None:
+            time.sleep(_MACOS_PLAIN_LAUNCH_CLASSIFICATION_SECONDS)
+            with self._macos_plain_launch_lock:
+                pending_exe = self._macos_plain_launches.pop(pid, None)
+            if pending_exe is None or self.env_lifecycle is None:
+                return
+            if (
+                self._macos_uri_interceptor is not None
+                and self._macos_uri_interceptor.has_claimed_pid(pid)
+            ):
+                return
+            current_identity = get_roblox_process_identity()
+            if not isinstance(current_identity, tuple) or not current_identity:
+                return
+            try:
+                if int(current_identity[0]) != pid:
+                    return
+            except (TypeError, ValueError):
+                return
+            if not self._macos_uri_interception_armed():
+                return
+            self._suppress_next_player_exit_cache_delete = True
+            self.env_lifecycle.handle_player_launch(pending_exe)
+
+        threading.Thread(
+            target=_fallback,
+            name='FleasionMacOSPlainLaunchFallback',
+            daemon=True,
+        ).start()
 
     @run_in_thread
     def check_roblox_status(self):
@@ -2116,7 +2224,10 @@ class RobloxExitMonitor(QObject):
                         and proxy_features_enabled
                     ):
                         if self.env_lifecycle is not None:
-                            run_in_thread(self.env_lifecycle.handle_player_launch)(exe_path)
+                            if sys.platform == 'darwin':
+                                self._schedule_macos_plain_launch_fallback(exe_path)
+                            else:
+                                run_in_thread(self.env_lifecycle.handle_player_launch)(exe_path)
                     elif self._proxy_master is not None and proxy_features_enabled:
                         run_in_thread(self._proxy_master.refresh_and_restart_roblox)(exe_path)
                     elif self._proxy_master is None and proxy_features_enabled:
@@ -3096,6 +3207,8 @@ def main():
             _target: str | None,
             force: bool,
             cancel_event: threading.Event,
+            _source_exe_path: Path | None,
+            _player_already_stopped: bool,
         ) -> bool:
             return relaunch_roblox_with_proxy_env(
                 proxy_url,
@@ -3114,9 +3227,16 @@ def main():
             target: str | None,
             force: bool,
             cancel_event: threading.Event,
+            source_exe_path: Path | None,
+            player_already_stopped: bool,
         ) -> bool:
             return relaunch_roblox_with_proxy_env(
-                proxy_url, target, force=force, cancel_event=cancel_event
+                proxy_url,
+                target,
+                force=force,
+                cancel_event=cancel_event,
+                source_exe_path=source_exe_path,
+                player_already_stopped=player_already_stopped,
             )
 
         _terminate_env_player = terminate_roblox
@@ -3129,6 +3249,8 @@ def main():
             target: str | None,
             force: bool,
             cancel_event: threading.Event,
+            _source_exe_path: Path | None,
+            _player_already_stopped: bool,
         ) -> bool:
             return relaunch_roblox_with_proxy_env(
                 proxy_url, target, force=force, cancel_event=cancel_event
@@ -3154,6 +3276,7 @@ def main():
     roblox_monitor = RobloxExitMonitor(
         config_manager, proxy_master, mod_manager, env_lifecycle
     )
+    app.aboutToQuit.connect(roblox_monitor.stop)
 
     # Create system tray
     tray = SystemTray(app, config_manager, proxy_master, mod_manager, roblox_monitor)

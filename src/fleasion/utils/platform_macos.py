@@ -5,14 +5,19 @@ from __future__ import annotations
 import ctypes
 import ctypes.util
 import json
+import os
+import re
+import select
+import signal
 import shutil
 import socket
 import subprocess
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 from urllib.parse import urlsplit
 
 from .logging import log_buffer
@@ -44,12 +49,15 @@ FROSTSTRAP_VERSIONS_DIR = (
 FROSTSTRAP_MOD_BACKUP_DIR = (
     USER_HOME / 'Library' / 'Application Support' / 'Froststrap' / 'ModBackup'
 )
+ROBLOX_PLAYER_LOG_DIR = USER_HOME / 'Library' / 'Logs' / 'Roblox'
 APPLEBLOX_DATA_DIR = USER_HOME / 'Library' / 'Application Support' / 'AppleBlox'
 APPLEBLOX_ROBLOX_CONFIG = APPLEBLOX_DATA_DIR / 'config' / 'roblox.json'
 APPLEBLOX_MOD_BACKUP_RESOURCES = APPLEBLOX_DATA_DIR / 'cache' / 'mods' / 'Resources'
 
 _ENV_PROXY_RELAUNCH_TTL_SECONDS = 45.0
 _LOCAL_PROXY_HOSTS = frozenset({'127.0.0.1', '::1', 'localhost'})
+_URI_LOG_CLASSIFICATION_SECONDS = 2.0
+_URI_PID_DISCOVERY_POLL_SECONDS = 0.01
 _env_proxy_relaunch_lock = threading.Lock()
 _env_proxy_relaunch_in_progress = False
 _env_proxy_relaunch_at: float | None = None
@@ -458,6 +466,383 @@ def is_roblox_running() -> bool:
     return _first_process_pid(ROBLOX_PROCESS) is not None
 
 
+class _IncrementalRobloxLaunchUriParser:
+    """Recover a browser launch URI from appended Player.log bytes only.
+
+    The combined URI line is truncated by current macOS Roblox builds, but the
+    following ``Argument N`` records are complete.  Roblox emits its cold-launch
+    marker after the final argument, which gives us an exact boundary without
+    guessing how many arguments a future client version will use.
+    """
+
+    _COMPLETE_URI_RE = re.compile(r'^\s*"((?:roblox|roblox-player):[^"\r\n]+)"')
+    _ARGUMENT_RE = re.compile(r'Argument (\d+) = (.+)$')
+
+    def __init__(self) -> None:
+        self._partial_line = ''
+        self._inside_open_urls = False
+        self._arguments: dict[int, str] = {}
+
+    def feed(self, data: bytes) -> str | None:
+        """Consume appended bytes and return a complete URI once, if present."""
+        if not data:
+            return None
+        text = self._partial_line + data.decode('utf-8', errors='replace')
+        lines = text.splitlines(keepends=True)
+        self._partial_line = ''
+        if lines and not lines[-1].endswith(('\n', '\r')):
+            self._partial_line = lines.pop()
+
+        for raw_line in lines:
+            target = self._consume_line(raw_line.rstrip('\r\n'))
+            if target:
+                return target
+        return None
+
+    def _consume_line(self, line: str) -> str | None:
+        if 'application:openURLs:' in line:
+            self._inside_open_urls = True
+            self._arguments.clear()
+            return None
+        if not self._inside_open_urls:
+            return None
+
+        complete_uri = self._COMPLETE_URI_RE.match(line)
+        if complete_uri:
+            return complete_uri.group(1).strip()
+
+        argument = self._ARGUMENT_RE.search(line)
+        if argument:
+            self._arguments[int(argument.group(1))] = argument.group(2).strip()
+            return None
+
+        # Current Roblox writes this after every argument record for a browser
+        # URI.  Waiting for it avoids replaying a prefix that omits a trailing
+        # launch field such as LaunchExp.
+        if 'application:openURLs cold launch' in line:
+            return self._reconstructed_uri()
+        return None
+
+    def _reconstructed_uri(self) -> str | None:
+        if not self._arguments:
+            return None
+        numbers = sorted(self._arguments)
+        if numbers != list(range(1, numbers[-1] + 1)):
+            return None
+        parts = [self._arguments[number] for number in numbers]
+        if not any(part.startswith('gameinfo:') for part in parts):
+            return None
+        if not any(part.startswith('placelauncherurl:') for part in parts):
+            return None
+        return 'roblox-player:1+' + '+'.join(parts)
+
+
+@dataclass(frozen=True)
+class MacOSRobloxPlayerLaunch:
+    """The original Player identity captured before URI replay."""
+
+    pid: int
+    executable_path: Path
+    app_path: Path
+    log_path: Path
+    detected_at: float
+
+
+@dataclass
+class _TrackedMacOSPlayerLog:
+    path: Path
+    fd: int
+    launch: MacOSRobloxPlayerLaunch | None
+    parser: _IncrementalRobloxLaunchUriParser
+    opened_at: float
+    offset: int = 0
+    needs_read: bool = True
+
+
+def _wait_for_pid_exit(pid: int, timeout: float = 3.0) -> bool:
+    """Wait for one known PID without enumerating processes."""
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            return False
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.005)
+
+
+class MacOSRobloxUriInterceptor:
+    """Watch new Player logs and convert URI launches before ticket redemption.
+
+    Roblox remains the LaunchServices URI handler.  This watcher observes only
+    its newly-created Player log, records the original PID and app bundle before
+    parsing credentials, then keeps the URI-to-SIGKILL section deliberately
+    minimal.
+    """
+
+    def __init__(
+        self,
+        *,
+        is_armed: Callable[[], bool],
+        on_intercepted: Callable[[MacOSRobloxPlayerLaunch, str], None],
+        log_dir: Path | None = None,
+    ) -> None:
+        self._is_armed = is_armed
+        self._on_intercepted = on_intercepted
+        self._log_dir = Path(log_dir or ROBLOX_PLAYER_LOG_DIR)
+        self._stop_event = threading.Event()
+        self._state_lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._known_logs: set[Path] = set()
+        self._claimed_pid: int | None = None
+
+    def start(self) -> bool:
+        """Start one idle kqueue thread.  Unsupported hosts are a no-op."""
+        if sys.platform != 'darwin' or not hasattr(select, 'kqueue'):
+            return False
+        with self._state_lock:
+            if self._thread is not None and self._thread.is_alive():
+                return True
+            self._stop_event.clear()
+            self._known_logs = self._player_logs()
+            self._thread = threading.Thread(
+                target=self._run,
+                name='FleasionMacOSRobloxUriWatcher',
+                daemon=True,
+            )
+            self._thread.start()
+        log_buffer.log(
+            'Launcher',
+            'macOS Roblox URI watcher started; Roblox remains the URI handler',
+        )
+        return True
+
+    def stop(self, timeout: float = 1.5) -> None:
+        """Stop the watcher without leaving a background file descriptor open."""
+        self._stop_event.set()
+        with self._state_lock:
+            thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(max(0.0, timeout))
+
+    def has_claimed_pid(self, pid: int) -> bool:
+        """Return whether a URI handoff already owns this original PID."""
+        with self._state_lock:
+            return self._claimed_pid == pid
+
+    def _player_logs(self) -> set[Path]:
+        try:
+            return {
+                path
+                for path in self._log_dir.glob('*_Player_*_last.log')
+                if path.is_file()
+            }
+        except OSError:
+            return set()
+
+    @staticmethod
+    def _vnode_event(fd: int):
+        return select.kevent(
+            fd,
+            filter=select.KQ_FILTER_VNODE,
+            flags=select.KQ_EV_ADD | select.KQ_EV_ENABLE | select.KQ_EV_CLEAR,
+            fflags=(
+                select.KQ_NOTE_WRITE
+                | select.KQ_NOTE_EXTEND
+                | select.KQ_NOTE_RENAME
+                | select.KQ_NOTE_DELETE
+            ),
+        )
+
+    def _run(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                directory_fd = os.open(self._log_dir, os.O_RDONLY)
+            except OSError:
+                self._stop_event.wait(0.5)
+                continue
+
+            tracked: _TrackedMacOSPlayerLog | None = None
+            queue = None
+            try:
+                queue = select.kqueue()
+                queue.control([self._vnode_event(directory_fd)], 0, 0)
+                tracked = self._discover_new_log(queue, tracked)
+                while not self._stop_event.is_set():
+                    timeout = (
+                        _URI_PID_DISCOVERY_POLL_SECONDS
+                        if tracked is not None and tracked.launch is None
+                        else 0.5
+                    )
+                    events = queue.control(None, 8, timeout)
+                    directory_changed = any(event.ident == directory_fd for event in events)
+                    if directory_changed:
+                        tracked = self._discover_new_log(queue, tracked)
+
+                    if tracked is None:
+                        continue
+                    tracked_events = [event for event in events if event.ident == tracked.fd]
+                    if tracked_events:
+                        if any(
+                            event.fflags & (select.KQ_NOTE_RENAME | select.KQ_NOTE_DELETE)
+                            for event in tracked_events
+                        ):
+                            tracked = self._close_tracked(tracked)
+                            continue
+                        tracked.needs_read = True
+
+                    if tracked.launch is None:
+                        tracked.launch = self._capture_player_launch(tracked.path)
+                    if tracked.launch is not None and tracked.needs_read:
+                        target = self._read_appended_target(tracked)
+                        if target:
+                            self._intercept(tracked.launch, target)
+                            target = ''
+                            tracked = self._close_tracked(tracked)
+                            continue
+                    if time.monotonic() - tracked.opened_at >= _URI_LOG_CLASSIFICATION_SECONDS:
+                        tracked = self._close_tracked(tracked)
+            except (OSError, ValueError):
+                # A Roblox updater can replace the log directory while the
+                # watcher is armed.  Reopen it rather than retaining a stale FD.
+                pass
+            finally:
+                if tracked is not None:
+                    self._close_tracked(tracked)
+                if queue is not None:
+                    try:
+                        queue.close()
+                    except OSError:
+                        pass
+                try:
+                    os.close(directory_fd)
+                except OSError:
+                    pass
+
+    def _discover_new_log(
+        self,
+        queue,
+        tracked: _TrackedMacOSPlayerLog | None,
+    ) -> _TrackedMacOSPlayerLog | None:
+        logs = self._player_logs()
+        new_logs = logs - self._known_logs
+        self._known_logs.update(logs)
+        if tracked is not None or not new_logs or not self._is_armed():
+            return tracked
+        try:
+            path = max(new_logs, key=lambda candidate: candidate.stat().st_mtime_ns)
+            fd = os.open(path, os.O_RDONLY)
+            queue.control([self._vnode_event(fd)], 0, 0)
+        except (OSError, ValueError):
+            return None
+        return _TrackedMacOSPlayerLog(
+            path=path,
+            fd=fd,
+            launch=self._capture_player_launch(path),
+            parser=_IncrementalRobloxLaunchUriParser(),
+            opened_at=time.monotonic(),
+        )
+
+    @staticmethod
+    def _close_tracked(
+        tracked: _TrackedMacOSPlayerLog | None,
+    ) -> None:
+        if tracked is None:
+            return None
+        try:
+            os.close(tracked.fd)
+        except OSError:
+            pass
+        return None
+
+    def _capture_player_launch(self, log_path: Path) -> MacOSRobloxPlayerLaunch | None:
+        """Resolve the original PID and bundle before touching URI log bytes."""
+        pid = _first_process_pid(ROBLOX_PROCESS)
+        if pid is None:
+            return None
+        executable = _process_command(pid)
+        app_path = _app_for_executable(executable) if executable is not None else None
+        if executable is None or app_path is None or not app_path.is_dir():
+            return None
+        return MacOSRobloxPlayerLaunch(
+            pid=pid,
+            executable_path=executable,
+            app_path=app_path,
+            log_path=log_path,
+            detected_at=time.monotonic(),
+        )
+
+    def _read_appended_target(self, tracked: _TrackedMacOSPlayerLog) -> str | None:
+        try:
+            os.lseek(tracked.fd, tracked.offset, os.SEEK_SET)
+            chunks: list[bytes] = []
+            while True:
+                chunk = os.read(tracked.fd, 65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                tracked.offset += len(chunk)
+        except OSError:
+            return None
+        tracked.needs_read = False
+        for chunk in chunks:
+            target = tracked.parser.feed(chunk)
+            if target:
+                return target
+        return None
+
+    def _intercept(self, launch: MacOSRobloxPlayerLaunch, target: str) -> None:
+        """Claim, kill, then hand off.  Never add work before ``os.kill``."""
+        captured_at = time.perf_counter_ns()
+        with self._state_lock:
+            if self._claimed_pid is not None or not self._is_armed():
+                return
+            self._claimed_pid = launch.pid
+        try:
+            os.kill(launch.pid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            with self._state_lock:
+                if self._claimed_pid == launch.pid:
+                    self._claimed_pid = None
+            return
+
+        kill_latency_us = (time.perf_counter_ns() - captured_at) / 1000.0
+        if not _wait_for_pid_exit(launch.pid):
+            log_buffer.log(
+                'Launcher',
+                'macOS URI interception stopped: original Roblox PID did not exit after SIGKILL',
+            )
+            with self._state_lock:
+                if self._claimed_pid == launch.pid:
+                    self._claimed_pid = None
+            return
+
+        # The credential is never logged.  The only persistent diagnostics are
+        # non-secret timing and length metadata.
+        log_buffer.log(
+            'Launcher',
+            'macOS Roblox URI captured and original Player terminated '
+            f'(pid={launch.pid}, uri_length={len(target)}, '
+            f'capture_to_kill_us={kill_latency_us:.0f})',
+        )
+        try:
+            self._on_intercepted(launch, target)
+        except Exception as exc:
+            log_buffer.log(
+                'Launcher',
+                f'macOS URI interception handoff failed: {type(exc).__name__}: {exc}',
+            )
+        finally:
+            # Drop the credential after the replacement launch has been initiated.
+            target = ''
+            with self._state_lock:
+                if self._claimed_pid == launch.pid:
+                    self._claimed_pid = None
+
+
 def get_roblox_process_identity() -> tuple[int, str] | None:
     """Return a token identifying the current Player process."""
     pid = _first_process_pid(ROBLOX_PROCESS)
@@ -778,6 +1163,8 @@ def relaunch_roblox_with_proxy_env(
     *,
     force: bool = False,
     cancel_event: threading.Event | None = None,
+    source_exe_path: Path | None = None,
+    player_already_stopped: bool = False,
 ) -> bool:
     """Relaunch the running macOS Roblox Player through Fleasion's env proxy.
 
@@ -786,7 +1173,11 @@ def relaunch_roblox_with_proxy_env(
     then use ``open --env`` so the newly launched app inherits the conventional
     proxy variables while retaining normal macOS bundle launch behavior.
     """
-    exe_path = get_roblox_player_exe_path()
+    exe_path = (
+        Path(source_exe_path)
+        if source_exe_path is not None
+        else get_roblox_player_exe_path()
+    )
     app_path = _app_for_executable(exe_path) if exe_path is not None else None
     if exe_path is None or app_path is None:
         log_buffer.log(
@@ -812,9 +1203,10 @@ def relaunch_roblox_with_proxy_env(
 
         log_buffer.log(
             'Launcher',
-            f'Relaunching Roblox through Fleasion env proxy: {app_path}',
+            f'Relaunching Roblox through Fleasion env proxy: {app_path} '
+            f'({"with launch target" if launch_target else "without launch target"})',
         )
-        if is_roblox_running():
+        if not player_already_stopped and is_roblox_running():
             terminate_roblox()
             if not wait_for_roblox_exit():
                 log_buffer.log(

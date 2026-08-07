@@ -7,7 +7,6 @@ between packaged builds and ``uv run`` development sessions.
 
 from __future__ import annotations
 
-import json
 import os
 import plistlib
 import shlex
@@ -29,7 +28,6 @@ WINDOWS_START_MENU_SHORTCUT_PATH = (
 )
 MACOS_APPLICATION_PATH = USER_HOME / 'Applications' / f'{APP_NAME}.app'
 _MACOS_MARKER_NAME = '.fleasion-managed-launcher'
-_MACOS_URL_HANDLER_BACKUP_NAME = '.fleasion-url-handler-backup.json'
 _DESCRIPTION = 'Roblox asset interceptor and replacer'
 
 
@@ -125,7 +123,7 @@ def _macos_launcher_script(
 
 
 def _register_macos_application(app_path: Path) -> None:
-    """Register a generated app bundle before assigning URL handlers to it."""
+    """Register a generated app bundle with Launch Services."""
     lsregister = Path(
         '/System/Library/Frameworks/CoreServices.framework/Frameworks/'
         'LaunchServices.framework/Support/lsregister'
@@ -150,17 +148,6 @@ def _remove_macos_app() -> bool:
         _log(f'Refusing to remove unmarked macOS app: {MACOS_APPLICATION_PATH}')
         return True
     try:
-        backup_path = MACOS_APPLICATION_PATH / 'Contents' / _MACOS_URL_HANDLER_BACKUP_NAME
-        if backup_path.is_file():
-            try:
-                from .platform_macos import set_default_url_handler
-
-                backup = json.loads(backup_path.read_text(encoding='utf-8'))
-                for scheme, bundle_id in backup.items():
-                    if isinstance(scheme, str) and isinstance(bundle_id, str) and bundle_id:
-                        set_default_url_handler(scheme, bundle_id)
-            except Exception as exc:
-                _log(f'Failed to restore macOS Roblox URL handlers: {exc}')
         shutil.rmtree(MACOS_APPLICATION_PATH)
         return True
     except OSError as exc:
@@ -169,6 +156,9 @@ def _remove_macos_app() -> bool:
 
 
 def _create_macos_app() -> bool:
+    # Keep Roblox's own LaunchServices association. Fleasion observes the
+    # resulting Player launch, matching the Windows URI flow; claiming
+    # roblox:// here would launch a second Fleasion instance from the browser.
     command, working_dir, env = _launch_command()
     contents = MACOS_APPLICATION_PATH / 'Contents'
     macos_dir = contents / 'MacOS'
@@ -212,34 +202,12 @@ def _create_macos_app() -> bool:
             'CFBundleVersion': APP_VERSION,
             'LSApplicationCategoryType': 'public.app-category.utilities',
             'NSHumanReadableCopyright': _DESCRIPTION,
-            'CFBundleURLTypes': [
-                {
-                    'CFBundleURLName': 'Roblox launch links',
-                    'CFBundleTypeRole': 'Viewer',
-                    'CFBundleURLSchemes': ['roblox', 'roblox-player'],
-                }
-            ],
         }
         if icon_name:
             info['CFBundleIconFile'] = icon_name
         with (contents / 'Info.plist').open('wb') as f:
             plistlib.dump(info, f)
         _register_macos_application(MACOS_APPLICATION_PATH)
-        try:
-            from .platform_macos import get_default_url_handler, set_default_url_handler
-
-            backup_path = contents / _MACOS_URL_HANDLER_BACKUP_NAME
-            if not backup_path.exists():
-                backup = {
-                    scheme: get_default_url_handler(scheme)
-                    for scheme in ('roblox', 'roblox-player')
-                }
-                backup_path.write_text(json.dumps(backup), encoding='utf-8')
-            for scheme in ('roblox', 'roblox-player'):
-                if not set_default_url_handler(scheme, 'com.fleasion.launcher'):
-                    _log(f'Could not set Fleasion as the macOS {scheme} handler')
-        except Exception as exc:
-            _log(f'Failed to configure macOS Roblox URL handlers: {exc}')
         marker.write_text('Managed by Fleasion desktop integration.\n', encoding='utf-8')
         _log(f'macOS launcher app updated: {MACOS_APPLICATION_PATH}')
         return True

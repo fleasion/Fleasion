@@ -1,4 +1,5 @@
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -94,6 +95,126 @@ def test_discovers_only_valid_froststrap_mod_restore_snapshots(tmp_path, monkeyp
     assert platform_macos.find_froststrap_mod_backup_resource_dirs() == [valid]
 
 
+def test_incremental_uri_parser_waits_for_complete_argument_block():
+    parser = platform_macos._IncrementalRobloxLaunchUriParser()
+    expected = (
+        "roblox-player:1+launchmode:play+gameinfo:ticket+launchtime:123+"
+        "placelauncherurl:https%3A%2F%2Fexample.test+browsertrackerid:1+"
+        "robloxLocale:en_us+gameLocale:en_us+channel:test+LaunchExp:InApp"
+    )
+
+    assert parser.feed(
+        b"[FLog::MacLuaApp] (AppDelegate) application:openURLs:(\n"
+        b'    "roblox-player:1+launchmode:play+gameinfo:ticket\n'
+        b"[FLog::MacLuaApp] (AppDelegate) Argument 1 = launchmode:play\n"
+        b"[FLog::MacLuaApp] (AppDelegate) Argument 2 = game"
+    ) is None
+    assert parser.feed(
+        b"info:ticket\n"
+        b"[FLog::MacLuaApp] (AppDelegate) Argument 3 = launchtime:123\n"
+        b"[FLog::MacLuaApp] (AppDelegate) Argument 4 = "
+        b"placelauncherurl:https%3A%2F%2Fexample.test\n"
+        b"[FLog::MacLuaApp] (AppDelegate) Argument 5 = browsertrackerid:1\n"
+        b"[FLog::MacLuaApp] (AppDelegate) Argument 6 = robloxLocale:en_us\n"
+        b"[FLog::MacLuaApp] (AppDelegate) Argument 7 = gameLocale:en_us\n"
+        b"[FLog::MacLuaApp] (AppDelegate) Argument 8 = channel:test\n"
+        b"[FLog::MacLuaApp] (AppDelegate) Argument 9 = LaunchExp:InApp\n"
+    ) is None
+    assert parser.feed(
+        b"[FLog::MacLuaApp] (AppDelegate) application:openURLs cold launch. "
+        b"Defer web launch until after initialization is complete.\n"
+    ) == expected
+
+
+def test_uri_interceptor_kills_known_pid_before_handoff(tmp_path, monkeypatch):
+    app = tmp_path / "Custom Roblox.app"
+    _make_player_app(app)
+    launch = platform_macos.MacOSRobloxPlayerLaunch(
+        pid=123,
+        executable_path=app / "Contents" / "MacOS" / "RobloxPlayer",
+        app_path=app,
+        log_path=tmp_path / "Player_last.log",
+        detected_at=1.0,
+    )
+    calls = []
+    handoffs = []
+    logs = []
+    interceptor = platform_macos.MacOSRobloxUriInterceptor(
+        is_armed=lambda: True,
+        on_intercepted=lambda received_launch, target: handoffs.append(
+            (received_launch, target)
+        ),
+    )
+
+    def fake_kill(pid, sig):
+        calls.append((pid, sig))
+        if sig == 0:
+            raise ProcessLookupError
+
+    monkeypatch.setattr(platform_macos.os, "kill", fake_kill)
+    monkeypatch.setattr(
+        platform_macos.log_buffer,
+        "log",
+        lambda *args: logs.append(args),
+    )
+    monkeypatch.setattr(
+        platform_macos,
+        "_first_process_pid",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("no process scan in hot path")),
+    )
+
+    target = "roblox-player:1+launchmode:play+gameinfo:test"
+    interceptor._intercept(launch, target)
+
+    assert calls[0] == (123, platform_macos.signal.SIGKILL)
+    assert handoffs == [(launch, target)]
+    assert all(target not in " ".join(map(str, entry)) for entry in logs)
+
+
+def test_uri_interceptor_watches_new_log_and_reads_existing_bytes_once(tmp_path, monkeypatch):
+    log_dir = tmp_path / "RobloxLogs"
+    log_dir.mkdir()
+    app = tmp_path / "Froststrap" / "Versions" / "current" / "RobloxPlayer.app"
+    _make_player_app(app)
+    exe = app / "Contents" / "MacOS" / "RobloxPlayer"
+    handoffs = []
+    complete = threading.Event()
+
+    monkeypatch.setattr(platform_macos, "_first_process_pid", lambda _name: 456)
+    monkeypatch.setattr(platform_macos, "_process_command", lambda _pid: exe)
+
+    def fake_kill(_pid, sig):
+        if sig == 0:
+            raise ProcessLookupError
+
+    monkeypatch.setattr(platform_macos.os, "kill", fake_kill)
+    interceptor = platform_macos.MacOSRobloxUriInterceptor(
+        is_armed=lambda: True,
+        on_intercepted=lambda launch, target: (handoffs.append((launch, target)), complete.set()),
+        log_dir=log_dir,
+    )
+    assert interceptor.start()
+    try:
+        log_path = log_dir / "2026_Player_test_last.log"
+        log_path.write_text(
+            "[FLog::MacLuaApp] application:openURLs:(\n"
+            "[FLog::MacLuaApp] Argument 1 = launchmode:play\n"
+            "[FLog::MacLuaApp] Argument 2 = gameinfo:test\n"
+            "[FLog::MacLuaApp] Argument 3 = launchtime:123\n"
+            "[FLog::MacLuaApp] Argument 4 = placelauncherurl:https%3A%2F%2Fexample.test\n"
+            "[FLog::MacLuaApp] Argument 5 = LaunchExp:InApp\n"
+            "[FLog::MacLuaApp] application:openURLs cold launch. Defer web launch.\n",
+            encoding="utf-8",
+        )
+        assert complete.wait(2.0)
+    finally:
+        interceptor.stop()
+
+    assert handoffs[0][0].pid == 456
+    assert handoffs[0][0].app_path == app
+    assert handoffs[0][1].startswith("roblox-player:1+launchmode:play+gameinfo:")
+
+
 def _reset_env_proxy_relaunch_state(monkeypatch):
     monkeypatch.setattr(platform_macos, "_env_proxy_relaunch_at", None)
     monkeypatch.setattr(platform_macos, "_env_proxy_relaunch_in_progress", False)
@@ -181,6 +302,48 @@ def test_relaunch_roblox_with_env_proxy_preserves_launch_target(tmp_path, monkey
         "http://127.0.0.1:58443", target
     )
     assert calls[0][-1] == target
+
+
+def test_intercepted_relaunch_uses_original_bundle_without_second_termination(
+    tmp_path, monkeypatch
+):
+    calls = []
+    app = tmp_path / "Froststrap" / "Versions" / "version-current" / "RobloxPlayer.app"
+    _make_player_app(app)
+    exe = app / "Contents" / "MacOS" / "RobloxPlayer"
+    _reset_env_proxy_relaunch_state(monkeypatch)
+    monkeypatch.setattr(platform_macos, "_wait_for_local_proxy", lambda *_args: True)
+    monkeypatch.setattr(
+        platform_macos,
+        "get_roblox_player_exe_path",
+        lambda: (_ for _ in ()).throw(AssertionError("must preserve original executable")),
+    )
+    monkeypatch.setattr(
+        platform_macos,
+        "is_roblox_running",
+        lambda: (_ for _ in ()).throw(AssertionError("original Player is already stopped")),
+    )
+    monkeypatch.setattr(platform_macos, "wait_for_roblox_window", lambda **_kwargs: True)
+
+    class Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(
+        platform_macos.subprocess,
+        "run",
+        lambda args, **_kwargs: calls.append(args) or Result(),
+    )
+
+    target = "roblox-player:1+launchmode:play+gameinfo:test"
+    assert platform_macos.relaunch_roblox_with_proxy_env(
+        "http://127.0.0.1:58443",
+        target,
+        source_exe_path=exe,
+        player_already_stopped=True,
+    )
+    assert calls[0][-3:] == ["-a", str(app), target]
 
 
 def test_relaunch_roblox_with_env_proxy_retries_launchservices_600(
