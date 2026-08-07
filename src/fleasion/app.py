@@ -2050,22 +2050,27 @@ class RobloxExitMonitor(QObject):
                         )
 
                         if is_roblox_gdk_exe_path(exe_path):
-                            if (
+                            gdk_env_proxy_armed = (
                                 is_roblox_gdk_env_proxy_armed()
                                 or is_gdk_env_proxy_activation_in_progress()
-                            ):
+                            )
+                            if gdk_env_proxy_armed and self.env_lifecycle is not None:
                                 log_buffer.log(
                                     'Launcher',
-                                    'Xbox/GDK Env Proxy package activation is armed; '
-                                    'leaving the initial package Player running',
+                                    'Xbox/GDK Env Proxy package activation supplied the '
+                                    'initial Player; handing it to Env Proxy lifecycle monitoring',
                                 )
+                                self._suppress_next_player_exit_cache_delete = True
+                                run_in_thread(
+                                    self.env_lifecycle.handle_adopted_player_launch
+                                )(exe_path)
                             else:
                                 log_buffer.log(
                                     'Launcher',
                                     'Xbox/GDK Env Proxy package activation is unavailable; '
                                     'leaving the initial package Player untouched',
                                 )
-                            self._suppress_next_player_exit_cache_delete = False
+                                self._suppress_next_player_exit_cache_delete = False
                         elif is_env_proxy_relaunched_player_running():
                             log_buffer.log(
                                 'Launcher',

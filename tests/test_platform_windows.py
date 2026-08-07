@@ -84,6 +84,9 @@ def test_windows_identifies_the_store_gdk_player_path(monkeypatch):
     assert not module.is_roblox_gdk_exe_path(
         r'C:\Users\Sviat\AppData\Local\Roblox\Versions\version-current\RobloxPlayerBeta.exe'
     )
+    assert module.is_roblox_gdk_exe_path(
+        r'C:\XboxGames\Roblox\Content\RobloxPlayerBeta.exe'
+    )
 
 
 def test_windows_reads_store_package_full_name_and_aumid(monkeypatch, tmp_path):
@@ -151,6 +154,35 @@ def test_env_proxy_relaunch_leaves_store_gdk_player_untouched(monkeypatch, tmp_p
         fallback_exe_path=lambda: exe,
     )
     assert commands == []
+
+
+def test_env_proxy_relaunch_adopts_armed_store_gdk_player(monkeypatch, tmp_path):
+    module = _load_platform_windows(monkeypatch)
+    exe = _touch(
+        tmp_path
+        / 'Program Files'
+        / 'WindowsApps'
+        / 'ROBLOXCorporation.RobloxGDK_2.733.988.0_x64__55nm5eh3cm0pr'
+        / 'RobloxPlayerBeta.exe',
+        3000,
+    )
+    commands = []
+
+    monkeypatch.setattr(module, '_gdk_env_proxy_armed_package', ('package', 'aumid'))
+    monkeypatch.setattr(module, 'run_cmd', lambda args: commands.append(args) or '')
+
+    assert module._relaunch_roblox_exe_with_proxy_env(
+        'http://127.0.0.1:58443',
+        label='Roblox',
+        query_processes=lambda: [
+            {'ProcessId': 100, 'ExecutablePath': str(exe), 'CommandLine': ''}
+        ],
+        extract_launch_arg=lambda _cmd: '',
+        wait_pid_exe_name='RobloxPlayerBeta.exe',
+        fallback_exe_path=lambda: exe,
+    )
+    assert commands == []
+    assert module._env_proxy_owned_process == (100, str(exe))
 
 
 def test_env_proxy_relaunch_skips_gdk_even_when_helper_exists(monkeypatch, tmp_path):

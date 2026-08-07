@@ -225,6 +225,15 @@ class SystemTray:
         self.mod_manager = mod_manager
         self.roblox_monitor = roblox_monitor
 
+        self.custom_fflag_hotkeys = None
+        if sys.platform == 'win32':
+            from .gui.windows_hotkeys import WindowsCustomFFlagHotkeyController
+
+            self.custom_fflag_hotkeys = WindowsCustomFFlagHotkeyController(
+                config_manager, proxy_master, app
+            )
+            self.custom_fflag_hotkeys.sync()
+
         # Keep references to open windows to prevent garbage collection
         self.open_windows = []
         self.dashboard_window = None
@@ -891,6 +900,7 @@ class SystemTray:
             self.mod_manager,
             self.roblox_monitor,
             system_tray=self,
+            hotkey_controller=self.custom_fflag_hotkeys,
         )
         window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         window.destroyed.connect(self._on_dashboard_destroyed)
@@ -1138,6 +1148,8 @@ class SystemTray:
 
         lifecycle = getattr(getattr(self, 'roblox_monitor', None), 'env_lifecycle', None)
         try:
+            if self.custom_fflag_hotkeys is not None:
+                self.custom_fflag_hotkeys.stop()
             if lifecycle is not None:
                 if preserve_roblox:
                     lifecycle.preserve_owned_player_for_restart()

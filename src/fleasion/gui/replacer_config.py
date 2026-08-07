@@ -618,6 +618,7 @@ class ReplacerConfigWindow(QDialog):
         mod_manager=None,
         roblox_monitor=None,
         system_tray=None,
+        hotkey_controller=None,
     ):
         super().__init__()
         self.config_manager = config_manager
@@ -625,6 +626,7 @@ class ReplacerConfigWindow(QDialog):
         self._mod_manager = mod_manager
         self.roblox_monitor = roblox_monitor
         self._system_tray = system_tray
+        self._hotkey_controller = hotkey_controller
         self.undo_manager = UndoManager()
         self.undo_manager.save_state(self.config_manager.replacement_rules, copy_state=False)
         self.config_enabled_vars = {}
@@ -719,6 +721,7 @@ class ReplacerConfigWindow(QDialog):
                 self.roblox_monitor,
                 config_manager=self.config_manager,
                 proxy_master=self.proxy_master,
+                hotkey_controller=self._hotkey_controller,
             )
             self.tab_widget.addTab(modifications_tab, 'Modifications')
 

@@ -105,6 +105,21 @@ def test_env_lifecycle_never_attempts_a_third_ca_repair():
     assert not controller.owns_player
 
 
+def test_env_lifecycle_adopts_package_player_without_synthetic_relaunch():
+    controller, proxy, calls, _running, _identity = _controller(
+        [{"success": False, "path": "cacert.pem"}, {"success": True}]
+    )
+
+    assert controller.handle_adopted_player_launch(Path("/Roblox/RobloxPlayerBeta.exe"))
+    assert calls == []
+    assert proxy.monitors == 2
+    assert proxy.prepares == [
+        (Path("/Roblox/RobloxPlayerBeta.exe"), True),
+        (Path("/Roblox/RobloxPlayerBeta.exe"), False),
+    ]
+    assert controller.owns_player
+
+
 def test_cancelled_env_lifecycle_cannot_relaunch_player():
     controller, _proxy, calls, _running, _identity = _controller([{"success": True}])
     controller.cancel()

@@ -2230,7 +2230,7 @@ class CustomFFlagEditor(QWidget):
 
     _BOOLEAN_FLAG_PREFIXES = ('FFlag', 'DFFlag')
 
-    def __init__(self, config_manager=None, proxy_master=None, parent=None):
+    def __init__(self, config_manager=None, proxy_master=None, parent=None, hotkey_controller=None):
         super().__init__(parent)
         self._config = config_manager
         self._proxy_master = proxy_master
@@ -2238,11 +2238,19 @@ class CustomFFlagEditor(QWidget):
         self._linux_keybinds = sys.platform.startswith('linux')
         self._hotkeys_supported = self._windows_keybinds or self._linux_keybinds
         self._hotkey_service = None
+        self._hotkey_controller = None
+        self._owns_hotkey_controller = False
         if self._windows_keybinds:
-            from .windows_hotkeys import WindowsHotkeyService
+            from .windows_hotkeys import WindowsCustomFFlagHotkeyController
 
-            self._hotkey_service = WindowsHotkeyService(self)
-            self._hotkey_service.activated.connect(self._toggle_flag_from_hotkey)
+            self._hotkey_controller = hotkey_controller
+            if self._hotkey_controller is None:
+                self._hotkey_controller = WindowsCustomFFlagHotkeyController(
+                    config_manager, proxy_master, self
+                )
+                self._owns_hotkey_controller = True
+            self._hotkey_service = self._hotkey_controller.service
+            self._hotkey_controller.toggled.connect(self._on_hotkey_toggled)
         elif self._linux_keybinds:
             from .linux_hotkeys import LinuxHotkeyService
 
@@ -2514,7 +2522,9 @@ class CustomFFlagEditor(QWidget):
         self._sync_hotkeys()
 
     def _sync_hotkeys(self):
-        if self._hotkey_service is not None:
+        if self._hotkey_controller is not None:
+            self._hotkey_controller.sync()
+        elif self._hotkey_service is not None:
             feature_enabled = bool(
                 self._config and getattr(self._config, 'custom_fflags_enabled', False)
             )
@@ -2607,30 +2617,18 @@ class CustomFFlagEditor(QWidget):
         self._load_flags()
 
     def _toggle_flag_from_hotkey(self, name: str):
-        if (
-            self._config is None
-            or not getattr(self._config, 'custom_fflags_enabled', False)
-            or name not in self._flags_from_table()
-        ):
-            return
-        disabled = self._disabled_flag_names()
-        is_enabled = name in disabled
-        if is_enabled:
-            disabled.remove(name)
-        else:
-            disabled.add(name)
-        self._config.custom_fflag_disabled = sorted(disabled)
-        self._refresh_proxy_hosts()
-        log_buffer.log(
-            'CustomFFlags',
-            f'{"Windows" if self._windows_keybinds else "Linux"} keybind turned '
-            f'{name} {"on" if is_enabled else "off"}',
-        )
-        self._load_flags(sync_hotkeys=False)
+        if self._hotkey_controller is not None:
+            self._hotkey_controller.toggle_flag(name)
+
+    def _on_hotkey_toggled(self, _name: str):
+        if hasattr(self, '_table'):
+            self._load_flags(sync_hotkeys=False)
 
     def closeEvent(self, event):
-        if self._hotkey_service is not None:
+        if self._linux_keybinds and self._hotkey_service is not None:
             self._hotkey_service.stop()
+        elif self._owns_hotkey_controller and self._hotkey_controller is not None:
+            self._hotkey_controller.stop()
         super().closeEvent(event)
 
     def _on_cell_changed(self, row: int, column: int):
@@ -2917,6 +2915,7 @@ class FFlagSection(QWidget):
         roblox_monitor=None,
         config_manager=None,
         proxy_master=None,
+        hotkey_controller=None,
         parent=None,
     ):
         super().__init__(parent)
@@ -2924,6 +2923,7 @@ class FFlagSection(QWidget):
         self._roblox_monitor = roblox_monitor
         self._config_manager = config_manager
         self._proxy_master = proxy_master
+        self._hotkey_controller = hotkey_controller
 
         self._debounce_timer = QTimer()
         self._debounce_timer.setSingleShot(True)
@@ -3104,7 +3104,10 @@ class FFlagSection(QWidget):
         layout.addLayout(btn_row)
 
         self._custom_fflag_editor = CustomFFlagEditor(
-            self._config_manager, self._proxy_master, self
+            self._config_manager,
+            self._proxy_master,
+            self,
+            hotkey_controller=self._hotkey_controller,
         )
         layout.addWidget(self._custom_fflag_editor)
 
@@ -3328,6 +3331,7 @@ class ModificationsTab(QWidget):
         roblox_monitor=None,
         config_manager=None,
         proxy_master=None,
+        hotkey_controller=None,
         parent=None,
     ):
         super().__init__(parent)
@@ -3335,6 +3339,7 @@ class ModificationsTab(QWidget):
         self._roblox_monitor = roblox_monitor
         self._config_manager = config_manager
         self._proxy_master = proxy_master
+        self._hotkey_controller = hotkey_controller
         self._row_widgets: dict[str, ModRowWidget] = {}  # target_path -> widget
         self._custom_rows: list[ModRowWidget] = []
 
@@ -3384,6 +3389,7 @@ class ModificationsTab(QWidget):
             self._roblox_monitor,
             self._config_manager,
             self._proxy_master,
+            hotkey_controller=self._hotkey_controller,
         )
         self._fflag_widget.set_presets_enabled(self._manager.fast_flags_enabled)
         fflag_section.add_widget(self._fflag_widget)

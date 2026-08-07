@@ -461,7 +461,10 @@ def is_roblox_gdk_exe_path(exe_path: Path | str | None) -> bool:
     if not exe_path:
         return False
     normalized = str(exe_path).replace('/', '\\').casefold()
-    return '\\windowsapps\\' in normalized and 'robloxgdk' in normalized
+    return (
+        ('\\windowsapps\\' in normalized and 'robloxgdk' in normalized)
+        or normalized.endswith('\\xboxgames\\roblox\\content\\robloxplayerbeta.exe')
+    )
 
 
 def is_gdk_env_proxy_activation_in_progress() -> bool:
@@ -945,6 +948,8 @@ def _relaunch_roblox_exe_with_proxy_env(
     prepare_launch: Callable[[Path], bool] | None = None,
 ) -> bool:
     """Relaunch a browser/shortcut-started Roblox process with proxy environment variables."""
+    global _env_proxy_owned_process
+
     now = time.monotonic()
     for key, timestamp in list(_env_proxy_relaunches.items()):
         if now - timestamp > _ENV_PROXY_RELAUNCH_TTL_SECONDS:
@@ -982,6 +987,18 @@ def _relaunch_roblox_exe_with_proxy_env(
 
         if is_roblox_gdk_exe_path(exe_path):
             if not force:
+                if (
+                    is_roblox_gdk_env_proxy_armed()
+                    or is_gdk_env_proxy_activation_in_progress()
+                ):
+                    _env_proxy_owned_process = (pid, str(exe_path))
+                    _env_proxy_relaunches[relaunch_key] = time.monotonic()
+                    log_buffer.log(
+                        'Launcher',
+                        f'{label} Env Proxy GDK package activation already supplied '
+                        f'environment; adopting Player PID {pid} for CA monitoring',
+                    )
+                    return True
                 log_buffer.log(
                     'Launcher',
                     f'{label} Env Proxy normal GDK relaunch suppressed; '
@@ -1006,8 +1023,6 @@ def _relaunch_roblox_exe_with_proxy_env(
             )
             if activated_process is None:
                 return False
-            global _env_proxy_owned_process
-
             _env_proxy_owned_process = activated_process
             _env_proxy_relaunches[relaunch_key] = time.monotonic()
             return True
