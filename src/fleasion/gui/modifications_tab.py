@@ -2252,14 +2252,16 @@ class CustomFFlagEditor(QWidget):
             self._hotkey_service = self._hotkey_controller.service
             self._hotkey_controller.toggled.connect(self._on_hotkey_toggled)
         elif self._linux_keybinds:
-            from .linux_hotkeys import LinuxHotkeyService
+            from .linux_hotkeys import LinuxCustomFFlagHotkeyController
 
-            self._hotkey_service = LinuxHotkeyService(self)
-            self._hotkey_service.activated.connect(self._toggle_flag_from_hotkey)
-            # This editor is normally destroyed as a child of its containing
-            # tab rather than closed as a window, so closeEvent alone cannot
-            # guarantee that the background evdev reader has stopped.
-            self.destroyed.connect(lambda *_args: self._hotkey_service.stop())
+            self._hotkey_controller = hotkey_controller
+            if self._hotkey_controller is None:
+                self._hotkey_controller = LinuxCustomFFlagHotkeyController(
+                    config_manager, proxy_master, self
+                )
+                self._owns_hotkey_controller = True
+            self._hotkey_service = self._hotkey_controller.service
+            self._hotkey_controller.toggled.connect(self._on_hotkey_toggled)
         self._loading = False
         self._sort_column: int | None = 0
         self._sort_ascending = True
@@ -2625,9 +2627,7 @@ class CustomFFlagEditor(QWidget):
             self._load_flags(sync_hotkeys=False)
 
     def closeEvent(self, event):
-        if self._linux_keybinds and self._hotkey_service is not None:
-            self._hotkey_service.stop()
-        elif self._owns_hotkey_controller and self._hotkey_controller is not None:
+        if self._owns_hotkey_controller and self._hotkey_controller is not None:
             self._hotkey_controller.stop()
         super().closeEvent(event)
 

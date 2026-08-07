@@ -227,11 +227,12 @@ class SystemTray:
 
         self.custom_fflag_hotkeys = None
         if sys.platform == 'win32':
-            from .gui.windows_hotkeys import WindowsCustomFFlagHotkeyController
+            from .gui.windows_hotkeys import WindowsCustomFFlagHotkeyController as HotkeyController
+        elif sys.platform.startswith('linux'):
+            from .gui.linux_hotkeys import LinuxCustomFFlagHotkeyController as HotkeyController
 
-            self.custom_fflag_hotkeys = WindowsCustomFFlagHotkeyController(
-                config_manager, proxy_master, app
-            )
+        if sys.platform == 'win32' or sys.platform.startswith('linux'):
+            self.custom_fflag_hotkeys = HotkeyController(config_manager, proxy_master, app)
             self.custom_fflag_hotkeys.sync()
 
         # Keep references to open windows to prevent garbage collection

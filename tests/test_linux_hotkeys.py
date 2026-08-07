@@ -1,8 +1,10 @@
 import sys
+from types import SimpleNamespace
 
 import pytest
 
 from fleasion.gui.linux_hotkeys import (
+    LinuxCustomFFlagHotkeyController,
     MOD_ALT,
     MOD_CTRL,
     MOD_SHIFT,
@@ -71,3 +73,26 @@ def test_linux_modifier_codes_are_combined_generically():
     assert modifier_mask_for_evdev_code(100) == MOD_ALT
     assert modifier_mask_for_evdev_code(42) == MOD_SHIFT
     assert modifier_mask_for_evdev_code(30) == 0
+
+
+def test_linux_hotkey_controller_toggles_without_the_dashboard():
+    config = SimpleNamespace(
+        custom_fflags_enabled=True,
+        custom_fflags={'FFlagExample': 'True'},
+        custom_fflag_disabled=[],
+        custom_fflag_keybinds={},
+    )
+    proxy = SimpleNamespace(refresh_calls=0)
+    proxy.refresh_custom_fflag_interception = lambda: setattr(
+        proxy, 'refresh_calls', proxy.refresh_calls + 1
+    )
+    controller = LinuxCustomFFlagHotkeyController(config, proxy)
+    toggled = []
+    controller.toggled.connect(toggled.append)
+
+    controller.service.activated.emit('FFlagExample')
+
+    assert config.custom_fflag_disabled == ['FFlagExample']
+    assert proxy.refresh_calls == 1
+    assert toggled == ['FFlagExample']
+    controller.stop()

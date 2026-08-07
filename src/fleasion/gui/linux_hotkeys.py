@@ -378,3 +378,55 @@ class LinuxHotkeyService(QObject):
                 os.close(fd)
             except OSError:
                 pass
+
+
+class LinuxCustomFFlagHotkeyController(QObject):
+    """Keep custom FastFlag hotkeys alive independently of the dashboard."""
+
+    toggled = pyqtSignal(str)
+
+    def __init__(self, config_manager=None, proxy_master=None, parent=None):
+        super().__init__(parent)
+        self._config = config_manager
+        self._proxy_master = proxy_master
+        self._service = LinuxHotkeyService(self)
+        self._service.activated.connect(self.toggle_flag)
+
+    @property
+    def service(self) -> LinuxHotkeyService:
+        return self._service
+
+    def sync(self) -> None:
+        if self._config is None or not getattr(self._config, 'custom_fflags_enabled', False):
+            self._service.set_bindings({})
+            return
+        bindings = getattr(self._config, 'custom_fflag_keybinds', {}) or {}
+        self._service.set_bindings(bindings if isinstance(bindings, Mapping) else {})
+
+    def toggle_flag(self, name: str) -> None:
+        if (
+            self._config is None
+            or not getattr(self._config, 'custom_fflags_enabled', False)
+            or name not in (getattr(self._config, 'custom_fflags', {}) or {})
+        ):
+            return
+        disabled = set(getattr(self._config, 'custom_fflag_disabled', []) or [])
+        is_enabled = name in disabled
+        if is_enabled:
+            disabled.remove(name)
+        else:
+            disabled.add(name)
+        self._config.custom_fflag_disabled = sorted(disabled)
+        if self._proxy_master is not None:
+            try:
+                self._proxy_master.refresh_custom_fflag_interception()
+            except Exception as exc:
+                log_buffer.log('CustomFFlags', f'Could not refresh proxy interception: {exc}')
+        log_buffer.log(
+            'CustomFFlags',
+            f'Linux keybind turned {name} {"on" if is_enabled else "off"}',
+        )
+        self.toggled.emit(name)
+
+    def stop(self) -> None:
+        self._service.stop()
