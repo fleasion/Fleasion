@@ -5,15 +5,14 @@ import ctypes.wintypes
 import hashlib
 import os
 import re
-import socket
 import stat
 import subprocess
 import threading
 import time
 import winreg
 from pathlib import Path
-from typing import Any, Optional, cast
-from urllib.parse import parse_qs, unquote, urlparse, urlsplit
+from typing import Any, Callable, Optional, cast
+from urllib.parse import parse_qs, unquote, urlparse
 
 from .logging import log_buffer
 from .paths import LOCAL_APPDATA, ROBLOX_PROCESS, ROBLOX_STUDIO_PROCESS, STORAGE_DB, STORAGE_DB_GDK
@@ -21,33 +20,6 @@ from .paths import LOCAL_APPDATA, ROBLOX_PROCESS, ROBLOX_STUDIO_PROCESS, STORAGE
 _ENV_PROXY_RELAUNCH_TTL_SECONDS = 45.0
 _env_proxy_relaunches: dict[str, float] = {}
 _env_proxy_owned_process: tuple[int, str] | None = None
-_LOCAL_PROXY_HOSTS = {'127.0.0.1', 'localhost', '::1'}
-
-
-def _wait_for_local_proxy(proxy_url: str, timeout: float = 10.0) -> bool:
-    try:
-        parsed = urlsplit(proxy_url)
-        host, port = parsed.hostname, parsed.port
-    except ValueError:
-        return False
-    if host not in _LOCAL_PROXY_HOSTS:
-        return True
-    if port is None:
-        return False
-    deadline = time.monotonic() + max(0.0, timeout)
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining < 0:
-            return False
-        try:
-            with socket.create_connection(
-                (host, port), timeout=min(0.5, max(0.1, remaining))
-            ):
-                return True
-        except OSError:
-            if remaining <= 0:
-                return False
-            time.sleep(min(0.1, remaining))
 
 
 def run_cmd(args: list[str]) -> str:
@@ -262,57 +234,6 @@ def _guarded_force_close_process_for_env_relaunch(
     return bool(exited and restored)
 
 
-def _close_process_for_env_relaunch(
-    pid: int,
-    exe_name: str,
-    *,
-    label: str,
-    cancel_event: threading.Event | None = None,
-) -> bool:
-    """Close the exact Player without an unguarded forced exit."""
-    guarded_result = _guarded_force_close_process_for_env_relaunch(
-        pid,
-        exe_name,
-        cancel_event=cancel_event,
-    )
-    if guarded_result is not None:
-        if not guarded_result:
-            log_buffer.log(
-                'Launcher',
-                f'{label} Env Proxy relaunch failed during guarded Player exit',
-            )
-        return guarded_result
-
-    window_ready = wait_for_roblox_window(
-        timeout=60.0,
-        pid=pid,
-        cancel_event=cancel_event,
-    )
-    if not window_ready:
-        if cancel_event is not None and cancel_event.is_set():
-            return False
-        log_buffer.log(
-            'Launcher',
-            f'{label} Env Proxy relaunch skipped: Player window did not appear',
-        )
-        return False
-
-    if not _request_process_window_close(pid):
-        log_buffer.log(
-            'Launcher',
-            f'{label} Env Proxy relaunch skipped: normal Player close was unavailable',
-        )
-        return False
-    if _wait_for_pid_exit(pid, exe_name, 20.0, cancel_event):
-        return True
-
-    log_buffer.log(
-        'Launcher',
-        f'{label} Env Proxy relaunch skipped: Player did not close normally',
-    )
-    return False
-
-
 def wait_for_roblox_window(
     timeout: float = 60.0,
     *,
@@ -447,9 +368,9 @@ def _relaunch_roblox_exe_with_proxy_env(
     fallback_exe_path,
     force: bool = False,
     cancel_event: threading.Event | None = None,
+    prepare_launch: Callable[[Path], bool] | None = None,
 ) -> bool:
     """Relaunch a browser/shortcut-started Roblox process with proxy environment variables."""
-    global _env_proxy_owned_process
     now = time.monotonic()
     for key, timestamp in list(_env_proxy_relaunches.items()):
         if now - timestamp > _ENV_PROXY_RELAUNCH_TTL_SECONDS:
@@ -486,21 +407,32 @@ def _relaunch_roblox_exe_with_proxy_env(
             'Launcher',
             f'Relaunching {label} through Fleasion env proxy ({launch_kind}): {exe_path}',
         )
-        if not _wait_for_local_proxy(proxy_url):
-            log_buffer.log(
-                'Launcher',
-                f'{label} Env Proxy relaunch skipped: local proxy is not ready at {proxy_url}',
-            )
-            return False
         if cancel_event is not None and cancel_event.is_set():
             return False
-        if not _close_process_for_env_relaunch(
-            pid,
-            wait_pid_exe_name,
-            label=label,
-            cancel_event=cancel_event,
-        ):
-            return False
+        run_cmd(['taskkill', '/F', '/PID', str(pid)])
+        deadline = time.time() + 8.0
+        while time.time() < deadline and _find_pid(wait_pid_exe_name) == pid:
+            if cancel_event is not None and cancel_event.is_set():
+                return False
+            time.sleep(0.2)
+
+        # Fishstrap can finish replacing the active version after the first
+        # Player process appears. Repair the bundle only now, after that
+        # process is gone, so the replacement starts with the current CA.
+        if prepare_launch is not None:
+            try:
+                if not prepare_launch(exe_path):
+                    log_buffer.log(
+                        'Launcher',
+                        f'{label} Env Proxy relaunch skipped: launch CA preparation failed',
+                    )
+                    return False
+            except Exception as exc:
+                log_buffer.log(
+                    'Launcher',
+                    f'{label} Env Proxy launch CA preparation failed: {type(exc).__name__}: {exc}',
+                )
+                return False
 
         env = os.environ.copy()
         env.update(
@@ -520,7 +452,7 @@ def _relaunch_roblox_exe_with_proxy_env(
             if cancel_event is not None and cancel_event.is_set():
                 return False
             args = [str(exe_path), launch_arg] if launch_arg else [str(exe_path)]
-            replacement = subprocess.Popen(
+            subprocess.Popen(
                 args,
                 cwd=str(exe_path.parent),
                 env=env,
@@ -529,22 +461,8 @@ def _relaunch_roblox_exe_with_proxy_env(
                 stderr=subprocess.DEVNULL,
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
-            _env_proxy_owned_process = (int(replacement.pid), str(exe_path))
         except OSError as exc:
             log_buffer.log('Launcher', f'{label} Env Proxy relaunch failed: {exc}')
-            return False
-        launch_deadline = time.monotonic() + 15.0
-        while time.monotonic() < launch_deadline:
-            if cancel_event is not None and cancel_event.is_set():
-                return False
-            replacement_pid = _find_pid(wait_pid_exe_name)
-            if replacement_pid is not None and replacement_pid != pid:
-                break
-            time.sleep(0.2)
-        else:
-            log_buffer.log(
-                'Launcher', f'{label} Env Proxy relaunch failed: replacement process did not start'
-            )
             return False
         _env_proxy_relaunches[relaunch_key] = time.monotonic()
         return True
@@ -558,6 +476,7 @@ def relaunch_roblox_with_proxy_env(
     *,
     force: bool = False,
     cancel_event: threading.Event | None = None,
+    prepare_launch: Callable[[Path], bool] | None = None,
 ) -> bool:
     """Relaunch a browser-started Roblox Player process with proxy environment variables."""
     return _relaunch_roblox_exe_with_proxy_env(
@@ -569,6 +488,7 @@ def relaunch_roblox_with_proxy_env(
         fallback_exe_path=get_roblox_player_exe_path,
         force=force,
         cancel_event=cancel_event,
+        prepare_launch=prepare_launch,
     )
 
 

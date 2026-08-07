@@ -11,6 +11,7 @@ def _load_platform_windows(monkeypatch, registry_command: str | None = None):
     source = Path(__file__).resolve().parents[1] / "src" / "fleasion" / "utils" / "platform_windows.py"
 
     paths = types.ModuleType("fleasion.utils.paths")
+    paths.LOCAL_APPDATA = ""
     paths.ROBLOX_PROCESS = "RobloxPlayerBeta.exe"
     paths.ROBLOX_STUDIO_PROCESS = "RobloxStudioBeta.exe"
     paths.STORAGE_DB = ""

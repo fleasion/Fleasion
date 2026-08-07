@@ -1945,6 +1945,7 @@ class RobloxExitMonitor(QObject):
         adopted_running = bool(env_lifecycle and env_lifecycle.owns_player)
         self.was_running = adopted_running
         self._player_was_running = adopted_running
+        self._suppress_next_player_exit_cache_delete = False
         self._studio_was_running = False
         self._studio_notified = False
         self._studio_suppress_session = False
@@ -2019,6 +2020,31 @@ class RobloxExitMonitor(QObject):
                     if self._mod_manager is not None:
                         self._mod_manager.refresh_roblox_dirs(reapply_if_changed=True)
                     if (
+                        sys.platform == 'win32'
+                        and self.config_manager.proxy_mode == 'env'
+                        and self._proxy_master is not None
+                        and proxy_features_enabled
+                    ):
+                        from .utils.platform_windows import relaunch_roblox_with_proxy_env
+
+                        self._suppress_next_player_exit_cache_delete = True
+
+                        def _prepare_env_proxy_launch(path: Path) -> bool:
+                            result = self._proxy_master.ensure_env_proxy_roblox_ca(
+                                path, settle=True
+                            )
+                            return bool(result.get('success'))
+
+                        def _relaunch_env_proxy_player() -> None:
+                            started = relaunch_roblox_with_proxy_env(
+                                self._proxy_master.roblox_env_proxy_url(),
+                                prepare_launch=_prepare_env_proxy_launch,
+                            )
+                            if not started:
+                                self._suppress_next_player_exit_cache_delete = False
+
+                        run_in_thread(_relaunch_env_proxy_player)()
+                    elif (
                         self.config_manager.proxy_mode == 'env'
                         and self._proxy_master is not None
                         and proxy_features_enabled
@@ -2044,7 +2070,8 @@ class RobloxExitMonitor(QObject):
         # --- Roblox Player: auto cache deletion on exit ---
         if self.config_manager.auto_delete_cache_on_exit:
             if self.was_running and not is_running:
-                if intentional_player_exit:
+                if intentional_player_exit or self._suppress_next_player_exit_cache_delete:
+                    self._suppress_next_player_exit_cache_delete = False
                     log_buffer.log(
                         'Cache',
                         'Roblox exited during env-proxy relaunch; skipping auto cache deletion',

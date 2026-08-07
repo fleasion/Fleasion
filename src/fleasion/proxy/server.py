@@ -1904,12 +1904,22 @@ class FleasionProxy:
                 log_entry['ms'] = round((time.time() - start) * 1000)
             try:
                 await client_writer.drain()
+            except (ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError, OSError):
+                pass
             finally:
                 client_writer.close()
             return
 
         client_writer.write(b'HTTP/1.1 200 Connection Established\r\nProxy-Agent: Fleasion\r\n\r\n')
-        await client_writer.drain()
+        try:
+            await client_writer.drain()
+        except (ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError, OSError):
+            # Roblox can close a CONNECT socket while the response is in flight
+            # during a failed launch. This is a client disconnect, not a proxy
+            # crash, so do not emit an unhandled callback traceback.
+            upstream_writer.close()
+            client_writer.close()
+            return
 
         async def _pipe(
             reader: asyncio.StreamReader, writer: asyncio.StreamWriter, track: bool = False
