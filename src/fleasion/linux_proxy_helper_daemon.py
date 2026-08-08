@@ -9,7 +9,10 @@ import errno
 import hashlib
 import json
 import os
-import pwd
+try:
+    import pwd
+except ModuleNotFoundError:  # pragma: no cover - module is Linux-only at runtime
+    pwd = None
 import shlex
 import shutil
 import signal

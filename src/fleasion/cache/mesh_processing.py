@@ -344,74 +344,151 @@ def process_v2_to_v5(data: bytes, version_num: str) -> str:
         return None
 
 
+def _read_chunked_mesh(data: bytes) -> list[tuple[str, int, bytes]]:
+    """Read v6/v7 chunks, whose declared size includes their whole payload."""
+    chunks = []
+    offset = 13  # Skip "version X.XX\n".
+    while offset < len(data):
+        if len(data) - offset < 16:
+            raise ValueError('truncated chunk header')
+
+        chunk_type = data[offset : offset + 8].decode('ascii', errors='replace').rstrip('\0')
+        chunk_version, chunk_size = struct.unpack_from('<II', data, offset + 8)
+        offset += 16
+        chunk_end = offset + chunk_size
+        if chunk_end > len(data):
+            raise ValueError(f'{chunk_type} chunk exceeds file size')
+
+        chunks.append((chunk_type, chunk_version, data[offset:chunk_end]))
+        offset = chunk_end
+    return chunks
+
+
+def _read_raw_coremesh(data: bytes) -> tuple[list[Vertex], list[Face]]:
+    """Read the uncompressed COREMESH v1 payload used by FileMesh v6."""
+    if len(data) < 8:
+        raise ValueError('COREMESH v1 payload is too small')
+
+    num_verts = struct.unpack_from('<I', data, 0)[0]
+    vertex_end = 4 + num_verts * 40
+    if vertex_end + 4 > len(data):
+        raise ValueError('COREMESH v1 vertex data exceeds chunk size')
+
+    verts, offset = read_vertices(data, 4, num_verts, 40)
+    num_faces = struct.unpack_from('<I', data, offset)[0]
+    offset += 4
+    face_end = offset + num_faces * 12
+    if face_end != len(data):
+        raise ValueError('COREMESH v1 face data does not match chunk size')
+
+    faces = []
+    for _ in range(num_faces):
+        a, b, c = struct.unpack_from('<III', data, offset)
+        if a >= num_verts or b >= num_verts or c >= num_verts:
+            raise ValueError('COREMESH v1 face references an invalid vertex')
+        faces.append(Face(a + 1, b + 1, c + 1))
+        offset += 12
+    return verts, faces
+
+
+def _apply_chunked_lod(faces: list[Face], lod_data: bytes | None) -> list[Face]:
+    """Select the highest-quality face range from a v6/v7 LODS v1 payload."""
+    if not lod_data:
+        return faces
+    if len(lod_data) < 7:
+        raise ValueError('LODS payload is too small')
+
+    num_offsets = struct.unpack_from('<I', lod_data, 3)[0]
+    offsets_end = 7 + num_offsets * 4
+    if offsets_end > len(lod_data):
+        raise ValueError('LODS offsets exceed chunk size')
+    if num_offsets < 2:
+        return faces
+
+    first, second = struct.unpack_from('<II', lod_data, 7)
+    if first > second or second > len(faces):
+        raise ValueError('LODS face range is invalid')
+    if first == 0 and 0 < second < len(faces):
+        log_buffer.log(
+            'Mesh',
+            f'Applying high-quality LOD: {len(faces):,} → {second:,} faces',
+        )
+        return faces[:second]
+    return faces[first:second] if second > first else faces
+
+
+def _mesh_to_obj(verts: list[Vertex], faces: list[Face]) -> str:
+    """Serialize parsed FileMesh geometry using Fleasion's OBJ conventions."""
+    v_lines = [
+        f'v {fix_float(f"{v.px:.6f}")} {fix_float(f"{v.py:.6f}")} {fix_float(f"{v.pz:.6f}")} '
+        f'{fix_float(f"{v.r / 255.0:.6f}")} {fix_float(f"{v.g / 255.0:.6f}")} {fix_float(f"{v.b / 255.0:.6f}")}'
+        for v in verts
+    ]
+    n_lines = [
+        f'vn {fix_float(f"{v.nx:.6f}")} {fix_float(f"{v.ny:.6f}")} {fix_float(f"{v.nz:.6f}")}'
+        for v in verts
+    ]
+    t_lines = [f'vt {fix_float(f"{v.tu:.6f}")} {fix_float(f"{v.tv:.6f}")} 0.0' for v in verts]
+    f_lines = [f'f {f.a}/{f.a}/{f.a} {f.b}/{f.b}/{f.b} {f.c}/{f.c}/{f.c}' for f in faces]
+    return write_obj_data(v_lines, n_lines, t_lines, f_lines)
+
+
 def process_v6_v7(data: bytes) -> str:
-    """
-    Process version 6.00 and 7.00 mesh formats (Draco-compressed)
-    Args:
-        data: Complete mesh file data
-    Returns:
-        OBJ file content as string, or None on failure
-    """
-    if not DRACO_AVAILABLE:
-        log_buffer.log('Mesh', 'DracoPy not available - cannot process v6/v7 meshes')
-        return None
+    """Process chunked v6 geometry and Draco-compressed v7 geometry."""
     try:
-        version = data[:12].decode('utf-8', errors='replace').strip()
-        offset = 13  # Skip version header
-        coremesh_data = None
+        version = data[:12].decode('ascii', errors='replace').strip()
+        coremesh = None
         lod_data = None
-        # Parse chunk-based format
-        while offset < len(data):
-            # Read chunk header
-            if offset + 16 > len(data):
-                break
-            chunk_type = data[offset : offset + 8].decode('utf-8', errors='ignore').rstrip('\0')
-            offset += 8
-            chunk_ver = struct.unpack_from('<I', data, offset)[0]
-            offset += 4
-            chunk_size = struct.unpack_from('<I', data, offset)[0]
-            offset += 4
-            # Handle version 2 chunks (have additional data_size field)
-            if chunk_ver == 2:
-                data_size = struct.unpack_from('<I', data, offset)[0]
-                offset += 4
-            else:
-                data_size = chunk_size
-            # Extract chunk content
-            if offset + data_size > len(data):
-                log_buffer.log('Mesh', f'Warning: Chunk {chunk_type} exceeds file size')
-                break
-            chunk_content = data[offset : offset + data_size]
-            # Store relevant chunks
-            if chunk_type == 'COREMESH' and chunk_ver == 2:
-                coremesh_data = chunk_content
-            elif chunk_type == 'LODS':
-                lod_data = chunk_content
-            offset += data_size
-        if not coremesh_data:
-            log_buffer.log('Mesh', 'No COREMESH chunk found in v6/v7 mesh')
-            return None
-        # Decode Draco-compressed mesh
-        try:
-            mesh = DracoPy.decode(coremesh_data)
-            if mesh is None or not hasattr(mesh, 'points'):
-                log_buffer.log('Mesh', 'Draco decode failed: invalid mesh data')
+        for chunk_type, chunk_version, chunk_data in _read_chunked_mesh(data):
+            if chunk_type == 'COREMESH':
+                coremesh = (chunk_version, chunk_data)
+            elif chunk_type == 'LODS' and chunk_version == 1:
+                lod_data = chunk_data
+
+        if coremesh is None:
+            raise ValueError('no COREMESH chunk found')
+
+        coremesh_version, coremesh_data = coremesh
+        if coremesh_version == 1:
+            if version != 'version 6.00':
+                raise ValueError(f'COREMESH v1 is not valid for {version}')
+            verts, faces = _read_raw_coremesh(coremesh_data)
+            log_buffer.log(
+                'Mesh',
+                f'Raw v6 mesh decoded: {len(verts):,} vertices, {len(faces):,} faces',
+            )
+        elif coremesh_version == 2:
+            if version != 'version 7.00':
+                raise ValueError(f'COREMESH v2 is not valid for {version}')
+            if len(coremesh_data) < 4:
+                raise ValueError('COREMESH v2 payload is too small')
+
+            draco_size = struct.unpack_from('<I', coremesh_data, 0)[0]
+            if draco_size != len(coremesh_data) - 4:
+                raise ValueError('COREMESH v2 Draco size does not match chunk size')
+            if not DRACO_AVAILABLE:
+                log_buffer.log('Mesh', 'DracoPy not available - cannot process v7 meshes')
                 return None
-            # Extract vertex positions
+
+            try:
+                mesh = DracoPy.decode(coremesh_data[4:])
+            except Exception as e:
+                log_buffer.log('Mesh', f'DracoPy decoding error: {e}')
+                return None
+            if mesh is None or not hasattr(mesh, 'points'):
+                raise ValueError('Draco decode returned invalid mesh data')
+
             positions = np.array(mesh.points, dtype=np.float32)
             num_verts = len(positions)
             if num_verts == 0:
-                log_buffer.log('Mesh', 'Draco mesh has no vertices')
-                return None
-            # Create vertex array
+                raise ValueError('Draco mesh has no vertices')
             verts = [Vertex() for _ in range(num_verts)]
             for i in range(num_verts):
                 verts[i].px, verts[i].py, verts[i].pz = positions[i]
-            # Extract normals if available
+
             normals = None
             if hasattr(mesh, 'get_attribute_by_unique_id'):
                 try:
-                    # Roblox FileMesh uses Unique ID 1 for Normals (GENERIC type)
                     normal_attr = mesh.get_attribute_by_unique_id(1)
                     if normal_attr is not None and 'data' in normal_attr:
                         normals = np.array(normal_attr['data'], dtype=np.float32)
@@ -419,13 +496,10 @@ def process_v6_v7(data: bytes) -> str:
                             normals = normals.reshape(-1, 3)
                 except Exception:
                     pass
-
-            # Fallback to standard Draco normals
             if normals is None and hasattr(mesh, 'normals') and mesh.normals is not None:
                 normals = np.array(mesh.normals, dtype=np.float32)
                 if normals.ndim == 1:
                     normals = normals.reshape(-1, 3)
-
             if normals is not None:
                 if len(normals) == num_verts:
                     for i in range(num_verts):
@@ -436,11 +510,9 @@ def process_v6_v7(data: bytes) -> str:
                         f'Warning: Normal count mismatch ({len(normals)} vs {num_verts})',
                     )
 
-            # --- Extract UV coordinates ---
             tex_coords = None
             if hasattr(mesh, 'get_attribute_by_unique_id'):
                 try:
-                    # Roblox FileMesh uses Unique ID 2 for UVs (TEX_COORD type)
                     uv_attr = mesh.get_attribute_by_unique_id(2)
                     if uv_attr is not None and 'data' in uv_attr:
                         tex_coords = np.array(uv_attr['data'], dtype=np.float32)
@@ -448,119 +520,67 @@ def process_v6_v7(data: bytes) -> str:
                             tex_coords = tex_coords.reshape(-1, 2)
                 except Exception:
                     pass
-            # --- Extract Vertex Colors ---
+
             colors = None
             if hasattr(mesh, 'get_attribute_by_unique_id'):
                 try:
-                    # Roblox FileMesh uses Unique ID 4 for Vertex Colors (UINT8 type)
                     color_attr = mesh.get_attribute_by_unique_id(4)
                     if color_attr is not None and 'data' in color_attr:
                         colors = np.array(color_attr['data'], dtype=np.uint8)
                         if colors.ndim == 1:
-                            colors = colors.reshape(-1, 4)  # RGBA layout
+                            colors = colors.reshape(-1, 4)
                 except Exception:
                     pass
-
             if colors is not None:
                 if len(colors) == num_verts:
                     for i in range(num_verts):
-                        verts[i].r = colors[i][0]
-                        verts[i].g = colors[i][1]
-                        verts[i].b = colors[i][2]
-                        verts[i].a = colors[i][3]
+                        verts[i].r, verts[i].g, verts[i].b, verts[i].a = colors[i]
                 else:
                     log_buffer.log(
                         'Mesh',
                         f'Warning: Color count mismatch ({len(colors)} vs {num_verts})',
                     )
 
-            # Fallback to Draco's standard property (Note: singular 'tex_coord')
             if tex_coords is None and hasattr(mesh, 'tex_coord') and mesh.tex_coord is not None:
                 tex_coords = np.array(mesh.tex_coord, dtype=np.float32)
                 if tex_coords.ndim == 1:
                     tex_coords = tex_coords.reshape(-1, 2)
-
             if tex_coords is not None:
                 if len(tex_coords) == num_verts:
                     for i in range(num_verts):
-                        u, v = tex_coords[i]
-                        verts[i].tu = u
-                        verts[i].tv = 1.0 - v  # Flip V for Roblox
+                        verts[i].tu = tex_coords[i][0]
+                        verts[i].tv = 1.0 - tex_coords[i][1]
                 else:
                     log_buffer.log(
                         'Mesh',
                         f'Warning: UV count mismatch ({len(tex_coords)} vs {num_verts})',
                     )
-            # Extract faces
+
             faces = []
             if hasattr(mesh, 'faces') and mesh.faces is not None:
-                for tri in mesh.faces:
-                    a, b, c = map(int, tri)
-                    # Convert to 1-based indexing
+                for triangle in mesh.faces:
+                    a, b, c = map(int, triangle)
+                    if (
+                        a < 0
+                        or b < 0
+                        or c < 0
+                        or a >= num_verts
+                        or b >= num_verts
+                        or c >= num_verts
+                    ):
+                        raise ValueError('Draco face references an invalid vertex')
                     faces.append(Face(a + 1, b + 1, c + 1))
             log_buffer.log(
                 'Mesh',
                 f'Draco mesh decoded: {num_verts:,} vertices, {len(faces):,} faces',
             )
-            # Apply LOD trimming if LODS chunk is present
-            max_faces = len(faces)
-            if lod_data and len(lod_data) > 7:
-                try:
-                    lod_pos = 0
-                    # Skip LOD type (2 bytes)
-                    lod_pos += 2
-                    # Read number of high quality LODs
-                    num_high_quality = lod_data[lod_pos]
-                    lod_pos += 1
-                    # Read number of LOD offsets
-                    num_offsets = struct.unpack_from('<I', lod_data, lod_pos)[0]
-                    lod_pos += 4
-                    if num_offsets >= 2:
-                        # Read first two offsets
-                        offset1 = struct.unpack_from('<I', lod_data, lod_pos)[0]
-                        lod_pos += 4
-                        offset2 = struct.unpack_from('<I', lod_data, lod_pos)[0]
-                        # Calculate high-quality face count
-                        computed = offset2 - offset1
-                        if computed > 0 and computed < len(faces):
-                            max_faces = computed
-                            log_buffer.log(
-                                'Mesh',
-                                f'Applying high-quality LOD: {len(faces):,} → {max_faces:,} faces',
-                            )
-                except Exception as e:
-                    log_buffer.log('Mesh', f'LOD parsing failed: {e}')
-            # Trim faces to LOD limit
-            if max_faces < len(faces):
-                faces = faces[:max_faces]
-            # Generate OBJ lines (Appends r, g, b to support Blender vertex colors)
-            v_lines = [
-                f'v {fix_float(f"{v.px:.6f}")} {fix_float(f"{v.py:.6f}")} {fix_float(f"{v.pz:.6f}")} '
-                f'{fix_float(f"{v.r / 255.0:.6f}")} {fix_float(f"{v.g / 255.0:.6f}")} {fix_float(f"{v.b / 255.0:.6f}")}'
-                for v in verts
-            ]
-            n_lines = [
-                f'vn {fix_float(f"{v.nx:.6f}")} {fix_float(f"{v.ny:.6f}")} {
-                    fix_float(f"{v.nz:.6f}")
-                }'
-                for v in verts
-            ]
-            t_lines = [
-                f'vt {fix_float(f"{v.tu:.6f}")} {fix_float(f"{v.tv:.6f}")} 0.0' for v in verts
-            ]
-            f_lines = [f'f {f.a}/{f.a}/{f.a} {f.b}/{f.b}/{f.b} {f.c}/{f.c}/{f.c}' for f in faces]
-            return write_obj_data(v_lines, n_lines, t_lines, f_lines)
-        except Exception as e:
-            log_buffer.log('Mesh', f'DracoPy decoding error: {e}')
-            import traceback
+        else:
+            raise ValueError(f'unsupported COREMESH chunk version {coremesh_version}')
 
-            traceback.print_exc()
-            return None
+        faces = _apply_chunked_lod(faces, lod_data)
+        return _mesh_to_obj(verts, faces)
     except Exception as e:
         log_buffer.log('Mesh', f'Error processing v6/v7 mesh: {e}')
-        import traceback
-
-        traceback.print_exc()
         return None
 
 

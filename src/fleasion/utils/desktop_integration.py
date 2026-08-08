@@ -15,6 +15,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from ..version import macos_bundle_version
 from .metadata import APP_NAME, APP_VERSION
 from .paths import USER_HOME, get_icon_path
 
@@ -122,6 +123,24 @@ def _macos_launcher_script(
     return '\n'.join(lines) + '\n'
 
 
+def _register_macos_application(app_path: Path) -> None:
+    """Register a generated app bundle with Launch Services."""
+    lsregister = Path(
+        '/System/Library/Frameworks/CoreServices.framework/Frameworks/'
+        'LaunchServices.framework/Support/lsregister'
+    )
+    if not lsregister.is_file():
+        return
+    try:
+        subprocess.run(
+            [str(lsregister), '-f', str(app_path)],
+            capture_output=True,
+            timeout=10,
+        )
+    except OSError as exc:
+        _log(f'Failed to register macOS launcher app with Launch Services: {exc}')
+
+
 def _remove_macos_app() -> bool:
     if not MACOS_APPLICATION_PATH.exists():
         return True
@@ -138,6 +157,9 @@ def _remove_macos_app() -> bool:
 
 
 def _create_macos_app() -> bool:
+    # Keep Roblox's own LaunchServices association. Fleasion observes the
+    # resulting Player launch, matching the Windows URI flow; claiming
+    # roblox:// here would launch a second Fleasion instance from the browser.
     command, working_dir, env = _launch_command()
     contents = MACOS_APPLICATION_PATH / 'Contents'
     macos_dir = contents / 'MacOS'
@@ -169,6 +191,7 @@ def _create_macos_app() -> bool:
             icon_name = icon_path.stem
             shutil.copy2(icon_path, resources / icon_path.name)
 
+        bundle_version = macos_bundle_version(APP_VERSION)
         info = {
             'CFBundleDevelopmentRegion': 'en',
             'CFBundleDisplayName': APP_NAME,
@@ -177,8 +200,8 @@ def _create_macos_app() -> bool:
             'CFBundleInfoDictionaryVersion': '6.0',
             'CFBundleName': APP_NAME,
             'CFBundlePackageType': 'APPL',
-            'CFBundleShortVersionString': APP_VERSION,
-            'CFBundleVersion': APP_VERSION,
+            'CFBundleShortVersionString': bundle_version,
+            'CFBundleVersion': bundle_version,
             'LSApplicationCategoryType': 'public.app-category.utilities',
             'NSHumanReadableCopyright': _DESCRIPTION,
         }
@@ -186,6 +209,7 @@ def _create_macos_app() -> bool:
             info['CFBundleIconFile'] = icon_name
         with (contents / 'Info.plist').open('wb') as f:
             plistlib.dump(info, f)
+        _register_macos_application(MACOS_APPLICATION_PATH)
         marker.write_text('Managed by Fleasion desktop integration.\n', encoding='utf-8')
         _log(f'macOS launcher app updated: {MACOS_APPLICATION_PATH}')
         return True
@@ -196,10 +220,17 @@ def _create_macos_app() -> bool:
 
 def _remove_linux_desktop_entries() -> bool:
     try:
-        from .platform_linux import LINUX_DESKTOP_ENTRY_PATH, LINUX_LAUNCHER_PATH
+        from .platform_linux import (
+            LINUX_APPLICATIONS_DIR,
+            LINUX_DESKTOP_ENTRY_PATH,
+            LINUX_LAUNCHER_PATH,
+            _restore_sober_uri_handler,
+        )
 
         for path in (LINUX_DESKTOP_ENTRY_PATH, LINUX_LAUNCHER_PATH):
             path.unlink(missing_ok=True)
+        if LINUX_DESKTOP_ENTRY_PATH.parent == LINUX_APPLICATIONS_DIR:
+            _restore_sober_uri_handler()
         return True
     except Exception as exc:
         _log(f'Failed to remove Linux desktop integration: {exc}')

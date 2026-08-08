@@ -209,6 +209,40 @@ class SearchWorkerThread(QThread):
             self.results_ready.emit(filtered)
 
 
+class TypeProbeWorker(QThread):
+    """Resolve corrected asset types from small payload headers off the UI thread."""
+
+    results_ready = pyqtSignal(list)
+
+    def __init__(self, cache_manager: CacheManager, requests: list[tuple]):
+        super().__init__()
+        self.cache_manager = cache_manager
+        self.requests = requests
+        self._stop_requested = False
+
+    def stop(self):
+        self._stop_requested = True
+
+    def run(self):
+        results = []
+        for asset_id, asset_type, cache_hash in self.requests:
+            if self._stop_requested:
+                return
+
+            try:
+                detected_type = self.cache_manager.detect_asset_type_from_header(
+                    asset_id, asset_type
+                )
+            except Exception as e:
+                log_buffer.log('Scraper', f'Failed to detect type for {asset_id}: {e}')
+                detected_type = None
+
+            results.append((asset_id, asset_type, cache_hash, detected_type))
+
+        if not self._stop_requested:
+            self.results_ready.emit(results)
+
+
 class DeleteWorkerThread(QThread):
     """Worker thread for deleting multiple assets without blocking UI."""
 
@@ -1417,6 +1451,14 @@ class CacheViewerTab(QWidget):
         self._asset_loader: AssetLoaderThread | None = None
         self._is_deleting: bool = False
 
+        # Type correction is lazy: only rows near the viewport are probed.
+        # Include the cache hash in each key so a replaced payload is checked
+        # again even when its asset ID and type stay the same.
+        self._type_probe_pending: dict[tuple[str, int, str], tuple[str, int, str]] = {}
+        self._type_probe_inflight: set[tuple[str, int, str]] = set()
+        self._type_probe_checked: set[tuple[str, int, str]] = set()
+        self._type_probe_worker: TypeProbeWorker | None = None
+
         # Blacklisted asset IDs (excluded from table)
         if config_manager is not None:
             self._blacklisted_ids: set[str] = set(config_manager.scraper_blacklist)
@@ -1466,6 +1508,10 @@ class CacheViewerTab(QWidget):
         self._filter_debounce.setSingleShot(True)
         self._filter_debounce.timeout.connect(self._refresh_assets)
 
+        self._type_probe_debounce = QTimer()
+        self._type_probe_debounce.setSingleShot(True)
+        self._type_probe_debounce.timeout.connect(self._queue_visible_type_probes)
+
         # Load persisted resolved names from index
         self._load_persisted_names()
 
@@ -1477,6 +1523,17 @@ class CacheViewerTab(QWidget):
 
         # Start name resolver daemon thread
         threading.Thread(target=self._name_resolver_loop, daemon=True).start()
+
+    def closeEvent(self, event):
+        """Stop the lightweight type-probe worker before the tab is destroyed."""
+        if hasattr(self, '_type_probe_debounce'):
+            self._type_probe_debounce.stop()
+        worker = getattr(self, '_type_probe_worker', None)
+        if worker is not None:
+            worker.stop()
+            worker.wait()
+            self._type_probe_worker = None
+        super().closeEvent(event)
 
     # ------------------------------------------------------------------
     # Column visibility / width helpers
@@ -1671,6 +1728,7 @@ class CacheViewerTab(QWidget):
         # Qt performs the actual sort), renumber the left-most counter
         # column so it always shows 1..N in the current visible order.
         QTimer.singleShot(0, self._renumber_counters)
+        QTimer.singleShot(0, self._schedule_visible_type_probes)
 
     def _on_column_resized(self, logical_index: int, _old_size: int, new_size: int):
         """Save user-dragged column widths to config."""
@@ -2079,6 +2137,7 @@ class CacheViewerTab(QWidget):
         # managed by _update_table_alt_palette() and kept in sync via changeEvent.
         self._update_table_alt_palette()
         self.table.currentItemChanged.connect(self._on_selection_changed)
+        self.table.verticalScrollBar().valueChanged.connect(self._schedule_visible_type_probes)
         # Prevent column 0 (counter) from ever becoming the current item.
         # If Qt lands on column 0 (e.g. during keyboard nav), silently redirect
         # focus to column 1 of the same row so there is only one selection anchor.
@@ -2419,10 +2478,12 @@ class CacheViewerTab(QWidget):
                 self.table.setItem(row, 3, id_item)
 
                 # Column 4: Type
-                # Use detected type if available (e.g., 'Json' for detected JSON files)
-                type_name = self.cache_manager.get_type_name_for_asset(
-                    asset_id,
-                    asset['type'],
+                # Use persisted metadata only while building the table. Payload
+                # correction is lazy and runs for rows near the viewport.
+                type_name = (
+                    asset.get('detected_type')
+                    or asset.get('type_name')
+                    or self.cache_manager.get_asset_type_name(asset['type'])
                 )
                 fm = self.table.fontMetrics()
                 max_w = max(100, int(self.width() * 0.15))
@@ -2535,6 +2596,127 @@ class CacheViewerTab(QWidget):
 
         # OPTIMIZATION: Update row cache after table populate so background thread can use cached lookups
         self._update_asset_row_cache()
+        self._schedule_visible_type_probes()
+
+    def _schedule_visible_type_probes(self, *_args):
+        """Debounce type correction requests caused by scrolling or sorting."""
+        if hasattr(self, '_type_probe_debounce'):
+            self._type_probe_debounce.start(60)
+
+    def _queue_visible_type_probes(self):
+        """Queue type checks for the visible rows and a small scroll-ahead buffer."""
+        row_count = self.table.rowCount()
+        if row_count == 0:
+            return
+
+        viewport_height = max(1, self.table.viewport().height())
+        top_row = self.table.rowAt(0)
+        bottom_row = self.table.rowAt(viewport_height - 1)
+        if top_row < 0:
+            top_row = 0
+        if bottom_row < 0:
+            bottom_row = row_count - 1
+
+        visible_rows = max(1, bottom_row - top_row + 1)
+        prefetch_rows = max(50, visible_rows * 2)
+        start_row = max(0, top_row - prefetch_rows)
+        end_row = min(row_count, bottom_row + prefetch_rows + 1)
+
+        for row in range(start_row, end_row):
+            name_item = self.table.item(row, 1)
+            if name_item is None:
+                continue
+
+            asset = name_item.data(Qt.ItemDataRole.UserRole)
+            if not isinstance(asset, dict) or asset.get('type') not in (1, 13):
+                continue
+            if asset.get('detected_type'):
+                continue
+
+            asset_id = str(asset.get('id', ''))
+            if not asset_id:
+                continue
+            cache_hash = str(asset.get('hash', ''))
+            key = (asset_id, int(asset['type']), cache_hash)
+            if key in self._type_probe_checked or key in self._type_probe_inflight:
+                continue
+            self._type_probe_pending[key] = key
+
+        self._start_next_type_probe()
+
+    def _start_next_type_probe(self):
+        """Start one bounded header-probe batch, leaving later rows queued."""
+        if self._type_probe_worker is not None or not self._type_probe_pending:
+            return
+
+        keys = list(self._type_probe_pending)[:128]
+        for key in keys:
+            self._type_probe_pending.pop(key, None)
+            self._type_probe_inflight.add(key)
+
+        worker = TypeProbeWorker(self.cache_manager, keys)
+        worker.results_ready.connect(self._on_type_probe_results)
+        worker.finished.connect(self._on_type_probe_finished)
+        self._type_probe_worker = worker
+        worker.start()
+
+    def _on_type_probe_results(self, results: list):
+        """Apply header-probe results and update only rows still in the table."""
+        self.table.setUpdatesEnabled(False)
+        try:
+            for asset_id, asset_type, cache_hash, detected_type in results:
+                key = (asset_id, asset_type, cache_hash)
+                self._type_probe_inflight.discard(key)
+                self._type_probe_checked.add(key)
+
+                if not detected_type:
+                    continue
+
+                current_info = self.cache_manager.get_asset_info(asset_id, asset_type) or {}
+                if str(current_info.get('hash', '')) != cache_hash:
+                    continue
+
+                # Persist the correction once, after the cheap header probe,
+                # so future sessions do not need to inspect this payload.
+                self.cache_manager.set_detected_type(asset_id, asset_type, detected_type)
+
+                row = self._asset_row_cache.get(asset_id)
+                if row is None or row >= self.table.rowCount():
+                    continue
+
+                name_item = self.table.item(row, 1)
+                asset = name_item.data(Qt.ItemDataRole.UserRole) if name_item else None
+                if (
+                    not isinstance(asset, dict)
+                    or str(asset.get('hash', '')) != cache_hash
+                    or asset.get('type') != asset_type
+                ):
+                    continue
+
+                asset['detected_type'] = detected_type
+                asset['type_name'] = detected_type
+                type_item = self.table.item(row, 4)
+                if type_item is None:
+                    continue
+
+                fm = self.table.fontMetrics()
+                max_w = max(100, int(self.width() * 0.15))
+                elided_type = fm.elidedText(
+                    detected_type, Qt.TextElideMode.ElideRight, max_w
+                )
+                type_item.setText(elided_type)
+                type_item.setToolTip(detected_type if elided_type != detected_type else '')
+        finally:
+            self.table.setUpdatesEnabled(True)
+            self.table.viewport().update()
+
+    def _on_type_probe_finished(self):
+        """Release the completed worker and continue queued viewport probes."""
+        worker = self._type_probe_worker
+        self._type_probe_worker = None
+        if worker is not None:
+            worker.deleteLater()
+        self._start_next_type_probe()
 
     def _format_size(self, size_bytes: int) -> str:
         """Format size in bytes to human-readable string."""
@@ -3523,6 +3705,31 @@ class CacheViewerTab(QWidget):
             try:
                 import shutil
 
+                # Stop any header probes before replacing the database.  A
+                # worker that finishes against the old index can otherwise
+                # repopulate the viewer while the reset is in progress.
+                if hasattr(self, '_type_probe_debounce'):
+                    self._type_probe_debounce.stop()
+                type_probe_worker = self._type_probe_worker
+                if type_probe_worker is not None:
+                    type_probe_worker.stop()
+                    type_probe_worker.wait()
+                    self._type_probe_worker = None
+                self._type_probe_pending.clear()
+                self._type_probe_inflight.clear()
+                self._type_probe_checked.clear()
+
+                # Delete DB is also a process-state reset: evict payloads
+                # retained by CacheManager and invalidate/cancel scraper work
+                # that was queued for the old database.
+                self.cache_manager.clear_memory_cache()
+                if self.cache_scraper:
+                    reset_scraper = getattr(self.cache_scraper, 'reset_for_cache_clear', None)
+                    if callable(reset_scraper):
+                        reset_scraper()
+                    else:
+                        self.cache_scraper.clear_tracking()
+
                 cache_dir = self.cache_manager.cache_dir
                 if cache_dir.exists():
                     shutil.rmtree(cache_dir)
@@ -3532,9 +3739,6 @@ class CacheViewerTab(QWidget):
                 self.cache_manager._save_index()
                 self._last_asset_count = 0
                 self._asset_info.clear()
-                # Clear scraper tracking so assets can be re-scraped
-                if self.cache_scraper:
-                    self.cache_scraper.clear_tracking()
                 self._refresh_assets()
                 log_buffer.log('Scraper', 'Database deleted and reset')
                 QMessageBox.information(self, 'Success', 'Database deleted successfully')
@@ -3774,6 +3978,7 @@ class CacheViewerTab(QWidget):
         # Add format options
         export_actions = {}
         format_labels = {
+            'converted_rigged_glb': 'Rigged Mesh (.glb)',
             'converted_obj': 'Converted (.obj)',
             'converted_rbxmx': 'Converted - KeyframeSequence (.rbxmx)',
             'converted_rbxmx_curve': 'Converted - CurveAnimation (.rbxmx)',
@@ -3798,6 +4003,7 @@ class CacheViewerTab(QWidget):
             'converted_document_rbxm',
             'converted_document_rbxmx',
             'slot_ktx2',
+            'converted_rigged_glb',
             'converted_obj',
             'converted_rbxmx_model',
             'converted_rbxmx',
@@ -3903,7 +4109,7 @@ class CacheViewerTab(QWidget):
             self._copy_creator_info('id')
         elif action == open_creator_action:
             self._open_creator_in_browser()
-        elif action == copy_converted_action:
+        elif copy_converted_action is not None and action == copy_converted_action:
             self._copy_converted()
         elif action == copy_dump_action:
             self._export_as_game_dump()

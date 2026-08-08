@@ -423,6 +423,52 @@ class CacheManager:
             log_buffer.log('Scraper', f'Failed to retrieve asset {asset_id}: {e}')
             return None
 
+    def clear_memory_cache(self) -> int:
+        """Evict all in-memory asset payloads and return the number removed."""
+        with self._asset_cache_lock:
+            count = len(self._asset_cache)
+            self._asset_cache.clear()
+        return count
+
+    def peek_asset_bytes(
+        self, asset_id: str, asset_type: int, max_bytes: int = 16
+    ) -> Optional[bytes]:
+        """Read only the beginning of an asset without populating the LRU cache.
+
+        Type correction only needs magic bytes for the formats currently
+        detected by the cache viewer. Keeping this separate from ``get_asset``
+        prevents a metadata operation from reading and retaining a full image,
+        mesh, or audio payload in memory.
+        """
+        if max_bytes <= 0:
+            return b''
+
+        try:
+            asset_path = self.get_asset_path(asset_id, asset_type)
+            if not asset_path.exists():
+                return None
+
+            asset_info = self.index['assets'].get(f'{asset_type}_{asset_id}', {})
+            if asset_info.get('compressed', False):
+                with gzip.open(asset_path, 'rb') as f:
+                    return f.read(max_bytes)
+
+            with asset_path.open('rb') as f:
+                return f.read(max_bytes)
+        except Exception as e:
+            log_buffer.log('Scraper', f'Failed to peek at asset {asset_id}: {e}')
+            return None
+
+    def detect_asset_type_from_header(self, asset_id: str, asset_type: int) -> str | None:
+        """Detect a corrected display type using only cached payload headers."""
+        if asset_type not in (1, 13):
+            return None
+
+        data = self.peek_asset_bytes(asset_id, asset_type, max_bytes=16)
+        if not data:
+            return None
+        return self._detect_payload_type(data, asset_type)
+
     def get_asset_info(self, asset_id: str, asset_type: int) -> Optional[dict]:
         """Get metadata about a cached asset."""
         asset_key = f'{asset_type}_{asset_id}'
@@ -463,12 +509,10 @@ class CacheManager:
         # Heal those persisted entries lazily so old cache indexes display
         # correctly after a restart without requiring a re-download.
         if probe_payload and asset_type in (1, 13):
-            data = self.get_asset(asset_id, asset_type)
-            if data:
-                detected_type = self._detect_payload_type(data, asset_type)
-                if detected_type:
-                    self.set_detected_type(asset_id, asset_type, detected_type)
-                    return detected_type
+            detected_type = self.detect_asset_type_from_header(asset_id, asset_type)
+            if detected_type:
+                self.set_detected_type(asset_id, asset_type, detected_type)
+                return detected_type
 
         return self.get_asset_type_name(asset_type)
 
@@ -553,6 +597,11 @@ class CacheManager:
         data = self.get_asset(asset_id, asset_type)
         if not data:
             return formats
+
+        from .mesh_rig import has_embedded_rig
+
+        if has_embedded_rig(data) and 'converted_rigged_glb' not in formats:
+            formats.insert(0, 'converted_rigged_glb')
 
         document_formats = get_roblox_document_export_formats(data, asset_type=asset_type)
         for fmt in reversed(document_formats):
@@ -668,6 +717,14 @@ class CacheManager:
                     return output_path
 
                 # Converted export - convert to usable format
+                if export_format == 'converted_rigged_glb':
+                    from .mesh_rig import export_glb
+
+                    glb_data = export_glb(data)
+                    output_path = export_type_dir / f'{filename}.glb'
+                    output_path.write_bytes(glb_data)
+                    return output_path
+
                 if export_format == 'converted_obj' and asset_type == 4:  # Mesh - convert to OBJ
                     from . import mesh_processing
 

@@ -480,7 +480,9 @@ def keyframe_to_curve_anim(xml_bytes: bytes) -> bytes:
         return xml_bytes
 
     # Read top-level properties
-    ksp = ks.find('Properties') or ET.Element('Properties')
+    ksp = ks.find('Properties')
+    if ksp is None:
+        ksp = ET.Element('Properties')
 
     def _ptext(tag, name, default):
         e = ksp.find(f"{tag}[@name='{name}']")
@@ -501,8 +503,6 @@ def keyframe_to_curve_anim(xml_bytes: bytes) -> bytes:
     )
     if not kf_elems:
         return xml_bytes
-
-    time_scale = 1.0 / 6.0
 
     # Build bone hierarchy from first keyframe
     parents_of: dict = {}  # bone -> parent_name or None
@@ -539,7 +539,10 @@ def keyframe_to_curve_anim(xml_bytes: bytes) -> bytes:
             if elem.get('class') != 'Pose':
                 return
             n = _get_name(elem)
-            if n and n in bone_cfs:
+            props = elem.find('Properties')
+            weight_elem = props.find("float[@name='Weight']") if props is not None else None
+            weight = float(weight_elem.text or 0) if weight_elem is not None else 1.0
+            if n and n in bone_cfs and weight > 0:
                 bone_cfs[n].append((t, _get_cf(elem)))
             for c in elem:
                 _walk_poses(c)
@@ -561,18 +564,18 @@ def keyframe_to_curve_anim(xml_bytes: bytes) -> bytes:
         return (
             f'<Item class="FloatCurve" referent="{_ref()}">'
             f'<Properties>'
-            f'<string name="AttributesSerialize"/>'
+            f'<BinaryString name="AttributesSerialize"/>'
             f'<bool name="DefinesCapabilities">false</bool>'
             f'<string name="Name">{safe}</string>'
             f'<int64 name="SourceAssetId">-1</int64>'
-            f'<string name="Tags"/>'
+            f'<BinaryString name="Tags"/>'
             f'<BinaryString name="ValuesAndTimes">{b64}</BinaryString>'
             f'</Properties></Item>'
         )
 
     def _bone_xml(bone):
         data = bone_cfs.get(bone) or [(t, list(IDENTITY)) for t in all_times]
-        times = [d[0] * time_scale for d in data]
+        times = [d[0] for d in data]
         decomp = [_decompose_cf(d[1]) for d in data]
         px = [d[0] for d in decomp]
         py = [d[1] for d in decomp]
@@ -584,11 +587,11 @@ def keyframe_to_curve_anim(xml_bytes: bytes) -> bytes:
         pos_item = (
             f'<Item class="Vector3Curve" referent="{_ref()}">'
             f'<Properties>'
-            f'<string name="AttributesSerialize"/>'
+            f'<BinaryString name="AttributesSerialize"/>'
             f'<bool name="DefinesCapabilities">false</bool>'
             f'<string name="Name">Position</string>'
             f'<int64 name="SourceAssetId">-1</int64>'
-            f'<string name="Tags"/>'
+            f'<BinaryString name="Tags"/>'
             f'</Properties>'
             + _fc_xml('X', times, px)
             + _fc_xml('Y', times, py)
@@ -598,12 +601,12 @@ def keyframe_to_curve_anim(xml_bytes: bytes) -> bytes:
         rot_item = (
             f'<Item class="EulerRotationCurve" referent="{_ref()}">'
             f'<Properties>'
-            f'<string name="AttributesSerialize"/>'
+            f'<BinaryString name="AttributesSerialize"/>'
             f'<bool name="DefinesCapabilities">false</bool>'
             f'<string name="Name">Rotation</string>'
             f'<token name="RotationOrder">0</token>'
             f'<int64 name="SourceAssetId">-1</int64>'
-            f'<string name="Tags"/>'
+            f'<BinaryString name="Tags"/>'
             f'</Properties>'
             + _fc_xml('X', times, rx)
             + _fc_xml('Y', times, ry)
@@ -615,11 +618,11 @@ def keyframe_to_curve_anim(xml_bytes: bytes) -> bytes:
         return (
             f'<Item class="Folder" referent="{_ref()}">'
             f'<Properties>'
-            f'<string name="AttributesSerialize"/>'
+            f'<BinaryString name="AttributesSerialize"/>'
             f'<bool name="DefinesCapabilities">false</bool>'
             f'<string name="Name">{safe_name}</string>'
             f'<int64 name="SourceAssetId">-1</int64>'
-            f'<string name="Tags"/>'
+            f'<BinaryString name="Tags"/>'
             f'</Properties>'
             f'{pos_item}{rot_item}{children}'
             f'</Item>'
@@ -635,13 +638,13 @@ def keyframe_to_curve_anim(xml_bytes: bytes) -> bytes:
         '<External>null</External><External>nil</External>'
         f'<Item class="CurveAnimation" referent="{_ref()}">'
         f'<Properties>'
-        f'<string name="AttributesSerialize"/>'
+        f'<BinaryString name="AttributesSerialize"/>'
         f'<bool name="DefinesCapabilities">false</bool>'
         f'<bool name="Loop">{loop_val}</bool>'
         f'<string name="Name">{name_val}</string>'
         f'<token name="Priority">{prio_val}</token>'
         f'<int64 name="SourceAssetId">-1</int64>'
-        f'<string name="Tags"/>'
+        f'<BinaryString name="Tags"/>'
         f'</Properties>'
         f'{bones_xml}'
         f'</Item>'

@@ -633,6 +633,35 @@ def _connect_tls_for_self_test(host: str | None, ca_cert_path: Path, port: int) 
             return cert if isinstance(cert, dict) else {}
 
 
+def _connect_explicit_proxy_tls_for_self_test(
+    host: str | None, ca_cert_path: Path, port: int
+) -> dict:
+    if host is None:
+        return _connect_tls_for_self_test(host, ca_cert_path, port)
+    ctx = ssl.create_default_context(cafile=str(ca_cert_path))
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    with socket.create_connection(('127.0.0.1', port), timeout=5.0) as raw_sock:
+        request = (
+            f'CONNECT {host}:443 HTTP/1.1\r\n'
+            f'Host: {host}:443\r\n'
+            'Proxy-Connection: keep-alive\r\n'
+            '\r\n'
+        ).encode('ascii')
+        raw_sock.sendall(request)
+        response = b''
+        while b'\r\n\r\n' not in response and len(response) < 4096:
+            chunk = raw_sock.recv(4096)
+            if not chunk:
+                break
+            response += chunk
+        first_line = response.split(b'\r\n', 1)[0]
+        if b' 200 ' not in first_line:
+            raise OSError(f'CONNECT self-test failed: {first_line!r}')
+        with ctx.wrap_socket(raw_sock, server_hostname=host) as tls_sock:
+            cert = tls_sock.getpeercert()
+            return cert if isinstance(cert, dict) else {}
+
+
 def _cert_dict_san_hosts(cert: dict) -> set[str]:
     names: set[str] = set()
     for kind, value in cert.get('subjectAltName', ()):
@@ -642,45 +671,124 @@ def _cert_dict_san_hosts(cert: dict) -> set[str]:
 
 
 def _run_tls_self_test_sync(
-    hosts: set[str], ca_cert_path: Path, port: int
+    hosts: set[str], ca_cert_path: Path, port: int, explicit_proxy: bool = False
 ) -> tuple[bool, list[str]]:
     failures: list[str] = []
+    connector = (
+        _connect_explicit_proxy_tls_for_self_test
+        if explicit_proxy
+        else _connect_tls_for_self_test
+    )
     for host in sorted(hosts):
         try:
-            _connect_tls_for_self_test(host, ca_cert_path, port)
+            connector(host, ca_cert_path, port)
         except Exception as exc:
             failures.append(f'{host}: {type(exc).__name__}: {exc}')
 
-    try:
-        default_cert = _connect_tls_for_self_test(None, ca_cert_path, port)
-        san_hosts = _cert_dict_san_hosts(default_cert)
-        missing = sorted(host for host in hosts if host.lower() not in san_hosts)
-        if missing:
-            failures.append(f'default cert missing SAN hosts: {", ".join(missing)}')
-    except Exception as exc:
-        failures.append(f'default cert without SNI: {type(exc).__name__}: {exc}')
+    if not explicit_proxy:
+        try:
+            default_cert = _connect_tls_for_self_test(None, ca_cert_path, port)
+            san_hosts = _cert_dict_san_hosts(default_cert)
+            missing = sorted(host for host in hosts if host.lower() not in san_hosts)
+            if missing:
+                failures.append(f'default cert missing SAN hosts: {", ".join(missing)}')
+        except Exception as exc:
+            failures.append(f'default cert without SNI: {type(exc).__name__}: {exc}')
 
     return not failures, failures
 
 
-async def _run_tls_self_test(hosts: set[str], ca_cert_path: Path, port: int) -> bool:
+async def _tls_self_test_result(
+    hosts: set[str], ca_cert_path: Path, port: int, explicit_proxy: bool = False
+) -> tuple[bool, list[str]]:
     loop = asyncio.get_running_loop()
-    ok, failures = await loop.run_in_executor(
+    return await loop.run_in_executor(
         None,
         _run_tls_self_test_sync,
         set(hosts),
         ca_cert_path,
         port,
+        explicit_proxy,
     )
-    if ok:
-        log_buffer.log(
-            'TLS',
-            f'Startup TLS self-test passed for {format_count(hosts, "intercept host")}',
-        )
-        return True
+
+
+def _log_tls_self_test_passed(hosts: set[str], explicit_proxy: bool = False) -> None:
+    mode = 'explicit proxy TLS' if explicit_proxy else 'TLS'
+    log_buffer.log(
+        'TLS',
+        f'Startup {mode} self-test passed for {format_count(hosts, "intercept host")}',
+    )
+
+
+def _log_tls_self_test_failures(failures: list[str]) -> None:
     for failure in failures:
         log_buffer.log('TLS', f'Startup TLS self-test failed: {failure}')
+
+
+async def _run_tls_self_test(
+    hosts: set[str], ca_cert_path: Path, port: int, explicit_proxy: bool = False
+) -> bool:
+    ok, failures = await _tls_self_test_result(hosts, ca_cert_path, port, explicit_proxy)
+    if ok:
+        _log_tls_self_test_passed(hosts, explicit_proxy)
+        return True
+    _log_tls_self_test_failures(failures)
     return False
+
+
+async def _run_privileged_relay_tls_self_test(
+    hosts: set[str],
+    ca_cert_path: Path,
+    port: int,
+    *,
+    attempts: int = 3,
+    retry_delay: float = 0.5,
+) -> tuple[bool, list[str]]:
+    """Test the relay, retrying a small representative probe before giving up."""
+    attempts = max(1, int(attempts))
+    ok, failures = await _tls_self_test_result(hosts, ca_cert_path, port)
+    if ok:
+        _log_tls_self_test_passed(hosts)
+        return True, []
+
+    representative_hosts = {sorted(hosts)[0]} if hosts else set()
+    full_failures = list(failures)
+    last_failures = list(failures)
+    for attempt in range(2, attempts + 1):
+        log_buffer.log(
+            'ProxyHelper',
+            f'Privileged relay TLS probe attempt {attempt - 1}/{attempts} failed; '
+            f'retrying in {retry_delay:.1f}s',
+        )
+        await asyncio.sleep(retry_delay)
+        recovered, retry_failures = await _tls_self_test_result(
+            representative_hosts,
+            ca_cert_path,
+            port,
+        )
+        last_failures = list(retry_failures)
+        if not recovered:
+            continue
+
+        ok, failures = await _tls_self_test_result(hosts, ca_cert_path, port)
+        if ok:
+            log_buffer.log(
+                'ProxyHelper',
+                f'Privileged relay TLS probe recovered on attempt {attempt}/{attempts}',
+            )
+            _log_tls_self_test_passed(hosts)
+            return True, []
+        full_failures = list(failures)
+        last_failures = list(failures)
+
+    final_failures = full_failures
+    if last_failures != full_failures:
+        final_failures = [
+            *full_failures,
+            *(f'relay retry check: {failure}' for failure in last_failures),
+        ]
+    _log_tls_self_test_failures(final_failures)
+    return False, final_failures
 
 
 def _directory_is_writable(path: Path) -> bool:
@@ -1715,8 +1823,8 @@ def _remove_hosts_entries(hosts: Set[str], error_details: Optional[dict] = None)
 # ---------------------------------------------------------------------------
 
 
-def _find_roblox_dirs() -> list:
-    """Locate every RobloxPlayerBeta.exe and RobloxStudioBeta.exe installation.
+def _find_roblox_dirs(*, include_studio: bool = True) -> list:
+    """Locate Roblox resource directories, optionally including Studio.
 
     Methods used (combined):
       1. Main Registry   — HKCU\\Software (two levels) for REG_SZ "PlayerPath"/"StudioPath"
@@ -1763,6 +1871,8 @@ def _find_roblox_dirs() -> list:
     seen: set = set()
 
     def _add(path: Path) -> bool:
+        if not include_studio and is_roblox_studio_resource_dir(path):
+            return False
         key = str(path)
         if key not in seen:
             found.append(path)
@@ -2321,6 +2431,62 @@ def _upsert_fleasion_ca_in_cacert(ca_file: Path, ca_pem: str) -> tuple[bool, int
             _restore_cacert_read_only(ca_file)
 
 
+def _patch_bootstrapper_ca_backups(ca_pem: str) -> tuple[bool, list[dict]]:
+    """Normalize bootstrapper snapshots that may restore managed Roblox files."""
+    if not IS_MACOS:
+        return True, []
+
+    from ..utils.platform_macos import find_bootstrapper_restore_resource_dirs
+
+    details: list[dict] = []
+    ok = True
+    for resource_dir in find_bootstrapper_restore_resource_dirs():
+        ca_file = resource_dir / 'ssl' / 'cacert.pem'
+        bootstrapper = (
+            'AppleBlox' if 'AppleBlox' in resource_dir.parts else 'Froststrap'
+        )
+        try:
+            changed, _fleasion_count, _current_count = _upsert_fleasion_ca_in_cacert(
+                ca_file, ca_pem
+            )
+            state = _log_cacert_state(
+                ca_file,
+                ca_pem,
+                f'{bootstrapper} backup cacert.pem after normalization',
+            )
+            healthy = bool(state.get('healthy'))
+            ok = ok and healthy
+            details.append(
+                {
+                    'resource_dir': str(resource_dir),
+                    'ca_file': str(ca_file),
+                    'changed': changed,
+                    'healthy': healthy,
+                }
+            )
+            log_buffer.log(
+                'Certificate',
+                f'Normalized {bootstrapper} restore snapshot CA'
+                if changed
+                else f'{bootstrapper} restore snapshot CA already current',
+            )
+        except (PermissionError, OSError, UnicodeDecodeError) as exc:
+            ok = False
+            details.append(
+                {
+                    'resource_dir': str(resource_dir),
+                    'ca_file': str(ca_file),
+                    'error': str(exc),
+                    'healthy': False,
+                }
+            )
+            log_buffer.log(
+                'Certificate',
+                f'Failed to normalize {bootstrapper} restore snapshot CA: {exc}',
+            )
+    return ok, details
+
+
 def _cacert_has_only_current_fleasion_ca(cacert_text: str, current_ca_pem: str) -> bool:
     """Return True when cacert contains exactly one Fleasion CA and it is current.
 
@@ -2461,10 +2627,12 @@ def _patch_roblox_ca_with_macos_helper(ca_pem: str, roblox_dir: Path) -> tuple[b
     return bool(response.get('ok')), changed, response
 
 
-def _install_ca_into_roblox(ca_pem: str) -> tuple[bool, dict]:
+def _install_ca_into_roblox(
+    ca_pem: str, *, include_studio: bool = True
+) -> tuple[bool, dict]:
     """Ensure each Roblox ssl/cacert.pem has exactly one current Fleasion CA cert."""
     t0 = time.perf_counter()
-    dirs = _find_roblox_dirs()
+    dirs = _find_roblox_dirs(include_studio=include_studio)
     elapsed_ms = int((time.perf_counter() - t0) * 1000)
     if not dirs:
         log_buffer.log(
@@ -2477,11 +2645,9 @@ def _install_ca_into_roblox(ca_pem: str) -> tuple[bool, dict]:
         f'Found {format_count(dirs, "Roblox install")} to patch (scanned in {elapsed_ms} ms)',
     )
 
-    if IS_MACOS and not _is_admin():
-        return _install_ca_into_roblox_with_helper(ca_pem, dirs)
-
     ok = True
     details = {'patched': [], 'failed': [], 'verified': []}
+    helper_fallback_dirs: list[Path] = []
     for d in dirs:
         ssl_dir = d / 'ssl'
         ca_file = ssl_dir / 'cacert.pem'
@@ -2495,7 +2661,8 @@ def _install_ca_into_roblox(ca_pem: str) -> tuple[bool, dict]:
                 ca_file, ca_pem, f'cacert.pem after startup patch for {d.name}'
             )
             details['verified'].append(post_state)
-            ok = ok and bool(post_state.get('healthy'))
+            post_healthy = bool(post_state.get('healthy'))
+            ok = ok and post_healthy
             already_current = (
                 fleasion_count == 1 and current_count == 1 and bool(post_state.get('healthy'))
             )
@@ -2518,13 +2685,47 @@ def _install_ca_into_roblox(ca_pem: str) -> tuple[bool, dict]:
             details['patched'].append(
                 {'resource_dir': str(d), 'ca_file': str(ca_file), 'changed': changed}
             )
+            if not post_healthy:
+                details['failed'].append(
+                    {
+                        'resource_dir': str(d),
+                        'ca_file': str(ca_file),
+                        'error': 'cacert.pem was not launch-healthy after direct patch',
+                    }
+                )
+                if IS_MACOS and not _is_admin():
+                    helper_fallback_dirs.append(d)
         except (PermissionError, OSError, UnicodeDecodeError) as exc:
             log_buffer.log('Certificate', f'Failed to write CA for {d.name}: {exc}')
             details['failed'].append(
                 {'resource_dir': str(d), 'ca_file': str(ca_file), 'error': str(exc)}
             )
             ok = False
-    return ok, details
+            if IS_MACOS and not _is_admin():
+                helper_fallback_dirs.append(d)
+
+    if helper_fallback_dirs:
+        direct_failures = list(details['failed'])
+        helper_ok, helper_details = _install_ca_into_roblox_with_helper(
+            ca_pem, helper_fallback_dirs
+        )
+        details['direct_failures'] = direct_failures
+        details['helper'] = helper_details
+        details['helper_required'] = not helper_ok
+        fallback_keys = {str(path.resolve()).lower() for path in helper_fallback_dirs}
+        details['failed'] = [
+            item
+            for item in details['failed']
+            if str(Path(item['resource_dir']).resolve()).lower() not in fallback_keys
+        ]
+        details['patched'].extend(helper_details.get('patched') or [])
+        details['patched'].extend(helper_details.get('skipped') or [])
+        details['failed'].extend(helper_details.get('failed') or [])
+        details['verified'].extend(helper_details.get('verified') or [])
+        ok = helper_ok and not details['failed']
+    backup_ok, backup_details = _patch_bootstrapper_ca_backups(ca_pem)
+    details['bootstrapper_backups'] = backup_details
+    return ok and backup_ok, details
 
 
 def _ca_thumbprint_sha1(ca_pem: str) -> str:
@@ -2795,6 +2996,72 @@ def _install_ca_into_macos_system_keychain(ca_cert_path: Path, ca_pem: str) -> N
     )
 
 
+def _install_ca_into_macos_login_keychain(
+    ca_cert_path: Path, ca_pem: str
+) -> tuple[bool, dict]:
+    """Trust Fleasion's CA for HTTP clients launched by the signed-in user."""
+    thumbprint = _ca_thumbprint_sha1(ca_pem).upper()
+    keychain = str(Path.home() / 'Library' / 'Keychains' / 'login.keychain-db')
+    stored_thumbprints = _macos_fleasion_keychain_thumbprints(keychain)
+    stale_thumbprints = [
+        stored for stored in stored_thumbprints if stored != thumbprint
+    ]
+    removed = sum(
+        1
+        for stored in stale_thumbprints
+        if _macos_delete_keychain_certificate(keychain, stored)
+    )
+    if thumbprint in stored_thumbprints:
+        return True, {
+            'trusted': True,
+            'changed': False,
+            'removed_stale': removed,
+            'keychain': keychain,
+        }
+
+    try:
+        result = subprocess.run(
+            [
+                '/usr/bin/security',
+                'add-trusted-cert',
+                '-r',
+                'trustRoot',
+                '-k',
+                keychain,
+                str(ca_cert_path),
+            ],
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            timeout=30,
+        )
+    except Exception as exc:
+        return False, {
+            'trusted': False,
+            'changed': False,
+            'removed_stale': removed,
+            'keychain': keychain,
+            'error': f'{type(exc).__name__}: {exc}',
+        }
+
+    if result.returncode == 0:
+        return True, {
+            'trusted': True,
+            'changed': True,
+            'removed_stale': removed,
+            'keychain': keychain,
+        }
+    error = (result.stderr or result.stdout or '').strip()
+    return False, {
+        'trusted': False,
+        'changed': False,
+        'removed_stale': removed,
+        'keychain': keychain,
+        'error': error or f'security exited with {result.returncode}',
+    }
+
+
 def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
     """Check if the currently running Roblox instance has our CA in its cacert.pem.
 
@@ -2814,8 +3081,9 @@ def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
             f'Skipping macOS Roblox Studio CA patch for {Path(exe_path).name}',
         )
         return False
-
     ca_pem = get_ca_pem(ca_cert_path)
+    if IS_MACOS:
+        _patch_bootstrapper_ca_backups(ca_pem)
     if IS_MACOS:
         from ..utils.platform_macos import _resource_root_from_executable
 
@@ -2837,8 +3105,30 @@ def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
             f'cacert.pem before running-instance patch for {roblox_dir.name}',
         )
         pre_state_readable = bool(pre_state.get('exists')) and not bool(pre_state.get('error'))
-        if IS_MACOS and not _is_admin():
-            request_ok, changed, helper_details = _patch_roblox_ca_with_macos_helper(
+        direct_error: Exception | None = None
+        try:
+            _prepare_cacert_target_for_write(ca_file)
+            changed, fleasion_count, current_count = _upsert_fleasion_ca_in_cacert(ca_file, ca_pem)
+        except (PermissionError, OSError, UnicodeDecodeError) as exc:
+            direct_error = exc
+            changed = False
+            fleasion_count = int(pre_state.get('fleasion_certs') or 0)
+            current_count = int(pre_state.get('current_fleasion_certs') or 0)
+
+        post_state = _log_cacert_state(
+            ca_file,
+            ca_pem,
+            f'cacert.pem after running-instance patch for {roblox_dir.name}',
+        )
+        if IS_MACOS and not _is_admin() and (
+            direct_error is not None or not bool(post_state.get('healthy'))
+        ):
+            if direct_error is not None:
+                log_buffer.log(
+                    'Certificate',
+                    f'Direct macOS cacert.pem patch needs helper fallback for {roblox_dir.name}: {direct_error}',
+                )
+            request_ok, helper_changed, helper_details = _patch_roblox_ca_with_macos_helper(
                 ca_pem, roblox_dir
             )
             if not request_ok:
@@ -2847,21 +3137,17 @@ def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
                     f'Failed to inject CA into running Roblox instance through macOS helper: {helper_details}',
                 )
                 return False
-            fleasion_count = int(pre_state.get('fleasion_certs') or 0) if pre_state_readable else 0
-            current_count = (
-                int(pre_state.get('current_fleasion_certs') or 0) if pre_state_readable else 0
+            changed = changed or helper_changed
+            post_state = _log_cacert_state(
+                ca_file,
+                ca_pem,
+                f'cacert.pem after running-instance helper patch for {roblox_dir.name}',
             )
-        else:
-            _prepare_cacert_target_for_write(ca_file)
-            changed, fleasion_count, current_count = _upsert_fleasion_ca_in_cacert(ca_file, ca_pem)
-        post_state = _log_cacert_state(
-            ca_file,
-            ca_pem,
-            f'cacert.pem after running-instance patch for {roblox_dir.name}',
-        )
-        if IS_MACOS and not _is_admin() and not pre_state_readable:
-            fleasion_count = int(post_state.get('fleasion_certs') or 0)
-            current_count = int(post_state.get('current_fleasion_certs') or 0)
+            if not pre_state_readable:
+                fleasion_count = int(post_state.get('fleasion_certs') or 0)
+                current_count = int(post_state.get('current_fleasion_certs') or 0)
+        elif direct_error is not None:
+            raise direct_error
     except (PermissionError, OSError) as exc:
         log_buffer.log('Certificate', f'Failed to inject CA into running Roblox instance: {exc}')
         return False
@@ -2942,9 +3228,16 @@ class ProxyMaster:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
         self._running = False
+        self._active_proxy_port: Optional[int] = None
         self._lock = threading.Lock()
+        self._env_proxy_ready = threading.Event()
         self._hosts_installed: bool = False
+        self._active_env_proxy_mode: bool = False
         self._active_intercept_hosts: set[str] = set(BASE_INTERCEPT_HOSTS)
+        self._env_proxy_intercept_match: str = ''
+        # In-memory only, on purpose - never read from or written to
+        # config_manager, so it always resets to False on every app launch.
+        self._env_proxy_intercept_all: bool = False
         self._roblox_player_running: bool = False
         self._watchdog_stop: Optional[threading.Event] = None
         self._watchdog_thread: Optional[threading.Thread] = None
@@ -2971,6 +3264,215 @@ class ProxyMaster:
         if self._proxy_debug_enabled() and self._proxy_debug_mode() == 'e':
             return UpstreamMode.SYSTEM_PROXY.value
         return self.config_manager.upstream_transport_mode
+
+    def _use_env_proxy_mode(self) -> bool:
+        return str(getattr(self.config_manager, 'proxy_mode', 'hosts') or 'hosts') == 'env'
+
+    def roblox_env_proxy_url(self) -> str:
+        port = self._active_proxy_port or MACOS_PROXY_BACKEND_PORT
+        return f'http://127.0.0.1:{port}'
+
+    def wait_for_env_proxy_ready(self, timeout: float = 15.0) -> bool:
+        """Wait for bind and TLS self-test, not merely proxy thread startup."""
+        return self._env_proxy_ready.wait(max(0.0, timeout))
+
+    def _roblox_ca_target(self, exe_path: Path) -> tuple[Path, str] | None:
+        ca_cert_path = _current_proxy_ca_dir() / 'ca.crt'
+        if not ca_cert_path.exists():
+            return None
+        exe_path = Path(exe_path)
+        if _is_macos_studio_bundle_path(exe_path):
+            return None
+        ca_pem = get_ca_pem(ca_cert_path)
+        if IS_MACOS:
+            from ..utils.platform_macos import _resource_root_from_executable
+
+            roblox_dir = _resource_root_from_executable(exe_path) or exe_path.parent
+        elif IS_LINUX:
+            from ..utils.platform_linux import find_roblox_resource_dirs
+
+            dirs = find_roblox_resource_dirs(include_studio=False)
+            roblox_dir = dirs[0] if dirs else exe_path.parent
+        else:
+            roblox_dir = exe_path.parent
+        return roblox_dir / 'ssl' / 'cacert.pem', ca_pem
+
+    def inspect_env_proxy_roblox_ca(self, exe_path: Path, reason: str) -> dict:
+        target = self._roblox_ca_target(exe_path)
+        if target is None:
+            return {'healthy': False, 'error': 'Roblox CA target is unavailable'}
+        ca_file, ca_pem = target
+        return _log_cacert_state(ca_file, ca_pem, reason)
+
+    def ensure_env_proxy_roblox_ca(
+        self, exe_path: Path, *, settle: bool = False
+    ) -> dict:
+        """Settle, directly repair, and fully verify Player's CA bundle."""
+        if settle:
+            time.sleep(_CACERT_LAUNCH_SETTLE_SECONDS)
+        before = self.inspect_env_proxy_roblox_ca(
+            exe_path, f'Env Proxy cacert.pem before launch preparation for {Path(exe_path).name}'
+        )
+        if not before.get('healthy'):
+            check_and_patch_running_roblox_ca(Path(exe_path))
+        after = self.inspect_env_proxy_roblox_ca(
+            exe_path, f'Env Proxy cacert.pem after launch preparation for {Path(exe_path).name}'
+        )
+        return {
+            'success': bool(after.get('healthy')),
+            'healthy': bool(after.get('healthy')),
+            'changed': before.get('sha256') != after.get('sha256'),
+            'path': after.get('path'),
+            'error': after.get('error'),
+            'state': after,
+        }
+
+    def monitor_env_proxy_roblox_ca(
+        self,
+        exe_path: Path,
+        cancel_event: threading.Event,
+        *,
+        duration: float = _CACERT_LAUNCH_POLL_SECONDS,
+    ) -> dict:
+        """Require CA health for the complete post-launch observation window."""
+        deadline = time.monotonic() + max(0.0, duration)
+        unhealthy_samples = 0
+        last_state: dict = {}
+        while time.monotonic() < deadline:
+            if cancel_event.is_set():
+                return {'success': False, 'cancelled': True, 'state': last_state}
+            last_state = self.inspect_env_proxy_roblox_ca(
+                exe_path, f'Env Proxy post-launch cacert.pem health for {Path(exe_path).name}'
+            )
+            if last_state.get('healthy'):
+                unhealthy_samples = 0
+            else:
+                unhealthy_samples += 1
+                if unhealthy_samples >= 2:
+                    return {
+                        'success': False,
+                        'healthy': False,
+                        'path': last_state.get('path'),
+                        'error': last_state.get('error') or 'cacert.pem became unhealthy',
+                        'state': last_state,
+                    }
+            cancel_event.wait(_CACERT_LAUNCH_POLL_INTERVAL_SECONDS)
+        return {
+            'success': bool(last_state.get('healthy')),
+            'healthy': bool(last_state.get('healthy')),
+            'path': last_state.get('path'),
+            'error': last_state.get('error'),
+            'state': last_state,
+        }
+
+    def get_env_proxy_traffic(self) -> list[dict]:
+        """Every request/tunnel the explicit proxy has logged, intercepted or not."""
+        if self._proxy is None:
+            return []
+        get_log = getattr(self._proxy, 'get_request_log', None)
+        return get_log() if callable(get_log) else []
+
+    def clear_env_proxy_traffic(self) -> None:
+        if self._proxy is None:
+            return
+        clear_log = getattr(self._proxy, 'clear_request_log', None)
+        if callable(clear_log):
+            clear_log()
+
+    def format_env_proxy_request_preview(self, entry: dict) -> str:
+        if self._proxy is None:
+            return ''
+        fmt = getattr(self._proxy, 'format_request_preview', None)
+        return fmt(entry) if callable(fmt) else ''
+
+    def format_env_proxy_response_preview(self, entry: dict) -> str:
+        if self._proxy is None:
+            return ''
+        fmt = getattr(self._proxy, 'format_response_preview', None)
+        return fmt(entry) if callable(fmt) else ''
+
+    def set_env_proxy_intercept_match(self, text: str) -> None:
+        """Interception is armed purely by this being non-empty text - nothing else gates it."""
+        self._env_proxy_intercept_match = text
+        if self._proxy is not None:
+            setter = getattr(self._proxy, 'set_intercept_match', None)
+            if callable(setter):
+                setter(text)
+
+    def set_env_proxy_intercept_all(self, enabled: bool) -> None:
+        """Toggle whether hosts outside Fleasion's own feature set also get
+        decrypted/logged. Deliberately not persisted anywhere - this always
+        starts back at False on every launch, regardless of what it was
+        last set to.
+        """
+        self._env_proxy_intercept_all = bool(enabled)
+        if self._proxy is not None:
+            setter = getattr(self._proxy, 'set_intercept_all_hosts', None)
+            if callable(setter):
+                setter(enabled)
+
+    def get_auto_replace_rules(self) -> list:
+        """Auto Replace rules, persisted to config (unlike the env-proxy
+        toggles above) so they survive a restart without the dialog needing
+        to have been opened.
+        """
+        return list(self.config_manager.settings.get('auto_replace_rules', []))
+
+    def set_auto_replace_rules(self, rules: list) -> None:
+        self.config_manager.settings['auto_replace_rules'] = list(rules)
+        self.config_manager.save()
+        if self._proxy is not None:
+            setter = getattr(self._proxy, 'set_auto_replace_rules', None)
+            if callable(setter):
+                setter(rules)
+
+    def get_env_proxy_pending_intercepts(self) -> list:
+        if self._proxy is None:
+            return []
+        getter = getattr(self._proxy, 'get_pending_intercepts', None)
+        return getter() if callable(getter) else []
+
+    def get_env_proxy_pending_data(self, entry_id: int, stage: str):
+        if self._proxy is None:
+            return None
+        getter = getattr(self._proxy, 'get_pending_data', None)
+        return getter(entry_id, stage) if callable(getter) else None
+
+    def submit_env_proxy_pending(
+        self, entry_id: int, stage: str, action: str, edited_text: Optional[str] = None
+    ) -> bool:
+        if self._proxy is None:
+            return False
+        submitter = getattr(self._proxy, 'submit_pending', None)
+        return submitter(entry_id, stage, action, edited_text) if callable(submitter) else False
+
+    def replay_env_proxy_request(self, entry_id: int, edited_text: Optional[str] = None) -> bool:
+        """Resend a captured/edited request fresh, overwriting that SAME
+        entry's request/response fields in place - not a new row.
+        Fire-and-forget from the GUI's side; the row updates once the
+        round-trip completes.
+        """
+        if self._proxy is None or self._loop is None or not self._loop.is_running():
+            return False
+        entries = {e['id']: e for e in self._proxy.get_request_log()}
+        entry = entries.get(entry_id)
+        if entry is None:
+            return False
+        host = entry.get('host')
+        if not host:
+            return False
+        if edited_text is not None:
+            from .server import rebuild_edited_message
+
+            raw = rebuild_edited_message(edited_text)
+        else:
+            raw = entry.get('request_raw')
+        if not raw:
+            return False
+        asyncio.run_coroutine_threadsafe(
+            self._proxy.replay_request(entry_id, bytes(raw), host), self._loop
+        )
+        return True
 
     def _effective_wire_preserving_passthrough(self) -> bool:
         if self._proxy_debug_enabled() and self._proxy_debug_mode() == 'd':
@@ -3034,9 +3536,8 @@ class ProxyMaster:
     def _log_intercept_configuration(self, reason: str, hosts: set[str]) -> None:
         """Log the feature state that selected the currently routed host set.
 
-        A TLS self-test intentionally covers every supported hostname, so it
-        cannot establish that a feature actually routed that hostname through
-        the proxy.  Keep that distinction explicit in support logs.
+        The startup TLS self-test covers this same active route set, so the
+        log reports the routes that were actually tested and selected.
         """
         custom_modifier = getattr(self, 'custom_fflag_modifier', None)
         custom_fflags_enabled = (
@@ -3077,6 +3578,22 @@ class ProxyMaster:
         _pid, started_at = process
         return self._sober_boottime() - started_at >= SOBER_CUSTOM_FFLAG_ROUTE_ARM_DELAY_SECONDS
 
+    def _set_linux_sober_clientsettings_passthrough(self, enabled: bool) -> None:
+        """Keep Sober's pinned ClientSettings bootstrap outside TLS interception."""
+        if self._proxy is None:
+            return
+        excluded_hosts = set(
+            getattr(self, '_env_proxy_intercept_excluded_hosts', set())
+        )
+        if enabled:
+            excluded_hosts.update(CUSTOM_FFLAGS_INTERCEPT_HOSTS)
+        else:
+            excluded_hosts.difference_update(CUSTOM_FFLAGS_INTERCEPT_HOSTS)
+        self._env_proxy_intercept_excluded_hosts = excluded_hosts
+        setter = getattr(self._proxy, 'set_intercept_excluded_hosts', None)
+        if callable(setter):
+            setter(excluded_hosts)
+
     def _start_linux_sober_custom_fflag_timer(self) -> None:
         """Arm Linux ClientSettings interception after Sober's bootstrap window."""
         if not IS_LINUX or (
@@ -3092,13 +3609,18 @@ class ProxyMaster:
 
             previous_process: tuple[int, float] | None = None
             previous_ready: bool | None = None
+            previous_custom_fflags_enabled: bool | None = None
             while not stop_event.is_set():
                 process = sober_main_process()
+                custom_fflags_enabled = bool(
+                    getattr(self.config_manager, 'custom_fflags_enabled', False)
+                )
                 ready = False
                 if process is not None:
                     _pid, started_at = process
                     ready = (
-                        self._sober_boottime() - started_at
+                        custom_fflags_enabled
+                        and self._sober_boottime() - started_at
                         >= SOBER_CUSTOM_FFLAG_ROUTE_ARM_DELAY_SECONDS
                     )
 
@@ -3121,15 +3643,20 @@ class ProxyMaster:
                         )
                     previous_process = process
 
-                if ready != previous_ready:
+                if (
+                    ready != previous_ready
+                    or custom_fflags_enabled != previous_custom_fflags_enabled
+                ):
                     if ready:
                         log_buffer.log(
                             'CustomFFlags',
                             'Linux ClientSettings interception armed; custom FastFlags will '
                             'arrive on Sober\'s 120-second dynamic refresh',
                         )
+                    self._set_linux_sober_clientsettings_passthrough(not ready)
                     self.refresh_username_spoofer_interception()
                     previous_ready = ready
+                    previous_custom_fflags_enabled = custom_fflags_enabled
                 stop_event.wait(_SOBER_CUSTOM_FFLAG_POLL_SECONDS)
 
         self._sober_fflag_timer_thread = threading.Thread(
@@ -3174,8 +3701,27 @@ class ProxyMaster:
         """Refresh hosts entries for optional proxy-backed features."""
         desired_hosts = self._desired_intercept_hosts()
         self._log_intercept_configuration('Refresh requested', desired_hosts)
+
         with self._lock:
             if desired_hosts == self._active_intercept_hosts:
+                return
+            if getattr(self, '_active_env_proxy_mode', False) and self._proxy is not None:
+                previous_hosts = set(self._active_intercept_hosts)
+                added_hosts = desired_hosts - previous_hosts
+                retained_hosts = previous_hosts & desired_hosts
+                real_endpoints = self._proxy.upstream_endpoints_for_hosts(retained_hosts)
+                added_endpoints = _resolve_real_endpoints(added_hosts) if added_hosts else {}
+                real_endpoints.update(added_endpoints)
+                self._proxy.set_upstream_endpoints(real_endpoints)
+                self._proxy.set_intercept_hosts(desired_hosts)
+                scraper_ips = _first_endpoint_ips(real_endpoints)
+                if scraper_ips:
+                    self.cache_scraper.set_real_ips(scraper_ips)
+                self._active_intercept_hosts = set(desired_hosts)
+                log_buffer.log(
+                    'InterceptConfig',
+                    f'Env proxy intercepts updated: {", ".join(sorted(desired_hosts))}',
+                )
                 return
             if not self._hosts_installed or self._proxy is None:
                 self._active_intercept_hosts = set(desired_hosts)
@@ -3279,16 +3825,39 @@ class ProxyMaster:
         self.prime_custom_fflag_cache()
         self.refresh_username_spoofer_interception()
 
-    def prime_custom_fflag_cache(self) -> bool:
-        """Preload startup-only custom FastFlags while Roblox is closed."""
+    def prepare_custom_fflags_for_player_launch(self) -> None:
+        """Arm one fresh custom-FFlag response for the next Player launch."""
+        custom_modifier = getattr(self, 'custom_fflag_modifier', None)
+        if custom_modifier is None:
+            return
+        enabled = custom_modifier.is_enabled()
+        if enabled:
+            custom_modifier.prepare_for_player_launch()
+        seed_startup_flags = getattr(custom_modifier, 'prime_startup_flag_cache', None)
+        if not callable(seed_startup_flags):
+            seed_startup_flags = getattr(custom_modifier, 'prime_windows_flag_cache', None)
+        if callable(seed_startup_flags):
+            seed_startup_flags()
+        if enabled:
+            log_buffer.log(
+                'CustomFFlags',
+                'Armed a fresh ClientSettings response for Roblox Player launch',
+            )
+
+    def prime_custom_fflag_cache(self, *, allow_running: bool = False) -> bool:
+        """Preload startup-only custom FastFlags for the next Player launch."""
         custom_modifier = getattr(self, 'custom_fflag_modifier', None)
         if (
             custom_modifier is None
-            or not custom_modifier.is_enabled()
-            or is_roblox_running()
+            or (is_roblox_running() and not allow_running)
         ):
             return False
-        return custom_modifier.prime_windows_flag_cache()
+        seed_startup_flags = getattr(custom_modifier, 'prime_startup_flag_cache', None)
+        if not callable(seed_startup_flags):
+            seed_startup_flags = getattr(custom_modifier, 'prime_windows_flag_cache', None)
+        if not callable(seed_startup_flags):
+            return False
+        return bool(seed_startup_flags())
 
     def _emit_proxy_start_error(self, code: str, details: dict) -> None:
         """Forward startup failures to the app layer for user-facing dialogs."""
@@ -3549,6 +4118,8 @@ class ProxyMaster:
         with self._lock:
             if self._running:
                 return
+            self._env_proxy_ready.clear()
+            self._active_proxy_port = None
 
             def _run():
                 try:
@@ -3560,12 +4131,40 @@ class ProxyMaster:
             self._thread = threading.Thread(target=_run, daemon=True, name='fleasion-proxy')
             self._thread.start()
 
+    def restart_for_mode_switch(self) -> None:
+        """Live-swap the running proxy to a new mode without restarting the
+        app. The mode change (self.config_manager.proxy_mode) must already
+        be persisted by the caller before this runs; stop() cleans up
+        whatever the old mode had in place (hosts entries, port bindings),
+        then start() picks the new mode back up from config. Only safe to
+        call when the new mode needs nothing this process doesn't already
+        have - callers should restart the whole app instead when the new
+        mode might require elevation this process doesn't hold.
+        """
+
+        # Publish the transition before starting the worker. Consumers such
+        # as Windows GDK arming must not observe the old proxy as ready and
+        # capture its stale port while this restart thread is still pending.
+        self._env_proxy_ready.clear()
+
+        def _do_restart() -> None:
+            self.stop()
+            self.start()
+
+        threading.Thread(
+            target=_do_restart, daemon=True, name='fleasion-proxy-mode-switch'
+        ).start()
+
     def stop(self) -> None:
+        ready_event = getattr(self, '_env_proxy_ready', None)
+        if ready_event is not None:
+            ready_event.clear()
         self._stop_linux_sober_custom_fflag_timer()
         with self._lock:
             if not self._running and not (self._thread and self._thread.is_alive()):
                 return
             log_buffer.log('Proxy', 'Stopping proxy...')
+            self._active_env_proxy_mode = False
 
             # Clean up hosts file first so Roblox stops routing to us immediately
             if self._hosts_installed:
@@ -3605,9 +4204,10 @@ class ProxyMaster:
     async def _run_proxy(self) -> None:
         self._running = True
         self._loop = asyncio.get_running_loop()
+        env_proxy_mode = self._use_env_proxy_mode()
 
         # ── Privileged proxy endpoint check ───────────────────────────────
-        if IS_MACOS:
+        if not env_proxy_mode and IS_MACOS:
             from ..utils.macos_proxy_helper import helper_is_ready
 
             if not helper_is_ready():
@@ -3615,7 +4215,7 @@ class ProxyMaster:
                 self._emit_proxy_start_error('macos_helper_unavailable', {})
                 self._running = False
                 return
-        elif not _is_admin() and not _use_linux_privileged_helper():
+        elif not env_proxy_mode and not _is_admin() and not _use_linux_privileged_helper():
             log_buffer.log(
                 'Error',
                 (
@@ -3630,7 +4230,13 @@ class ProxyMaster:
         custom_fflags_active = bool(
             getattr(self.config_manager, 'custom_fflags_enabled', False)
         )
-        if custom_fflags_active and is_roblox_running():
+        if env_proxy_mode and is_roblox_running():
+            log_buffer.log(
+                'Cleanup',
+                'Roblox Env Proxy mode detected Roblox already running; '
+                'skipping cache clear to preserve the launch deeplink',
+            )
+        elif custom_fflags_active and is_roblox_running():
             log_buffer.log(
                 'Cleanup',
                 'Custom FastFlags are active and Roblox is already running; skipping cache clear',
@@ -3647,8 +4253,7 @@ class ProxyMaster:
         else:
             log_buffer.log('Cleanup', 'Cache clear on launch disabled - skipping')
 
-        if custom_fflags_active:
-            self.prime_custom_fflag_cache()
+        self.prime_custom_fflag_cache()
 
         # ── Certificate setup ─────────────────────────────────────────────
         log_buffer.log('Certificate', 'Generating/loading CA certificates...')
@@ -3694,7 +4299,9 @@ class ProxyMaster:
 
         # Install CA into Roblox ssl dirs
         ca_pem = get_ca_pem(ca_cert_path)
-        ca_patch_ok, ca_patch_details = _install_ca_into_roblox(ca_pem)
+        ca_patch_ok, ca_patch_details = _install_ca_into_roblox(
+            ca_pem, include_studio=not env_proxy_mode
+        )
         if IS_MACOS and not ca_patch_ok:
             log_buffer.log(
                 'Certificate',
@@ -3703,7 +4310,35 @@ class ProxyMaster:
             self._emit_proxy_start_error('macos_ca_patch_failed', ca_patch_details)
             self._running = False
             return
-        if IS_WINDOWS:
+        if env_proxy_mode and not ca_patch_ok:
+            log_buffer.log(
+                'Certificate',
+                'Roblox CA patch verification failed; Env Proxy startup aborted before relaunch',
+            )
+            self._emit_proxy_start_error('roblox_ca_patch_failed', ca_patch_details)
+            self._running = False
+            return
+        if IS_MACOS:
+            trust_ok, trust_details = _install_ca_into_macos_login_keychain(
+                ca_cert_path, ca_pem
+            )
+            if not trust_ok:
+                details = dict(trust_details)
+                details.setdefault('error', 'Could not trust Fleasion CA in login keychain')
+                log_buffer.log(
+                    'Certificate',
+                    'macOS CA trust verification failed; proxy startup aborted before writing hosts entries',
+                )
+                self._emit_proxy_start_error('macos_ca_trust_failed', details)
+                self._running = False
+                return
+            log_buffer.log(
+                'Certificate',
+                'macOS login keychain CA trust installed'
+                if trust_details.get('changed')
+                else 'macOS login keychain CA trust already current',
+            )
+        if IS_WINDOWS and not env_proxy_mode:
             _install_ca_into_windows_root(ca_cert_path, ca_pem)
         elif IS_LINUX:
             from ..utils.linux_proxy_helper import install_ca_into_linux_trust
@@ -3717,7 +4352,35 @@ class ProxyMaster:
         # Skip cleanup entirely if another elevated Fleasion instance already
         # owns the proxy.  Deleting its watchdog task or hosts entries while it
         # is running would break it silently.
-        if _use_linux_privileged_helper():
+        if env_proxy_mode:
+            if not _other_proxy_owner_alive():
+                # A previous hosts-mode session may have left entries behind
+                # (e.g. a crash without a clean stop()). Env mode doesn't
+                # need the hosts file at all, but leaving stale "# Fleasion
+                # proxy entry" lines around would keep redirecting those
+                # hosts to 127.0.0.1 for every app on the system, not just
+                # Roblox through our proxy - so clean them up here too.
+                # Unlike the hosts-mode branch below, a failure here doesn't
+                # abort startup: env mode doesn't depend on the hosts file
+                # working.
+                stale_hosts_error_details: dict = {}
+                if _remove_hosts_entries(
+                    set(INTERCEPT_HOSTS), error_details=stale_hosts_error_details
+                ):
+                    _flush_dns()
+                else:
+                    log_buffer.log(
+                        'Error',
+                        'Failed to remove stale proxy hosts entries while starting Roblox '
+                        'Env Proxy mode - they may still redirect some hosts to 127.0.0.1. '
+                        'If this causes problems, manually remove "# Fleasion proxy entry" '
+                        f'lines from {HOSTS_FILE}.',
+                    )
+            log_buffer.log(
+                'Proxy',
+                'Roblox Env Proxy mode active; skipping privileged relay startup',
+            )
+        elif _use_linux_privileged_helper():
             log_buffer.log(
                 'ProxyHelper',
                 'Linux user-mode GUI active; privileged helper will own port 443 and hosts entries',
@@ -3798,10 +4461,24 @@ class ProxyMaster:
             pass
 
         # ── Start TLS proxy server ────────────────────────────────────────
-        use_linux_helper = _use_linux_privileged_helper()
-        listen_port = MACOS_PROXY_BACKEND_PORT if IS_MACOS or use_linux_helper else PROXY_PORT
+        use_linux_helper = (not env_proxy_mode) and _use_linux_privileged_helper()
+        env_proxy_intercept_excluded_hosts: set[str] = set()
+        if env_proxy_mode and IS_LINUX:
+            from ..utils.platform_linux import SOBER_ENV_PROXY_PASSTHROUGH_HOSTS
+
+            env_proxy_intercept_excluded_hosts.update(SOBER_ENV_PROXY_PASSTHROUGH_HOSTS)
+            # Sober's first ClientSettings request is made by its pinned
+            # bootstrap client. Keep it tunneled until the Roblox engine has
+            # passed the bootstrap window and custom FastFlag interception is
+            # safe to arm.
+            env_proxy_intercept_excluded_hosts.update(CUSTOM_FFLAGS_INTERCEPT_HOSTS)
+        self._env_proxy_intercept_excluded_hosts = set(env_proxy_intercept_excluded_hosts)
+        listen_port = (
+            MACOS_PROXY_BACKEND_PORT if env_proxy_mode or IS_MACOS or use_linux_helper else PROXY_PORT
+        )
         if (
             IS_LINUX
+            and not env_proxy_mode
             and not use_linux_helper
             and not _ensure_linux_system_trust_for_hosts(active_hosts, ca_cert_path)
         ):
@@ -3819,26 +4496,79 @@ class ProxyMaster:
             manual_http_proxy=manual_http_proxy,
             manual_socks5_proxy=manual_socks5_proxy,
             wire_preserving_passthrough=self._effective_wire_preserving_passthrough(),
+            explicit_proxy=env_proxy_mode,
+            intercept_hosts=active_hosts,
+            intercept_all_hosts=getattr(self, '_env_proxy_intercept_all', False),
+            intercept_excluded_hosts=env_proxy_intercept_excluded_hosts,
+            auto_replace_rules=self.get_auto_replace_rules(),
+            ca_cert_path=ca_cert_path,
+            ca_key_path=ca_key_path,
+            cert_cache_dir=proxy_ca_dir,
             vpn_compat_max_assetdelivery_connections=asset_connection_limit,
             vpn_compat_max_cdn_connections=cdn_connection_limit,
             custom_fflag_modifier=getattr(self, 'custom_fflag_modifier', None),
+            on_upstream_connect_failure=lambda host, error: self._emit_proxy_start_error(
+                'upstream_connect_failed',
+                {
+                    'host': host,
+                    'error': error,
+                    'proxy_mode': 'env' if env_proxy_mode else 'hosts',
+                    'listen_port': listen_port,
+                },
+            ),
         )
         with self._lock:
             interceptors = list(self._module_interceptors)
         self._proxy.set_module_interceptors(interceptors)
+        if hasattr(self._proxy, 'set_intercept_match'):
+            self._proxy.set_intercept_match(self._env_proxy_intercept_match)
         await self._proxy.log_upstream_self_test(active_hosts)
         try:
             await self._proxy.start()
         except OSError as exc:
             err_text = str(exc).lower()
-            if (
+            native_error = getattr(exc, 'winerror', None)
+            bind_error = (
                 exc.errno in (10013, 10048)
+                or native_error in (10013, 10048)
                 or 'access' in err_text
                 or 'address already in use' in err_text
                 or 'only one usage of each socket address' in err_text
                 or (str(listen_port) in err_text and 'bind' in err_text)
-            ):
-                owners = _list_port_listeners(listen_port)
+            )
+            owners = _list_port_listeners(listen_port) if bind_error else []
+
+            if bind_error and env_proxy_mode and IS_WINDOWS and not owners:
+                fixed_port = listen_port
+                try:
+                    self._proxy.port = 0
+                    await self._proxy.start()
+                    listen_port = int(self._proxy.port)
+                    self._active_proxy_port = listen_port
+                    log_buffer.log(
+                        'Proxy',
+                        f'Fixed Env Proxy port {fixed_port} was unavailable; '
+                        f'using free loopback port {listen_port}',
+                    )
+                except OSError as fallback_exc:
+                    log_buffer.log(
+                        'Error',
+                        f'Failed to bind Env Proxy fallback port after {fixed_port}: '
+                        f'{fallback_exc}',
+                    )
+                    self._emit_proxy_start_error(
+                        'port_bind_failed',
+                        {
+                            'port': fixed_port,
+                            'owners': owners,
+                            'bind_error': str(exc),
+                            'fallback_error': str(fallback_exc),
+                            'bind_reason': 'access_denied_or_reserved',
+                        },
+                    )
+                    self._running = False
+                    return
+            elif bind_error:
                 log_buffer.log(
                     'Error',
                     (
@@ -3856,16 +4586,30 @@ class ProxyMaster:
                     {
                         'port': listen_port,
                         'owners': owners,
+                        'bind_error': str(exc),
+                        'bind_reason': (
+                            'access_denied_or_reserved'
+                            if exc.errno == 10013
+                            or native_error == 10013
+                            or 'access' in err_text
+                            else 'already_in_use'
+                        ),
                     },
                 )
+                self._running = False
+                return
             else:
                 log_buffer.log('Error', f'Failed to start proxy: {exc}')
-            self._running = False
-            return
+                self._running = False
+                return
         except Exception as exc:
             log_buffer.log('Error', f'Failed to start proxy: {exc}')
             self._running = False
             return
+
+        if env_proxy_mode:
+            self._active_proxy_port = int(self._proxy.port)
+            listen_port = self._active_proxy_port
 
         loopback_ips_for_hosts = getattr(self._proxy, 'loopback_ips_for_hosts', None)
         _set_active_hosts_loopbacks(
@@ -3873,13 +4617,74 @@ class ProxyMaster:
         )
 
         # ── TLS startup self-test ───────────────────────────────────────────
-        # Probe every intercepted host with SNI plus one no-SNI connection before
-        # the hosts file points Roblox at us. This catches certificate/SNI failures
-        # that otherwise happen before normal request logs exist.
-        if not await _run_tls_self_test(set(INTERCEPT_HOSTS), ca_cert_path, listen_port):
+        # Probe every active intercepted host with SNI plus one no-SNI connection
+        # before the hosts file points Roblox at us. In particular, do not probe
+        # delayed Sober ClientSettings routes before their bootstrap window has
+        # elapsed: those hosts are intentionally not active yet.
+        if not await _run_tls_self_test(
+            set(active_hosts), ca_cert_path, listen_port, explicit_proxy=env_proxy_mode
+        ):
+            log_buffer.log(
+                'Error',
+                'Proxy startup aborted: TLS self-test failed for active intercept hosts',
+            )
+            self._emit_proxy_start_error(
+                'tls_self_test_failed',
+                {
+                    'hosts': sorted(active_hosts),
+                    'proxy_mode': 'env' if env_proxy_mode else 'hosts',
+                },
+            )
             await self._proxy.stop()
             _set_active_hosts_loopbacks(None)
             self._running = False
+            return
+        if env_proxy_mode:
+            _set_active_hosts_loopbacks(None)
+            self._active_env_proxy_mode = True
+            ready_event = getattr(self, '_env_proxy_ready', None)
+            if ready_event is not None:
+                ready_event.set()
+            if env_proxy_intercept_excluded_hosts:
+                log_buffer.log(
+                    'Proxy',
+                    'Linux/Sober pinned bootstrap hosts remain tunneled even when '
+                    f'Proxy-tab intercept-all is enabled: {", ".join(sorted(SOBER_ENV_PROXY_PASSTHROUGH_HOSTS))}',
+                )
+            # The self-test above just probed every active intercept host itself;
+            # wipe that from the log so the traffic tab only ever shows genuine
+            # client requests, not Fleasion's own startup TLS probe.
+            self._proxy.clear_request_log()
+            self._start_linux_sober_custom_fflag_timer()
+
+            log_buffer.log('Info', '=' * 50)
+            log_buffer.log('Info', 'Fleasion Proxy Active')
+            log_buffer.log('Info', f'Proxy mode: Roblox Env Proxy ({self.roblox_env_proxy_url()})')
+            log_buffer.log('Info', f'Intercepting: {", ".join(sorted(active_hosts))}')
+            log_buffer.log('Info', f'Port: {listen_port}')
+            log_buffer.log('Info', 'Launch Roblox through Fleasion or let Fleasion relaunch it')
+            log_buffer.log('Info', '=' * 50)
+
+            if self._texture_stripper is not None:
+                _precheck_thread = threading.Thread(
+                    target=self._texture_stripper.precheck_replacements,
+                    name='ReplacementPrecheck',
+                    daemon=True,
+                )
+                _precheck_thread.start()
+
+            try:
+                await self._proxy.serve_forever()
+            except asyncio.CancelledError:
+                # Stopping the proxy cancels its serve_forever future. That is
+                # the normal Env Proxy shutdown path, not a thread failure.
+                pass
+            finally:
+                ready_event = getattr(self, '_env_proxy_ready', None)
+                if ready_event is not None:
+                    ready_event.clear()
+                self._stop_linux_sober_custom_fflag_timer()
+                self._running = False
             return
         if use_linux_helper:
             from ..utils.linux_proxy_helper import (
@@ -3919,9 +4724,45 @@ class ProxyMaster:
                     stop_helper()
                     self._running = False
                     return
-        if (IS_MACOS or use_linux_helper) and not await _run_tls_self_test(
-            set(INTERCEPT_HOSTS), ca_cert_path, PROXY_PORT
-        ):
+        if IS_MACOS or use_linux_helper:
+            relay_ok, relay_failures = await _run_privileged_relay_tls_self_test(
+                set(INTERCEPT_HOSTS),
+                ca_cert_path,
+                PROXY_PORT,
+            )
+        else:
+            relay_ok, relay_failures = True, []
+        if not relay_ok:
+            relay_details: dict = {
+                'relay_port': PROXY_PORT,
+                'backend_port': listen_port,
+                'attempts': 3,
+                'tls_failures': relay_failures,
+            }
+            if IS_MACOS:
+                from ..utils.macos_proxy_helper import (
+                    helper_probe_backend,
+                    helper_status,
+                )
+
+                # _run_proxy itself runs on Fleasion's dedicated proxy thread,
+                # so these bounded control-socket calls do not block the GUI.
+                helper_state = helper_status()
+                backend_probe = helper_probe_backend()
+                relay_details['helper_status'] = helper_state or {}
+                relay_details['backend_probe'] = backend_probe
+                reachable = bool(backend_probe.get('reachable'))
+                probe_summary = (
+                    f'reachable={"yes" if reachable else "no"}; '
+                    f'backend=127.0.0.1:{backend_probe.get("backend_port", listen_port)}; '
+                    f'elapsed_ms={backend_probe.get("elapsed_ms", "unknown")}'
+                )
+                if backend_probe.get('error'):
+                    probe_summary += (
+                        f'; error={backend_probe.get("error_type") or "OSError"}: '
+                        f'{backend_probe.get("error")}'
+                    )
+                log_buffer.log('ProxyHelper', f'macOS helper backend health probe: {probe_summary}')
             log_buffer.log('ProxyHelper', 'Privileged port-443 relay TLS self-test failed')
             await self._proxy.stop()
             _set_active_hosts_loopbacks(None)
@@ -3930,6 +4771,8 @@ class ProxyMaster:
 
                 stop_helper()
             self._running = False
+            if IS_MACOS:
+                self._emit_proxy_start_error('macos_relay_failed', relay_details)
             return
 
         # ── Write hosts file entries ──────────────────────────────────────

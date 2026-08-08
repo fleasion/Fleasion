@@ -18,6 +18,12 @@ If the `.exe` fails to launch on startup with a `DLL load failed` error, move th
 
 If you're on Linux and having issues with launching the GUI, please install `PortAudio` on your distro. How? Look it up.
 
+Arch-based Linux systems also require Qt's native Widgets/runtime package:
+
+```bash
+sudo pacman -S --needed qt6-base
+```
+
 ## Requirements for Building from Source
 
 - **Windows 10+, macOS 11+, or Linux with Sober Flatpak**
@@ -39,7 +45,7 @@ uv run fleasion
 uv run build
 ```
 
-`uv run build` is the build command on Windows, Linux, and macOS. On macOS, it builds a universal release app by default. The output is copied to `dist/Fleasion-v{APP_VERSION}.app`, mirrored at `dist/Fleasion.app`, and zipped as `dist/Fleasion-v{APP_VERSION}-MacOS-Universal.zip`.
+`uv run build` is the build command on Windows, Linux, and macOS. Stable artifact filenames use the project version unchanged. Prerelease filenames add `+local` for local builds or `+g<short-sha>` on GitHub Actions; this provenance is not included in Fleasion's runtime version metadata. On macOS, the command builds a universal release app by default. The output is copied to `dist/Fleasion-v{ARTIFACT_VERSION}.app`, mirrored at `dist/Fleasion.app`, and zipped as `dist/Fleasion-v{ARTIFACT_VERSION}-MacOS-Universal.zip`.
 
 On Apple Silicon, the command builds the arm64 slice with the normal `uv` environment, bootstraps an ignored x86_64 build environment under `.tools/`, and resolves Python for both from the tracked `.python-version` pin. It builds the Intel slice under Rosetta, merges the app with `lipo`, signs it ad hoc, and verifies every Mach-O binary contains both `arm64` and `x86_64`. Rosetta must be installed for the Intel build:
 
@@ -49,14 +55,25 @@ softwareupdate --install-rosetta --agree-to-license
 
 For local single-architecture builds, set `MACOS_TARGET_ARCH=arm64` or `MACOS_TARGET_ARCH=x86_64`.
 
-To bump Fleasion for a release, update the project version once:
+Use `uv version` to update the canonical version in `pyproject.toml` and `uv.lock`:
 
 ```bash
+# Stable patch: 2.4.0 -> 2.4.1
 uv version --bump patch
-# or: uv version <new-version>
+
+# First beta of the next minor: 2.4.0 -> 2.5.0b1
+uv version --bump minor --bump beta
+
+# Subsequent beta: 2.5.0b1 -> 2.5.0b2
+uv version --bump beta
+
+# Promote a prerelease: 2.5.0b2 -> 2.5.0
+uv version --bump stable
 ```
 
-Runtime code, PyInstaller naming, and GitHub release workflows read that value from `pyproject.toml`.
+Source runs, packaged distribution metadata, and stable GitHub releases use the canonical version. PyInstaller and GitHub Actions derive only the artifact filename label when building a prerelease.
+
+The draft-release workflow accepts stable and prerelease project versions. Prereleases keep a clean version tag such as `v2.5.0b1`, publish artifacts containing their Git commit label, and are marked as GitHub prereleases. Stable installations check GitHub's latest stable release; prerelease installations follow newer published prereleases and automatically return to the stable channel after installing the final release. Draft releases are never offered by the updater.
 
 ## System Tray
 
@@ -80,17 +97,23 @@ After applying any changes in the Dashboard, you must **clear your Roblox cache*
 
 ## How It Works
 
-Fleasion runs a lightweight custom asyncio HTTPS proxy on `127.0.0.1:443`. On startup it redirects `assetdelivery.roblox.com` and `fts.rbxcdn.com` to localhost via the system hosts file, installs a locally-generated CA certificate into Roblox's `ssl/cacert.pem` trust bundle so the TLS handshake succeeds, and intercepts all asset traffic. When custom FastFlags are enabled, it also intercepts Roblox ClientSettings requests so those overrides can be applied before the client receives them. When Roblox requests assets from its CDN, Fleasion can:
+Fleasion runs a lightweight custom asyncio HTTPS proxy and supports two routing modes:
+
+- **Roblox Env Proxy** normally listens only on the loopback high port `58443` and relaunches Roblox Player with proxy environment variables. If Windows has reserved or excluded that port, Fleasion automatically selects another free loopback port and passes it to Player. It does not modify the system hosts file or bind privileged port 443. Roblox Player's own `ssl/cacert.pem` still receives Fleasion's local CA so Player trusts the intercepted TLS traffic. Microsoft Store/Xbox (GDK) Roblox uses package-aware activation with a scoped environment block; if that activation is unavailable, Fleasion leaves the activated client untouched and reports the fallback rather than directly relaunching it. Roblox Studio is not relaunched, intercepted, patched, or closed by this mode.
+- **Hosts File** is the legacy compatibility path. It redirects the intercepted Roblox hosts to localhost and uses local port 443, so it still requires the platform's administrator/helper path.
+
+When custom FastFlags are enabled, Fleasion also intercepts Roblox ClientSettings requests and pre-seeds platform startup settings so overrides needed early in Player startup are available immediately. When Roblox requests assets from its CDN, Fleasion can:
 
 - **Replace** assets by ID &mdash; swap one asset for another (different texture, audio, etc.)
 - **Remove** assets &mdash; strip textures from the batch request entirely
 - **Redirect** to CDN URLs or local files &mdash; serve your own content
 - **Cache** original assets &mdash; browse, preview, and export everything Roblox downloads
 
-All interception happens locally on your machine. Windows runs Fleasion elevated. On macOS, Fleasion installs a small root-owned relay/hosts/CA-patching helper with one administrator approval; the dashboard and menu-bar app always run as the normal user.
-On Linux, Fleasion targets the Sober Flatpak client (`org.vinegarhq.Sober`). It uses Sober's asset overlay at `~/.var/app/org.vinegarhq.Sober/data/sober/asset_overlay` and writes Sober FFlags to `~/.var/app/org.vinegarhq.Sober/config/sober/config.json`. Proxy interception needs root permission because Fleasion updates `/etc/hosts` and listens on local port 443.
+All interception happens locally on your machine. Env Proxy runs the Fleasion GUI and proxy as the normal user on Windows, macOS, and Linux. A one-time administrator prompt can still be needed to repair an unusually protected Player installation or an inaccessible legacy Windows autostart task. Hosts File mode retains its existing administrator/helper requirements.
 
-**VPN compatibility:** Because interception uses the system's hosts file (application layer), it should be compatible with most VPN software, as long as it respects the hosts file.
+On Linux, Fleasion targets the Sober Flatpak client (`org.vinegarhq.Sober`). It uses Sober's asset overlay at `~/.var/app/org.vinegarhq.Sober/data/sober/asset_overlay` and writes Sober FFlags to `~/.var/app/org.vinegarhq.Sober/config/sober/config.json`.
+
+**VPN compatibility:** Env Proxy is scoped to the Player process and normally coexists with system VPN settings. Hosts File mode depends on the VPN respecting local hosts-file resolution.
 
 **Roblox policy and moderation:** Fleasion's normal asset replacement is client-side, so only you see the changes. The project has no known detections or reported warnings/bans for local asset replacement at the time of writing, but Roblox has stated that these modifications are not permitted and game moderators may still take action. Use your own judgment.
 
@@ -192,21 +215,21 @@ Every asset type Roblox uses &mdash; images, decals, audio, meshes, animations, 
 On first launch, Fleasion will:
 
 - Generate a local CA certificate and install it into Roblox's SSL trust bundle
-- On macOS, offer to install the root-owned proxy helper with one administrator approval. The helper owns local port 443, updates `/etc/hosts`, and patches Roblox `ssl/cacert.pem`.
-- On Linux, use the installed desktop launcher or startup prompt to relaunch through Polkit; the desktop installer intentionally creates only the proxy-capable launcher, not the deprecated non-admin/read-only entry.
+- In Env Proxy mode, run as the normal user and relaunch only Roblox Player with the local proxy environment
+- In Hosts File mode, request the existing Windows elevation, macOS helper, or Linux Polkit helper needed for hosts-file and port-443 access
 - Show a welcome dialog explaining how the proxy works
 - Open the Dashboard automatically
 
 ### macOS Notes
 
-- AppleBlox is not supported by Fleasion's macOS release path. Use the normal Roblox app bundle.
+- Fleasion discovers normal Roblox, Froststrap-managed `RobloxPlayer.app` versions, and AppleBlox custom Roblox paths. It mirrors managed files and CA state into Froststrap/AppleBlox restore snapshots. Because AppleBlox recreates `Contents/MacOS/ClientSettings` immediately before launch, Fleasion also merges its allowlisted FastFlags into that launch file before Roblox consumes it; conflicting Fleasion values take precedence.
 - Fleasion must verify the helper-patched Roblox `ssl/cacert.pem` before it writes hosts entries. If verification fails, the proxy will not start.
 - Account Manager selected-account launches use Roblox auth-ticket `roblox-player:` URIs on macOS. Place, private-server, job-id, and plain app launches are attempted, but Roblox may still reject some app-launch flows; opening Roblox normally can use the account already signed in to Roblox.
 - On first macOS launch, Fleasion asks which browser is signed in to roblox.com. It reads that browser directly when account-aware features need a Roblox login token, so macOS may ask for browser-data access; choose **Always Allow** if you do not want to approve it every time. Fleasion can also reuse a valid encrypted Chrome-family cache when present; if cache recovery is ambiguous, startup preserves it and skips surprise repeat prompts. Change the browser or store a manually imported encrypted token from **Settings -> Roblox Login**, or use **Miscellaneous -> Account Manager -> Import Browser Login** to re-import a browser login explicitly.
 
 ### Run on Boot
 
-Fleasion can be configured to launch automatically via **Settings -> Run on Boot**. On Windows this creates a Task Scheduler task with `RunLevel=HighestAvailable`. On macOS this creates an unprivileged LaunchAgent; the already-installed proxy helper starts separately as a LaunchDaemon, so boot launches do not request an administrator password. **Settings -> Create desktop/start menu integration on boot** adds or refreshes the OS launcher entry on Windows, macOS, and Linux. On Linux, packaged builds are copied into `~/.local/share/Fleasion`, and the launcher starts through Polkit so proxy interception can update `/etc/hosts` and bind local port 443.
+Fleasion can be configured to launch automatically via **Settings -> Run on Boot**. Windows creates a per-user Task Scheduler task with `InteractiveToken` and `LeastPrivilege`; macOS creates an unprivileged per-user LaunchAgent; Linux creates a per-user XDG autostart entry. Env Proxy boot launches do not elevate the GUI. If a user selects Hosts File mode, Fleasion can still request the platform-specific helper or administrator access after launch. **Settings -> Create desktop/start menu integration on boot** adds or refreshes the OS launcher entry on Windows, macOS, and Linux.
 
 ## Project Structure
 
@@ -366,6 +389,28 @@ Settings are stored in:
 | `proxy_ca/` | Generated CA certificate and per-host leaf certificates |
 | `logs/fleasion.log` | Persistent application and proxy log |
 | `Temp/ConvertedMeshes/` | Temporary directory for OBJ/mesh conversions |
+
+### Sharing Configs with Files
+
+Replacement config JSON files live directly inside `configs/`. If a config needs its own files,
+such as an OBJ model, put those files in a folder inside `configs/`:
+
+```text
+configs/
+├── Replace all weapons with sticks.json
+└── StickObj/
+    └── stick.obj
+```
+
+In the replacement field, `/StickObj/stick.obj` means “use `stick.obj` from the `StickObj`
+folder inside Fleasion's Configs folder.” This notation works unchanged on Windows, macOS, and
+Linux. The **Browse** button and drag-and-drop automatically use this shareable notation when
+the selected file is inside a Configs subfolder.
+
+Asset folders may be nested up to 10 folders deep. Config JSON files remain at the root of
+`configs/`; JSON files inside asset subfolders are not listed as configs. Normal operating-system
+file paths remain supported. On macOS and Linux, when both a Configs asset and an absolute path
+could match the same `/Folder/file` text, the file inside Configs takes priority.
 
 ## Community
 

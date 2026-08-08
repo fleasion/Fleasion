@@ -1,4 +1,5 @@
 from fleasion.cache import cache_manager as cache_manager_module
+from fleasion.cache import mesh_rig
 
 
 MODEL_XML = b"""<roblox version="4">
@@ -66,6 +67,24 @@ def test_old_image_typed_mesh_payload_is_healed_lazily(tmp_path, monkeypatch):
     assert info["type_name"] == "Mesh"
 
 
+def test_old_image_typed_mesh_payload_uses_only_a_header_for_type_detection(tmp_path, monkeypatch):
+    monkeypatch.setattr(cache_manager_module, "CONFIG_DIR", tmp_path)
+    manager = cache_manager_module.CacheManager(config_manager=_Config())
+    assert manager.store_asset("790", 1, MESH_PAYLOAD + (b"x" * 20_000))
+
+    info = manager.get_asset_info("790", 1)
+    info.pop("detected_type", None)
+    info["type_name"] = "Image"
+
+    def fail_full_asset_read(*_args, **_kwargs):
+        raise AssertionError("type detection must not read the full payload")
+
+    manager.get_asset = fail_full_asset_read
+
+    assert manager.get_type_name_for_asset("790", 1) == "Mesh"
+    assert info["detected_type"] == "Mesh"
+
+
 def test_image_typed_audio_payload_is_displayed_as_audio(tmp_path, monkeypatch):
     monkeypatch.setattr(cache_manager_module, "CONFIG_DIR", tmp_path)
     manager = cache_manager_module.CacheManager(config_manager=_Config())
@@ -77,3 +96,38 @@ def test_image_typed_audio_payload_is_displayed_as_audio(tmp_path, monkeypatch):
     assert info["detected_type"] == "Audio"
     assert info["type_name"] == "Audio"
     assert manager._detect_extension(AUDIO_PAYLOAD, 3) == ".ogg"
+
+
+def test_clear_memory_cache_evicts_loaded_asset_payloads(tmp_path, monkeypatch):
+    monkeypatch.setattr(cache_manager_module, "CONFIG_DIR", tmp_path)
+    manager = cache_manager_module.CacheManager(config_manager=_Config())
+    assert manager.store_asset("102", 9, MODEL_XML)
+    assert manager.get_asset("102", 9) == MODEL_XML
+    assert manager._asset_cache
+
+    assert manager.clear_memory_cache() == 1
+    assert manager._asset_cache == {}
+
+
+def test_rigged_glb_is_only_offered_for_payloads_with_embedded_skinning(tmp_path, monkeypatch):
+    monkeypatch.setattr(cache_manager_module, 'CONFIG_DIR', tmp_path)
+    manager = cache_manager_module.CacheManager(config_manager=_Config())
+    assert manager.store_asset('rigged', 4, b'rigged mesh')
+    assert manager.store_asset('static', 4, b'static mesh')
+    monkeypatch.setattr(mesh_rig, 'has_embedded_rig', lambda data: data == b'rigged mesh')
+
+    assert 'converted_rigged_glb' in manager.get_available_export_formats_for_asset('rigged', 4)
+    assert 'converted_rigged_glb' not in manager.get_available_export_formats_for_asset('static', 4)
+
+
+def test_rigged_glb_exports_as_a_separate_converted_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(cache_manager_module, 'CONFIG_DIR', tmp_path)
+    manager = cache_manager_module.CacheManager(config_manager=_Config())
+    assert manager.store_asset('123', 4, b'rigged mesh')
+    monkeypatch.setattr(mesh_rig, 'export_glb', lambda _data: b'glTF rig data')
+
+    exported = manager.export_asset('123', 4, export_format='converted_rigged_glb')
+
+    assert exported is not None
+    assert exported.suffix == '.glb'
+    assert exported.read_bytes() == b'glTF rig data'

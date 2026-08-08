@@ -6,10 +6,11 @@ import os
 import shutil
 import subprocess
 import sys
-import tomllib
+from importlib.metadata import PackageNotFoundError, version as distribution_version
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from fleasion.version import build_artifact_version, macos_bundle_version, read_project_version
 from PyInstaller.utils.hooks import (
     collect_all,
     collect_data_files,
@@ -45,6 +46,7 @@ _OPENGL_HIDDEN_IMPORTS = [
 ]
 
 _COMPILED_HIDDEN_IMPORTS = [
+    'DracoPy',
     'certifi',
     'orjson',
     'zstandard',
@@ -54,6 +56,7 @@ _WINDOWS_HIDDEN_IMPORTS = [
     'win32crypt',
     'win32api',
     'win32con',
+    'win32security',
     'pywintypes',
     'winreg',
 ]
@@ -169,19 +172,6 @@ def _run_pyinstaller_spec(spec_path: str, *, env: dict[str, str] | None = None) 
     )
 
 
-def _read_app_version() -> str:
-    pyproject = tomllib.loads(Path('pyproject.toml').read_text(encoding='utf-8'))
-    project = pyproject.get('project')
-    if not isinstance(project, dict):
-        raise SystemExit('Could not find [project] in pyproject.toml.')
-
-    project_version = project.get('version')
-    if not isinstance(project_version, str) or not project_version:
-        raise SystemExit('Could not find project.version in pyproject.toml.')
-
-    return project_version
-
-
 def _collect_package(package: str) -> None:
     package_datas, package_binaries, package_hiddenimports = collect_all(package)
     datas.extend(package_datas)
@@ -238,8 +228,22 @@ def _build_macos_helper(target_arch: str | None) -> None:
         shutil.copy2(_bundled_legacy_macos_helper, _bundled_macos_helpers[target_arch])
 
 
-_version = _read_app_version()
-_exe_name = f'Fleasion-v{_version}'
+try:
+    _app_version = read_project_version()
+    _artifact_version = build_artifact_version(_app_version)
+    _bundle_version = macos_bundle_version(_app_version)
+except (OSError, ValueError) as exc:
+    raise SystemExit(f'Could not resolve the Fleasion build version: {exc}') from exc
+_exe_name = f'Fleasion-v{_artifact_version}'
+try:
+    _distribution_version = distribution_version('fleasion')
+except PackageNotFoundError:
+    raise SystemExit('Fleasion distribution metadata is missing. Run uv sync before building.')
+if _distribution_version != _app_version:
+    raise SystemExit(
+        f'Fleasion distribution metadata is {_distribution_version}, but pyproject.toml '
+        f'declares {_app_version}. Run uv sync before building.'
+    )
 if sys.platform == 'win32':
     _exe_name = f'{_exe_name}-Windows'
 elif sys.platform.startswith('linux'):
@@ -267,7 +271,7 @@ datas: list[CollectionEntry] = [
     ('src/fleasion/modifications/bundled/empty.mesh', 'fleasion/modifications/bundled'),
     ('src/fleasion/modifications/bundled/empty.tex', 'fleasion/modifications/bundled'),
 ]
-datas.extend(copy_metadata('Fleasion'))
+datas.extend(copy_metadata('fleasion'))
 binaries: list[CollectionEntry] = []
 if sys.platform == 'win32':
     binaries.append(('src/fleasion/cache/tools/ktx_to_png/ktx.dll', '.'))
@@ -412,8 +416,8 @@ if sys.platform == 'darwin':
         info_plist={
             'CFBundleDisplayName': 'Fleasion',
             'CFBundleName': 'Fleasion',
-            'CFBundleShortVersionString': _version,
-            'CFBundleVersion': _version,
+            'CFBundleShortVersionString': _bundle_version,
+            'CFBundleVersion': _bundle_version,
             'LSUIElement': True,
             'NSHighResolutionCapable': True,
         },

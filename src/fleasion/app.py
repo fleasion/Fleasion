@@ -9,10 +9,11 @@ import shlex
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, QSharedMemory, Qt, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QEvent, QObject, QSharedMemory, Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWidgets import (
     QApplication,
@@ -27,7 +28,7 @@ from PyQt6.QtWidgets import (
 )
 
 from . import __version__
-from .config import ConfigManager
+from .config import ConfigFolderWatcher, ConfigManager
 from .modifications import ModificationManager
 from .prejsons import download_prejsons
 from .proxy import ProxyMaster, check_and_patch_running_roblox_ca
@@ -40,6 +41,7 @@ from .utils import (
     delete_cache,
     get_icon_path,
     get_roblox_player_exe_path,
+    get_roblox_process_identity,
     get_roblox_studio_exe_path,
     is_roblox_running,
     is_studio_running,
@@ -48,11 +50,15 @@ from .utils import (
     open_folder,
     run_in_thread,
     start_update_check,
+    terminate_roblox,
     time_tracker,
+    wait_for_roblox_exit,
 )
 
 _SINGLE_INSTANCE_KEY = 'FleasionSingleInstance'
 _SINGLE_INSTANCE_CONTROL_SERVER = 'FleasionSingleInstanceControl'
+_WINDOWS_REPAIR_RESULT_TIMEOUT_SECONDS = 120.0
+_MACOS_PLAIN_LAUNCH_CLASSIFICATION_SECONDS = 2.0
 
 
 class _FirstTimeSetupMessageBox(QMessageBox):
@@ -95,6 +101,82 @@ class _ForcedAcknowledgeMessageBox(QMessageBox):
             event.accept()
         else:
             event.ignore()
+
+
+def _prepare_env_proxy_migration(config_manager: ConfigManager) -> bool:
+    """Select Env Proxy before privilege gates and report a legacy migration."""
+    if config_manager.env_proxy_migration_v1_complete:
+        return False
+
+    # Assign even when the merged in-memory default is already Env so the new
+    # mode is durable on disk before any acknowledgement dialog can appear.
+    config_manager.proxy_mode = 'env'
+
+    # First-time users learn about Env Proxy in the setup guide. Existing
+    # users receive the dedicated migration acknowledgement later in startup.
+    return bool(config_manager.first_time_setup_complete)
+
+
+def _show_env_proxy_migration(config_manager: ConfigManager, roblox_monitor) -> None:
+    """Acknowledge the forced legacy migration and optionally relaunch Player."""
+    player_running = bool(roblox_monitor.is_player_running())
+    if player_running:
+        # Do not let the process monitor interpret a Player that predates this
+        # startup as a fresh launch and relaunch it without the user's choice.
+        roblox_monitor.was_running = True
+        roblox_monitor._player_was_running = True
+
+    msg = QMessageBox(_visible_parent_widget())
+    msg.setWindowTitle('New Default: Roblox Env Proxy')
+    msg.setIcon(QMessageBox.Icon.Information)
+    msg.setText('Fleasion has switched your saved proxy mode to Roblox Env Proxy.')
+    details = (
+        'Env Proxy is the new recommended mode and does not require administrator '
+        'permission for normal use. Fleasion applies it only to Roblox Player '
+        '(including Sober); Roblox Studio is left untouched.\n\n'
+        'You can switch back at any time under Settings > Proxy > Proxy Mode. '
+        'Hosts File mode may require administrator permission.'
+    )
+    restart_button = None
+    if player_running and config_manager.proxy_features_enabled:
+        details += (
+            '\n\nRoblox Player is already running. It must be relaunched before '
+            'the new proxy mode applies to that session.'
+        )
+        restart_button = msg.addButton(
+            'Restart Roblox Now', QMessageBox.ButtonRole.AcceptRole
+        )
+        later_button = msg.addButton(
+            'Restart Roblox Later', QMessageBox.ButtonRole.RejectRole
+        )
+        msg.setDefaultButton(restart_button)
+        msg.setEscapeButton(later_button)
+    else:
+        if player_running:
+            details += (
+                '\n\nProxy features are currently disabled, so Fleasion will not '
+                'relaunch Roblox Player.'
+            )
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+    msg.setInformativeText(details)
+    if icon_path := get_icon_path():
+        from PyQt6.QtGui import QIcon
+
+        msg.setWindowIcon(QIcon(str(icon_path)))
+
+    msg.exec()
+    config_manager.env_proxy_migration_v1_complete = True
+
+    if restart_button is None or msg.clickedButton() is not restart_button:
+        return
+    lifecycle = getattr(roblox_monitor, 'env_lifecycle', None)
+    if lifecycle is None:
+        return
+    if sys.platform.startswith('linux'):
+        exe_path = Path('org.vinegarhq.Sober')
+    else:
+        exe_path = get_roblox_player_exe_path()
+    run_in_thread(lifecycle.handle_player_launch)(exe_path)
 
 
 class _MacOSAuthSourceDialog(QDialog):
@@ -164,7 +246,7 @@ def _should_sync_autostart_on_launch(run_on_boot: bool) -> bool:
     if sys.platform.startswith('linux'):
         return True
     if sys.platform == 'win32':
-        return _is_admin()
+        return True
     return False
 
 
@@ -182,20 +264,179 @@ def _refresh_desktop_integration_ui(tray, enabled: bool) -> None:
         tray._refresh_settings_tab()
 
 
-def _show_run_on_boot_failure(parent) -> None:
+def _show_run_on_boot_failure(parent, proxy_mode: str | None = None) -> None:
     msg = QMessageBox(parent)
     msg.setWindowTitle('Run on Boot Failed')
     msg.setIcon(QMessageBox.Icon.Warning)
+    if sys.platform == 'win32':
+        from .utils.autostart import windows_autostart_privilege_hint
+
+        msg.setText(
+            'Failed to register autostart.\n'
+            'A legacy task may have been created with administrator permissions.\n\n'
+            'Choose Ignore to leave Run on Boot enabled and try again on the next '
+            'launch, or choose Repair as administrator for a one-time task repair.\n\n'
+            f'{windows_autostart_privilege_hint(proxy_mode)}'
+        )
+    else:
+        msg.setText(
+            'Failed to register autostart.\n'
+            'Check the application log for details.\n\n'
+            'Turn off Run on Boot to stop this error from appearing.'
+        )
+    if icon_path := get_icon_path():
+        from PyQt6.QtGui import QIcon
+
+        msg.setWindowIcon(QIcon(str(icon_path)))
+
+    repair_button = None
+    if sys.platform == 'win32':
+        repair_button = msg.addButton(
+            'Repair as administrator', QMessageBox.ButtonRole.AcceptRole
+        )
+        ignore_button = msg.addButton('Ignore', QMessageBox.ButtonRole.RejectRole)
+        msg.setDefaultButton(ignore_button)
+    else:
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+    msg.exec()
+
+    if repair_button is not None and msg.clickedButton() == repair_button:
+        if _relaunch_as_admin(
+            extra_args='--repair-autostart', parent_hwnd=_window_handle(parent)
+        ):
+            log_buffer.log('Autostart', 'Elevated autostart repair started')
+            msg.setWindowTitle('Autostart Repair Started')
+            msg.setIcon(QMessageBox.Icon.Information)
+            msg.setText(
+                'The one-time administrator repair has started successfully.\n\n'
+                'Fleasion will remain open while the repair finishes in the background. '
+                'The scheduled task will use the current per-user launch configuration '
+                'on the next launch.'
+            )
+            msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+            msg.exec()
+        else:
+            log_buffer.log('Autostart', 'Elevated autostart repair was not started')
+
+
+def _show_roblox_permission_failure(parent, denied_dirs, mod_manager=None) -> None:
+    """Ask before permanently granting this Windows user access to failed installs."""
+    if sys.platform != 'win32':
+        return
+    paths = sorted({Path(path).resolve() for path in denied_dirs}, key=lambda value: str(value).lower())
+    if not paths:
+        return
+
+    msg = QMessageBox(parent)
+    msg.setWindowTitle('Roblox Installation Permission Required')
+    msg.setIcon(QMessageBox.Icon.Warning)
+    listed_paths = '\n'.join(f'- {path}' for path in paths)
     msg.setText(
-        'Failed to register autostart.\n'
-        'Check the application log for details.\n\n'
-        'Turn off Run on Boot to stop this error from appearing.\n\n'
-        'On Windows, ensure Fleasion is running as Administrator.'
+        'Fleasion could not write configured modifications or FastFlags to these Roblox '
+        f'Player installations:\n\n{listed_paths}\n\n'
+        'Would you like to permanently grant your current Windows account Modify access '
+        'to only these installation folders? Existing permissions are preserved. '
+        'This requires a one-time administrator prompt.'
     )
     if icon_path := get_icon_path():
         from PyQt6.QtGui import QIcon
 
         msg.setWindowIcon(QIcon(str(icon_path)))
+
+    grant_button = msg.addButton(
+        'Grant access for this Windows user', QMessageBox.ButtonRole.AcceptRole
+    )
+    ignore_button = msg.addButton('Ignore', QMessageBox.ButtonRole.RejectRole)
+    msg.setDefaultButton(ignore_button)
+    msg.exec()
+
+    if msg.clickedButton() != grant_button:
+        return
+
+    from .utils.windows_permissions import (
+        clear_repair_result,
+        clear_pending_repair,
+        write_pending_repair,
+    )
+
+    try:
+        clear_repair_result(CONFIG_DIR)
+        if not write_pending_repair(paths, CONFIG_DIR):
+            raise OSError('No valid Roblox installation folders were selected')
+        relaunched = _relaunch_as_admin(
+            extra_args='--repair-roblox-permissions',
+            parent_hwnd=_window_handle(parent),
+        )
+    except Exception as exc:
+        clear_pending_repair(CONFIG_DIR)
+        log_buffer.log('RobloxPermissions', f'Could not start elevated ACL repair: {exc}')
+        return
+
+    if relaunched:
+        log_buffer.log(
+            'RobloxPermissions',
+            'Elevated ACL repair started for the selected Roblox installations',
+        )
+        if mod_manager is not None:
+            deadline = time.monotonic() + _WINDOWS_REPAIR_RESULT_TIMEOUT_SECONDS
+            QTimer.singleShot(
+                500,
+                lambda: _poll_roblox_permission_repair(mod_manager, deadline),
+            )
+    else:
+        clear_pending_repair(CONFIG_DIR)
+
+
+def _poll_roblox_permission_repair(mod_manager, deadline: float) -> None:
+    """Consume a one-shot elevated ACL result and retry the normal write path."""
+    from .utils.windows_permissions import (
+        clear_pending_repair,
+        clear_repair_result,
+        read_repair_result,
+    )
+
+    result = read_repair_result(CONFIG_DIR)
+    if result is None:
+        if time.monotonic() < deadline:
+            QTimer.singleShot(
+                500,
+                lambda: _poll_roblox_permission_repair(mod_manager, deadline),
+            )
+            return
+        clear_pending_repair(CONFIG_DIR)
+        clear_repair_result(CONFIG_DIR)
+        log_buffer.log(
+            'RobloxPermissions',
+            'Timed out waiting for the elevated Roblox permission repair',
+        )
+        QMessageBox.warning(
+            _visible_parent_widget(),
+            'Roblox Permission Repair Timed Out',
+            'Fleasion did not receive a result from the administrator process. '
+            'No additional permission repair will be attempted automatically.',
+        )
+        return
+
+    clear_repair_result(CONFIG_DIR)
+    clear_pending_repair(CONFIG_DIR)
+    if result.get('ok'):
+        log_buffer.log(
+            'RobloxPermissions',
+            f"Granted Modify access to {len(result.get('granted', []))} Roblox installation(s)",
+        )
+        run_in_thread(mod_manager.reapply_all)()
+        return
+
+    detail = result.get('error') or result.get('failed') or 'icacls could not update the ACL'
+    log_buffer.log('RobloxPermissions', f'ACL repair failed: {detail}')
+    msg = QMessageBox(_visible_parent_widget())
+    msg.setWindowTitle('Roblox Permission Repair Failed')
+    msg.setIcon(QMessageBox.Icon.Warning)
+    msg.setText(
+        'Fleasion could not update the permissions for one or more Roblox installations.\n\n'
+        f'{detail}'
+    )
+    msg.setStandardButtons(QMessageBox.StandardButton.Ok)
     msg.exec()
 
 
@@ -242,7 +483,10 @@ def _prompt_first_time_startup_options(config_manager: ConfigManager, tray=None)
         'Fleasion to your operating system launcher and is refreshed on each launch.'
     )
     if sys.platform == 'win32':
-        message += '\n\nOn this OS, boot launches will be auto-elevated.'
+        message += (
+            '\n\nRun on Boot uses a normal per-user task. Hosts File mode may still '
+            'request administrator permission after Fleasion starts.'
+        )
     label.setText(message)
     layout.addWidget(label)
 
@@ -284,7 +528,11 @@ def _prompt_first_time_startup_options(config_manager: ConfigManager, tray=None)
     try:
         from .utils.autostart import sync_autostart
 
-        boot_ok = sync_autostart(enable_run_on_boot, CONFIG_DIR)
+        boot_ok = sync_autostart(
+            enable_run_on_boot,
+            CONFIG_DIR,
+            proxy_mode=config_manager.proxy_mode,
+        )
     except Exception as exc:
         boot_ok = False
         log_buffer.log('Autostart', f'First-time run-on-boot prompt failed: {exc}')
@@ -295,9 +543,30 @@ def _prompt_first_time_startup_options(config_manager: ConfigManager, tray=None)
     _refresh_desktop_integration_ui(tray, config_manager.desktop_integration)
 
     if enable_run_on_boot and not boot_ok:
-        _show_run_on_boot_failure(dialog.parentWidget())
+        _show_run_on_boot_failure(dialog.parentWidget(), config_manager.proxy_mode)
     if enable_desktop_integration and not desktop_ok:
         _show_desktop_integration_failure(dialog.parentWidget())
+
+
+def _append_windows_requesting_user_args(existing_args: list[str]) -> bool:
+    """Carry the pre-UAC desktop identity into a one-shot elevated child."""
+    if sys.platform != 'win32':
+        return True
+    if any(arg.startswith('--fleasion-requesting-user-sid=') for arg in existing_args):
+        return True
+    try:
+        from .utils.windows_permissions import current_windows_user_identity
+
+        sid, _account_name = current_windows_user_identity()
+    except Exception as exc:
+        log_buffer.log('UAC', f'Could not capture requesting Windows identity: {exc}')
+        return False
+    existing_args.extend(
+        [
+            f'--fleasion-requesting-user-sid={sid}',
+        ]
+    )
+    return True
 
 
 def _relaunch_as_admin(extra_args: str = '', parent_hwnd: int | None = None) -> bool:
@@ -368,6 +637,11 @@ def _relaunch_as_admin(extra_args: str = '', parent_hwnd: int | None = None) -> 
         existing_args.append(f'--fleasion-user-localappdata={local_appdata}')
     if extra_args.strip():
         existing_args.extend(extra_args.strip().split())
+    requesting_identity_captured = _append_windows_requesting_user_args(existing_args)
+    if extra_args.strip().startswith(('--repair-autostart', '--repair-roblox-permissions')) and not (
+        requesting_identity_captured
+    ):
+        return False
     # ShellExecuteEx returns as soon as the elevated child is created, while
     # this normal-user Qt process can still own the single-instance slot.  Let
     # the elevated copy request a clean exit from that parent before it tries
@@ -392,14 +666,7 @@ def _relaunch_as_admin(extra_args: str = '', parent_hwnd: int | None = None) -> 
             # Reconstruct:  uv run fleasion  (the original entry-point)
             exe = uv_exe
             # Pass the project directory so uv finds pyproject.toml correctly
-            cwd = os.path.dirname(os.path.abspath(sys.argv[0]))
-            # Walk up from the script to find the dir containing pyproject.toml
-            check = cwd
-            for _ in range(6):
-                if os.path.exists(os.path.join(check, 'pyproject.toml')):
-                    cwd = check
-                    break
-                check = os.path.dirname(check)
+            cwd = str(Path(__file__).resolve().parents[2])
             # ShellExecuteW doesn't let us set cwd directly for the child, but
             # we can pass --project to tell uv where to look.
             params = subprocess.list2cmdline(['--project', cwd, 'run', 'fleasion', *existing_args])
@@ -472,6 +739,163 @@ def _relaunch_as_admin(extra_args: str = '', parent_hwnd: int | None = None) -> 
                 f'Administrator relaunch failed: WinError {err}: {ctypes.FormatError(err)}',
             )
     return bool(ok)
+
+
+def _repair_autostart_once(requesting_user_sid: str | None = None) -> int:
+    """Repair the Windows autostart task from a one-shot elevated process."""
+    if sys.platform != 'win32' or not _is_admin():
+        log_buffer.log('Autostart', 'Elevated autostart repair rejected: administrator access is required')
+        return 1
+
+    from .utils.autostart import sync_autostart
+    from .utils.windows_permissions import windows_user_id_from_sid
+
+    if not requesting_user_sid:
+        log_buffer.log('Autostart', 'Elevated autostart repair has no requesting user identity')
+        return 1
+
+    try:
+        requesting_user_id = windows_user_id_from_sid(requesting_user_sid)
+    except Exception as exc:
+        log_buffer.log('Autostart', f'Invalid requesting Windows identity: {exc}')
+        return 1
+
+    try:
+        proxy_mode = ConfigManager().proxy_mode
+    except Exception:
+        proxy_mode = None
+    if sync_autostart(
+        True,
+        CONFIG_DIR,
+        windows_user_id=requesting_user_id,
+        proxy_mode=proxy_mode,
+    ):
+        log_buffer.log('Autostart', 'Elevated autostart repair completed')
+        return 0
+
+    log_buffer.log('Autostart', 'Elevated autostart repair failed')
+    return 1
+
+
+def _repair_roblox_permissions_once(requesting_user_sid: str | None = None) -> int:
+    """Apply a pending targeted Roblox ACL repair from a one-shot UAC child."""
+    from .utils.windows_permissions import (
+        clear_pending_repair,
+        grant_current_user_modify_access,
+        read_pending_repair,
+        write_repair_result,
+    )
+
+    if sys.platform != 'win32' or not _is_admin():
+        log_buffer.log(
+            'RobloxPermissions',
+            'Elevated Roblox ACL repair rejected: administrator access is required',
+        )
+        return 1
+
+    if not requesting_user_sid:
+        log_buffer.log(
+            'RobloxPermissions',
+            'Elevated Roblox ACL repair has no requesting user identity',
+        )
+        return 1
+
+    paths = read_pending_repair(CONFIG_DIR)
+    if not paths:
+        result = {
+            'ok': False,
+            'granted': [],
+            'failed': [],
+            'error': 'No pending Roblox installation permission repair was found',
+        }
+    else:
+        try:
+            result = grant_current_user_modify_access(
+                paths,
+                user_sid=requesting_user_sid,
+            )
+        except Exception as exc:
+            result = {
+                'ok': False,
+                'granted': [],
+                'failed': [],
+                'error': f'Unexpected ACL repair error: {exc}',
+            }
+
+    try:
+        write_repair_result(result, CONFIG_DIR)
+    finally:
+        clear_pending_repair(CONFIG_DIR)
+
+    if result.get('ok'):
+        log_buffer.log('RobloxPermissions', 'Elevated Roblox ACL repair completed')
+        return 0
+    log_buffer.log('RobloxPermissions', f"Elevated Roblox ACL repair failed: {result}")
+    return 1
+
+
+def restart_fleasion_normally(*, preserve_env_proxy_player: bool = False) -> bool:
+    """Relaunch Fleasion as a normal (non-elevated) process and return
+    whether the new process was spawned - used when a setting change (e.g.
+    switching the proxy mode back to Hosts File) needs a full restart to
+    apply cleanly. Unlike ``_relaunch_as_admin``, this never triggers an
+    OS elevation prompt, and is implemented for all three platforms (the
+    admin version is a no-op stub on Linux). The caller is responsible for
+    then exiting this process - it isn't done here, same as
+    ``_relaunch_as_admin``.
+
+    Reuses the frozen-vs-dev relaunch-command logic from
+    ``_relaunch_as_admin`` (locating ``uv``/``launcher.py`` as needed) minus
+    the ``runas``/``osascript administrator`` elevation wrapping, and passes
+    ``--kill-others`` so the new process' own single-instance startup check
+    asks this one to exit if there's ever a timing race between the two.
+    """
+    existing_args = [
+        arg for arg in sys.argv[1:] if arg != '--preserve-env-proxy-player'
+    ]
+    if '--kill-others' not in existing_args:
+        existing_args.append('--kill-others')
+    if preserve_env_proxy_player:
+        existing_args.append('--preserve-env-proxy-player')
+
+    creationflags = 0
+    popen_kwargs = {}
+
+    if getattr(sys, 'frozen', False):
+        launch = [sys.executable, *existing_args]
+        if sys.platform != 'win32':
+            popen_kwargs['start_new_session'] = True
+    elif sys.platform == 'win32':
+        import shutil
+
+        uv_exe = shutil.which('uv') or shutil.which('uv.exe')
+        if uv_exe:
+            cwd = str(Path(__file__).resolve().parents[2])
+            launch = [uv_exe, '--project', cwd, 'run', 'fleasion', *existing_args]
+        else:
+            launch = [sys.executable, sys.argv[0], *existing_args]
+        # A dev/uv relaunch is a console app under the hood - avoid flashing
+        # a visible console window for what should look like a GUI restart.
+        creationflags = subprocess.CREATE_NO_WINDOW
+    else:
+        project_root = Path(__file__).resolve().parents[2]
+        launcher = project_root / 'launcher.py'
+        if launcher.exists():
+            launch = [sys.executable, str(launcher), *existing_args]
+        else:
+            launch = [sys.executable, sys.argv[0], *existing_args]
+        popen_kwargs['start_new_session'] = True
+
+    if sys.platform == 'win32':
+        popen_kwargs['creationflags'] = creationflags
+
+    try:
+        subprocess.Popen(launch, **popen_kwargs)
+    except Exception as exc:
+        log_buffer.log('Restart', f'Failed to relaunch Fleasion: {exc}')
+        return False
+    log_buffer.log('Restart', 'Relaunching Fleasion normally to apply a setting change')
+    return True
 
 
 def _attempt_silent_elevation(extra_args: str = '', parent_hwnd: int | None = None) -> bool:
@@ -553,9 +977,10 @@ def _show_admin_required_dialog(parent=None):
 
 
 def _show_proxy_bind_error_dialog(details: dict):
-    """Show a user-facing popup when Fleasion cannot bind proxy port 443."""
+    """Show a user-facing popup when Fleasion cannot bind its proxy port."""
     port = int(details.get('port') or 443)
     owners = details.get('owners') or []
+    bind_reason = str(details.get('bind_reason') or '')
 
     _top = QApplication.topLevelWidgets()
     _parent = next((w for w in _top if w.isVisible()), None)
@@ -570,7 +995,12 @@ def _show_proxy_bind_error_dialog(details: dict):
     msg.setIcon(QMessageBox.Icon.Warning)
     msg.setText(f'Fleasion could not start its local proxy on port {port}.')
 
-    if owners:
+    if bind_reason == 'access_denied_or_reserved':
+        owners_html = (
+            f'Windows denied access to port {port}; it may be reserved or excluded even though '
+            'no listening process appears in netstat.<br><br>'
+        )
+    elif owners:
         owner_lines = '<br>'.join(
             f'- {html.escape(str(owner.get("process_name") or "Unknown"))} '
             f'(PID {int(owner.get("pid") or 0)}) on '
@@ -768,7 +1198,7 @@ def _show_linux_hosts_read_only_dialog(details: dict):
 
 
 def _show_macos_ca_patch_failed_dialog(details: dict):
-    """Show a user-facing popup when the helper cannot verify Roblox cacert.pem."""
+    """Show a user-facing popup when Roblox cacert.pem cannot be verified."""
     _top = QApplication.topLevelWidgets()
     _parent = next((w for w in _top if w.isVisible()), None)
     _on_top = any(
@@ -809,10 +1239,19 @@ def _show_macos_ca_patch_failed_dialog(details: dict):
     msg.setInformativeText(
         'Roblox would reject Fleasion proxy certificates until its bundled '
         '<code>ssl/cacert.pem</code> contains the Fleasion CA exactly once.<br><br>'
-        'Restart Fleasion and approve the helper install/upgrade if prompted. If this keeps happening, '
-        'repair or reinstall Roblox, then start Fleasion again.' + diagnostics_html
+        'A protected Roblox installation may need Fleasion\'s small privileged helper. '
+        'If this keeps happening, repair or reinstall Roblox, then start Fleasion again.'
+        + diagnostics_html
     )
-    msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+    install_button = None
+    if details.get('helper_required'):
+        install_button = msg.addButton(
+            'Install Helper and Retry', QMessageBox.ButtonRole.AcceptRole
+        )
+        msg.addButton('Not Now', QMessageBox.ButtonRole.RejectRole)
+        msg.setDefaultButton(install_button)
+    else:
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
     if icon_path := get_icon_path():
         from PyQt6.QtGui import QIcon
 
@@ -825,6 +1264,128 @@ def _show_macos_ca_patch_failed_dialog(details: dict):
         )
 
     msg.exec()
+    return 'install_helper' if install_button is not None and msg.clickedButton() == install_button else None
+
+
+def _show_macos_ca_trust_failed_dialog(details: dict):
+    """Explain why launcher traffic cannot be intercepted safely."""
+    raw_error = html.escape(str(details.get('error') or 'unknown helper error'))
+    _top = QApplication.topLevelWidgets()
+    _parent = next((w for w in _top if w.isVisible()), None)
+
+    msg = QMessageBox(_parent)
+    msg.setWindowTitle('macOS Launcher CA Trust Failed')
+    msg.setIcon(QMessageBox.Icon.Warning)
+    msg.setText(
+        'Fleasion could not establish macOS trust for launcher network traffic, '
+        'so the proxy was not started.'
+    )
+    msg.setTextFormat(Qt.TextFormat.RichText)
+    msg.setInformativeText(
+        'Froststrap and AppleBlox can contact intercepted Roblox endpoints before '
+        'Roblox starts. Their HTTP clients require the same Fleasion CA to be trusted '
+        'by macOS.<br><br>Unlock the login keychain if prompted, then restart Fleasion.'
+        f'<br><br>Technical details:<br>{raw_error}'
+    )
+    msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+    if icon_path := get_icon_path():
+        from PyQt6.QtGui import QIcon
+
+        msg.setWindowIcon(QIcon(str(icon_path)))
+    msg.exec()
+
+
+def _show_roblox_ca_patch_failed_dialog(details: dict) -> None:
+    failed = details.get('failed') or []
+    lines = []
+    for item in failed[:8] if isinstance(failed, list) else []:
+        if not isinstance(item, dict):
+            continue
+        path = item.get('ca_file') or item.get('resource_dir') or '(unknown path)'
+        error = item.get('error') or item.get('status') or 'verification failed'
+        lines.append(f'{path}: {error}')
+    diagnostics = '\n'.join(lines) or str(details.get('error') or 'No writable Roblox installation was found.')
+    QMessageBox.critical(
+        _visible_parent_widget(),
+        'Fleasion - Roblox Files Are Protected',
+        'Fleasion could not prepare Roblox Player for Env Proxy, so Roblox was not relaunched.\n\n'
+        'Move or reinstall Roblox in a directory your user account can modify, then restart Fleasion.\n\n'
+        f'Details:\n{diagnostics}',
+    )
+
+
+def _show_macos_relay_failed_dialog(details: dict) -> str:
+    """Explain a failed privileged relay and return the requested recovery action."""
+    from .utils.macos_proxy_helper import HELPER_LOG_DIR
+
+    _top = QApplication.topLevelWidgets()
+    _parent = next((w for w in _top if w.isVisible()), None)
+    _on_top = any(
+        w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in _top
+    )
+
+    backend_probe = details.get('backend_probe') or {}
+    reachable = bool(backend_probe.get('reachable'))
+    if reachable:
+        probe_html = (
+            'The helper can currently reach Fleasion’s backend, but TLS forwarding through '
+            '<code>127.0.0.1:443</code> still failed.'
+        )
+    else:
+        error_type = html.escape(str(backend_probe.get('error_type') or 'connection error'))
+        error_text = html.escape(str(backend_probe.get('error') or 'No details were reported.'))
+        probe_html = (
+            'The helper could not reach Fleasion’s backend on '
+            f'<code>127.0.0.1:{int(details.get("backend_port") or 58443)}</code>.<br>'
+            f'Technical details: {error_type}: {error_text}'
+        )
+
+    attempts = int(details.get('attempts') or 1)
+    while True:
+        msg = QMessageBox(_parent)
+        if _on_top:
+            msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
+        msg.setWindowTitle('macOS Proxy Relay Failed')
+        msg.setIcon(QMessageBox.Icon.Warning)
+        msg.setText('Fleasion could not start its privileged local HTTPS relay.')
+        msg.setTextFormat(Qt.TextFormat.RichText)
+        msg.setInformativeText(
+            f'The relay was tested {attempts} times and the proxy was stopped before any '
+            'Roblox hosts were redirected, so Roblox networking was left unchanged.<br><br>'
+            f'{probe_html}<br><br>'
+            'A stale helper or macOS firewall/network filter can cause this. Retry once, '
+            'or reinstall the helper to restart and replace its LaunchDaemon.'
+        )
+        retry_button = msg.addButton('Retry', QMessageBox.ButtonRole.AcceptRole)
+        reinstall_button = msg.addButton(
+            'Reinstall Helper', QMessageBox.ButtonRole.ActionRole
+        )
+        logs_button = msg.addButton('Open Helper Logs', QMessageBox.ButtonRole.ActionRole)
+        close_button = msg.addButton(QMessageBox.StandardButton.Close)
+        msg.setDefaultButton(reinstall_button)
+        if icon_path := get_icon_path():
+            from PyQt6.QtGui import QIcon
+
+            msg.setWindowIcon(QIcon(str(icon_path)))
+
+        for label in msg.findChildren(QLabel):
+            label.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextBrowserInteraction
+                | Qt.TextInteractionFlag.TextSelectableByMouse
+            )
+
+        msg.exec()
+        clicked = msg.clickedButton()
+        if clicked == retry_button:
+            return 'retry'
+        if clicked == reinstall_button:
+            return 'reinstall'
+        if clicked == logs_button:
+            open_folder(HELPER_LOG_DIR)
+            continue
+        if clicked == close_button:
+            return 'close'
+        return 'close'
 
 
 def _choose_macos_auth_source_on_launch(config_manager, tray=None, *, force: bool = False) -> str:
@@ -1250,11 +1811,72 @@ def _show_auth_cookie_unavailable_dialog(details: dict, tray=None):
             webbrowser.open('https://www.roblox.com/login')
 
 
+def _show_windows_upstream_firewall_dialog(details: dict) -> None:
+    """Explain a blocked upstream connection without installing broad rules."""
+    if sys.platform != 'win32':
+        return
+
+    host = str(details.get('host') or 'a Roblox content server')
+    msg = QMessageBox(_visible_parent_widget())
+    msg.setWindowTitle('Fleasion - Connection Blocked')
+    msg.setIcon(QMessageBox.Icon.Warning)
+    msg.setText(f'Fleasion could not connect securely to {host}.')
+    if details.get('proxy_mode') == 'env':
+        explanation = (
+            'Env Proxy listens only on this computer\'s loopback interface and does not need '
+            'a public or private inbound firewall exception. Check whether Windows Firewall, '
+            'antivirus, a VPN, or an organization policy is blocking Fleasion\'s outbound connection.'
+        )
+    else:
+        explanation = (
+            'Check whether Windows Firewall, antivirus, a VPN, or an organization policy is '
+            'blocking Fleasion. Fleasion will not install firewall rules automatically.'
+        )
+    msg.setInformativeText(explanation)
+    settings_button = msg.addButton(
+        'Open Firewall Settings', QMessageBox.ButtonRole.ActionRole
+    )
+    msg.addButton('Not Now', QMessageBox.ButtonRole.RejectRole)
+    msg.setDefaultButton(settings_button)
+    msg.exec()
+
+    if msg.clickedButton() == settings_button:
+        try:
+            subprocess.Popen(
+                [
+                    'control.exe',
+                    '/name',
+                    'Microsoft.WindowsFirewall',
+                    '/page',
+                    'pageConfigureApps',
+                ]
+            )
+        except OSError as exc:
+            QMessageBox.warning(
+                msg.parentWidget(), 'Fleasion', f'Could not open Firewall settings: {exc}'
+            )
+        return
+
+
+def _show_tls_self_test_failed_dialog(details: dict) -> None:
+    """Show a user-facing error when the proxy cannot pass startup TLS checks."""
+    hosts = details.get('hosts') or []
+    host_text = ', '.join(str(host) for host in hosts) or 'the configured Roblox routes'
+    QMessageBox.critical(
+        _visible_parent_widget(),
+        'Fleasion - Proxy Startup Failed',
+        'Fleasion could not start its local proxy because its TLS self-test failed.\n\n'
+        f'Routes tested: {host_text}\n\n'
+        'Check the Fleasion log for the certificate or network error, then restart Fleasion.',
+    )
+
+
 class _ProxyErrorInvoker(QObject):
     """Main-thread bridge for proxy startup errors emitted from worker threads."""
 
     show_proxy_error = pyqtSignal(str, dict)
     disable_proxy_features = pyqtSignal(str)
+    retry_proxy = pyqtSignal()
 
     @pyqtSlot(str, dict)
     def handle_proxy_error(self, code: str, details: dict):
@@ -1265,7 +1887,70 @@ class _ProxyErrorInvoker(QObject):
         elif code == 'linux_hosts_read_only':
             _show_linux_hosts_read_only_dialog(details)
         elif code == 'macos_ca_patch_failed':
-            _show_macos_ca_patch_failed_dialog(details)
+            if _show_macos_ca_patch_failed_dialog(details) == 'install_helper':
+                from .utils.macos_proxy_helper import install_helper
+
+                ok, detail = install_helper()
+                if ok:
+                    log_buffer.log(
+                        'ProxyHelper',
+                        'macOS proxy helper installed for protected cacert.pem; retrying proxy startup',
+                    )
+                    self.retry_proxy.emit()
+                else:
+                    log_buffer.log('ProxyHelper', f'macOS proxy helper install failed: {detail}')
+                    QMessageBox.warning(
+                        _visible_parent_widget(),
+                        'Fleasion - Proxy Helper Installation Failed',
+                        f'Fleasion could not install or start the macOS proxy helper.\n\n{detail}',
+                    )
+        elif code == 'macos_ca_trust_failed':
+            _show_macos_ca_trust_failed_dialog(details)
+        elif code == 'roblox_ca_patch_failed':
+            _show_roblox_ca_patch_failed_dialog(details)
+        elif code == 'macos_relay_failed':
+            action = _show_macos_relay_failed_dialog(details)
+            if action == 'retry':
+                self.retry_proxy.emit()
+            elif action == 'reinstall':
+                from .utils.macos_proxy_helper import install_helper
+
+                ok, detail = install_helper()
+                if ok:
+                    log_buffer.log(
+                        'ProxyHelper',
+                        'macOS proxy helper reinstalled after relay failure; retrying proxy startup',
+                    )
+                    self.retry_proxy.emit()
+                else:
+                    log_buffer.log(
+                        'ProxyHelper',
+                        f'macOS proxy helper reinstall failed: {detail}',
+                    )
+                    QMessageBox.warning(
+                        _visible_parent_widget(),
+                        'Fleasion - Proxy Helper Reinstall Failed',
+                        f'Fleasion could not reinstall or restart the macOS proxy helper.\n\n{detail}',
+                    )
+        elif code == 'upstream_connect_failed':
+            _show_windows_upstream_firewall_dialog(details)
+        elif code == 'tls_self_test_failed':
+            _show_tls_self_test_failed_dialog(details)
+
+
+def _manual_upstream_credentials_missing(config_manager) -> bool:
+    mode = config_manager.upstream_transport_mode
+    if mode == 'http_connect':
+        return not bool(
+            config_manager.upstream_http_connect_username.strip()
+            or config_manager.upstream_http_connect_password
+        )
+    if mode == 'socks5':
+        return not bool(
+            config_manager.upstream_socks5_username.strip()
+            or config_manager.upstream_socks5_password
+        )
+    return False
 
 
 def _disable_proxy_features_after_start_failure(
@@ -1303,6 +1988,47 @@ class _AuthCheckInvoker(QObject):
     completed = pyqtSignal(bool, dict)
 
 
+class _RobloxUrlEventFilter(QObject):
+    """Receive Roblox URL open events delivered to the macOS app bundle."""
+
+    roblox_uri_received = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._ready = False
+        self._pending: list[str] = []
+
+    @staticmethod
+    def _event_target(event: QEvent) -> str | None:
+        if event.type() != QEvent.Type.FileOpen:
+            return None
+        try:
+            url = event.url()
+            target = url.toString() if url.isValid() else ''
+        except AttributeError:
+            target = ''
+        target = str(target).strip()
+        if target.startswith(('roblox:', 'roblox-player:')):
+            return target
+        return None
+
+    def eventFilter(self, _watched, event):
+        target = self._event_target(event)
+        if target is not None:
+            if self._ready:
+                self.roblox_uri_received.emit(target)
+            else:
+                self._pending.append(target)
+        return False
+
+    def start(self) -> None:
+        self._ready = True
+        pending = self._pending
+        self._pending = []
+        for target in pending:
+            self.roblox_uri_received.emit(target)
+
+
 class RobloxExitMonitor(QObject):
     """Monitors Roblox process and triggers cache deletion on exit."""
 
@@ -1311,41 +2037,182 @@ class RobloxExitMonitor(QObject):
         bool
     )  # Emitted when RobloxPlayerBeta opens/closes (True = running)
 
-    def __init__(self, config_manager, proxy_master=None, mod_manager=None):
+    def __init__(
+        self,
+        config_manager,
+        proxy_master=None,
+        mod_manager=None,
+        env_lifecycle=None,
+    ):
         super().__init__()
         self.config_manager = config_manager
         self._proxy_master = proxy_master
         self._mod_manager = mod_manager
-        self.was_running = False
-        self._player_was_running = False
+        self.env_lifecycle = env_lifecycle
+        self._status_lock = threading.Lock()
+        adopted_running = bool(env_lifecycle and env_lifecycle.owns_player)
+        self.was_running = adopted_running
+        self._player_was_running = adopted_running
+        self._suppress_next_player_exit_cache_delete = False
         self._studio_was_running = False
         self._studio_notified = False
         self._studio_suppress_session = False
+        self._macos_uri_interceptor = None
+        self._macos_plain_launch_lock = threading.Lock()
+        self._macos_plain_launches: dict[int, Path] = {}
+        if (
+            sys.platform == 'darwin'
+            and env_lifecycle is not None
+            and proxy_master is not None
+            and config_manager.proxy_mode == 'env'
+            and config_manager.proxy_features_enabled
+            and callable(getattr(proxy_master, 'wait_for_env_proxy_ready', None))
+        ):
+            try:
+                from .utils.platform_macos import MacOSRobloxUriInterceptor
+
+                self._macos_uri_interceptor = MacOSRobloxUriInterceptor(
+                    is_armed=self._macos_uri_interception_armed,
+                    on_intercepted=self._handle_macos_uri_interception,
+                )
+                self._macos_uri_interceptor.start()
+            except Exception as exc:
+                log_buffer.log(
+                    'Launcher',
+                    f'Could not start macOS Roblox URI watcher: {type(exc).__name__}: {exc}',
+                )
         self._studio_detected.connect(self._on_studio_detected)
 
     def is_player_running(self) -> bool:
         """Return whether Roblox Player is currently running."""
         return is_roblox_running()
 
+    def stop(self) -> None:
+        """Release the macOS URI watcher during normal application shutdown."""
+        with self._macos_plain_launch_lock:
+            self._macos_plain_launches.clear()
+        interceptor = self._macos_uri_interceptor
+        if interceptor is not None:
+            interceptor.stop()
+
+    def _macos_uri_interception_armed(self) -> bool:
+        """Return whether it is safe to stop and replay a browser URI launch."""
+        if (
+            sys.platform != 'darwin'
+            or self._proxy_master is None
+            or self.env_lifecycle is None
+            or self.config_manager.proxy_mode != 'env'
+            or not self.config_manager.proxy_features_enabled
+            or self.env_lifecycle.owns_player
+            or self.env_lifecycle.operation_in_progress
+        ):
+            return False
+        ready = getattr(self._proxy_master, 'wait_for_env_proxy_ready', None)
+        try:
+            return bool(callable(ready) and ready(timeout=0.0))
+        except Exception:
+            return False
+
+    def _handle_macos_uri_interception(self, launch, target: str) -> None:
+        """Run after the watcher has already SIGKILLed the original Player."""
+        if self.env_lifecycle is None:
+            return
+        self._suppress_next_player_exit_cache_delete = True
+        with self._macos_plain_launch_lock:
+            self._macos_plain_launches.pop(int(launch.pid), None)
+        self.env_lifecycle.handle_intercepted_player_launch(
+            Path(launch.executable_path), target
+        )
+
+    def _schedule_macos_plain_launch_fallback(self, exe_path: Path) -> None:
+        """Keep ordinary Dock/Finder launches on the existing Env Proxy path."""
+        if self._macos_uri_interceptor is None:
+            return
+        identity = get_roblox_process_identity()
+        if not isinstance(identity, tuple) or not identity:
+            return
+        try:
+            pid = int(identity[0])
+        except (TypeError, ValueError):
+            return
+        with self._macos_plain_launch_lock:
+            if pid in self._macos_plain_launches:
+                return
+            self._macos_plain_launches[pid] = Path(exe_path)
+
+        def _fallback() -> None:
+            time.sleep(_MACOS_PLAIN_LAUNCH_CLASSIFICATION_SECONDS)
+            with self._macos_plain_launch_lock:
+                pending_exe = self._macos_plain_launches.pop(pid, None)
+            if pending_exe is None or self.env_lifecycle is None:
+                return
+            if (
+                self._macos_uri_interceptor is not None
+                and self._macos_uri_interceptor.has_claimed_pid(pid)
+            ):
+                return
+            current_identity = get_roblox_process_identity()
+            if not isinstance(current_identity, tuple) or not current_identity:
+                return
+            try:
+                if int(current_identity[0]) != pid:
+                    return
+            except (TypeError, ValueError):
+                return
+            if not self._macos_uri_interception_armed():
+                return
+            self._suppress_next_player_exit_cache_delete = True
+            self.env_lifecycle.handle_player_launch(pending_exe)
+
+        threading.Thread(
+            target=_fallback,
+            name='FleasionMacOSPlainLaunchFallback',
+            daemon=True,
+        ).start()
+
     @run_in_thread
     def check_roblox_status(self):
+        """Coalesce timer ticks so process edges are handled exactly once."""
+        if not self._status_lock.acquire(blocking=False):
+            return
+        try:
+            self._check_roblox_status_locked()
+        finally:
+            self._status_lock.release()
+
+    def _check_roblox_status_locked(self):
         """Check if Roblox has exited and trigger cache deletion if needed."""
         is_running = is_roblox_running()
+        player_status_observed_at = time.monotonic()
+        intentional_player_exit = False
 
         # --- Roblox Player: player status changed signal ---
         if self._player_was_running != is_running:
             self.player_status_changed.emit(is_running)
             if self._proxy_master is not None:
                 self._proxy_master.set_roblox_player_running(is_running)
+            if self._player_was_running and not is_running and self.env_lifecycle is not None:
+                intentional_player_exit = self.env_lifecycle.consume_intentional_player_exit(
+                    player_status_observed_at
+                )
+                if not intentional_player_exit:
+                    self.env_lifecycle.note_unexpected_player_exit()
 
         # --- Roblox Player: launch detection - check CA cert on new launch ---
         if not self._player_was_running and is_running:
             if sys.platform.startswith('linux'):
                 exe_path = Path('org.vinegarhq.Sober')
                 if self._mod_manager is not None:
-                    self._mod_manager.refresh_roblox_dirs()
+                    self._mod_manager.refresh_roblox_dirs(reapply_if_changed=True)
                 proxy_features_enabled = self.config_manager.proxy_features_enabled
-                if self._proxy_master is not None and proxy_features_enabled:
+                if (
+                    self.config_manager.proxy_mode == 'env'
+                    and self._proxy_master is not None
+                    and proxy_features_enabled
+                ):
+                    if self.env_lifecycle is not None:
+                        run_in_thread(self.env_lifecycle.handle_player_launch)(exe_path)
+                elif self._proxy_master is not None and proxy_features_enabled:
                     run_in_thread(self._proxy_master.refresh_and_restart_roblox)(exe_path)
                 elif self._proxy_master is None and proxy_features_enabled:
                     run_in_thread(check_and_patch_running_roblox_ca)(exe_path)
@@ -1366,8 +2233,72 @@ class RobloxExitMonitor(QObject):
                 if exe_path is not None:
                     proxy_features_enabled = self.config_manager.proxy_features_enabled
                     if self._mod_manager is not None:
-                        self._mod_manager.refresh_roblox_dirs()
-                    if self._proxy_master is not None and proxy_features_enabled:
+                        self._mod_manager.refresh_roblox_dirs(reapply_if_changed=True)
+                    if (
+                        sys.platform == 'win32'
+                        and self.config_manager.proxy_mode == 'env'
+                        and self._proxy_master is not None
+                        and proxy_features_enabled
+                    ):
+                        from .utils.platform_windows import (
+                            is_roblox_gdk_env_proxy_armed,
+                            is_gdk_env_proxy_activation_in_progress,
+                            is_env_proxy_relaunched_player_running,
+                            is_roblox_gdk_exe_path,
+                        )
+
+                        if is_roblox_gdk_exe_path(exe_path):
+                            gdk_env_proxy_armed = (
+                                is_roblox_gdk_env_proxy_armed()
+                                or is_gdk_env_proxy_activation_in_progress()
+                            )
+                            if gdk_env_proxy_armed and self.env_lifecycle is not None:
+                                log_buffer.log(
+                                    'Launcher',
+                                    'Xbox/GDK Env Proxy package activation supplied the '
+                                    'initial Player; handing it to Env Proxy lifecycle monitoring',
+                                )
+                                self._suppress_next_player_exit_cache_delete = True
+                                run_in_thread(
+                                    self.env_lifecycle.handle_adopted_player_launch
+                                )(exe_path)
+                            else:
+                                log_buffer.log(
+                                    'Launcher',
+                                    'Xbox/GDK Env Proxy package activation is unavailable; '
+                                    'leaving the initial package Player untouched',
+                                )
+                                self._suppress_next_player_exit_cache_delete = False
+                        elif is_env_proxy_relaunched_player_running():
+                            log_buffer.log(
+                                'Launcher',
+                                'Roblox Env Proxy Player already running; skipping duplicate launch handling',
+                            )
+                            self._suppress_next_player_exit_cache_delete = False
+                        else:
+                            self._suppress_next_player_exit_cache_delete = True
+
+                            def _handle_env_proxy_player_launch() -> None:
+                                lifecycle = self.env_lifecycle
+                                started = bool(
+                                    lifecycle is not None
+                                    and lifecycle.handle_player_launch(exe_path)
+                                )
+                                if not started:
+                                    self._suppress_next_player_exit_cache_delete = False
+
+                            run_in_thread(_handle_env_proxy_player_launch)()
+                    elif (
+                        self.config_manager.proxy_mode == 'env'
+                        and self._proxy_master is not None
+                        and proxy_features_enabled
+                    ):
+                        if self.env_lifecycle is not None:
+                            if sys.platform == 'darwin':
+                                self._schedule_macos_plain_launch_fallback(exe_path)
+                            else:
+                                run_in_thread(self.env_lifecycle.handle_player_launch)(exe_path)
+                    elif self._proxy_master is not None and proxy_features_enabled:
                         run_in_thread(self._proxy_master.refresh_and_restart_roblox)(exe_path)
                     elif self._proxy_master is None and proxy_features_enabled:
                         run_in_thread(check_and_patch_running_roblox_ca)(exe_path)
@@ -1386,24 +2317,44 @@ class RobloxExitMonitor(QObject):
         # --- Roblox Player: auto cache deletion on exit ---
         if self.config_manager.auto_delete_cache_on_exit:
             if self.was_running and not is_running:
-                log_buffer.log('Cache', 'Roblox exited, deleting cache...')
-                run_in_thread(self._delete_cache_background)()
+                if intentional_player_exit or self._suppress_next_player_exit_cache_delete:
+                    self._suppress_next_player_exit_cache_delete = False
+                    log_buffer.log(
+                        'Cache',
+                        'Roblox exited during env-proxy relaunch; skipping auto cache deletion',
+                    )
+                else:
+                    log_buffer.log('Cache', 'Roblox exited, deleting cache...')
+                    run_in_thread(self._delete_cache_background)()
             self.was_running = is_running
         else:
             self.was_running = False
 
-        # --- Roblox Studio: patch CA cert on launch, show warning ---
+        # --- Roblox Studio: Env Proxy deliberately leaves Studio untouched ---
         studio_running = is_studio_running()
 
         if not self._studio_was_running and studio_running:
-            studio_exe_path = get_roblox_studio_exe_path()
-            if studio_exe_path is None:
-                for _ in range(10):
-                    time.sleep(1.0)
-                    studio_exe_path = get_roblox_studio_exe_path()
-                    if studio_exe_path is not None:
-                        break
-            if studio_exe_path is not None and self.config_manager.proxy_features_enabled:
+            env_proxy_mode = self.config_manager.proxy_mode == 'env'
+            if env_proxy_mode:
+                log_buffer.log(
+                    'Launcher',
+                    'Studio launch detected in Env Proxy mode; leaving Studio untouched',
+                )
+                studio_exe_path = None
+            else:
+                studio_exe_path = get_roblox_studio_exe_path()
+                if studio_exe_path is None:
+                    for _ in range(10):
+                        time.sleep(1.0)
+                        studio_exe_path = get_roblox_studio_exe_path()
+                        if studio_exe_path is not None:
+                            break
+
+            if (
+                not env_proxy_mode
+                and studio_exe_path is not None
+                and self.config_manager.proxy_features_enabled
+            ):
                 if sys.platform == 'darwin':
                     log_buffer.log(
                         'Certificate',
@@ -1411,18 +2362,22 @@ class RobloxExitMonitor(QObject):
                     )
                 else:
                     run_in_thread(check_and_patch_running_roblox_ca)(studio_exe_path)
-            elif studio_exe_path is not None:
+            elif not env_proxy_mode and studio_exe_path is not None:
                 log_buffer.log(
                     'Certificate',
                     'Studio launch detected: proxy features disabled, skipping proxy CA refresh',
                 )
-            else:
+            elif not env_proxy_mode:
                 log_buffer.log(
                     'Certificate',
                     'Studio launch detected but could not resolve exe path for CA check',
                 )
 
-            if not self._studio_suppress_session and not self._studio_notified:
+            if (
+                not env_proxy_mode
+                and not self._studio_suppress_session
+                and not self._studio_notified
+            ):
                 self._studio_notified = True
                 self._studio_detected.emit()
 
@@ -1619,7 +2574,11 @@ def _should_reclaim_stale_single_instance(error) -> bool:
     return not _other_fleasion_pids()
 
 
-def _request_running_instance_exit(timeout_ms: int = 2000) -> bool:
+def _request_running_instance_exit(
+    timeout_ms: int = 2000,
+    *,
+    preserve_env_proxy_player: bool = False,
+) -> bool:
     """Ask the already-running Fleasion instance to exit through its Qt event loop."""
     try:
         socket = QLocalSocket()
@@ -1627,13 +2586,82 @@ def _request_running_instance_exit(timeout_ms: int = 2000) -> bool:
         if not socket.waitForConnected(timeout_ms):
             return False
 
-        socket.write(b'quit\n')
+        command = 'quit-preserve-env-player' if preserve_env_proxy_player else 'quit'
+        socket.write(f'{command}\n'.encode('utf-8'))
         socket.waitForBytesWritten(1000)
         socket.disconnectFromServer()
         socket.waitForDisconnected(1000)
         return True
     except Exception:
         return False
+
+
+def _roblox_uri_from_argv() -> str | None:
+    """Return a Roblox deeplink passed by a desktop URI handler, if any."""
+    for argument in sys.argv[1:]:
+        target = str(argument).strip()
+        if target.startswith(('roblox:', 'roblox-player:')):
+            return target
+    return None
+
+
+def _request_running_instance_launch(target: str, timeout_ms: int = 5000) -> bool:
+    """Forward a Roblox deeplink to the already-running Fleasion instance."""
+    try:
+        socket = QLocalSocket()
+        socket.connectToServer(_SINGLE_INSTANCE_CONTROL_SERVER)
+        if not socket.waitForConnected(timeout_ms):
+            return False
+
+        socket.write(f'launch-roblox\n{target}\n'.encode('utf-8'))
+        socket.waitForBytesWritten(1000)
+        socket.disconnectFromServer()
+        socket.waitForDisconnected(1000)
+        return True
+    except Exception:
+        return False
+
+
+def _launch_roblox_uri_for_instance(tray: SystemTray, target: str) -> bool:
+    """Launch a URI through the active proxy mode on Linux/Sober."""
+    config = tray.config_manager
+    proxy_master = tray.proxy_master
+    if (
+        (sys.platform.startswith('linux') or sys.platform == 'darwin')
+        and getattr(config, 'proxy_mode', 'hosts') == 'env'
+        and getattr(config, 'proxy_features_enabled', False)
+        and proxy_master is not None
+    ):
+        lifecycle = getattr(getattr(tray, 'roblox_monitor', None), 'env_lifecycle', None)
+        if lifecycle is not None:
+            exe_path = (
+                Path('org.vinegarhq.Sober')
+                if sys.platform.startswith('linux')
+                else get_roblox_player_exe_path()
+            )
+            return lifecycle.handle_player_launch(exe_path, target)
+
+    return launch_as_standard_user(target)
+
+
+def _arm_windows_gdk_env_proxy_when_ready(proxy_master, timeout: float = 15.0) -> bool:
+    """Arm Store/GDK activation with the proxy's finalized loopback port."""
+    if not proxy_master.wait_for_env_proxy_ready(timeout=timeout):
+        log_buffer.log(
+            'Launcher',
+            'Xbox/GDK Env Proxy activation was not armed because the proxy did not become ready',
+        )
+        return False
+
+    from .utils.platform_windows import (
+        arm_roblox_gdk_env_proxy,
+        disarm_roblox_gdk_env_proxy,
+    )
+
+    if not arm_roblox_gdk_env_proxy(proxy_master.roblox_env_proxy_url()):
+        return False
+    atexit.register(disarm_roblox_gdk_env_proxy)
+    return True
 
 
 def _wait_for_other_fleasion_instances_to_exit(timeout_seconds: float = 8.0) -> bool:
@@ -1646,20 +2674,32 @@ def _wait_for_other_fleasion_instances_to_exit(timeout_seconds: float = 8.0) -> 
     return not _other_fleasion_pids()
 
 
-def _request_other_fleasion_instances_exit(timeout_seconds: float = 8.0) -> bool:
+def _request_other_fleasion_instances_exit(
+    timeout_seconds: float = 8.0,
+    *,
+    preserve_env_proxy_player: bool = False,
+) -> bool:
     """Return True if other instances were asked to exit and disappeared."""
     if not _other_fleasion_pids():
         return True
-    if not _request_running_instance_exit():
+    if not _request_running_instance_exit(
+        preserve_env_proxy_player=preserve_env_proxy_player
+    ):
         return False
     return _wait_for_other_fleasion_instances_to_exit(timeout_seconds)
 
 
 def _handle_single_instance_command(socket: QLocalSocket, tray: SystemTray):
     try:
-        command = bytes(socket.readAll()).decode('utf-8', errors='replace').strip().lower()
-        if command == 'quit':
+        command = bytes(socket.readAll()).decode('utf-8', errors='replace').strip()
+        if command.lower() == 'quit':
             tray._exit_app()
+        elif command.lower() == 'quit-preserve-env-player':
+            tray._exit_app(preserve_roblox=True)
+        elif command.lower().startswith('launch-roblox\n'):
+            target = command.split('\n', 1)[1].strip()
+            if target.startswith(('roblox:', 'roblox-player:')):
+                run_in_thread(_launch_roblox_uri_for_instance)(tray, target)
     except Exception:
         pass
 
@@ -1735,6 +2775,39 @@ def _configure_opengl_for_legacy_viewers() -> None:
         log_buffer.log('OpenGL', f'Could not configure default OpenGL format: {exc}')
 
 
+def _check_linux_gui_dependencies() -> bool:
+    """Report native Linux GUI dependencies that Python packaging cannot supply."""
+    if not sys.platform.startswith('linux'):
+        return True
+
+    from .utils.platform_linux import missing_linux_gui_packages
+
+    missing = missing_linux_gui_packages()
+    if not missing:
+        return True
+
+    package_list = ' '.join(missing)
+    install_command = f'sudo pacman -S --needed {package_list}'
+    log_buffer.log(
+        'Linux GUI',
+        'A required Arch Linux GUI package is missing.\n'
+        f'  Package: {package_list}\n'
+        f'  Impact: Fleasion cannot reliably publish its system tray icon.\n'
+        f'  Install: {install_command}',
+    )
+    QMessageBox.critical(
+        None,
+        f'{APP_NAME} - System Package Required',
+        'Fleasion needs a system package before its tray icon can work reliably.\n\n'
+        f'Required package:\n  • {package_list}\n\n'
+        f'Install it with:\n  {install_command}\n\n'
+        'Restart Fleasion after installation. Without this package, PyQt6 may create a '
+        'tray object but your desktop may never show its icon.',
+        QMessageBox.StandardButton.Ok,
+    )
+    return False
+
+
 def main():
     """Main application entry point."""
     import argparse as _ap
@@ -1750,6 +2823,11 @@ def main():
         action='store_true',
         help='Kill other Fleasion instances on startup (used when relaunching elevated)',
     )
+    _parser.add_argument(
+        '--preserve-env-proxy-player',
+        action='store_true',
+        help=_ap.SUPPRESS,
+    )
     _parser.add_argument('--proxy-debug', '-proxy-debug', action='store_true', help=_ap.SUPPRESS)
     _parser.add_argument(
         '--proxy-debug-mode',
@@ -1757,6 +2835,10 @@ def main():
         help=_ap.SUPPRESS,
     )
     _parser.add_argument('--fleasion-user-localappdata', help=_ap.SUPPRESS)
+    _parser.add_argument('--fleasion-requesting-user-sid', help=_ap.SUPPRESS)
+    _parser.add_argument('--repair-autostart', action='store_true', help=_ap.SUPPRESS)
+    _parser.add_argument('--repair-roblox-permissions', action='store_true', help=_ap.SUPPRESS)
+    _parser.add_argument('--fleasion-gdk-debugger', action='store_true', help=_ap.SUPPRESS)
     _parser.add_argument(
         '--install-linux-privileged-helper',
         action='store_true',
@@ -1768,6 +2850,19 @@ def main():
         help='Allow active sudo/wheel users to run the Linux proxy helper without future prompts',
     )
     _args, _ = _parser.parse_known_args()
+    if _args.fleasion_gdk_debugger:
+        from .utils.platform_windows import run_gdk_debugger_command_line
+
+        sys.exit(run_gdk_debugger_command_line())
+    if _args.repair_autostart:
+        sys.exit(_repair_autostart_once(_args.fleasion_requesting_user_sid))
+    if _args.repair_roblox_permissions:
+        sys.exit(
+            _repair_roblox_permissions_once(
+                _args.fleasion_requesting_user_sid
+            )
+        )
+    pending_roblox_uri = _roblox_uri_from_argv()
     if _args.install_linux_privileged_helper:
         if not sys.platform.startswith('linux'):
             print(
@@ -1808,6 +2903,8 @@ def main():
 
     # Create Qt application
     app = QApplication(sys.argv)
+    roblox_url_event_filter = _RobloxUrlEventFilter(app)
+    app.installEventFilter(roblox_url_event_filter)
     # Qt normally follows each desktop's dialog conventions (GNOME/KDE/Windows),
     # which changes the visual order of standard buttons. Fleasion uses the
     # Windows order everywhere so confirmations have a stable layout.
@@ -1824,6 +2921,9 @@ def main():
 
             set_application_icon(icon_path)
 
+    if not _check_linux_gui_dependencies():
+        sys.exit(1)
+
     if sys.platform == 'darwin' and _is_admin():
         QMessageBox.critical(
             None,
@@ -1832,6 +2932,14 @@ def main():
             'Fleasion installs a small privileged proxy helper when needed; the dashboard and menu-bar app must not run as root.',
         )
         sys.exit(1)
+
+    # Gracefully release the existing instance before claiming shared memory.
+    # The preserve command reaches the old lifecycle controller before its
+    # proxy stops, so an Env Player can be adopted by this replacement.
+    if _args.kill_others and _other_fleasion_pids():
+        _request_other_fleasion_instances_exit(
+            preserve_env_proxy_player=_args.preserve_env_proxy_player
+        )
 
     # Single instance check.
     # When we've just been relaunched via UAC elevation, the non-elevated
@@ -1866,6 +2974,8 @@ def main():
     if not _shared_memory_created:
         if shared_memory.error() == QSharedMemory.SharedMemoryError.AlreadyExists:
             # Another instance is already running.
+            if pending_roblox_uri and _request_running_instance_launch(pending_roblox_uri):
+                sys.exit(0)
             if _suppress_dashboard:
                 sys.exit(0)
             # Non-admin processes cannot use taskkill on elevated processes — it
@@ -1935,6 +3045,7 @@ def main():
     # Initialize config manager before the elevation gate so the non-elevated
     # process can still build the prompt UI and show a fallback dialog.
     config_manager = ConfigManager()
+    _env_proxy_migration_pending = _prepare_env_proxy_migration(config_manager)
     config_manager.settings['_runtime_proxy_debug'] = bool(_args.proxy_debug)
     config_manager.settings['_runtime_proxy_debug_mode'] = _args.proxy_debug_mode or 'full'
 
@@ -1942,9 +3053,12 @@ def main():
     # show UAC as a taskbar item instead of foregrounding it, so startup must
     # block here until UAC is accepted, denied, or fails.
     _admin_prompt_needed = (
-        sys.platform == 'win32' and config_manager.proxy_features_enabled and not _is_admin()
+        sys.platform == 'win32'
+        and config_manager.proxy_features_enabled
+        and config_manager.proxy_mode != 'env'
+        and not _is_admin()
     )
-    if sys.platform == 'darwin':
+    if sys.platform == 'darwin' and config_manager.proxy_mode != 'env':
         from .utils.macos_proxy_helper import helper_is_ready
 
         start_proxy = config_manager.proxy_features_enabled and helper_is_ready()
@@ -1959,12 +3073,59 @@ def main():
     proxy_error_invoker.show_proxy_error.connect(proxy_error_invoker.handle_proxy_error)
     tray_ref: dict[str, SystemTray | None] = {'tray': None}
 
+    def _refresh_config_surfaces() -> None:
+        config_manager.refresh_config_names()
+        tray = tray_ref.get('tray')
+        dashboard = getattr(tray, 'dashboard_window', None)
+        if dashboard is not None:
+            try:
+                dashboard.refresh_configs_from_disk()
+            except Exception as exc:
+                log_buffer.log('Config', f'Failed to refresh Dashboard after config import: {exc}')
+
+    config_folder_watcher = ConfigFolderWatcher(
+        config_manager,
+        parent=app,
+        parent_provider=_visible_parent_widget,
+    )
+    config_folder_watcher.configs_changed.connect(_refresh_config_surfaces)
+    app.aboutToQuit.connect(config_folder_watcher.stop)
+
+    def _revert_uncredentialed_manual_upstream() -> None:
+        if not _manual_upstream_credentials_missing(config_manager):
+            return
+        previous_mode = config_manager.upstream_transport_mode
+        config_manager.upstream_transport_mode = 'auto'
+        log_buffer.log(
+            'Proxy',
+            f'Reset upstream transport from {previous_mode} to auto after '
+            '10 seconds without credentials',
+        )
+        tray = tray_ref.get('tray')
+        dashboard = getattr(tray, 'dashboard_window', None)
+        settings_tab = getattr(dashboard, '_settings_tab', None)
+        if settings_tab is not None:
+            settings_tab.refresh_from_config()
+        if proxy_master.is_running:
+
+            def _restart_proxy() -> None:
+                proxy_master.stop()
+                proxy_master.start()
+
+            run_in_thread(_restart_proxy)()
+
+    QTimer.singleShot(10_000, _revert_uncredentialed_manual_upstream)
+
     def _handle_proxy_features_start_failure(reason: str):
         _disable_proxy_features_after_start_failure(config_manager, tray_ref.get('tray'), reason)
 
     proxy_error_invoker.disable_proxy_features.connect(_handle_proxy_features_start_failure)
 
     def _on_proxy_start_error(code: str, details: dict):
+        if code == 'upstream_connect_failed':
+            if sys.platform == 'win32':
+                proxy_error_invoker.show_proxy_error.emit(code, dict(details))
+            return
         if code == 'linux_hosts_read_only':
             proxy_error_invoker.show_proxy_error.emit(code, dict(details))
             return
@@ -1973,26 +3134,63 @@ def main():
                 'Linux Polkit approval was denied or the proxy helper could not start'
             )
             return
+        if code == 'tls_self_test_failed':
+            proxy_error_invoker.show_proxy_error.emit(code, dict(details))
+            return
         if code not in (
             'port_bind_failed',
             'hosts_write_exhausted',
             'macos_ca_patch_failed',
+            'roblox_ca_patch_failed',
+            'macos_ca_trust_failed',
+            'macos_relay_failed',
         ):
             return
         proxy_error_invoker.show_proxy_error.emit(code, dict(details))
 
     # Initialize proxy master
     proxy_master = ProxyMaster(config_manager, on_proxy_start_error=_on_proxy_start_error)
+    proxy_error_invoker.retry_proxy.connect(proxy_master.start)
 
     # Initialize modification manager (pass cache_scraper for asset-id resolution)
-    mod_manager = ModificationManager(cache_scraper=getattr(proxy_master, 'cache_scraper', None))
+    mod_manager = ModificationManager(
+        cache_scraper=getattr(proxy_master, 'cache_scraper', None),
+        read_only_lock_enabled=config_manager.lock_roblox_files_read_only,
+    )
+    if not config_manager.lock_roblox_files_read_only:
+        if not config_manager.read_only_lock_migration_v1_complete:
+            # One-time cleanup for persistent guards left by older builds,
+            # including the old cacert.pem lock.
+            mod_manager.clear_managed_file_read_only(
+                (
+                    roblox_dir / 'ssl' / 'cacert.pem'
+                    for roblox_dir in mod_manager.roblox_dirs
+                ),
+                clear_untracked=True,
+            )
+            config_manager.read_only_lock_migration_v1_complete = True
+        else:
+            # Exact original modes persisted by the new opt-in guard survive a
+            # crash and can be restored without changing unrelated files.
+            mod_manager.clear_managed_file_read_only(clear_untracked=False)
+    macos_bootstrapper_bridge = None
+    if sys.platform == 'darwin':
+        from .modifications.macos_bootstrapper_bridge import MacBootstrapperBridge
 
-    def _current_roblox_ca_paths() -> list[Path]:
-        return [roblox_dir / 'ssl' / 'cacert.pem' for roblox_dir in mod_manager.roblox_dirs]
+        macos_bootstrapper_bridge = MacBootstrapperBridge(
+            mod_manager,
+            app,
+            custom_fflag_seed=lambda: proxy_master.prime_custom_fflag_cache(
+                allow_running=True
+            ),
+            custom_fflag_prepare=proxy_master.prepare_custom_fflags_for_player_launch,
+        )
+        app.aboutToQuit.connect(macos_bootstrapper_bridge.stop)
 
     def _refresh_managed_read_only_guard() -> None:
         try:
-            mod_manager.protect_managed_files(_current_roblox_ca_paths())
+            if config_manager.lock_roblox_files_read_only:
+                mod_manager.protect_managed_files()
         except Exception as exc:
             log_buffer.log('Modifications', f'Read-only guard refresh failed: {exc}')
 
@@ -2003,6 +3201,10 @@ def main():
     # 1. Graceful Windows shutdown / log-off: Qt fires commitDataRequest before
     #    the session ends, giving us a chance to clean up the hosts file.
     def _on_commit_data(_session):
+        try:
+            env_lifecycle.cancel()
+        except (NameError, AttributeError):
+            pass
         mod_manager.clear_managed_file_read_only()
         proxy_master.stop()
         mod_manager.restore_all()
@@ -2022,8 +3224,8 @@ def main():
     start_update_check()
 
     # Sync launch integrations on every launch (updates if launch method changed).
-    # Windows needs elevation for Task Scheduler; macOS/Linux use user-session
-    # launch entries and should reconcile from the normal GUI process.
+    # All platforms use per-user launch entries and reconcile from the normal
+    # non-elevated GUI process.
     _autostart_launch_sync_failed = False
     _desktop_integration_launch_sync_failed = False
     if config_manager.first_time_setup_complete and config_manager.desktop_integration:
@@ -2041,7 +3243,11 @@ def main():
         try:
             from .utils.autostart import sync_autostart
 
-            _autostart_launch_sync_failed = not sync_autostart(True, CONFIG_DIR)
+            _autostart_launch_sync_failed = not sync_autostart(
+                True,
+                CONFIG_DIR,
+                proxy_mode=config_manager.proxy_mode,
+            )
         except Exception as exc:
             _autostart_launch_sync_failed = True
             log_buffer.log('Autostart', f'Launch autostart sync failed: {exc}')
@@ -2057,19 +3263,150 @@ def main():
     else:
         log_buffer.log('Proxy', 'Read-only mode: proxy not started (no admin rights)')
 
+    if (
+        sys.platform == 'win32'
+        and start_proxy
+        and config_manager.proxy_mode == 'env'
+        and config_manager.proxy_features_enabled
+    ):
+        if not _arm_windows_gdk_env_proxy_when_ready(proxy_master):
+            log_buffer.log(
+                'Launcher',
+                'Xbox/GDK package activation could not be armed before launch; '
+                'reactive relaunch fallback remains available',
+            )
+
+    # Env Proxy owns Player/Sober lifecycle independently of Studio.
+    from .proxy.env_lifecycle import EnvProxyLifecycleController
+
+    if sys.platform == 'win32':
+        from .utils.platform_windows import (
+            close_roblox_for_env_lifecycle,
+            relaunch_roblox_with_proxy_env,
+        )
+
+        def _prepare_env_proxy_launch(path: Path) -> bool:
+            result = proxy_master.ensure_env_proxy_roblox_ca(path, settle=True)
+            return bool(result.get('success'))
+
+        def _relaunch_env_player(
+            proxy_url: str,
+            _target: str | None,
+            force: bool,
+            cancel_event: threading.Event,
+            _source_exe_path: Path | None,
+            _player_already_stopped: bool,
+        ) -> bool:
+            return relaunch_roblox_with_proxy_env(
+                proxy_url,
+                force=force,
+                cancel_event=cancel_event,
+                prepare_launch=_prepare_env_proxy_launch,
+            )
+
+        _terminate_env_player = close_roblox_for_env_lifecycle
+
+    elif sys.platform == 'darwin':
+        from .utils.platform_macos import relaunch_roblox_with_proxy_env
+
+        def _relaunch_env_player(
+            proxy_url: str,
+            target: str | None,
+            force: bool,
+            cancel_event: threading.Event,
+            source_exe_path: Path | None,
+            player_already_stopped: bool,
+        ) -> bool:
+            return relaunch_roblox_with_proxy_env(
+                proxy_url,
+                target,
+                force=force,
+                cancel_event=cancel_event,
+                source_exe_path=source_exe_path,
+                player_already_stopped=player_already_stopped,
+            )
+
+        _terminate_env_player = terminate_roblox
+
+    else:
+        from .utils.platform_linux import relaunch_roblox_with_proxy_env
+
+        def _relaunch_env_player(
+            proxy_url: str,
+            target: str | None,
+            force: bool,
+            cancel_event: threading.Event,
+            _source_exe_path: Path | None,
+            _player_already_stopped: bool,
+        ) -> bool:
+            return relaunch_roblox_with_proxy_env(
+                proxy_url, target, force=force, cancel_event=cancel_event
+            )
+
+        _terminate_env_player = terminate_roblox
+
+    env_lifecycle = EnvProxyLifecycleController(
+        config_manager=config_manager,
+        proxy_master=proxy_master,
+        resolve_player_exe=get_roblox_player_exe_path,
+        relaunch_player=_relaunch_env_player,
+        is_player_running=is_roblox_running,
+        get_player_identity=get_roblox_process_identity,
+        terminate_player=_terminate_env_player,
+        wait_for_player_exit=wait_for_roblox_exit,
+        adopted_player=_args.preserve_env_proxy_player,
+        max_repairs=2,
+    )
+    atexit.register(env_lifecycle.cancel)
+
     # Setup Roblox exit monitor for auto cache deletion (before tray to pass to it)
-    roblox_monitor = RobloxExitMonitor(config_manager, proxy_master, mod_manager)
+    roblox_monitor = RobloxExitMonitor(
+        config_manager, proxy_master, mod_manager, env_lifecycle
+    )
+    app.aboutToQuit.connect(roblox_monitor.stop)
 
     # Create system tray
     tray = SystemTray(app, config_manager, proxy_master, mod_manager, roblox_monitor)
     tray_ref['tray'] = tray
     app.aboutToQuit.connect(tray.cleanup_tray_icon)
     single_instance_control_server = _start_single_instance_control_server(app, tray)
+
+    if _env_proxy_migration_pending:
+        _show_env_proxy_migration(config_manager, roblox_monitor)
+
+    def _handle_roblox_uri_event(target: str) -> None:
+        run_in_thread(_launch_roblox_uri_for_instance)(tray, target)
+
+    roblox_url_event_filter.roblox_uri_received.connect(_handle_roblox_uri_event)
+    roblox_url_event_filter.start()
+    if pending_roblox_uri:
+        QTimer.singleShot(
+            0,
+            lambda target=pending_roblox_uri: run_in_thread(
+                _launch_roblox_uri_for_instance
+            )(tray, target),
+        )
     log_buffer.log('App', f'Persistent log file: {LOG_FILE}')
     if _autostart_launch_sync_failed:
-        QTimer.singleShot(0, lambda: _show_run_on_boot_failure(_visible_parent_widget()))
+        QTimer.singleShot(
+            0,
+            lambda: _show_run_on_boot_failure(
+                _visible_parent_widget(), config_manager.proxy_mode
+            ),
+        )
     if _desktop_integration_launch_sync_failed:
         QTimer.singleShot(0, lambda: _show_desktop_integration_failure(_visible_parent_widget()))
+
+    def _check_roblox_permission_failures() -> None:
+        denied_dirs = mod_manager.take_permission_denied_dirs()
+        if denied_dirs:
+            _show_roblox_permission_failure(
+                _visible_parent_widget(), denied_dirs, mod_manager
+            )
+        QTimer.singleShot(500, _check_roblox_permission_failures)
+
+    if sys.platform == 'win32':
+        QTimer.singleShot(500, _check_roblox_permission_failures)
     _admin_prompt_shown = False
 
     def _request_admin_once():
@@ -2231,6 +3568,10 @@ def main():
         welcome_box.setWindowTitle('Welcome')
         welcome_box.setText(
             'Welcome to Fleasion!\n\n'
+            'Fleasion uses Roblox Env Proxy mode by default. Normal use does not require '
+            'administrator permission, and Roblox Studio is left untouched. You can switch '
+            'to Hosts File mode at any time under Settings > Proxy > Proxy Mode; that mode '
+            'may require administrator permission.\n\n'
             'Quick setup guide:\n\n'
             '1. Use the Replacer tab to manage asset replacements. At the bottom, add IDs you want '
             'to replace, then choose a replacement ID, URL, or local file.\n\n'
@@ -2282,6 +3623,7 @@ def main():
             welcome_box.setWindowIcon(QIcon(str(icon_path)))
         welcome_box.exec()
         _prompt_first_time_startup_options(config_manager, tray)
+        config_manager.env_proxy_migration_v1_complete = True
         config_manager.first_time_setup_complete = True
         tray._show_replacer_config()
     elif not _suppress_dashboard and config_manager.open_dashboard_on_launch:

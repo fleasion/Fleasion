@@ -61,7 +61,11 @@ from ..utils import (
     open_folder,
 )
 from ..utils.http import http_head_status
-from .file_drop import FileDropLineEdit
+from ..config.manager import (
+    local_replacement_path_for_storage,
+    resolve_local_replacement_path,
+)
+from .file_drop import FileDropLineEdit, local_file_path_example
 from .json_viewer import JsonTreeViewer
 from .proxy_gate import ProxyGate
 
@@ -90,6 +94,20 @@ _CONFIG_MENU_SCREEN_MARGIN_PX = 12
 _CONFIG_MENU_OPEN_RELEASE_GRACE_SEC = 0.25
 _CONFIG_MENU_BUTTON_POPUP_EXTRA_WIDTH_PX = 24
 _ID_SPLIT_RE = re.compile(r'[,\s;]+')
+
+
+def _replacement_path_tooltip(*, empty_removes: bool = True) -> str:
+    lines = [
+        'For a config that comes with files, click Open Configs below, create a folder there, '
+        'and put the files in that folder.',
+        'For example, /ExampleOBJ/Example.obj loads the file at '
+        'Configs/ExampleOBJ/Example.obj.',
+        'Asset folders can be nested up to 10 folders deep.',
+        f'You can also use a normal path such as {local_file_path_example()}.',
+    ]
+    if empty_removes:
+        lines.append('Leave this empty to remove the selected assets.')
+    return '\n'.join(lines)
 
 
 class UndoManager:
@@ -304,7 +322,9 @@ class _ConfigMenuRow(QWidget):
         checked: bool = False,
         icon: QIcon | None = None,
     ):
-        super().__init__()
+        # QWidget construction may call the Python sizeHint override before
+        # QWidget.__init__ returns, so every field used by sizeHint/style
+        # calculation must exist first.
         self._name = name
         self._parent_menu = parent_menu
         self._checkable = checkable
@@ -312,6 +332,7 @@ class _ConfigMenuRow(QWidget):
         self._icon = icon or QIcon()
         self._pressed = False
         self._hovered = False
+        super().__init__()
         self.setMouseTracking(True)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         self.setFixedHeight(_CONFIG_MENU_ROW_HEIGHT_PX)
@@ -438,6 +459,12 @@ class _ScrollableConfigMenu(QMenu):
         self.addAction(self._content_action)
         self.aboutToShow.connect(self._guard_opening_mouse_release)
 
+    def sizeHint(self):  # noqa: N802
+        """Use the embedded scroll area's size without rebuilding the action."""
+        if self._natural_content_size.isValid() and self.scroll_area.size().isValid():
+            return self.scroll_area.size()
+        return super().sizeHint()
+
     def set_entries(self, entries: list[dict], *, minimum_width: int = 0):
         """Replace the displayed config rows."""
         old_container = self.scroll_area.takeWidget()
@@ -538,8 +565,6 @@ class _ScrollableConfigMenu(QMenu):
 
     def _reset_action_geometry(self):
         """Invalidate QMenu/QWidgetAction cached geometry after row count changes."""
-        self.removeAction(self._content_action)
-        self.addAction(self._content_action)
         self.adjustSize()
         self.resize(self.sizeHint())
         self.updateGeometry()
@@ -593,6 +618,7 @@ class ReplacerConfigWindow(QDialog):
         mod_manager=None,
         roblox_monitor=None,
         system_tray=None,
+        hotkey_controller=None,
     ):
         super().__init__()
         self.config_manager = config_manager
@@ -600,6 +626,7 @@ class ReplacerConfigWindow(QDialog):
         self._mod_manager = mod_manager
         self.roblox_monitor = roblox_monitor
         self._system_tray = system_tray
+        self._hotkey_controller = hotkey_controller
         self.undo_manager = UndoManager()
         self.undo_manager.save_state(self.config_manager.replacement_rules, copy_state=False)
         self.config_enabled_vars = {}
@@ -607,6 +634,7 @@ class ReplacerConfigWindow(QDialog):
         self._dialog_asset_types_popup_last_closed = 0.0
         self._prejsons_dialog: QDialog | None = None
         self._proxy_gates: list[ProxyGate] = []
+        self._env_proxy_gates: list[ProxyGate] = []
 
         self.setWindowTitle('Dashboard')
         self.resize(900, 750)
@@ -693,6 +721,7 @@ class ReplacerConfigWindow(QDialog):
                 self.roblox_monitor,
                 config_manager=self.config_manager,
                 proxy_master=self.proxy_master,
+                hotkey_controller=self._hotkey_controller,
             )
             self.tab_widget.addTab(modifications_tab, 'Modifications')
 
@@ -708,7 +737,11 @@ class ReplacerConfigWindow(QDialog):
         # Create Subplace Joiner tab
         from .subplace_joiner_tab import SubplaceJoinerTab
 
-        self._subplace_tab = SubplaceJoinerTab(rando_tab=self._rando_stuff_tab)
+        self._subplace_tab = SubplaceJoinerTab(
+            rando_tab=self._rando_stuff_tab,
+            config_manager=self.config_manager,
+            proxy_master=self.proxy_master,
+        )
         self._rando_stuff_tab.selected_account_changed.connect(
             self._subplace_tab.set_selected_account
         )
@@ -721,6 +754,15 @@ class ReplacerConfigWindow(QDialog):
         if self.proxy_master is not None:
             self.proxy_master.register_module_interceptor(self._rando_stuff_tab)
             self._registered_module_interceptors.append(self._rando_stuff_tab)
+
+        # Create Proxy tab
+        from .proxy_tab import ProxyTrafficTab
+
+        self._proxy_traffic_tab = ProxyTrafficTab(
+            config_manager=self.config_manager,
+            proxy_master=self.proxy_master,
+        )
+        self.tab_widget.addTab(self._env_proxy_required(self._proxy_traffic_tab), 'Proxy')
 
         # Create Settings tab
         from .settings_tab import SettingsTab
@@ -753,6 +795,28 @@ class ReplacerConfigWindow(QDialog):
         self._proxy_gates.append(gate)
         return gate
 
+    def _env_proxy_required(self, widget: QWidget) -> ProxyGate:
+        gate = ProxyGate(
+            widget,
+            message=(
+                'This section is closed because Roblox Env Proxy mode is not '
+                'selected in Settings.'
+            ),
+        )
+        self._env_proxy_gates.append(gate)
+        return gate
+
+    def _env_proxy_effective_enabled(self) -> bool:
+        return bool(
+            self.config_manager.proxy_features_enabled
+            and self.config_manager.proxy_mode == 'env'
+        )
+
+    def refresh_env_proxy_gate(self):
+        enabled = self._env_proxy_effective_enabled()
+        for gate in self._env_proxy_gates:
+            gate.set_proxy_enabled(enabled)
+
     def set_proxy_features_enabled(self, enabled: bool):
         for gate in self._proxy_gates:
             gate.set_proxy_enabled(enabled)
@@ -764,6 +828,7 @@ class ReplacerConfigWindow(QDialog):
             self._rando_stuff_tab, 'set_proxy_features_enabled'
         ):
             self._rando_stuff_tab.set_proxy_features_enabled(enabled)
+        self.refresh_env_proxy_gate()
 
     def _create_replacer_tab(self):
         """Create the replacer configuration tab."""
@@ -830,7 +895,6 @@ class ReplacerConfigWindow(QDialog):
         self.config_menu.aboutToShow.connect(self._rebuild_editing_menu)
         self.config_menu.item_selected.connect(self._on_config_select)
         self.config_menu_btn.setMenu(self.config_menu)
-        self.config_menu_btn.pressed.connect(self._rebuild_editing_menu)
         row1.addWidget(self.config_menu_btn)
 
         self._rebuild_editing_menu()
@@ -846,7 +910,6 @@ class ReplacerConfigWindow(QDialog):
         self.enabled_menu.aboutToShow.connect(self._rebuild_enabled_menu)
         self.enabled_menu.item_toggled.connect(self._on_config_toggle)
         self.enabled_menu_btn.setMenu(self.enabled_menu)
-        self.enabled_menu_btn.pressed.connect(self._rebuild_enabled_menu)
         row1.addWidget(self.enabled_menu_btn)
 
         self._rebuild_enabled_menu()
@@ -964,8 +1027,11 @@ class ReplacerConfigWindow(QDialog):
         replace_layout.addWidget(label2)
         self.replacement_entry = FileDropLineEdit()
         self.replacement_entry.setPlaceholderText(
-            'ID, URL (http://...), path (C:\\...), or empty to remove'
+            'ID, URL, file path, or /ExampleOBJ/Example.obj'
         )
+        self.replacement_entry.setToolTip(_replacement_path_tooltip())
+        self.replacement_entry.fileDropped.connect(self._store_dropped_replacement_path)
+        label2.setToolTip(_replacement_path_tooltip())
         replace_layout.addWidget(self.replacement_entry)
         browse_btn = QPushButton('Browse...')
         browse_btn.clicked.connect(self._browse_local_file)
@@ -1083,6 +1149,7 @@ class ReplacerConfigWindow(QDialog):
         # Clean up enabled configs that no longer exist on disk
         current_configs = self.config_manager.config_names
         enabled = self.config_manager.enabled_configs
+        enabled_set = set(enabled)
         for name in enabled[:]:  # Copy list to allow modification
             if name not in current_configs:
                 self.config_manager.set_config_enabled(name, False)
@@ -1091,7 +1158,7 @@ class ReplacerConfigWindow(QDialog):
             [
                 {
                     'name': name,
-                    'checked': self.config_manager.is_config_enabled(name),
+                    'checked': name in enabled_set,
                 }
                 for name in current_configs
             ],
@@ -1449,6 +1516,10 @@ class ReplacerConfigWindow(QDialog):
         """Refresh config controls from the current files on disk."""
         self._sync_config_state_from_disk()
 
+    def refresh_configs_from_disk(self):
+        """Refresh config controls after an external config-folder change."""
+        self._sync_config_state_from_disk()
+
     def _sync_config_state_from_disk(self, *, update_enabled_menu: bool = True) -> bool:
         """Refresh config settings from disk and update dependent UI."""
         previous_config = self.config_manager.settings.get('last_config', 'Default')
@@ -1479,12 +1550,13 @@ class ReplacerConfigWindow(QDialog):
         """Rebuild the editing config menu."""
         self._sync_config_state_from_disk()
         current_configs = self.config_manager.config_names
+        enabled = set(self.config_manager.enabled_configs)
 
         entries = []
         for name in current_configs:
             # Add a small subtle red dot icon for profiles that are not enabled.
             try:
-                if not self.config_manager.is_config_enabled(name):
+                if name not in enabled:
                     icon = self._make_status_icon('#cc5555')
                 else:
                     # Mark enabled profiles with a subtle green dot
@@ -1579,9 +1651,9 @@ class ReplacerConfigWindow(QDialog):
         current_val = self.replacement_entry.text().strip(' \t"\'')
         initial_dir = ''
         if current_val:
-            path = Path(current_val)
+            path = resolve_local_replacement_path(current_val)
             if path.parent.exists():
-                initial_dir = str(path)
+                initial_dir = str(path.parent)
 
         file_path, _ = QFileDialog.getOpenFileName(
             self,
@@ -1590,7 +1662,11 @@ class ReplacerConfigWindow(QDialog):
             'All Files (*)',
         )
         if file_path:
-            self.replacement_entry.setText(file_path)
+            self.replacement_entry.setText(local_replacement_path_for_storage(file_path))
+
+    def _store_dropped_replacement_path(self, file_path: str) -> None:
+        """Make dropped Configs assets portable while preserving external paths."""
+        self.replacement_entry.setText(local_replacement_path_for_storage(file_path))
 
     def _config_action(self, action: str):
         """Handle config management actions."""
@@ -2092,6 +2168,12 @@ class ReplacerConfigWindow(QDialog):
 
         line_edit = FileDropLineEdit()
         line_edit.setText(old_value)
+        line_edit.setToolTip(_replacement_path_tooltip())
+
+        def _store_dropped_path(file_path: str) -> None:
+            line_edit.setText(local_replacement_path_for_storage(file_path))
+
+        line_edit.fileDropped.connect(_store_dropped_path)
         layout.addWidget(line_edit)
 
         btn_layout = QHBoxLayout()
@@ -2104,9 +2186,9 @@ class ReplacerConfigWindow(QDialog):
             current_val = line_edit.text().strip(' \t"\'')
             initial_dir = ''
             if current_val:
-                path = Path(current_val)
+                path = resolve_local_replacement_path(current_val)
                 if path.parent.exists():
-                    initial_dir = str(path)
+                    initial_dir = str(path.parent)
 
             path, _ = QFileDialog.getOpenFileName(
                 dialog,
@@ -2115,7 +2197,7 @@ class ReplacerConfigWindow(QDialog):
                 'All Files (*)',
             )
             if path:
-                line_edit.setText(path)
+                line_edit.setText(local_replacement_path_for_storage(path))
                 dialog.accept()
 
         browse_btn.clicked.connect(_on_browse)
@@ -2148,7 +2230,7 @@ class ReplacerConfigWindow(QDialog):
             return
 
         if new_mode == 'local' and 'local_path' in extra:
-            if not Path(extra['local_path']).exists():
+            if not resolve_local_replacement_path(extra['local_path']).is_file():
                 QMessageBox.critical(self, 'Error', f'File not found: {extra["local_path"]}')
                 return
 
@@ -2380,7 +2462,7 @@ class ReplacerConfigWindow(QDialog):
             rule['cdn_url'] = cdn_url
         elif mode == 'local':
             local_path = extra['local_path']
-            if not Path(local_path).exists():
+            if not resolve_local_replacement_path(local_path).is_file():
                 QMessageBox.critical(self, 'Error', f'File not found: {local_path}')
                 return None
             rule['local_path'] = local_path

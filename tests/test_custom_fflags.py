@@ -115,6 +115,92 @@ def test_modifier_primes_the_uncompressed_windows_flag_cache(tmp_path):
     assert DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG not in config.custom_fflags
 
 
+def test_modifier_removes_disabled_override_from_windows_flag_cache(tmp_path):
+    config = SimpleNamespace(
+        custom_fflags_enabled=True,
+        custom_fflags={'FFlagFleasionGateMarker': 'True'},
+        custom_fflag_disabled=[],
+    )
+    cache_path = tmp_path / 'flag_cache.dat'
+    cache_path.write_bytes(
+        b'\x00\x00\x00\x00\x00'
+        + json.dumps({'applicationSettings': {'Existing': 'True'}}).encode()
+    )
+    modifier = CustomFFlagModifier(config, flag_cache_path=cache_path)
+
+    assert modifier.prime_windows_flag_cache()
+    config.custom_fflag_disabled = ['FFlagFleasionGateMarker']
+    assert modifier.prime_windows_flag_cache()
+
+    payload = json.loads(cache_path.read_bytes()[5:])['applicationSettings']
+    assert 'FFlagFleasionGateMarker' not in payload
+    assert payload[DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG] == '1'
+
+
+def test_modifier_removes_all_saved_overrides_when_windows_feature_is_disabled(tmp_path):
+    config = SimpleNamespace(
+        custom_fflags_enabled=True,
+        custom_fflags={'FFlagFleasionGateMarker': 'True'},
+        custom_fflag_disabled=[],
+    )
+    cache_path = tmp_path / 'flag_cache.dat'
+    cache_path.write_bytes(
+        b'\x00\x00\x00\x00\x00'
+        + json.dumps({'applicationSettings': {'Existing': 'True'}}).encode()
+    )
+    modifier = CustomFFlagModifier(config, flag_cache_path=cache_path)
+
+    assert modifier.prime_windows_flag_cache()
+    config.custom_fflags_enabled = False
+    assert modifier.prime_windows_flag_cache()
+
+    payload = json.loads(cache_path.read_bytes()[5:])['applicationSettings']
+    assert payload == {'Existing': 'True'}
+
+
+def test_modifier_primes_macos_player_client_settings(tmp_path):
+    config = SimpleNamespace(
+        custom_fflags_enabled=True,
+        custom_fflags={'DFFlagDebugDrawBroadPhaseAABBs': 'True', 'FFlagExample': 'False'},
+    )
+    resources = tmp_path / 'Roblox.app' / 'Contents' / 'Resources'
+    settings = resources / 'ClientSettings' / 'ClientAppSettings.json'
+    settings.parent.mkdir(parents=True)
+    settings.write_text('{"Existing": "True"}', encoding='utf-8')
+    modifier = CustomFFlagModifier(config, macos_resource_dirs=[resources])
+
+    assert modifier.prime_startup_flag_cache()
+
+    payload = json.loads(settings.read_text(encoding='utf-8'))
+    assert payload == {
+        'Existing': 'True',
+        'DFFlagDebugDrawBroadPhaseAABBs': 'True',
+        'FFlagExample': 'False',
+        DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG: '1',
+    }
+
+
+def test_modifier_removes_previous_macos_seed_when_flags_change_or_disable(tmp_path):
+    config = SimpleNamespace(
+        custom_fflags_enabled=True,
+        custom_fflags={'FFlagExample': 'True'},
+    )
+    resources = tmp_path / 'Roblox.app' / 'Contents' / 'Resources'
+    settings = resources / 'ClientSettings' / 'ClientAppSettings.json'
+    settings.parent.mkdir(parents=True)
+    settings.write_text('{"Existing": "True"}', encoding='utf-8')
+    modifier = CustomFFlagModifier(config, macos_resource_dirs=[resources])
+
+    assert modifier.prime_macos_client_settings()
+    config.custom_fflags = {'FFlagExample': 'False'}
+    assert modifier.prime_macos_client_settings()
+    assert json.loads(settings.read_text(encoding='utf-8'))['FFlagExample'] == 'False'
+
+    config.custom_fflags_enabled = False
+    assert modifier.prime_macos_client_settings()
+    assert json.loads(settings.read_text(encoding='utf-8')) == {'Existing': 'True'}
+
+
 def test_modifier_does_not_replace_an_unknown_compressed_flag_cache(tmp_path):
     config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={})
     cache_path = tmp_path / 'flag_cache.dat'
@@ -133,6 +219,18 @@ def test_modifier_requests_one_fresh_response_for_each_flag_set():
     assert not modifier.requires_fresh_response()
 
     config.custom_fflags['FFlagExample'] = 'False'
+    assert modifier.requires_fresh_response()
+
+
+def test_modifier_requests_a_fresh_response_again_after_player_relaunch():
+    config = SimpleNamespace(custom_fflags_enabled=True, custom_fflags={'FFlagExample': 'True'})
+    modifier = CustomFFlagModifier(config)
+
+    assert modifier.requires_fresh_response()
+    assert not modifier.requires_fresh_response()
+
+    modifier.prepare_for_player_launch()
+
     assert modifier.requires_fresh_response()
 
 
@@ -314,3 +412,32 @@ def test_master_primes_custom_flag_cache_only_while_player_is_closed(monkeypatch
     monkeypatch.setattr(proxy_master, 'is_roblox_running', lambda: True)
     assert not proxy.prime_custom_fflag_cache()
     assert calls == ['primed']
+
+
+def test_master_launch_preparation_seeds_startup_flags_before_relaunch(monkeypatch):
+    calls = []
+    proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
+    proxy.custom_fflag_modifier = SimpleNamespace(
+        is_enabled=lambda: True,
+        prepare_for_player_launch=lambda: calls.append('armed'),
+        prime_startup_flag_cache=lambda: calls.append('seeded') or True,
+    )
+    monkeypatch.setattr(proxy_master, 'log_buffer', SimpleNamespace(log=lambda *_args: None))
+
+    proxy.prepare_custom_fflags_for_player_launch()
+
+    assert calls == ['armed', 'seeded']
+
+
+def test_master_launch_preparation_cleans_startup_cache_when_custom_flags_are_off(monkeypatch):
+    calls = []
+    proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
+    proxy.custom_fflag_modifier = SimpleNamespace(
+        is_enabled=lambda: False,
+        prepare_for_player_launch=lambda: calls.append('armed'),
+        prime_startup_flag_cache=lambda: calls.append('seeded') or True,
+    )
+
+    proxy.prepare_custom_fflags_for_player_launch()
+
+    assert calls == ['seeded']

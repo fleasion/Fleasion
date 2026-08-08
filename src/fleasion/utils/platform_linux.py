@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import os
-import pwd
+try:
+    import pwd
+except ModuleNotFoundError:  # pragma: no cover - exercised by Windows collection
+    pwd = None
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit
 
 from .logging import log_buffer
 from .metadata import APP_NAME
@@ -26,7 +32,20 @@ SOBER_LEGACY_EXE_DIR = SOBER_DATA_DIR / 'exe'
 SOBER_CACHE_STORAGE_DIR = SOBER_CACHE_DIR / 'rbx-storage'
 SOBER_PROCESS_NAMES = ('sober', 'Sober', SOBER_APP_ID)
 SOBER_CGROUP_MARKER = 'app-flatpak-org.vinegarhq.Sober'
+# Sober fetches its update/feature manifest before the Roblox engine starts.
+# That bootstrap client uses certificate pinning and does not trust Fleasion's
+# generated CA, so these connections must remain tunneled when the Proxy tab's
+# intercept-all switch is enabled. Roblox traffic is still intercepted normally.
+SOBER_ENV_PROXY_PASSTHROUGH_HOSTS = frozenset(
+    {'sober.vinegarhq.org', 'raw.githubusercontent.com'}
+)
 PROC_ROOT = Path('/proc')
+_ENV_PROXY_RELAUNCH_TTL_SECONDS = 45.0
+_LOCAL_PROXY_HOSTS = frozenset({'127.0.0.1', '::1', 'localhost'})
+_ROBLOX_URI_SCHEMES = ('x-scheme-handler/roblox', 'x-scheme-handler/roblox-player')
+_env_proxy_relaunch_lock = threading.Lock()
+_env_proxy_relaunch_in_progress = False
+_env_proxy_relaunch_at: float | None = None
 DESKTOP_OPENERS = (
     ('xdg-open', ()),
     ('gio', ('open',)),
@@ -47,6 +66,81 @@ LINUX_DEPRECATED_DESKTOP_ENTRY_PATHS = (
     LINUX_APPLICATIONS_DIR / 'fleasion-read-only.desktop',
     LINUX_APPLICATIONS_DIR / 'fleasion-proxy.desktop',
 )
+OS_RELEASE_PATH = Path('/etc/os-release')
+ARCH_LINUX_IDS = frozenset(
+    {
+        'arch',
+        'cachyos',
+        'endeavouros',
+        'garuda',
+        'manjaro',
+        'steamos',
+    }
+)
+ARCH_LINUX_GUI_PACKAGES = ('qt6-base',)
+
+
+def _os_release_ids(path: Path = OS_RELEASE_PATH) -> set[str]:
+    """Return normalized distro IDs from os-release."""
+    try:
+        lines = path.read_text(encoding='utf-8', errors='replace').splitlines()
+    except OSError:
+        return set()
+
+    values: dict[str, str] = {}
+    for line in lines:
+        key, separator, value = line.partition('=')
+        if not separator or key not in {'ID', 'ID_LIKE'}:
+            continue
+        values[key] = value.strip().strip('"').strip("'")
+
+    return {
+        distro_id.casefold()
+        for value in values.values()
+        for distro_id in value.split()
+        if distro_id
+    }
+
+
+def missing_linux_gui_packages(
+    *,
+    os_release_path: Path = OS_RELEASE_PATH,
+) -> list[str]:
+    """Return missing native GUI packages on supported package-managed distros."""
+    if not (_os_release_ids(os_release_path) & ARCH_LINUX_IDS):
+        return []
+    pacman = shutil.which('pacman')
+    if pacman is None:
+        return []
+
+    missing: list[str] = []
+    for package in ARCH_LINUX_GUI_PACKAGES:
+        try:
+            result = subprocess.run(
+                [pacman, '-Q', package],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                # PyInstaller adds its Ubuntu-built shared libraries to
+                # LD_LIBRARY_PATH.  pacman must instead load the Arch host
+                # libraries, or an ABI/load failure looks like a missing
+                # package to this check.
+                env=_host_subprocess_env(),
+            )
+        except Exception:
+            # A failed package query should not block an otherwise working
+            # desktop when its package manager cannot be inspected.
+            continue
+        if result.returncode != 0:
+            diagnostics = (result.stderr or result.stdout).strip()
+            detail = f' Details: {diagnostics}' if diagnostics else ''
+            log_buffer.log(
+                'Linux GUI',
+                f'Arch package query reports {package} as unavailable '
+                f'(pacman exit {result.returncode}).{detail}',
+            )
+            missing.append(package)
+    return missing
 
 
 def run_cmd(args: list[str]) -> str:
@@ -149,6 +243,15 @@ def is_roblox_running() -> bool:
     return _first_sober_pid() is not None
 
 
+def get_roblox_process_identity() -> tuple[str, int, float] | tuple[str, int] | None:
+    """Return Sober's engine generation, falling back to its launcher PID."""
+    engine = sober_main_process()
+    if engine is not None:
+        return 'engine', engine[0], engine[1]
+    pid = _first_sober_pid()
+    return ('launcher', pid) if pid is not None else None
+
+
 def is_studio_running() -> bool:
     """Roblox Studio is not supported through Sober."""
     return False
@@ -213,6 +316,70 @@ def wait_for_roblox_exit(timeout: float = 10.0) -> bool:
             return True
         time.sleep(0.5)
     return False
+
+
+def _wait_for_local_proxy(proxy_url: str, timeout: float = 10.0) -> bool:
+    """Wait until a local explicit proxy endpoint accepts connections.
+
+    Sober fetches its own remote manifest before it starts the Roblox engine.
+    Launching it while Fleasion is still switching proxy modes makes that
+    bootstrap request fail, which looks like a Sober networking failure and
+    can trigger a relaunch loop in the process monitor.
+    """
+    try:
+        parsed = urlsplit(proxy_url)
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return False
+
+    if host not in _LOCAL_PROXY_HOSTS:
+        return True
+    if port is None:
+        return False
+
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining < 0:
+            return False
+        try:
+            with socket.create_connection(
+                (host, port), timeout=min(0.5, max(0.1, remaining))
+            ):
+                return True
+        except OSError:
+            if remaining <= 0:
+                return False
+            time.sleep(min(0.1, remaining))
+
+
+def _claim_env_proxy_relaunch(*, force: bool = False) -> bool:
+    """Allow only one Linux/Sober env-proxy relaunch per launch window."""
+    global _env_proxy_relaunch_in_progress
+
+    now = time.monotonic()
+    with _env_proxy_relaunch_lock:
+        if _env_proxy_relaunch_in_progress:
+            return False
+        if (
+            not force
+            and
+            _env_proxy_relaunch_at is not None
+            and now - _env_proxy_relaunch_at < _ENV_PROXY_RELAUNCH_TTL_SECONDS
+        ):
+            return False
+        _env_proxy_relaunch_in_progress = True
+        return True
+
+
+def _finish_env_proxy_relaunch(success: bool) -> None:
+    global _env_proxy_relaunch_at, _env_proxy_relaunch_in_progress
+
+    with _env_proxy_relaunch_lock:
+        _env_proxy_relaunch_in_progress = False
+        if success:
+            _env_proxy_relaunch_at = time.monotonic()
 
 
 def _delete_path(path: Path, messages: list[str], label: str) -> None:
@@ -364,6 +531,8 @@ def _standard_user_popen(args: list[str]) -> subprocess.Popen:
         stat = user_home.stat()
         uid = stat.st_uid
         gid = stat.st_gid
+        if pwd is None:
+            raise KeyError(uid)
         pw_entry = pwd.getpwuid(uid)
     except Exception:
         return subprocess.Popen(args, env=env, **_DETACHED_POPEN_KWARGS)
@@ -442,6 +611,127 @@ def launch_as_standard_user(target: str | Path) -> bool:
 
     log_buffer.log('Launch', f'Launch target not found: {target_str}')
     return False
+
+
+def relaunch_roblox_with_proxy_env(
+    proxy_url: str,
+    launch_target: str | None = None,
+    *,
+    force: bool = False,
+    cancel_event: threading.Event | None = None,
+) -> bool:
+    """Relaunch Sober through Fleasion's explicit (env) proxy.
+
+    Sets the conventional Unix proxy env vars (http_proxy/https_proxy/
+    all_proxy, plus their uppercase forms for tools that only check those -
+    the same set Windows already sets for RobloxPlayerBeta.exe, since it's
+    the same cross-platform Roblox client engine). Flatpak apps don't
+    inherit the host's environment by default, so each var has to be passed
+    through the sandbox explicitly via ``flatpak run --env=KEY=VALUE``.
+
+    ``launch_target`` is kept on the same Flatpak invocation. This matters for
+    browser and subplace joins: starting Sober once for the URI and then
+    restarting it separately for proxy injection loses the join request.
+    """
+    flatpak = shutil.which('flatpak')
+    if not flatpak:
+        log_buffer.log('Launcher', 'Env Proxy relaunch skipped: flatpak command not found')
+        return False
+
+    if not _claim_env_proxy_relaunch(force=bool(launch_target) or force):
+        log_buffer.log('Launcher', 'Env Proxy relaunch skipped: Sober launch already handled')
+        return False
+
+    success = False
+    try:
+        if not _wait_for_local_proxy(proxy_url):
+            log_buffer.log(
+                'Launcher',
+                f'Env Proxy relaunch skipped: local proxy is not ready at {proxy_url}',
+            )
+            return False
+        if cancel_event is not None and cancel_event.is_set():
+            return False
+
+        if is_roblox_running():
+            terminate_roblox()
+            if not wait_for_roblox_exit():
+                log_buffer.log('Launcher', 'Sober did not exit before env-proxy relaunch')
+                return False
+        if cancel_event is not None and cancel_event.is_set():
+            return False
+
+        proxy_env = {
+            'ALL_PROXY': proxy_url,
+            'HTTPS_PROXY': proxy_url,
+            'HTTP_PROXY': proxy_url,
+            'all_proxy': proxy_url,
+            'https_proxy': proxy_url,
+            'http_proxy': proxy_url,
+            'NO_PROXY': 'localhost,127.0.0.1,::1',
+            'no_proxy': 'localhost,127.0.0.1,::1',
+            'FLEASION_PROXY_RELAUNCHED': '1',
+        }
+        env_args = [f'--env={key}={value}' for key, value in proxy_env.items()]
+        launch_args = [flatpak, 'run', *env_args, SOBER_APP_ID]
+        if launch_target:
+            launch_args.append(str(launch_target))
+        _standard_user_popen(launch_args)
+        if not wait_for_roblox_window(timeout=15.0):
+            log_buffer.log(
+                'Launcher', 'Sober Env Proxy relaunch failed: Sober process did not start'
+            )
+            return False
+        success = True
+    except Exception as exc:
+        log_buffer.log('Launcher', f'Sober Env Proxy relaunch failed: {exc}')
+        return False
+    finally:
+        _finish_env_proxy_relaunch(success)
+    log_buffer.log('Launcher', 'Relaunched Sober through Fleasion env proxy')
+    return True
+
+
+def _set_default_roblox_uri_handler(desktop_id: str) -> bool:
+    """Set Fleasion as the user-session handler for Roblox URI schemes."""
+    xdg_mime = shutil.which('xdg-mime')
+    if not xdg_mime:
+        log_buffer.log('DesktopIntegration', 'xdg-mime not found; Roblox URI handler unchanged')
+        return False
+
+    ok = True
+    env = _host_subprocess_env()
+    env['HOME'] = str(USER_HOME)
+    for scheme in _ROBLOX_URI_SCHEMES:
+        try:
+            result = subprocess.run(
+                [xdg_mime, 'default', desktop_id, scheme],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except Exception as exc:
+            log_buffer.log(
+                'DesktopIntegration',
+                f'Failed to set Fleasion as the {scheme} handler: {exc}',
+            )
+            ok = False
+            continue
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip()
+            log_buffer.log(
+                'DesktopIntegration',
+                f'Failed to set Fleasion as the {scheme} handler'
+                + (f': {detail}' if detail else ''),
+            )
+            ok = False
+    return ok
+
+
+def _restore_sober_uri_handler() -> bool:
+    """Restore Sober as the URI handler when Fleasion integration is removed."""
+    return _set_default_roblox_uri_handler(f'{SOBER_APP_ID}.desktop')
 
 
 def _find_project_root() -> Path | None:
@@ -547,10 +837,11 @@ exec {command_literal} "$@"
         'Type=Application\n'
         f'Name={APP_NAME}\n'
         'Comment=Roblox asset interceptor and replacer for Sober\n'
-        f'Exec={shlex.quote(str(LINUX_LAUNCHER_PATH))}\n'
+        f'Exec={shlex.quote(str(LINUX_LAUNCHER_PATH))} %U\n'
         f'{icon_line}'
         'Terminal=false\n'
         'Categories=Game;Utility;\n'
+        'MimeType=x-scheme-handler/roblox;x-scheme-handler/roblox-player;\n'
         'StartupNotify=true\n'
     )
     LINUX_APPLICATIONS_DIR.mkdir(parents=True, exist_ok=True)
@@ -571,12 +862,17 @@ exec {command_literal} "$@"
             timeout=10,
         )
 
+    uri_handler_configured = _set_default_roblox_uri_handler(
+        LINUX_DESKTOP_ENTRY_PATH.name
+    )
+
     return {
         'desktop_entry': str(LINUX_DESKTOP_ENTRY_PATH),
         'launcher': str(LINUX_LAUNCHER_PATH),
         'installed_app': str(installed_app) if installed_app is not None else None,
         'installed_icon': str(installed_icon) if installed_icon is not None else None,
         'removed_deprecated_entries': removed,
+        'roblox_uri_handler_configured': uri_handler_configured,
     }
 
 

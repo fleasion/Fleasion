@@ -19,7 +19,7 @@ jobs:
       - name: Download release assets
         uses: actions/download-artifact@v8
         with:
-          pattern: Fleasion-v${{ needs.build-packages.outputs.app_version }}-*
+          pattern: Fleasion-v${{ needs.build-packages.outputs.artifact_version }}-*
           path: release-files
           merge-multiple: true
           skip-decompress: true
@@ -31,6 +31,7 @@ jobs:
           target_commitish: ${{ github.sha }}
           name: Fleasion v${{ needs.build-packages.outputs.app_version }}
           draft: true
+          prerelease: ${{ needs.build-packages.outputs.is_prerelease == 'true' }}
           generate_release_notes: true
           files: release-files/*
           fail_on_unmatched_files: true

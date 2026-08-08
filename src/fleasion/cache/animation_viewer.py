@@ -241,6 +241,44 @@ class Keyframe:
     pose_by_part_name: Dict[str, np.ndarray]
 
 
+def _fill_sparse_pose_tracks(keys: List[Keyframe]) -> List[Keyframe]:
+    """Interpolate poses through keyframes that do not contribute to that track.
+
+    Roblox-authored animations can contain dense facial keyframes alongside much
+    sparser body tracks.  The binary file still gives the omitted body Pose
+    objects a CFrame, but marks them with Weight=0.  Once those placeholders are
+    discarded, sample each pose independently so unrelated facial keyframes do
+    not reset body parts to the rig's bind pose.
+    """
+    if len(keys) < 2:
+        return keys
+
+    tracks: Dict[str, List[Tuple[int, np.ndarray]]] = {}
+    for index, keyframe in enumerate(keys):
+        for name, transform in keyframe.pose_by_part_name.items():
+            tracks.setdefault(name, []).append((index, transform))
+
+    for name, samples in tracks.items():
+        first_index, first_transform = samples[0]
+        for index in range(first_index):
+            keys[index].pose_by_part_name[name] = first_transform
+
+        for (left_index, left), (right_index, right) in zip(samples, samples[1:]):
+            if right_index == left_index + 1:
+                continue
+            left_time = keys[left_index].time
+            span = keys[right_index].time - left_time
+            for index in range(left_index + 1, right_index):
+                alpha = (keys[index].time - left_time) / span if span > 0 else 0.0
+                keys[index].pose_by_part_name[name] = matrix_trs_lerp(left, right, alpha)
+
+        last_index, last_transform = samples[-1]
+        for index in range(last_index + 1, len(keys)):
+            keys[index].pose_by_part_name[name] = last_transform
+
+    return keys
+
+
 # XML parsing helpers
 
 
@@ -373,10 +411,11 @@ def load_animation_from_xml(anim_data: bytes) -> List[Keyframe]:
                 continue
 
             pname = _text(find_prop(pprops, 'string', ['Name']))
-            cf = find_prop(pprops, 'CoordinateFrame', ['CFrame']) or find_prop(
-                pprops, 'CFrame', ['CFrame']
-            )
-            if not pname or cf is None:
+            weight = float(_text(find_prop(pprops, 'float', ['Weight']), '1'))
+            cf = find_prop(pprops, 'CoordinateFrame', ['CFrame'])
+            if cf is None:
+                cf = find_prop(pprops, 'CFrame', ['CFrame'])
+            if not pname or cf is None or weight <= 0:
                 continue
 
             pos, r = parse_cframe(cf)
@@ -440,8 +479,9 @@ def _collect_poses(instance, poses: Dict[str, np.ndarray]):
         if child.class_name == 'Pose':
             name = child.properties.get('Name', '')
             cframe = child.properties.get('CFrame')
+            weight = child.properties.get('Weight', 1.0)
 
-            if name and cframe:
+            if name and cframe and isinstance(weight, (int, float)) and weight > 0:
                 # CFrame is a dict with 'position' and 'rotation'
                 pos = cframe.get('position', (0, 0, 0))
                 rot = cframe.get('rotation', [1, 0, 0, 0, 1, 0, 0, 0, 1])
@@ -705,7 +745,7 @@ def load_animation_data(anim_data: bytes) -> List[Keyframe]:
     if b'CurveAnimation' in anim_data:
         keys = load_curve_animation_data(anim_data)
         if keys:
-            return keys
+            return _fill_sparse_pose_tracks(keys)
 
     # Strip UTF-8 BOM for format detection (Roblox Studio emits BOM-prefixed RBXMX)
     _detect = anim_data[3:] if anim_data[:3] == b'\xef\xbb\xbf' else anim_data
@@ -713,12 +753,13 @@ def load_animation_data(anim_data: bytes) -> List[Keyframe]:
     # Try to detect format
     if _detect.startswith(b'<roblox!'):
         # Binary RBXM format
-        return load_animation_from_rbxm(anim_data)
+        keys = load_animation_from_rbxm(anim_data)
     elif _detect.strip().startswith(b'<'):
         # XML format
-        return load_animation_from_xml(anim_data)
+        keys = load_animation_from_xml(anim_data)
     else:
-        return load_animation_from_xml(anim_data)
+        keys = load_animation_from_xml(anim_data)
+    return _fill_sparse_pose_tracks(keys)
 
 
 def load_animation_from_file(anim_path: str) -> List[Keyframe]:
@@ -748,10 +789,11 @@ def load_animation_from_file(anim_path: str) -> List[Keyframe]:
                 continue
 
             pname = _text(find_prop(pprops, 'string', ['Name']))
-            cf = find_prop(pprops, 'CoordinateFrame', ['CFrame']) or find_prop(
-                pprops, 'CFrame', ['CFrame']
-            )
-            if not pname or cf is None:
+            weight = float(_text(find_prop(pprops, 'float', ['Weight']), '1'))
+            cf = find_prop(pprops, 'CoordinateFrame', ['CFrame'])
+            if cf is None:
+                cf = find_prop(pprops, 'CFrame', ['CFrame'])
+            if not pname or cf is None or weight <= 0:
                 continue
 
             pos, r = parse_cframe(cf)
@@ -760,7 +802,7 @@ def load_animation_from_file(anim_path: str) -> List[Keyframe]:
         keys.append(Keyframe(t, poses))
 
     keys.sort(key=lambda k: k.time)
-    return keys
+    return _fill_sparse_pose_tracks(keys)
 
 
 def sample_keyframes(keys: List[Keyframe], t: float) -> Tuple[Keyframe, Keyframe, float]:

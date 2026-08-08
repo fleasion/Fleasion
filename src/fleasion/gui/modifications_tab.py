@@ -65,7 +65,7 @@ from ..modifications.platform_targets import (
 from ..utils import APP_CACHE_DIR, format_count, log_buffer, open_folder
 from ..utils.http import http_get
 from ..utils.threading import run_in_thread
-from .file_drop import FileDropLineEdit
+from .file_drop import FileDropLineEdit, local_file_path_example
 from .theme import ThemeManager
 
 # ---------------------------------------------------------------------------
@@ -698,7 +698,7 @@ class ModRowWidget(QWidget):
         # Source text field (expands to fill remaining row space)
         self._source_edit = FileDropLineEdit()
         self._source_edit.setPlaceholderText(
-            'ID, URL (http://...), path (C:\\...), or "remove" to remove'
+            f'ID, URL, path ({local_file_path_example()}), or "remove"'
         )
         self._source_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         layout.addWidget(self._source_edit)
@@ -1963,6 +1963,7 @@ class WindowsHotkeyCaptureDialog(QDialog):
         self.clear_requested = False
         self._pending_modifier: dict[str, int | bool] | None = None
         self._pending_modifier_key: int | None = None
+        self._suppress_mouse_capture = False
         self.setWindowTitle('Set FastFlag Keybind')
         self.setMinimumWidth(460)
         layout = QVBoxLayout(self)
@@ -1981,6 +1982,10 @@ class WindowsHotkeyCaptureDialog(QDialog):
         clear_button = buttons.addButton('Clear Keybind', QDialogButtonBox.ButtonRole.DestructiveRole)
         clear_button.clicked.connect(self._clear)
         buttons.rejected.connect(self.reject)
+        clear_button.installEventFilter(self)
+        cancel_button = buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        if cancel_button is not None:
+            cancel_button.installEventFilter(self)
         layout.addWidget(buttons)
 
     @staticmethod
@@ -2075,23 +2080,188 @@ class WindowsHotkeyCaptureDialog(QDialog):
         self.binding = self._pending_modifier
         self.accept()
 
+    def mousePressEvent(self, event):
+        if self._suppress_mouse_capture:
+            return super().mousePressEvent(event)
+        button_map = {
+            Qt.MouseButton.LeftButton: 1,
+            Qt.MouseButton.RightButton: 2,
+            Qt.MouseButton.MiddleButton: 4,
+            Qt.MouseButton.BackButton: 5,
+            Qt.MouseButton.ForwardButton: 6,
+        }
+        if virtual_key := button_map.get(event.button()):
+            self.binding = {
+                'platform': 'windows', 'kind': 'mouse_button',
+                'scan_code': virtual_key, 'extended': False,
+                'modifiers': self._modifier_mask(event.modifiers()),
+            }
+            self.accept()
+            return
+        super().mousePressEvent(event)
+
+    def wheelEvent(self, event):
+        delta = event.angleDelta().y()
+        if delta:
+            self.binding = {
+                'platform': 'windows', 'kind': 'mouse_wheel',
+                'direction': 'up' if delta > 0 else 'down',
+                'modifiers': self._modifier_mask(event.modifiers()),
+            }
+            self.accept()
+            return
+        super().wheelEvent(event)
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.MouseButtonPress:
+            self._suppress_mouse_capture = True
+        return super().eventFilter(watched, event)
+
+
+class LinuxHotkeyCaptureDialog(QDialog):
+    """Capture a physical evdev key from Fleasion's passive Linux reader."""
+
+    def __init__(self, flag_name: str, hotkey_service, parent=None):
+        super().__init__(parent)
+        self.binding: dict[str, int | str] | None = None
+        self.clear_requested = False
+        self._service = hotkey_service
+        self._pending_modifier: int | None = None
+        self._suppress_mouse_capture = False
+        self.setWindowTitle('Set FastFlag Keybind')
+        self.setMinimumWidth(460)
+        layout = QVBoxLayout(self)
+        label = QLabel(
+            f'Press the global keybind for <b>{flag_name}</b>.<br>'
+            'Single keys, modifier keys, and key combinations are supported. '
+            'The key will still reach Roblox and your desktop.'
+        )
+        label.setWordWrap(True)
+        layout.addWidget(label)
+        self._preview = QLabel('Waiting for a key combination…')
+        self._preview.setStyleSheet('color: #999; padding: 10px 0;')
+        layout.addWidget(self._preview)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        clear_button = buttons.addButton('Clear Keybind', QDialogButtonBox.ButtonRole.DestructiveRole)
+        clear_button.clicked.connect(self._clear)
+        buttons.rejected.connect(self.reject)
+        clear_button.installEventFilter(self)
+        cancel_button = buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        if cancel_button is not None:
+            cancel_button.installEventFilter(self)
+        layout.addWidget(buttons)
+        self._service.key_pressed.connect(self._key_pressed)
+        self._service.key_released.connect(self._key_released)
+        self._service.wheel_scrolled.connect(self._wheel_scrolled)
+
+    def _clear(self):
+        self.clear_requested = True
+        self.accept()
+
+    def _key_pressed(self, code: int, modifiers: int):
+        from .linux_hotkeys import modifier_mask_for_evdev_code
+
+        # Raw evdev sees the dialog controls too. Only Clear and Cancel arm
+        # this suppression; every other mouse button remains bindable. Delay
+        # button capture a moment so Qt has time to deliver a Clear/Cancel
+        # click first; if it closes this dialog, the queued capture is ignored.
+        if code >= 0x100:
+            QTimer.singleShot(
+                25,
+                lambda code=code, modifiers=modifiers: self._capture_mouse_button(code, modifiers),
+            )
+            return
+        own_modifier = modifier_mask_for_evdev_code(code)
+        binding = {
+            'platform': 'linux_evdev',
+            'scan_code': code,
+            'modifiers': modifiers & ~own_modifier,
+        }
+        if own_modifier:
+            self._pending_modifier = code
+            self._preview.setText(
+                'Modifier captured. Release it to bind it alone, or press another key for a combination.'
+            )
+            return
+        self.binding = binding
+        self.accept()
+
+    def _capture_mouse_button(self, code: int, modifiers: int):
+        if self._suppress_mouse_capture or not self.isVisible():
+            return
+        self.binding = {
+            'platform': 'linux_evdev', 'kind': 'mouse_button',
+            'scan_code': code, 'modifiers': modifiers,
+        }
+        self.accept()
+
+    def _wheel_scrolled(self, code: int, modifiers: int):
+        self.binding = {
+            'platform': 'linux_evdev',
+            'kind': 'mouse_wheel',
+            'direction': 'up' if code == 256 else 'down',
+            'modifiers': modifiers,
+        }
+        self.accept()
+
+    def _key_released(self, code: int):
+        if code != self._pending_modifier:
+            return
+        self.binding = {'platform': 'linux_evdev', 'scan_code': code, 'modifiers': 0}
+        self.accept()
+
+    def done(self, result: int):
+        try:
+            self._service.key_pressed.disconnect(self._key_pressed)
+            self._service.key_released.disconnect(self._key_released)
+            self._service.wheel_scrolled.disconnect(self._wheel_scrolled)
+        except TypeError:
+            pass
+        super().done(result)
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.MouseButtonPress:
+            self._suppress_mouse_capture = True
+        return super().eventFilter(watched, event)
+
 
 class CustomFFlagEditor(QWidget):
     """Fishstrap-style name/value editor backed by Fleasion's proxy settings."""
 
     _BOOLEAN_FLAG_PREFIXES = ('FFlag', 'DFFlag')
 
-    def __init__(self, config_manager=None, proxy_master=None, parent=None):
+    def __init__(self, config_manager=None, proxy_master=None, parent=None, hotkey_controller=None):
         super().__init__(parent)
         self._config = config_manager
         self._proxy_master = proxy_master
         self._windows_keybinds = sys.platform == 'win32'
+        self._linux_keybinds = sys.platform.startswith('linux')
+        self._hotkeys_supported = self._windows_keybinds or self._linux_keybinds
         self._hotkey_service = None
+        self._hotkey_controller = None
+        self._owns_hotkey_controller = False
         if self._windows_keybinds:
-            from .windows_hotkeys import WindowsHotkeyService
+            from .windows_hotkeys import WindowsCustomFFlagHotkeyController
 
-            self._hotkey_service = WindowsHotkeyService(self)
-            self._hotkey_service.activated.connect(self._toggle_flag_from_hotkey)
+            self._hotkey_controller = hotkey_controller
+            if self._hotkey_controller is None:
+                self._hotkey_controller = WindowsCustomFFlagHotkeyController(
+                    config_manager, proxy_master, self
+                )
+                self._owns_hotkey_controller = True
+            self._hotkey_service = self._hotkey_controller.service
+            self._hotkey_controller.toggled.connect(self._on_hotkey_toggled)
+        elif self._linux_keybinds:
+            from .linux_hotkeys import LinuxCustomFFlagHotkeyController
+
+            self._hotkey_controller = hotkey_controller
+            if self._hotkey_controller is None:
+                self._hotkey_controller = LinuxCustomFFlagHotkeyController(
+                    config_manager, proxy_master, self
+                )
+                self._owns_hotkey_controller = True
+            self._hotkey_service = self._hotkey_controller.service
+            self._hotkey_controller.toggled.connect(self._on_hotkey_toggled)
         self._loading = False
         self._sort_column: int | None = 0
         self._sort_ascending = True
@@ -2143,10 +2313,13 @@ class CustomFFlagEditor(QWidget):
         self._status.setWordWrap(True)
         layout.addWidget(self._status)
 
-        if self._windows_keybinds:
+        if self._hotkeys_supported:
             hotkey_help = QLabel(
-                'Double-click a Keybind cell to assign a global Windows key. Single keys, '
-                'modifier-only keys, and combinations all work while Roblox is focused.'
+                'Double-click a Keybind cell to assign a global key. Single keys, modifier-only '
+                'keys, and combinations all work while Roblox is focused.'
+                if self._windows_keybinds
+                else 'Double-click a Keybind cell to assign a global Linux key. The first attempt '
+                'may ask for permission to read /dev/input/event*.'
             )
             hotkey_help.setWordWrap(True)
             hotkey_help.setStyleSheet('color: #999;')
@@ -2157,11 +2330,11 @@ class CustomFFlagEditor(QWidget):
         self._search.textChanged.connect(self._filter_rows)
         layout.addWidget(self._search)
 
-        column_count = 4 if self._windows_keybinds else 2
+        column_count = 4 if self._hotkeys_supported else 2
         self._table = QTableWidget(0, column_count)
         self._table.setHorizontalHeaderLabels(
             ['Name', 'Value', 'Status', 'Keybind']
-            if self._windows_keybinds
+            if self._hotkeys_supported
             else ['Name', 'Value']
         )
         header = self._table.horizontalHeader()
@@ -2183,9 +2356,9 @@ class CustomFFlagEditor(QWidget):
         self._table.setMinimumHeight(180)
         self._table.setItemDelegateForColumn(1, FastFlagValueDelegate(self._table))
         self._table.cellChanged.connect(self._on_cell_changed)
-        if self._windows_keybinds:
+        if self._hotkeys_supported:
             self._table.cellDoubleClicked.connect(self._edit_keybind)
-        if self._windows_keybinds:
+        if self._hotkeys_supported:
             self._table.setColumnWidth(2, 85)
             self._table.setColumnWidth(3, 160)
         layout.addWidget(self._table)
@@ -2249,7 +2422,7 @@ class CustomFFlagEditor(QWidget):
                 name_item.setToolTip(name)
                 self._table.setItem(row, 0, name_item)
                 self._set_value_editor(row, name, str(value))
-                if self._windows_keybinds:
+                if self._hotkeys_supported:
                     status_item = QTableWidgetItem('Enabled')
                     status_item.setFlags(
                         (status_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
@@ -2263,7 +2436,7 @@ class CustomFFlagEditor(QWidget):
                     self._table.setItem(row, 2, status_item)
                     keybind_item = QTableWidgetItem(self._keybind_text(self._keybinds().get(name)))
                     keybind_item.setFlags(keybind_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                    keybind_item.setToolTip('Double-click to assign or clear this global Windows keybind.')
+                    keybind_item.setToolTip('Double-click to assign or clear this global keybind.')
                     self._table.setItem(row, 3, keybind_item)
         finally:
             self._table.blockSignals(False)
@@ -2308,13 +2481,16 @@ class CustomFFlagEditor(QWidget):
     def _disabled_flag_names(self) -> set[str]:
         return set(getattr(self._config, 'custom_fflag_disabled', []) or [])
 
-    def _keybinds(self) -> dict[str, dict[str, int | bool]]:
+    def _keybinds(self) -> dict[str, dict[str, int | bool | str]]:
         bindings = getattr(self._config, 'custom_fflag_keybinds', {}) or {}
         return bindings if isinstance(bindings, dict) else {}
 
     @staticmethod
     def _keybind_text(binding) -> str:
-        from .windows_hotkeys import binding_text
+        if sys.platform.startswith('linux'):
+            from .linux_hotkeys import binding_text
+        else:
+            from .windows_hotkeys import binding_text
 
         return binding_text(binding)
 
@@ -2323,7 +2499,7 @@ class CustomFFlagEditor(QWidget):
         return item is not None and item.checkState() == Qt.CheckState.Checked
 
     def _save_hotkey_settings(self):
-        if not self._windows_keybinds or self._config is None or self._loading:
+        if not self._hotkeys_supported or self._config is None or self._loading:
             return
         names = set(self._flags_from_table())
         disabled = {
@@ -2339,7 +2515,7 @@ class CustomFFlagEditor(QWidget):
         self._update_status()
 
     def _prune_hotkey_settings(self, names: set[str]):
-        if not self._windows_keybinds or self._config is None:
+        if not self._hotkeys_supported or self._config is None:
             return
         disabled = self._disabled_flag_names() & names
         bindings = {name: spec for name, spec in self._keybinds().items() if name in names}
@@ -2348,11 +2524,72 @@ class CustomFFlagEditor(QWidget):
         self._sync_hotkeys()
 
     def _sync_hotkeys(self):
-        if self._hotkey_service is not None:
+        if self._hotkey_controller is not None:
+            self._hotkey_controller.sync()
+        elif self._hotkey_service is not None:
             feature_enabled = bool(
                 self._config and getattr(self._config, 'custom_fflags_enabled', False)
             )
             self._hotkey_service.set_bindings(self._keybinds() if feature_enabled else {})
+
+    def _begin_linux_hotkey_capture(self) -> bool:
+        """Open evdev only when a user first tries to set a Linux keybind."""
+        if self._hotkey_service is not None and self._hotkey_service.begin_capture():
+            return True
+
+        first_attempt = bool(
+            self._config is not None
+            and not getattr(self._config, 'linux_fflag_keybind_setup_prompted', False)
+        )
+        if self._config is not None and first_attempt:
+            self._config.linux_fflag_keybind_setup_prompted = True
+
+        detail = getattr(self._hotkey_service, 'last_error', 'Unknown input-device error.')
+        if not first_attempt:
+            self._status.setText(
+                'Linux global keybinds need access to /dev/input/event*. '
+                'Restart Fleasion after granting access, then try the Keybind cell again.'
+            )
+            self._status.setStyleSheet('color: #ffcc66;')
+            log_buffer.log('CustomFFlags', f'Linux keybind capture unavailable: {detail}')
+            return False
+
+        prompt = QMessageBox(self)
+        prompt.setWindowTitle('Enable Linux FastFlag Keybinds')
+        prompt.setIcon(QMessageBox.Icon.Information)
+        prompt.setText('Linux global keybinds need permission to read keyboard input.')
+        prompt.setInformativeText(
+            'Fleasion uses passive /dev/input/event* reads, so configured keys still reach Roblox. '
+            'Set Up Permissions adds your desktop user to the dedicated fleasion-input group, '
+            'installs a narrow udev rule for input event devices, and applies a temporary ACL.\n\n'
+            'This requires one Polkit administrator approval. You may need to log out and back in '
+            'before the group membership takes effect.\n\n'
+            f'Diagnostics: {detail}'
+        )
+        setup_button = prompt.addButton('Set Up Permissions', QMessageBox.ButtonRole.AcceptRole)
+        not_now_button = prompt.addButton('Not Now', QMessageBox.ButtonRole.RejectRole)
+        prompt.setDefaultButton(setup_button)
+        prompt.exec()
+        if prompt.clickedButton() != setup_button:
+            return False
+        try:
+            from .linux_hotkeys import launch_permission_setup
+
+            launch_permission_setup()
+        except OSError as exc:
+            QMessageBox.warning(
+                self,
+                'Linux Keybind Setup Failed',
+                f'Fleasion could not start the Polkit permission setup.\n\n{exc}',
+            )
+            return False
+        QMessageBox.information(
+            self,
+            'Linux Keybind Setup Started',
+            'Complete the administrator prompt, then log out and back in if necessary. '
+            'Return to this Keybind cell afterward to assign the key.',
+        )
+        return False
 
     def _edit_keybind(self, row: int, column: int):
         if column != 3:
@@ -2361,7 +2598,12 @@ class CustomFFlagEditor(QWidget):
         name = name_item.text() if name_item else ''
         if not name:
             return
-        dialog = WindowsHotkeyCaptureDialog(name, self)
+        if self._linux_keybinds:
+            if not self._begin_linux_hotkey_capture():
+                return
+            dialog = LinuxHotkeyCaptureDialog(name, self._hotkey_service, self)
+        else:
+            dialog = WindowsHotkeyCaptureDialog(name, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         bindings = self._keybinds()
@@ -2377,34 +2619,22 @@ class CustomFFlagEditor(QWidget):
         self._load_flags()
 
     def _toggle_flag_from_hotkey(self, name: str):
-        if (
-            self._config is None
-            or not getattr(self._config, 'custom_fflags_enabled', False)
-            or name not in self._flags_from_table()
-        ):
-            return
-        disabled = self._disabled_flag_names()
-        is_enabled = name in disabled
-        if is_enabled:
-            disabled.remove(name)
-        else:
-            disabled.add(name)
-        self._config.custom_fflag_disabled = sorted(disabled)
-        self._refresh_proxy_hosts()
-        log_buffer.log(
-            'CustomFFlags', f'Windows keybind turned {name} {"on" if is_enabled else "off"}',
-        )
-        self._load_flags(sync_hotkeys=False)
+        if self._hotkey_controller is not None:
+            self._hotkey_controller.toggle_flag(name)
+
+    def _on_hotkey_toggled(self, _name: str):
+        if hasattr(self, '_table'):
+            self._load_flags(sync_hotkeys=False)
 
     def closeEvent(self, event):
-        if self._hotkey_service is not None:
-            self._hotkey_service.stop()
+        if self._owns_hotkey_controller and self._hotkey_controller is not None:
+            self._hotkey_controller.stop()
         super().closeEvent(event)
 
     def _on_cell_changed(self, row: int, column: int):
         if self._loading:
             return
-        if self._windows_keybinds and column == 2:
+        if self._hotkeys_supported and column == 2:
             self._save_hotkey_settings()
             return
         if column == 0:
@@ -2433,7 +2663,7 @@ class CustomFFlagEditor(QWidget):
         count = len(self._flags_from_table()) if hasattr(self, '_table') else 0
         active_count = (
             sum(self._flag_is_enabled(row) for row in range(self._table.rowCount()))
-            if self._windows_keybinds and hasattr(self, '_table')
+            if self._hotkeys_supported and hasattr(self, '_table')
             else count
         )
         enabled = bool(self._config and getattr(self._config, 'custom_fflags_enabled', False))
@@ -2655,7 +2885,7 @@ class CustomFFlagEditor(QWidget):
             value_text = self._value_from_row(row)
             keybind_text = (
                 self._table.item(row, 3).text()
-                if self._windows_keybinds and self._table.item(row, 3)
+                if self._hotkeys_supported and self._table.item(row, 3)
                 else ''
             )
             matches = (
@@ -2685,6 +2915,7 @@ class FFlagSection(QWidget):
         roblox_monitor=None,
         config_manager=None,
         proxy_master=None,
+        hotkey_controller=None,
         parent=None,
     ):
         super().__init__(parent)
@@ -2692,6 +2923,7 @@ class FFlagSection(QWidget):
         self._roblox_monitor = roblox_monitor
         self._config_manager = config_manager
         self._proxy_master = proxy_master
+        self._hotkey_controller = hotkey_controller
 
         self._debounce_timer = QTimer()
         self._debounce_timer.setSingleShot(True)
@@ -2721,8 +2953,8 @@ class FFlagSection(QWidget):
         layout.addWidget(warn)
 
         warn2 = QLabel(
-            'If you are using a bootstrapper, you must disable its fflag management,'
-            ' else it will overwrite Fleasion.'
+            'Fleasion synchronizes detected bootstrapper launch settings. If both '
+            'apps set the same flag, Fleasion takes precedence while it is running.'
         )
         warn2.setWordWrap(True)
         warn2.setStyleSheet('color: #c90; padding: 4px;')
@@ -2872,7 +3104,10 @@ class FFlagSection(QWidget):
         layout.addLayout(btn_row)
 
         self._custom_fflag_editor = CustomFFlagEditor(
-            self._config_manager, self._proxy_master, self
+            self._config_manager,
+            self._proxy_master,
+            self,
+            hotkey_controller=self._hotkey_controller,
         )
         layout.addWidget(self._custom_fflag_editor)
 
@@ -3096,6 +3331,7 @@ class ModificationsTab(QWidget):
         roblox_monitor=None,
         config_manager=None,
         proxy_master=None,
+        hotkey_controller=None,
         parent=None,
     ):
         super().__init__(parent)
@@ -3103,6 +3339,7 @@ class ModificationsTab(QWidget):
         self._roblox_monitor = roblox_monitor
         self._config_manager = config_manager
         self._proxy_master = proxy_master
+        self._hotkey_controller = hotkey_controller
         self._row_widgets: dict[str, ModRowWidget] = {}  # target_path -> widget
         self._custom_rows: list[ModRowWidget] = []
 
@@ -3152,6 +3389,7 @@ class ModificationsTab(QWidget):
             self._roblox_monitor,
             self._config_manager,
             self._proxy_master,
+            hotkey_controller=self._hotkey_controller,
         )
         self._fflag_widget.set_presets_enabled(self._manager.fast_flags_enabled)
         fflag_section.add_widget(self._fflag_widget)
@@ -3560,7 +3798,7 @@ class _CustomModDialog(QDialog):
         row3.addWidget(QLabel('Source:'))
         self._source_edit = FileDropLineEdit()
         self._source_edit.setPlaceholderText(
-            'ID, URL (http://...), path (C:\\...), or "remove" to remove'
+            f'ID, URL, path ({local_file_path_example()}), or "remove"'
         )
         row3.addWidget(self._source_edit)
         browse_btn = QPushButton('Browse\u2026')

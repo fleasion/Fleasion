@@ -2,16 +2,19 @@
 
 import json
 import locale
+import os
 import stat
 import threading
 from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from ..utils.paths import CONFIG_DIR, CONFIG_FILE, CONFIGS_FOLDER
 
 # Windows forbids these characters in file and folder names.
 _INVALID_FILENAME_CHARS = frozenset('\\/:*?"<>|')
+MAX_CONFIG_ASSET_FOLDER_DEPTH = 10
 _FALLBACK_JSON_ENCODINGS = (
     'utf-8-sig',
     'utf-16',
@@ -22,6 +25,68 @@ _FALLBACK_JSON_ENCODINGS = (
     'utf-32-be',
     'cp1252',
 )
+
+
+def _config_asset_parts(value: str | Path) -> tuple[str, ...] | None:
+    """Return valid portable Configs asset parts, or ``None`` for a normal path."""
+    text = str(value or '').strip()
+    if not text.startswith('/') or text.startswith('//') or '\\' in text:
+        return None
+
+    parts = tuple(text[1:].split('/'))
+    # Assets must live below at least one folder in Configs.  The final part is
+    # the filename, so the number of folders is one less than the part count.
+    folder_depth = len(parts) - 1
+    if (
+        folder_depth < 1
+        or folder_depth > MAX_CONFIG_ASSET_FOLDER_DEPTH
+        or any(part in {'', '.', '..'} for part in parts)
+    ):
+        return None
+    return parts
+
+
+def resolve_local_replacement_path(value: str | Path) -> Path:
+    """Resolve a portable ``/Folder/file`` replacement path.
+
+    A matching file below the Configs folder takes priority.  If it is absent,
+    an existing operating-system absolute path keeps its historical meaning.
+    Otherwise the Configs candidate is returned so missing-file diagnostics
+    point users at the portable layout they requested.
+    """
+    text = str(value or '').strip()
+    parts = _config_asset_parts(text)
+    if parts is None:
+        return Path(text)
+
+    configs_candidate = CONFIGS_FOLDER.joinpath(*parts)
+    if configs_candidate.is_file():
+        return configs_candidate
+
+    os_path = Path(text)
+    if os_path.is_file():
+        return os_path
+    return configs_candidate
+
+
+def local_replacement_path_for_storage(value: str | Path) -> str:
+    """Use portable ``/Folder/file`` notation for files inside Configs."""
+    path = Path(value)
+    try:
+        relative = path.resolve().relative_to(CONFIGS_FOLDER.resolve())
+    except (OSError, ValueError):
+        return str(path)
+
+    folder_depth = len(relative.parts) - 1
+    if (
+        folder_depth < 1
+        or folder_depth > MAX_CONFIG_ASSET_FOLDER_DEPTH
+        or any(part in {'', '.', '..'} for part in relative.parts)
+    ):
+        return str(path)
+    return f'/{relative.as_posix()}'
+
+
 _ASSET_TYPE_IDS = {
     'image': 1,
     'tshirt': 2,
@@ -106,6 +171,55 @@ _VIRTUAL_ANIM_TYPES = {
     'r15 animation': 'R15Animation',
     'non-player animation': 'NonPlayerAnimation',
 }
+
+ConfigFileStatus = Literal['valid', 'invalid', 'binary', 'unreadable']
+
+
+@dataclass(frozen=True)
+class ConfigFileInspection:
+    """Result of inspecting a candidate file for import into the configs folder."""
+
+    status: ConfigFileStatus
+    data: dict | None = None
+
+
+def _looks_like_utf16_or_utf32(raw: bytes) -> bool:
+    """Return whether NUL placement is consistent with a text Unicode encoding."""
+    sample = raw[:8192]
+    if not sample or b'\x00' not in sample:
+        return False
+    if sample.startswith((b'\xff\xfe', b'\xfe\xff', b'\xff\xfe\x00\x00', b'\x00\x00\xfe\xff')):
+        return True
+
+    nul_positions = [index for index, value in enumerate(sample) if value == 0]
+    if len(nul_positions) < max(2, len(sample) // 8):
+        return False
+    even_nuls = sum(index % 2 == 0 for index in nul_positions)
+    odd_nuls = len(nul_positions) - even_nuls
+    return max(even_nuls, odd_nuls) >= len(nul_positions) * 0.8
+
+
+def _is_probably_binary(raw: bytes) -> bool:
+    """Use conservative content heuristics to distinguish binary from invalid text."""
+    if not raw or _looks_like_utf16_or_utf32(raw):
+        return False
+
+    sample = raw[:8192]
+    if b'\x00' in sample:
+        return True
+
+    try:
+        sample.decode('utf-8')
+        return False
+    except UnicodeDecodeError:
+        pass
+
+    replacement_count = sample.decode('utf-8', errors='replace').count('\ufffd')
+    control_count = sum(
+        value < 0x20 and value not in (0x09, 0x0A, 0x0C, 0x0D) or value == 0x7F
+        for value in sample
+    )
+    return control_count / len(sample) > 0.1 or replacement_count / len(sample) > 0.3
 DEFAULT_SETTINGS = {
     'strip_textures': False,
     'enabled_configs': [],
@@ -118,13 +232,19 @@ DEFAULT_SETTINGS = {
     'auto_delete_cache_on_exit': True,
     'clear_cache_on_launch': True,
     'proxy_features_enabled': True,
+    'proxy_mode': 'env',
+    'env_proxy_migration_v1_complete': False,
+    'lock_roblox_files_read_only': False,
+    'read_only_lock_migration_v1_complete': False,
+    'close_env_proxy_roblox_on_exit': True,
     'custom_fflags_enabled': False,
     'custom_fflags_warning_accepted': False,
     'custom_fflags': {},
-    # Windows-only UI state.  Keeping this separate from custom_fflags means a
+    # Per-platform UI state. Keeping this separate from custom_fflags means a
     # disabled flag retains its chosen value and can be restored by a hotkey.
     'custom_fflag_disabled': [],
     'custom_fflag_keybinds': {},
+    'linux_fflag_keybind_setup_prompted': False,
     'macos_auth_source': '',
     'upstream_transport_mode': 'auto',
     'upstream_http_connect_host': '',
@@ -157,6 +277,10 @@ DEFAULT_SETTINGS = {
         'url': False,
     },
     'scraper_column_widths': {},
+    'proxy_traffic_column_widths': {},
+    'proxy_traffic_preserve': False,
+    'auto_replace_rules': [],
+    'auto_replace_rules_column_widths': {},
     'time_wasted_seconds': 0,
     'auto_convert_anim_rig': False,
     'skip_non_player_anim_replace': False,
@@ -208,8 +332,8 @@ def _normalize_custom_fflag_disabled(value: Any) -> list[str]:
     return sorted({str(name).strip() for name in value if str(name).strip()}, key=str.casefold)
 
 
-def _normalize_custom_fflag_keybinds(value: Any) -> dict[str, dict[str, int | bool]]:
-    """Keep only physical Windows scan-code bindings used by the hotkey service."""
+def _normalize_custom_fflag_keybinds(value: Any) -> dict[str, dict[str, int | bool | str]]:
+    """Keep valid physical scan-code bindings for the platform hotkey services."""
     if not isinstance(value, dict):
         return {}
 
@@ -220,22 +344,58 @@ def _normalize_custom_fflag_keybinds(value: Any) -> dict[str, dict[str, int | bo
             continue
         scan_code = raw_binding.get('scan_code')
         modifiers = raw_binding.get('modifiers', 0)
+        platform = raw_binding.get('platform')
+        kind = raw_binding.get('kind', 'key')
         extended = raw_binding.get('extended', False)
         if (
-            not isinstance(scan_code, int)
-            or isinstance(scan_code, bool)
-            or not isinstance(modifiers, int)
+            not isinstance(modifiers, int)
             or isinstance(modifiers, bool)
-            or not isinstance(extended, bool)
-            or not 0 < scan_code <= 0xFF
             or modifiers & ~0x0F
         ):
             continue
-        normalized[name] = {
-            'scan_code': scan_code,
-            'extended': extended,
-            'modifiers': modifiers,
-        }
+        if kind == 'mouse_wheel':
+            direction = raw_binding.get('direction')
+            if platform not in ('linux_evdev', 'windows') or direction not in ('up', 'down'):
+                continue
+            normalized[name] = {
+                'platform': platform,
+                'kind': 'mouse_wheel',
+                'direction': direction,
+                'modifiers': modifiers,
+            }
+        elif platform == 'linux_evdev':
+            if (
+                not isinstance(scan_code, int)
+                or isinstance(scan_code, bool)
+                or not 0 < scan_code <= 0x2FF
+                or kind not in ('key', 'mouse_button')
+                or kind == 'mouse_button' and scan_code not in (0x110, 0x111, 0x112, 0x113, 0x114)
+            ):
+                continue
+            normalized[name] = {
+                'platform': 'linux_evdev',
+                **({'kind': 'mouse_button'} if kind == 'mouse_button' else {}),
+                'scan_code': scan_code,
+                'modifiers': modifiers,
+            }
+        elif platform in (None, 'windows') and isinstance(extended, bool):
+            if (
+                not isinstance(scan_code, int)
+                or isinstance(scan_code, bool)
+                or not 0 < scan_code <= 0xFF
+                or kind not in ('key', 'mouse_button')
+                or kind == 'mouse_button' and scan_code not in (1, 2, 4, 5, 6)
+            ):
+                continue
+            # Untagged bindings are the Windows format used before platform
+            # tagging was added, so preserve them for existing users.
+            normalized[name] = {
+                **({'platform': 'windows'} if platform == 'windows' else {}),
+                **({'kind': 'mouse_button'} if kind == 'mouse_button' else {}),
+                'scan_code': scan_code,
+                'extended': extended,
+                'modifiers': modifiers,
+            }
     return normalized
 
 
@@ -286,6 +446,10 @@ class ConfigManager:
     def _mark_replacements_dirty(self) -> None:
         self._all_replacements_cache_signature = None
         self._all_replacements_cache = None
+
+    def invalidate_replacements_cache(self) -> None:
+        """Invalidate resolved replacement mappings after an external asset change."""
+        self._mark_replacements_dirty()
 
     def _refresh_config_names_cache(self) -> list[str]:
         names, signature = self._scan_config_files()
@@ -375,14 +539,13 @@ class ConfigManager:
                 seen.add(normalized)
         return tuple(encodings)
 
-    def _load_json_file(self, path: Path) -> Any:
-        """Load JSON and recover legacy non-UTF files when possible."""
-        raw = path.read_bytes()
+    def _decode_json_bytes(self, raw: bytes) -> tuple[Any, bool]:
+        """Decode JSON bytes and report whether a fallback text encoding was used."""
         decode_error: UnicodeDecodeError | None = None
         json_error: json.JSONDecodeError | None = None
 
         try:
-            return _json_loads(raw)
+            return _json_loads(raw), False
         except UnicodeDecodeError as exc:
             decode_error = exc
         except json.JSONDecodeError as exc:
@@ -394,21 +557,84 @@ class ConfigManager:
                 loaded = _json_loads(text)
             except LookupError, UnicodeDecodeError, json.JSONDecodeError:
                 continue
-
-            # Normalize recovered configs back to UTF-8 JSON so future launches
-            # do not depend on locale-specific decoding.
-            try:
-                self._clear_read_only(path)
-                _write_json(path, loaded)
-            except OSError:
-                pass
-            return loaded
+            return loaded, True
 
         if decode_error is not None:
             raise decode_error
         if json_error is not None:
             raise json_error
-        return _json_loads(raw)
+        return _json_loads(raw), False
+
+    def _load_json_file(self, path: Path) -> Any:
+        """Load JSON and recover legacy non-UTF files when possible."""
+        raw = path.read_bytes()
+        loaded, recovered = self._decode_json_bytes(raw)
+
+        # Normalize recovered configs back to UTF-8 JSON so future launches
+        # do not depend on locale-specific decoding.
+        if recovered:
+            try:
+                self._clear_read_only(path)
+                _write_json(path, loaded)
+            except OSError:
+                pass
+        return loaded
+
+    def inspect_config_file(self, path: Path) -> ConfigFileInspection:
+        """Inspect an external file without modifying it or requiring a .json suffix."""
+        path = Path(path)
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            return ConfigFileInspection('unreadable')
+
+        try:
+            loaded, _recovered = self._decode_json_bytes(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            if _is_probably_binary(raw):
+                return ConfigFileInspection('binary')
+            return ConfigFileInspection('invalid')
+
+        # The existing loader accepts both the current object form and the
+        # legacy root-list form. Scalar JSON values are not Fleasion configs.
+        if not isinstance(loaded, dict | list):
+            return ConfigFileInspection('invalid')
+        return ConfigFileInspection('valid', self._normalize_config_data(loaded))
+
+    @staticmethod
+    def config_import_destination(path: Path) -> Path:
+        """Return the same path with its final extension normalized to .json."""
+        path = Path(path)
+        if path.suffix:
+            return path.with_suffix('.json')
+        return path.with_name(f'{path.name}.json')
+
+    def import_config_file(self, path: Path) -> Path:
+        """Safely adopt an inspected external config and invalidate config caches."""
+        path = Path(path)
+        destination = self.config_import_destination(path)
+        same_file = False
+        if destination.exists():
+            try:
+                same_file = os.path.samefile(path, destination)
+            except OSError:
+                same_file = path == destination
+            if not same_file:
+                raise FileExistsError(destination)
+
+        if (
+            same_file
+            and path.name != destination.name
+            and path.name.casefold() == destination.name.casefold()
+        ):
+            path.rename(destination)
+        elif not same_file and path != destination:
+            path.rename(destination)
+        with self._lock:
+            self._config_names_cache = None
+            self._config_names_signature = None
+            self._mark_replacements_dirty()
+        return destination
 
     @staticmethod
     def _normalize_config_data(data: Any) -> dict:
@@ -555,6 +781,57 @@ class ConfigManager:
         self._save_settings()
 
     @property
+    def proxy_mode(self) -> str:
+        """How Roblox traffic is routed into Fleasion's local proxy."""
+        mode = str(self.settings.get('proxy_mode', 'env') or 'env').lower()
+        return mode if mode in {'hosts', 'env'} else 'env'
+
+    @proxy_mode.setter
+    def proxy_mode(self, value: str):
+        value = str(value or 'env').lower()
+        self.settings['proxy_mode'] = value if value in {'hosts', 'env'} else 'env'
+        self._save_settings()
+
+    @property
+    def env_proxy_migration_v1_complete(self) -> bool:
+        """Whether the one-time Env Proxy default migration was acknowledged."""
+        return bool(self.settings.get('env_proxy_migration_v1_complete', False))
+
+    @env_proxy_migration_v1_complete.setter
+    def env_proxy_migration_v1_complete(self, value: bool):
+        self.settings['env_proxy_migration_v1_complete'] = bool(value)
+        self._save_settings()
+
+    @property
+    def lock_roblox_files_read_only(self) -> bool:
+        """Whether active modification targets should remain read-only."""
+        return bool(self.settings.get('lock_roblox_files_read_only', False))
+
+    @lock_roblox_files_read_only.setter
+    def lock_roblox_files_read_only(self, value: bool):
+        self.settings['lock_roblox_files_read_only'] = bool(value)
+        self._save_settings()
+
+    @property
+    def read_only_lock_migration_v1_complete(self) -> bool:
+        return bool(self.settings.get('read_only_lock_migration_v1_complete', False))
+
+    @read_only_lock_migration_v1_complete.setter
+    def read_only_lock_migration_v1_complete(self, value: bool):
+        self.settings['read_only_lock_migration_v1_complete'] = bool(value)
+        self._save_settings()
+
+    @property
+    def close_env_proxy_roblox_on_exit(self) -> bool:
+        """Whether Fleasion should close its Env-proxied Player on exit."""
+        return bool(self.settings.get('close_env_proxy_roblox_on_exit', True))
+
+    @close_env_proxy_roblox_on_exit.setter
+    def close_env_proxy_roblox_on_exit(self, value: bool):
+        self.settings['close_env_proxy_roblox_on_exit'] = bool(value)
+        self._save_settings()
+
+    @property
     def custom_fflags_enabled(self) -> bool:
         """Whether remote ClientSettings responses should receive custom overrides."""
         return bool(self.settings.get('custom_fflags_enabled', False))
@@ -595,13 +872,23 @@ class ConfigManager:
         self._save_settings()
 
     @property
-    def custom_fflag_keybinds(self) -> dict[str, dict[str, int | bool]]:
-        """Windows global hotkeys keyed by custom FastFlag name."""
+    def custom_fflag_keybinds(self) -> dict[str, dict[str, int | bool | str]]:
+        """Platform global hotkeys keyed by custom FastFlag name."""
         return _normalize_custom_fflag_keybinds(self.settings.get('custom_fflag_keybinds', {}))
 
     @custom_fflag_keybinds.setter
     def custom_fflag_keybinds(self, value):
         self.settings['custom_fflag_keybinds'] = _normalize_custom_fflag_keybinds(value)
+        self._save_settings()
+
+    @property
+    def linux_fflag_keybind_setup_prompted(self) -> bool:
+        """Whether the on-demand Linux keybind permission setup was shown."""
+        return bool(self.settings.get('linux_fflag_keybind_setup_prompted', False))
+
+    @linux_fflag_keybind_setup_prompted.setter
+    def linux_fflag_keybind_setup_prompted(self, value: bool):
+        self.settings['linux_fflag_keybind_setup_prompted'] = bool(value)
         self._save_settings()
 
     @property
@@ -1318,7 +1605,8 @@ class ConfigManager:
                 elif mode == 'local':
                     local_path = rule.get('local_path')
                     if local_path:
-                        local_replacements.update(dict.fromkeys(parsed_ids, local_path))
+                        resolved_path = str(resolve_local_replacement_path(local_path))
+                        local_replacements.update(dict.fromkeys(parsed_ids, resolved_path))
                     else:
                         # Empty local path means remove
                         removals.update(parsed_ids)

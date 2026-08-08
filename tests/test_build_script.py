@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
 from pytest import MonkeyPatch
 
 from fleasion.scripts import build, macos_build
@@ -48,6 +49,28 @@ def test_macos_versions_are_normalized_for_comparison() -> None:
     assert macos_build.MacOSBuilder._version_tuple('11.0.0') == (11, 0, 0)
 
 
+def test_macos_prerelease_paths_use_local_artifact_version(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setattr(macos_build, 'read_project_version', lambda: '2.4.0b1')
+    monkeypatch.delenv('GITHUB_ACTIONS', raising=False)
+
+    builder = macos_build.MacOSBuilder()
+
+    assert builder.executable_name == 'Fleasion-v2.4.0b1+local'
+    assert builder.versioned_app_path == Path('dist/Fleasion-v2.4.0b1+local.app')
+    assert builder.zip_path == Path('dist/Fleasion-v2.4.0b1+local-MacOS-Universal.zip')
+
+
+def test_macos_stable_paths_use_canonical_version(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setattr(macos_build, 'read_project_version', lambda: '2.4.0')
+    monkeypatch.setenv('GITHUB_ACTIONS', 'true')
+    monkeypatch.delenv('GITHUB_SHA', raising=False)
+
+    builder = macos_build.MacOSBuilder()
+
+    assert builder.executable_name == 'Fleasion-v2.4.0'
+    assert builder.zip_path == Path('dist/Fleasion-v2.4.0-MacOS-Universal.zip')
+
+
 def test_universal_verification_ignores_helper_symlink_targets(
     monkeypatch: MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -65,7 +88,10 @@ def test_universal_verification_ignores_helper_symlink_targets(
         framework_helper = frameworks / helper_name
         framework_helper.touch()
         resource_helper = resources / helper_name
-        resource_helper.symlink_to(framework_helper)
+        try:
+            resource_helper.symlink_to(framework_helper)
+        except OSError as exc:
+            pytest.skip(f'helper symlinks require Windows developer-mode privileges: {exc}')
         helper_paths[helper_name] = resource_helper
         framework_helpers.append(framework_helper)
 

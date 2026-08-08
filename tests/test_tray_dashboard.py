@@ -1,12 +1,17 @@
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
-from PyQt6.QtWidgets import QSystemTrayIcon
+os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QIcon, QPalette
+from PyQt6.QtWidgets import QApplication, QSystemTrayIcon
 
 from fleasion import tray as tray_module
 from fleasion import app as app_module
 from fleasion.utils import platform_macos
-from fleasion.tray import SystemTray
+from fleasion.tray import SystemTray, _XfceTrayNotification
 
 
 class _DashboardStub:
@@ -38,6 +43,47 @@ class _TrayIconStub:
         self.delete_later_calls += 1
 
 
+def test_linux_gui_dependency_check_reports_install_command(monkeypatch):
+    from fleasion.utils import platform_linux
+
+    critical_calls = []
+    log_calls = []
+    monkeypatch.setattr(app_module.sys, 'platform', 'linux')
+    monkeypatch.setattr(platform_linux, 'missing_linux_gui_packages', lambda: ['qt6-base'])
+    monkeypatch.setattr(
+        app_module.QMessageBox,
+        'critical',
+        lambda *args: critical_calls.append(args),
+    )
+    monkeypatch.setattr(
+        app_module.log_buffer,
+        'log',
+        lambda category, message: log_calls.append((category, message)),
+    )
+
+    assert app_module._check_linux_gui_dependencies() is False
+    assert 'sudo pacman -S --needed qt6-base' in critical_calls[0][2]
+    assert 'Required package:\n  • qt6-base' in critical_calls[0][2]
+    assert log_calls == [
+        (
+            'Linux GUI',
+            'A required Arch Linux GUI package is missing.\n'
+            '  Package: qt6-base\n'
+            '  Impact: Fleasion cannot reliably publish its system tray icon.\n'
+            '  Install: sudo pacman -S --needed qt6-base',
+        )
+    ]
+
+
+def test_linux_gui_dependency_check_accepts_complete_runtime(monkeypatch):
+    from fleasion.utils import platform_linux
+
+    monkeypatch.setattr(app_module.sys, 'platform', 'linux')
+    monkeypatch.setattr(platform_linux, 'missing_linux_gui_packages', lambda: [])
+
+    assert app_module._check_linux_gui_dependencies() is True
+
+
 def test_dashboard_toggle_hides_visible_window():
     system_tray = SystemTray.__new__(SystemTray)
     dashboard = _DashboardStub(visible=True)
@@ -52,6 +98,56 @@ def test_dashboard_toggle_hides_visible_window():
     assert foreground_modes == [False]
 
 
+def test_xfce_desktop_detection(monkeypatch):
+    monkeypatch.delenv('XDG_CURRENT_DESKTOP', raising=False)
+    monkeypatch.delenv('XDG_SESSION_DESKTOP', raising=False)
+    monkeypatch.setenv('DESKTOP_SESSION', 'xfce')
+
+    assert tray_module._is_xfce_desktop() is True
+
+    monkeypatch.setenv('DESKTOP_SESSION', 'gnome')
+    assert tray_module._is_xfce_desktop() is False
+
+
+def test_xfce_notification_uses_an_opaque_surface():
+    app = QApplication.instance() or QApplication([])
+    notification = _XfceTrayNotification(
+        'Fleasion',
+        'Fleasion is still running in the system tray.',
+        QIcon(),
+        True,
+        1000,
+    )
+
+    assert not notification.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+    assert notification.testAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+    assert notification.autoFillBackground()
+    assert notification.palette().color(QPalette.ColorRole.Window).alpha() == 255
+
+    notification.close()
+    app.processEvents()
+
+
+def test_dashboard_close_uses_styled_notification_on_xfce(monkeypatch):
+    system_tray = SystemTray.__new__(SystemTray)
+    calls = []
+
+    class _TrayStub:
+        def showMessage(self, *args):
+            calls.append(('native', args))
+
+    system_tray._dashboard_close_notice_shown = False
+    system_tray.tray = _TrayStub()
+    system_tray._show_xfce_notification = lambda *args: calls.append(('xfce', args)) or True
+    monkeypatch.setattr(tray_module.sys, 'platform', 'linux')
+    monkeypatch.setattr(tray_module, '_is_xfce_desktop', lambda: True)
+    monkeypatch.setattr(tray_module, 'get_icon_path', lambda: None)
+
+    system_tray.notify_dashboard_closed()
+
+    assert [call[0] for call in calls] == ['xfce']
+
+
 def test_dashboard_toggle_shows_hidden_window():
     system_tray = SystemTray.__new__(SystemTray)
     dashboard = _DashboardStub(visible=False)
@@ -62,6 +158,40 @@ def test_dashboard_toggle_shows_hidden_window():
     system_tray._toggle_dashboard()
 
     assert show_calls == [True]
+
+
+def test_show_logs_raises_and_activates_new_window(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    calls = []
+
+    class _RecordingLogsWindow(tray_module.LogsWindow):
+        def show(self):
+            calls.append('show')
+            super().show()
+
+        def raise_(self):
+            calls.append('raise')
+            super().raise_()
+
+        def activateWindow(self):
+            calls.append('activate')
+            super().activateWindow()
+
+    system_tray = SystemTray.__new__(SystemTray)
+    system_tray.open_windows = []
+    system_tray._apply_always_on_top_to_window = lambda _window: None
+    monkeypatch.setattr(tray_module, 'LogsWindow', _RecordingLogsWindow)
+
+    system_tray._show_logs()
+    app.processEvents()
+
+    assert calls[:3] == ['show', 'raise', 'activate']
+    assert len(system_tray.open_windows) == 1
+    assert system_tray.open_windows[0].isVisible()
+
+    system_tray.open_windows[0].close()
+    app.processEvents()
+    assert system_tray.open_windows == []
 
 
 def test_show_dashboard_enables_foreground_mode_before_showing_existing_window():

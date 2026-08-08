@@ -90,6 +90,45 @@ class ConfigManagerEncodingTests(unittest.TestCase):
 
             self.assertEqual(manager.replacement_rules, [])
 
+    def test_external_config_inspection_accepts_legacy_shapes_and_rejects_scalars(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_manager_module = self._load_manager_for(Path(tmp))
+            configs_dir = Path(tmp) / 'FleasionNT' / 'configs'
+            configs_dir.mkdir(parents=True)
+            manager = config_manager_module.ConfigManager()
+
+            root_list = configs_dir / 'root-list.txt'
+            root_list.write_text(json.dumps([{'name': 'Rule'}]), encoding='utf-8')
+            scalar = configs_dir / 'scalar.txt'
+            scalar.write_text('1', encoding='utf-8')
+            binary = configs_dir / 'binary.bin'
+            binary.write_bytes(b'\x89PNG\r\n\x1a\n\x00binary')
+            compressed = configs_dir / 'compressed.bin'
+            compressed.write_bytes(b'\xff' * 64)
+
+            self.assertEqual(manager.inspect_config_file(root_list).status, 'valid')
+            self.assertEqual(manager.inspect_config_file(scalar).status, 'invalid')
+            self.assertEqual(manager.inspect_config_file(binary).status, 'binary')
+            self.assertEqual(manager.inspect_config_file(compressed).status, 'binary')
+
+    def test_external_config_import_does_not_overwrite_destination(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_manager_module = self._load_manager_for(Path(tmp))
+            configs_dir = Path(tmp) / 'FleasionNT' / 'configs'
+            configs_dir.mkdir(parents=True)
+            manager = config_manager_module.ConfigManager()
+
+            destination = configs_dir / 'Copied.json'
+            destination.write_text(json.dumps({'replacement_rules': []}), encoding='utf-8')
+            source = configs_dir / 'Copied.txt'
+            source.write_text(json.dumps({'replacement_rules': [{'name': 'new'}]}), encoding='utf-8')
+
+            with self.assertRaises(FileExistsError):
+                manager.import_config_file(source)
+
+            self.assertTrue(source.exists())
+            self.assertEqual(json.loads(destination.read_text(encoding='utf-8')), {'replacement_rules': []})
+
     def test_large_list_root_config_is_loaded_as_replacement_rules(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_manager_module = self._load_manager_for(Path(tmp))
@@ -160,6 +199,35 @@ class ConfigManagerEncodingTests(unittest.TestCase):
             manager.settings['wire_preserving_passthrough'] = 'true'
             self.assertTrue(manager.wire_preserving_passthrough)
 
+    def test_proxy_mode_defaults_to_env_and_accepts_hosts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_manager_module = self._load_manager_for(Path(tmp))
+
+            manager = config_manager_module.ConfigManager()
+            self.assertEqual(manager.proxy_mode, 'env')
+
+            manager.proxy_mode = 'hosts'
+            self.assertEqual(manager.proxy_mode, 'hosts')
+
+            manager.proxy_mode = 'invalid'
+            self.assertEqual(manager.proxy_mode, 'env')
+
+            self.assertFalse(manager.env_proxy_migration_v1_complete)
+            manager.env_proxy_migration_v1_complete = True
+            self.assertTrue(manager.env_proxy_migration_v1_complete)
+
+            reloaded = config_manager_module.ConfigManager()
+            self.assertEqual(reloaded.proxy_mode, 'env')
+            self.assertTrue(reloaded.env_proxy_migration_v1_complete)
+
+            self.assertFalse(manager.lock_roblox_files_read_only)
+            manager.lock_roblox_files_read_only = True
+            self.assertTrue(manager.lock_roblox_files_read_only)
+
+            self.assertTrue(manager.close_env_proxy_roblox_on_exit)
+            manager.close_env_proxy_roblox_on_exit = False
+            self.assertFalse(manager.close_env_proxy_roblox_on_exit)
+
     def test_requested_defaults_for_boot_and_export_naming(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_manager_module = self._load_manager_for(Path(tmp))
@@ -221,6 +289,35 @@ class ConfigManagerEncodingTests(unittest.TestCase):
                 },
             )
 
+    def test_custom_fflag_mouse_bindings_are_preserved_per_platform(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_manager_module = self._load_manager_for(Path(tmp))
+            manager = config_manager_module.ConfigManager()
+            manager.custom_fflag_keybinds = {
+                'WindowsMouse4': {
+                    'platform': 'windows', 'kind': 'mouse_button', 'scan_code': 5,
+                    'extended': False, 'modifiers': 0,
+                },
+                'LinuxWheelDown': {
+                    'platform': 'linux_evdev', 'kind': 'mouse_wheel',
+                    'direction': 'down', 'modifiers': 0,
+                },
+            }
+
+            self.assertEqual(
+                manager.custom_fflag_keybinds,
+                {
+                    'WindowsMouse4': {
+                        'platform': 'windows', 'kind': 'mouse_button', 'scan_code': 5,
+                        'extended': False, 'modifiers': 0,
+                    },
+                    'LinuxWheelDown': {
+                        'platform': 'linux_evdev', 'kind': 'mouse_wheel',
+                        'direction': 'down', 'modifiers': 0,
+                    },
+                },
+            )
+
     def test_dummy_replacement_ids_are_ignored(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_manager_module = self._load_manager_for(Path(tmp))
@@ -239,6 +336,171 @@ class ConfigManagerEncodingTests(unittest.TestCase):
             self.assertEqual(removals, set())
             self.assertEqual(cdn_replacements, {})
             self.assertEqual(local_replacements, {})
+
+    def test_portable_local_replacement_resolves_below_configs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_manager_module = self._load_manager_for(Path(tmp))
+            manager = config_manager_module.ConfigManager()
+            configs_dir = Path(tmp) / 'FleasionNT' / 'configs'
+            asset = configs_dir / 'StickObj' / 'stick.obj'
+            asset.parent.mkdir()
+            asset.write_text('stick', encoding='utf-8')
+
+            manager.enabled_configs = ['Default']
+            manager.replacement_rules = [
+                {
+                    'name': 'Sticks',
+                    'enabled': True,
+                    'replace_ids': ['100'],
+                    'mode': 'local',
+                    'local_path': '/StickObj/stick.obj',
+                }
+            ]
+
+            _, _, _, local_replacements = manager.get_all_replacements()
+
+            self.assertEqual(local_replacements, {100: str(asset)})
+
+    @unittest.skipIf(sys.platform == 'win32', 'POSIX portable-path fixture')
+    def test_configs_asset_takes_priority_then_falls_back_to_absolute_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_manager_module = self._load_manager_for(Path(tmp))
+            configs_dir = Path(tmp) / 'FleasionNT' / 'configs'
+            absolute_asset = Path(tmp) / 'outside' / 'stick.obj'
+            absolute_asset.parent.mkdir()
+            absolute_asset.write_text('absolute', encoding='utf-8')
+            portable_value = absolute_asset.as_posix()
+            configs_asset = configs_dir.joinpath(*portable_value[1:].split('/'))
+            configs_asset.parent.mkdir(parents=True)
+            configs_asset.write_text('configs', encoding='utf-8')
+
+            self.assertEqual(
+                config_manager_module.resolve_local_replacement_path(portable_value),
+                configs_asset,
+            )
+
+            configs_asset.unlink()
+            self.assertEqual(
+                config_manager_module.resolve_local_replacement_path(portable_value),
+                absolute_asset,
+            )
+
+    @unittest.skipIf(sys.platform == 'win32', 'POSIX portable-path fixture')
+    def test_invalidated_replacements_notice_when_priority_configs_asset_appears(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_manager_module = self._load_manager_for(Path(tmp))
+            manager = config_manager_module.ConfigManager()
+            configs_dir = Path(tmp) / 'FleasionNT' / 'configs'
+            absolute_asset = Path(tmp) / 'outside' / 'stick.obj'
+            absolute_asset.parent.mkdir()
+            absolute_asset.write_text('absolute', encoding='utf-8')
+            portable_value = absolute_asset.as_posix()
+            configs_asset = configs_dir.joinpath(*portable_value[1:].split('/'))
+
+            manager.enabled_configs = ['Default']
+            manager.replacement_rules = [
+                {
+                    'name': 'Priority',
+                    'enabled': True,
+                    'replace_ids': ['100'],
+                    'mode': 'local',
+                    'local_path': portable_value,
+                }
+            ]
+
+            self.assertEqual(manager.get_all_replacements()[3], {100: str(absolute_asset)})
+
+            configs_asset.parent.mkdir(parents=True)
+            configs_asset.write_text('configs', encoding='utf-8')
+            manager.invalidate_replacements_cache()
+
+            self.assertEqual(manager.get_all_replacements()[3], {100: str(configs_asset)})
+
+    def test_replacement_cache_hit_does_not_stat_local_rules(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_manager_module = self._load_manager_for(Path(tmp))
+            manager = config_manager_module.ConfigManager()
+            configs_dir = Path(tmp) / 'FleasionNT' / 'configs'
+            asset = configs_dir / 'StickObj' / 'stick.obj'
+            asset.parent.mkdir()
+            asset.write_text('stick', encoding='utf-8')
+            manager.enabled_configs = ['Default']
+            manager.replacement_rules = [
+                {
+                    'name': 'Sticks',
+                    'enabled': True,
+                    'replace_ids': ['100'],
+                    'mode': 'local',
+                    'local_path': '/StickObj/stick.obj',
+                }
+            ]
+            manager.get_all_replacements()
+
+            original_file_signature = manager._file_signature
+            checked_paths = []
+
+            def record_file_signature(path):
+                checked_paths.append(Path(path))
+                return original_file_signature(path)
+
+            manager._file_signature = record_file_signature
+            manager.get_all_replacements()
+
+            self.assertEqual(checked_paths, [configs_dir / 'Default.json'])
+
+    def test_portable_assets_allow_one_to_ten_folders(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_manager_module = self._load_manager_for(Path(tmp))
+            configs_dir = Path(tmp) / 'FleasionNT' / 'configs'
+
+            ten_folders = [f'level-{index}' for index in range(10)]
+            valid_asset = configs_dir.joinpath(*ten_folders, 'asset.obj')
+            valid_asset.parent.mkdir(parents=True)
+            valid_asset.write_text('valid', encoding='utf-8')
+            valid_value = '/' + '/'.join((*ten_folders, 'asset.obj'))
+
+            eleven_folders = [f'level-{index}' for index in range(11)]
+            too_deep_asset = configs_dir.joinpath(*eleven_folders, 'asset.obj')
+            too_deep_asset.parent.mkdir(parents=True)
+            too_deep_asset.write_text('too deep', encoding='utf-8')
+            too_deep_value = '/' + '/'.join((*eleven_folders, 'asset.obj'))
+
+            self.assertEqual(
+                config_manager_module.resolve_local_replacement_path(valid_value),
+                valid_asset,
+            )
+            self.assertNotEqual(
+                config_manager_module.resolve_local_replacement_path(too_deep_value),
+                too_deep_asset,
+            )
+
+    def test_browsed_configs_asset_is_stored_portably(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_manager_module = self._load_manager_for(Path(tmp))
+            configs_dir = Path(tmp) / 'FleasionNT' / 'configs'
+            asset = configs_dir / 'Pack' / 'Models' / 'stick.obj'
+            asset.parent.mkdir(parents=True)
+            asset.write_text('stick', encoding='utf-8')
+
+            self.assertEqual(
+                config_manager_module.local_replacement_path_for_storage(asset),
+                '/Pack/Models/stick.obj',
+            )
+
+    def test_nested_json_is_an_asset_not_a_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_manager_module = self._load_manager_for(Path(tmp))
+            configs_dir = Path(tmp) / 'FleasionNT' / 'configs'
+            nested_config = configs_dir / 'Pack' / 'metadata.json'
+            nested_config.parent.mkdir(parents=True)
+            nested_config.write_text(
+                json.dumps({'replacement_rules': [{'name': 'Nested'}]}),
+                encoding='utf-8',
+            )
+
+            manager = config_manager_module.ConfigManager()
+
+            self.assertEqual(manager.config_names, ['Default'])
 
     def test_macos_auth_source_accepts_only_supported_values(self):
         with tempfile.TemporaryDirectory() as tmp:

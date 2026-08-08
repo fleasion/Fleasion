@@ -24,8 +24,8 @@ import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-HELPER_VERSION = 5
-HELPER_CAPABILITIES = ('hosts', 'relay', 'patch_ca')
+HELPER_VERSION = 7
+HELPER_CAPABILITIES = ('hosts', 'relay', 'patch_ca', 'probe_backend')
 HOSTS_FILE = '/etc/hosts'
 HOSTS_MARKER = '# Fleasion proxy entry'
 ALLOWED_HOSTS = {
@@ -46,6 +46,7 @@ _ALLOWED_ROBLOX_APPS = {
     'Roblox.app': 'RobloxPlayer',
     'RobloxStudio.app': 'RobloxStudio',
 }
+_USERS_ROOT = Path('/Users')
 
 _state_lock = threading.Lock()
 _active_hosts = set()
@@ -222,12 +223,36 @@ def _validate_resource_root(raw_resource_dir):
     if resource_root.name != 'Resources' or contents_dir.name != 'Contents':
         raise ValueError('resource_dir is not a Roblox app Resources directory')
     executable_name = _ALLOWED_ROBLOX_APPS.get(app_root.name)
+    if app_root.name == 'RobloxPlayer.app' and _is_froststrap_player_bundle(app_root):
+        executable_name = 'RobloxPlayer'
     if executable_name is None:
         raise ValueError('resource_dir is not under a supported Roblox app bundle')
     executable = app_root / 'Contents' / 'MacOS' / executable_name
     if not executable.is_file():
         raise ValueError('Roblox app executable was not found')
     return resource_root
+
+
+def _is_froststrap_player_bundle(app_root):
+    """Only admit Froststrap's version-managed RobloxPlayer.app layout."""
+    try:
+        relative = app_root.relative_to(_USERS_ROOT)
+    except ValueError:
+        return False
+    parts = relative.parts
+    return (
+        len(parts) == 7
+        and bool(parts[0])
+        and parts[1:5] == (
+            'Library',
+            'Application Support',
+            'Froststrap',
+            'Versions',
+        )
+        and parts[5].startswith('version-')
+        and len(parts[5]) > len('version-')
+        and parts[6] == 'RobloxPlayer.app'
+    )
 
 
 def _safe_cacert_path(resource_root):
@@ -444,6 +469,35 @@ def _status():
     }
 
 
+def _probe_backend():
+    started_at = time.monotonic()
+    try:
+        backend = socket.create_connection(('127.0.0.1', _backend_port), timeout=2.0)
+    except OSError as exc:
+        return {
+            'ok': True,
+            'reachable': False,
+            'backend_port': _backend_port,
+            'elapsed_ms': round((time.monotonic() - started_at) * 1000),
+            'error_type': type(exc).__name__,
+            'errno': exc.errno,
+            'error': str(exc),
+        }
+
+    try:
+        return {
+            'ok': True,
+            'reachable': True,
+            'backend_port': _backend_port,
+            'elapsed_ms': round((time.monotonic() - started_at) * 1000),
+            'error_type': '',
+            'errno': None,
+            'error': '',
+        }
+    finally:
+        backend.close()
+
+
 def _handle_request(request):
     supplied = str(request.get('token') or '')
     if not hmac.compare_digest(supplied, _read_token()):
@@ -464,6 +518,8 @@ def _handle_request(request):
             if _active_hosts:
                 _last_heartbeat = time.monotonic()
         return _status()
+    if action == 'probe_backend':
+        return _probe_backend()
     if action == 'patch_ca':
         return _patch_ca(str(request.get('ca_pem') or ''), request.get('installs') or [])
     return {'ok': False, 'error': 'unsupported action'}
@@ -485,7 +541,16 @@ class _RelayHandler(socketserver.BaseRequestHandler):
     def handle(self):
         try:
             backend = socket.create_connection(('127.0.0.1', _backend_port), timeout=3.0)
-        except OSError:
+        except OSError as exc:
+            logger.warning(
+                'relay backend connection failed for client %r: '
+                '127.0.0.1:%d: %s: errno=%r: %s',
+                self.client_address,
+                _backend_port,
+                type(exc).__name__,
+                exc.errno,
+                exc,
+            )
             return
 
         client = self.request

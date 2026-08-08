@@ -327,6 +327,10 @@ class CacheScraper:
 
         # Background thread pool for API conversion (KTX->PNG etc.)
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='cache_api')
+        # Incremented whenever the cache database is reset. Background jobs
+        # from the previous database are then cancelled or ignored before
+        # they can write stale assets back into the new one.
+        self._work_generation = 0
 
         # Real IPs for intercepted hosts - set by ProxyMaster after DNS resolution
         # (before the hosts file is written). Keyed by hostname.
@@ -334,6 +338,48 @@ class CacheScraper:
         self._real_ips: dict[str, str] = {}
 
         # (session removed - API fetches use _https_get() with raw ssl for SNI control)
+
+    def _submit_background(self, func, *args, generation: int | None = None):
+        """Submit cache work only if it belongs to the current database generation."""
+        with self._lock:
+            current_generation = self._work_generation
+            if generation is None:
+                generation = current_generation
+            if generation != current_generation:
+                return None
+            executor = self._executor
+
+        try:
+            return executor.submit(func, *args, generation=generation)
+        except RuntimeError as exc:
+            log_buffer.log('Cache', f'Failed to submit background cache work: {exc}')
+            return None
+
+    def _generation_is_current(self, generation: int | None) -> bool:
+        if generation is None:
+            return True
+        with self._lock:
+            return generation == self._work_generation
+
+    def reset_for_cache_clear(self) -> None:
+        """Cancel stale cache work and reset scraper state after Delete DB."""
+        with self._lock:
+            self._work_generation += 1
+            old_executor = self._executor
+            self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='cache_api')
+            self.cache_logs.clear()
+            self._url_to_asset.clear()
+            self._texpack_subasset_lookup.clear()
+            self._url_to_texpack_slot.clear()
+            self._texpack_slot_quality.clear()
+            self._texpack_vslot_channel.clear()
+            self._texpack_layout_fetched.clear()
+
+        # Do not wait for running tasks: their generation checks prevent stale
+        # writes, while cancel_futures releases queued payloads immediately.
+        old_executor.shutdown(wait=False, cancel_futures=True)
+        self.cache_manager.clear_memory_cache()
+        log_buffer.log('Cache', 'Reset in-memory cache state and cancelled stale work')
 
     # ------------------------------------------------------------------
     # Called from server MITM thread for assetdelivery batch responses
@@ -360,6 +406,7 @@ class CacheScraper:
         texpack_request_slots = _build_texpack_request_slot_map(req_json)
 
         with self._lock:
+            generation = self._work_generation
             for idx, item in enumerate(req_json):
                 if not isinstance(item, dict) or 'assetId' not in item:
                     continue
@@ -437,16 +484,14 @@ class CacheScraper:
 
         # Submit copy tasks outside the lock
         for source_id, dest_id, asset_type, url in to_copy:
-            try:
-                self._executor.submit(
-                    self._copy_cached_asset,
-                    source_id,
-                    dest_id,
-                    asset_type,
-                    url,
-                )
-            except RuntimeError as exc:
-                log_buffer.log('Cache', f'Failed to submit copy task: {exc}')
+            self._submit_background(
+                self._copy_cached_asset,
+                source_id,
+                dest_id,
+                asset_type,
+                url,
+                generation=generation,
+            )
 
         if tracked > 0:
             log_buffer.log('Cache', f'Tracking {format_count(tracked, "asset")} for caching')
@@ -477,6 +522,7 @@ class CacheScraper:
             )
 
         with self._lock:
+            generation = self._work_generation
             # Grab tp_slot_meta BEFORE the asset_ids check so that higher-quality
             # CDN responses still get stored even after clear_tracking() clears
             # _url_to_asset (tp_slot_meta dict is NOT cleared by clear_tracking).
@@ -493,6 +539,9 @@ class CacheScraper:
                         info['cached'] = True
                         pending.append((aid, info.get('assetTypeId', 0)))
         if not pending and not tp_slot_meta_early:
+            return
+
+        if not self._generation_is_current(generation):
             return
 
         cache_hash = path.rsplit('/', 1)[-1]
@@ -532,16 +581,14 @@ class CacheScraper:
         _KTX_MAGIC = (b'\xabKTX 20\xbb', b'\xabKTX 11\xbb')
         if tp_slot_meta_early and inner[:8] in _KTX_MAGIC:
             _tp_id, _tp_slot, _tp_qual = tp_slot_meta_early
-            try:
-                self._executor.submit(
-                    self._store_texpack_slot_ktx2_async,
-                    _tp_id,
-                    _tp_slot,
-                    _tp_qual,
-                    inner,
-                )
-            except RuntimeError as exc:
-                log_buffer.log('Cache', f'Failed to submit texpack slot store: {exc}')
+            self._submit_background(
+                self._store_texpack_slot_ktx2_async,
+                _tp_id,
+                _tp_slot,
+                _tp_qual,
+                inner,
+                generation=generation,
+            )
 
         # Store / convert for every original asset ID that shares this CDN URL
         for asset_id, asset_type in pending:
@@ -550,30 +597,26 @@ class CacheScraper:
             ) or asset_type == 63
 
             if needs_conversion:
-                try:
-                    self._executor.submit(
-                        self._fetch_and_update_cache,
-                        asset_id,
-                        asset_type,
-                        full_url,
-                        metadata,
-                        body,
-                        inner,
-                    )
-                except RuntimeError as exc:
-                    log_buffer.log('Cache', f'Failed to submit conversion task: {exc}')
+                self._submit_background(
+                    self._fetch_and_update_cache,
+                    asset_id,
+                    asset_type,
+                    full_url,
+                    metadata,
+                    body,
+                    inner,
+                    generation=generation,
+                )
             else:
-                try:
-                    self._executor.submit(
-                        self._store_asset_async,
-                        asset_id,
-                        asset_type,
-                        inner,
-                        full_url,
-                        metadata,
-                    )
-                except RuntimeError as exc:
-                    log_buffer.log('Cache', f'Failed to submit cache store task: {exc}')
+                self._submit_background(
+                    self._store_asset_async,
+                    asset_id,
+                    asset_type,
+                    inner,
+                    full_url,
+                    metadata,
+                    generation=generation,
+                )
 
     # ------------------------------------------------------------------
     # Background workers
@@ -629,7 +672,7 @@ class CacheScraper:
                 ssl_sock = ctx.wrap_socket(raw_sock, server_hostname=cur_hostname)
             except Exception as exc:
                 log_buffer.log('Cache', f'Socket connect failed {cur_hostname} ({real_ip}): {exc}')
-                return None
+                return (None, None) if return_status else None
 
             try:
                 conn = http.client.HTTPConnection.__new__(http.client.HTTPSConnection)
@@ -657,7 +700,7 @@ class CacheScraper:
                     resp.read()
                     ssl_sock.close()
                     if not location:
-                        return None
+                        return (None, resp.status) if return_status else None
                     parsed = urlparse(location)
                     cur_hostname = (parsed.hostname or cur_hostname).lower()
                     cur_path = parsed.path
@@ -931,8 +974,12 @@ class CacheScraper:
         metadata: dict,
         original_content: bytes | None = None,
         inner_content: bytes | None = None,
+        generation: int | None = None,
     ) -> None:
         try:
+            if not self._generation_is_current(generation):
+                return
+
             # Try local KTX conversion first (KTX1 ETC and KTX2 BasisU/UASTC).
             # Falls through to API fetch if conversion returns None (unsupported format).
             if asset_type in (1, 13) and inner_content:
@@ -944,7 +991,8 @@ class CacheScraper:
                     png_bytes = None
                 if png_bytes and png_bytes[:4] == b'\x89PNG':
                     metadata['content_length'] = len(png_bytes)
-                    success = self.cache_manager.store_asset(
+                    success = self._store_asset_if_current(
+                        generation,
                         asset_id=str(asset_id),
                         asset_type=asset_type,
                         data=png_bytes,
@@ -966,7 +1014,8 @@ class CacheScraper:
 
                 if is_valid:
                     metadata['content_length'] = len(api_content)
-                    success = self.cache_manager.store_asset(
+                    success = self._store_asset_if_current(
+                        generation,
                         asset_id=str(asset_id),
                         asset_type=asset_type,
                         data=api_content,
@@ -982,16 +1031,23 @@ class CacheScraper:
                         # For TexturePack: preserve raw KTX2 sidecar AND populate
                         # the sub-asset lookup so replacements can target sub-asset IDs.
                         if asset_type == 63:
-                            if inner_content:
-                                self.cache_manager.store_raw_asset(
-                                    str(asset_id), asset_type, inner_content
+                            if inner_content and self._generation_is_current(generation):
+                                self._store_raw_asset_if_current(
+                                    generation,
+                                    str(asset_id),
+                                    asset_type,
+                                    inner_content,
                                 )
-                            self._populate_texpack_subasset_lookup(int(asset_id), api_content)
+                            if self._generation_is_current(generation):
+                                self._populate_texpack_subasset_lookup(
+                                    int(asset_id), api_content, generation=generation
+                                )
                     return
 
             if original_content is not None:
                 metadata['content_length'] = len(original_content)
-                success = self.cache_manager.store_asset(
+                success = self._store_asset_if_current(
+                    generation,
                     asset_id=str(asset_id),
                     asset_type=asset_type,
                     data=original_content,
@@ -1003,9 +1059,10 @@ class CacheScraper:
                     log_buffer.log('Cache', f'Cached {type_name} (raw fallback): {asset_id}')
         except Exception as exc:
             log_buffer.log('Cache', f'Background conversion error for {asset_id}: {exc}')
-            if original_content is not None:
+            if original_content is not None and self._generation_is_current(generation):
                 try:
-                    self.cache_manager.store_asset(
+                    self._store_asset_if_current(
+                        generation,
                         asset_id=str(asset_id),
                         asset_type=asset_type,
                         data=original_content,
@@ -1015,7 +1072,9 @@ class CacheScraper:
                 except Exception:
                     pass
 
-    def _populate_texpack_subasset_lookup(self, parent_id: int, xml_content: bytes) -> None:
+    def _populate_texpack_subasset_lookup(
+        self, parent_id: int, xml_content: bytes, generation: int | None = None
+    ) -> None:
         """Parse TexturePack XML and record sub-asset → (parent, global_index) mappings.
 
         Fleasion global indices (fixed, asset-independent):
@@ -1084,11 +1143,16 @@ class CacheScraper:
                 sub_id = int(text) if text.isdigit() and int(text) != 0 else None
                 channel = _TAG_TO_CHANNEL.get(tag_lower)
                 if text.isdigit() and int(text) != 0:
-                    self._texpack_subasset_lookup[sub_id] = (parent_id, global_index)
+                    with self._lock:
+                        if generation is not None and generation != self._work_generation:
+                            return
+                        self._texpack_subasset_lookup[sub_id] = (parent_id, global_index)
                     added += 1
                 # Record virtual slot → channel for ORM sub-channels (legacy, kept for potential revert).
                 if channel is not None:  # None means Color/Normal/full-ORM → no channel
                     with self._lock:
+                        if generation is not None and generation != self._work_generation:
+                            return
                         self._texpack_vslot_channel[(parent_id, virtual_slot)] = channel
                 virtual_slot += 1
             if added:
@@ -1105,6 +1169,7 @@ class CacheScraper:
         slot: int,
         quality: int,
         ktx2_bytes: bytes,
+        generation: int | None = None,
     ) -> None:
         """Quality-aware per-slot KTX2 storage for TexturePacks.
 
@@ -1163,9 +1228,11 @@ class CacheScraper:
                 except Exception:
                     pass  # can't read existing — overwrite it
 
-            slot_path.write_bytes(ktx2_bytes)
-            # Update in-memory quality tracker for within-session fast-path.
             with self._lock:
+                if generation is not None and generation != self._work_generation:
+                    return
+                slot_path.write_bytes(ktx2_bytes)
+                # Update in-memory quality tracker for within-session fast-path.
                 self._texpack_slot_quality[key] = quality
 
             _SLOT_NAMES = {0: 'Color', 1: 'Normal', 2: 'ORM'}
@@ -1213,9 +1280,11 @@ class CacheScraper:
         data: bytes,
         url: str,
         metadata: dict,
+        generation: int | None = None,
     ) -> None:
         try:
-            success = self.cache_manager.store_asset(
+            success = self._store_asset_if_current(
+                generation,
                 asset_id=str(asset_id),
                 asset_type=asset_type,
                 data=data,
@@ -1234,12 +1303,16 @@ class CacheScraper:
         dest_id,
         asset_type: int,
         url: str,
+        generation: int | None = None,
     ) -> None:
         """Copy an already-cached asset to a new asset ID (cross-batch replication)."""
         try:
+            if not self._generation_is_current(generation):
+                return
             data = self.cache_manager.get_asset(str(source_id), asset_type)
-            if data:
-                success = self.cache_manager.store_asset(
+            if data and self._generation_is_current(generation):
+                success = self._store_asset_if_current(
+                    generation,
                     asset_id=str(dest_id),
                     asset_type=asset_type,
                     data=data,
@@ -1251,6 +1324,23 @@ class CacheScraper:
                     log_buffer.log('Cache', f'Replicated {type_name}: {dest_id} (from {source_id})')
         except Exception as exc:
             log_buffer.log('Cache', f'Replication error {source_id}->{dest_id}: {exc}')
+
+    def _store_asset_if_current(self, generation: int | None, **kwargs) -> bool:
+        """Store an asset while holding the reset lock for this generation."""
+        with self._lock:
+            if generation is not None and generation != self._work_generation:
+                return False
+            return bool(self.cache_manager.store_asset(**kwargs))
+
+    def _store_raw_asset_if_current(
+        self, generation: int | None, asset_id: str, asset_type: int, data: bytes
+    ) -> bool:
+        """Store a raw sidecar only while the background job is current."""
+        with self._lock:
+            if generation is not None and generation != self._work_generation:
+                return False
+            self.cache_manager.store_raw_asset(asset_id, asset_type, data)
+            return True
 
     # ------------------------------------------------------------------
     # DEBUG: Direct /v1/asset/ response hook (non-batch blind spot)

@@ -38,7 +38,7 @@ from ..utils.roblox_dirs import (
     save_saved_roblox_dirs,
 )
 from ..utils.threading import run_in_thread
-from .fflag_manager import CLIENT_SETTINGS_REL, FastFlagManager
+from .fflag_manager import FastFlagManager, client_settings_paths_for_resource_dir
 from .font_utils import (
     CUSTOM_FONT_REL,
     FAMILIES_REL,
@@ -51,6 +51,7 @@ from .platform_targets import (
     read_current_platform_original_asset,
     target_path_for_current_platform,
 )
+from .stash_paths import resource_stash_dir
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -59,6 +60,7 @@ from .platform_targets import (
 MODIFICATIONS_JSON = CONFIG_DIR / 'modifications.json'
 MOD_ORIGINALS_DIR = CONFIG_DIR / 'ModOriginals'
 MOD_CACHE_DIR = CONFIG_DIR / 'ModCache'
+READ_ONLY_STATE_FILE = CONFIG_DIR / 'read_only_modes.json'
 
 
 def normalise_target_path(target_path: str | Path) -> Path:
@@ -149,6 +151,13 @@ def _find_roblox_dirs() -> list[Path]:
         for cached_dir in load_saved_roblox_dirs():
             _add(cached_dir)
         save_saved_roblox_dirs(found)
+        if sys.platform == 'darwin':
+            from ..utils.platform_macos import find_bootstrapper_restore_resource_dirs
+
+            # Bootstrapper snapshots are transient mirrors, not installations:
+            # manage them while present, but never persist them as Roblox dirs.
+            for backup_dir in find_bootstrapper_restore_resource_dirs():
+                _add(backup_dir)
         return found
 
     import winreg
@@ -384,7 +393,7 @@ class ModificationManager(QObject):
     apply_finished = pyqtSignal(str)  # entry_id
     restore_finished = pyqtSignal()
 
-    def __init__(self, cache_scraper=None):
+    def __init__(self, cache_scraper=None, *, read_only_lock_enabled: bool = False):
         super().__init__()
         self._cache_scraper = cache_scraper
         self._roblox_dirs: list[Path] = _find_roblox_dirs()
@@ -398,13 +407,18 @@ class ModificationManager(QObject):
         # Ensure directories exist
         MOD_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         self._stash_dir.mkdir(parents=True, exist_ok=True)
+        self._migrate_legacy_macos_stash()
 
         # Lock that serialises all file-system writes/restores.  Prevents
         # a background apply thread from writing to dst after the main thread
         # has already restored the original (Apply → Reset race condition).
         self._fs_lock = threading.Lock()
-        self._read_only_original_modes: dict[Path, int] = {}
+        self._read_only_lock_enabled = bool(read_only_lock_enabled)
+        self._read_only_state_file = READ_ONLY_STATE_FILE
+        self._read_only_original_modes = self._load_read_only_original_modes()
         self._read_only_extra_paths: set[Path] = set()
+        self._permission_denied_lock = threading.Lock()
+        self._permission_denied_dirs: set[Path] = set()
 
         # Load persisted data
         self._data = self._load_json()
@@ -424,8 +438,65 @@ class ModificationManager(QObject):
     def roblox_dirs(self) -> list[Path]:
         return list(self._roblox_dirs)
 
-    def _active_managed_resource_files(self, extra_paths: Iterable[Path] = ()) -> list[Path]:
-        """Return existing Roblox-version files Fleasion currently owns."""
+    def _migrate_legacy_macos_stash(self) -> None:
+        """Assign the old shared ``Resources`` stash to the primary install."""
+        if sys.platform != 'darwin' or not self._roblox_dirs:
+            return
+        legacy = self._stash_dir / 'Resources'
+        if not legacy.is_dir():
+            return
+        primary = next(
+            (path for path in self._roblox_dirs if path.name == 'Resources'),
+            None,
+        )
+        if primary is None:
+            return
+        destination = resource_stash_dir(self._stash_dir, primary)
+        if destination.exists():
+            log_buffer.log(
+                'Modifications',
+                f'Legacy stash retained because {destination.name} already exists',
+            )
+            return
+        shutil.move(str(legacy), str(destination))
+        log_buffer.log(
+            'Modifications',
+            f'Migrated legacy macOS stash to {destination.name}',
+        )
+
+    def _record_permission_denied_dir(self, roblox_dir: Path) -> None:
+        """Remember a protected Roblox install for the user-facing repair prompt."""
+        try:
+            path = roblox_dir.resolve()
+        except OSError:
+            path = roblox_dir
+        lock = _instance_attr(self, '_permission_denied_lock')
+        if lock is None:
+            self._permission_denied_lock = threading.Lock()
+            lock = self._permission_denied_lock
+        with lock:
+            self._permission_denied_dirs.add(path)
+
+    def take_permission_denied_dirs(self) -> list[Path]:
+        """Return and clear protected installs recorded since the last poll."""
+        lock = _instance_attr(self, '_permission_denied_lock')
+        if lock is None:
+            return []
+        denied_dirs = _instance_attr(self, '_permission_denied_dirs')
+        if denied_dirs is None:
+            return []
+        with lock:
+            paths = sorted(denied_dirs, key=lambda value: str(value).lower())
+            denied_dirs.clear()
+        return paths
+
+    def _active_managed_resource_files(
+        self,
+        extra_paths: Iterable[Path] = (),
+        *,
+        existing_only: bool = True,
+    ) -> list[Path]:
+        """Return Roblox-version paths Fleasion currently owns."""
         files: list[Path] = []
         seen: set[str] = set()
 
@@ -467,15 +538,66 @@ class ModificationManager(QObject):
                     )
 
             if isinstance(data, dict) and data.get('fast_flags_enabled'):
-                _add(roblox_dir / CLIENT_SETTINGS_REL)
+                for settings_path in client_settings_paths_for_resource_dir(roblox_dir):
+                    _add(settings_path)
 
         for raw_path in extra_paths:
             _add(Path(raw_path))
 
-        return [path for path in files if path.is_file()]
+        return [path for path in files if path.is_file()] if existing_only else files
+
+    def _load_read_only_original_modes(self) -> dict[Path, int]:
+        state_file = _instance_attr(self, '_read_only_state_file')
+        if state_file is None:
+            return {}
+        try:
+            payload = json.loads(Path(state_file).read_text(encoding='utf-8'))
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        modes: dict[Path, int] = {}
+        for raw_path, raw_mode in payload.items():
+            try:
+                modes[Path(raw_path)] = int(raw_mode)
+            except (TypeError, ValueError):
+                continue
+        return modes
+
+    def _save_read_only_original_modes_locked(self) -> None:
+        state_file = _instance_attr(self, '_read_only_state_file')
+        if state_file is None:
+            return
+        protected = _instance_attr(self, '_read_only_original_modes') or {}
+        path = Path(state_file)
+        if not protected:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temp_path = path.with_suffix(path.suffix + '.tmp')
+            temp_path.write_text(
+                json.dumps(
+                    {str(file_path): stat.S_IMODE(mode) for file_path, mode in protected.items()},
+                    indent=2,
+                ),
+                encoding='utf-8',
+            )
+            temp_path.replace(path)
+        except OSError as exc:
+            log_buffer.log('Modifications', f'Failed to persist read-only guard state: {exc}')
+
+    def managed_resource_paths(self) -> list[Path]:
+        """Return live and snapshot paths Fleasion must keep authoritative."""
+        return self._active_managed_resource_files(existing_only=False)
 
     def protect_managed_files(self, extra_paths: Iterable[Path] = ()) -> None:
         """Mark Fleasion-managed Roblox files read-only until Fleasion needs to write."""
+        if not bool(_instance_attr(self, '_read_only_lock_enabled', False)):
+            return
         lock = _instance_attr(self, '_fs_lock')
         if lock is None:
             self._protect_managed_files_locked(extra_paths)
@@ -484,6 +606,8 @@ class ModificationManager(QObject):
             self._protect_managed_files_locked(extra_paths)
 
     def _protect_managed_files_locked(self, extra_paths: Iterable[Path] = ()) -> None:
+        if not bool(_instance_attr(self, '_read_only_lock_enabled', False)):
+            return
         protected = _instance_attr(self, '_read_only_original_modes')
         if protected is None:
             protected = {}
@@ -506,21 +630,67 @@ class ModificationManager(QObject):
             _set_read_only(path)
 
         if newly_protected:
+            self._save_read_only_original_modes_locked()
             log_buffer.log(
                 'Modifications',
                 f'Read-only guarded {format_count(newly_protected, "managed Roblox file")}',
             )
 
-    def clear_managed_file_read_only(self) -> None:
+    def _unlock_managed_files_locked(self) -> None:
+        """Temporarily make guarded files writable without forgetting modes."""
+        protected = _instance_attr(self, '_read_only_original_modes') or {}
+        for path in protected:
+            try:
+                if path.exists():
+                    _clear_read_only(path)
+            except OSError as exc:
+                log_buffer.log(
+                    'Modifications',
+                    f'Failed to temporarily unlock managed file {path}: {exc}',
+                )
+
+    def clear_managed_file_read_only(
+        self,
+        extra_paths: Iterable[Path] = (),
+        *,
+        clear_untracked: bool = False,
+    ) -> None:
         """Clear Fleasion's read-only guard from managed Roblox files."""
         lock = _instance_attr(self, '_fs_lock')
         if lock is None:
-            self._clear_managed_file_read_only_locked()
+            self._clear_managed_file_read_only_locked(
+                extra_paths, clear_untracked=clear_untracked
+            )
             return
         with lock:
-            self._clear_managed_file_read_only_locked()
+            self._clear_managed_file_read_only_locked(
+                extra_paths, clear_untracked=clear_untracked
+            )
 
-    def _clear_managed_file_read_only_locked(self) -> None:
+    def set_read_only_lock_enabled(self, enabled: bool) -> None:
+        """Apply or remove the optional persistent modification-file guard."""
+        enabled = bool(enabled)
+        lock = _instance_attr(self, '_fs_lock')
+        if lock is None:
+            self._read_only_lock_enabled = enabled
+            if enabled:
+                self._protect_managed_files_locked()
+            else:
+                self._clear_managed_file_read_only_locked()
+            return
+        with lock:
+            self._read_only_lock_enabled = enabled
+            if enabled:
+                self._protect_managed_files_locked()
+            else:
+                self._clear_managed_file_read_only_locked()
+
+    def _clear_managed_file_read_only_locked(
+        self,
+        extra_paths: Iterable[Path] = (),
+        *,
+        clear_untracked: bool = False,
+    ) -> None:
         protected = _instance_attr(self, '_read_only_original_modes')
         if protected is None:
             protected = {}
@@ -545,14 +715,23 @@ class ModificationManager(QObject):
 
         for path in protected:
             _add(path)
-        for path in self._active_managed_resource_files(registered_extra_paths):
-            _add(path)
+        if clear_untracked:
+            for path in self._active_managed_resource_files(registered_extra_paths):
+                _add(path)
+            for path in extra_paths:
+                _add(Path(path))
 
         cleared = 0
         for path in paths:
             try:
                 if path.exists():
-                    _clear_read_only(path)
+                    original_mode = protected.get(path)
+                    if original_mode is None:
+                        # This may be a stale guard left by an older Fleasion
+                        # build, before original modes were restored exactly.
+                        _clear_read_only(path)
+                    else:
+                        path.chmod(stat.S_IMODE(original_mode))
                     cleared += 1
             except OSError as exc:
                 log_buffer.log(
@@ -560,6 +739,8 @@ class ModificationManager(QObject):
                     f'Failed to clear read-only guard for {path}: {exc}',
                 )
         protected.clear()
+        registered_extra_paths.clear()
+        self._save_read_only_original_modes_locked()
         if cleared:
             log_buffer.log(
                 'Modifications',
@@ -792,7 +973,7 @@ class ModificationManager(QObject):
                 if not validate_font_bytes(data):
                     raise ValueError('Not a valid font file (invalid header)')
                 with self._fs_lock:
-                    self._clear_managed_file_read_only_locked()
+                    self._unlock_managed_files_locked()
                     try:
                         apply_custom_font(data, self._roblox_dirs, self._stash_dir)
                     finally:
@@ -995,31 +1176,39 @@ class ModificationManager(QObject):
     def _stash_and_write(self, target_path_rel: str, new_bytes: bytes) -> None:
         """Stash the original file and write the mod in every Roblox dir."""
         with self._fs_lock:
-            self._clear_managed_file_read_only_locked()
+            self._unlock_managed_files_locked()
             try:
+                failures: list[tuple[Path, PermissionError]] = []
                 for roblox_dir in self._roblox_dirs:
-                    target_path = normalise_target_path(target_path_rel)
-                    dst = roblox_dir / target_path
-                    stash = self._stash_dir / roblox_dir.name / target_path
-                    marker = stash.with_name(stash.name + self._NEW_FILE_MARKER_SUFFIX)
+                    try:
+                        target_path = normalise_target_path(target_path_rel)
+                        dst = roblox_dir / target_path
+                        stash = resource_stash_dir(self._stash_dir, roblox_dir) / target_path
+                        marker = stash.with_name(stash.name + self._NEW_FILE_MARKER_SUFFIX)
 
-                    # Stash original ONCE (idempotent)
-                    if dst.exists() and not stash.exists():
-                        stash.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(dst, stash)
-                        # Remove any stale new-file marker from a previous run
-                        if marker.exists():
-                            marker.unlink(missing_ok=True)
-                    elif not dst.exists() and not stash.exists() and not marker.exists():
-                        # Target is brand-new (no original to stash); leave a marker
-                        # so _restore_entry knows it is safe to delete the file later.
-                        stash.parent.mkdir(parents=True, exist_ok=True)
-                        marker.touch()
+                        # Stash original ONCE (idempotent)
+                        if dst.exists() and not stash.exists():
+                            stash.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(dst, stash)
+                            # Remove any stale new-file marker from a previous run
+                            if marker.exists():
+                                marker.unlink(missing_ok=True)
+                        elif not dst.exists() and not stash.exists() and not marker.exists():
+                            # Target is brand-new (no original to stash); leave a marker
+                            # so _restore_entry knows it is safe to delete the file later.
+                            stash.parent.mkdir(parents=True, exist_ok=True)
+                            marker.touch()
 
-                    # Write mod
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    _clear_read_only(dst)
-                    dst.write_bytes(new_bytes)
+                        # Write mod
+                        dst.parent.mkdir(parents=True, exist_ok=True)
+                        _clear_read_only(dst)
+                        dst.write_bytes(new_bytes)
+                    except PermissionError as exc:
+                        self._record_permission_denied_dir(roblox_dir)
+                        failures.append((roblox_dir, exc))
+                if failures:
+                    failed_paths = ', '.join(str(path) for path, _exc in failures)
+                    raise PermissionError(f'Permission denied in Roblox installation(s): {failed_paths}')
             finally:
                 self._protect_managed_files_locked()
 
@@ -1045,7 +1234,7 @@ class ModificationManager(QObject):
         with self._fs_lock:
             for roblox_dir in self._roblox_dirs:
                 dst = roblox_dir / target_path
-                stash = self._stash_dir / roblox_dir.name / target_path
+                stash = resource_stash_dir(self._stash_dir, roblox_dir) / target_path
                 marker = stash.with_name(stash.name + self._NEW_FILE_MARKER_SUFFIX)
                 if stash.exists():
                     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -1084,7 +1273,7 @@ class ModificationManager(QObject):
             restored = False
             for roblox_dir in self._roblox_dirs:
                 dst = roblox_dir / target_rel
-                stash = self._stash_dir / roblox_dir.name / target_rel
+                stash = resource_stash_dir(self._stash_dir, roblox_dir) / target_rel
                 marker = stash.with_name(stash.name + self._NEW_FILE_MARKER_SUFFIX)
                 if stash.exists():
                     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -1145,9 +1334,11 @@ class ModificationManager(QObject):
 
         if self._data.get('fast_flags_enabled') and self._data.get('fast_flags'):
             with self._fs_lock:
-                self._clear_managed_file_read_only_locked()
+                self._unlock_managed_files_locked()
                 try:
-                    self.fflag_manager.write(self._data['fast_flags'])
+                    failed_dirs = self.fflag_manager.write(self._data['fast_flags'])
+                    for roblox_dir in failed_dirs:
+                        self._record_permission_denied_dir(roblox_dir)
                 finally:
                     self._protect_managed_files_locked()
 
@@ -1169,7 +1360,7 @@ class ModificationManager(QObject):
         self._data['fast_flags_enabled'] = value
         if not value:
             with self._fs_lock:
-                self._clear_managed_file_read_only_locked()
+                self._unlock_managed_files_locked()
                 try:
                     self.fflag_manager.restore()
                 except Exception:
@@ -1239,21 +1430,41 @@ class ModificationManager(QObject):
         self._data['fast_flags_enabled'] = True
         self._save_json()
         with self._fs_lock:
-            self._clear_managed_file_read_only_locked()
+            self._unlock_managed_files_locked()
             try:
-                self.fflag_manager.write(settings)
+                failed_dirs = self.fflag_manager.write(settings)
+                for roblox_dir in failed_dirs:
+                    self._record_permission_denied_dir(roblox_dir)
             finally:
                 self._protect_managed_files_locked()
         self.sync_saved_global_settings()
 
-    def refresh_roblox_dirs(self) -> None:
+    def reassert_macos_bootstrapper_fast_flags(self) -> int:
+        """Restore Fleasion's flags after a bootstrapper rewrites launch settings."""
+        if not self._data.get('fast_flags_enabled') or not self._data.get('fast_flags'):
+            return 0
+        with self._fs_lock:
+            updated = self.fflag_manager.reassert_macos_bootstrapper_flags(
+                self._data['fast_flags']
+            )
+            if updated:
+                self._protect_managed_files_locked()
+            return updated
+
+    def refresh_roblox_dirs(self, *, reapply_if_changed: bool = False) -> bool:
         """Re-discover Roblox directories (e.g. after an update)."""
+        previous = {str(path.resolve()).lower() for path in self._roblox_dirs}
         self._roblox_dirs = _find_roblox_dirs()
         self.fflag_manager._roblox_dirs = self._roblox_dirs
+        current = {str(path.resolve()).lower() for path in self._roblox_dirs}
         log_buffer.log(
             'Modifications',
             f'Refreshed: {format_count(self._roblox_dirs, "Roblox dir")}',
         )
+        changed = current != previous
+        if changed and reapply_if_changed:
+            self.reapply_all()
+        return changed
 
     def apply_pending_modifications(self) -> None:
         """Apply all pending modifications that were queued while Roblox was running."""

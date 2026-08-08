@@ -1,8 +1,10 @@
 import json
 import stat
+import sys
 import types
 import threading
 from io import BytesIO
+from pathlib import Path
 
 import pytest
 from PIL import Image
@@ -12,6 +14,7 @@ from fleasion.modifications import fflag_manager
 from fleasion.cache.tools.rgba_ktx2 import read_rgba8_ktx2
 from fleasion.modifications.fflag_manager import FastFlagManager
 from fleasion.modifications.manager import ModificationManager, normalise_target_path
+from fleasion.modifications.stash_paths import resource_stash_dir
 
 
 class _SignalSpy:
@@ -57,6 +60,7 @@ def test_normalise_target_path_rejects_escape_paths(target):
         normalise_target_path(target)
 
 
+@pytest.mark.skipif(sys.platform == 'win32', reason='POSIX path-separator fixture')
 def test_stash_write_and_restore_use_normalised_target_paths(tmp_path):
     roblox_dir = tmp_path / "Roblox.app" / "Contents" / "Resources"
     target = roblox_dir / "content" / "textures" / "MouseLockedCursor.png"
@@ -73,9 +77,7 @@ def test_stash_write_and_restore_use_normalised_target_paths(tmp_path):
     assert target.read_bytes() == b"modified"
     assert not (roblox_dir / r"content\textures\MouseLockedCursor.png").exists()
     assert (
-        tmp_path
-        / "stash"
-        / roblox_dir.name
+        resource_stash_dir(tmp_path / "stash", roblox_dir)
         / "content"
         / "textures"
         / "MouseLockedCursor.png"
@@ -84,6 +86,38 @@ def test_stash_write_and_restore_use_normalised_target_paths(tmp_path):
     manager._restore_entry({"target_path": r"content\textures\MouseLockedCursor.png"})
 
     assert target.read_bytes() == b"original"
+
+
+def test_stash_write_records_permission_denials_and_continues(tmp_path, monkeypatch):
+    denied_dir = tmp_path / 'denied'
+    writable_dir = tmp_path / 'writable'
+    for path in (denied_dir, writable_dir):
+        (path / 'RobloxPlayerBeta.exe').parent.mkdir(parents=True)
+        (path / 'RobloxPlayerBeta.exe').write_bytes(b'')
+
+    manager = ModificationManager.__new__(ModificationManager)
+    manager._roblox_dirs = [denied_dir, writable_dir]
+    manager._stash_dir = tmp_path / 'stash'
+    manager._fs_lock = threading.Lock()
+    manager._permission_denied_lock = threading.Lock()
+    manager._permission_denied_dirs = set()
+    manager._unlock_managed_files_locked = lambda: None
+    manager._protect_managed_files_locked = lambda: None
+
+    original_write_bytes = Path.write_bytes
+
+    def fake_write_bytes(path, data):
+        if path.is_relative_to(denied_dir):
+            raise PermissionError('protected install')
+        return original_write_bytes(path, data)
+
+    monkeypatch.setattr(Path, 'write_bytes', fake_write_bytes)
+
+    with pytest.raises(PermissionError, match='denied'):
+        manager._stash_and_write('content/example.bin', b'modified')
+
+    assert manager.take_permission_denied_dirs() == [denied_dir.resolve()]
+    assert (writable_dir / 'content' / 'example.bin').read_bytes() == b'modified'
 
 
 def test_read_only_guard_protects_managed_files_and_clears_on_close(tmp_path):
@@ -109,6 +143,7 @@ def test_read_only_guard_protects_managed_files_and_clears_on_close(tmp_path):
         "fast_flags_enabled": True,
     }
     manager._read_only_original_modes = {}
+    manager._read_only_lock_enabled = True
 
     manager.protect_managed_files([cacert])
 
@@ -116,14 +151,86 @@ def test_read_only_guard_protects_managed_files_and_clears_on_close(tmp_path):
     assert not (settings.stat().st_mode & stat.S_IWRITE)
     assert not (cacert.stat().st_mode & stat.S_IWRITE)
 
-    manager.clear_managed_file_read_only()
+    manager.clear_managed_file_read_only(clear_untracked=True)
 
     assert target.stat().st_mode & stat.S_IWRITE
     assert settings.stat().st_mode & stat.S_IWRITE
-    assert cacert.stat().st_mode & stat.S_IWRITE
+    assert not (cacert.stat().st_mode & stat.S_IWRITE)
 
 
-def test_restore_all_finishes_with_guarded_cacert_writable(tmp_path):
+def test_read_only_guard_is_off_until_explicitly_enabled(tmp_path):
+    roblox_dir = tmp_path / "Roblox" / "Resources"
+    target = roblox_dir / "content" / "textures" / "Cursor.png"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"original")
+
+    manager = ModificationManager.__new__(ModificationManager)
+    manager._roblox_dirs = [roblox_dir]
+    manager._data = {
+        "entries": [
+            {
+                "target_path": r"content\textures\Cursor.png",
+                "source_type": "local_file",
+                "source_value": "cursor.png",
+            }
+        ]
+    }
+    manager._fs_lock = threading.Lock()
+    manager._read_only_original_modes = {}
+    manager._read_only_extra_paths = set()
+    manager._read_only_lock_enabled = False
+
+    manager.protect_managed_files()
+    assert target.stat().st_mode & stat.S_IWRITE
+
+    manager.set_read_only_lock_enabled(True)
+    assert not (target.stat().st_mode & stat.S_IWRITE)
+
+    manager.set_read_only_lock_enabled(False)
+    assert target.stat().st_mode & stat.S_IWRITE
+
+
+def test_read_only_guard_restores_modes_after_unclean_restart(tmp_path):
+    roblox_dir = tmp_path / "Roblox" / "Resources"
+    target = roblox_dir / "content" / "textures" / "Cursor.png"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"original")
+    state_file = tmp_path / "read_only_modes.json"
+
+    manager = ModificationManager.__new__(ModificationManager)
+    manager._roblox_dirs = [roblox_dir]
+    manager._data = {
+        "entries": [
+            {
+                "target_path": r"content\textures\Cursor.png",
+                "source_type": "local_file",
+                "source_value": "cursor.png",
+            }
+        ]
+    }
+    manager._fs_lock = threading.Lock()
+    manager._read_only_state_file = state_file
+    manager._read_only_original_modes = {}
+    manager._read_only_extra_paths = set()
+    manager._read_only_lock_enabled = True
+    manager.protect_managed_files()
+    assert state_file.exists()
+    assert not (target.stat().st_mode & stat.S_IWRITE)
+
+    restarted = ModificationManager.__new__(ModificationManager)
+    restarted._roblox_dirs = [roblox_dir]
+    restarted._data = manager._data
+    restarted._fs_lock = threading.Lock()
+    restarted._read_only_state_file = state_file
+    restarted._read_only_original_modes = restarted._load_read_only_original_modes()
+    restarted._read_only_extra_paths = set()
+    restarted._read_only_lock_enabled = False
+    restarted.clear_managed_file_read_only(clear_untracked=False)
+
+    assert target.stat().st_mode & stat.S_IWRITE
+    assert not state_file.exists()
+
+def test_restore_all_restores_guarded_cacert_original_mode(tmp_path):
     roblox_dir = tmp_path / "Fishstrap" / "Versions" / "WindowsPlayer"
     cacert = roblox_dir / "ssl" / "cacert.pem"
     cacert.parent.mkdir(parents=True)
@@ -137,6 +244,7 @@ def test_restore_all_finishes_with_guarded_cacert_writable(tmp_path):
     manager._data = {"entries": [], "fast_flags_enabled": False}
     manager._read_only_original_modes = {}
     manager._read_only_extra_paths = set()
+    manager._read_only_lock_enabled = True
     manager.global_settings_manager = types.SimpleNamespace(restore=lambda: None)
     manager.restore_finished = _SignalSpy()
 
@@ -145,7 +253,7 @@ def test_restore_all_finishes_with_guarded_cacert_writable(tmp_path):
 
     manager.restore_all()
 
-    assert cacert.stat().st_mode & stat.S_IWRITE
+    assert not (cacert.stat().st_mode & stat.S_IWRITE)
     assert manager.restore_finished.calls == [()]
 
 
@@ -171,6 +279,7 @@ def test_stash_write_does_not_preserve_guarded_read_only_mode(tmp_path):
     manager._data = {"entries": [entry]}
     manager._read_only_original_modes = {}
     manager._read_only_extra_paths = set()
+    manager._read_only_lock_enabled = True
 
     manager.protect_managed_files([cacert])
     assert not (target.stat().st_mode & stat.S_IWRITE)
@@ -178,7 +287,12 @@ def test_stash_write_does_not_preserve_guarded_read_only_mode(tmp_path):
 
     manager._stash_and_write(target_path, b"modified")
 
-    stash = manager._stash_dir / roblox_dir.name / "content" / "textures" / "MouseLockedCursor.png"
+    stash = (
+        resource_stash_dir(manager._stash_dir, roblox_dir)
+        / "content"
+        / "textures"
+        / "MouseLockedCursor.png"
+    )
     assert target.read_bytes() == b"modified"
     assert not (target.stat().st_mode & stat.S_IWRITE)
     assert not (cacert.stat().st_mode & stat.S_IWRITE)
@@ -274,6 +388,120 @@ def test_fast_flags_write_to_clientsettings_under_resource_root(tmp_path):
     assert json.loads(settings_path.read_text(encoding="utf-8")) == {
         "FFlagDebugSkyGray": "True",
     }
+
+
+def test_fast_flags_reports_permission_denied_installations(tmp_path, monkeypatch):
+    roblox_dir = tmp_path / 'Roblox' / 'Versions' / 'version-protected'
+    monkeypatch.setattr(fflag_manager.sys, 'platform', 'win32')
+
+    original_write_bytes = Path.write_bytes
+
+    def fake_write_bytes(path, data):
+        if path.is_relative_to(roblox_dir):
+            raise PermissionError('protected install')
+        return original_write_bytes(path, data)
+
+    monkeypatch.setattr(Path, 'write_bytes', fake_write_bytes)
+
+    failed_dirs = FastFlagManager([roblox_dir], tmp_path / 'stash').write({'grey_sky': True})
+
+    assert failed_dirs == {roblox_dir}
+
+
+def test_macos_fast_flags_cover_resource_and_appleblox_locations(tmp_path, monkeypatch):
+    roblox_dir = tmp_path / "Roblox.app" / "Contents" / "Resources"
+    roblox_dir.mkdir(parents=True)
+    monkeypatch.setattr(fflag_manager.sys, "platform", "darwin")
+    manager = FastFlagManager([roblox_dir], tmp_path / "stash")
+
+    manager.write({"grey_sky": True})
+
+    expected = {"FFlagDebugSkyGray": "True"}
+    assert json.loads(
+        (roblox_dir / "ClientSettings" / "ClientAppSettings.json").read_text(
+            encoding="utf-8"
+        )
+    ) == expected
+    assert json.loads(
+        (
+            roblox_dir.parent
+            / "MacOS"
+            / "ClientSettings"
+            / "ClientAppSettings.json"
+        ).read_text(encoding="utf-8")
+    ) == expected
+
+    manager.restore()
+    assert not (roblox_dir / "ClientSettings" / "ClientAppSettings.json").exists()
+    assert not (
+        roblox_dir.parent
+        / "MacOS"
+        / "ClientSettings"
+        / "ClientAppSettings.json"
+    ).exists()
+
+
+def test_macos_reassert_merges_fleasion_flags_into_appleblox_launch_file(
+    tmp_path, monkeypatch
+):
+    roblox_dir = tmp_path / "Roblox.app" / "Contents" / "Resources"
+    launch_settings = (
+        roblox_dir.parent
+        / "MacOS"
+        / "ClientSettings"
+        / "ClientAppSettings.json"
+    )
+    launch_settings.parent.mkdir(parents=True)
+    launch_settings.write_text(
+        json.dumps(
+            {
+                "DFFlagDisableDPIScale": True,
+                "FFlagDebugSkyGray": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(fflag_manager.sys, "platform", "darwin")
+    manager = FastFlagManager([roblox_dir], tmp_path / "stash")
+
+    assert manager.reassert_macos_bootstrapper_flags({"grey_sky": True}) == 1
+    assert json.loads(launch_settings.read_text(encoding="utf-8")) == {
+        "DFFlagDisableDPIScale": True,
+        "FFlagDebugSkyGray": "True",
+    }
+    assert not (tmp_path / "stash").exists()
+    assert manager.reassert_macos_bootstrapper_flags({"grey_sky": True}) == 0
+
+
+def test_macos_same_named_resource_roots_have_distinct_stashes(tmp_path, monkeypatch):
+    monkeypatch.setattr(modifications_manager.sys, "platform", "darwin")
+    first = tmp_path / "Roblox.app" / "Contents" / "Resources"
+    second = tmp_path / "RobloxPlayer.app" / "Contents" / "Resources"
+    relative = Path("content") / "textures" / "cursor.png"
+    for root, original in ((first, b"regular"), (second, b"froststrap")):
+        target = root / relative
+        target.parent.mkdir(parents=True)
+        target.write_bytes(original)
+
+    manager = ModificationManager.__new__(ModificationManager)
+    manager._roblox_dirs = [first, second]
+    manager._stash_dir = tmp_path / "stash"
+    manager._fs_lock = threading.Lock()
+    manager._data = {"entries": []}
+    manager._read_only_original_modes = {}
+    manager._read_only_extra_paths = set()
+
+    manager._stash_and_write(str(relative), b"modified")
+
+    first_stash = resource_stash_dir(manager._stash_dir, first) / relative
+    second_stash = resource_stash_dir(manager._stash_dir, second) / relative
+    assert first_stash != second_stash
+    assert first_stash.read_bytes() == b"regular"
+    assert second_stash.read_bytes() == b"froststrap"
+
+    manager._restore_entry({"target_path": str(relative)})
+    assert (first / relative).read_bytes() == b"regular"
+    assert (second / relative).read_bytes() == b"froststrap"
 
 
 def test_fast_flags_write_to_sober_config(tmp_path, monkeypatch):

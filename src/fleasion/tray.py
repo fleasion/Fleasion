@@ -3,14 +3,15 @@
 import ctypes
 import os
 import sys
+from pathlib import Path
 
 try:
     import winreg
 except ImportError:
     winreg = None
 
-from PyQt6.QtCore import Qt, QTimer, QUrl
-from PyQt6.QtGui import QAction, QDesktopServices, QIcon
+from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtGui import QAction, QColor, QDesktopServices, QIcon, QPalette
 from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
@@ -20,6 +21,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSystemTrayIcon,
     QVBoxLayout,
+    QWidget,
 )
 
 from .gui import (
@@ -45,6 +47,158 @@ _NOTIFICATION_APP_ID = f'{APP_NAME}.Notifications'
 _TOAST_TEMPLATE = '<toast><visual><binding template="ToastGeneric"></binding></visual></toast>'
 
 
+def _is_xfce_desktop() -> bool:
+    """Return whether the current desktop environment is XFCE."""
+    desktop_values = (
+        os.environ.get('XDG_CURRENT_DESKTOP', ''),
+        os.environ.get('XDG_SESSION_DESKTOP', ''),
+        os.environ.get('DESKTOP_SESSION', ''),
+    )
+    return any('xfce' in value.casefold() for value in desktop_values)
+
+
+class _XfceTrayNotification(QWidget):
+    """A readable tray notification for XFCE's inconsistent native palette."""
+
+    closed = pyqtSignal(object)
+
+    def __init__(self, title: str, message: str, icon: QIcon, dark: bool, timeout: int):
+        super().__init__(
+            None,
+            Qt.WindowType.Tool
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint,
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        # A translucent top-level surface can lose its stylesheet background under XFCE/X11.
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        self.setObjectName('FleasionXfceTrayNotification')
+        self.setWindowTitle(title)
+        self.setWindowIcon(icon)
+
+        if dark:
+            background = '#2b2b2b'
+            foreground = '#f4f4f4'
+            secondary = '#d8d8d8'
+            border = '#626262'
+        else:
+            background = '#fffdf2'
+            foreground = '#202020'
+            secondary = '#353535'
+            border = '#b7b7b7'
+
+        palette = self.palette()
+        palette.setColor(QPalette.ColorRole.Window, QColor(background))
+        palette.setColor(QPalette.ColorRole.WindowText, QColor(foreground))
+        self.setPalette(palette)
+        self.setAutoFillBackground(True)
+
+        self.setStyleSheet(
+            f"""
+            QWidget#FleasionXfceTrayNotification {{
+                background-color: {background};
+                color: {foreground};
+                border: 1px solid {border};
+                border-radius: 8px;
+            }}
+            QLabel#FleasionXfceTrayNotificationTitle {{
+                color: {foreground};
+                background: transparent;
+                border: none;
+                font-weight: 700;
+            }}
+            QLabel#FleasionXfceTrayNotificationMessage {{
+                color: {secondary};
+                background: transparent;
+                border: none;
+            }}
+            QPushButton#FleasionXfceTrayNotificationClose {{
+                color: {secondary};
+                background: transparent;
+                border: none;
+                font-size: 16px;
+                padding: 0;
+            }}
+            QPushButton#FleasionXfceTrayNotificationClose:hover {{
+                color: {foreground};
+                background: {border};
+                border-radius: 4px;
+            }}
+            """
+        )
+
+        icon_label = QLabel()
+        icon_label.setFixedSize(32, 32)
+        icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        if not icon.isNull():
+            icon_label.setPixmap(icon.pixmap(32, 32))
+
+        title_label = QLabel(title)
+        title_label.setObjectName('FleasionXfceTrayNotificationTitle')
+
+        message_label = QLabel(message)
+        message_label.setObjectName('FleasionXfceTrayNotificationMessage')
+        message_label.setWordWrap(True)
+        message_label.setMinimumWidth(320)
+        message_label.setMaximumWidth(420)
+
+        close_button = QPushButton('×')
+        close_button.setObjectName('FleasionXfceTrayNotificationClose')
+        close_button.setFixedSize(24, 24)
+        close_button.setToolTip('Close notification')
+        close_button.clicked.connect(self.close)
+
+        text_layout = QVBoxLayout()
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        text_layout.setSpacing(3)
+        text_layout.addWidget(title_label)
+        text_layout.addWidget(message_label)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 8, 8, 10)
+        layout.setSpacing(8)
+        layout.addWidget(icon_label)
+        layout.addLayout(text_layout, 1)
+        layout.addWidget(close_button, 0, Qt.AlignmentFlag.AlignTop)
+
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self.close)
+        self._timer.start(timeout)
+
+    def show_near_tray(self, tray_geometry) -> None:
+        """Show the notification beside the tray icon without taking focus."""
+        self.adjustSize()
+        screen = None
+        if not tray_geometry.isNull():
+            screen = QApplication.screenAt(tray_geometry.center())
+        if screen is None:
+            screen = QApplication.primaryScreen()
+
+        if screen is not None:
+            available = screen.availableGeometry()
+            width = self.width()
+            height = self.height()
+            if tray_geometry.isNull():
+                x = available.right() - width - 12
+                y = available.bottom() - height - 12
+            else:
+                x = tray_geometry.center().x() - width // 2
+                x = max(available.left() + 8, min(x, available.right() - width - 8))
+                if tray_geometry.center().y() >= available.center().y():
+                    y = max(available.top() + 8, tray_geometry.top() - height - 8)
+                else:
+                    y = min(available.bottom() - height - 8, tray_geometry.bottom() + 8)
+            self.move(x, y)
+
+        self.show()
+
+    def closeEvent(self, event):
+        self.closed.emit(self)
+        super().closeEvent(event)
+
+
 def _is_admin() -> bool:
     if sys.platform == 'darwin' or sys.platform.startswith('linux'):
         return hasattr(os, 'geteuid') and os.geteuid() == 0
@@ -52,10 +206,6 @@ def _is_admin() -> bool:
         return bool(ctypes.windll.shell32.IsUserAnAdmin()) if hasattr(ctypes, 'windll') else False
     except Exception:
         return False
-
-
-def _run_on_boot_requires_admin() -> bool:
-    return sys.platform == 'win32'
 
 
 class SystemTray:
@@ -75,13 +225,23 @@ class SystemTray:
         self.mod_manager = mod_manager
         self.roblox_monitor = roblox_monitor
 
+        self.custom_fflag_hotkeys = None
+        if sys.platform == 'win32':
+            from .gui.windows_hotkeys import WindowsCustomFFlagHotkeyController as HotkeyController
+        elif sys.platform.startswith('linux'):
+            from .gui.linux_hotkeys import LinuxCustomFFlagHotkeyController as HotkeyController
+
+        if sys.platform == 'win32' or sys.platform.startswith('linux'):
+            self.custom_fflag_hotkeys = HotkeyController(config_manager, proxy_master, app)
+            self.custom_fflag_hotkeys.sync()
+
         # Keep references to open windows to prevent garbage collection
         self.open_windows = []
         self.dashboard_window = None
         self._exiting = False
         self._dashboard_close_notice_shown = False
-        self._mac_beta_warning_shown = False
         self._notification_app_id = None
+        self._xfce_notification = None
         self._tray_cleaned_up = False
 
         # Create tray icon
@@ -108,7 +268,10 @@ class SystemTray:
         elif not self.tray.isVisible():
             log_buffer.log('Tray', 'System tray/menu-bar icon did not become visible')
         else:
-            log_buffer.log('Tray', 'System tray/menu-bar icon is visible')
+            log_buffer.log(
+                'Tray',
+                'System tray/menu-bar host is available and icon visibility was requested',
+            )
 
     def _set_icon(self):
         """Set the tray icon."""
@@ -285,15 +448,12 @@ class SystemTray:
         convenience_menu.addAction(self.clear_cache_action)
 
         # Run on Boot
-        _admin = _is_admin()
-        _boot_enabled = _admin or not _run_on_boot_requires_admin()
         self.run_on_boot_action = QAction(
-            'Run on Boot' if _boot_enabled else 'Run on Boot (admin required)',
+            'Run on Boot',
             convenience_menu,
         )
         self.run_on_boot_action.setCheckable(True)
         self.run_on_boot_action.setChecked(self.config_manager.run_on_boot)
-        self.run_on_boot_action.setEnabled(_boot_enabled)
         self.run_on_boot_action.triggered.connect(self._toggle_run_on_boot)
         convenience_menu.addAction(self.run_on_boot_action)
 
@@ -411,7 +571,20 @@ class SystemTray:
         self.config_manager.proxy_features_enabled = enabled
 
         if enabled:
-            if sys.platform == 'darwin':
+            if self.config_manager.proxy_mode == 'env':
+                # Env Proxy binds only a loopback high port. Any protected
+                # macOS cacert.pem fallback is requested only if direct patching fails.
+                self.proxy_master.start()
+                lifecycle = getattr(self.roblox_monitor, 'env_lifecycle', None)
+                if lifecycle is not None and self.roblox_monitor.is_player_running():
+                    if sys.platform.startswith('linux'):
+                        exe_path = Path('org.vinegarhq.Sober')
+                    else:
+                        from .utils import get_roblox_player_exe_path
+
+                        exe_path = get_roblox_player_exe_path()
+                    run_in_thread(lifecycle.handle_player_launch)(exe_path)
+            elif sys.platform == 'darwin':
                 from .utils.macos_proxy_helper import helper_is_ready, install_helper
 
                 if helper_is_ready():
@@ -456,6 +629,11 @@ class SystemTray:
         if self.dashboard_window and hasattr(self.dashboard_window, 'set_proxy_features_enabled'):
             self.dashboard_window.set_proxy_features_enabled(enabled)
         self._refresh_settings_tab()
+
+    def notify_proxy_mode_changed(self) -> None:
+        """Let the dashboard's Proxy tab know hosts/env mode was switched in Settings."""
+        if self.dashboard_window and hasattr(self.dashboard_window, 'refresh_env_proxy_gate'):
+            self.dashboard_window.refresh_env_proxy_gate()
 
     def _set_theme(self, theme: str):
         """Set the application theme."""
@@ -512,14 +690,15 @@ class SystemTray:
 
     def _toggle_run_on_boot(self):
         """Toggle run-on-boot for the current platform."""
-        if _run_on_boot_requires_admin() and not _is_admin():
-            self.run_on_boot_action.setChecked(not self.run_on_boot_action.isChecked())
-            return
         from .utils import CONFIG_DIR
-        from .utils.autostart import sync_autostart
+        from .utils.autostart import sync_autostart, windows_autostart_privilege_hint
 
         checked = self.run_on_boot_action.isChecked()
-        ok = sync_autostart(checked, CONFIG_DIR)
+        ok = sync_autostart(
+            checked,
+            CONFIG_DIR,
+            proxy_mode=self.config_manager.proxy_mode,
+        )
         if ok:
             self.config_manager.run_on_boot = checked
             self._refresh_settings_tab()
@@ -538,12 +717,16 @@ class SystemTray:
             _warn = QMessageBox(_parent)
             _warn.setWindowTitle('Run on Boot Failed')
             _warn.setIcon(QMessageBox.Icon.Warning)
-            _warn.setText(
+            message = (
                 'Failed to register autostart.\n'
                 'Check the application log for details (autostart errors are logged at ERROR level).\n\n'
-                'Turn off Run on Boot to stop this error from appearing.\n\n'
-                'On Windows, ensure Fleasion is running as Administrator.'
+                'Turn off Run on Boot to stop this error from appearing.'
             )
+            if sys.platform == 'win32':
+                message += '\n\n' + windows_autostart_privilege_hint(
+                    self.config_manager.proxy_mode
+                )
+            _warn.setText(message)
             if _on_top:
                 _warn.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
             _warn.exec()
@@ -560,7 +743,11 @@ class SystemTray:
                 from .utils import CONFIG_DIR
                 from .utils.autostart import sync_autostart
 
-                if not sync_autostart(True, CONFIG_DIR):
+                if not sync_autostart(
+                    True,
+                    CONFIG_DIR,
+                    proxy_mode=self.config_manager.proxy_mode,
+                ):
                     from PyQt6.QtWidgets import QApplication, QMessageBox
 
                     _top = QApplication.topLevelWidgets()
@@ -682,15 +869,20 @@ class SystemTray:
         """Show Logs window — only one instance allowed."""
         for w in self.open_windows:
             if isinstance(w, LogsWindow):
+                w.showNormal()
                 w.show()
                 w.raise_()
                 w.activateWindow()
                 return
         window = LogsWindow()
-        window.destroyed.connect(lambda: self._remove_window(window))
+        window.destroyed.connect(
+            lambda _obj=None, _self=self, _window=window: _self._remove_window(_window)
+        )
         self.open_windows.append(window)
         self._apply_always_on_top_to_window(window)
         window.show()
+        window.raise_()
+        window.activateWindow()
 
     def _show_replacer_config(self):
         """Show Replacer Config window (Dashboard)."""
@@ -699,7 +891,6 @@ class SystemTray:
             self.dashboard_window.show()
             self.dashboard_window.raise_()
             self.dashboard_window.activateWindow()
-            QTimer.singleShot(0, self._show_macos_beta_warning)
             return
 
         from PyQt6.QtCore import Qt
@@ -710,6 +901,7 @@ class SystemTray:
             self.mod_manager,
             self.roblox_monitor,
             system_tray=self,
+            hotkey_controller=self.custom_fflag_hotkeys,
         )
         window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         window.destroyed.connect(self._on_dashboard_destroyed)
@@ -717,7 +909,6 @@ class SystemTray:
         self.open_windows.append(window)
         # Note: ReplacerConfigWindow applies always_on_top in its __init__
         window.show()
-        QTimer.singleShot(0, self._show_macos_beta_warning)
 
     def _on_dashboard_destroyed(self):
         """Handle dashboard destruction."""
@@ -760,6 +951,10 @@ class SystemTray:
         message = 'Fleasion is still running in the system tray. Right click and select the exit option to quit.'
         icon_path = get_icon_path()
 
+        if sys.platform.startswith('linux') and _is_xfce_desktop():
+            if self._show_xfce_notification(title, message, icon_path):
+                return
+
         if os.name != 'nt':
             if icon_path is not None:
                 self.tray.showMessage(title, message, QIcon(str(icon_path)), 10000)
@@ -774,6 +969,28 @@ class SystemTray:
             self.tray.showMessage(title, message, QIcon(str(icon_path)), 10000)
         else:
             self.tray.showMessage(title, message, QSystemTrayIcon.MessageIcon.NoIcon, 10000)
+
+    def _show_xfce_notification(self, title: str, message: str, icon_path) -> bool:
+        """Show an app-owned notification so XFCE cannot apply unreadable colors."""
+        try:
+            if self._xfce_notification is not None:
+                self._xfce_notification.close()
+
+            icon = QIcon(str(icon_path)) if icon_path is not None else QIcon()
+            dark = QApplication.palette().color(QPalette.ColorRole.Window).lightness() < 128
+            notification = _XfceTrayNotification(title, message, icon, dark, 10000)
+            notification.closed.connect(self._on_xfce_notification_closed)
+            self._xfce_notification = notification
+            notification.show_near_tray(self.tray.geometry())
+            return True
+        except Exception as exc:
+            self._xfce_notification = None
+            log_buffer.log('Tray', f'Failed to show XFCE notification: {exc}')
+            return False
+
+    def _on_xfce_notification_closed(self, notification) -> None:
+        if self._xfce_notification is notification:
+            self._xfce_notification = None
 
     def _show_windows_notification(self, title: str, message: str, icon_path) -> bool:
         """Show a silent Windows toast with the app icon and app identity."""
@@ -862,63 +1079,6 @@ class SystemTray:
         )
         QDesktopServices.openUrl(QUrl(discord_url))
 
-    def _show_macos_beta_warning(self):
-        """Show the macOS early-beta warning once per app session."""
-        if self._mac_beta_warning_shown or sys.platform != 'darwin':
-            return
-        if self.dashboard_window is None or not self.dashboard_window.isVisible():
-            return
-
-        self._mac_beta_warning_shown = True
-
-        _top = QApplication.topLevelWidgets()
-        _parent = next((w for w in _top if w.isVisible()), self.dashboard_window)
-        _on_top = any(
-            w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
-            for w in _top
-        )
-
-        dialog = QDialog(_parent)
-        if _on_top:
-            dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
-        dialog.setWindowTitle('macOS Beta Warning')
-
-        layout = QVBoxLayout(dialog)
-        layout.setSpacing(12)
-
-        label = QLabel(
-            'macOS is in extremely early beta and does not support the AppleBlox bootstrapper yet.\n\n'
-            'Please report bugs in the Discord server.'
-        )
-        label.setWordWrap(True)
-        layout.addWidget(label)
-
-        button_row = QHBoxLayout()
-        discord_btn = QPushButton('Discord Server')
-        discord_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        discord_btn.setFlat(True)
-        discord_btn.setStyleSheet(
-            'QPushButton { border: none; padding: 0; background: transparent; color: #2f6feb; text-decoration: underline; }'
-            'QPushButton:hover { text-decoration: none; }'
-        )
-        ok_btn = QPushButton('OK')
-        ok_btn.setDefault(True)
-        ok_btn.setAutoDefault(True)
-        ok_btn.setFixedWidth(80)
-
-        button_row.addWidget(discord_btn)
-        button_row.addStretch()
-        button_row.addWidget(ok_btn)
-        layout.addLayout(button_row)
-
-        if icon_path := get_icon_path():
-            dialog.setWindowIcon(QIcon(str(icon_path)))
-
-        discord_btn.clicked.connect(self._open_discord_server)
-        ok_btn.clicked.connect(dialog.accept)
-
-        dialog.exec()
-
     def _copy_discord(self):
         """Copy Discord invite to clipboard."""
         from PyQt6.QtCore import Qt
@@ -951,21 +1111,66 @@ class SystemTray:
 
         webbrowser.open(f'https://{APP_KOFI}')
 
-    def _exit_app(self):
+    def restart_fleasion(self):
+        """Relaunch Fleasion (no admin prompt) and exit this process - used
+        when a setting change needs a full restart to apply (e.g. switching
+        the proxy mode back to Hosts File).
+        """
+        from .app import restart_fleasion_normally
+
+        lifecycle = getattr(self.roblox_monitor, 'env_lifecycle', None)
+        preserve_player = bool(
+            self.config_manager.proxy_mode == 'env'
+            and lifecycle is not None
+            and lifecycle.owns_player
+            and self.roblox_monitor.is_player_running()
+        )
+        if not restart_fleasion_normally(
+            preserve_env_proxy_player=preserve_player
+        ):
+            log_buffer.log('Restart', 'Could not relaunch Fleasion automatically')
+            return
+        self._exit_app(
+            preserve_roblox=preserve_player,
+            force_close_roblox=not preserve_player,
+        )
+
+    def _exit_app(
+        self,
+        *,
+        preserve_roblox: bool = False,
+        force_close_roblox: bool = False,
+    ):
         """Exit the application."""
+        if getattr(self, '_exiting', False):
+            return
         self._exiting = True
         self.cleanup_tray_icon()
-        # Stop proxy: always attempt to stop so startup failures (e.g., UAC rejected)
-        # that leave background threads or waiters won't be skipped.
+
+        lifecycle = getattr(getattr(self, 'roblox_monitor', None), 'env_lifecycle', None)
         try:
-            # Stop proxy asynchronously to avoid blocking the UI/tray menu
-            run_in_thread(self.proxy_master.stop)()
+            if self.custom_fflag_hotkeys is not None:
+                self.custom_fflag_hotkeys.stop()
+            if lifecycle is not None:
+                if preserve_roblox:
+                    lifecycle.preserve_owned_player_for_restart()
+                elif force_close_roblox or getattr(
+                    getattr(self, 'config_manager', None),
+                    'close_env_proxy_roblox_on_exit',
+                    True,
+                ):
+                    lifecycle.close_owned_player_for_exit()
+                else:
+                    lifecycle.cancel()
+        except Exception as exc:
+            log_buffer.log('Launcher', f'Env Proxy Player exit cleanup failed: {exc}')
+
+        # Player must be closed (or explicitly preserved) before its loopback
+        # proxy disappears.
+        try:
+            self.proxy_master.stop()
         except Exception:
-            # Fall back to synchronous stop if async invocation fails
-            try:
-                self.proxy_master.stop()
-            except Exception:
-                pass
+            pass
 
         # Quit Qt app
         self.app.quit()
@@ -976,6 +1181,9 @@ class SystemTray:
             return
 
         self._tray_cleaned_up = True
+        if notification := getattr(self, '_xfce_notification', None):
+            notification.close()
+            self._xfce_notification = None
         try:
             self.tray.hide()
             self.tray.setContextMenu(None)

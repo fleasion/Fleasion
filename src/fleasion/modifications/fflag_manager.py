@@ -7,12 +7,14 @@ and ``FastFlagsViewModel.cs``.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import stat
 import sys
 from pathlib import Path
 
 from ..utils import format_count, log_buffer
+from .stash_paths import resource_stash_dir
 
 # ---------------------------------------------------------------------------
 # Preset flag name mapping (mirrors Fishstrap PresetFlags)
@@ -46,6 +48,9 @@ EXTRA_FLAGS: dict[str, str] = {
 }
 
 CLIENT_SETTINGS_REL = Path('ClientSettings') / 'ClientAppSettings.json'
+APPLEBLOX_CLIENT_SETTINGS_REL = (
+    Path('MacOS') / 'ClientSettings' / 'ClientAppSettings.json'
+)
 
 LOD_LEVELS = ('L0', 'L12', 'L23', 'L34')
 
@@ -84,6 +89,30 @@ def _sober_config_path_for_resource_dir(roblox_dir: Path) -> Path | None:
         return SOBER_CONFIG_FILE if is_sober_resource_dir(roblox_dir) else None
     except Exception:
         return None
+
+
+def client_settings_targets_for_resource_dir(
+    roblox_dir: Path,
+) -> list[tuple[Path, Path]]:
+    """Return live settings files and their per-install stash-relative paths."""
+    targets = [(roblox_dir / CLIENT_SETTINGS_REL, CLIENT_SETTINGS_REL)]
+    if (
+        sys.platform == 'darwin'
+        and roblox_dir.name == 'Resources'
+        and roblox_dir.parent.name == 'Contents'
+        and roblox_dir.parent.parent.suffix == '.app'
+    ):
+        targets.append(
+            (
+                roblox_dir.parent / 'MacOS' / CLIENT_SETTINGS_REL,
+                APPLEBLOX_CLIENT_SETTINGS_REL,
+            )
+        )
+    return targets
+
+
+def client_settings_paths_for_resource_dir(roblox_dir: Path) -> list[Path]:
+    return [path for path, _stash_rel in client_settings_targets_for_resource_dir(roblox_dir)]
 
 
 def _sober_flag_value(value: str):
@@ -176,35 +205,40 @@ class FastFlagManager:
 
         return flags
 
-    def write(self, settings: dict) -> None:
-        """Build flags and write ``ClientAppSettings.json`` in every Roblox dir."""
+    def write(self, settings: dict) -> set[Path]:
+        """Build flags and write settings, returning dirs blocked by permissions."""
         flags = self.build_json(settings)
         content = json.dumps(flags, indent=2).encode('utf-8') if flags else b'{}'
 
-        written = 0
+        written_dirs = 0
         failed = 0
+        failed_dirs: set[Path] = set()
 
         for roblox_dir in self._roblox_dirs:
-            dst = roblox_dir / CLIENT_SETTINGS_REL
-            stash = self._stash_dir / roblox_dir.name / CLIENT_SETTINGS_REL
+            install_stash = resource_stash_dir(self._stash_dir, roblox_dir)
+            wrote_dir = False
+            for dst, stash_rel in client_settings_targets_for_resource_dir(roblox_dir):
+                stash = install_stash / stash_rel
+                try:
+                    # Stash original once
+                    if dst.exists() and not stash.exists():
+                        stash.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(dst, stash)
 
-            try:
-                # Stash original once
-                if dst.exists() and not stash.exists():
-                    stash.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(dst, stash)
-
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                _clear_read_only(dst)
-                dst.write_bytes(content)
-                written += 1
-            except PermissionError as exc:
-                failed += 1
-                log_buffer.log('FastFlags', f'Permission denied writing {dst}: {exc}')
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    _clear_read_only(dst)
+                    dst.write_bytes(content)
+                    wrote_dir = True
+                except PermissionError as exc:
+                    failed += 1
+                    failed_dirs.add(roblox_dir)
+                    log_buffer.log('FastFlags', f'Permission denied writing {dst}: {exc}')
+            if wrote_dir:
+                written_dirs += 1
 
             sober_config = _sober_config_path_for_resource_dir(roblox_dir)
             if sober_config is not None:
-                stash_config = self._stash_dir / roblox_dir.name / 'sober_config.json'
+                stash_config = install_stash / 'sober_config.json'
                 try:
                     config_payload = {}
                     if sober_config.exists():
@@ -232,6 +266,7 @@ class FastFlagManager:
                             _restore_read_only(sober_config)
                 except PermissionError as exc:
                     failed += 1
+                    failed_dirs.add(roblox_dir)
                     log_buffer.log(
                         'FastFlags',
                         f'Permission denied writing Sober config {sober_config}: {exc}',
@@ -243,10 +278,79 @@ class FastFlagManager:
                         f'Failed writing Sober config {sober_config}: {exc}',
                     )
 
-        message = f'Wrote {format_count(flags, "flag")} to {format_count(written, "Roblox dir")}'
+        message = (
+            f'Wrote {format_count(flags, "flag")} to '
+            f'{format_count(written_dirs, "Roblox dir")}'
+        )
         if failed:
             message += f'; skipped {format_count(failed, "Roblox dir")} due to permission errors'
         log_buffer.log('FastFlags', message)
+        return failed_dirs
+
+    def reassert_macos_bootstrapper_flags(self, settings: dict) -> int:
+        """Merge Fleasion flags into settings rewritten just before a macOS launch.
+
+        AppleBlox removes and recreates ``Contents/MacOS/ClientSettings`` during
+        every launch. This intentionally does not stash that transient file:
+        normal Fleasion writes already captured the pre-Fleasion state, and
+        treating AppleBlox's generated launch payload as an original would make
+        Fleasion restore bootstrapper-owned flags later.
+        """
+        if sys.platform != 'darwin':
+            return 0
+
+        flags = self.build_json(settings)
+        if not flags:
+            return 0
+
+        updated_count = 0
+        for roblox_dir in self._roblox_dirs:
+            if not (
+                roblox_dir.name == 'Resources'
+                and roblox_dir.parent.name == 'Contents'
+                and roblox_dir.parent.parent.suffix == '.app'
+            ):
+                continue
+
+            target = roblox_dir.parent / 'MacOS' / CLIENT_SETTINGS_REL
+            if not target.is_file():
+                continue
+
+            try:
+                try:
+                    existing = json.loads(target.read_text(encoding='utf-8'))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    existing = {}
+                if not isinstance(existing, dict):
+                    existing = {}
+
+                merged = {**existing, **flags}
+                if merged == existing:
+                    continue
+
+                target.parent.mkdir(parents=True, exist_ok=True)
+                _clear_read_only(target)
+                temporary = target.with_name(f'.{target.name}.fleasion-{os.getpid()}.tmp')
+                try:
+                    temporary.write_text(json.dumps(merged, indent=2), encoding='utf-8')
+                    temporary.replace(target)
+                finally:
+                    temporary.unlink(missing_ok=True)
+                updated_count += 1
+            except (PermissionError, OSError) as exc:
+                log_buffer.log(
+                    'FastFlags',
+                    f'Failed to merge Fleasion flags into bootstrapper launch settings '
+                    f'{target}: {exc}',
+                )
+
+        if updated_count:
+            log_buffer.log(
+                'FastFlags',
+                f'Merged {format_count(flags, "Fleasion flag")} into '
+                f'{format_count(updated_count, "bootstrapper launch settings file")}',
+            )
+        return updated_count
 
     def restore(self) -> None:
         """Restore (or delete) ``ClientAppSettings.json`` in every Roblox dir."""
@@ -254,26 +358,31 @@ class FastFlagManager:
         failed = 0
 
         for roblox_dir in self._roblox_dirs:
-            dst = roblox_dir / CLIENT_SETTINGS_REL
-            stash = self._stash_dir / roblox_dir.name / CLIENT_SETTINGS_REL
-            try:
-                if stash.exists():
-                    _clear_read_only(dst)
-                    shutil.copy2(stash, dst)
-                    _clear_read_only(stash)
-                    stash.unlink()
-                    restored += 1
-                elif dst.exists():
-                    _clear_read_only(dst)
-                    dst.unlink()
-                    restored += 1
-            except PermissionError as exc:
-                failed += 1
-                log_buffer.log('FastFlags', f'Permission denied restoring {dst}: {exc}')
+            install_stash = resource_stash_dir(self._stash_dir, roblox_dir)
+            restored_dir = False
+            for dst, stash_rel in client_settings_targets_for_resource_dir(roblox_dir):
+                stash = install_stash / stash_rel
+                try:
+                    if stash.exists():
+                        dst.parent.mkdir(parents=True, exist_ok=True)
+                        _clear_read_only(dst)
+                        shutil.copy2(stash, dst)
+                        _clear_read_only(stash)
+                        stash.unlink()
+                        restored_dir = True
+                    elif dst.exists():
+                        _clear_read_only(dst)
+                        dst.unlink()
+                        restored_dir = True
+                except PermissionError as exc:
+                    failed += 1
+                    log_buffer.log('FastFlags', f'Permission denied restoring {dst}: {exc}')
+            if restored_dir:
+                restored += 1
 
             sober_config = _sober_config_path_for_resource_dir(roblox_dir)
             if sober_config is not None:
-                stash_config = self._stash_dir / roblox_dir.name / 'sober_config.json'
+                stash_config = install_stash / 'sober_config.json'
                 try:
                     if stash_config.exists():
                         sober_config.parent.mkdir(parents=True, exist_ok=True)

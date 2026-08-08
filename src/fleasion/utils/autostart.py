@@ -38,12 +38,50 @@ LINUX_AUTOSTART_PATH = USER_HOME / '.config' / 'autostart' / 'fleasion.desktop'
 
 
 # Bump this whenever the task XML format changes to force recreation on next launch.
-_TASK_FORMAT_VERSION = 7
+_TASK_FORMAT_VERSION = 8
+
+
+def _project_root() -> Path:
+    """Return the checkout root when running from a development environment."""
+    check = Path(__file__).resolve().parent
+    for _ in range(8):
+        if (check / 'pyproject.toml').exists():
+            return check
+        check = check.parent
+    return Path(__file__).resolve().parent
+
+
+def _windows_uv_executable() -> str:
+    """Return a stable absolute uv path for Windows task registration."""
+    import shutil
+
+    for name in ('uv', 'uv.exe'):
+        found = shutil.which(name)
+        if found:
+            if os.name == 'nt' and not os.path.isabs(found):
+                found = os.path.abspath(found)
+            return found
+
+    user_profile = os.environ.get('USERPROFILE') or str(Path.home())
+    installed_uv = Path(user_profile) / '.local' / 'bin' / 'uv.exe'
+    if installed_uv.is_file():
+        return str(installed_uv)
+    return 'uv'
 
 
 def _ps_single_quote(value: str) -> str:
     """Return *value* as a PowerShell single-quoted string literal."""
     return "'" + value.replace("'", "''") + "'"
+
+
+def windows_autostart_privilege_hint(proxy_mode: str | None) -> str:
+    """Describe proxy-mode elevation without conflating it with autostart."""
+    if proxy_mode == 'hosts':
+        return (
+            'Hosts File mode requires administrator permission for proxy startup. '
+            'The Run on Boot task itself remains a per-user task.'
+        )
+    return 'Env Proxy mode uses a normal per-user task and does not require Administrator.'
 
 
 def _desktop_exec_quote(value: str) -> str:
@@ -101,16 +139,14 @@ def _get_launch_info() -> dict:
         }
 
     # Dev / uv run
-    import shutil
+    if sys.platform == 'win32':
+        uv = _windows_uv_executable()
+    else:
+        import shutil
 
-    found_uv = shutil.which('uv') or shutil.which('uv.exe')
-    uv = str(Path(found_uv).resolve()) if found_uv else 'uv'
+        uv = shutil.which('uv') or shutil.which('uv.exe') or 'uv'
     # Find project root (dir containing pyproject.toml)
-    check = Path(sys.argv[0]).resolve().parent
-    for _ in range(8):
-        if (check / 'pyproject.toml').exists():
-            break
-        check = check.parent
+    check = _project_root()
     return {
         'mode': 'uv',
         'path': uv,
@@ -136,7 +172,7 @@ def _task_exists() -> bool:
         return False
 
 
-def _delete_task() -> None:
+def _delete_task() -> bool:
     if sys.platform == 'darwin':
         try:
             subprocess.run(
@@ -150,26 +186,190 @@ def _delete_task() -> None:
             LAUNCH_AGENT_PATH.unlink(missing_ok=True)
         except OSError:
             pass
-        return
+        return not LAUNCH_AGENT_PATH.exists()
     if sys.platform.startswith('linux'):
         try:
             LINUX_AUTOSTART_PATH.unlink(missing_ok=True)
         except OSError:
             pass
-        return
+        return not LINUX_AUTOSTART_PATH.exists()
     try:
-        subprocess.run(
+        result = subprocess.run(
             ['schtasks', '/Delete', '/TN', TASK_NAME, '/F'],
             capture_output=True,
             creationflags=subprocess.CREATE_NO_WINDOW,
             timeout=10,
         )
+        return result.returncode == 0 and not _task_exists()
     except Exception:
-        pass
+        return False
 
 
-def _create_task(launch_info: dict) -> bool:
-    """Create the scheduled task with highest privileges (no UAC on logon)."""
+def _windows_launch_action(launch_info: dict) -> tuple[str, str]:
+    """Return the executable and arguments used by the Windows task."""
+    if launch_info['mode'] == 'exe':
+        return launch_info['path'], '--no-dashboard'
+
+    # For uv, wrap in PowerShell with -WindowStyle Hidden to suppress the
+    # console window that uv.exe would otherwise show at logon.
+    uv_path = launch_info['path']
+    proj_path = launch_info['project']
+    uv_args = subprocess.list2cmdline(
+        ['--project', proj_path, 'run', 'fleasion', '--no-dashboard']
+    )
+    log_path = launch_info.get('log')
+    ps_script = (
+        'try{'
+        f'Start-Process -FilePath {_ps_single_quote(uv_path)} '
+        f'-ArgumentList {_ps_single_quote(uv_args)} '
+        '-WindowStyle Hidden -ErrorAction Stop'
+        '}catch{'
+    )
+    if log_path:
+        ps_script += (
+            f'New-Item -ItemType Directory -Force -Path '
+            f'{_ps_single_quote(str(Path(log_path).parent))}|Out-Null;'
+            f'Add-Content -LiteralPath {_ps_single_quote(log_path)} '
+            "-Value ((Get-Date -Format o)+' '+($_|Out-String));"
+        )
+    ps_script += 'exit 1}'
+    ps_encoded = base64.b64encode(ps_script.encode('utf-16-le')).decode('ascii')
+    return (
+        'powershell.exe',
+        f'-WindowStyle Hidden -NoProfile -NonInteractive '
+        f'-ExecutionPolicy Bypass -EncodedCommand {ps_encoded}',
+    )
+
+
+def _create_windows_task_as_current_user(launch_info: dict) -> bool:
+    """Create/update the per-user task without requiring elevation.
+
+    ``schtasks /Create`` rejects standard-user task creation on current Windows
+    builds, even when the requested task is limited to the interactive user.
+    The Task Scheduler COM API supports the intended per-user interactive-token
+    task without that elevation requirement.
+    """
+    import textwrap
+
+    command, args = _windows_launch_action(launch_info)
+    script = textwrap.dedent(
+        f"""
+        $ErrorActionPreference = 'Stop'
+        $userId = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+        $service = New-Object -ComObject 'Schedule.Service'
+        $service.Connect()
+        $folder = $service.GetFolder('\')
+        $definition = $service.NewTask(0)
+        $definition.RegistrationInfo.Description = 'Fleasion per-user autostart'
+        $definition.Settings.Enabled = $true
+        $definition.Settings.Hidden = $true
+        $definition.Settings.MultipleInstances = 2
+        $trigger = $definition.Triggers.Create(9)
+        $trigger.Enabled = $true
+        $trigger.UserId = $userId
+        $principal = $definition.Principal
+        $principal.UserId = $userId
+        $principal.LogonType = 3
+        $principal.RunLevel = 0
+        $action = $definition.Actions.Create(0)
+        $action.Path = {_ps_single_quote(command)}
+        $action.Arguments = {_ps_single_quote(args)}
+        $registered = $folder.RegisterTaskDefinition(
+            {_ps_single_quote(TASK_NAME)}, $definition, 6, $userId, $null, 3, $null
+        )
+        if ($registered.Definition.Principal.LogonType -ne 3 -or
+            $registered.Definition.Principal.RunLevel -ne 0) {{
+            throw 'Task Scheduler returned a task with an unexpected privilege level'
+        }}
+        """
+    ).strip()
+    encoded = base64.b64encode(script.encode('utf-16-le')).decode('ascii')
+    try:
+        result = subprocess.run(
+            [
+                'powershell.exe',
+                '-NoProfile',
+                '-NonInteractive',
+                '-ExecutionPolicy',
+                'Bypass',
+                '-EncodedCommand',
+                encoded,
+            ],
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            timeout=15,
+        )
+        if result.returncode != 0:
+            _log(
+                f'PowerShell Task Scheduler registration failed (rc={result.returncode}): '
+                f'{result.stdout.decode(errors="replace").strip()} '
+                f'{result.stderr.decode(errors="replace").strip()}'
+            )
+        return result.returncode == 0
+    except Exception as exc:
+        _log(f'Failed to create per-user scheduled task: {exc}')
+        return False
+
+
+def _grant_windows_task_user_control(windows_user_id: str) -> bool:
+    """Grant the requesting user control of an elevated-created task.
+
+    An elevated ``schtasks /Create /XML`` call can leave the task owned by
+    Administrators even when its principal is an interactive, least-privilege
+    user.  Preserve the task's existing ACL and add full control for the user
+    that will update it on future normal launches.
+    """
+    import textwrap
+
+    script = textwrap.dedent(
+        f"""
+        $ErrorActionPreference = 'Stop'
+        $service = New-Object -ComObject 'Schedule.Service'
+        $service.Connect()
+        $task = $service.GetFolder('\\').GetTask({_ps_single_quote(TASK_NAME)})
+        $account = New-Object System.Security.Principal.NTAccount({_ps_single_quote(str(windows_user_id))})
+        $sid = $account.Translate([System.Security.Principal.SecurityIdentifier]).Value
+        $descriptor = $task.GetSecurityDescriptor(15)
+        $ace = '(A;;FA;;;' + $sid + ')'
+        if ($descriptor.IndexOf($ace, [System.StringComparison]::Ordinal) -lt 0) {{
+            $task.SetSecurityDescriptor($descriptor + $ace, 0)
+        }}
+        """
+    ).strip()
+    encoded = base64.b64encode(script.encode('utf-16-le')).decode('ascii')
+    try:
+        result = subprocess.run(
+            [
+                'powershell.exe',
+                '-NoProfile',
+                '-NonInteractive',
+                '-ExecutionPolicy',
+                'Bypass',
+                '-EncodedCommand',
+                encoded,
+            ],
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            timeout=15,
+        )
+        if result.returncode != 0:
+            _log(
+                f'PowerShell Task Scheduler ACL repair failed (rc={result.returncode}): '
+                f'{result.stdout.decode(errors="replace").strip()} '
+                f'{result.stderr.decode(errors="replace").strip()}'
+            )
+        return result.returncode == 0
+    except Exception as exc:
+        _log(f'Failed to repair scheduled task permissions: {exc}')
+        return False
+
+
+def _create_task(
+    launch_info: dict,
+    *,
+    windows_user_id: str | None = None,
+) -> bool:
+    """Create a per-user autostart entry without elevation."""
     if sys.platform == 'darwin':
         try:
             if launch_info['mode'] == 'exe':
@@ -251,6 +451,9 @@ def _create_task(launch_info: dict) -> bool:
             _log(f'Failed to create XDG autostart entry: {e}')
             return False
 
+    if not windows_user_id:
+        return _create_windows_task_as_current_user(launch_info)
+
     import html as _html
     import tempfile
     import textwrap
@@ -258,9 +461,13 @@ def _create_task(launch_info: dict) -> bool:
     # Resolve the current user so the task is scoped to them specifically.
     # Without an explicit <UserId> in the XML, Windows may not associate the
     # task with the correct user and can silently discard it after a restart.
-    _username = os.environ.get('USERNAME', '')
-    _domain = os.environ.get('USERDOMAIN', os.environ.get('COMPUTERNAME', ''))
-    user_id = _html.escape(f'{_domain}\\{_username}' if _domain else _username)
+    if windows_user_id:
+        raw_user_id = str(windows_user_id)
+    else:
+        _username = os.environ.get('USERNAME', '')
+        _domain = os.environ.get('USERDOMAIN', os.environ.get('COMPUTERNAME', ''))
+        raw_user_id = f'{_domain}\\{_username}' if _domain else _username
+    user_id = _html.escape(raw_user_id)
 
     if launch_info['mode'] == 'exe':
         command = _html.escape(launch_info['path'])
@@ -296,7 +503,8 @@ def _create_task(launch_info: dict) -> bool:
         command = 'powershell.exe'
         args = _html.escape(ps_cmd)
 
-    # We use an XML task definition so we can set RunLevel=HighestAvailable.
+    # Use a per-user interactive task. Env Proxy does not need elevation, and
+    # hosts mode can request it only when the user explicitly selects that mode.
     # Both <Principal> and <LogonTrigger> must carry <UserId> so that:
     #   - The task is owned by (and runs as) the correct user account.
     #   - The logon trigger fires only when that specific user logs on.
@@ -313,7 +521,7 @@ def _create_task(launch_info: dict) -> bool:
             <Principal id="Author">
               <UserId>{user_id}</UserId>
               <LogonType>InteractiveToken</LogonType>
-              <RunLevel>HighestAvailable</RunLevel>
+              <RunLevel>LeastPrivilege</RunLevel>
             </Principal>
           </Principals>
           <Settings>
@@ -350,7 +558,8 @@ def _create_task(launch_info: dict) -> bool:
                 f'{r.stdout.decode(errors="replace").strip()} '
                 f'{r.stderr.decode(errors="replace").strip()}'
             )
-        return r.returncode == 0
+            return False
+        return _grant_windows_task_user_control(raw_user_id)
     except Exception as e:
         _log(f'Failed to create scheduled task: {e}')
         return False
@@ -376,7 +585,13 @@ def _save_launch_info(config_dir: Path, info: dict) -> None:
         pass
 
 
-def sync_autostart(enabled: bool, config_dir: Path) -> bool:
+def sync_autostart(
+    enabled: bool,
+    config_dir: Path,
+    *,
+    windows_user_id: str | None = None,
+    proxy_mode: str | None = None,
+) -> bool:
     """Ensure the scheduled task matches the desired state.
 
     Called on startup (to update if launch method changed) and when the
@@ -384,12 +599,17 @@ def sync_autostart(enabled: bool, config_dir: Path) -> bool:
     """
     if not enabled:
         if _task_exists():
-            _delete_task()
+            return _delete_task()
         return True
 
     current = _get_launch_info()
     if current.get('mode') == 'uv':
         current['log'] = str(config_dir / 'autostart_launch_error.log')
+    if proxy_mode is not None:
+        # Persist the mode so switching Hosts <-> Env forces a task refresh.
+        # This also repairs stale legacy HighestAvailable tasks when the user
+        # moves into Env Proxy mode.
+        current['proxy_mode'] = proxy_mode
     stored = _get_stored_launch_info(config_dir)
 
     # Recreate if: task missing, or launch method changed since last save.
@@ -397,7 +617,7 @@ def sync_autostart(enabled: bool, config_dir: Path) -> bool:
     # the old task.  If we deleted first and creation failed, the task would be
     # permanently gone while run_on_boot remains True in settings.
     if not _task_exists() or stored != current:
-        ok = _create_task(current)
+        ok = _create_task(current, windows_user_id=windows_user_id)
         if ok:
             _save_launch_info(config_dir, current)
         return ok
