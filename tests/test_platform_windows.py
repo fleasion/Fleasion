@@ -64,10 +64,10 @@ def _touch(path: Path, mtime: float) -> Path:
     return path
 
 
-def _skip_cookie_settle_for_relaunch_test(monkeypatch, module):
+def _skip_immediate_close_for_relaunch_test(monkeypatch, module):
     monkeypatch.setattr(
         module,
-        "_force_close_process_after_cookie_settle",
+        "_force_close_process_immediately",
         lambda *_args, **_kwargs: True,
     )
 
@@ -192,36 +192,10 @@ def test_windows_proxy_environment_block_is_double_nul_terminated(monkeypatch):
     assert block[block._length_ - 2] == '\x00'
 
 
-def test_gdk_initial_launch_settle_honors_cancellation(monkeypatch):
-    module = _load_platform_windows(monkeypatch)
-    cancelled = SimpleNamespace(wait=lambda _timeout: True)
-
-    assert not module._wait_for_gdk_initial_launch_settle(cancelled)
-
-
-def test_roblox_cookie_settle_waits_for_a_stable_metadata_sample(monkeypatch, tmp_path):
-    module = _load_platform_windows(monkeypatch)
-    module.LOCAL_APPDATA = str(tmp_path)
-    clock = [0.0]
-    signatures = iter([(1, 10), (2, 20)])
-
-    monkeypatch.setattr(module, "_roblox_cookies_signature", lambda _path: next(signatures, (2, 20)))
-    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
-    monkeypatch.setattr(module.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
-
-    assert module._wait_for_roblox_cookies_write_settle(timeout=5.0)
-    assert clock[0] >= module._ROBLOX_COOKIES_MINIMUM_SETTLE_SECONDS
-
-
-def test_force_close_waits_for_cookie_settle_before_taskkill(monkeypatch):
+def test_force_close_kills_immediately_before_waiting_for_process_exit(monkeypatch):
     module = _load_platform_windows(monkeypatch)
     events = []
 
-    monkeypatch.setattr(
-        module,
-        "_wait_for_roblox_cookies_write_settle",
-        lambda **_kwargs: events.append("cookie_settle") or True,
-    )
     monkeypatch.setattr(
         module,
         "run_cmd",
@@ -233,13 +207,12 @@ def test_force_close_waits_for_cookie_settle_before_taskkill(monkeypatch):
         lambda *_args, **_kwargs: events.append("pid_exit") or True,
     )
 
-    assert module._force_close_process_after_cookie_settle(
+    assert module._force_close_process_immediately(
         100,
         "RobloxPlayerBeta.exe",
         label="Roblox",
     )
     assert events == [
-        "cookie_settle",
         ("taskkill", "/F", "/PID", "100"),
         "pid_exit",
     ]
@@ -368,7 +341,7 @@ def test_env_proxy_relaunch_skips_gdk_even_when_helper_exists(monkeypatch, tmp_p
 
 def test_env_proxy_relaunch_skips_the_proxy_owned_process(monkeypatch, tmp_path):
     module = _load_platform_windows(monkeypatch)
-    _skip_cookie_settle_for_relaunch_test(monkeypatch, module)
+    _skip_immediate_close_for_relaunch_test(monkeypatch, module)
     exe = _touch(tmp_path / "Content" / "RobloxPlayerBeta.exe", 3000)
     running_pids = {100}
     current = {"pid": 100}
@@ -413,7 +386,7 @@ def test_env_proxy_relaunch_skips_the_proxy_owned_process(monkeypatch, tmp_path)
 
 def test_env_proxy_relaunch_allows_new_process_after_crash(monkeypatch, tmp_path):
     module = _load_platform_windows(monkeypatch)
-    _skip_cookie_settle_for_relaunch_test(monkeypatch, module)
+    _skip_immediate_close_for_relaunch_test(monkeypatch, module)
     exe = _touch(tmp_path / "Content" / "RobloxPlayerBeta.exe", 3000)
     running_pids = {100}
     current = {"pid": 100}

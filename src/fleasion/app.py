@@ -3286,7 +3286,7 @@ def main():
         )
 
         def _prepare_env_proxy_launch(path: Path) -> bool:
-            result = proxy_master.ensure_env_proxy_roblox_ca(path, settle=True)
+            result = proxy_master.ensure_env_proxy_roblox_ca(path, settle=False)
             return bool(result.get('success'))
 
         def _relaunch_env_player(

@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -80,6 +81,14 @@ def test_env_lifecycle_converts_once_when_ca_stays_healthy():
     assert controller.owns_player
 
 
+def test_windows_env_lifecycle_does_not_settle_before_relaunch(monkeypatch):
+    monkeypatch.setattr('fleasion.proxy.env_lifecycle.sys.platform', 'win32')
+    controller, proxy, _calls, _running, _identity = _controller([{"success": True}])
+
+    assert controller.handle_player_launch(Path("/Roblox/RobloxPlayerBeta.exe"))
+    assert proxy.prepares == [(Path("/Roblox/RobloxPlayerBeta.exe"), False)]
+
+
 def test_intercepted_launch_uses_source_bundle_without_waiting_for_running_player():
     controller, proxy, calls, running, _identity = _controller([{"success": True}])
     running["value"] = False
@@ -153,7 +162,7 @@ def test_env_lifecycle_adopts_package_player_without_synthetic_relaunch():
     assert calls == []
     assert proxy.monitors == 2
     assert proxy.prepares == [
-        (Path("/Roblox/RobloxPlayerBeta.exe"), True),
+        (Path("/Roblox/RobloxPlayerBeta.exe"), sys.platform != 'win32'),
         (Path("/Roblox/RobloxPlayerBeta.exe"), False),
     ]
     assert controller.owns_player

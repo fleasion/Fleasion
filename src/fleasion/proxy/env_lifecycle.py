@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import threading
 import time
 from pathlib import Path
@@ -154,7 +155,11 @@ class EnvProxyLifecycleController:
 
             prepared = self._proxy_master.ensure_env_proxy_roblox_ca(
                 Path(current_exe),
-                settle=not player_already_stopped and self._is_player_running(),
+                settle=(
+                    sys.platform != 'win32'
+                    and not player_already_stopped
+                    and self._is_player_running()
+                ),
             )
             if not prepared.get('success'):
                 log_buffer.log(
@@ -237,7 +242,7 @@ class EnvProxyLifecycleController:
                 return False
 
             prepared = self._proxy_master.ensure_env_proxy_roblox_ca(
-                Path(current_exe), settle=self._is_player_running()
+                Path(current_exe), settle=sys.platform != 'win32' and self._is_player_running()
             )
             if not prepared.get('success'):
                 log_buffer.log(
