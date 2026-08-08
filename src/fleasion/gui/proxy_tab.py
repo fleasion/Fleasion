@@ -614,6 +614,7 @@ class ProxyTrafficTab(QWidget):
         # currently loaded into the response box - same reload-avoidance idea
         # as above, but only for the response side while it's actually held.
         self._loaded_pending_response_key: Optional[tuple] = None
+        self._loaded_completed_response_key: Optional[tuple] = None
 
         # Unlike enableCheckBox, "Preserve" DOES persist across launches -
         # it decides whether traffic (rows, requests, responses, and their
@@ -769,6 +770,7 @@ class ProxyTrafficTab(QWidget):
             self._displayed_entry_id = None
             self._loaded_request_entry_id = None
             self._loaded_pending_response_key = None
+            self._loaded_completed_response_key = None
             self.ui.requestText.clear()
             self.ui.responseText.clear()
             self.ui.requestGroup.setTitle('Request')
@@ -793,6 +795,7 @@ class ProxyTrafficTab(QWidget):
             self._displayed_entry_id = None
             self._loaded_request_entry_id = None
             self._loaded_pending_response_key = None
+            self._loaded_completed_response_key = None
             self.ui.requestText.clear()
             self.ui.responseText.clear()
             self.ui.requestGroup.setTitle('Request')
@@ -834,12 +837,14 @@ class ProxyTrafficTab(QWidget):
                 )
             self._loaded_pending_response_key = pending_response_key
 
-        # Outside of an active response hold, the response box is always a
-        # read-only preview, safe to refresh freely.
         if pending_stage != 'response':
-            _set_text_preserving_scroll(
-                self.ui.responseText, self._format_preview('format_env_proxy_response_preview', entry)
-            )
+            completed_response_key = (entry['id'], entry.get('response_raw'))
+            if completed_response_key != self._loaded_completed_response_key:
+                _set_text_preserving_scroll(
+                    self.ui.responseText,
+                    self._format_preview('format_env_proxy_response_preview', entry),
+                )
+                self._loaded_completed_response_key = completed_response_key
 
         self.ui.responseText.setReadOnly(pending_stage != 'response')
         self.ui.requestGroup.setTitle(
