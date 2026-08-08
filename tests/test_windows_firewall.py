@@ -38,6 +38,28 @@ def test_install_firewall_rules_targets_both_directions_and_profiles(monkeypatch
     assert all(command[6].endswith('Fleasion.exe') for command in commands)
 
 
+def test_firewall_rule_status_requires_both_rules_for_the_executable(monkeypatch, tmp_path):
+    monkeypatch.setattr(windows_firewall.sys, 'platform', 'win32')
+    executable = tmp_path / 'Fleasion.exe'
+    output = (
+        'Rule Name: Fleasion - Allow inbound (Private,Public)\n'
+        f'Program: {executable}\n'
+        'Rule Name: Fleasion - Allow outbound (Private,Public)\n'
+        f'Program: {executable}\n'
+    )
+    monkeypatch.setattr(
+        windows_firewall.subprocess,
+        'run',
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout=output, stderr=''),
+    )
+
+    result = windows_firewall.get_fleasion_firewall_rule_status(executable)
+
+    assert result['ok']
+    assert len(result['rules']) == 2
+    assert result['missing'] == []
+
+
 def test_install_firewall_rules_reports_netsh_failure(monkeypatch):
     monkeypatch.setattr(windows_firewall.sys, 'platform', 'win32')
     monkeypatch.setattr(windows_firewall, '_is_admin', lambda: True)

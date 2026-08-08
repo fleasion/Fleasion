@@ -2049,27 +2049,62 @@ def _show_windows_upstream_firewall_dialog(details: dict) -> None:
     if sys.platform != 'win32':
         return
 
+    from .utils.windows_firewall import get_fleasion_firewall_rule_status
+
     host = str(details.get('host') or 'a Roblox content server')
     parent = _visible_parent_widget()
+    try:
+        firewall_status = get_fleasion_firewall_rule_status()
+    except Exception as exc:
+        log_buffer.log('WindowsFirewall', f'Could not inspect Fleasion firewall rules: {exc}')
+        firewall_status = {'ok': False}
+
+    rules_already_present = bool(firewall_status.get('ok'))
     msg = QMessageBox(parent)
-    msg.setWindowTitle('Fleasion - Connection Blocked')
+    msg.setWindowTitle(
+        'Fleasion - Connection Still Blocked'
+        if rules_already_present
+        else 'Fleasion - Connection Blocked'
+    )
     msg.setIcon(QMessageBox.Icon.Warning)
-    msg.setText(f'Fleasion could not connect securely to {host}. Windows may be blocking it.')
-    msg.setInformativeText(
-        'Fleasion needs to reach Roblox over HTTPS, but the connection was refused or '
-        'interrupted before the request completed. This can happen when Windows Firewall, '
-        'antivirus, a VPN, or an organization policy blocks Fleasion.\n\n'
-        'Allow Fleasion through Windows Firewall adds only Fleasion program rules for '
-        'inbound and outbound traffic on Private and Public networks. It requires one '
-        "standard administrator approval and does not change other applications' rules."
-    )
-    repair_button = msg.addButton(
-        'Allow Fleasion Through Firewall', QMessageBox.ButtonRole.AcceptRole
-    )
+    if rules_already_present:
+        msg.setText(f'Fleasion still cannot connect securely to {host}.')
+        msg.setInformativeText(
+            'Fleasion\'s Windows Firewall rules are already installed for both Private and '
+            'Public networks, so adding them again will not fix this connection.\n\n'
+            'Another network control may be blocking Fleasion, such as antivirus, a VPN, '
+            'DNS filtering, or an organization policy. Please contact the Fleasion Discord '
+            'for help and include the Fleasion log if possible.'
+        )
+        repair_button = None
+        help_button = msg.addButton('Get Help on Discord', QMessageBox.ButtonRole.ActionRole)
+    else:
+        msg.setText(f'Fleasion could not connect securely to {host}. Windows may be blocking it.')
+        msg.setInformativeText(
+            'Fleasion needs to reach Roblox over HTTPS, but the connection was refused or '
+            'interrupted before the request completed. This can happen when Windows Firewall, '
+            'antivirus, a VPN, or an organization policy blocks Fleasion.\n\n'
+            'Allow Fleasion through Windows Firewall adds only Fleasion program rules for '
+            'inbound and outbound traffic on Private and Public networks. It requires one '
+            "standard administrator approval and does not change other applications' rules."
+        )
+        repair_button = msg.addButton(
+            'Allow Fleasion Through Firewall', QMessageBox.ButtonRole.AcceptRole
+        )
+        help_button = None
     settings_button = msg.addButton('Open Firewall Settings', QMessageBox.ButtonRole.ActionRole)
     msg.addButton('Not Now', QMessageBox.ButtonRole.RejectRole)
-    msg.setDefaultButton(repair_button)
+    msg.setDefaultButton(help_button or settings_button)
     msg.exec()
+
+    if help_button is not None and msg.clickedButton() == help_button:
+        import webbrowser
+
+        discord_url = APP_DISCORD
+        if not discord_url.startswith(('http://', 'https://')):
+            discord_url = f'https://{discord_url}'
+        webbrowser.open(discord_url)
+        return
 
     if msg.clickedButton() == repair_button:
         from .utils.windows_firewall import (

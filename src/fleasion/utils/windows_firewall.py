@@ -86,6 +86,52 @@ def _is_admin() -> bool:
         return False
 
 
+def get_fleasion_firewall_rule_status(program_path: str | Path | None = None) -> dict:
+    """Check whether both Fleasion rules exist for the current executable."""
+    if sys.platform != 'win32':
+        return {'ok': False, 'rules': [], 'missing': [], 'error': 'Windows is required'}
+
+    executable = Path(program_path or sys.executable).resolve()
+    present: list[str] = []
+    missing: list[str] = []
+    errors: list[str] = []
+    for _direction, rule_name in _RULES:
+        try:
+            completed = subprocess.run(
+                [
+                    'netsh.exe',
+                    'advfirewall',
+                    'firewall',
+                    'show',
+                    'rule',
+                    f'name={rule_name}',
+                    'verbose',
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+                timeout=15,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            errors.append(str(exc))
+            continue
+
+        output = f'{completed.stdout}\n{completed.stderr}'.casefold()
+        if completed.returncode == 0 and rule_name.casefold() in output and str(executable).casefold() in output:
+            present.append(rule_name)
+        else:
+            missing.append(rule_name)
+
+    return {
+        'ok': len(present) == len(_RULES),
+        'rules': present,
+        'missing': missing,
+        'error': '; '.join(errors) if errors else None,
+        'program': str(executable),
+    }
+
+
 def install_fleasion_firewall_rules(program_path: str | Path | None = None) -> dict:
     """Allow Fleasion's executable on private and public Windows networks.
 

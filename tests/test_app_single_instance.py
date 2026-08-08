@@ -877,6 +877,11 @@ def test_windows_upstream_dialog_requests_targeted_firewall_repair(monkeypatch, 
 
     from fleasion.utils import windows_firewall
 
+    monkeypatch.setattr(
+        windows_firewall,
+        'get_fleasion_firewall_rule_status',
+        lambda: {'ok': False, 'missing': ['out']},
+    )
     pending = []
     monkeypatch.setattr(
         windows_firewall,
@@ -895,6 +900,85 @@ def test_windows_upstream_dialog_requests_targeted_firewall_repair(monkeypatch, 
     assert 'only Fleasion program rules' in informative
     assert pending == [tmp_path]
     assert relaunches == [{'extra_args': '--repair-firewall', 'parent_hwnd': None}]
+
+
+def test_windows_upstream_dialog_escalates_when_firewall_rules_already_exist(monkeypatch):
+    import webbrowser
+
+    opened = []
+    calls = []
+    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(app_module, '_visible_parent_widget', lambda: None)
+    monkeypatch.setattr(
+        webbrowser,
+        'open',
+        lambda url: opened.append(url),
+    )
+    monkeypatch.setattr(
+        app_module,
+        'log_buffer',
+        type('Log', (), {'log': staticmethod(lambda *args: calls.append(args))})(),
+    )
+
+    class _MessageBox:
+        class Icon:
+            Warning = object()
+
+        class ButtonRole:
+            ActionRole = object()
+            RejectRole = object()
+
+        def __init__(self, _parent):
+            self._clicked = None
+
+        def setWindowTitle(self, title):
+            calls.append(('title', title))
+
+        def setIcon(self, _icon):
+            pass
+
+        def setText(self, text):
+            calls.append(('text', text))
+
+        def setInformativeText(self, text):
+            calls.append(('informative', text))
+
+        def addButton(self, text, _role):
+            button = object()
+            if text == 'Get Help on Discord':
+                self._clicked = button
+            return button
+
+        def setDefaultButton(self, _button):
+            pass
+
+        def exec(self):
+            pass
+
+        def clickedButton(self):
+            return self._clicked
+
+    monkeypatch.setattr(app_module, 'QMessageBox', _MessageBox)
+
+    from fleasion.utils import windows_firewall
+
+    monkeypatch.setattr(
+        windows_firewall,
+        'get_fleasion_firewall_rule_status',
+        lambda: {'ok': True, 'rules': ['in', 'out'], 'missing': []},
+    )
+    monkeypatch.setattr(
+        app_module,
+        '_relaunch_as_admin',
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError('repair should not repeat')),
+    )
+
+    _show_windows_upstream_firewall_dialog({'host': 'assetdelivery.roblox.com'})
+
+    informative = next(value for kind, value in calls if kind == 'informative')
+    assert 'already installed' in informative
+    assert 'Fleasion Discord' in informative
+    assert opened == ['https://discord.gg/hXyhKehEZF']
 
 
 def test_env_proxy_studio_launch_is_completely_untouched(monkeypatch):
