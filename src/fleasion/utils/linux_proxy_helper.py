@@ -598,6 +598,39 @@ def stop_helper(timeout: float = 8.0) -> bool:
     return False
 
 
+def cleanup_hosts_with_pkexec(timeout: float = 120.0) -> bool:
+    """Run a one-shot root child that removes Fleasion hosts entries."""
+    pkexec = shutil.which('pkexec')
+    if not pkexec:
+        log_buffer.log('ProxyHelper', 'Linux hosts cleanup failed: pkexec not found')
+        return False
+
+    cmd = [pkexec, *_helper_command(), '--cleanup-hosts']
+    try:
+        result = _run_host_command(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            timeout=timeout,
+        )
+    except Exception as exc:
+        log_buffer.log('ProxyHelper', f'Linux hosts cleanup child failed: {exc}')
+        return False
+
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or '').strip()
+        log_buffer.log(
+            'ProxyHelper',
+            f'Linux hosts cleanup was cancelled or failed (rc={result.returncode}): '
+            f'{detail or "no details"}',
+        )
+        return False
+    log_buffer.log('ProxyHelper', 'Linux one-shot hosts cleanup completed')
+    return True
+
+
 def _user_home() -> Path:
     return Path(os.environ.get('FLEASION_USER_HOME') or Path.home()).expanduser()
 

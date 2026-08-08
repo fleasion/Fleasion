@@ -11,9 +11,13 @@ from fleasion.app import (
     _looks_like_macos_fleasion_command,
     _manual_upstream_credentials_missing,
     _repair_autostart_once,
+    _repair_windows_firewall_once,
     _repair_roblox_permissions_once,
+    _run_privileged_hosts_cleanup,
+    _show_env_proxy_stale_hosts_dialog,
     _show_roblox_permission_failure,
     _show_run_on_boot_failure,
+    _show_windows_upstream_firewall_dialog,
     _should_reclaim_stale_single_instance,
     _should_sync_autostart_on_launch,
     kill_other_fleasion_instances,
@@ -56,15 +60,15 @@ def test_fleasion_process_matching_rejects_linux_proxy_helper_commands():
 
 
 def test_stale_single_instance_can_be_reclaimed_on_linux_without_gui_process(monkeypatch):
-    monkeypatch.setattr(app_module.sys, "platform", "linux")
-    monkeypatch.setattr(app_module, "_other_fleasion_pids", lambda: [])
+    monkeypatch.setattr(app_module.sys, 'platform', 'linux')
+    monkeypatch.setattr(app_module, '_other_fleasion_pids', lambda: [])
 
     assert _should_reclaim_stale_single_instance(QSharedMemory.SharedMemoryError.AlreadyExists)
 
 
 def test_stale_single_instance_not_reclaimed_on_linux_with_gui_process(monkeypatch):
-    monkeypatch.setattr(app_module.sys, "platform", "linux")
-    monkeypatch.setattr(app_module, "_other_fleasion_pids", lambda: [1234])
+    monkeypatch.setattr(app_module.sys, 'platform', 'linux')
+    monkeypatch.setattr(app_module, '_other_fleasion_pids', lambda: [1234])
 
     assert not _should_reclaim_stale_single_instance(QSharedMemory.SharedMemoryError.AlreadyExists)
 
@@ -74,7 +78,9 @@ def test_kill_other_instances_prefers_graceful_exit(monkeypatch):
 
     monkeypatch.setattr(app_module, '_request_other_fleasion_instances_exit', lambda: True)
     monkeypatch.setattr(app_module, '_other_fleasion_pids', lambda: [1234])
-    monkeypatch.setattr(app_module.subprocess, 'run', lambda *args, **kwargs: calls.append((args, kwargs)))
+    monkeypatch.setattr(
+        app_module.subprocess, 'run', lambda *args, **kwargs: calls.append((args, kwargs))
+    )
 
     kill_other_fleasion_instances()
 
@@ -150,7 +156,9 @@ def test_single_instance_launch_command_preserves_uri(monkeypatch):
             return b'launch-roblox\nroblox://experiences/start?placeId=1\n'
 
     class _TrayStub:
-        config_manager = type('Config', (), {'proxy_mode': 'hosts', 'proxy_features_enabled': False})()
+        config_manager = type(
+            'Config', (), {'proxy_mode': 'hosts', 'proxy_features_enabled': False}
+        )()
         proxy_master = None
 
     _handle_single_instance_command(_SocketStub(), _TrayStub())
@@ -160,18 +168,18 @@ def test_single_instance_launch_command_preserves_uri(monkeypatch):
 
 
 def test_autostart_resync_includes_linux_normal_user(monkeypatch):
-    monkeypatch.setattr(app_module.sys, "platform", "linux")
-    monkeypatch.setattr(app_module, "_is_admin", lambda: False)
+    monkeypatch.setattr(app_module.sys, 'platform', 'linux')
+    monkeypatch.setattr(app_module, '_is_admin', lambda: False)
 
     assert _should_sync_autostart_on_launch(True)
-    monkeypatch.setattr(app_module, "_is_admin", lambda: True)
+    monkeypatch.setattr(app_module, '_is_admin', lambda: True)
     assert _should_sync_autostart_on_launch(True)
     assert not _should_sync_autostart_on_launch(False)
 
 
 def test_autostart_resync_runs_without_admin_on_windows(monkeypatch):
-    monkeypatch.setattr(app_module.sys, "platform", "win32")
-    monkeypatch.setattr(app_module, "_is_admin", lambda: False)
+    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(app_module, '_is_admin', lambda: False)
 
     assert _should_sync_autostart_on_launch(True)
 
@@ -399,7 +407,7 @@ def test_run_on_boot_failure_can_launch_one_time_admin_repair(monkeypatch):
         def addButton(self, text, _role):
             button = object()
             self._buttons.append((text, button))
-            if text == 'Repair as administrator':
+            if text == 'Repair Now (Recommended)':
                 self._clicked = button
             return button
 
@@ -423,9 +431,16 @@ def test_run_on_boot_failure_can_launch_one_time_admin_repair(monkeypatch):
 
     _show_run_on_boot_failure(None)
 
-    assert 'try again on the next launch' in selected[0]
-    assert 'started successfully' in selected[1]
-    assert relaunches == [{'extra_args': '--repair-autostart', 'parent_hwnd': None}]
+    assert 'confirms whether it worked' in selected[0]
+    assert 'It worked' in selected[1]
+    assert 'do not need to run the repair again' in selected[1]
+    assert relaunches == [
+        {
+            'extra_args': '--repair-autostart',
+            'parent_hwnd': None,
+            'wait_for_completion': True,
+        }
+    ]
 
 
 def test_nonwindows_run_on_boot_failure_never_offers_admin_repair(monkeypatch):
@@ -544,10 +559,7 @@ def test_repair_autostart_once_syncs_only_from_admin(monkeypatch, tmp_path):
     monkeypatch.setattr(
         autostart,
         'sync_autostart',
-        lambda enabled, config_dir, **kwargs: calls.append(
-            (enabled, config_dir, kwargs)
-        )
-        or True,
+        lambda enabled, config_dir, **kwargs: calls.append((enabled, config_dir, kwargs)) or True,
     )
 
     assert _repair_autostart_once('S-1-5-21-1234') == 0
@@ -648,9 +660,7 @@ def test_roblox_permission_prompt_requests_targeted_elevation(monkeypatch, tmp_p
 
     assert 'current Windows account' in selected[0]
     assert pending == [tmp_path / 'Roblox' / 'version-old']
-    assert relaunches == [
-        {'extra_args': '--repair-roblox-permissions', 'parent_hwnd': None}
-    ]
+    assert relaunches == [{'extra_args': '--repair-roblox-permissions', 'parent_hwnd': None}]
 
 
 def test_repair_roblox_permissions_once_writes_result_and_clears_pending(monkeypatch, tmp_path):
@@ -694,10 +704,203 @@ def test_repair_roblox_permissions_once_writes_result_and_clears_pending(monkeyp
     assert cleared == [tmp_path]
 
 
+def test_repair_windows_firewall_once_writes_result_and_clears_pending(monkeypatch, tmp_path):
+    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(app_module, '_is_admin', lambda: True)
+    monkeypatch.setattr(app_module, 'CONFIG_DIR', tmp_path)
+    monkeypatch.setattr(
+        app_module,
+        'log_buffer',
+        type('Log', (), {'log': staticmethod(lambda *args: None)})(),
+    )
+
+    from fleasion.utils import windows_firewall
+
+    monkeypatch.setattr(windows_firewall, 'read_pending_repair', lambda _path: True)
+    monkeypatch.setattr(
+        windows_firewall,
+        'install_fleasion_firewall_rules',
+        lambda: {'ok': True, 'rules': ['in', 'out'], 'failed': []},
+    )
+    results = []
+    monkeypatch.setattr(
+        windows_firewall,
+        'write_repair_result',
+        lambda result, _path: results.append(result),
+    )
+    cleared = []
+    monkeypatch.setattr(
+        windows_firewall,
+        'clear_pending_repair',
+        lambda path: cleared.append(path),
+    )
+
+    assert _repair_windows_firewall_once() == 0
+    assert results == [{'ok': True, 'rules': ['in', 'out'], 'failed': []}]
+    assert cleared == [tmp_path]
+
+
+def test_privileged_hosts_cleanup_uses_pkexec_on_linux(monkeypatch):
+    calls = []
+    monkeypatch.setattr(app_module.sys, 'platform', 'linux')
+    monkeypatch.setattr(app_module, '_is_admin', lambda: False)
+    monkeypatch.setattr(
+        'fleasion.utils.linux_proxy_helper.cleanup_hosts_with_pkexec',
+        lambda: calls.append(True) or True,
+    )
+
+    assert _run_privileged_hosts_cleanup() is True
+    assert calls == [True]
+
+
+def test_stale_env_hosts_dialog_runs_privileged_repair(monkeypatch):
+    from fleasion.proxy import master as proxy_master
+
+    stale = iter([True, False])
+    calls = []
+    monkeypatch.setattr(proxy_master, 'has_stale_hosts_entries', lambda _hosts: next(stale))
+    monkeypatch.setattr(proxy_master, 'INTERCEPT_HOSTS', frozenset({'assetdelivery.roblox.com'}))
+    monkeypatch.setattr(app_module, '_visible_parent_widget', lambda: None)
+    monkeypatch.setattr(
+        app_module,
+        '_run_privileged_hosts_cleanup',
+        lambda _parent: calls.append(True) or True,
+    )
+
+    class _MessageBox:
+        class Icon:
+            Warning = object()
+
+        class ButtonRole:
+            AcceptRole = object()
+            RejectRole = object()
+
+        def __init__(self, _parent):
+            self._clicked = None
+
+        def setWindowTitle(self, _title):
+            pass
+
+        def setIcon(self, _icon):
+            pass
+
+        def setText(self, _text):
+            pass
+
+        def setInformativeText(self, _text):
+            pass
+
+        def addButton(self, text, _role):
+            button = object()
+            if text.startswith('Fix Hosts File'):
+                self._clicked = button
+            return button
+
+        def setDefaultButton(self, _button):
+            pass
+
+        def exec(self):
+            pass
+
+        def clickedButton(self):
+            return self._clicked
+
+    monkeypatch.setattr(app_module, 'QMessageBox', _MessageBox)
+
+    _show_env_proxy_stale_hosts_dialog()
+
+    assert calls == [True]
+
+
+def test_windows_upstream_dialog_requests_targeted_firewall_repair(monkeypatch, tmp_path):
+    calls = []
+    relaunches = []
+    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(app_module, 'CONFIG_DIR', tmp_path)
+    monkeypatch.setattr(app_module, '_visible_parent_widget', lambda: None)
+    monkeypatch.setattr(app_module, '_window_handle', lambda _widget: None)
+    monkeypatch.setattr(
+        app_module,
+        '_relaunch_as_admin',
+        lambda **kwargs: relaunches.append(kwargs) or True,
+    )
+    monkeypatch.setattr(app_module.QTimer, 'singleShot', lambda *_args: None)
+    monkeypatch.setattr(
+        app_module,
+        'log_buffer',
+        type('Log', (), {'log': staticmethod(lambda *args: calls.append(args))})(),
+    )
+
+    class _MessageBox:
+        class Icon:
+            Warning = object()
+
+        class ButtonRole:
+            AcceptRole = object()
+            ActionRole = object()
+            RejectRole = object()
+
+        def __init__(self, _parent):
+            self._clicked = None
+
+        def setWindowTitle(self, _title):
+            pass
+
+        def setIcon(self, _icon):
+            pass
+
+        def setText(self, text):
+            calls.append(('text', text))
+
+        def setInformativeText(self, text):
+            calls.append(('informative', text))
+
+        def addButton(self, text, _role):
+            button = object()
+            if text == 'Allow Fleasion Through Firewall':
+                self._clicked = button
+            return button
+
+        def setDefaultButton(self, _button):
+            pass
+
+        def exec(self):
+            pass
+
+        def clickedButton(self):
+            return self._clicked
+
+        def parentWidget(self):
+            return None
+
+    monkeypatch.setattr(app_module, 'QMessageBox', _MessageBox)
+
+    from fleasion.utils import windows_firewall
+
+    pending = []
+    monkeypatch.setattr(
+        windows_firewall,
+        'write_pending_repair',
+        lambda config_dir: pending.append(config_dir),
+    )
+    monkeypatch.setattr(windows_firewall, 'clear_repair_result', lambda _path: None)
+    monkeypatch.setattr(windows_firewall, 'clear_pending_repair', lambda _path: None)
+
+    _show_windows_upstream_firewall_dialog(
+        {'host': 'assetdelivery.roblox.com', 'proxy_mode': 'env'}
+    )
+
+    informative = next(value for kind, value in calls if kind == 'informative')
+    assert 'Private and Public networks' in informative
+    assert 'only Fleasion program rules' in informative
+    assert pending == [tmp_path]
+    assert relaunches == [{'extra_args': '--repair-firewall', 'parent_hwnd': None}]
+
+
 def test_env_proxy_studio_launch_is_completely_untouched(monkeypatch):
     qt_app = QCoreApplication.instance() or QCoreApplication([])
     config = SimpleNamespace(
-        proxy_mode="env",
+        proxy_mode='env',
         proxy_features_enabled=True,
         auto_delete_cache_on_exit=False,
     )
@@ -706,12 +909,12 @@ def test_env_proxy_studio_launch_is_completely_untouched(monkeypatch):
     notifications = []
     monitor._studio_detected.connect(lambda: notifications.append(True))
 
-    monkeypatch.setattr(app_module, "is_roblox_running", lambda: False)
-    monkeypatch.setattr(app_module, "is_studio_running", lambda: True)
+    monkeypatch.setattr(app_module, 'is_roblox_running', lambda: False)
+    monkeypatch.setattr(app_module, 'is_studio_running', lambda: True)
     monkeypatch.setattr(
         app_module,
-        "get_roblox_studio_exe_path",
-        lambda: (_ for _ in ()).throw(AssertionError("Env mode must not inspect Studio")),
+        'get_roblox_studio_exe_path',
+        lambda: (_ for _ in ()).throw(AssertionError('Env mode must not inspect Studio')),
     )
 
     monitor._check_roblox_status_locked()
@@ -724,7 +927,7 @@ def test_env_proxy_studio_launch_is_completely_untouched(monkeypatch):
 def test_windows_desktop_player_launch_uses_env_lifecycle(monkeypatch, tmp_path):
     qt_app = QCoreApplication.instance() or QCoreApplication([])
     config = SimpleNamespace(
-        proxy_mode="env",
+        proxy_mode='env',
         proxy_features_enabled=True,
         auto_delete_cache_on_exit=False,
     )
@@ -743,15 +946,15 @@ def test_windows_desktop_player_launch_uses_env_lifecycle(monkeypatch, tmp_path)
         proxy_master=proxy_master,
         env_lifecycle=_Lifecycle(),
     )
-    player_exe = tmp_path / "Roblox" / "RobloxPlayerBeta.exe"
-    monkeypatch.setattr(app_module.sys, "platform", "win32")
-    monkeypatch.setattr(app_module, "is_roblox_running", lambda: True)
-    monkeypatch.setattr(app_module, "is_studio_running", lambda: False)
-    monkeypatch.setattr(app_module, "get_roblox_player_exe_path", lambda: player_exe)
-    monkeypatch.setattr(app_module, "run_in_thread", lambda function: function)
+    player_exe = tmp_path / 'Roblox' / 'RobloxPlayerBeta.exe'
+    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(app_module, 'is_roblox_running', lambda: True)
+    monkeypatch.setattr(app_module, 'is_studio_running', lambda: False)
+    monkeypatch.setattr(app_module, 'get_roblox_player_exe_path', lambda: player_exe)
+    monkeypatch.setattr(app_module, 'run_in_thread', lambda function: function)
     monkeypatch.setitem(
         app_module.sys.modules,
-        "fleasion.utils.platform_windows",
+        'fleasion.utils.platform_windows',
         SimpleNamespace(
             is_roblox_gdk_env_proxy_armed=lambda: False,
             is_gdk_env_proxy_activation_in_progress=lambda: False,
@@ -773,33 +976,33 @@ def test_windows_gdk_arming_waits_for_final_proxy_port(monkeypatch):
 
     class _Proxy:
         def wait_for_env_proxy_ready(self, timeout):
-            events.append(("ready", timeout))
+            events.append(('ready', timeout))
             return True
 
         def roblox_env_proxy_url(self):
-            events.append(("url",))
-            return "http://127.0.0.1:49152"
+            events.append(('url',))
+            return 'http://127.0.0.1:49152'
 
     monkeypatch.setitem(
         app_module.sys.modules,
-        "fleasion.utils.platform_windows",
+        'fleasion.utils.platform_windows',
         SimpleNamespace(
-            arm_roblox_gdk_env_proxy=lambda url: events.append(("arm", url)) or True,
+            arm_roblox_gdk_env_proxy=lambda url: events.append(('arm', url)) or True,
             disarm_roblox_gdk_env_proxy=cleanup,
         ),
     )
     monkeypatch.setattr(
         app_module.atexit,
-        "register",
-        lambda callback: events.append(("cleanup", callback)),
+        'register',
+        lambda callback: events.append(('cleanup', callback)),
     )
 
     assert app_module._arm_windows_gdk_env_proxy_when_ready(_Proxy(), timeout=4.0)
     assert events == [
-        ("ready", 4.0),
-        ("url",),
-        ("arm", "http://127.0.0.1:49152"),
-        ("cleanup", cleanup),
+        ('ready', 4.0),
+        ('url',),
+        ('arm', 'http://127.0.0.1:49152'),
+        ('cleanup', cleanup),
     ]
 
 
@@ -807,7 +1010,7 @@ def test_windows_gdk_arming_stops_when_proxy_is_not_ready(monkeypatch):
     proxy = SimpleNamespace(
         wait_for_env_proxy_ready=lambda timeout: False,
         roblox_env_proxy_url=lambda: (_ for _ in ()).throw(
-            AssertionError("an unready proxy has no final URL")
+            AssertionError('an unready proxy has no final URL')
         ),
     )
 
@@ -819,7 +1022,7 @@ def test_windows_hosts_to_env_live_switch_rearms_gdk_after_proxy_restart(monkeyp
 
     events = []
     proxy_master = SimpleNamespace(
-        restart_for_mode_switch=lambda: events.append("restart_proxy"),
+        restart_for_mode_switch=lambda: events.append('restart_proxy'),
     )
     monitor = SimpleNamespace(
         env_lifecycle=SimpleNamespace(handle_player_launch=lambda _path: True),
@@ -828,39 +1031,39 @@ def test_windows_hosts_to_env_live_switch_rearms_gdk_after_proxy_restart(monkeyp
     tray = SimpleNamespace(
         proxy_master=proxy_master,
         roblox_monitor=monitor,
-        notify_proxy_mode_changed=lambda: events.append("notify"),
+        notify_proxy_mode_changed=lambda: events.append('notify'),
     )
     config = SimpleNamespace(
-        proxy_mode="hosts",
+        proxy_mode='hosts',
         proxy_features_enabled=True,
         run_on_boot=False,
     )
     tab = SimpleNamespace(
         _config=config,
         _tray=tray,
-        _proxy_mode_combo=SimpleNamespace(currentData=lambda: "env"),
+        _proxy_mode_combo=SimpleNamespace(currentData=lambda: 'env'),
     )
-    monkeypatch.setattr(settings_tab.sys, "platform", "win32")
+    monkeypatch.setattr(settings_tab.sys, 'platform', 'win32')
     monkeypatch.setattr(
         settings_tab,
-        "EnvProxyWarningDialog",
-        lambda _parent: SimpleNamespace(exec=lambda: events.append("dialog")),
+        'EnvProxyWarningDialog',
+        lambda _parent: SimpleNamespace(exec=lambda: events.append('dialog')),
     )
-    monkeypatch.setattr(settings_tab, "run_in_thread", lambda function: function)
+    monkeypatch.setattr(settings_tab, 'run_in_thread', lambda function: function)
     monkeypatch.setattr(
         app_module,
-        "_arm_windows_gdk_env_proxy_when_ready",
-        lambda proxy: events.append(("arm_gdk", proxy)) or True,
+        '_arm_windows_gdk_env_proxy_when_ready',
+        lambda proxy: events.append(('arm_gdk', proxy)) or True,
     )
 
     settings_tab.SettingsTab._on_proxy_mode_changed(tab)
 
-    assert config.proxy_mode == "env"
+    assert config.proxy_mode == 'env'
     assert events == [
-        "dialog",
-        "restart_proxy",
-        ("arm_gdk", proxy_master),
-        "notify",
+        'dialog',
+        'restart_proxy',
+        ('arm_gdk', proxy_master),
+        'notify',
     ]
 
 
@@ -868,9 +1071,9 @@ def test_macos_uri_watcher_handoff_passes_target_to_special_lifecycle(monkeypatc
     qt_app = QCoreApplication.instance() or QCoreApplication([])
     from fleasion.utils import platform_macos
 
-    monkeypatch.setattr(app_module.sys, "platform", "darwin")
+    monkeypatch.setattr(app_module.sys, 'platform', 'darwin')
     config = SimpleNamespace(
-        proxy_mode="env",
+        proxy_mode='env',
         proxy_features_enabled=True,
         auto_delete_cache_on_exit=False,
     )
@@ -897,15 +1100,15 @@ def test_macos_uri_watcher_handoff_passes_target_to_special_lifecycle(monkeypatc
         set_roblox_player_running=lambda _running: None,
         wait_for_env_proxy_ready=lambda timeout=0.0: True,
     )
-    monkeypatch.setattr(platform_macos, "MacOSRobloxUriInterceptor", _Interceptor)
+    monkeypatch.setattr(platform_macos, 'MacOSRobloxUriInterceptor', _Interceptor)
     monitor = app_module.RobloxExitMonitor(
         config, proxy_master=proxy_master, env_lifecycle=_Lifecycle()
     )
     monitor._studio_detected.disconnect(monitor._on_studio_detected)
-    target = "roblox-player:1+launchmode:play+placeId:6484006319"
+    target = 'roblox-player:1+launchmode:play+placeId:6484006319'
     launch = SimpleNamespace(
         pid=123,
-        executable_path=tmp_path / "Roblox.app" / "Contents" / "MacOS" / "RobloxPlayer",
+        executable_path=tmp_path / 'Roblox.app' / 'Contents' / 'MacOS' / 'RobloxPlayer',
     )
 
     monitor._handle_macos_uri_interception(launch, target)
@@ -913,30 +1116,31 @@ def test_macos_uri_watcher_handoff_passes_target_to_special_lifecycle(monkeypatc
     assert lifecycle_calls == [(Path(launch.executable_path), target)]
     assert qt_app is not None
 
+
 def test_linux_hosts_nix_snippet_default_includes_profile_api_host():
     snippet = _linux_hosts_nix_snippet({})
 
-    assert "127.0.0.1 apis.roblox.com" in snippet
+    assert '127.0.0.1 apis.roblox.com' in snippet
 
 
 def test_manual_upstream_credentials_missing_only_for_empty_selected_manual_mode():
     config = type(
-        "Config",
+        'Config',
         (),
         {
-            "upstream_transport_mode": "http_connect",
-            "upstream_http_connect_username": "",
-            "upstream_http_connect_password": "",
-            "upstream_socks5_username": "",
-            "upstream_socks5_password": "",
+            'upstream_transport_mode': 'http_connect',
+            'upstream_http_connect_username': '',
+            'upstream_http_connect_password': '',
+            'upstream_socks5_username': '',
+            'upstream_socks5_password': '',
         },
     )()
 
     assert _manual_upstream_credentials_missing(config) is True
-    config.upstream_http_connect_username = "proxy-user"
+    config.upstream_http_connect_username = 'proxy-user'
     assert _manual_upstream_credentials_missing(config) is False
-    config.upstream_transport_mode = "auto"
-    config.upstream_http_connect_username = ""
+    config.upstream_transport_mode = 'auto'
+    config.upstream_http_connect_username = ''
     assert _manual_upstream_credentials_missing(config) is False
 
 
@@ -946,11 +1150,11 @@ def test_macos_relay_failure_retry_action_restarts_proxy(monkeypatch):
     invoker.retry_proxy.connect(lambda: retries.append(None))
     monkeypatch.setattr(
         app_module,
-        "_show_macos_relay_failed_dialog",
-        lambda _details: "retry",
+        '_show_macos_relay_failed_dialog',
+        lambda _details: 'retry',
     )
 
-    invoker.handle_proxy_error("macos_relay_failed", {"attempts": 3})
+    invoker.handle_proxy_error('macos_relay_failed', {'attempts': 3})
 
     assert retries == [None]
 
@@ -962,16 +1166,16 @@ def test_macos_relay_failure_reinstall_action_replaces_helper_and_retries(monkey
     invoker.retry_proxy.connect(lambda: retries.append(None))
     monkeypatch.setattr(
         app_module,
-        "_show_macos_relay_failed_dialog",
-        lambda _details: "reinstall",
+        '_show_macos_relay_failed_dialog',
+        lambda _details: 'reinstall',
     )
     monkeypatch.setattr(
         macos_proxy_helper,
-        "install_helper",
-        lambda: installs.append(None) or (True, ""),
+        'install_helper',
+        lambda: installs.append(None) or (True, ''),
     )
 
-    invoker.handle_proxy_error("macos_relay_failed", {"attempts": 3})
+    invoker.handle_proxy_error('macos_relay_failed', {'attempts': 3})
 
     assert installs == [None]
     assert retries == [None]

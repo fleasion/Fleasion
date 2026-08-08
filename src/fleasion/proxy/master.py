@@ -675,9 +675,7 @@ def _run_tls_self_test_sync(
 ) -> tuple[bool, list[str]]:
     failures: list[str] = []
     connector = (
-        _connect_explicit_proxy_tls_for_self_test
-        if explicit_proxy
-        else _connect_tls_for_self_test
+        _connect_explicit_proxy_tls_for_self_test if explicit_proxy else _connect_tls_for_self_test
     )
     for host in sorted(hosts):
         try:
@@ -1508,6 +1506,19 @@ def _hosts_line_has_target_loopback(raw_line: str, hosts: Set[str]) -> bool:
     return any(host.lower() in target_hosts for host in parts[1:])
 
 
+def has_stale_hosts_entries(hosts: Set[str] | None = None) -> bool:
+    """Return whether Fleasion-owned hosts entries need privileged cleanup."""
+    target_hosts = set(hosts or INTERCEPT_HOSTS)
+    try:
+        existing = HOSTS_FILE.read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        return False
+    return any(
+        _HOSTS_MARKER in line or _hosts_line_has_target_loopback(line, target_hosts)
+        for line in existing.splitlines()
+    )
+
+
 def _hosts_file_loopback_hosts(hosts: Set[str]) -> set[str]:
     """Return requested hosts that already have active loopback mappings."""
     try:
@@ -1538,9 +1549,7 @@ def _is_voidstrap_gu_acc_line(raw_line: str, hosts: Set[str]) -> bool:
     return any(token.lower() in target_hosts for token in raw_line.split())
 
 
-def _remove_voidstrap_gu_acc_entries(
-    hosts: Set[str], error_details: Optional[dict] = None
-) -> bool:
+def _remove_voidstrap_gu_acc_entries(hosts: Set[str], error_details: Optional[dict] = None) -> bool:
     """Remove known Voidstrap ``#gu_acc`` entries for Fleasion proxy hosts."""
     try:
         existing = HOSTS_FILE.read_text(encoding='utf-8', errors='replace')
@@ -1552,9 +1561,7 @@ def _remove_voidstrap_gu_acc_entries(
         return False
 
     lines = existing.splitlines(keepends=True)
-    filtered = [
-        line for line in lines if not _is_voidstrap_gu_acc_line(line, hosts)
-    ]
+    filtered = [line for line in lines if not _is_voidstrap_gu_acc_line(line, hosts)]
     removed_count = len(lines) - len(filtered)
     if not removed_count:
         return True
@@ -2442,9 +2449,7 @@ def _patch_bootstrapper_ca_backups(ca_pem: str) -> tuple[bool, list[dict]]:
     ok = True
     for resource_dir in find_bootstrapper_restore_resource_dirs():
         ca_file = resource_dir / 'ssl' / 'cacert.pem'
-        bootstrapper = (
-            'AppleBlox' if 'AppleBlox' in resource_dir.parts else 'Froststrap'
-        )
+        bootstrapper = 'AppleBlox' if 'AppleBlox' in resource_dir.parts else 'Froststrap'
         try:
             changed, _fleasion_count, _current_count = _upsert_fleasion_ca_in_cacert(
                 ca_file, ca_pem
@@ -2627,9 +2632,7 @@ def _patch_roblox_ca_with_macos_helper(ca_pem: str, roblox_dir: Path) -> tuple[b
     return bool(response.get('ok')), changed, response
 
 
-def _install_ca_into_roblox(
-    ca_pem: str, *, include_studio: bool = True
-) -> tuple[bool, dict]:
+def _install_ca_into_roblox(ca_pem: str, *, include_studio: bool = True) -> tuple[bool, dict]:
     """Ensure each Roblox ssl/cacert.pem has exactly one current Fleasion CA cert."""
     t0 = time.perf_counter()
     dirs = _find_roblox_dirs(include_studio=include_studio)
@@ -2996,20 +2999,14 @@ def _install_ca_into_macos_system_keychain(ca_cert_path: Path, ca_pem: str) -> N
     )
 
 
-def _install_ca_into_macos_login_keychain(
-    ca_cert_path: Path, ca_pem: str
-) -> tuple[bool, dict]:
+def _install_ca_into_macos_login_keychain(ca_cert_path: Path, ca_pem: str) -> tuple[bool, dict]:
     """Trust Fleasion's CA for HTTP clients launched by the signed-in user."""
     thumbprint = _ca_thumbprint_sha1(ca_pem).upper()
     keychain = str(Path.home() / 'Library' / 'Keychains' / 'login.keychain-db')
     stored_thumbprints = _macos_fleasion_keychain_thumbprints(keychain)
-    stale_thumbprints = [
-        stored for stored in stored_thumbprints if stored != thumbprint
-    ]
+    stale_thumbprints = [stored for stored in stored_thumbprints if stored != thumbprint]
     removed = sum(
-        1
-        for stored in stale_thumbprints
-        if _macos_delete_keychain_certificate(keychain, stored)
+        1 for stored in stale_thumbprints if _macos_delete_keychain_certificate(keychain, stored)
     )
     if thumbprint in stored_thumbprints:
         return True, {
@@ -3120,8 +3117,10 @@ def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
             ca_pem,
             f'cacert.pem after running-instance patch for {roblox_dir.name}',
         )
-        if IS_MACOS and not _is_admin() and (
-            direct_error is not None or not bool(post_state.get('healthy'))
+        if (
+            IS_MACOS
+            and not _is_admin()
+            and (direct_error is not None or not bool(post_state.get('healthy')))
         ):
             if direct_error is not None:
                 log_buffer.log(
@@ -3304,9 +3303,7 @@ class ProxyMaster:
         ca_file, ca_pem = target
         return _log_cacert_state(ca_file, ca_pem, reason)
 
-    def ensure_env_proxy_roblox_ca(
-        self, exe_path: Path, *, settle: bool = False
-    ) -> dict:
+    def ensure_env_proxy_roblox_ca(self, exe_path: Path, *, settle: bool = False) -> dict:
         """Settle, directly repair, and fully verify Player's CA bundle."""
         if settle:
             time.sleep(_CACERT_LAUNCH_SETTLE_SECONDS)
@@ -3540,9 +3537,7 @@ class ProxyMaster:
         log reports the routes that were actually tested and selected.
         """
         custom_modifier = getattr(self, 'custom_fflag_modifier', None)
-        custom_fflags_enabled = (
-            custom_modifier is not None and custom_modifier.is_enabled()
-        )
+        custom_fflags_enabled = custom_modifier is not None and custom_modifier.is_enabled()
         spoofer = getattr(self, 'username_spoofer', None)
         username_spoofer_enabled = spoofer is not None and spoofer.is_enabled()
         log_buffer.log(
@@ -3582,9 +3577,7 @@ class ProxyMaster:
         """Keep Sober's pinned ClientSettings bootstrap outside TLS interception."""
         if self._proxy is None:
             return
-        excluded_hosts = set(
-            getattr(self, '_env_proxy_intercept_excluded_hosts', set())
-        )
+        excluded_hosts = set(getattr(self, '_env_proxy_intercept_excluded_hosts', set()))
         if enabled:
             excluded_hosts.update(CUSTOM_FFLAGS_INTERCEPT_HOSTS)
         else:
@@ -3651,7 +3644,7 @@ class ProxyMaster:
                         log_buffer.log(
                             'CustomFFlags',
                             'Linux ClientSettings interception armed; custom FastFlags will '
-                            'arrive on Sober\'s 120-second dynamic refresh',
+                            "arrive on Sober's 120-second dynamic refresh",
                         )
                     self._set_linux_sober_clientsettings_passthrough(not ready)
                     self.refresh_username_spoofer_interception()
@@ -3667,10 +3660,7 @@ class ProxyMaster:
     def _stop_linux_sober_custom_fflag_timer(self) -> None:
         if self._sober_fflag_timer_stop is not None:
             self._sober_fflag_timer_stop.set()
-        if (
-            self._sober_fflag_timer_thread is not None
-            and self._sober_fflag_timer_thread.is_alive()
-        ):
+        if self._sober_fflag_timer_thread is not None and self._sober_fflag_timer_thread.is_alive():
             self._sober_fflag_timer_thread.join(timeout=2.0)
         self._sober_fflag_timer_stop = None
         self._sober_fflag_timer_thread = None
@@ -3798,9 +3788,8 @@ class ProxyMaster:
             if IS_MACOS and not _is_admin():
                 hosts_updated = _add_hosts_entries(desired_hosts)
             else:
-                hosts_updated = (
-                    (not removed_hosts or _remove_hosts_entries(removed_hosts))
-                    and (not added_hosts or _add_hosts_entries(added_hosts))
+                hosts_updated = (not removed_hosts or _remove_hosts_entries(removed_hosts)) and (
+                    not added_hosts or _add_hosts_entries(added_hosts)
                 )
             if not hosts_updated:
                 log_buffer.log('Hosts', 'Failed to update username spoofer hosts entries')
@@ -3847,10 +3836,7 @@ class ProxyMaster:
     def prime_custom_fflag_cache(self, *, allow_running: bool = False) -> bool:
         """Preload startup-only custom FastFlags for the next Player launch."""
         custom_modifier = getattr(self, 'custom_fflag_modifier', None)
-        if (
-            custom_modifier is None
-            or (is_roblox_running() and not allow_running)
-        ):
+        if custom_modifier is None or (is_roblox_running() and not allow_running):
             return False
         seed_startup_flags = getattr(custom_modifier, 'prime_startup_flag_cache', None)
         if not callable(seed_startup_flags):
@@ -4151,9 +4137,7 @@ class ProxyMaster:
             self.stop()
             self.start()
 
-        threading.Thread(
-            target=_do_restart, daemon=True, name='fleasion-proxy-mode-switch'
-        ).start()
+        threading.Thread(target=_do_restart, daemon=True, name='fleasion-proxy-mode-switch').start()
 
     def stop(self) -> None:
         ready_event = getattr(self, '_env_proxy_ready', None)
@@ -4227,9 +4211,7 @@ class ProxyMaster:
             return
 
         # ── Optional cache clear on launch ───────────────────────────────
-        custom_fflags_active = bool(
-            getattr(self.config_manager, 'custom_fflags_enabled', False)
-        )
+        custom_fflags_active = bool(getattr(self.config_manager, 'custom_fflags_enabled', False))
         if env_proxy_mode and is_roblox_running():
             log_buffer.log(
                 'Cleanup',
@@ -4319,9 +4301,7 @@ class ProxyMaster:
             self._running = False
             return
         if IS_MACOS:
-            trust_ok, trust_details = _install_ca_into_macos_login_keychain(
-                ca_cert_path, ca_pem
-            )
+            trust_ok, trust_details = _install_ca_into_macos_login_keychain(ca_cert_path, ca_pem)
             if not trust_ok:
                 details = dict(trust_details)
                 details.setdefault('error', 'Could not trust Fleasion CA in login keychain')
@@ -4363,19 +4343,15 @@ class ProxyMaster:
                 # Unlike the hosts-mode branch below, a failure here doesn't
                 # abort startup: env mode doesn't depend on the hosts file
                 # working.
-                stale_hosts_error_details: dict = {}
-                if _remove_hosts_entries(
-                    set(INTERCEPT_HOSTS), error_details=stale_hosts_error_details
-                ):
-                    _flush_dns()
-                else:
+                if has_stale_hosts_entries(set(INTERCEPT_HOSTS)):
                     log_buffer.log(
                         'Error',
-                        'Failed to remove stale proxy hosts entries while starting Roblox '
-                        'Env Proxy mode - they may still redirect some hosts to 127.0.0.1. '
-                        'If this causes problems, manually remove "# Fleasion proxy entry" '
-                        f'lines from {HOSTS_FILE}.',
+                        'Stale proxy hosts entries still exist while starting Roblox Env Proxy '
+                        'mode; privileged cleanup was not completed. They may still redirect '
+                        f'some hosts to 127.0.0.1. Hosts file: {HOSTS_FILE}',
                     )
+                else:
+                    _flush_dns()
             log_buffer.log(
                 'Proxy',
                 'Roblox Env Proxy mode active; skipping privileged relay startup',
@@ -4474,7 +4450,9 @@ class ProxyMaster:
             env_proxy_intercept_excluded_hosts.update(CUSTOM_FFLAGS_INTERCEPT_HOSTS)
         self._env_proxy_intercept_excluded_hosts = set(env_proxy_intercept_excluded_hosts)
         listen_port = (
-            MACOS_PROXY_BACKEND_PORT if env_proxy_mode or IS_MACOS or use_linux_helper else PROXY_PORT
+            MACOS_PROXY_BACKEND_PORT
+            if env_proxy_mode or IS_MACOS or use_linux_helper
+            else PROXY_PORT
         )
         if (
             IS_LINUX
@@ -4589,9 +4567,7 @@ class ProxyMaster:
                         'bind_error': str(exc),
                         'bind_reason': (
                             'access_denied_or_reserved'
-                            if exc.errno == 10013
-                            or native_error == 10013
-                            or 'access' in err_text
+                            if exc.errno == 10013 or native_error == 10013 or 'access' in err_text
                             else 'already_in_use'
                         ),
                     },

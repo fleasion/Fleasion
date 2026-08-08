@@ -9,6 +9,7 @@ import errno
 import hashlib
 import json
 import os
+
 try:
     import pwd
 except ModuleNotFoundError:  # pragma: no cover - module is Linux-only at runtime
@@ -203,7 +204,9 @@ def _install_privileged_helper(
         elif source.suffix == '.py':
             python = shutil.which('python3') or '/usr/bin/env python3'
             _copy_root_file(source, INSTALLED_HELPER_SCRIPT_PATH, 0o755)
-            wrapper = f'#!/bin/sh\nexec {python} {shlex.quote(str(INSTALLED_HELPER_SCRIPT_PATH))} "$@"\n'
+            wrapper = (
+                f'#!/bin/sh\nexec {python} {shlex.quote(str(INSTALLED_HELPER_SCRIPT_PATH))} "$@"\n'
+            )
             _write_root_file(INSTALLED_HELPER_PATH, wrapper, 0o755)
         else:
             _copy_root_file(source, INSTALLED_HELPER_PATH, 0o755)
@@ -471,7 +474,20 @@ def _read_hosts_update(path: Path) -> set[str]:
 
 
 def _clean_hosts_content(content: str) -> str:
-    return ''.join(line for line in content.splitlines(keepends=True) if HOSTS_MARKER not in line)
+    def _is_fleasion_line(line: str) -> bool:
+        if HOSTS_MARKER in line:
+            return True
+        active = line.split('#', 1)[0].strip()
+        parts = active.split()
+        return (
+            len(parts) >= 2
+            and parts[0] == '127.0.0.1'
+            and any(host.lower() in ALLOWED_PROXY_HOSTS for host in parts[1:])
+        )
+
+    return ''.join(
+        line for line in content.splitlines(keepends=True) if not _is_fleasion_line(line)
+    )
 
 
 def _hosts_content_has_loopback_entries(content: str, hosts: set[str]) -> bool:
@@ -712,9 +728,7 @@ def _apply_hosts_delta(previous_hosts: set[str], updated_hosts: set[str]) -> Non
     content = ''.join(retained_lines)
     entries = _parse_active_loopback_hosts(content)
     lines_to_add = [
-        f'127.0.0.1 {host} {HOSTS_MARKER}\n'
-        for host in sorted(added_hosts)
-        if host not in entries
+        f'127.0.0.1 {host} {HOSTS_MARKER}\n' for host in sorted(added_hosts) if host not in entries
     ]
     if lines_to_add:
         content = content.rstrip('\n') + '\n' + ''.join(lines_to_add)
@@ -1077,8 +1091,10 @@ async def _serve(args: argparse.Namespace) -> int:
                                     'Continuing Linux hosts update without confirmed system trust-store '
                                     f'install: {error}'
                                 )
-                            update_read_only_hosts_mode = _apply_hosts_delta_or_use_existing_read_only(
-                                current_hosts, updated_hosts
+                            update_read_only_hosts_mode = (
+                                _apply_hosts_delta_or_use_existing_read_only(
+                                    current_hosts, updated_hosts
+                                )
                             )
                             _flush_dns()
                             current_hosts = set(updated_hosts)
@@ -1108,6 +1124,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description='Fleasion privileged Linux proxy helper')
     parser.add_argument('--install-system-ca', action='store_true')
     parser.add_argument('--install-privileged-helper', action='store_true')
+    parser.add_argument('--cleanup-hosts', action='store_true')
     parser.add_argument('--source-helper')
     parser.add_argument('--source-helper-needs-dispatch-flag', action='store_true')
     parser.add_argument('--enable-promptless', action='store_true')
@@ -1130,6 +1147,17 @@ def main() -> None:
 
     if hasattr(os, 'geteuid') and os.geteuid() != 0:
         raise SystemExit('Fleasion Linux proxy helper must run as root')
+
+    if args.cleanup_hosts:
+        try:
+            _clear_hosts()
+            _flush_dns()
+            _remove_boot_guard()
+        except Exception as exc:
+            _log(f'One-shot hosts cleanup failed: {exc}')
+            raise SystemExit(1) from exc
+        _log('One-shot hosts cleanup completed')
+        return
 
     if args.install_privileged_helper:
         details = _install_privileged_helper(

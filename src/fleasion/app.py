@@ -58,6 +58,7 @@ from .utils import (
 _SINGLE_INSTANCE_KEY = 'FleasionSingleInstance'
 _SINGLE_INSTANCE_CONTROL_SERVER = 'FleasionSingleInstanceControl'
 _WINDOWS_REPAIR_RESULT_TIMEOUT_SECONDS = 120.0
+_WINDOWS_FIREWALL_REPAIR_RESULT_TIMEOUT_SECONDS = 120.0
 _MACOS_PLAIN_LAUNCH_CLASSIFICATION_SECONDS = 2.0
 
 
@@ -143,12 +144,8 @@ def _show_env_proxy_migration(config_manager: ConfigManager, roblox_monitor) -> 
             '\n\nRoblox Player is already running. It must be relaunched before '
             'the new proxy mode applies to that session.'
         )
-        restart_button = msg.addButton(
-            'Restart Roblox Now', QMessageBox.ButtonRole.AcceptRole
-        )
-        later_button = msg.addButton(
-            'Restart Roblox Later', QMessageBox.ButtonRole.RejectRole
-        )
+        restart_button = msg.addButton('Restart Roblox Now', QMessageBox.ButtonRole.AcceptRole)
+        later_button = msg.addButton('Restart Roblox Later', QMessageBox.ButtonRole.RejectRole)
         msg.setDefaultButton(restart_button)
         msg.setEscapeButton(later_button)
     else:
@@ -238,6 +235,100 @@ def _is_admin() -> bool:
         return False
 
 
+def _cleanup_hosts_once() -> int:
+    """Remove Fleasion hosts entries from a one-shot elevated child."""
+    if not _is_admin():
+        log_buffer.log(
+            'Hosts', 'Elevated hosts cleanup child rejected: administrator access is required'
+        )
+        return 1
+
+    from .proxy.master import (
+        INTERCEPT_HOSTS,
+        _cancel_hosts_cleanup_on_reboot,
+        _flush_dns,
+        _remove_hosts_entries,
+    )
+
+    if not _remove_hosts_entries(set(INTERCEPT_HOSTS)):
+        log_buffer.log('Hosts', 'Elevated hosts cleanup child could not update the hosts file')
+        return 1
+    _flush_dns()
+    _cancel_hosts_cleanup_on_reboot()
+    log_buffer.log('Hosts', 'Elevated one-shot hosts cleanup completed')
+    return 0
+
+
+def _run_privileged_hosts_cleanup(parent=None) -> bool:
+    """Run the short-lived administrator/root child used for Env Proxy repair."""
+    if _is_admin():
+        return _cleanup_hosts_once() == 0
+
+    if sys.platform.startswith('linux'):
+        from .utils.linux_proxy_helper import cleanup_hosts_with_pkexec
+
+        return cleanup_hosts_with_pkexec()
+
+    return _relaunch_as_admin(
+        extra_args='--cleanup-hosts',
+        parent_hwnd=_window_handle(parent),
+        wait_for_completion=True,
+    )
+
+
+def _show_env_proxy_stale_hosts_dialog() -> None:
+    """Offer a one-shot privileged repair for stale Env Proxy hosts entries."""
+    from .proxy.master import (
+        INTERCEPT_HOSTS,
+        _other_proxy_owner_alive,
+        has_stale_hosts_entries,
+    )
+
+    if _other_proxy_owner_alive():
+        log_buffer.log('Hosts', 'Skipped Env Proxy stale hosts prompt because another proxy owns the hosts file')
+        return
+    if not has_stale_hosts_entries(set(INTERCEPT_HOSTS)):
+        return
+
+    parent = _visible_parent_widget()
+    msg = QMessageBox(parent)
+    msg.setWindowTitle('Fleasion - Stale Hosts File Entries')
+    msg.setIcon(QMessageBox.Icon.Warning)
+    msg.setText('Fleasion found stale Env Proxy entries in your system hosts file.')
+    msg.setInformativeText(
+        'The hosts file is protected by the operating system, so Fleasion cannot safely '
+        'repair it as your normal user.\n\n'
+        'Fix Hosts File runs a temporary administrator/root child that removes only '
+        'Fleasion-owned entries, flushes DNS, and exits. It does not keep Fleasion running '
+        'as administrator.\n\n'
+        'If you continue without fixing it, those stale entries may keep redirecting Roblox '
+        'hosts for other applications.'
+    )
+    fix_button = msg.addButton('Fix Hosts File (Recommended)', QMessageBox.ButtonRole.AcceptRole)
+    msg.addButton('Continue Without Fixing', QMessageBox.ButtonRole.RejectRole)
+    msg.setDefaultButton(fix_button)
+    msg.exec()
+
+    if msg.clickedButton() != fix_button:
+        log_buffer.log('Hosts', 'User deferred privileged Env Proxy stale hosts cleanup')
+        return
+
+    if _run_privileged_hosts_cleanup(parent):
+        if not has_stale_hosts_entries(set(INTERCEPT_HOSTS)):
+            log_buffer.log('Hosts', 'Verified stale Env Proxy hosts entries were removed')
+            return
+        detail = 'The administrator child completed, but stale Fleasion entries are still present.'
+    else:
+        detail = 'Fleasion could not obtain administrator permission or the cleanup child failed.'
+
+    log_buffer.log('Hosts', f'Privileged Env Proxy stale hosts cleanup failed: {detail}')
+    QMessageBox.warning(
+        parent,
+        'Fleasion - Hosts File Still Needs Repair',
+        f'{detail}\n\nEnv Proxy may start, but the stale entries can still affect other applications.',
+    )
+
+
 def _should_sync_autostart_on_launch(run_on_boot: bool) -> bool:
     if not run_on_boot:
         return False
@@ -266,16 +357,15 @@ def _refresh_desktop_integration_ui(tray, enabled: bool) -> None:
 
 def _show_run_on_boot_failure(parent, proxy_mode: str | None = None) -> None:
     msg = QMessageBox(parent)
-    msg.setWindowTitle('Run on Boot Failed')
+    msg.setWindowTitle('Run on Boot Needs Repair')
     msg.setIcon(QMessageBox.Icon.Warning)
     if sys.platform == 'win32':
         from .utils.autostart import windows_autostart_privilege_hint
 
         msg.setText(
-            'Failed to register autostart.\n'
-            'A legacy task may have been created with administrator permissions.\n\n'
-            'Choose Ignore to leave Run on Boot enabled and try again on the next '
-            'launch, or choose Repair as administrator for a one-time task repair.\n\n'
+            'Fleasion could not update its Run on Boot task.\n\n'
+            'Repair it now with one administrator approval? The repair updates the task '
+            'for your current Windows account and confirms whether it worked.\n\n'
             f'{windows_autostart_privilege_hint(proxy_mode)}'
         )
     else:
@@ -291,10 +381,8 @@ def _show_run_on_boot_failure(parent, proxy_mode: str | None = None) -> None:
 
     repair_button = None
     if sys.platform == 'win32':
-        repair_button = msg.addButton(
-            'Repair as administrator', QMessageBox.ButtonRole.AcceptRole
-        )
-        ignore_button = msg.addButton('Ignore', QMessageBox.ButtonRole.RejectRole)
+        repair_button = msg.addButton('Repair Now (Recommended)', QMessageBox.ButtonRole.AcceptRole)
+        ignore_button = msg.addButton('Keep Run on Boot Enabled', QMessageBox.ButtonRole.RejectRole)
         msg.setDefaultButton(ignore_button)
     else:
         msg.setStandardButtons(QMessageBox.StandardButton.Ok)
@@ -302,28 +390,41 @@ def _show_run_on_boot_failure(parent, proxy_mode: str | None = None) -> None:
 
     if repair_button is not None and msg.clickedButton() == repair_button:
         if _relaunch_as_admin(
-            extra_args='--repair-autostart', parent_hwnd=_window_handle(parent)
+            extra_args='--repair-autostart',
+            parent_hwnd=_window_handle(parent),
+            wait_for_completion=True,
         ):
-            log_buffer.log('Autostart', 'Elevated autostart repair started')
-            msg.setWindowTitle('Autostart Repair Started')
+            log_buffer.log('Autostart', 'Elevated autostart repair completed')
+            msg.setWindowTitle('Run on Boot Fixed')
             msg.setIcon(QMessageBox.Icon.Information)
             msg.setText(
-                'The one-time administrator repair has started successfully.\n\n'
-                'Fleasion will remain open while the repair finishes in the background. '
-                'The scheduled task will use the current per-user launch configuration '
-                'on the next launch.'
+                'It worked — Fleasion repaired the Run on Boot task for your current '
+                'Windows account.\n\n'
+                'You do not need to run the repair again. Fleasion will start automatically '
+                'the next time you sign in.'
             )
             msg.setStandardButtons(QMessageBox.StandardButton.Ok)
             msg.exec()
         else:
-            log_buffer.log('Autostart', 'Elevated autostart repair was not started')
+            log_buffer.log('Autostart', 'Elevated autostart repair did not complete successfully')
+            msg.setWindowTitle('Run on Boot Repair Incomplete')
+            msg.setIcon(QMessageBox.Icon.Warning)
+            msg.setText(
+                'Fleasion could not confirm that the Run on Boot task was repaired.\n\n'
+                'The administrator prompt may have been canceled, or Windows rejected the '
+                'task update. No further repair was started automatically.'
+            )
+            msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+            msg.exec()
 
 
 def _show_roblox_permission_failure(parent, denied_dirs, mod_manager=None) -> None:
     """Ask before permanently granting this Windows user access to failed installs."""
     if sys.platform != 'win32':
         return
-    paths = sorted({Path(path).resolve() for path in denied_dirs}, key=lambda value: str(value).lower())
+    paths = sorted(
+        {Path(path).resolve() for path in denied_dirs}, key=lambda value: str(value).lower()
+    )
     if not paths:
         return
 
@@ -422,7 +523,7 @@ def _poll_roblox_permission_repair(mod_manager, deadline: float) -> None:
     if result.get('ok'):
         log_buffer.log(
             'RobloxPermissions',
-            f"Granted Modify access to {len(result.get('granted', []))} Roblox installation(s)",
+            f'Granted Modify access to {len(result.get("granted", []))} Roblox installation(s)',
         )
         run_in_thread(mod_manager.reapply_all)()
         return
@@ -438,6 +539,55 @@ def _poll_roblox_permission_repair(mod_manager, deadline: float) -> None:
     )
     msg.setStandardButtons(QMessageBox.StandardButton.Ok)
     msg.exec()
+
+
+def _poll_windows_firewall_repair(deadline: float) -> None:
+    """Consume a one-shot elevated firewall result and explain the outcome."""
+    from .utils.windows_firewall import (
+        clear_pending_repair,
+        clear_repair_result,
+        read_repair_result,
+    )
+
+    result = read_repair_result(CONFIG_DIR)
+    if result is None:
+        if time.monotonic() < deadline:
+            QTimer.singleShot(500, lambda: _poll_windows_firewall_repair(deadline))
+            return
+        clear_pending_repair(CONFIG_DIR)
+        clear_repair_result(CONFIG_DIR)
+        log_buffer.log('WindowsFirewall', 'Timed out waiting for the elevated firewall repair')
+        QMessageBox.warning(
+            _visible_parent_widget(),
+            'Fleasion Firewall Repair Timed Out',
+            'Fleasion did not receive a result from the administrator process.\n\n'
+            'You can retry the repair or open Windows Firewall settings manually.',
+        )
+        return
+
+    clear_repair_result(CONFIG_DIR)
+    clear_pending_repair(CONFIG_DIR)
+    if result.get('ok'):
+        log_buffer.log(
+            'WindowsFirewall',
+            f'Added {len(result.get("rules", []))} Fleasion firewall rule(s)',
+        )
+        QMessageBox.information(
+            _visible_parent_widget(),
+            'Fleasion Firewall Updated',
+            'Windows Firewall now allows Fleasion on Private and Public networks.\n\n'
+            'Try the Roblox action again.',
+        )
+        return
+
+    detail = result.get('error') or result.get('failed') or 'netsh could not update the rules'
+    log_buffer.log('WindowsFirewall', f'Firewall repair failed: {detail}')
+    QMessageBox.warning(
+        _visible_parent_widget(),
+        'Fleasion Firewall Repair Failed',
+        'Fleasion could not update Windows Firewall.\n\n'
+        f'{detail}\n\nYou can open Windows Firewall settings manually to review the block.',
+    )
 
 
 def _show_desktop_integration_failure(parent) -> None:
@@ -569,11 +719,18 @@ def _append_windows_requesting_user_args(existing_args: list[str]) -> bool:
     return True
 
 
-def _relaunch_as_admin(extra_args: str = '', parent_hwnd: int | None = None) -> bool:
+def _relaunch_as_admin(
+    extra_args: str = '',
+    parent_hwnd: int | None = None,
+    *,
+    wait_for_completion: bool = False,
+) -> bool:
     """Silently attempt to relaunch elevated via the platform prompt.
 
     Shows only the standard Windows UAC or macOS administrator prompt.
-    Returns True if the elevated process was spawned (caller should exit).
+    Returns True if the elevated process was spawned (caller should exit), or,
+    when ``wait_for_completion`` is set, if the elevated child completed with
+    exit code zero.
     Returns False if the user declined or the relaunch failed.
     """
     if sys.platform == 'darwin':
@@ -585,20 +742,25 @@ def _relaunch_as_admin(extra_args: str = '', parent_hwnd: int | None = None) -> 
 
         if getattr(sys, 'frozen', False):
             launch = [sys.executable, *existing_args]
+            redirect = ' >/tmp/fleasion-admin.log 2>&1'
+            if not wait_for_completion:
+                redirect += ' &'
             shell_cmd = (
-                f'FLEASION_USER_HOME={shlex.quote(str(Path.home()))} '
-                f'{shlex.join(launch)} >/tmp/fleasion-admin.log 2>&1 &'
+                f'FLEASION_USER_HOME={shlex.quote(str(Path.home()))} {shlex.join(launch)}{redirect}'
             )
         else:
             project_root = Path(__file__).resolve().parents[2]
             launcher = project_root / 'launcher.py'
             python_exe = Path(sys.executable)
             launch = [str(python_exe), str(launcher), *existing_args]
+            redirect = ' >/tmp/fleasion-admin.log 2>&1'
+            if not wait_for_completion:
+                redirect += ' &'
             shell_cmd = (
                 f'cd {shlex.quote(str(project_root))} && '
                 f'FLEASION_USER_HOME={shlex.quote(str(Path.home()))} '
                 f'PYTHONPATH={shlex.quote(str(project_root / "src"))} '
-                f'{shlex.join(launch)} >/tmp/fleasion-admin.log 2>&1 &'
+                f'{shlex.join(launch)}{redirect}'
             )
 
         script = 'do shell script ' + json.dumps(shell_cmd) + ' with administrator privileges'
@@ -638,9 +800,9 @@ def _relaunch_as_admin(extra_args: str = '', parent_hwnd: int | None = None) -> 
     if extra_args.strip():
         existing_args.extend(extra_args.strip().split())
     requesting_identity_captured = _append_windows_requesting_user_args(existing_args)
-    if extra_args.strip().startswith(('--repair-autostart', '--repair-roblox-permissions')) and not (
-        requesting_identity_captured
-    ):
+    if extra_args.strip().startswith(
+        ('--repair-autostart', '--repair-roblox-permissions')
+    ) and not (requesting_identity_captured):
         return False
     # ShellExecuteEx returns as soon as the elevated child is created, while
     # this normal-user Qt process can still own the single-instance slot.  Let
@@ -738,13 +900,35 @@ def _relaunch_as_admin(extra_args: str = '', parent_hwnd: int | None = None) -> 
                 'UAC',
                 f'Administrator relaunch failed: WinError {err}: {ctypes.FormatError(err)}',
             )
-    return bool(ok)
+        return False
+
+    if not wait_for_completion:
+        return True
+
+    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    wait_result = kernel32.WaitForSingleObject(sei.hProcess, 120_000)
+    exit_code = ctypes.wintypes.DWORD()
+    completed = (
+        wait_result == 0
+        and bool(kernel32.GetExitCodeProcess(sei.hProcess, ctypes.byref(exit_code)))
+        and exit_code.value == 0
+    )
+    kernel32.CloseHandle(sei.hProcess)
+    if not completed:
+        log_buffer.log(
+            'UAC',
+            f'Elevated child did not complete successfully (wait={wait_result}, '
+            f'exit={exit_code.value})',
+        )
+    return completed
 
 
 def _repair_autostart_once(requesting_user_sid: str | None = None) -> int:
     """Repair the Windows autostart task from a one-shot elevated process."""
     if sys.platform != 'win32' or not _is_admin():
-        log_buffer.log('Autostart', 'Elevated autostart repair rejected: administrator access is required')
+        log_buffer.log(
+            'Autostart', 'Elevated autostart repair rejected: administrator access is required'
+        )
         return 1
 
     from .utils.autostart import sync_autostart
@@ -830,8 +1014,55 @@ def _repair_roblox_permissions_once(requesting_user_sid: str | None = None) -> i
     if result.get('ok'):
         log_buffer.log('RobloxPermissions', 'Elevated Roblox ACL repair completed')
         return 0
-    log_buffer.log('RobloxPermissions', f"Elevated Roblox ACL repair failed: {result}")
+    log_buffer.log('RobloxPermissions', f'Elevated Roblox ACL repair failed: {result}')
     return 1
+
+
+def _repair_windows_firewall_once() -> int:
+    """Apply a pending Fleasion firewall repair from a one-shot UAC child."""
+    from .utils.windows_firewall import (
+        clear_pending_repair,
+        install_fleasion_firewall_rules,
+        read_pending_repair,
+        write_repair_result,
+    )
+
+    if sys.platform != 'win32' or not _is_admin():
+        result = {
+            'ok': False,
+            'rules': [],
+            'failed': [],
+            'error': 'Administrator permission is required to update Windows Firewall',
+        }
+    elif not read_pending_repair(CONFIG_DIR):
+        result = {
+            'ok': False,
+            'rules': [],
+            'failed': [],
+            'error': 'No pending Fleasion firewall repair was found',
+        }
+    else:
+        try:
+            result = install_fleasion_firewall_rules()
+        except Exception as exc:
+            result = {
+                'ok': False,
+                'rules': [],
+                'failed': [],
+                'error': f'Unexpected Windows Firewall repair error: {exc}',
+            }
+
+    try:
+        write_repair_result(result, CONFIG_DIR)
+    finally:
+        clear_pending_repair(CONFIG_DIR)
+    log_buffer.log(
+        'WindowsFirewall',
+        'Elevated Fleasion firewall repair completed'
+        if result.get('ok')
+        else f'Elevated Fleasion firewall repair failed: {result}',
+    )
+    return 0
 
 
 def restart_fleasion_normally(*, preserve_env_proxy_player: bool = False) -> bool:
@@ -850,9 +1081,7 @@ def restart_fleasion_normally(*, preserve_env_proxy_player: bool = False) -> boo
     ``--kill-others`` so the new process' own single-instance startup check
     asks this one to exit if there's ever a timing race between the two.
     """
-    existing_args = [
-        arg for arg in sys.argv[1:] if arg != '--preserve-env-proxy-player'
-    ]
+    existing_args = [arg for arg in sys.argv[1:] if arg != '--preserve-env-proxy-player']
     if '--kill-others' not in existing_args:
         existing_args.append('--kill-others')
     if preserve_env_proxy_player:
@@ -1239,7 +1468,7 @@ def _show_macos_ca_patch_failed_dialog(details: dict):
     msg.setInformativeText(
         'Roblox would reject Fleasion proxy certificates until its bundled '
         '<code>ssl/cacert.pem</code> contains the Fleasion CA exactly once.<br><br>'
-        'A protected Roblox installation may need Fleasion\'s small privileged helper. '
+        "A protected Roblox installation may need Fleasion's small privileged helper. "
         'If this keeps happening, repair or reinstall Roblox, then start Fleasion again.'
         + diagnostics_html
     )
@@ -1264,7 +1493,11 @@ def _show_macos_ca_patch_failed_dialog(details: dict):
         )
 
     msg.exec()
-    return 'install_helper' if install_button is not None and msg.clickedButton() == install_button else None
+    return (
+        'install_helper'
+        if install_button is not None and msg.clickedButton() == install_button
+        else None
+    )
 
 
 def _show_macos_ca_trust_failed_dialog(details: dict):
@@ -1304,7 +1537,9 @@ def _show_roblox_ca_patch_failed_dialog(details: dict) -> None:
         path = item.get('ca_file') or item.get('resource_dir') or '(unknown path)'
         error = item.get('error') or item.get('status') or 'verification failed'
         lines.append(f'{path}: {error}')
-    diagnostics = '\n'.join(lines) or str(details.get('error') or 'No writable Roblox installation was found.')
+    diagnostics = '\n'.join(lines) or str(
+        details.get('error') or 'No writable Roblox installation was found.'
+    )
     QMessageBox.critical(
         _visible_parent_widget(),
         'Fleasion - Roblox Files Are Protected',
@@ -1357,9 +1592,7 @@ def _show_macos_relay_failed_dialog(details: dict) -> str:
             'or reinstall the helper to restart and replace its LaunchDaemon.'
         )
         retry_button = msg.addButton('Retry', QMessageBox.ButtonRole.AcceptRole)
-        reinstall_button = msg.addButton(
-            'Reinstall Helper', QMessageBox.ButtonRole.ActionRole
-        )
+        reinstall_button = msg.addButton('Reinstall Helper', QMessageBox.ButtonRole.ActionRole)
         logs_button = msg.addButton('Open Helper Logs', QMessageBox.ButtonRole.ActionRole)
         close_button = msg.addButton(QMessageBox.StandardButton.Close)
         msg.setDefaultButton(reinstall_button)
@@ -1812,33 +2045,64 @@ def _show_auth_cookie_unavailable_dialog(details: dict, tray=None):
 
 
 def _show_windows_upstream_firewall_dialog(details: dict) -> None:
-    """Explain a blocked upstream connection without installing broad rules."""
+    """Explain a blocked upstream connection and offer a targeted UAC repair."""
     if sys.platform != 'win32':
         return
 
     host = str(details.get('host') or 'a Roblox content server')
-    msg = QMessageBox(_visible_parent_widget())
+    parent = _visible_parent_widget()
+    msg = QMessageBox(parent)
     msg.setWindowTitle('Fleasion - Connection Blocked')
     msg.setIcon(QMessageBox.Icon.Warning)
-    msg.setText(f'Fleasion could not connect securely to {host}.')
-    if details.get('proxy_mode') == 'env':
-        explanation = (
-            'Env Proxy listens only on this computer\'s loopback interface and does not need '
-            'a public or private inbound firewall exception. Check whether Windows Firewall, '
-            'antivirus, a VPN, or an organization policy is blocking Fleasion\'s outbound connection.'
-        )
-    else:
-        explanation = (
-            'Check whether Windows Firewall, antivirus, a VPN, or an organization policy is '
-            'blocking Fleasion. Fleasion will not install firewall rules automatically.'
-        )
-    msg.setInformativeText(explanation)
-    settings_button = msg.addButton(
-        'Open Firewall Settings', QMessageBox.ButtonRole.ActionRole
+    msg.setText(f'Fleasion could not connect securely to {host}. Windows may be blocking it.')
+    msg.setInformativeText(
+        'Fleasion needs to reach Roblox over HTTPS, but the connection was refused or '
+        'interrupted before the request completed. This can happen when Windows Firewall, '
+        'antivirus, a VPN, or an organization policy blocks Fleasion.\n\n'
+        'Allow Fleasion through Windows Firewall adds only Fleasion program rules for '
+        'inbound and outbound traffic on Private and Public networks. It requires one '
+        "standard administrator approval and does not change other applications' rules."
     )
+    repair_button = msg.addButton(
+        'Allow Fleasion Through Firewall', QMessageBox.ButtonRole.AcceptRole
+    )
+    settings_button = msg.addButton('Open Firewall Settings', QMessageBox.ButtonRole.ActionRole)
     msg.addButton('Not Now', QMessageBox.ButtonRole.RejectRole)
-    msg.setDefaultButton(settings_button)
+    msg.setDefaultButton(repair_button)
     msg.exec()
+
+    if msg.clickedButton() == repair_button:
+        from .utils.windows_firewall import (
+            clear_pending_repair,
+            clear_repair_result,
+            write_pending_repair,
+        )
+
+        try:
+            clear_repair_result(CONFIG_DIR)
+            write_pending_repair(CONFIG_DIR)
+            relaunched = _relaunch_as_admin(
+                extra_args='--repair-firewall',
+                parent_hwnd=_window_handle(parent),
+            )
+        except Exception as exc:
+            clear_pending_repair(CONFIG_DIR)
+            log_buffer.log('WindowsFirewall', f'Could not start elevated firewall repair: {exc}')
+            relaunched = False
+
+        if relaunched:
+            log_buffer.log('WindowsFirewall', 'Elevated Fleasion firewall repair started')
+            deadline = time.monotonic() + _WINDOWS_FIREWALL_REPAIR_RESULT_TIMEOUT_SECONDS
+            QTimer.singleShot(500, lambda: _poll_windows_firewall_repair(deadline))
+        else:
+            clear_pending_repair(CONFIG_DIR)
+            QMessageBox.warning(
+                parent,
+                'Fleasion Firewall Repair Not Started',
+                'Fleasion could not obtain administrator permission, so Windows Firewall '
+                'was not changed. You can retry this action or open Firewall Settings manually.',
+            )
+        return
 
     if msg.clickedButton() == settings_button:
         try:
@@ -2120,9 +2384,7 @@ class RobloxExitMonitor(QObject):
         self._suppress_next_player_exit_cache_delete = True
         with self._macos_plain_launch_lock:
             self._macos_plain_launches.pop(int(launch.pid), None)
-        self.env_lifecycle.handle_intercepted_player_launch(
-            Path(launch.executable_path), target
-        )
+        self.env_lifecycle.handle_intercepted_player_launch(Path(launch.executable_path), target)
 
     def _schedule_macos_plain_launch_fallback(self, exe_path: Path) -> None:
         """Keep ordinary Dock/Finder launches on the existing Env Proxy path."""
@@ -2133,7 +2395,7 @@ class RobloxExitMonitor(QObject):
             return
         try:
             pid = int(identity[0])
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return
         with self._macos_plain_launch_lock:
             if pid in self._macos_plain_launches:
@@ -2157,7 +2419,7 @@ class RobloxExitMonitor(QObject):
             try:
                 if int(current_identity[0]) != pid:
                     return
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 return
             if not self._macos_uri_interception_armed():
                 return
@@ -2259,9 +2521,9 @@ class RobloxExitMonitor(QObject):
                                     'initial Player; handing it to Env Proxy lifecycle monitoring',
                                 )
                                 self._suppress_next_player_exit_cache_delete = True
-                                run_in_thread(
-                                    self.env_lifecycle.handle_adopted_player_launch
-                                )(exe_path)
+                                run_in_thread(self.env_lifecycle.handle_adopted_player_launch)(
+                                    exe_path
+                                )
                             else:
                                 log_buffer.log(
                                     'Launcher',
@@ -2682,9 +2944,7 @@ def _request_other_fleasion_instances_exit(
     """Return True if other instances were asked to exit and disappeared."""
     if not _other_fleasion_pids():
         return True
-    if not _request_running_instance_exit(
-        preserve_env_proxy_player=preserve_env_proxy_player
-    ):
+    if not _request_running_instance_exit(preserve_env_proxy_player=preserve_env_proxy_player):
         return False
     return _wait_for_other_fleasion_instances_to_exit(timeout_seconds)
 
@@ -2838,6 +3098,8 @@ def main():
     _parser.add_argument('--fleasion-requesting-user-sid', help=_ap.SUPPRESS)
     _parser.add_argument('--repair-autostart', action='store_true', help=_ap.SUPPRESS)
     _parser.add_argument('--repair-roblox-permissions', action='store_true', help=_ap.SUPPRESS)
+    _parser.add_argument('--repair-firewall', action='store_true', help=_ap.SUPPRESS)
+    _parser.add_argument('--cleanup-hosts', action='store_true', help=_ap.SUPPRESS)
     _parser.add_argument('--fleasion-gdk-debugger', action='store_true', help=_ap.SUPPRESS)
     _parser.add_argument(
         '--install-linux-privileged-helper',
@@ -2854,14 +3116,14 @@ def main():
         from .utils.platform_windows import run_gdk_debugger_command_line
 
         sys.exit(run_gdk_debugger_command_line())
+    if _args.cleanup_hosts:
+        sys.exit(_cleanup_hosts_once())
     if _args.repair_autostart:
         sys.exit(_repair_autostart_once(_args.fleasion_requesting_user_sid))
     if _args.repair_roblox_permissions:
-        sys.exit(
-            _repair_roblox_permissions_once(
-                _args.fleasion_requesting_user_sid
-            )
-        )
+        sys.exit(_repair_roblox_permissions_once(_args.fleasion_requesting_user_sid))
+    if _args.repair_firewall:
+        sys.exit(_repair_windows_firewall_once())
     pending_roblox_uri = _roblox_uri_from_argv()
     if _args.install_linux_privileged_helper:
         if not sys.platform.startswith('linux'):
@@ -3162,10 +3424,7 @@ def main():
             # One-time cleanup for persistent guards left by older builds,
             # including the old cacert.pem lock.
             mod_manager.clear_managed_file_read_only(
-                (
-                    roblox_dir / 'ssl' / 'cacert.pem'
-                    for roblox_dir in mod_manager.roblox_dirs
-                ),
+                (roblox_dir / 'ssl' / 'cacert.pem' for roblox_dir in mod_manager.roblox_dirs),
                 clear_untracked=True,
             )
             config_manager.read_only_lock_migration_v1_complete = True
@@ -3180,9 +3439,7 @@ def main():
         macos_bootstrapper_bridge = MacBootstrapperBridge(
             mod_manager,
             app,
-            custom_fflag_seed=lambda: proxy_master.prime_custom_fflag_cache(
-                allow_running=True
-            ),
+            custom_fflag_seed=lambda: proxy_master.prime_custom_fflag_cache(allow_running=True),
             custom_fflag_prepare=proxy_master.prepare_custom_fflags_for_player_launch,
         )
         app.aboutToQuit.connect(macos_bootstrapper_bridge.stop)
@@ -3203,7 +3460,7 @@ def main():
     def _on_commit_data(_session):
         try:
             env_lifecycle.cancel()
-        except (NameError, AttributeError):
+        except NameError, AttributeError:
             pass
         mod_manager.clear_managed_file_read_only()
         proxy_master.stop()
@@ -3253,6 +3510,9 @@ def main():
             log_buffer.log('Autostart', f'Launch autostart sync failed: {exc}')
 
     # Start proxy only if enabled and we have admin rights
+    if start_proxy and config_manager.proxy_features_enabled and config_manager.proxy_mode == 'env':
+        _show_env_proxy_stale_hosts_dialog()
+
     if start_proxy:
         proxy_master.start()
         _refresh_managed_read_only_guard()
@@ -3360,9 +3620,7 @@ def main():
     atexit.register(env_lifecycle.cancel)
 
     # Setup Roblox exit monitor for auto cache deletion (before tray to pass to it)
-    roblox_monitor = RobloxExitMonitor(
-        config_manager, proxy_master, mod_manager, env_lifecycle
-    )
+    roblox_monitor = RobloxExitMonitor(config_manager, proxy_master, mod_manager, env_lifecycle)
     app.aboutToQuit.connect(roblox_monitor.stop)
 
     # Create system tray
@@ -3382,17 +3640,15 @@ def main():
     if pending_roblox_uri:
         QTimer.singleShot(
             0,
-            lambda target=pending_roblox_uri: run_in_thread(
-                _launch_roblox_uri_for_instance
-            )(tray, target),
+            lambda target=pending_roblox_uri: run_in_thread(_launch_roblox_uri_for_instance)(
+                tray, target
+            ),
         )
     log_buffer.log('App', f'Persistent log file: {LOG_FILE}')
     if _autostart_launch_sync_failed:
         QTimer.singleShot(
             0,
-            lambda: _show_run_on_boot_failure(
-                _visible_parent_widget(), config_manager.proxy_mode
-            ),
+            lambda: _show_run_on_boot_failure(_visible_parent_widget(), config_manager.proxy_mode),
         )
     if _desktop_integration_launch_sync_failed:
         QTimer.singleShot(0, lambda: _show_desktop_integration_failure(_visible_parent_widget()))
@@ -3400,9 +3656,7 @@ def main():
     def _check_roblox_permission_failures() -> None:
         denied_dirs = mod_manager.take_permission_denied_dirs()
         if denied_dirs:
-            _show_roblox_permission_failure(
-                _visible_parent_widget(), denied_dirs, mod_manager
-            )
+            _show_roblox_permission_failure(_visible_parent_widget(), denied_dirs, mod_manager)
         QTimer.singleShot(500, _check_roblox_permission_failures)
 
     if sys.platform == 'win32':
@@ -3586,7 +3840,7 @@ def main():
             'Right-click assets to download them, Replace them, or Replace With them.\n\n'
             'Other tabs are optional tools and settings and are self explanatory.\n\n'
             'Fleasion is client-sided: only you see your changes. Roblox currently cannot/ '
-            'doesn\'t ban or warn you for local asset replacement, and game developers cannot meaningfully '
+            "doesn't ban or warn you for local asset replacement, and game developers cannot meaningfully "
             'detect it. Game moderators can still ban users for any reason, so use your own '
             'judgment, we take no responsiblity. Roblox has no known detections for fleasion and there '
             'has been no reported cases of warnings or bans for using it, but Roblox has stated it is '

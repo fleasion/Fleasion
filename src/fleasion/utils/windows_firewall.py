@@ -1,0 +1,153 @@
+"""Targeted Windows Defender Firewall repair for Fleasion."""
+
+from __future__ import annotations
+
+import ctypes
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+from .paths import CONFIG_DIR
+
+PENDING_REPAIR_FILENAME = 'fleasion_firewall_repair.json'
+RESULT_REPAIR_FILENAME = 'fleasion_firewall_repair_result.json'
+
+_RULES = (
+    ('in', 'Fleasion - Allow inbound (Private,Public)'),
+    ('out', 'Fleasion - Allow outbound (Private,Public)'),
+)
+
+
+def _state_path(config_dir: Path | None, filename: str) -> Path:
+    return Path(config_dir or CONFIG_DIR) / filename
+
+
+def _atomic_write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f'.{path.name}.tmp')
+    temporary.write_text(json.dumps(payload, indent=2), encoding='utf-8')
+    os.replace(temporary, path)
+
+
+def write_pending_repair(config_dir: Path | None = None) -> None:
+    """Mark that the elevated child should repair Fleasion's firewall rules."""
+    _atomic_write_json(_state_path(config_dir, PENDING_REPAIR_FILENAME), {'requested': True})
+
+
+def read_pending_repair(config_dir: Path | None = None) -> bool:
+    path = _state_path(config_dir, PENDING_REPAIR_FILENAME)
+    try:
+        payload = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return isinstance(payload, dict) and payload.get('requested') is True
+
+
+def clear_pending_repair(config_dir: Path | None = None) -> None:
+    try:
+        _state_path(config_dir, PENDING_REPAIR_FILENAME).unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+
+def write_repair_result(result: dict, config_dir: Path | None = None) -> None:
+    """Publish the one-shot elevated result for the normal process to read."""
+    _atomic_write_json(_state_path(config_dir, RESULT_REPAIR_FILENAME), result)
+
+
+def read_repair_result(config_dir: Path | None = None) -> dict | None:
+    path = _state_path(config_dir, RESULT_REPAIR_FILENAME)
+    try:
+        payload = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def clear_repair_result(config_dir: Path | None = None) -> None:
+    try:
+        _state_path(config_dir, RESULT_REPAIR_FILENAME).unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+
+def _is_admin() -> bool:
+    if sys.platform != 'win32':
+        return False
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def install_fleasion_firewall_rules(program_path: str | Path | None = None) -> dict:
+    """Allow Fleasion's executable on private and public Windows networks.
+
+    The rule names are stable, so running the repair again updates the same
+    rules instead of accumulating duplicates.  The executable path is taken
+    from the elevated child by default rather than from user-controlled state.
+    """
+    if sys.platform != 'win32':
+        return {'ok': False, 'rules': [], 'failed': [], 'error': 'Windows is required'}
+    if not _is_admin():
+        return {
+            'ok': False,
+            'rules': [],
+            'failed': [],
+            'error': 'Administrator permission is required to update Windows Firewall',
+        }
+
+    executable = Path(program_path or sys.executable).resolve()
+    added: list[str] = []
+    failed: list[dict[str, str]] = []
+    for direction, rule_name in _RULES:
+        command = [
+            'netsh.exe',
+            'advfirewall',
+            'firewall',
+            'add',
+            'rule',
+            f'name={rule_name}',
+            f'program={executable}',
+            f'dir={direction}',
+            'action=allow',
+            'enable=yes',
+            'profile=private,public',
+            'protocol=any',
+        ]
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                check=False,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+                timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            failed.append({'rule': rule_name, 'error': str(exc)})
+            continue
+
+        if completed.returncode == 0:
+            added.append(rule_name)
+            continue
+        detail = (completed.stderr or completed.stdout or '').strip()
+        failed.append(
+            {
+                'rule': rule_name,
+                'error': detail or f'netsh exit code {completed.returncode}',
+            }
+        )
+
+    return {
+        'ok': not failed,
+        'rules': added,
+        'failed': failed,
+        'program': str(executable),
+    }

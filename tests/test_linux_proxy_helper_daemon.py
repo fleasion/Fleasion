@@ -17,12 +17,16 @@ from cryptography.x509.oid import NameOID
 from fleasion import linux_proxy_helper_daemon as daemon
 
 
-def _make_ca_pem(common_name='Fleasion Proxy CA', organization='Fleasion', *, is_ca=True, can_sign=True) -> bytes:
+def _make_ca_pem(
+    common_name='Fleasion Proxy CA', organization='Fleasion', *, is_ca=True, can_sign=True
+) -> bytes:
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    subject = x509.Name([
-        x509.NameAttribute(NameOID.ORGANIZATION_NAME, organization),
-        x509.NameAttribute(NameOID.COMMON_NAME, common_name),
-    ])
+    subject = x509.Name(
+        [
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, organization),
+            x509.NameAttribute(NameOID.COMMON_NAME, common_name),
+        ]
+    )
     now = datetime.now(timezone.utc)
     cert = (
         x509.CertificateBuilder()
@@ -76,11 +80,21 @@ def test_boot_guard_command_removes_only_fleasion_hosts_lines(tmp_path, monkeypa
         timeout=10,
     )
 
-    assert hosts.read_text(encoding='utf-8') == (
-        '127.0.0.1 localhost\n'
-        '203.0.113.10 example.test\n'
-    )
+    assert hosts.read_text(encoding='utf-8') == ('127.0.0.1 localhost\n203.0.113.10 example.test\n')
     assert not unit.exists()
+
+
+def test_clean_hosts_content_removes_fleasion_marker_and_target_loopbacks():
+    content = (
+        '127.0.0.1 localhost\n'
+        f'127.0.0.1 assetdelivery.roblox.com {daemon.HOSTS_MARKER}\n'
+        '127.0.0.1 gamejoin.roblox.com\n'
+        '127.0.0.1 unrelated.example\n'
+    )
+
+    assert daemon._clean_hosts_content(content) == (
+        '127.0.0.1 localhost\n127.0.0.1 unrelated.example\n'
+    )
 
 
 def test_install_boot_guard_writes_and_enables_systemd_unit(tmp_path, monkeypatch):
@@ -98,7 +112,9 @@ def test_install_boot_guard_writes_and_enables_systemd_unit(tmp_path, monkeypatc
         return Result()
 
     monkeypatch.setattr(daemon, 'BOOT_GUARD_PATH', unit)
-    monkeypatch.setattr(daemon.shutil, 'which', lambda name: '/usr/bin/systemctl' if name == 'systemctl' else None)
+    monkeypatch.setattr(
+        daemon.shutil, 'which', lambda name: '/usr/bin/systemctl' if name == 'systemctl' else None
+    )
     monkeypatch.setattr(daemon.subprocess, 'run', fake_run)
 
     assert daemon._install_boot_guard()
@@ -128,7 +144,9 @@ def test_remove_boot_guard_disables_deletes_and_reloads(tmp_path, monkeypatch):
         return Result()
 
     monkeypatch.setattr(daemon, 'BOOT_GUARD_PATH', unit)
-    monkeypatch.setattr(daemon.shutil, 'which', lambda name: '/usr/bin/systemctl' if name == 'systemctl' else None)
+    monkeypatch.setattr(
+        daemon.shutil, 'which', lambda name: '/usr/bin/systemctl' if name == 'systemctl' else None
+    )
     monkeypatch.setattr(daemon.subprocess, 'run', fake_run)
 
     assert daemon._remove_boot_guard()
@@ -147,11 +165,23 @@ def test_install_privileged_helper_writes_current_metadata(tmp_path, monkeypatch
     policy_root = tmp_path / 'polkit'
     legacy_policy_root = tmp_path / 'legacy-polkit'
 
-    monkeypatch.setattr(daemon, 'INSTALLED_HELPER_PATH', install_root / 'fleasion-linux-proxy-helper')
-    monkeypatch.setattr(daemon, 'INSTALLED_HELPER_SCRIPT_PATH', install_root / 'fleasion-linux-proxy-helper.py')
-    monkeypatch.setattr(daemon, 'INSTALLED_HELPER_METADATA_PATH', install_root / 'fleasion-linux-proxy-helper.metadata.json')
-    monkeypatch.setattr(daemon, 'POLKIT_POLICY_PATH', policy_root / 'com.fleasion.proxy-helper.policy')
-    monkeypatch.setattr(daemon, 'LEGACY_POLKIT_POLICY_PATH', legacy_policy_root / 'com.fleasion.proxy-helper.policy')
+    monkeypatch.setattr(
+        daemon, 'INSTALLED_HELPER_PATH', install_root / 'fleasion-linux-proxy-helper'
+    )
+    monkeypatch.setattr(
+        daemon, 'INSTALLED_HELPER_SCRIPT_PATH', install_root / 'fleasion-linux-proxy-helper.py'
+    )
+    monkeypatch.setattr(
+        daemon,
+        'INSTALLED_HELPER_METADATA_PATH',
+        install_root / 'fleasion-linux-proxy-helper.metadata.json',
+    )
+    monkeypatch.setattr(
+        daemon, 'POLKIT_POLICY_PATH', policy_root / 'com.fleasion.proxy-helper.policy'
+    )
+    monkeypatch.setattr(
+        daemon, 'LEGACY_POLKIT_POLICY_PATH', legacy_policy_root / 'com.fleasion.proxy-helper.policy'
+    )
     monkeypatch.setattr(daemon.os, 'chown', lambda *_args, **_kwargs: None)
 
     details = daemon._install_privileged_helper(str(source))
@@ -176,14 +206,32 @@ def test_install_privileged_helper_can_install_system_ca_in_same_prompt(tmp_path
     policy_root = tmp_path / 'polkit'
     legacy_policy_root = tmp_path / 'legacy-polkit'
 
-    monkeypatch.setattr(daemon, 'INSTALLED_HELPER_PATH', install_root / 'fleasion-linux-proxy-helper')
-    monkeypatch.setattr(daemon, 'INSTALLED_HELPER_SCRIPT_PATH', install_root / 'fleasion-linux-proxy-helper.py')
-    monkeypatch.setattr(daemon, 'INSTALLED_HELPER_METADATA_PATH', install_root / 'fleasion-linux-proxy-helper.metadata.json')
-    monkeypatch.setattr(daemon, 'POLKIT_POLICY_PATH', policy_root / 'com.fleasion.proxy-helper.policy')
-    monkeypatch.setattr(daemon, 'LEGACY_POLKIT_POLICY_PATH', legacy_policy_root / 'com.fleasion.proxy-helper.policy')
+    monkeypatch.setattr(
+        daemon, 'INSTALLED_HELPER_PATH', install_root / 'fleasion-linux-proxy-helper'
+    )
+    monkeypatch.setattr(
+        daemon, 'INSTALLED_HELPER_SCRIPT_PATH', install_root / 'fleasion-linux-proxy-helper.py'
+    )
+    monkeypatch.setattr(
+        daemon,
+        'INSTALLED_HELPER_METADATA_PATH',
+        install_root / 'fleasion-linux-proxy-helper.metadata.json',
+    )
+    monkeypatch.setattr(
+        daemon, 'POLKIT_POLICY_PATH', policy_root / 'com.fleasion.proxy-helper.policy'
+    )
+    monkeypatch.setattr(
+        daemon, 'LEGACY_POLKIT_POLICY_PATH', legacy_policy_root / 'com.fleasion.proxy-helper.policy'
+    )
     monkeypatch.setattr(daemon.os, 'chown', lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(daemon, '_validate_install_system_ca_args', lambda value: ca if value == str(ca) else None)
-    monkeypatch.setattr(daemon, '_install_system_ca', lambda path: {'ok': path == ca, 'stores': ['update-ca-certificates']})
+    monkeypatch.setattr(
+        daemon, '_validate_install_system_ca_args', lambda value: ca if value == str(ca) else None
+    )
+    monkeypatch.setattr(
+        daemon,
+        '_install_system_ca',
+        lambda path: {'ok': path == ca, 'stores': ['update-ca-certificates']},
+    )
 
     details = daemon._install_privileged_helper(str(source), ca_cert=str(ca))
 
@@ -201,14 +249,32 @@ def test_install_privileged_helper_allows_unsupported_system_ca(tmp_path, monkey
     policy_root = tmp_path / 'polkit'
     legacy_policy_root = tmp_path / 'legacy-polkit'
 
-    monkeypatch.setattr(daemon, 'INSTALLED_HELPER_PATH', install_root / 'fleasion-linux-proxy-helper')
-    monkeypatch.setattr(daemon, 'INSTALLED_HELPER_SCRIPT_PATH', install_root / 'fleasion-linux-proxy-helper.py')
-    monkeypatch.setattr(daemon, 'INSTALLED_HELPER_METADATA_PATH', install_root / 'fleasion-linux-proxy-helper.metadata.json')
-    monkeypatch.setattr(daemon, 'POLKIT_POLICY_PATH', policy_root / 'com.fleasion.proxy-helper.policy')
-    monkeypatch.setattr(daemon, 'LEGACY_POLKIT_POLICY_PATH', legacy_policy_root / 'com.fleasion.proxy-helper.policy')
+    monkeypatch.setattr(
+        daemon, 'INSTALLED_HELPER_PATH', install_root / 'fleasion-linux-proxy-helper'
+    )
+    monkeypatch.setattr(
+        daemon, 'INSTALLED_HELPER_SCRIPT_PATH', install_root / 'fleasion-linux-proxy-helper.py'
+    )
+    monkeypatch.setattr(
+        daemon,
+        'INSTALLED_HELPER_METADATA_PATH',
+        install_root / 'fleasion-linux-proxy-helper.metadata.json',
+    )
+    monkeypatch.setattr(
+        daemon, 'POLKIT_POLICY_PATH', policy_root / 'com.fleasion.proxy-helper.policy'
+    )
+    monkeypatch.setattr(
+        daemon, 'LEGACY_POLKIT_POLICY_PATH', legacy_policy_root / 'com.fleasion.proxy-helper.policy'
+    )
     monkeypatch.setattr(daemon.os, 'chown', lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(daemon, '_validate_install_system_ca_args', lambda value: ca if value == str(ca) else None)
-    monkeypatch.setattr(daemon, '_install_system_ca', lambda _path: {'ok': False, 'error': 'no_supported_system_trust_store'})
+    monkeypatch.setattr(
+        daemon, '_validate_install_system_ca_args', lambda value: ca if value == str(ca) else None
+    )
+    monkeypatch.setattr(
+        daemon,
+        '_install_system_ca',
+        lambda _path: {'ok': False, 'error': 'no_supported_system_trust_store'},
+    )
 
     details = daemon._install_privileged_helper(str(source), ca_cert=str(ca))
 
@@ -305,8 +371,7 @@ def test_read_hosts_update_accepts_allowlisted_hosts(tmp_path):
 def test_apply_hosts_continues_when_read_only_hosts_already_has_entries(tmp_path, monkeypatch):
     hosts_file = tmp_path / 'hosts'
     hosts_file.write_text(
-        '127.0.0.1 assetdelivery.roblox.com\n'
-        '127.0.0.1 gamejoin.roblox.com\n',
+        '127.0.0.1 assetdelivery.roblox.com\n127.0.0.1 gamejoin.roblox.com\n',
         encoding='utf-8',
     )
 
@@ -318,10 +383,15 @@ def test_apply_hosts_continues_when_read_only_hosts_already_has_entries(tmp_path
     monkeypatch.setattr(daemon, '_install_boot_guard', lambda: False)
     monkeypatch.setattr(daemon, '_apply_hosts', fail_apply)
 
-    assert daemon._apply_hosts_or_use_existing_read_only({
-        'assetdelivery.roblox.com',
-        'gamejoin.roblox.com',
-    }) is True
+    assert (
+        daemon._apply_hosts_or_use_existing_read_only(
+            {
+                'assetdelivery.roblox.com',
+                'gamejoin.roblox.com',
+            }
+        )
+        is True
+    )
 
 
 def test_apply_hosts_raises_when_read_only_hosts_is_missing_entries(tmp_path, monkeypatch):
@@ -337,10 +407,12 @@ def test_apply_hosts_raises_when_read_only_hosts_is_missing_entries(tmp_path, mo
     monkeypatch.setattr(daemon, '_apply_hosts', fail_apply)
 
     try:
-        daemon._apply_hosts_or_use_existing_read_only({
-            'assetdelivery.roblox.com',
-            'gamejoin.roblox.com',
-        })
+        daemon._apply_hosts_or_use_existing_read_only(
+            {
+                'assetdelivery.roblox.com',
+                'gamejoin.roblox.com',
+            }
+        )
     except OSError as exc:
         assert exc.errno == errno.EROFS
     else:
@@ -416,7 +488,9 @@ def test_serve_requires_system_ca_before_applying_hosts(tmp_path, monkeypatch):
     monkeypatch.setattr(daemon, '_repair_sober_cert_ownership', lambda *_args, **_kwargs: None)
     monkeypatch.setattr(daemon, '_system_ca_is_current', lambda _path: False)
     monkeypatch.setattr(daemon, '_apply_hosts', lambda hosts: hosts_calls.append(hosts))
-    monkeypatch.setattr(daemon.pwd, 'getpwuid', lambda _uid: SimpleNamespace(pw_dir=str(home), pw_gid=1000))
+    monkeypatch.setattr(
+        daemon.pwd, 'getpwuid', lambda _uid: SimpleNamespace(pw_dir=str(home), pw_gid=1000)
+    )
 
     args = SimpleNamespace(
         hosts='apis.roblox.com',
@@ -447,7 +521,17 @@ def test_serve_requires_system_ca_before_applying_hosts(tmp_path, monkeypatch):
 
 def test_repair_sober_cert_ownership_repairs_only_user_home_paths(tmp_path, monkeypatch):
     home = tmp_path / 'home'
-    cert = home / '.var' / 'app' / 'org.vinegarhq.Sober' / 'data' / 'sober' / 'asset_overlay' / 'ssl' / 'cacert.pem'
+    cert = (
+        home
+        / '.var'
+        / 'app'
+        / 'org.vinegarhq.Sober'
+        / 'data'
+        / 'sober'
+        / 'asset_overlay'
+        / 'ssl'
+        / 'cacert.pem'
+    )
     cert.parent.mkdir(parents=True)
     cert.write_text('cert', encoding='utf-8')
     chowned = []
@@ -463,7 +547,13 @@ def test_repair_sober_cert_ownership_repairs_only_user_home_paths(tmp_path, monk
         return Stat()
 
     monkeypatch.setattr(daemon.pwd, 'getpwuid', lambda _uid: Pw())
-    monkeypatch.setattr(daemon.os, 'chown', lambda path, uid, gid, follow_symlinks=False: chowned.append((path, uid, gid, follow_symlinks)))
+    monkeypatch.setattr(
+        daemon.os,
+        'chown',
+        lambda path, uid, gid, follow_symlinks=False: chowned.append(
+            (path, uid, gid, follow_symlinks)
+        ),
+    )
     monkeypatch.setattr(daemon.Path, 'lstat', fake_lstat)
 
     daemon._repair_sober_cert_ownership(1000, 1000)

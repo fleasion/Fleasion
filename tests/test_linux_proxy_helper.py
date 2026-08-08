@@ -16,10 +16,19 @@ def test_start_helper_requires_ca_cert_when_system_trust_is_required(monkeypatch
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_STOP_FILE', tmp_path / 'stop')
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_HOSTS_FILE', tmp_path / 'hosts.json')
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_LOG_FILE', tmp_path / 'helper.log')
-    monkeypatch.setattr(linux_proxy_helper.shutil, 'which', lambda name: '/usr/bin/pkexec' if name == 'pkexec' else None)
-    monkeypatch.setattr(linux_proxy_helper, '_popen_host_command', lambda *args, **kwargs: calls.append(args))
+    monkeypatch.setattr(
+        linux_proxy_helper.shutil,
+        'which',
+        lambda name: '/usr/bin/pkexec' if name == 'pkexec' else None,
+    )
+    monkeypatch.setattr(
+        linux_proxy_helper, '_popen_host_command', lambda *args, **kwargs: calls.append(args)
+    )
 
-    assert linux_proxy_helper.start_helper({'apis.roblox.com'}, require_system_ca=True, timeout=0.01) is False
+    assert (
+        linux_proxy_helper.start_helper({'apis.roblox.com'}, require_system_ca=True, timeout=0.01)
+        is False
+    )
     assert calls == []
 
 
@@ -43,10 +52,16 @@ def test_start_helper_passes_required_system_ca_flag(monkeypatch, tmp_path):
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_STOP_FILE', tmp_path / 'stop')
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_HOSTS_FILE', tmp_path / 'hosts.json')
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_LOG_FILE', tmp_path / 'helper.log')
-    monkeypatch.setattr(linux_proxy_helper.shutil, 'which', lambda name: '/usr/bin/pkexec' if name == 'pkexec' else None)
+    monkeypatch.setattr(
+        linux_proxy_helper.shutil,
+        'which',
+        lambda name: '/usr/bin/pkexec' if name == 'pkexec' else None,
+    )
     monkeypatch.setattr(linux_proxy_helper, '_helper_command', lambda: ['/opt/fleasion-helper'])
     monkeypatch.setattr(linux_proxy_helper, '_current_process_start_time', lambda: '12345')
-    monkeypatch.setattr(linux_proxy_helper, 'ensure_privileged_helper_installed', lambda **_kwargs: True)
+    monkeypatch.setattr(
+        linux_proxy_helper, 'ensure_privileged_helper_installed', lambda **_kwargs: True
+    )
     monkeypatch.setattr(linux_proxy_helper, 'linux_system_ca_store_supported', lambda: True)
     monkeypatch.setattr(linux_proxy_helper, 'linux_system_ca_is_current', lambda _path: True)
     monkeypatch.setattr(linux_proxy_helper, 'linux_system_ca_needs_install', lambda _path: False)
@@ -62,12 +77,15 @@ def test_start_helper_passes_required_system_ca_flag(monkeypatch, tmp_path):
         lambda: {'ok': True, 'system_ca': {'ok': True}},
     )
 
-    assert linux_proxy_helper.start_helper(
-        {'apis.roblox.com'},
-        ca_cert_path=ca,
-        require_system_ca=True,
-        timeout=1.0,
-    ) is True
+    assert (
+        linux_proxy_helper.start_helper(
+            {'apis.roblox.com'},
+            ca_cert_path=ca,
+            require_system_ca=True,
+            timeout=1.0,
+        )
+        is True
+    )
 
     assert '--ca-cert' in commands[0]
     assert str(ca) in commands[0]
@@ -96,10 +114,16 @@ def test_start_helper_does_not_reinstall_system_ca_when_current(monkeypatch, tmp
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_STOP_FILE', tmp_path / 'stop')
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_HOSTS_FILE', tmp_path / 'hosts.json')
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_LOG_FILE', tmp_path / 'helper.log')
-    monkeypatch.setattr(linux_proxy_helper.shutil, 'which', lambda name: '/usr/bin/pkexec' if name == 'pkexec' else None)
+    monkeypatch.setattr(
+        linux_proxy_helper.shutil,
+        'which',
+        lambda name: '/usr/bin/pkexec' if name == 'pkexec' else None,
+    )
     monkeypatch.setattr(linux_proxy_helper, '_helper_command', lambda: ['/opt/fleasion-helper'])
     monkeypatch.setattr(linux_proxy_helper, '_current_process_start_time', lambda: '12345')
-    monkeypatch.setattr(linux_proxy_helper, 'ensure_privileged_helper_installed', lambda **_kwargs: True)
+    monkeypatch.setattr(
+        linux_proxy_helper, 'ensure_privileged_helper_installed', lambda **_kwargs: True
+    )
     monkeypatch.setattr(linux_proxy_helper, 'linux_system_ca_store_supported', lambda: True)
     monkeypatch.setattr(linux_proxy_helper, 'linux_system_ca_is_current', lambda _path: True)
     monkeypatch.setattr(
@@ -107,15 +131,24 @@ def test_start_helper_does_not_reinstall_system_ca_when_current(monkeypatch, tmp
         '_install_ca_into_linux_system_store',
         lambda _path: install_calls.append(_path) or {'ok': True},
     )
-    monkeypatch.setattr(linux_proxy_helper, '_popen_host_command', lambda cmd, **_kwargs: commands.append(cmd) or Process())
-    monkeypatch.setattr(linux_proxy_helper, '_read_ready', lambda: {'ok': True, 'system_ca': {'ok': True}})
+    monkeypatch.setattr(
+        linux_proxy_helper,
+        '_popen_host_command',
+        lambda cmd, **_kwargs: commands.append(cmd) or Process(),
+    )
+    monkeypatch.setattr(
+        linux_proxy_helper, '_read_ready', lambda: {'ok': True, 'system_ca': {'ok': True}}
+    )
 
-    assert linux_proxy_helper.start_helper(
-        {'apis.roblox.com'},
-        ca_cert_path=ca,
-        require_system_ca=True,
-        timeout=1.0,
-    ) is True
+    assert (
+        linux_proxy_helper.start_helper(
+            {'apis.roblox.com'},
+            ca_cert_path=ca,
+            require_system_ca=True,
+            timeout=1.0,
+        )
+        is True
+    )
 
     assert install_calls == []
     assert commands
@@ -146,21 +179,37 @@ def test_start_helper_combines_helper_update_with_missing_system_ca(monkeypatch,
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_STOP_FILE', tmp_path / 'stop')
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_HOSTS_FILE', tmp_path / 'hosts.json')
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_LOG_FILE', tmp_path / 'helper.log')
-    monkeypatch.setattr(linux_proxy_helper.shutil, 'which', lambda name: '/usr/bin/pkexec' if name == 'pkexec' else None)
+    monkeypatch.setattr(
+        linux_proxy_helper.shutil,
+        'which',
+        lambda name: '/usr/bin/pkexec' if name == 'pkexec' else None,
+    )
     monkeypatch.setattr(linux_proxy_helper, '_is_trusted_installed_helper', lambda: installed['ok'])
     monkeypatch.setattr(linux_proxy_helper, '_installed_policy_is_current', lambda: installed['ok'])
-    monkeypatch.setattr(linux_proxy_helper, '_installed_helper_metadata_is_current', lambda: installed['ok'])
-    monkeypatch.setattr(linux_proxy_helper, '_persistent_helper_install_path_is_read_only', lambda: False)
+    monkeypatch.setattr(
+        linux_proxy_helper, '_installed_helper_metadata_is_current', lambda: installed['ok']
+    )
+    monkeypatch.setattr(
+        linux_proxy_helper, '_persistent_helper_install_path_is_read_only', lambda: False
+    )
     monkeypatch.setattr(linux_proxy_helper, 'install_privileged_helper', fake_install)
     monkeypatch.setattr(linux_proxy_helper, 'linux_system_ca_store_supported', lambda: True)
     monkeypatch.setattr(
         linux_proxy_helper,
         '_install_ca_into_linux_system_store',
-        lambda _path: (_ for _ in ()).throw(AssertionError('separate system CA prompt should not run')),
+        lambda _path: (_ for _ in ()).throw(
+            AssertionError('separate system CA prompt should not run')
+        ),
     )
     monkeypatch.setattr(linux_proxy_helper, '_current_process_start_time', lambda: '12345')
-    monkeypatch.setattr(linux_proxy_helper, '_popen_host_command', lambda cmd, **_kwargs: commands.append(cmd) or Process())
-    monkeypatch.setattr(linux_proxy_helper, '_read_ready', lambda: {'ok': True, 'system_ca': {'ok': True}})
+    monkeypatch.setattr(
+        linux_proxy_helper,
+        '_popen_host_command',
+        lambda cmd, **_kwargs: commands.append(cmd) or Process(),
+    )
+    monkeypatch.setattr(
+        linux_proxy_helper, '_read_ready', lambda: {'ok': True, 'system_ca': {'ok': True}}
+    )
 
     def current_after_helper(_path):
         if installed['ok']:
@@ -169,12 +218,15 @@ def test_start_helper_combines_helper_update_with_missing_system_ca(monkeypatch,
 
     monkeypatch.setattr(linux_proxy_helper, 'linux_system_ca_is_current', current_after_helper)
 
-    assert linux_proxy_helper.start_helper(
-        {'apis.roblox.com'},
-        ca_cert_path=ca,
-        require_system_ca=True,
-        timeout=1.0,
-    ) is True
+    assert (
+        linux_proxy_helper.start_helper(
+            {'apis.roblox.com'},
+            ca_cert_path=ca,
+            require_system_ca=True,
+            timeout=1.0,
+        )
+        is True
+    )
 
     assert installed['kwargs'] == {'enable_promptless': True, 'ca_cert_path': ca}
     assert commands[0][1] == str(linux_proxy_helper.INSTALLED_HELPER_PATH)
@@ -194,31 +246,49 @@ def test_start_helper_does_not_require_system_ca_when_store_is_unsupported(monke
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_STOP_FILE', tmp_path / 'stop')
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_HOSTS_FILE', tmp_path / 'hosts.json')
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_LOG_FILE', tmp_path / 'helper.log')
-    monkeypatch.setattr(linux_proxy_helper.shutil, 'which', lambda name: '/usr/bin/pkexec' if name == 'pkexec' else None)
+    monkeypatch.setattr(
+        linux_proxy_helper.shutil,
+        'which',
+        lambda name: '/usr/bin/pkexec' if name == 'pkexec' else None,
+    )
     monkeypatch.setattr(linux_proxy_helper, '_helper_command', lambda: ['/opt/fleasion-helper'])
     monkeypatch.setattr(linux_proxy_helper, '_current_process_start_time', lambda: '12345')
-    monkeypatch.setattr(linux_proxy_helper, 'ensure_privileged_helper_installed', lambda **_kwargs: True)
+    monkeypatch.setattr(
+        linux_proxy_helper, 'ensure_privileged_helper_installed', lambda **_kwargs: True
+    )
     monkeypatch.setattr(linux_proxy_helper, 'linux_system_ca_store_supported', lambda: False)
-    monkeypatch.setattr(linux_proxy_helper, '_popen_host_command', lambda cmd, **_kwargs: commands.append(cmd) or Process())
+    monkeypatch.setattr(
+        linux_proxy_helper,
+        '_popen_host_command',
+        lambda cmd, **_kwargs: commands.append(cmd) or Process(),
+    )
     monkeypatch.setattr(
         linux_proxy_helper,
         '_read_ready',
-        lambda: {'ok': True, 'system_ca': {'ok': False, 'error': 'no_supported_system_trust_store'}},
+        lambda: {
+            'ok': True,
+            'system_ca': {'ok': False, 'error': 'no_supported_system_trust_store'},
+        },
     )
 
-    assert linux_proxy_helper.start_helper(
-        {'apis.roblox.com'},
-        ca_cert_path=ca,
-        require_system_ca=True,
-        timeout=1.0,
-    ) is True
+    assert (
+        linux_proxy_helper.start_helper(
+            {'apis.roblox.com'},
+            ca_cert_path=ca,
+            require_system_ca=True,
+            timeout=1.0,
+        )
+        is True
+    )
 
     assert '--ca-cert' in commands[0]
     assert str(ca) in commands[0]
     assert '--require-system-ca' not in commands[0]
 
 
-def test_start_helper_continues_when_privileged_system_ca_install_is_unsupported(monkeypatch, tmp_path):
+def test_start_helper_continues_when_privileged_system_ca_install_is_unsupported(
+    monkeypatch, tmp_path
+):
     commands = []
     ca = tmp_path / 'ca.crt'
     ca.write_text('ca', encoding='utf-8')
@@ -232,10 +302,16 @@ def test_start_helper_continues_when_privileged_system_ca_install_is_unsupported
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_STOP_FILE', tmp_path / 'stop')
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_HOSTS_FILE', tmp_path / 'hosts.json')
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_LOG_FILE', tmp_path / 'helper.log')
-    monkeypatch.setattr(linux_proxy_helper.shutil, 'which', lambda name: '/usr/bin/pkexec' if name == 'pkexec' else f'/usr/sbin/{name}')
+    monkeypatch.setattr(
+        linux_proxy_helper.shutil,
+        'which',
+        lambda name: '/usr/bin/pkexec' if name == 'pkexec' else f'/usr/sbin/{name}',
+    )
     monkeypatch.setattr(linux_proxy_helper, '_helper_command', lambda: ['/opt/fleasion-helper'])
     monkeypatch.setattr(linux_proxy_helper, '_current_process_start_time', lambda: '12345')
-    monkeypatch.setattr(linux_proxy_helper, 'ensure_privileged_helper_installed', lambda **_kwargs: True)
+    monkeypatch.setattr(
+        linux_proxy_helper, 'ensure_privileged_helper_installed', lambda **_kwargs: True
+    )
     monkeypatch.setattr(linux_proxy_helper, 'linux_system_ca_store_supported', lambda: True)
     monkeypatch.setattr(linux_proxy_helper, 'linux_system_ca_is_current', lambda _path: False)
     monkeypatch.setattr(
@@ -243,19 +319,29 @@ def test_start_helper_continues_when_privileged_system_ca_install_is_unsupported
         '_install_ca_into_linux_system_store',
         lambda _path: {'ok': False, 'error': 'no_supported_system_trust_store'},
     )
-    monkeypatch.setattr(linux_proxy_helper, '_popen_host_command', lambda cmd, **_kwargs: commands.append(cmd) or Process())
+    monkeypatch.setattr(
+        linux_proxy_helper,
+        '_popen_host_command',
+        lambda cmd, **_kwargs: commands.append(cmd) or Process(),
+    )
     monkeypatch.setattr(
         linux_proxy_helper,
         '_read_ready',
-        lambda: {'ok': True, 'system_ca': {'ok': False, 'error': 'no_supported_system_trust_store'}},
+        lambda: {
+            'ok': True,
+            'system_ca': {'ok': False, 'error': 'no_supported_system_trust_store'},
+        },
     )
 
-    assert linux_proxy_helper.start_helper(
-        {'apis.roblox.com'},
-        ca_cert_path=ca,
-        require_system_ca=True,
-        timeout=1.0,
-    ) is True
+    assert (
+        linux_proxy_helper.start_helper(
+            {'apis.roblox.com'},
+            ca_cert_path=ca,
+            require_system_ca=True,
+            timeout=1.0,
+        )
+        is True
+    )
 
     assert '--ca-cert' in commands[0]
     assert str(ca) in commands[0]
@@ -273,21 +359,37 @@ def test_start_helper_installs_persistent_helper_before_launch(monkeypatch, tmp_
     def fake_install(**kwargs):
         installed['ok'] = True
         installed['kwargs'] = kwargs
-        return {'ok': True, 'helper': str(linux_proxy_helper.INSTALLED_HELPER_PATH), 'promptless_rule': None}
+        return {
+            'ok': True,
+            'helper': str(linux_proxy_helper.INSTALLED_HELPER_PATH),
+            'promptless_rule': None,
+        }
 
     monkeypatch.setattr(linux_proxy_helper, 'CONFIG_DIR', tmp_path)
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_READY_FILE', tmp_path / 'ready.json')
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_STOP_FILE', tmp_path / 'stop')
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_HOSTS_FILE', tmp_path / 'hosts.json')
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_LOG_FILE', tmp_path / 'helper.log')
-    monkeypatch.setattr(linux_proxy_helper.shutil, 'which', lambda name: '/usr/bin/pkexec' if name == 'pkexec' else None)
+    monkeypatch.setattr(
+        linux_proxy_helper.shutil,
+        'which',
+        lambda name: '/usr/bin/pkexec' if name == 'pkexec' else None,
+    )
     monkeypatch.setattr(linux_proxy_helper, '_is_trusted_installed_helper', lambda: installed['ok'])
     monkeypatch.setattr(linux_proxy_helper, '_installed_policy_is_current', lambda: installed['ok'])
-    monkeypatch.setattr(linux_proxy_helper, '_installed_helper_metadata_is_current', lambda: installed['ok'])
-    monkeypatch.setattr(linux_proxy_helper, '_persistent_helper_install_path_is_read_only', lambda: False)
+    monkeypatch.setattr(
+        linux_proxy_helper, '_installed_helper_metadata_is_current', lambda: installed['ok']
+    )
+    monkeypatch.setattr(
+        linux_proxy_helper, '_persistent_helper_install_path_is_read_only', lambda: False
+    )
     monkeypatch.setattr(linux_proxy_helper, 'install_privileged_helper', fake_install)
     monkeypatch.setattr(linux_proxy_helper, '_current_process_start_time', lambda: '12345')
-    monkeypatch.setattr(linux_proxy_helper, '_popen_host_command', lambda cmd, **_kwargs: commands.append(cmd) or Process())
+    monkeypatch.setattr(
+        linux_proxy_helper,
+        '_popen_host_command',
+        lambda cmd, **_kwargs: commands.append(cmd) or Process(),
+    )
     monkeypatch.setattr(linux_proxy_helper, '_read_ready', lambda: {'ok': True})
 
     assert linux_proxy_helper.start_helper({'gamejoin.roblox.com'}, timeout=1.0) is True
@@ -296,7 +398,9 @@ def test_start_helper_installs_persistent_helper_before_launch(monkeypatch, tmp_
     assert commands[0][1] == str(linux_proxy_helper.INSTALLED_HELPER_PATH)
 
 
-def test_start_helper_uses_source_helper_when_persistent_install_path_is_read_only(monkeypatch, tmp_path):
+def test_start_helper_uses_source_helper_when_persistent_install_path_is_read_only(
+    monkeypatch, tmp_path
+):
     commands = []
 
     class Process:
@@ -309,11 +413,17 @@ def test_start_helper_uses_source_helper_when_persistent_install_path_is_read_on
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_STOP_FILE', tmp_path / 'stop')
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_HOSTS_FILE', tmp_path / 'hosts.json')
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_LOG_FILE', tmp_path / 'helper.log')
-    monkeypatch.setattr(linux_proxy_helper.shutil, 'which', lambda name: '/usr/bin/pkexec' if name == 'pkexec' else None)
+    monkeypatch.setattr(
+        linux_proxy_helper.shutil,
+        'which',
+        lambda name: '/usr/bin/pkexec' if name == 'pkexec' else None,
+    )
     monkeypatch.setattr(linux_proxy_helper, '_is_trusted_installed_helper', lambda: False)
     monkeypatch.setattr(linux_proxy_helper, '_installed_policy_is_current', lambda: False)
     monkeypatch.setattr(linux_proxy_helper, '_installed_helper_metadata_is_current', lambda: False)
-    monkeypatch.setattr(linux_proxy_helper, '_persistent_helper_install_path_is_read_only', lambda: False)
+    monkeypatch.setattr(
+        linux_proxy_helper, '_persistent_helper_install_path_is_read_only', lambda: False
+    )
     monkeypatch.setattr(
         linux_proxy_helper,
         'install_privileged_helper',
@@ -322,9 +432,15 @@ def test_start_helper_uses_source_helper_when_persistent_install_path_is_read_on
             'error': "[Errno 30] Read-only file system: '/usr/local/libexec/fleasion-linux-proxy-helper'",
         },
     )
-    monkeypatch.setattr(linux_proxy_helper, '_source_helper_command', lambda: ['/current/fleasion-helper'])
+    monkeypatch.setattr(
+        linux_proxy_helper, '_source_helper_command', lambda: ['/current/fleasion-helper']
+    )
     monkeypatch.setattr(linux_proxy_helper, '_current_process_start_time', lambda: '12345')
-    monkeypatch.setattr(linux_proxy_helper, '_popen_host_command', lambda cmd, **_kwargs: commands.append(cmd) or Process())
+    monkeypatch.setattr(
+        linux_proxy_helper,
+        '_popen_host_command',
+        lambda cmd, **_kwargs: commands.append(cmd) or Process(),
+    )
     monkeypatch.setattr(linux_proxy_helper, '_read_ready', lambda: {'ok': True})
 
     assert linux_proxy_helper.start_helper({'gamejoin.roblox.com'}, timeout=1.0) is True
@@ -332,7 +448,9 @@ def test_start_helper_uses_source_helper_when_persistent_install_path_is_read_on
     assert commands[0][:2] == ['/usr/bin/pkexec', '/current/fleasion-helper']
 
 
-def test_start_helper_skips_persistent_install_prompt_when_install_path_mount_is_read_only(monkeypatch, tmp_path):
+def test_start_helper_skips_persistent_install_prompt_when_install_path_mount_is_read_only(
+    monkeypatch, tmp_path
+):
     commands = []
     install_calls = []
 
@@ -346,15 +464,31 @@ def test_start_helper_skips_persistent_install_prompt_when_install_path_mount_is
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_STOP_FILE', tmp_path / 'stop')
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_HOSTS_FILE', tmp_path / 'hosts.json')
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_LOG_FILE', tmp_path / 'helper.log')
-    monkeypatch.setattr(linux_proxy_helper.shutil, 'which', lambda name: '/usr/bin/pkexec' if name == 'pkexec' else None)
+    monkeypatch.setattr(
+        linux_proxy_helper.shutil,
+        'which',
+        lambda name: '/usr/bin/pkexec' if name == 'pkexec' else None,
+    )
     monkeypatch.setattr(linux_proxy_helper, '_is_trusted_installed_helper', lambda: False)
     monkeypatch.setattr(linux_proxy_helper, '_installed_policy_is_current', lambda: False)
     monkeypatch.setattr(linux_proxy_helper, '_installed_helper_metadata_is_current', lambda: False)
-    monkeypatch.setattr(linux_proxy_helper, '_persistent_helper_install_path_is_read_only', lambda: True)
-    monkeypatch.setattr(linux_proxy_helper, 'install_privileged_helper', lambda **kwargs: install_calls.append(kwargs) or {'ok': True})
-    monkeypatch.setattr(linux_proxy_helper, '_source_helper_command', lambda: ['/current/fleasion-helper'])
+    monkeypatch.setattr(
+        linux_proxy_helper, '_persistent_helper_install_path_is_read_only', lambda: True
+    )
+    monkeypatch.setattr(
+        linux_proxy_helper,
+        'install_privileged_helper',
+        lambda **kwargs: install_calls.append(kwargs) or {'ok': True},
+    )
+    monkeypatch.setattr(
+        linux_proxy_helper, '_source_helper_command', lambda: ['/current/fleasion-helper']
+    )
     monkeypatch.setattr(linux_proxy_helper, '_current_process_start_time', lambda: '12345')
-    monkeypatch.setattr(linux_proxy_helper, '_popen_host_command', lambda cmd, **_kwargs: commands.append(cmd) or Process())
+    monkeypatch.setattr(
+        linux_proxy_helper,
+        '_popen_host_command',
+        lambda cmd, **_kwargs: commands.append(cmd) or Process(),
+    )
     monkeypatch.setattr(linux_proxy_helper, '_read_ready', lambda: {'ok': True})
 
     assert linux_proxy_helper.start_helper({'gamejoin.roblox.com'}, timeout=1.0) is True
@@ -380,10 +514,18 @@ def test_start_helper_records_read_only_hosts_ready_failure(monkeypatch, tmp_pat
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_STOP_FILE', tmp_path / 'stop')
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_HOSTS_FILE', tmp_path / 'hosts.json')
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_LOG_FILE', tmp_path / 'helper.log')
-    monkeypatch.setattr(linux_proxy_helper.shutil, 'which', lambda name: '/usr/bin/pkexec' if name == 'pkexec' else None)
-    monkeypatch.setattr(linux_proxy_helper, 'ensure_privileged_helper_installed', lambda **_kwargs: True)
+    monkeypatch.setattr(
+        linux_proxy_helper.shutil,
+        'which',
+        lambda name: '/usr/bin/pkexec' if name == 'pkexec' else None,
+    )
+    monkeypatch.setattr(
+        linux_proxy_helper, 'ensure_privileged_helper_installed', lambda **_kwargs: True
+    )
     monkeypatch.setattr(linux_proxy_helper, '_current_process_start_time', lambda: '12345')
-    monkeypatch.setattr(linux_proxy_helper, '_popen_host_command', lambda *_args, **_kwargs: Process())
+    monkeypatch.setattr(
+        linux_proxy_helper, '_popen_host_command', lambda *_args, **_kwargs: Process()
+    )
     monkeypatch.setattr(linux_proxy_helper, '_read_ready', lambda: ready)
 
     assert linux_proxy_helper.start_helper({'gamejoin.roblox.com'}, timeout=1.0) is False
@@ -395,9 +537,35 @@ def test_update_helper_hosts_writes_atomic_hosts_request(monkeypatch, tmp_path):
     monkeypatch.setattr(linux_proxy_helper, 'CONFIG_DIR', tmp_path)
     monkeypatch.setattr(linux_proxy_helper, 'HELPER_HOSTS_FILE', hosts_file)
 
-    assert linux_proxy_helper.update_helper_hosts({'gamejoin.roblox.com', 'apis.roblox.com'}) is True
+    assert (
+        linux_proxy_helper.update_helper_hosts({'gamejoin.roblox.com', 'apis.roblox.com'}) is True
+    )
 
-    assert hosts_file.read_text(encoding='utf-8') == '{"hosts":["apis.roblox.com","gamejoin.roblox.com"]}'
+    assert (
+        hosts_file.read_text(encoding='utf-8')
+        == '{"hosts":["apis.roblox.com","gamejoin.roblox.com"]}'
+    )
+
+
+def test_cleanup_hosts_with_pkexec_runs_one_shot_root_child(monkeypatch):
+    commands = []
+
+    monkeypatch.setattr(linux_proxy_helper.shutil, 'which', lambda _name: '/usr/bin/pkexec')
+    monkeypatch.setattr(linux_proxy_helper, '_helper_command', lambda: ['/opt/fleasion-helper'])
+
+    class Result:
+        returncode = 0
+        stdout = ''
+        stderr = ''
+
+    monkeypatch.setattr(
+        linux_proxy_helper,
+        '_run_host_command',
+        lambda command, **_kwargs: commands.append(command) or Result(),
+    )
+
+    assert linux_proxy_helper.cleanup_hosts_with_pkexec()
+    assert commands == [['/usr/bin/pkexec', '/opt/fleasion-helper', '--cleanup-hosts']]
 
 
 def test_existing_nss_dbs_finds_shared_and_firefox_profiles(tmp_path):
@@ -500,7 +668,11 @@ def test_linux_system_ca_needs_install_false_when_current(monkeypatch, tmp_path)
     ca_dir.mkdir()
     (ca_dir / linux_proxy_helper.SYSTEM_CA_NAME).write_bytes(b'current')
     monkeypatch.setattr(linux_proxy_helper, 'SYSTEM_CA_DIRS', (ca_dir,))
-    monkeypatch.setattr(linux_proxy_helper.shutil, 'which', lambda name: f'/usr/sbin/{name}' if name == 'update-ca-certificates' else None)
+    monkeypatch.setattr(
+        linux_proxy_helper.shutil,
+        'which',
+        lambda name: f'/usr/sbin/{name}' if name == 'update-ca-certificates' else None,
+    )
 
     assert linux_proxy_helper.linux_system_ca_needs_install(ca) is False
 
@@ -512,7 +684,11 @@ def test_linux_system_ca_needs_install_true_when_stale(monkeypatch, tmp_path):
     ca_dir.mkdir()
     (ca_dir / linux_proxy_helper.SYSTEM_CA_NAME).write_bytes(b'old')
     monkeypatch.setattr(linux_proxy_helper, 'SYSTEM_CA_DIRS', (ca_dir,))
-    monkeypatch.setattr(linux_proxy_helper.shutil, 'which', lambda name: f'/usr/sbin/{name}' if name == 'update-ca-certificates' else None)
+    monkeypatch.setattr(
+        linux_proxy_helper.shutil,
+        'which',
+        lambda name: f'/usr/sbin/{name}' if name == 'update-ca-certificates' else None,
+    )
 
     assert linux_proxy_helper.linux_system_ca_needs_install(ca) is True
 
