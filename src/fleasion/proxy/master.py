@@ -4142,6 +4142,11 @@ class ProxyMaster:
         mode might require elevation this process doesn't hold.
         """
 
+        # Publish the transition before starting the worker. Consumers such
+        # as Windows GDK arming must not observe the old proxy as ready and
+        # capture its stale port while this restart thread is still pending.
+        self._env_proxy_ready.clear()
+
         def _do_restart() -> None:
             self.stop()
             self.start()

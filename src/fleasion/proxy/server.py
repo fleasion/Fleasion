@@ -599,8 +599,22 @@ async def _open_explicit_proxy_tunnel(
             error=f'phase=dns host={host} port={port} elapsed_ms={elapsed_ms} no_stream_candidates',
         )
 
+    attempt_candidates = candidates[:_EXPLICIT_TUNNEL_MAX_CANDIDATES]
+    if (
+        attempt_candidates
+        and not any(family == socket.AF_INET6 for family, _address in attempt_candidates)
+    ):
+        ipv6_candidate = next(
+            (candidate for candidate in candidates if candidate[0] == socket.AF_INET6),
+            None,
+        )
+        if ipv6_candidate is not None:
+            # Preserve the IPv4 preference without allowing a large A-record
+            # set to consume every bounded attempt before IPv6 is considered.
+            attempt_candidates[-1] = ipv6_candidate
+
     failures: list[str] = []
-    for family, address in candidates[:_EXPLICIT_TUNNEL_MAX_CANDIDATES]:
+    for family, address in attempt_candidates:
         remaining = timeout - (time.monotonic() - started)
         if remaining <= 0:
             failures.append('phase=connect budget_exhausted')

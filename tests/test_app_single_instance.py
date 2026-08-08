@@ -176,6 +176,192 @@ def test_autostart_resync_runs_without_admin_on_windows(monkeypatch):
     assert _should_sync_autostart_on_launch(True)
 
 
+def test_env_proxy_migration_forces_legacy_users_before_acknowledgement():
+    config = SimpleNamespace(
+        proxy_mode='hosts',
+        first_time_setup_complete=True,
+        env_proxy_migration_v1_complete=False,
+    )
+
+    assert app_module._prepare_env_proxy_migration(config) is True
+    assert config.proxy_mode == 'env'
+    assert config.env_proxy_migration_v1_complete is False
+
+
+def test_env_proxy_migration_uses_first_time_guide_for_new_users():
+    config = SimpleNamespace(
+        proxy_mode='hosts',
+        first_time_setup_complete=False,
+        env_proxy_migration_v1_complete=False,
+    )
+
+    assert app_module._prepare_env_proxy_migration(config) is False
+    assert config.proxy_mode == 'env'
+    assert config.env_proxy_migration_v1_complete is False
+
+
+def test_completed_env_proxy_migration_preserves_hosts_choice():
+    config = SimpleNamespace(
+        proxy_mode='hosts',
+        first_time_setup_complete=True,
+        env_proxy_migration_v1_complete=True,
+    )
+
+    assert app_module._prepare_env_proxy_migration(config) is False
+    assert config.proxy_mode == 'hosts'
+
+
+def test_env_proxy_migration_acknowledges_then_restarts_running_player(monkeypatch):
+    events = []
+    config = SimpleNamespace(
+        proxy_features_enabled=True,
+        env_proxy_migration_v1_complete=False,
+    )
+    lifecycle = SimpleNamespace(
+        handle_player_launch=lambda path: events.append(('restart', Path(path)))
+    )
+    monitor = SimpleNamespace(
+        is_player_running=lambda: True,
+        env_lifecycle=lifecycle,
+        was_running=False,
+        _player_was_running=False,
+    )
+
+    class _MessageBox:
+        class Icon:
+            Information = object()
+
+        class ButtonRole:
+            AcceptRole = object()
+            RejectRole = object()
+
+        class StandardButton:
+            Ok = object()
+
+        def __init__(self, _parent):
+            self._clicked = None
+
+        def setWindowTitle(self, _value):
+            pass
+
+        def setIcon(self, _value):
+            pass
+
+        def setText(self, _value):
+            pass
+
+        def setInformativeText(self, _value):
+            pass
+
+        def setWindowIcon(self, _value):
+            pass
+
+        def setStandardButtons(self, _value):
+            pass
+
+        def addButton(self, label, _role):
+            button = object()
+            if label == 'Restart Roblox Now':
+                self._clicked = button
+            return button
+
+        def setDefaultButton(self, _value):
+            pass
+
+        def setEscapeButton(self, _value):
+            pass
+
+        def exec(self):
+            events.append(('ack-state', config.env_proxy_migration_v1_complete))
+
+        def clickedButton(self):
+            return self._clicked
+
+    monkeypatch.setattr(app_module, 'QMessageBox', _MessageBox)
+    monkeypatch.setattr(app_module, '_visible_parent_widget', lambda: None)
+    monkeypatch.setattr(app_module, 'get_icon_path', lambda: None)
+    monkeypatch.setattr(app_module.sys, 'platform', 'linux')
+    monkeypatch.setattr(app_module, 'run_in_thread', lambda function: function)
+
+    app_module._show_env_proxy_migration(config, monitor)
+
+    assert events == [
+        ('ack-state', False),
+        ('restart', Path('org.vinegarhq.Sober')),
+    ]
+    assert config.env_proxy_migration_v1_complete is True
+    assert monitor.was_running is True
+    assert monitor._player_was_running is True
+
+
+def test_env_proxy_migration_does_not_relaunch_when_proxy_features_are_disabled(
+    monkeypatch,
+):
+    config = SimpleNamespace(
+        proxy_features_enabled=False,
+        env_proxy_migration_v1_complete=False,
+    )
+    lifecycle = SimpleNamespace(
+        handle_player_launch=lambda _path: (_ for _ in ()).throw(
+            AssertionError('disabled proxy features must not relaunch Roblox')
+        )
+    )
+    monitor = SimpleNamespace(
+        is_player_running=lambda: True,
+        env_lifecycle=lifecycle,
+        was_running=False,
+        _player_was_running=False,
+    )
+
+    class _MessageBox:
+        class Icon:
+            Information = object()
+
+        class ButtonRole:
+            AcceptRole = object()
+            RejectRole = object()
+
+        class StandardButton:
+            Ok = object()
+
+        def __init__(self, _parent):
+            self._clicked = None
+
+        def setWindowTitle(self, _value):
+            pass
+
+        def setIcon(self, _value):
+            pass
+
+        def setText(self, _value):
+            pass
+
+        def setInformativeText(self, _value):
+            pass
+
+        def setWindowIcon(self, _value):
+            pass
+
+        def setStandardButtons(self, _value):
+            pass
+
+        def exec(self):
+            pass
+
+        def clickedButton(self):
+            return self._clicked
+
+    monkeypatch.setattr(app_module, 'QMessageBox', _MessageBox)
+    monkeypatch.setattr(app_module, '_visible_parent_widget', lambda: None)
+    monkeypatch.setattr(app_module, 'get_icon_path', lambda: None)
+
+    app_module._show_env_proxy_migration(config, monitor)
+
+    assert config.env_proxy_migration_v1_complete is True
+    assert monitor.was_running is True
+    assert monitor._player_was_running is True
+
+
 def test_run_on_boot_failure_can_launch_one_time_admin_repair(monkeypatch):
     selected = []
     monkeypatch.setattr(app_module.sys, 'platform', 'win32')
@@ -535,8 +721,153 @@ def test_env_proxy_studio_launch_is_completely_untouched(monkeypatch):
     assert qt_app is not None
 
 
+def test_windows_desktop_player_launch_uses_env_lifecycle(monkeypatch, tmp_path):
+    qt_app = QCoreApplication.instance() or QCoreApplication([])
+    config = SimpleNamespace(
+        proxy_mode="env",
+        proxy_features_enabled=True,
+        auto_delete_cache_on_exit=False,
+    )
+    lifecycle_calls = []
+
+    class _Lifecycle:
+        owns_player = False
+
+        def handle_player_launch(self, exe_path):
+            lifecycle_calls.append(Path(exe_path))
+            return True
+
+    proxy_master = SimpleNamespace(set_roblox_player_running=lambda _running: None)
+    monitor = app_module.RobloxExitMonitor(
+        config,
+        proxy_master=proxy_master,
+        env_lifecycle=_Lifecycle(),
+    )
+    player_exe = tmp_path / "Roblox" / "RobloxPlayerBeta.exe"
+    monkeypatch.setattr(app_module.sys, "platform", "win32")
+    monkeypatch.setattr(app_module, "is_roblox_running", lambda: True)
+    monkeypatch.setattr(app_module, "is_studio_running", lambda: False)
+    monkeypatch.setattr(app_module, "get_roblox_player_exe_path", lambda: player_exe)
+    monkeypatch.setattr(app_module, "run_in_thread", lambda function: function)
+    monkeypatch.setitem(
+        app_module.sys.modules,
+        "fleasion.utils.platform_windows",
+        SimpleNamespace(
+            is_roblox_gdk_env_proxy_armed=lambda: False,
+            is_gdk_env_proxy_activation_in_progress=lambda: False,
+            is_env_proxy_relaunched_player_running=lambda: False,
+            is_roblox_gdk_exe_path=lambda _path: False,
+        ),
+    )
+
+    monitor._check_roblox_status_locked()
+
+    assert lifecycle_calls == [player_exe]
+    assert monitor._suppress_next_player_exit_cache_delete is True
+    assert qt_app is not None
+
+
+def test_windows_gdk_arming_waits_for_final_proxy_port(monkeypatch):
+    events = []
+    cleanup = lambda: None
+
+    class _Proxy:
+        def wait_for_env_proxy_ready(self, timeout):
+            events.append(("ready", timeout))
+            return True
+
+        def roblox_env_proxy_url(self):
+            events.append(("url",))
+            return "http://127.0.0.1:49152"
+
+    monkeypatch.setitem(
+        app_module.sys.modules,
+        "fleasion.utils.platform_windows",
+        SimpleNamespace(
+            arm_roblox_gdk_env_proxy=lambda url: events.append(("arm", url)) or True,
+            disarm_roblox_gdk_env_proxy=cleanup,
+        ),
+    )
+    monkeypatch.setattr(
+        app_module.atexit,
+        "register",
+        lambda callback: events.append(("cleanup", callback)),
+    )
+
+    assert app_module._arm_windows_gdk_env_proxy_when_ready(_Proxy(), timeout=4.0)
+    assert events == [
+        ("ready", 4.0),
+        ("url",),
+        ("arm", "http://127.0.0.1:49152"),
+        ("cleanup", cleanup),
+    ]
+
+
+def test_windows_gdk_arming_stops_when_proxy_is_not_ready(monkeypatch):
+    proxy = SimpleNamespace(
+        wait_for_env_proxy_ready=lambda timeout: False,
+        roblox_env_proxy_url=lambda: (_ for _ in ()).throw(
+            AssertionError("an unready proxy has no final URL")
+        ),
+    )
+
+    assert not app_module._arm_windows_gdk_env_proxy_when_ready(proxy)
+
+
+def test_windows_hosts_to_env_live_switch_rearms_gdk_after_proxy_restart(monkeypatch):
+    from fleasion.gui import settings_tab
+
+    events = []
+    proxy_master = SimpleNamespace(
+        restart_for_mode_switch=lambda: events.append("restart_proxy"),
+    )
+    monitor = SimpleNamespace(
+        env_lifecycle=SimpleNamespace(handle_player_launch=lambda _path: True),
+        is_player_running=lambda: False,
+    )
+    tray = SimpleNamespace(
+        proxy_master=proxy_master,
+        roblox_monitor=monitor,
+        notify_proxy_mode_changed=lambda: events.append("notify"),
+    )
+    config = SimpleNamespace(
+        proxy_mode="hosts",
+        proxy_features_enabled=True,
+        run_on_boot=False,
+    )
+    tab = SimpleNamespace(
+        _config=config,
+        _tray=tray,
+        _proxy_mode_combo=SimpleNamespace(currentData=lambda: "env"),
+    )
+    monkeypatch.setattr(settings_tab.sys, "platform", "win32")
+    monkeypatch.setattr(
+        settings_tab,
+        "EnvProxyWarningDialog",
+        lambda _parent: SimpleNamespace(exec=lambda: events.append("dialog")),
+    )
+    monkeypatch.setattr(settings_tab, "run_in_thread", lambda function: function)
+    monkeypatch.setattr(
+        app_module,
+        "_arm_windows_gdk_env_proxy_when_ready",
+        lambda proxy: events.append(("arm_gdk", proxy)) or True,
+    )
+
+    settings_tab.SettingsTab._on_proxy_mode_changed(tab)
+
+    assert config.proxy_mode == "env"
+    assert events == [
+        "dialog",
+        "restart_proxy",
+        ("arm_gdk", proxy_master),
+        "notify",
+    ]
+
+
 def test_macos_uri_watcher_handoff_passes_target_to_special_lifecycle(monkeypatch, tmp_path):
     qt_app = QCoreApplication.instance() or QCoreApplication([])
+    from fleasion.utils import platform_macos
+
     monkeypatch.setattr(app_module.sys, "platform", "darwin")
     config = SimpleNamespace(
         proxy_mode="env",
@@ -566,8 +897,6 @@ def test_macos_uri_watcher_handoff_passes_target_to_special_lifecycle(monkeypatc
         set_roblox_player_running=lambda _running: None,
         wait_for_env_proxy_ready=lambda timeout=0.0: True,
     )
-    from fleasion.utils import platform_macos
-
     monkeypatch.setattr(platform_macos, "MacOSRobloxUriInterceptor", _Interceptor)
     monitor = app_module.RobloxExitMonitor(
         config, proxy_master=proxy_master, env_lifecycle=_Lifecycle()

@@ -103,6 +103,82 @@ class _ForcedAcknowledgeMessageBox(QMessageBox):
             event.ignore()
 
 
+def _prepare_env_proxy_migration(config_manager: ConfigManager) -> bool:
+    """Select Env Proxy before privilege gates and report a legacy migration."""
+    if config_manager.env_proxy_migration_v1_complete:
+        return False
+
+    # Assign even when the merged in-memory default is already Env so the new
+    # mode is durable on disk before any acknowledgement dialog can appear.
+    config_manager.proxy_mode = 'env'
+
+    # First-time users learn about Env Proxy in the setup guide. Existing
+    # users receive the dedicated migration acknowledgement later in startup.
+    return bool(config_manager.first_time_setup_complete)
+
+
+def _show_env_proxy_migration(config_manager: ConfigManager, roblox_monitor) -> None:
+    """Acknowledge the forced legacy migration and optionally relaunch Player."""
+    player_running = bool(roblox_monitor.is_player_running())
+    if player_running:
+        # Do not let the process monitor interpret a Player that predates this
+        # startup as a fresh launch and relaunch it without the user's choice.
+        roblox_monitor.was_running = True
+        roblox_monitor._player_was_running = True
+
+    msg = QMessageBox(_visible_parent_widget())
+    msg.setWindowTitle('New Default: Roblox Env Proxy')
+    msg.setIcon(QMessageBox.Icon.Information)
+    msg.setText('Fleasion has switched your saved proxy mode to Roblox Env Proxy.')
+    details = (
+        'Env Proxy is the new recommended mode and does not require administrator '
+        'permission for normal use. Fleasion applies it only to Roblox Player '
+        '(including Sober); Roblox Studio is left untouched.\n\n'
+        'You can switch back at any time under Settings > Proxy > Proxy Mode. '
+        'Hosts File mode may require administrator permission.'
+    )
+    restart_button = None
+    if player_running and config_manager.proxy_features_enabled:
+        details += (
+            '\n\nRoblox Player is already running. It must be relaunched before '
+            'the new proxy mode applies to that session.'
+        )
+        restart_button = msg.addButton(
+            'Restart Roblox Now', QMessageBox.ButtonRole.AcceptRole
+        )
+        later_button = msg.addButton(
+            'Restart Roblox Later', QMessageBox.ButtonRole.RejectRole
+        )
+        msg.setDefaultButton(restart_button)
+        msg.setEscapeButton(later_button)
+    else:
+        if player_running:
+            details += (
+                '\n\nProxy features are currently disabled, so Fleasion will not '
+                'relaunch Roblox Player.'
+            )
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+    msg.setInformativeText(details)
+    if icon_path := get_icon_path():
+        from PyQt6.QtGui import QIcon
+
+        msg.setWindowIcon(QIcon(str(icon_path)))
+
+    msg.exec()
+    config_manager.env_proxy_migration_v1_complete = True
+
+    if restart_button is None or msg.clickedButton() is not restart_button:
+        return
+    lifecycle = getattr(roblox_monitor, 'env_lifecycle', None)
+    if lifecycle is None:
+        return
+    if sys.platform.startswith('linux'):
+        exe_path = Path('org.vinegarhq.Sober')
+    else:
+        exe_path = get_roblox_player_exe_path()
+    run_in_thread(lifecycle.handle_player_launch)(exe_path)
+
+
 class _MacOSAuthSourceDialog(QDialog):
     """Browser-token startup prompt that only closes through explicit choices."""
 
@@ -2169,7 +2245,6 @@ class RobloxExitMonitor(QObject):
                             is_gdk_env_proxy_activation_in_progress,
                             is_env_proxy_relaunched_player_running,
                             is_roblox_gdk_exe_path,
-                            relaunch_roblox_with_proxy_env,
                         )
 
                         if is_roblox_gdk_exe_path(exe_path):
@@ -2203,21 +2278,16 @@ class RobloxExitMonitor(QObject):
                         else:
                             self._suppress_next_player_exit_cache_delete = True
 
-                            def _prepare_env_proxy_launch(path: Path) -> bool:
-                                result = self._proxy_master.ensure_env_proxy_roblox_ca(
-                                    path, settle=True
-                                )
-                                return bool(result.get('success'))
-
-                            def _relaunch_env_proxy_player() -> None:
-                                started = relaunch_roblox_with_proxy_env(
-                                    self._proxy_master.roblox_env_proxy_url(),
-                                    prepare_launch=_prepare_env_proxy_launch,
+                            def _handle_env_proxy_player_launch() -> None:
+                                lifecycle = self.env_lifecycle
+                                started = bool(
+                                    lifecycle is not None
+                                    and lifecycle.handle_player_launch(exe_path)
                                 )
                                 if not started:
                                     self._suppress_next_player_exit_cache_delete = False
 
-                            run_in_thread(_relaunch_env_proxy_player)()
+                            run_in_thread(_handle_env_proxy_player_launch)()
                     elif (
                         self.config_manager.proxy_mode == 'env'
                         and self._proxy_master is not None
@@ -2572,6 +2642,26 @@ def _launch_roblox_uri_for_instance(tray: SystemTray, target: str) -> bool:
             return lifecycle.handle_player_launch(exe_path, target)
 
     return launch_as_standard_user(target)
+
+
+def _arm_windows_gdk_env_proxy_when_ready(proxy_master, timeout: float = 15.0) -> bool:
+    """Arm Store/GDK activation with the proxy's finalized loopback port."""
+    if not proxy_master.wait_for_env_proxy_ready(timeout=timeout):
+        log_buffer.log(
+            'Launcher',
+            'Xbox/GDK Env Proxy activation was not armed because the proxy did not become ready',
+        )
+        return False
+
+    from .utils.platform_windows import (
+        arm_roblox_gdk_env_proxy,
+        disarm_roblox_gdk_env_proxy,
+    )
+
+    if not arm_roblox_gdk_env_proxy(proxy_master.roblox_env_proxy_url()):
+        return False
+    atexit.register(disarm_roblox_gdk_env_proxy)
+    return True
 
 
 def _wait_for_other_fleasion_instances_to_exit(timeout_seconds: float = 8.0) -> bool:
@@ -2955,6 +3045,7 @@ def main():
     # Initialize config manager before the elevation gate so the non-elevated
     # process can still build the prompt UI and show a fallback dialog.
     config_manager = ConfigManager()
+    _env_proxy_migration_pending = _prepare_env_proxy_migration(config_manager)
     config_manager.settings['_runtime_proxy_debug'] = bool(_args.proxy_debug)
     config_manager.settings['_runtime_proxy_debug_mode'] = _args.proxy_debug_mode or 'full'
 
@@ -3178,14 +3269,7 @@ def main():
         and config_manager.proxy_mode == 'env'
         and config_manager.proxy_features_enabled
     ):
-        from .utils.platform_windows import (
-            arm_roblox_gdk_env_proxy,
-            disarm_roblox_gdk_env_proxy,
-        )
-
-        if arm_roblox_gdk_env_proxy(proxy_master.roblox_env_proxy_url()):
-            atexit.register(disarm_roblox_gdk_env_proxy)
-        else:
+        if not _arm_windows_gdk_env_proxy_when_ready(proxy_master):
             log_buffer.log(
                 'Launcher',
                 'Xbox/GDK package activation could not be armed before launch; '
@@ -3286,6 +3370,9 @@ def main():
     tray_ref['tray'] = tray
     app.aboutToQuit.connect(tray.cleanup_tray_icon)
     single_instance_control_server = _start_single_instance_control_server(app, tray)
+
+    if _env_proxy_migration_pending:
+        _show_env_proxy_migration(config_manager, roblox_monitor)
 
     def _handle_roblox_uri_event(target: str) -> None:
         run_in_thread(_launch_roblox_uri_for_instance)(tray, target)
@@ -3481,6 +3568,10 @@ def main():
         welcome_box.setWindowTitle('Welcome')
         welcome_box.setText(
             'Welcome to Fleasion!\n\n'
+            'Fleasion uses Roblox Env Proxy mode by default. Normal use does not require '
+            'administrator permission, and Roblox Studio is left untouched. You can switch '
+            'to Hosts File mode at any time under Settings > Proxy > Proxy Mode; that mode '
+            'may require administrator permission.\n\n'
             'Quick setup guide:\n\n'
             '1. Use the Replacer tab to manage asset replacements. At the bottom, add IDs you want '
             'to replace, then choose a replacement ID, URL, or local file.\n\n'
@@ -3532,6 +3623,7 @@ def main():
             welcome_box.setWindowIcon(QIcon(str(icon_path)))
         welcome_box.exec()
         _prompt_first_time_startup_options(config_manager, tray)
+        config_manager.env_proxy_migration_v1_complete = True
         config_manager.first_time_setup_complete = True
         tray._show_replacer_config()
     elif not _suppress_dashboard and config_manager.open_dashboard_on_launch:

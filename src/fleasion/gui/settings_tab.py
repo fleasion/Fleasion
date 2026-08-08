@@ -638,6 +638,13 @@ class SettingsTab(QWidget):
             proxy_master = getattr(self._tray, 'proxy_master', None) if self._tray else None
             if proxy_master is not None and hasattr(proxy_master, 'restart_for_mode_switch'):
                 proxy_master.restart_for_mode_switch()
+                if sys.platform == 'win32':
+                    # The proxy may have fallen back from 58443 to a dynamic
+                    # port. Arm Store/GDK only after the restarted proxy has
+                    # published its final loopback URL.
+                    from ..app import _arm_windows_gdk_env_proxy_when_ready
+
+                    run_in_thread(_arm_windows_gdk_env_proxy_when_ready)(proxy_master)
             monitor = getattr(self._tray, 'roblox_monitor', None) if self._tray else None
             lifecycle = getattr(monitor, 'env_lifecycle', None)
             if (

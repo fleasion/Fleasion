@@ -199,18 +199,26 @@ class ConfigManagerEncodingTests(unittest.TestCase):
             manager.settings['wire_preserving_passthrough'] = 'true'
             self.assertTrue(manager.wire_preserving_passthrough)
 
-    def test_proxy_mode_defaults_to_hosts_and_accepts_env(self):
+    def test_proxy_mode_defaults_to_env_and_accepts_hosts(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_manager_module = self._load_manager_for(Path(tmp))
 
             manager = config_manager_module.ConfigManager()
-            self.assertEqual(manager.proxy_mode, 'hosts')
-
-            manager.proxy_mode = 'env'
             self.assertEqual(manager.proxy_mode, 'env')
 
-            manager.proxy_mode = 'invalid'
+            manager.proxy_mode = 'hosts'
             self.assertEqual(manager.proxy_mode, 'hosts')
+
+            manager.proxy_mode = 'invalid'
+            self.assertEqual(manager.proxy_mode, 'env')
+
+            self.assertFalse(manager.env_proxy_migration_v1_complete)
+            manager.env_proxy_migration_v1_complete = True
+            self.assertTrue(manager.env_proxy_migration_v1_complete)
+
+            reloaded = config_manager_module.ConfigManager()
+            self.assertEqual(reloaded.proxy_mode, 'env')
+            self.assertTrue(reloaded.env_proxy_migration_v1_complete)
 
             self.assertFalse(manager.lock_roblox_files_read_only)
             manager.lock_roblox_files_read_only = True

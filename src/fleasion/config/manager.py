@@ -232,7 +232,8 @@ DEFAULT_SETTINGS = {
     'auto_delete_cache_on_exit': True,
     'clear_cache_on_launch': True,
     'proxy_features_enabled': True,
-    'proxy_mode': 'hosts',
+    'proxy_mode': 'env',
+    'env_proxy_migration_v1_complete': False,
     'lock_roblox_files_read_only': False,
     'read_only_lock_migration_v1_complete': False,
     'close_env_proxy_roblox_on_exit': True,
@@ -782,13 +783,23 @@ class ConfigManager:
     @property
     def proxy_mode(self) -> str:
         """How Roblox traffic is routed into Fleasion's local proxy."""
-        mode = str(self.settings.get('proxy_mode', 'hosts') or 'hosts').lower()
-        return mode if mode in {'hosts', 'env'} else 'hosts'
+        mode = str(self.settings.get('proxy_mode', 'env') or 'env').lower()
+        return mode if mode in {'hosts', 'env'} else 'env'
 
     @proxy_mode.setter
     def proxy_mode(self, value: str):
-        value = str(value or 'hosts').lower()
-        self.settings['proxy_mode'] = value if value in {'hosts', 'env'} else 'hosts'
+        value = str(value or 'env').lower()
+        self.settings['proxy_mode'] = value if value in {'hosts', 'env'} else 'env'
+        self._save_settings()
+
+    @property
+    def env_proxy_migration_v1_complete(self) -> bool:
+        """Whether the one-time Env Proxy default migration was acknowledged."""
+        return bool(self.settings.get('env_proxy_migration_v1_complete', False))
+
+    @env_proxy_migration_v1_complete.setter
+    def env_proxy_migration_v1_complete(self, value: bool):
+        self.settings['env_proxy_migration_v1_complete'] = bool(value)
         self._save_settings()
 
     @property

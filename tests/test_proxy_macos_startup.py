@@ -21,6 +21,29 @@ from fleasion.utils import linux_proxy_helper, macos_proxy_helper, platform_maco
 pytestmark = pytest.mark.skipif(sys.platform == 'win32', reason='Linux/macOS proxy startup tests')
 
 
+def test_mode_switch_restart_clears_proxy_readiness_before_worker_runs():
+    proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
+    proxy._env_proxy_ready = threading.Event()
+    proxy._env_proxy_ready.set()
+    stop_entered = threading.Event()
+    allow_stop = threading.Event()
+    started = threading.Event()
+
+    def stop():
+        stop_entered.set()
+        allow_stop.wait(2.0)
+
+    proxy.stop = stop
+    proxy.start = started.set
+
+    proxy.restart_for_mode_switch()
+
+    assert stop_entered.wait(1.0)
+    assert not proxy._env_proxy_ready.is_set()
+    allow_stop.set()
+    assert started.wait(1.0)
+
+
 def test_privileged_relay_tls_self_test_retries_representative_host(monkeypatch):
     hosts = {"assetdelivery.roblox.com", "gamejoin.roblox.com"}
     calls = []

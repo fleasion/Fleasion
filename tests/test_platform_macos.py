@@ -171,6 +171,10 @@ def test_uri_interceptor_kills_known_pid_before_handoff(tmp_path, monkeypatch):
     assert all(target not in " ".join(map(str, entry)) for entry in logs)
 
 
+@pytest.mark.skipif(
+    not hasattr(platform_macos.select, "kqueue"),
+    reason="requires macOS kqueue",
+)
 def test_uri_interceptor_watches_new_log_and_reads_existing_bytes_once(tmp_path, monkeypatch):
     log_dir = tmp_path / "RobloxLogs"
     log_dir.mkdir()
