@@ -74,6 +74,8 @@ INTERCEPT_HOSTS: frozenset = (
     BASE_INTERCEPT_HOSTS | USERNAME_SPOOFER_INTERCEPT_HOSTS | CUSTOM_FFLAGS_INTERCEPT_HOSTS
 )
 ASSET_TRAFFIC_MISSING_DIAGNOSTIC_SECONDS = 20.0
+UPSTREAM_ENDPOINT_REFRESH_COOLDOWN_SECONDS = 5.0
+UPSTREAM_ENDPOINT_REFRESH_RETRY_TIMEOUT = 3.0
 
 _ZSTD_MAGIC = b'\x28\xb5\x2f\xfd'
 _GZIP_MAGIC = b'\x1f\x8b'
@@ -490,9 +492,7 @@ def apply_auto_replace_header_rules(
     return result, changed
 
 
-def apply_auto_replace_query_rules(
-    rules: Iterable[dict], host: str, path: str
-) -> Tuple[str, bool]:
+def apply_auto_replace_query_rules(rules: Iterable[dict], host: str, path: str) -> Tuple[str, bool]:
     """Run 'Query param' type Auto Replace rules: sets a query string
     parameter's value (matched by name) in a request's path - adds it
     (appended) if it wasn't already there. Only meaningful for requests -
@@ -600,9 +600,8 @@ async def _open_explicit_proxy_tunnel(
         )
 
     attempt_candidates = candidates[:_EXPLICIT_TUNNEL_MAX_CANDIDATES]
-    if (
-        attempt_candidates
-        and not any(family == socket.AF_INET6 for family, _address in attempt_candidates)
+    if attempt_candidates and not any(
+        family == socket.AF_INET6 for family, _address in attempt_candidates
     ):
         ipv6_candidate = next(
             (candidate for candidate in candidates if candidate[0] == socket.AF_INET6),
@@ -759,9 +758,7 @@ _BROWSER_BYPASS_CUSTOM_FFLAGS_HEADER = b'x-fleasion-bypass-custom-fflags'
 def _without_internal_client_settings_headers(headers: Dict[bytes, bytes]) -> Dict[bytes, bytes]:
     """Remove Fleasion-only ClientSettings headers before contacting Roblox."""
     return {
-        key: value
-        for key, value in headers.items()
-        if key != _BROWSER_BYPASS_CUSTOM_FFLAGS_HEADER
+        key: value for key, value in headers.items() if key != _BROWSER_BYPASS_CUSTOM_FFLAGS_HEADER
     }
 
 
@@ -1183,6 +1180,9 @@ class FleasionProxy:
         vpn_compat_max_cdn_connections: int = 32,
         custom_fflag_modifier=None,
         on_upstream_connect_failure: Optional[Callable[[str, str], None]] = None,
+        upstream_endpoint_refresher: Optional[
+            Callable[[str], Sequence[UpstreamEndpoint | str]]
+        ] = None,
         ca_cert_path: Optional[Path] = None,
         ca_key_path: Optional[Path] = None,
         cert_cache_dir: Optional[Path] = None,
@@ -1218,7 +1218,9 @@ class FleasionProxy:
             for host in (intercept_excluded_hosts or ())
             if str(host).strip()
         )
-        self._auto_replace_rules: List[dict] = list(auto_replace_rules) if auto_replace_rules else []
+        self._auto_replace_rules: List[dict] = (
+            list(auto_replace_rules) if auto_replace_rules else []
+        )
         self._ca_cert_path = ca_cert_path
         self._ca_key_path = ca_key_path
         self._cert_cache_dir = cert_cache_dir
@@ -1234,6 +1236,8 @@ class FleasionProxy:
         self._asset_diag_generation: int = 0
         self._on_upstream_connect_failure = on_upstream_connect_failure
         self._upstream_connect_failure_notified = False
+        self._upstream_endpoint_refresher = upstream_endpoint_refresher
+        self._last_upstream_endpoint_refresh: Dict[str, float] = {}
 
         asset_limit = max(1, int(vpn_compat_max_assetdelivery_connections or 16))
         cdn_limit = max(1, int(vpn_compat_max_cdn_connections or 32))
@@ -1516,7 +1520,9 @@ class FleasionProxy:
         req_raw, req_body = reparsed
         parts = req_raw.first_line.split(b' ', 2)
         entry['method'] = parts[0].decode('ascii', errors='replace') if parts else entry['method']
-        entry['path'] = parts[1].decode('ascii', errors='replace') if len(parts) > 1 else entry['path']
+        entry['path'] = (
+            parts[1].decode('ascii', errors='replace') if len(parts) > 1 else entry['path']
+        )
         entry['request_raw'] = raw_request[:_PREVIEW_CAPTURE_CAP]
         entry['status'] = None
         entry['size'] = 0
@@ -1571,9 +1577,7 @@ class FleasionProxy:
     def set_intercept_excluded_hosts(self, hosts: Iterable[str]) -> None:
         """Update hosts that must remain CONNECT tunnels in explicit-proxy mode."""
         self._intercept_excluded_hosts = frozenset(
-            str(host).strip().lower().rstrip('.')
-            for host in hosts
-            if str(host).strip()
+            str(host).strip().lower().rstrip('.') for host in hosts if str(host).strip()
         )
 
     def _should_intercept_explicit_host(self, host: str, port: int) -> bool:
@@ -1651,7 +1655,8 @@ class FleasionProxy:
         return self._wire_preserving_passthrough or host == PROFILE_API_HOST
 
     def upstream_endpoints_for_hosts(
-        self, hosts: Sequence[str],
+        self,
+        hosts: Sequence[str],
     ) -> Dict[str, List[UpstreamEndpoint]]:
         """Return a copy of the already-resolved routes for *hosts*.
 
@@ -1764,6 +1769,70 @@ class FleasionProxy:
             endpoints = endpoints[:max_targets]
         return endpoints
 
+    def _uses_direct_path_without_fallback(self) -> bool:
+        """Whether a failed request has no transport other than direct IP."""
+        if self._upstream_mode == UpstreamMode.DIRECT_IP:
+            return True
+        return (
+            self._upstream_mode == UpstreamMode.AUTO
+            and self._system_http_connector is None
+            and self._manual_http_connector is None
+            and self._manual_socks5_connector is None
+        )
+
+    async def _refresh_upstream_endpoints_after_failure(self, host: str) -> list[UpstreamEndpoint]:
+        """Ask the lifecycle layer for fresh DNS-bypass endpoints, at most once per host.
+
+        Intercepted hosts resolve to loopback while Fleasion is active, so the
+        server cannot safely use the normal resolver itself.  The master owns
+        a resolver that bypasses that redirect.  A short refresh cooldown
+        prevents a burst of client retries from repeatedly querying DNS.
+        """
+        refresher = self._upstream_endpoint_refresher
+        if refresher is None:
+            return []
+
+        now = time.monotonic()
+        last_attempt = self._last_upstream_endpoint_refresh.get(host, 0.0)
+        if now - last_attempt < UPSTREAM_ENDPOINT_REFRESH_COOLDOWN_SECONDS:
+            return []
+        self._last_upstream_endpoint_refresh[host] = now
+
+        try:
+            refreshed_raw = await asyncio.to_thread(refresher, host)
+        except Exception as exc:
+            from ..utils import log_buffer
+
+            log_buffer.log('Proxy', f'Runtime endpoint refresh failed for {host}: {exc}')
+            return []
+
+        refreshed = normalize_endpoints({host: refreshed_raw}).get(host, [])
+        if not refreshed:
+            return []
+
+        previous = self._upstream_endpoints.get(host, [])
+        self._upstream_endpoints[host] = refreshed
+
+        candidate_ips = [endpoint.ip for endpoint in refreshed if endpoint.ip]
+        update_ips = getattr(self.cache_scraper, 'update_real_ips', None)
+        if callable(update_ips) and candidate_ips:
+            try:
+                update_ips({host: candidate_ips})
+            except Exception as exc:
+                from ..utils import log_buffer
+
+                log_buffer.log('Cache', f'Could not refresh API bypass endpoints for {host}: {exc}')
+
+        old_ips = ', '.join(endpoint.ip or endpoint.host for endpoint in previous)
+        new_ips = ', '.join(endpoint.ip or endpoint.host for endpoint in refreshed)
+        from ..utils import log_buffer
+
+        log_buffer.log(
+            'Proxy',
+            f'Refreshed upstream endpoints for {host}: {old_ips or "none"} -> {new_ips}',
+        )
+        return refreshed
+
     async def _connect_upstream(
         self,
         host: str,
@@ -1774,9 +1843,47 @@ class FleasionProxy:
         endpoints = self._endpoints_for_host(host, max_targets=max_targets)
         sem = self._upstream_host_limits.get(host)
         if sem is None:
-            return await self._connector.connect(host, endpoints, self._upstream_ssl_ctx, timeout)
+            return await self._connect_upstream_with_recovery(host, endpoints, timeout)
         async with sem:
-            return await self._connector.connect(host, endpoints, self._upstream_ssl_ctx, timeout)
+            return await self._connect_upstream_with_recovery(host, endpoints, timeout)
+
+    async def _connect_upstream_with_recovery(
+        self,
+        host: str,
+        endpoints: Sequence[UpstreamEndpoint],
+        timeout: float,
+    ) -> UpstreamConnectResult:
+        result = await self._connector.connect(host, endpoints, self._upstream_ssl_ctx, timeout)
+
+        if result.writer is not None or not self._uses_direct_path_without_fallback():
+            return result
+
+        refreshed = await self._refresh_upstream_endpoints_after_failure(host)
+        if not refreshed:
+            return result
+
+        retry = await self._direct_connector.connect(
+            host,
+            refreshed,
+            self._upstream_ssl_ctx,
+            timeout=min(timeout, UPSTREAM_ENDPOINT_REFRESH_RETRY_TIMEOUT),
+        )
+        if retry.writer is None:
+            if retry.error:
+                result.error = (
+                    f'{result.error or "direct path failed"} | refreshed direct_ip: {retry.error}'
+                )
+            return result
+
+        if isinstance(self._connector, AutoConnector):
+            self._connector.note_direct_success(host)
+        from ..utils import log_buffer
+
+        log_buffer.log(
+            'Proxy',
+            f'Upstream recovered for {host} after endpoint refresh via {retry.endpoint}',
+        )
+        return retry
 
     async def _open_upstream(
         self,
@@ -1942,7 +2049,9 @@ class FleasionProxy:
                 if self._intercept_all_hosts
                 else None
             )
-            await self._tunnel_explicit_proxy_connection(reader, writer, host, port, log_entry=entry)
+            await self._tunnel_explicit_proxy_connection(
+                reader, writer, host, port, log_entry=entry
+            )
             return
 
         writer.write(b'HTTP/1.1 200 Connection Established\r\nProxy-Agent: Fleasion\r\n\r\n')
@@ -2017,7 +2126,7 @@ class FleasionProxy:
                 log_entry['ms'] = round((time.time() - start) * 1000)
             try:
                 await client_writer.drain()
-            except (ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError, OSError):
+            except ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError, OSError:
                 pass
             finally:
                 client_writer.close()
@@ -2028,7 +2137,7 @@ class FleasionProxy:
         client_writer.write(b'HTTP/1.1 200 Connection Established\r\nProxy-Agent: Fleasion\r\n\r\n')
         try:
             await client_writer.drain()
-        except (ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError, OSError):
+        except ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError, OSError:
             # Roblox can close a CONNECT socket while the response is in flight
             # during a failed launch. This is a client disconnect, not a proxy
             # crash, so do not emit an unhandled callback traceback.
@@ -2171,7 +2280,9 @@ class FleasionProxy:
                 await dictionary_writer.drain()
                 response = await _read_headers_raw(dictionary_reader)
                 if response is None:
-                    log_buffer.log('CustomFFlags', 'Roblox compression dictionary returned no response')
+                    log_buffer.log(
+                        'CustomFFlags', 'Roblox compression dictionary returned no response'
+                    )
                     return None
                 status_code = _parse_status_code(response.first_line)
                 if not 200 <= status_code < 300:
@@ -2192,7 +2303,12 @@ class FleasionProxy:
                     return None
                 self._client_settings_dictionary_cache[dictionary_sha256] = dictionary
                 return dictionary
-            except (ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError, OSError) as exc:
+            except (
+                ConnectionResetError,
+                BrokenPipeError,
+                asyncio.IncompleteReadError,
+                OSError,
+            ) as exc:
                 log_buffer.log('CustomFFlags', f'Roblox compression dictionary fetch failed: {exc}')
                 return None
             finally:
@@ -2249,7 +2365,9 @@ class FleasionProxy:
                         _req_pending = self._create_pending(
                             _log_entry, 'request', bytes(_log_entry['request_raw'])
                         )
-                        await asyncio.get_event_loop().run_in_executor(None, _req_pending.event.wait)
+                        await asyncio.get_event_loop().run_in_executor(
+                            None, _req_pending.event.wait
+                        )
                         self._resolve_pending(_log_entry, 'request')
                         _edited_request = bytes(_req_pending.data)
                         _log_entry['request_raw'] = _edited_request
@@ -2314,7 +2432,9 @@ class FleasionProxy:
                             req_body_raw = req_body.payload
                             _ar_parts = req_first.split(b' ', 2)
                             method = (
-                                _ar_parts[0].decode('ascii', errors='replace') if _ar_parts else method
+                                _ar_parts[0].decode('ascii', errors='replace')
+                                if _ar_parts
+                                else method
                             )
                             path = (
                                 _ar_parts[1].decode('ascii', errors='replace')

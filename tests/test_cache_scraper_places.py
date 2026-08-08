@@ -1,5 +1,7 @@
 import json
+import http.client
 import socket
+from types import SimpleNamespace
 
 from fleasion.proxy.addons.cache_scraper import CacheScraper
 
@@ -34,13 +36,15 @@ def test_user_place_lookup_uses_supported_limits_and_falls_back():
         if 'limit=50' in path:
             return None
         if 'limit=25' in path:
-            return json.dumps({
-                'data': [
-                    {'rootPlace': {'id': 155615604}},
-                    {'rootPlace': {'id': 332857185}},
-                ],
-                'nextPageCursor': None,
-            }).encode()
+            return json.dumps(
+                {
+                    'data': [
+                        {'rootPlace': {'id': 155615604}},
+                        {'rootPlace': {'id': 332857185}},
+                    ],
+                    'nextPageCursor': None,
+                }
+            ).encode()
         raise AssertionError(f'unexpected path: {path}')
 
     scraper._https_get = fake_https_get
@@ -63,14 +67,16 @@ def test_user_place_lookup_finds_prison_life_places_with_limit_50():
         assert 'limit=100' not in path
         if 'limit=50' not in path:
             raise AssertionError(f'unexpected fallback after successful limit=50: {path}')
-        return json.dumps({
-            'data': [
-                {'name': '[Closed] Prison Life v2.0 Beta', 'rootPlace': {'id': 454002598}},
-                {'name': 'Prison Life', 'rootPlace': {'id': 155615604}},
-                {'name': 'FE PL', 'rootPlace': {'id': 332857185}},
-            ],
-            'nextPageCursor': None,
-        }).encode()
+        return json.dumps(
+            {
+                'data': [
+                    {'name': '[Closed] Prison Life v2.0 Beta', 'rootPlace': {'id': 454002598}},
+                    {'name': 'Prison Life', 'rootPlace': {'id': 155615604}},
+                    {'name': 'FE PL', 'rootPlace': {'id': 332857185}},
+                ],
+                'nextPageCursor': None,
+            }
+        ).encode()
 
     scraper._https_get = fake_https_get
 
@@ -128,3 +134,48 @@ def test_https_get_status_failure_always_returns_unpackable_tuple(monkeypatch):
         ) == (None, None)
     finally:
         scraper._executor.shutdown(wait=False, cancel_futures=True)
+
+
+def test_https_get_tries_the_next_cached_endpoint_after_a_connect_failure(monkeypatch):
+    scraper = _make_scraper()
+    attempts = []
+
+    class _FakeSocket:
+        def close(self):
+            return None
+
+    class _FakeContext:
+        check_hostname = True
+        verify_mode = None
+
+        def wrap_socket(self, raw_sock, server_hostname):
+            assert server_hostname == 'assetdelivery.roblox.com'
+            return raw_sock
+
+    def fake_connect(address, timeout):
+        attempts.append((address, timeout))
+        if address[0] == '198.51.100.1':
+            raise OSError('first route timed out')
+        return _FakeSocket()
+
+    monkeypatch.setattr(socket, 'create_connection', fake_connect)
+    monkeypatch.setattr('ssl.create_default_context', lambda: _FakeContext())
+    monkeypatch.setattr(http.client.HTTPConnection, '__init__', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(http.client.HTTPConnection, 'request', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        http.client.HTTPConnection,
+        'getresponse',
+        lambda _self: SimpleNamespace(status=404, read=lambda: b'', headers={}),
+    )
+    scraper.set_real_ips({'assetdelivery.roblox.com': ['198.51.100.1', '93.184.216.34']})
+
+    try:
+        assert scraper._https_get(
+            'assetdelivery.roblox.com',
+            '/v1/asset/?id=123',
+            return_status=True,
+        ) == (None, 404)
+    finally:
+        scraper._executor.shutdown(wait=False, cancel_futures=True)
+
+    assert [address[0] for address, _timeout in attempts] == ['198.51.100.1', '93.184.216.34']

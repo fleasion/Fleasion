@@ -1,9 +1,14 @@
+import asyncio
 import socket
 import threading
 import time
 import unittest
 
 from fleasion.proxy.upstream import (
+    AutoConnector,
+    BaseUpstreamConnector,
+    UpstreamConnectResult,
+    UpstreamEndpoint,
     _blocking_http_connect_socket,
     _blocking_socks5_connect_socket,
 )
@@ -32,7 +37,7 @@ class _OneShotServer:
     def _run(self):
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
-                listener.bind(("127.0.0.1", 0))
+                listener.bind(('127.0.0.1', 0))
                 listener.listen(1)
                 self.port = listener.getsockname()[1]
                 self.ready.set()
@@ -56,39 +61,68 @@ def _recv_until(conn: socket.socket, marker: bytes) -> bytes:
 
 
 class UpstreamHandshakeTests(unittest.TestCase):
+    def test_auto_direct_only_retries_during_an_unhealthy_cooldown(self):
+        attempts = []
+
+        class _FailingDirectConnector(BaseUpstreamConnector):
+            async def connect(self, host, endpoints, ssl_ctx, timeout):
+                attempts.append((host, list(endpoints), timeout))
+                return UpstreamConnectResult(
+                    reader=None,
+                    writer=None,
+                    method='direct_ip',
+                    endpoint=host,
+                    error='timed out',
+                )
+
+        connector = AutoConnector(direct=_FailingDirectConnector(), cooldown_seconds=120.0)
+        connector.state_for('apis.roblox.com').direct_ip_unhealthy_until = time.monotonic() + 60.0
+
+        result = asyncio.run(
+            connector.connect(
+                'apis.roblox.com',
+                [UpstreamEndpoint(host='apis.roblox.com', ip='93.184.216.34')],
+                None,
+                1.0,
+            )
+        )
+
+        self.assertEqual(len(attempts), 1)
+        self.assertEqual(result.error, 'direct_ip: timed out')
+
     def test_http_connect_handshake_parser(self):
         seen = {}
 
         def handler(conn):
-            request = _recv_until(conn, b"\r\n\r\n")
-            seen["request"] = request
-            conn.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            request = _recv_until(conn, b'\r\n\r\n')
+            seen['request'] = request
+            conn.sendall(b'HTTP/1.1 200 Connection Established\r\n\r\n')
             time.sleep(0.05)
 
         with _OneShotServer(handler) as server:
             sock = _blocking_http_connect_socket(
-                "127.0.0.1",
+                '127.0.0.1',
                 server.port,
-                "assetdelivery.roblox.com",
+                'assetdelivery.roblox.com',
                 443,
                 2.0,
             )
             sock.close()
 
-        self.assertIn(b"CONNECT assetdelivery.roblox.com:443 HTTP/1.1", seen["request"])
-        self.assertIn(b"Host: assetdelivery.roblox.com:443", seen["request"])
+        self.assertIn(b'CONNECT assetdelivery.roblox.com:443 HTTP/1.1', seen['request'])
+        self.assertIn(b'Host: assetdelivery.roblox.com:443', seen['request'])
 
     def test_http_connect_rejects_non_200(self):
         def handler(conn):
-            _recv_until(conn, b"\r\n\r\n")
-            conn.sendall(b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n")
+            _recv_until(conn, b'\r\n\r\n')
+            conn.sendall(b'HTTP/1.1 407 Proxy Authentication Required\r\n\r\n')
 
         with _OneShotServer(handler) as server:
             with self.assertRaises(OSError):
                 _blocking_http_connect_socket(
-                    "127.0.0.1",
+                    '127.0.0.1',
                     server.port,
-                    "assetdelivery.roblox.com",
+                    'assetdelivery.roblox.com',
                     443,
                     2.0,
                 )
@@ -97,40 +131,40 @@ class UpstreamHandshakeTests(unittest.TestCase):
         seen = {}
 
         def handler(conn):
-            seen["greeting"] = conn.recv(3)
-            conn.sendall(b"\x05\x00")
+            seen['greeting'] = conn.recv(3)
+            conn.sendall(b'\x05\x00')
             head = conn.recv(5)
             name_len = head[4]
             name = conn.recv(name_len)
             port = conn.recv(2)
-            seen["request"] = head + name + port
-            conn.sendall(b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00")
+            seen['request'] = head + name + port
+            conn.sendall(b'\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00')
             time.sleep(0.05)
 
         with _OneShotServer(handler) as server:
             sock = _blocking_socks5_connect_socket(
-                "127.0.0.1",
+                '127.0.0.1',
                 server.port,
-                "assetdelivery.roblox.com",
+                'assetdelivery.roblox.com',
                 443,
                 2.0,
             )
             sock.close()
 
-        self.assertEqual(seen["greeting"], b"\x05\x01\x00")
-        self.assertEqual(seen["request"][0:4], b"\x05\x01\x00\x03")
-        self.assertIn(b"assetdelivery.roblox.com", seen["request"])
-        self.assertEqual(seen["request"][-2:], (443).to_bytes(2, "big"))
+        self.assertEqual(seen['greeting'], b'\x05\x01\x00')
+        self.assertEqual(seen['request'][0:4], b'\x05\x01\x00\x03')
+        self.assertIn(b'assetdelivery.roblox.com', seen['request'])
+        self.assertEqual(seen['request'][-2:], (443).to_bytes(2, 'big'))
 
     def test_static_windows_proxy_parsing(self):
-        proxy = parse_static_http_proxy("http=127.0.0.1:8080;https=127.0.0.1:8443")
+        proxy = parse_static_http_proxy('http=127.0.0.1:8080;https=127.0.0.1:8443')
         self.assertIsNotNone(proxy)
-        self.assertEqual(proxy.host, "127.0.0.1")
+        self.assertEqual(proxy.host, '127.0.0.1')
         self.assertEqual(proxy.port, 8443)
 
-        proxy = parse_static_http_proxy("127.0.0.1:8888")
+        proxy = parse_static_http_proxy('127.0.0.1:8888')
         self.assertIsNotNone(proxy)
-        self.assertEqual(proxy.host, "127.0.0.1")
+        self.assertEqual(proxy.host, '127.0.0.1')
         self.assertEqual(proxy.port, 8888)
 
     def test_macos_scutil_proxy_parsing_prefers_static_values(self):
@@ -150,11 +184,11 @@ class UpstreamHandshakeTests(unittest.TestCase):
         )
 
         self.assertTrue(http_enabled)
-        self.assertEqual(http_proxy, "proxy.local:8080")
+        self.assertEqual(http_proxy, 'proxy.local:8080')
         self.assertTrue(https_enabled)
-        self.assertEqual(https_proxy, "secure-proxy.local:8443")
-        self.assertEqual(auto_url, "https://proxy.local/proxy.pac")
+        self.assertEqual(https_proxy, 'secure-proxy.local:8443')
+        self.assertEqual(auto_url, 'https://proxy.local/proxy.pac')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

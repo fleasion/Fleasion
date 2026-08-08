@@ -335,7 +335,7 @@ class CacheScraper:
         # Real IPs for intercepted hosts - set by ProxyMaster after DNS resolution
         # (before the hosts file is written). Keyed by hostname.
         # Used to bypass our own hosts file when making direct API calls.
-        self._real_ips: dict[str, str] = {}
+        self._real_ips: dict[str, tuple[str, ...]] = {}
 
         # (session removed - API fetches use _https_get() with raw ssl for SNI control)
 
@@ -622,12 +622,43 @@ class CacheScraper:
     # Background workers
     # ------------------------------------------------------------------
 
-    def set_real_ips(self, real_ips: dict[str, str]) -> None:
+    @staticmethod
+    def _normalize_real_ips(real_ips: dict[str, object]) -> dict[str, tuple[str, ...]]:
+        normalized: dict[str, tuple[str, ...]] = {}
+        for host, candidates in real_ips.items():
+            host_key = str(host).strip().lower().rstrip('.')
+            if not host_key:
+                continue
+            if isinstance(candidates, str):
+                values = (candidates,)
+            else:
+                try:
+                    values = tuple(str(value) for value in candidates)
+                except TypeError:
+                    values = (str(candidates),)
+            unique_values = tuple(dict.fromkeys(value.strip() for value in values if value.strip()))
+            if unique_values:
+                normalized[host_key] = unique_values
+        return normalized
+
+    def set_real_ips(self, real_ips: dict[str, object]) -> None:
         """Called by ProxyMaster after DNS resolution (before hosts file is written).
-        Stores real IPs so API calls can bypass our hosts file redirect.
+        Stores real IP candidates so API calls can bypass our hosts file redirect.
         """
-        self._real_ips = real_ips
-        log_buffer.log('Cache', f'API bypass configured for: {list(real_ips.keys())}')
+        normalized = self._normalize_real_ips(real_ips)
+        with self._lock:
+            self._real_ips = normalized
+        log_buffer.log('Cache', f'API bypass configured for: {list(normalized.keys())}')
+
+    def update_real_ips(self, real_ips: dict[str, object]) -> None:
+        """Prefer refreshed candidates without dropping routes for other hosts."""
+        refreshed = self._normalize_real_ips(real_ips)
+        if not refreshed:
+            return
+        with self._lock:
+            for host, candidates in refreshed.items():
+                existing = self._real_ips.get(host, ())
+                self._real_ips[host] = tuple(dict.fromkeys((*candidates, *existing)))
 
     def _https_get(
         self,
@@ -666,12 +697,29 @@ class CacheScraper:
         cur_path = path
 
         for _ in range(max_redirects):
-            real_ip = self._real_ips.get(cur_hostname, cur_hostname)
-            try:
-                raw_sock = socket.create_connection((real_ip, 443), timeout=timeout)
-                ssl_sock = ctx.wrap_socket(raw_sock, server_hostname=cur_hostname)
-            except Exception as exc:
-                log_buffer.log('Cache', f'Socket connect failed {cur_hostname} ({real_ip}): {exc}')
+            with self._lock:
+                real_ips = self._real_ips.get(cur_hostname, ())
+            candidates = real_ips or (cur_hostname,)
+            ssl_sock = None
+            real_ip = ''
+            for candidate in candidates:
+                raw_sock = None
+                try:
+                    raw_sock = socket.create_connection((candidate, 443), timeout=timeout)
+                    ssl_sock = ctx.wrap_socket(raw_sock, server_hostname=cur_hostname)
+                    real_ip = candidate
+                    break
+                except Exception as exc:
+                    try:
+                        if raw_sock is not None:
+                            raw_sock.close()
+                    except Exception:
+                        pass
+                    log_buffer.log(
+                        'Cache', f'Socket connect failed {cur_hostname} ({candidate}): {exc}'
+                    )
+
+            if ssl_sock is None:
                 return (None, None) if return_status else None
 
             try:

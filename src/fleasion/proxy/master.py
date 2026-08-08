@@ -418,7 +418,12 @@ def _prefer_ipv4_endpoints(endpoints: list[UpstreamEndpoint]) -> list[UpstreamEn
     )
 
 
-def _resolve_real_endpoints(hosts: set[str]) -> dict[str, list[UpstreamEndpoint]]:
+def _resolve_real_endpoints(
+    hosts: set[str],
+    *,
+    collect_all_public_fallbacks: bool = False,
+    public_dns_timeout: float = 3.0,
+) -> dict[str, list[UpstreamEndpoint]]:
     """Resolve real upstream endpoints before hosts entries point at localhost.
 
     We MUST do this first - once hosts file points them to 127.0.0.1, any
@@ -467,26 +472,37 @@ def _resolve_real_endpoints(hosts: set[str]) -> dict[str, list[UpstreamEndpoint]
             'Proxy',
             f'OS resolver returned no routable endpoints for {host}; trying public DNS as a last resort.',
         )
+        fallback_endpoints: list[UpstreamEndpoint] = []
+        fallback_servers: list[str] = []
         for dns_server in _DNS_FALLBACK_SERVERS:
             try:
                 fallback: list[UpstreamEndpoint] = []
                 for family, qtype in ((socket.AF_INET, 1), (socket.AF_INET6, 28)):
-                    for ip in _dns_query_udp(host, dns_server, qtype=qtype):
+                    for ip in _dns_query_udp(
+                        host, dns_server, timeout=public_dns_timeout, qtype=qtype
+                    ):
                         key = (family, ip)
                         if key in seen:
                             continue
                         seen.add(key)
                         fallback.append(UpstreamEndpoint(host=host, ip=ip, family=family))
                 if fallback:
-                    fallback = _prefer_ipv4_endpoints(fallback)
-                    real_endpoints[host] = fallback
-                    log_buffer.log(
-                        'Proxy',
-                        f'Public DNS fallback used for {host}. This may be incompatible with VPN routing.',
-                    )
-                    break
+                    fallback_endpoints.extend(fallback)
+                    fallback_servers.append(dns_server)
+                    if not collect_all_public_fallbacks:
+                        break
             except Exception as exc:
                 log_buffer.log('Proxy', f'Direct UDP DNS to {dns_server} failed for {host}: {exc}')
+        if fallback_endpoints:
+            real_endpoints[host] = _prefer_ipv4_endpoints(fallback_endpoints)
+            resolver_note = (
+                f' via {", ".join(fallback_servers)}' if len(fallback_servers) > 1 else ''
+            )
+            log_buffer.log(
+                'Proxy',
+                f'Public DNS fallback used for {host}{resolver_note}. '
+                'This may be incompatible with VPN routing.',
+            )
         else:
             log_buffer.log(
                 'Proxy',
@@ -504,6 +520,32 @@ def _resolve_real_ips(hosts: set[str]) -> dict[str, list[str]]:
     return {host: [ep.ip for ep in eps if ep.ip] for host, eps in endpoints.items()}
 
 
+def _refresh_real_upstream_endpoints(host: str) -> list[UpstreamEndpoint]:
+    """Resolve fresh real routes after an intercepted host times out.
+
+    At runtime the hosts file deliberately points intercepted names to
+    loopback, so the normal resolver cannot supply a usable upstream IP.  The
+    existing raw-DNS fallback bypasses that redirect.  Querying every fallback
+    resolver here gives a transiently bad CDN/API edge a chance to be replaced
+    without restarting Roblox or waiting out a transport cooldown.
+    """
+    normalized_host = str(host).strip().lower().rstrip('.')
+    if not normalized_host:
+        return []
+    endpoints = _resolve_real_endpoints(
+        {normalized_host},
+        collect_all_public_fallbacks=True,
+        public_dns_timeout=0.75,
+    ).get(normalized_host, [])
+    if endpoints:
+        log_buffer.log(
+            'Proxy',
+            f'Runtime upstream endpoint refresh for {normalized_host}: '
+            f'{", ".join(ep.ip for ep in endpoints if ep.ip)}',
+        )
+    return endpoints
+
+
 def _log_upstream_ip_coverage(hosts: set[str], real_endpoints: dict) -> None:
     for host in sorted(hosts):
         endpoints = real_endpoints.get(host) or []
@@ -518,10 +560,20 @@ def _log_upstream_ip_coverage(hosts: set[str], real_endpoints: dict) -> None:
             log_buffer.log('Proxy', f'Upstream IP coverage: {host} -> NO ROUTABLE IPS')
 
 
-def _first_endpoint_ips(
+def _endpoint_ip_candidates(
     real_endpoints: dict[str, list[UpstreamEndpoint]],
-) -> dict[str, str]:
-    return {host: eps[0].ip for host, eps in real_endpoints.items() if eps and eps[0].ip}
+) -> dict[str, tuple[str, ...]]:
+    """Return every usable IP for direct cache-scraper bypasses.
+
+    The proxy already retries all resolved upstream endpoints.  Keeping only
+    the first address for cache/pre-download traffic created an avoidable
+    single-edge failure mode for assetdelivery and CDN downloads.
+    """
+    return {
+        host: tuple(ep.ip for ep in eps if ep.ip)
+        for host, eps in real_endpoints.items()
+        if any(ep.ip for ep in eps)
+    }
 
 
 def _log_system_proxy_info(info: WindowsProxyInfo, system_proxy: Optional[HttpProxyConfig]) -> None:
@@ -3704,7 +3756,7 @@ class ProxyMaster:
                 real_endpoints.update(added_endpoints)
                 self._proxy.set_upstream_endpoints(real_endpoints)
                 self._proxy.set_intercept_hosts(desired_hosts)
-                scraper_ips = _first_endpoint_ips(real_endpoints)
+                scraper_ips = _endpoint_ip_candidates(real_endpoints)
                 if scraper_ips:
                     self.cache_scraper.set_real_ips(scraper_ips)
                 self._active_intercept_hosts = set(desired_hosts)
@@ -3773,7 +3825,7 @@ class ProxyMaster:
                     return
                 self._active_intercept_hosts = set(desired_hosts)
                 self._proxy.set_upstream_endpoints(real_endpoints)
-                scraper_ips = _first_endpoint_ips(real_endpoints)
+                scraper_ips = _endpoint_ip_candidates(real_endpoints)
                 if scraper_ips:
                     self.cache_scraper.set_real_ips(scraper_ips)
                 log_buffer.log(
@@ -3801,7 +3853,7 @@ class ProxyMaster:
 
             self._active_intercept_hosts = set(desired_hosts)
             self._proxy.set_upstream_endpoints(real_endpoints)
-            scraper_ips = _first_endpoint_ips(real_endpoints)
+            scraper_ips = _endpoint_ip_candidates(real_endpoints)
             if scraper_ips:
                 self.cache_scraper.set_real_ips(scraper_ips)
             log_buffer.log(
@@ -3894,7 +3946,7 @@ class ProxyMaster:
             new_endpoints = _resolve_real_endpoints(active_hosts)
             if self._proxy is not None and new_endpoints:
                 self._proxy.set_upstream_endpoints(new_endpoints)
-            scraper_ips = _first_endpoint_ips(new_endpoints)
+            scraper_ips = _endpoint_ip_candidates(new_endpoints)
             if scraper_ips:
                 self.cache_scraper.set_real_ips(scraper_ips)
             return
@@ -3924,7 +3976,7 @@ class ProxyMaster:
         # Update running proxy and scraper with fresh upstream IPs.
         if self._proxy is not None and new_endpoints:
             self._proxy.set_upstream_endpoints(new_endpoints)
-        scraper_ips = _first_endpoint_ips(new_endpoints)
+        scraper_ips = _endpoint_ip_candidates(new_endpoints)
         if scraper_ips:
             self.cache_scraper.set_real_ips(scraper_ips)
 
@@ -4424,7 +4476,7 @@ class ProxyMaster:
         self._texture_stripper.set_cache_scraper(self.cache_scraper)
         # Give the scraper real IPs for ALL intercepted hosts so its API
         # calls bypass our hosts file redirect (including CDN redirects).
-        scraper_ips = _first_endpoint_ips(real_endpoints)
+        scraper_ips = _endpoint_ip_candidates(real_endpoints)
         self.cache_scraper.set_real_ips(scraper_ips)
 
         # Wire the scraper into the json_viewer's AssetFetcherThread so the
@@ -4494,6 +4546,7 @@ class ProxyMaster:
                     'listen_port': listen_port,
                 },
             ),
+            upstream_endpoint_refresher=_refresh_real_upstream_endpoints,
         )
         with self._lock:
             interceptors = list(self._module_interceptors)

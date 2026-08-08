@@ -435,6 +435,31 @@ class AutoConnector(BaseUpstreamConnector):
         state.preferred_until = now + self.cooldown_seconds
         state.last_success_method = method
 
+    def note_direct_success(self, host: str) -> None:
+        """Clear a previous direct-path failure after a refreshed retry works."""
+        state = self.state_for(host)
+        state.direct_ip_unhealthy_until = 0.0
+        state.preferred_method = None
+        state.preferred_until = 0.0
+        state.last_success_method = UpstreamMode.DIRECT_IP.value
+
+    def _has_fallback_transport(self) -> bool:
+        """Whether a failed direct route can actually be bypassed.
+
+        In ``auto`` mode without a detected/configured upstream proxy, a
+        direct-IP cooldown used to turn one transient timeout into a two-minute
+        outage: every later request skipped the only available transport.  Keep
+        the cooldown only when there is a real alternate path to prefer.
+        """
+        return any(
+            connector is not None
+            for connector in (
+                self.system_http_proxy,
+                self.manual_http_proxy,
+                self.manual_socks5,
+            )
+        )
+
     def _connectors_by_method(self) -> dict[str, BaseUpstreamConnector]:
         connectors: dict[str, BaseUpstreamConnector] = {
             UpstreamMode.DIRECT_IP.value: self.direct,
@@ -493,7 +518,7 @@ class AutoConnector(BaseUpstreamConnector):
                 state.preferred_until = now + self.cooldown_seconds
                 return result
 
-        direct_unhealthy = state.direct_ip_unhealthy_until > now
+        direct_unhealthy = state.direct_ip_unhealthy_until > now and self._has_fallback_transport()
         if UpstreamMode.DIRECT_IP.value not in attempted and not direct_unhealthy:
             attempted.add(UpstreamMode.DIRECT_IP.value)
             result = await self._try_connector(
