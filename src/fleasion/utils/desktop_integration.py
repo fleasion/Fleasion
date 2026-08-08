@@ -15,6 +15,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from ..version import macos_bundle_version
 from .metadata import APP_NAME, APP_VERSION
 from .paths import USER_HOME, get_icon_path
 
@@ -190,6 +191,7 @@ def _create_macos_app() -> bool:
             icon_name = icon_path.stem
             shutil.copy2(icon_path, resources / icon_path.name)
 
+        bundle_version = macos_bundle_version(APP_VERSION)
         info = {
             'CFBundleDevelopmentRegion': 'en',
             'CFBundleDisplayName': APP_NAME,
@@ -198,8 +200,8 @@ def _create_macos_app() -> bool:
             'CFBundleInfoDictionaryVersion': '6.0',
             'CFBundleName': APP_NAME,
             'CFBundlePackageType': 'APPL',
-            'CFBundleShortVersionString': APP_VERSION,
-            'CFBundleVersion': APP_VERSION,
+            'CFBundleShortVersionString': bundle_version,
+            'CFBundleVersion': bundle_version,
             'LSApplicationCategoryType': 'public.app-category.utilities',
             'NSHumanReadableCopyright': _DESCRIPTION,
         }

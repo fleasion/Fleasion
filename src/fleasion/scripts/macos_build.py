@@ -13,10 +13,11 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-import tomllib
 import urllib.request
 from functools import cached_property
 from pathlib import Path
+
+from fleasion.version import build_artifact_version, read_project_version
 
 log = logging.getLogger(__name__)
 
@@ -78,17 +79,14 @@ class MacOSBuilder:
         self.base_environment.setdefault('MACOSX_DEPLOYMENT_TARGET', self.deployment_target)
 
     @cached_property
-    def version(self) -> str:
-        """Return the application version."""
-        pyproject = tomllib.loads(Path('pyproject.toml').read_text(encoding='utf-8'))
-        project = pyproject.get('project')
-        if not isinstance(project, dict):
-            raise RuntimeError('Could not find [project] in pyproject.toml.')
+    def app_version(self) -> str:
+        """Return the canonical application version."""
+        return read_project_version()
 
-        version = project.get('version')
-        if not isinstance(version, str) or not version:
-            raise RuntimeError('Could not find project.version in pyproject.toml.')
-        return version
+    @cached_property
+    def version(self) -> str:
+        """Return the artifact filename version."""
+        return build_artifact_version(self.app_version)
 
     @cached_property
     def x86_uv_version(self) -> str:

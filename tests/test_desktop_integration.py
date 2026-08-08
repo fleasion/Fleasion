@@ -50,6 +50,7 @@ def test_macos_launcher_app_contains_metadata_icon_and_current_launch(tmp_path, 
     project = tmp_path / "Project"
 
     monkeypatch.setattr(desktop_integration.sys, "platform", "darwin")
+    monkeypatch.setattr(desktop_integration, "APP_VERSION", "2.4.0b1")
     monkeypatch.setattr(desktop_integration, "MACOS_APPLICATION_PATH", app_path)
     monkeypatch.setattr(desktop_integration, "get_icon_path", lambda: icon)
     monkeypatch.setattr(
@@ -68,6 +69,8 @@ def test_macos_launcher_app_contains_metadata_icon_and_current_launch(tmp_path, 
     script = (app_path / "Contents" / "MacOS" / "Fleasion").read_text(encoding="utf-8")
 
     assert info["CFBundleDisplayName"] == "Fleasion"
+    assert info["CFBundleShortVersionString"] == "2.4.0"
+    assert info["CFBundleVersion"] == "2.4.0"
     assert info["CFBundleIconFile"] == "fleasionlogoHR"
     assert info["NSHumanReadableCopyright"] == "Roblox asset interceptor and replacer"
     assert "CFBundleURLTypes" not in info
