@@ -59,16 +59,21 @@ _CLSID_APPLICATION_ACTIVATION_MANAGER = _guid('45BA127D-10A8-46EA-8AB7-56EA90789
 _IID_APPLICATION_ACTIVATION_MANAGER = _guid('2E941141-7F97-4756-BA1D-9DECDE894A3D')
 
 
-def run_cmd(args: list[str]) -> str:
-    """Run a Windows command and return its output."""
-    return subprocess.run(
+def run_cmd(args: list[str], timeout: float = 10.0) -> tuple[int, str]:
+    """Run a Windows command and return (return_code, combined output)."""
+    result = subprocess.run(
         args,
         capture_output=True,
         text=True,
         encoding='utf-8',
         errors='replace',
         creationflags=subprocess.CREATE_NO_WINDOW,
-    ).stdout
+        timeout=timeout,
+    )
+    output = '\n'.join(
+        part.strip() for part in (result.stdout, result.stderr) if part and part.strip()
+    )
+    return result.returncode, output
 
 
 def run_gdk_debugger_command_line(arguments: list[str] | None = None) -> int:
@@ -230,11 +235,35 @@ def _iter_processes():
 
 def _find_pid(exe_name: str) -> Optional[int]:
     """Return the PID of the first process matching exe_name (case-insensitive)."""
-    target = exe_name.lower()
-    for pid, name in _iter_processes():
-        if name == target:
-            return pid
-    return None
+    pids = _find_pids(exe_name)
+    return pids[0] if pids else None
+
+
+def _find_pids(exe_name: str) -> list[int]:
+    """Return all PIDs whose executable name matches *exe_name*."""
+    target = exe_name.casefold()
+    return [pid for pid, name in _iter_processes() if name == target]
+
+
+def _describe_pids(pids: list[int]) -> str:
+    """Return concise PID/path details for process diagnostics."""
+    if not pids:
+        return 'none'
+    descriptions = []
+    for pid in pids:
+        path = _query_exe_path(pid)
+        descriptions.append(f'{pid} ({path or "path unavailable"})')
+    return ', '.join(descriptions)
+
+
+def _summarize_command_output(output: str, limit: int = 500) -> str:
+    """Make command output suitable for a single persistent log line."""
+    summary = ' '.join(output.split())
+    if not summary:
+        return '<no output>'
+    if len(summary) > limit:
+        return f'{summary[: limit - 3]}...'
+    return summary
 
 
 def _query_exe_path(pid: int) -> Optional[Path]:
@@ -347,8 +376,25 @@ def _force_close_process_immediately(
 
     try:
         log_buffer.log('Launcher', f'{label} forcing exact Player exit immediately')
-        run_cmd(['taskkill', '/F', '/PID', str(pid)])
+        returncode, output = run_cmd(['taskkill', '/F', '/PID', str(pid)])
+        log_buffer.log(
+            'Launcher',
+            f'{label} taskkill /F /PID {pid} returned {returncode}: '
+            f'{_summarize_command_output(output)}',
+        )
+        if returncode != 0:
+            log_buffer.log(
+                'Launcher',
+                f'{label} taskkill /PID {pid} failed with exit code {returncode}',
+            )
+            return False
         return _wait_for_pid_exit(pid, exe_name, timeout, cancel_event)
+    except subprocess.TimeoutExpired:
+        log_buffer.log(
+            'Launcher',
+            f'{label} taskkill /F /PID {pid} timed out after 10 seconds',
+        )
+        return False
     except Exception as exc:
         log_buffer.log(
             'Launcher',
@@ -1100,10 +1146,63 @@ def get_roblox_studio_exe_path() -> Optional[Path]:
 
 def terminate_roblox() -> bool:
     """Terminate Roblox if it's running. Returns True if it was running."""
-    if not is_roblox_running():
+    pids = _find_pids(ROBLOX_PROCESS)
+    if not pids:
         return False
-    run_cmd(['taskkill', '/F', '/IM', ROBLOX_PROCESS])
-    return True
+
+    log_buffer.log(
+        'Launcher',
+        f'Cache termination starting: elevated={_is_process_elevated()}; '
+        f'Roblox PID(s)={_describe_pids(pids)}',
+    )
+
+    all_commands_succeeded = True
+    for pid in pids:
+        if not _pid_is_running(pid, ROBLOX_PROCESS):
+            log_buffer.log('Launcher', f'Roblox PID {pid} exited before taskkill ran')
+            continue
+        try:
+            returncode, output = run_cmd(['taskkill', '/F', '/PID', str(pid)])
+        except subprocess.TimeoutExpired:
+            log_buffer.log(
+                'Launcher',
+                f'taskkill /F /PID {pid} timed out after 10 seconds',
+            )
+            all_commands_succeeded = False
+            continue
+        except OSError as exc:
+            log_buffer.log(
+                'Launcher',
+                f'taskkill /F /PID {pid} could not start: {type(exc).__name__}: {exc}',
+            )
+            all_commands_succeeded = False
+            continue
+
+        log_buffer.log(
+            'Launcher',
+            f'taskkill /F /PID {pid} returned {returncode}: '
+            f'{_summarize_command_output(output)}',
+        )
+        if returncode != 0:
+            all_commands_succeeded = False
+
+        if not _wait_for_pid_exit(pid, ROBLOX_PROCESS, timeout=5.0):
+            log_buffer.log(
+                'Launcher',
+                f'Roblox PID {pid} remained after taskkill /F; '
+                f'current details={_describe_pids(_find_pids(ROBLOX_PROCESS))}',
+            )
+            all_commands_succeeded = False
+
+    remaining_pids = _find_pids(ROBLOX_PROCESS)
+    if remaining_pids:
+        log_buffer.log(
+            'Launcher',
+            f'Cache termination left Roblox running: '
+            f'{_describe_pids(remaining_pids)}',
+        )
+        return False
+    return all_commands_succeeded
 
 
 def close_roblox_for_env_lifecycle() -> bool:
@@ -1146,11 +1245,18 @@ def close_roblox_for_env_lifecycle() -> bool:
 
 def wait_for_roblox_exit(timeout: float = 10.0) -> bool:
     """Wait for Roblox to exit. Returns True if it exited before timeout."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if not is_roblox_running():
+    deadline = time.monotonic() + max(0.0, timeout)
+    while time.monotonic() < deadline:
+        if not _find_pids(ROBLOX_PROCESS):
             return True
         time.sleep(0.5)
+    remaining_pids = _find_pids(ROBLOX_PROCESS)
+    if remaining_pids:
+        log_buffer.log(
+            'Launcher',
+            f'Roblox exit wait timed out after {timeout:g} seconds; '
+            f'remaining PID(s)={_describe_pids(remaining_pids)}',
+        )
     return False
 
 
@@ -1218,11 +1324,15 @@ def delete_cache() -> list[str]:
 
     if is_roblox_running():
         messages.append('Roblox is running, terminating...')
-        terminate_roblox()
+        if not terminate_roblox():
+            messages.append('Roblox termination failed (taskkill did not succeed)')
+            messages.append('Cache deletion aborted')
+            return messages
         if wait_for_roblox_exit():
             messages.append('Roblox terminated successfully')
         else:
-            messages.extend(['Roblox termination timed out', 'Cache deletion aborted'])
+            messages.append('Roblox termination timed out (process still running)')
+            messages.append('Cache deletion aborted')
             return messages
     else:
         messages.append('Roblox was closed')

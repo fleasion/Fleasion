@@ -199,7 +199,7 @@ def test_force_close_kills_immediately_before_waiting_for_process_exit(monkeypat
     monkeypatch.setattr(
         module,
         "run_cmd",
-        lambda args: events.append(tuple(args)) or "",
+        lambda args: events.append(tuple(args)) or (0, ""),
     )
     monkeypatch.setattr(
         module,
@@ -216,6 +216,81 @@ def test_force_close_kills_immediately_before_waiting_for_process_exit(monkeypat
         ("taskkill", "/F", "/PID", "100"),
         "pid_exit",
     ]
+
+
+def test_terminate_roblox_logs_taskkill_result_for_every_process(monkeypatch):
+    module = _load_platform_windows(monkeypatch)
+    commands = []
+    logs = []
+    process_snapshots = iter(([100, 200], []))
+
+    monkeypatch.setattr(module, "_find_pids", lambda _name: next(process_snapshots))
+    monkeypatch.setattr(module, "_pid_is_running", lambda _pid, _name: True)
+    monkeypatch.setattr(module, "_is_process_elevated", lambda: False)
+    monkeypatch.setattr(module, "_describe_pids", lambda pids: ",".join(map(str, pids)))
+    monkeypatch.setattr(module, "_wait_for_pid_exit", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        module,
+        "run_cmd",
+        lambda args: commands.append(tuple(args)) or (0, f"SUCCESS: {args[-1]}"),
+    )
+    monkeypatch.setattr(
+        module.log_buffer,
+        "log",
+        lambda category, message: logs.append((category, message)),
+    )
+
+    assert module.terminate_roblox()
+    assert commands == [
+        ("taskkill", "/F", "/PID", "100"),
+        ("taskkill", "/F", "/PID", "200"),
+    ]
+    assert any("PID 100 returned 0" in message for _, message in logs)
+    assert any("PID 200 returned 0" in message for _, message in logs)
+
+
+def test_terminate_roblox_reports_taskkill_timeout(monkeypatch):
+    module = _load_platform_windows(monkeypatch)
+    logs = []
+
+    monkeypatch.setattr(module, "_find_pids", lambda _name: [100])
+    monkeypatch.setattr(module, "_pid_is_running", lambda _pid, _name: True)
+    monkeypatch.setattr(module, "_is_process_elevated", lambda: True)
+    monkeypatch.setattr(module, "_describe_pids", lambda pids: ",".join(map(str, pids)))
+    monkeypatch.setattr(
+        module.log_buffer,
+        "log",
+        lambda category, message: logs.append((category, message)),
+    )
+
+    def timeout(_args):
+        raise subprocess.TimeoutExpired(cmd="taskkill", timeout=10)
+
+    monkeypatch.setattr(module, "run_cmd", timeout)
+
+    assert not module.terminate_roblox()
+    assert any("timed out after 10 seconds" in message for _, message in logs)
+
+
+def test_terminate_roblox_logs_taskkill_failure_output(monkeypatch):
+    module = _load_platform_windows(monkeypatch)
+    logs = []
+    process_snapshots = iter(([100], []))
+
+    monkeypatch.setattr(module, "_find_pids", lambda _name: next(process_snapshots))
+    monkeypatch.setattr(module, "_pid_is_running", lambda _pid, _name: True)
+    monkeypatch.setattr(module, "_is_process_elevated", lambda: False)
+    monkeypatch.setattr(module, "_describe_pids", lambda pids: ",".join(map(str, pids)))
+    monkeypatch.setattr(module, "_wait_for_pid_exit", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(module, "run_cmd", lambda _args: (5, "ERROR: Access is denied."))
+    monkeypatch.setattr(
+        module.log_buffer,
+        "log",
+        lambda category, message: logs.append((category, message)),
+    )
+
+    assert not module.terminate_roblox()
+    assert any("returned 5" in message and "Access is denied" in message for _, message in logs)
 
 
 def test_env_proxy_relaunch_leaves_store_gdk_player_untouched(monkeypatch, tmp_path):
