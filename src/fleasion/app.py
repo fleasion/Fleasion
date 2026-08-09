@@ -418,7 +418,14 @@ def _show_run_on_boot_failure(parent, proxy_mode: str | None = None) -> None:
             msg.exec()
 
 
-def _show_roblox_permission_failure(parent, denied_dirs, mod_manager=None) -> None:
+def _show_roblox_permission_failure(
+    parent,
+    denied_dirs,
+    mod_manager=None,
+    *,
+    on_repaired=None,
+    failure_text: str | None = None,
+) -> None:
     """Ask before permanently granting this Windows user access to failed installs."""
     if sys.platform != 'win32':
         return
@@ -432,9 +439,12 @@ def _show_roblox_permission_failure(parent, denied_dirs, mod_manager=None) -> No
     msg.setWindowTitle('Roblox Installation Permission Required')
     msg.setIcon(QMessageBox.Icon.Warning)
     listed_paths = '\n'.join(f'- {path}' for path in paths)
-    msg.setText(
+    failure_text = failure_text or (
         'Fleasion could not write configured modifications or FastFlags to these Roblox '
-        f'Player installations:\n\n{listed_paths}\n\n'
+        'Player installations'
+    )
+    msg.setText(
+        f'{failure_text}:\n\n{listed_paths}\n\n'
         'Would you like to permanently grant your current Windows account Modify access '
         'to only these installation folders? Existing permissions are preserved. '
         'This requires a one-time administrator prompt.'
@@ -482,13 +492,27 @@ def _show_roblox_permission_failure(parent, denied_dirs, mod_manager=None) -> No
             deadline = time.monotonic() + _WINDOWS_REPAIR_RESULT_TIMEOUT_SECONDS
             QTimer.singleShot(
                 500,
-                lambda: _poll_roblox_permission_repair(mod_manager, deadline),
+                lambda: _poll_roblox_permission_repair(
+                    mod_manager,
+                    deadline,
+                    on_repaired=on_repaired,
+                ),
+            )
+        elif on_repaired is not None:
+            deadline = time.monotonic() + _WINDOWS_REPAIR_RESULT_TIMEOUT_SECONDS
+            QTimer.singleShot(
+                500,
+                lambda: _poll_roblox_permission_repair(
+                    None,
+                    deadline,
+                    on_repaired=on_repaired,
+                ),
             )
     else:
         clear_pending_repair(CONFIG_DIR)
 
 
-def _poll_roblox_permission_repair(mod_manager, deadline: float) -> None:
+def _poll_roblox_permission_repair(mod_manager, deadline: float, *, on_repaired=None) -> None:
     """Consume a one-shot elevated ACL result and retry the normal write path."""
     from .utils.windows_permissions import (
         clear_pending_repair,
@@ -501,7 +525,11 @@ def _poll_roblox_permission_repair(mod_manager, deadline: float) -> None:
         if time.monotonic() < deadline:
             QTimer.singleShot(
                 500,
-                lambda: _poll_roblox_permission_repair(mod_manager, deadline),
+                lambda: _poll_roblox_permission_repair(
+                    mod_manager,
+                    deadline,
+                    on_repaired=on_repaired,
+                ),
             )
             return
         clear_pending_repair(CONFIG_DIR)
@@ -525,7 +553,10 @@ def _poll_roblox_permission_repair(mod_manager, deadline: float) -> None:
             'RobloxPermissions',
             f'Granted Modify access to {len(result.get("granted", []))} Roblox installation(s)',
         )
-        run_in_thread(mod_manager.reapply_all)()
+        if mod_manager is not None:
+            run_in_thread(mod_manager.reapply_all)()
+        if on_repaired is not None:
+            on_repaired()
         return
 
     detail = result.get('error') or result.get('failed') or 'icacls could not update the ACL'
@@ -1549,6 +1580,34 @@ def _show_roblox_ca_patch_failed_dialog(details: dict) -> None:
     )
 
 
+def _windows_ca_permission_denied_dirs(details: dict) -> list[Path]:
+    """Return install directories whose CA patch failed due to Windows ACLs."""
+    if sys.platform != 'win32':
+        return []
+
+    denied: set[Path] = set()
+    failed = details.get('failed') or []
+    for item in failed if isinstance(failed, list) else []:
+        if not isinstance(item, dict):
+            continue
+        error = str(item.get('error') or '').lower()
+        if not any(
+            marker in error
+            for marker in ('permission denied', 'access is denied', 'winerror 5', 'errno 13')
+        ):
+            continue
+        resource_dir = item.get('resource_dir')
+        if resource_dir:
+            denied.add(Path(resource_dir))
+            continue
+        ca_file = item.get('ca_file')
+        if ca_file:
+            path = Path(ca_file)
+            denied.add(path.parent.parent if path.parent.name.lower() == 'ssl' else path.parent)
+
+    return sorted(denied, key=lambda path: str(path).lower())
+
+
 def _show_macos_relay_failed_dialog(details: dict) -> str:
     """Explain a failed privileged relay and return the requested recovery action."""
     from .utils.macos_proxy_helper import HELPER_LOG_DIR
@@ -2206,7 +2265,19 @@ class _ProxyErrorInvoker(QObject):
         elif code == 'macos_ca_trust_failed':
             _show_macos_ca_trust_failed_dialog(details)
         elif code == 'roblox_ca_patch_failed':
-            _show_roblox_ca_patch_failed_dialog(details)
+            denied_dirs = _windows_ca_permission_denied_dirs(details)
+            if denied_dirs:
+                _show_roblox_permission_failure(
+                    _visible_parent_widget(),
+                    denied_dirs,
+                    on_repaired=self.retry_proxy.emit,
+                    failure_text=(
+                        'Fleasion could not update cacert.pem for Env Proxy in these Roblox '
+                        'Player installations'
+                    ),
+                )
+            else:
+                _show_roblox_ca_patch_failed_dialog(details)
         elif code == 'macos_relay_failed':
             action = _show_macos_relay_failed_dialog(details)
             if action == 'retry':

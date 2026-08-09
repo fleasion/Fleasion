@@ -18,6 +18,7 @@ from fleasion.app import (
     _show_roblox_permission_failure,
     _show_run_on_boot_failure,
     _show_windows_upstream_firewall_dialog,
+    _windows_ca_permission_denied_dirs,
     _should_reclaim_stale_single_instance,
     _should_sync_autostart_on_launch,
     kill_other_fleasion_instances,
@@ -498,6 +499,106 @@ def test_nonwindows_permission_failure_does_not_offer_windows_acl(monkeypatch, t
     )
 
     _show_roblox_permission_failure(None, [tmp_path])
+
+
+def test_windows_ca_permission_failure_extracts_install_for_acl_repair(monkeypatch, tmp_path):
+    install = tmp_path / 'Roblox' / 'Versions' / 'version-test'
+    ca_file = install / 'ssl' / 'cacert.pem'
+    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
+
+    denied = _windows_ca_permission_denied_dirs(
+        {
+            'failed': [
+                {
+                    'resource_dir': str(install),
+                    'ca_file': str(ca_file),
+                    'error': "[Errno 13] Permission denied: 'cacert.pem'",
+                },
+                {
+                    'resource_dir': str(tmp_path / 'unhealthy'),
+                    'error': 'cacert.pem was not launch-healthy after direct patch',
+                },
+            ]
+        }
+    )
+
+    assert denied == [install]
+
+
+def test_windows_ca_permission_failure_offers_acl_and_retries_proxy(monkeypatch, tmp_path):
+    install = tmp_path / 'Roblox' / 'Versions' / 'version-test'
+    offered = []
+    retries = []
+    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(app_module, '_visible_parent_widget', lambda: 'parent')
+    monkeypatch.setattr(
+        app_module,
+        '_show_roblox_permission_failure',
+        lambda parent, paths, **kwargs: offered.append((parent, paths, kwargs)),
+    )
+
+    invoker = app_module._ProxyErrorInvoker()
+    invoker.retry_proxy.connect(lambda: retries.append(True))
+    invoker.handle_proxy_error(
+        'roblox_ca_patch_failed',
+        {'failed': [{'resource_dir': str(install), 'error': '[WinError 5] Access is denied'}]},
+    )
+
+    assert offered[0][0] == 'parent'
+    assert offered[0][1] == [install]
+    assert 'cacert.pem for Env Proxy' in offered[0][2]['failure_text']
+    offered[0][2]['on_repaired']()
+    assert retries == [True]
+
+
+def test_windows_ca_nonpermission_failure_keeps_diagnostic_dialog(monkeypatch, tmp_path):
+    install = tmp_path / 'Roblox' / 'Versions' / 'version-test'
+    shown = []
+    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(
+        app_module,
+        '_show_roblox_ca_patch_failed_dialog',
+        lambda details: shown.append(details),
+    )
+    monkeypatch.setattr(
+        app_module,
+        '_show_roblox_permission_failure',
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError('ACL repair offered')),
+    )
+    details = {
+        'failed': [
+            {
+                'resource_dir': str(install),
+                'error': 'cacert.pem was not launch-healthy after direct patch',
+            }
+        ]
+    }
+
+    app_module._ProxyErrorInvoker().handle_proxy_error('roblox_ca_patch_failed', details)
+
+    assert shown == [details]
+
+
+def test_successful_permission_repair_runs_proxy_retry_callback(monkeypatch, tmp_path):
+    from fleasion.utils import windows_permissions
+
+    callbacks = []
+    monkeypatch.setattr(app_module, 'CONFIG_DIR', tmp_path)
+    monkeypatch.setattr(
+        windows_permissions,
+        'read_repair_result',
+        lambda _path: {'ok': True, 'granted': ['version-test']},
+    )
+    monkeypatch.setattr(windows_permissions, 'clear_pending_repair', lambda _path: None)
+    monkeypatch.setattr(windows_permissions, 'clear_repair_result', lambda _path: None)
+
+    app_module._poll_roblox_permission_repair(
+        None,
+        deadline=10.0,
+        on_repaired=lambda: callbacks.append(True),
+    )
+
+    assert callbacks == [True]
 
 
 def test_permission_repair_poll_times_out_and_cleans_state(monkeypatch, tmp_path):
