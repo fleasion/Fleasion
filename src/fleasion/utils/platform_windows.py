@@ -920,7 +920,7 @@ def _query_roblox_processes(exe_name: str) -> list[dict[str, Any]]:
             encoding='utf-8',
             errors='replace',
             creationflags=subprocess.CREATE_NO_WINDOW,
-            timeout=10,
+            timeout=20,
         )
     except Exception as exc:
         log_buffer.log('Launcher', f'Could not query Roblox command line: {exc}')
