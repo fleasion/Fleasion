@@ -53,6 +53,11 @@ dev = [
 [tool.pyright]
 typeCheckingMode = "basic"
 
+[tool.pytest.ini_options]
+markers = [
+    "threaded_asyncio: requires working cross-thread event-loop socket wakeups",
+]
+
 [tool.ruff]
 line-length = 100
 target-version = "py314"

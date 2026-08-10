@@ -3635,12 +3635,7 @@ def main():
         and config_manager.proxy_mode == 'env'
         and config_manager.proxy_features_enabled
     ):
-        if not _arm_windows_gdk_env_proxy_when_ready(proxy_master):
-            log_buffer.log(
-                'Launcher',
-                'Xbox/GDK package activation could not be armed before launch; '
-                'reactive relaunch fallback remains available',
-            )
+        _arm_windows_gdk_env_proxy_when_ready(proxy_master)
 
     # Env Proxy owns Player/Sober lifecycle independently of Studio.
     from .proxy.env_lifecycle import EnvProxyLifecycleController

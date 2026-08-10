@@ -32,6 +32,10 @@ _CLSCTX_ALL = 0x17
 _AO_NONE = 0
 _THREAD_SUSPEND_RESUME = 0x0002
 _GDK_DEBUGGER_SWITCH = '--fleasion-gdk-debugger'
+_PROCESS_COMMAND_LINE_INFORMATION = 60
+_STATUS_INFO_LENGTH_MISMATCH = 0xC0000004
+_STATUS_BUFFER_TOO_SMALL = 0xC0000023
+_MAX_PROCESS_COMMAND_LINE_BYTES = 1024 * 1024
 
 
 class _GUID(ctypes.Structure):
@@ -40,6 +44,14 @@ class _GUID(ctypes.Structure):
         ('Data2', ctypes.wintypes.WORD),
         ('Data3', ctypes.wintypes.WORD),
         ('Data4', ctypes.wintypes.BYTE * 8),
+    ]
+
+
+class _UNICODE_STRING(ctypes.Structure):
+    _fields_ = [
+        ('Length', ctypes.wintypes.USHORT),
+        ('MaximumLength', ctypes.wintypes.USHORT),
+        ('Buffer', ctypes.c_void_p),
     ]
 
 
@@ -282,6 +294,60 @@ def _query_exe_path(pid: int) -> Optional[Path]:
         k32.CloseHandle(handle)
 
 
+def _query_process_command_line(pid: int) -> str:
+    """Return a process command line through the native Unicode NT API."""
+    k32 = ctypes.windll.kernel32
+    handle = k32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return ''
+    try:
+        query = ctypes.windll.ntdll.NtQueryInformationProcess
+        query.argtypes = [
+            ctypes.wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            ctypes.wintypes.ULONG,
+            ctypes.POINTER(ctypes.wintypes.ULONG),
+        ]
+        query.restype = ctypes.c_long
+
+        needed = ctypes.wintypes.ULONG(0)
+        status = query(
+            handle,
+            _PROCESS_COMMAND_LINE_INFORMATION,
+            None,
+            0,
+            ctypes.byref(needed),
+        )
+        status_code = int(status) & 0xFFFFFFFF
+        minimum_size = ctypes.sizeof(_UNICODE_STRING)
+        if (
+            status_code not in {_STATUS_INFO_LENGTH_MISMATCH, _STATUS_BUFFER_TOO_SMALL}
+            or needed.value < minimum_size
+            or needed.value > _MAX_PROCESS_COMMAND_LINE_BYTES
+        ):
+            return ''
+
+        buffer = ctypes.create_string_buffer(needed.value)
+        status = query(
+            handle,
+            _PROCESS_COMMAND_LINE_INFORMATION,
+            buffer,
+            len(buffer),
+            ctypes.byref(needed),
+        )
+        if int(status) < 0:
+            return ''
+        command_line = _UNICODE_STRING.from_buffer(buffer)
+        if not command_line.Buffer or command_line.Length == 0:
+            return ''
+        return ctypes.string_at(command_line.Buffer, command_line.Length).decode('utf-16-le')
+    except (AttributeError, OSError, TypeError, UnicodeError, ValueError):
+        return ''
+    finally:
+        k32.CloseHandle(handle)
+
+
 _WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
 
 
@@ -489,7 +555,9 @@ def _get_roblox_gdk_package_identity(exe_path: Path) -> tuple[str, str] | None:
         return None
 
 
-def _find_installed_roblox_gdk_package_identity() -> tuple[str, str] | None:
+def _find_installed_roblox_gdk_package_identity(
+    *, report_diagnostics: bool = False
+) -> tuple[str, str] | None:
     """Find the installed Store package before its Player process exists."""
     try:
         result = subprocess.run(
@@ -510,15 +578,35 @@ def _find_installed_roblox_gdk_package_identity() -> tuple[str, str] | None:
             creationflags=subprocess.CREATE_NO_WINDOW,
             timeout=5,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as exc:
+        if report_diagnostics:
+            log_buffer.log(
+                'Launcher',
+                f'Xbox/GDK Roblox installation lookup failed: {type(exc).__name__}: {exc}',
+            )
         return None
     install_location = next(
         (line.strip() for line in result.stdout.splitlines() if line.strip()),
         '',
     )
-    if result.returncode != 0 or not install_location:
+    if result.returncode != 0:
+        if report_diagnostics:
+            log_buffer.log(
+                'Launcher',
+                f'Xbox/GDK Roblox installation lookup failed with exit code {result.returncode}',
+            )
         return None
-    return _get_roblox_gdk_package_identity(Path(install_location) / ROBLOX_PROCESS)
+    if not install_location:
+        if report_diagnostics:
+            log_buffer.log('Launcher', 'No GDK Roblox installation found')
+        return None
+    identity = _get_roblox_gdk_package_identity(Path(install_location) / ROBLOX_PROCESS)
+    if identity is None and report_diagnostics:
+        log_buffer.log(
+            'Launcher',
+            'Xbox/GDK Roblox installation found, but its package manifest could not be read',
+        )
+    return identity
 
 
 def _enable_gdk_package_debugging(
@@ -641,7 +729,7 @@ def arm_roblox_gdk_env_proxy(proxy_url: str) -> bool:
     """Arm package-aware Env Proxy before the user activates Store Roblox."""
     global _gdk_env_proxy_armed_package
 
-    identity = _find_installed_roblox_gdk_package_identity()
+    identity = _find_installed_roblox_gdk_package_identity(report_diagnostics=True)
     if identity is None:
         return False
     if _gdk_env_proxy_armed_package == identity:
@@ -899,46 +987,15 @@ def get_roblox_player_exe_path() -> Optional[Path]:
 
 
 def _query_roblox_processes(exe_name: str) -> list[dict[str, Any]]:
-    ps_script = (
-        f"$p=Get-CimInstance Win32_Process -Filter \"Name='{exe_name}'\" | "
-        "Select-Object ProcessId,ExecutablePath,CommandLine; "
-        "if($p){$p|ConvertTo-Json -Compress}"
-    )
-    try:
-        result = subprocess.run(
-            [
-                'powershell.exe',
-                '-NoProfile',
-                '-NonInteractive',
-                '-ExecutionPolicy',
-                'Bypass',
-                '-Command',
-                ps_script,
-            ],
-            capture_output=True,
-            text=True,
-            encoding='utf-8',
-            errors='replace',
-            creationflags=subprocess.CREATE_NO_WINDOW,
-            timeout=20,
-        )
-    except Exception as exc:
-        log_buffer.log('Launcher', f'Could not query Roblox command line: {exc}')
-        return []
-    if result.returncode != 0 or not (result.stdout or '').strip():
-        return []
-    try:
-        import json
-
-        data = json.loads(result.stdout)
-    except Exception as exc:
-        log_buffer.log('Launcher', f'Could not parse Roblox command line query: {exc}')
-        return []
-    if isinstance(data, dict):
-        return [data]
-    if isinstance(data, list):
-        return [entry for entry in data if isinstance(entry, dict)]
-    return []
+    """Return matching processes without spawning PowerShell or decoding paths."""
+    return [
+        {
+            'ProcessId': pid,
+            'ExecutablePath': str(_query_exe_path(pid) or ''),
+            'CommandLine': _query_process_command_line(pid),
+        }
+        for pid in _find_pids(exe_name)
+    ]
 
 
 def _query_roblox_player_processes() -> list[dict[str, Any]]:

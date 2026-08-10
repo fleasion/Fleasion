@@ -5,6 +5,8 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from fleasion.proxy.server import (
     ASSET_DELIVERY_HOST,
     PROFILE_API_HOST,
@@ -290,6 +292,7 @@ def test_upstream_failure_notification_is_emitted_only_once(monkeypatch, tmp_pat
     assert notifications == [('contentdelivery.roblox.com', 'blocked')]
 
 
+@pytest.mark.threaded_asyncio
 def test_direct_upstream_refresh_retries_a_fresh_endpoint(monkeypatch, tmp_path):
     class FakeSSLContext:
         verify_mode = None

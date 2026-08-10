@@ -83,6 +83,105 @@ def test_windows_relaunch_extractor_preserves_both_roblox_uri_forms(monkeypatch)
     ) == 'roblox://experiences/start?placeId=1'
 
 
+def test_windows_process_query_uses_native_unicode_path_and_command_line(
+    monkeypatch, tmp_path
+):
+    module = _load_platform_windows(monkeypatch)
+    exe = _touch(
+        tmp_path / 'Michael Březina' / 'Roblox' / 'RobloxPlayerBeta.exe',
+        3000,
+    )
+    command_line = f'"{exe}" roblox-player:1+launchmode:play'
+
+    monkeypatch.setattr(module, '_find_pids', lambda _name: [123])
+    monkeypatch.setattr(module, '_query_exe_path', lambda _pid: exe)
+    monkeypatch.setattr(module, '_query_process_command_line', lambda _pid: command_line)
+    monkeypatch.setattr(
+        module.subprocess,
+        'run',
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError('native process discovery must not start PowerShell')
+        ),
+    )
+
+    assert module._query_roblox_processes('RobloxPlayerBeta.exe') == [
+        {
+            'ProcessId': 123,
+            'ExecutablePath': str(exe),
+            'CommandLine': command_line,
+        }
+    ]
+
+
+def test_windows_native_command_line_query_preserves_unicode(monkeypatch):
+    module = _load_platform_windows(monkeypatch)
+    command_line = (
+        '"C:\\Users\\Michael Březina\\RobloxPlayerBeta.exe" '
+        'roblox-player:1+launchmode:play'
+    )
+    encoded = command_line.encode('utf-16-le')
+
+    class _NativeQuery:
+        argtypes = None
+        restype = None
+
+        def __call__(self, _handle, info_class, buffer, _size, needed):
+            assert info_class == module._PROCESS_COMMAND_LINE_INFORMATION
+            total_size = module.ctypes.sizeof(module._UNICODE_STRING) + len(encoded) + 2
+            module.ctypes.cast(
+                needed,
+                module.ctypes.POINTER(module.ctypes.wintypes.ULONG),
+            ).contents.value = total_size
+            if buffer is None:
+                return module.ctypes.c_long(module._STATUS_INFO_LENGTH_MISMATCH).value
+
+            string_address = module.ctypes.addressof(buffer) + module.ctypes.sizeof(
+                module._UNICODE_STRING
+            )
+            module.ctypes.memmove(string_address, encoded, len(encoded))
+            info = module._UNICODE_STRING.from_buffer(buffer)
+            info.Length = len(encoded)
+            info.MaximumLength = len(encoded) + 2
+            info.Buffer = string_address
+            return 0
+
+    closed = []
+    monkeypatch.setattr(
+        module.ctypes,
+        'windll',
+        SimpleNamespace(
+            kernel32=SimpleNamespace(
+                OpenProcess=lambda *_args: 99,
+                CloseHandle=lambda handle: closed.append(handle),
+            ),
+            ntdll=SimpleNamespace(NtQueryInformationProcess=_NativeQuery()),
+        ),
+        raising=False,
+    )
+
+    assert module._query_process_command_line(123) == command_line
+    assert closed == [99]
+
+
+def test_gdk_arming_reports_missing_installation_precisely(monkeypatch):
+    module = _load_platform_windows(monkeypatch)
+    messages = []
+    monkeypatch.setattr(module.subprocess, 'CREATE_NO_WINDOW', 0, raising=False)
+    monkeypatch.setattr(
+        module.subprocess,
+        'run',
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout=''),
+    )
+    monkeypatch.setattr(
+        module,
+        'log_buffer',
+        SimpleNamespace(log=lambda category, message: messages.append((category, message))),
+    )
+
+    assert not module.arm_roblox_gdk_env_proxy('http://127.0.0.1:58443')
+    assert messages == [('Launcher', 'No GDK Roblox installation found')]
+
+
 def test_windows_identifies_the_store_gdk_player_path(monkeypatch):
     module = _load_platform_windows(monkeypatch)
 
