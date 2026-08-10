@@ -59,6 +59,9 @@ _SINGLE_INSTANCE_KEY = 'FleasionSingleInstance'
 _SINGLE_INSTANCE_CONTROL_SERVER = 'FleasionSingleInstanceControl'
 _WINDOWS_REPAIR_RESULT_TIMEOUT_SECONDS = 120.0
 _WINDOWS_FIREWALL_REPAIR_RESULT_TIMEOUT_SECONDS = 120.0
+_HOSTS_CLEANUP_NOT_ADMIN_EXIT = 10
+_HOSTS_CLEANUP_WRITE_FAILED_EXIT = 11
+_HOSTS_CLEANUP_UNEXPECTED_EXIT = 12
 _MACOS_PLAIN_LAUNCH_CLASSIFICATION_SECONDS = 2.0
 
 
@@ -241,7 +244,7 @@ def _cleanup_hosts_once() -> int:
         log_buffer.log(
             'Hosts', 'Elevated hosts cleanup child rejected: administrator access is required'
         )
-        return 1
+        return _HOSTS_CLEANUP_NOT_ADMIN_EXIT
 
     from .proxy.master import (
         INTERCEPT_HOSTS,
@@ -250,11 +253,19 @@ def _cleanup_hosts_once() -> int:
         _remove_hosts_entries,
     )
 
-    if not _remove_hosts_entries(set(INTERCEPT_HOSTS)):
-        log_buffer.log('Hosts', 'Elevated hosts cleanup child could not update the hosts file')
-        return 1
-    _flush_dns()
-    _cancel_hosts_cleanup_on_reboot()
+    error_details: dict = {}
+    try:
+        if not _remove_hosts_entries(set(INTERCEPT_HOSTS), error_details=error_details):
+            detail = error_details.get('error') or 'unknown hosts write failure'
+            log_buffer.log(
+                'Hosts', f'Elevated hosts cleanup child could not update the hosts file: {detail}'
+            )
+            return _HOSTS_CLEANUP_WRITE_FAILED_EXIT
+        _flush_dns()
+        _cancel_hosts_cleanup_on_reboot()
+    except Exception as exc:
+        log_buffer.log('Hosts', f'Elevated hosts cleanup child crashed: {exc!r}')
+        return _HOSTS_CLEANUP_UNEXPECTED_EXIT
     log_buffer.log('Hosts', 'Elevated one-shot hosts cleanup completed')
     return 0
 
@@ -269,11 +280,30 @@ def _run_privileged_hosts_cleanup(parent=None) -> bool:
 
         return cleanup_hosts_with_pkexec()
 
-    return _relaunch_as_admin(
+    completion: dict[str, int | bool] = {}
+    completed = _relaunch_as_admin(
         extra_args='--cleanup-hosts',
         parent_hwnd=_window_handle(parent),
         wait_for_completion=True,
+        completion=completion,
     )
+    if completed:
+        return True
+
+    exit_code = completion.get('exit_code')
+    reasons = {
+        _HOSTS_CLEANUP_NOT_ADMIN_EXIT: 'the child did not receive an administrator token',
+        _HOSTS_CLEANUP_WRITE_FAILED_EXIT: 'Windows or security software blocked the hosts write',
+        _HOSTS_CLEANUP_UNEXPECTED_EXIT: 'the cleanup child raised an unexpected exception',
+    }
+    if exit_code in reasons:
+        log_buffer.log('Hosts', f'Privileged cleanup failed because {reasons[exit_code]}')
+    elif exit_code is not None:
+        log_buffer.log(
+            'Hosts',
+            f'Privileged cleanup child exited before reporting a known outcome (exit={exit_code})',
+        )
+    return False
 
 
 def _show_env_proxy_stale_hosts_dialog() -> None:
@@ -285,7 +315,10 @@ def _show_env_proxy_stale_hosts_dialog() -> None:
     )
 
     if _other_proxy_owner_alive():
-        log_buffer.log('Hosts', 'Skipped Env Proxy stale hosts prompt because another proxy owns the hosts file')
+        log_buffer.log(
+            'Hosts',
+            'Skipped Env Proxy stale hosts prompt because another proxy owns the hosts file',
+        )
         return
     if not has_stale_hosts_entries(set(INTERCEPT_HOSTS)):
         return
@@ -305,7 +338,7 @@ def _show_env_proxy_stale_hosts_dialog() -> None:
         'hosts for other applications.'
     )
     fix_button = msg.addButton('Fix Hosts File (Recommended)', QMessageBox.ButtonRole.AcceptRole)
-    msg.addButton('Continue Without Fixing', QMessageBox.ButtonRole.RejectRole)
+    continue_button = msg.addButton('Continue Without Fixing', QMessageBox.ButtonRole.RejectRole)
     msg.setDefaultButton(fix_button)
     msg.exec()
 
@@ -313,7 +346,30 @@ def _show_env_proxy_stale_hosts_dialog() -> None:
         log_buffer.log('Hosts', 'User deferred privileged Env Proxy stale hosts cleanup')
         return
 
-    if _run_privileged_hosts_cleanup(parent):
+    fix_button.setEnabled(False)
+    continue_button.setEnabled(False)
+    if sys.platform == 'win32':
+        msg.setText('Waiting for Windows administrator permission...')
+        msg.setInformativeText(
+            'Approve the UAC prompt to remove the stale Fleasion hosts entries.\n\n'
+            'If the prompt is flashing on the taskbar, click it and choose Yes or No.'
+        )
+    else:
+        msg.setText('Waiting for administrator/root permission...')
+        msg.setInformativeText(
+            'Approve the operating-system permission prompt to remove the stale Fleasion '
+            'hosts entries.'
+        )
+    msg.show()
+    msg.raise_()
+    msg.activateWindow()
+    QApplication.processEvents()
+    try:
+        repaired = _run_privileged_hosts_cleanup(msg)
+    finally:
+        msg.hide()
+
+    if repaired:
         if not has_stale_hosts_entries(set(INTERCEPT_HOSTS)):
             log_buffer.log('Hosts', 'Verified stale Env Proxy hosts entries were removed')
             return
@@ -755,13 +811,15 @@ def _relaunch_as_admin(
     parent_hwnd: int | None = None,
     *,
     wait_for_completion: bool = False,
+    completion: dict[str, int | bool] | None = None,
 ) -> bool:
     """Silently attempt to relaunch elevated via the platform prompt.
 
     Shows only the standard Windows UAC or macOS administrator prompt.
     Returns True if the elevated process was spawned (caller should exit), or,
     when ``wait_for_completion`` is set, if the elevated child completed with
-    exit code zero.
+    exit code zero. ``completion`` receives the native wait and exit-code
+    details for synchronous callers that need a more specific failure reason.
     Returns False if the user declined or the relaunch failed.
     """
     if sys.platform == 'darwin':
@@ -843,7 +901,8 @@ def _relaunch_as_admin(
     if '--kill-others' not in existing_args:
         existing_args.append('--kill-others')
 
-    if getattr(sys, 'frozen', False):
+    frozen = bool(getattr(sys, 'frozen', False))
+    if frozen:
         # Compiled .exe — sys.executable is the .exe itself
         exe = sys.executable
         params = subprocess.list2cmdline(existing_args) if existing_args else None
@@ -905,19 +964,21 @@ def _relaunch_as_admin(
     sei.lpDirectory = os.path.dirname(os.path.abspath(exe)) or None
     # SW_HIDE (0) for dev/uv mode: hides the uv.exe console wrapper.
     # SW_SHOWNORMAL (1) for compiled .exe: the exe IS the app, we need windows to show.
-    sei.nShow = 0 if not getattr(sys, 'frozen', False) else 1
+    sei.nShow = 1 if frozen else 0
     sei.hInstApp = None
 
     shell32 = ctypes.WinDLL('shell32', use_last_error=True)
+    shell32.ShellExecuteExW.argtypes = [ctypes.POINTER(_SHELLEXECUTEINFOW)]
+    shell32.ShellExecuteExW.restype = ctypes.wintypes.BOOL
 
     reset_env_key = 'PYINSTALLER_RESET_ENVIRONMENT'
     old_reset_env = os.environ.get(reset_env_key)
-    if getattr(sys, 'frozen', False):
+    if frozen:
         os.environ[reset_env_key] = '1'
     try:
         ok = shell32.ShellExecuteExW(ctypes.byref(sei))
     finally:
-        if getattr(sys, 'frozen', False):
+        if frozen:
             if old_reset_env is None:
                 os.environ.pop(reset_env_key, None)
             else:
@@ -934,17 +995,35 @@ def _relaunch_as_admin(
         return False
 
     if not wait_for_completion:
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel32.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
+        kernel32.CloseHandle.restype = ctypes.wintypes.BOOL
+        kernel32.CloseHandle(sei.hProcess)
         return True
 
     kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel32.WaitForSingleObject.argtypes = [ctypes.wintypes.HANDLE, ctypes.wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = ctypes.wintypes.DWORD
+    kernel32.GetExitCodeProcess.argtypes = [
+        ctypes.wintypes.HANDLE,
+        ctypes.POINTER(ctypes.wintypes.DWORD),
+    ]
+    kernel32.GetExitCodeProcess.restype = ctypes.wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
+    kernel32.CloseHandle.restype = ctypes.wintypes.BOOL
     wait_result = kernel32.WaitForSingleObject(sei.hProcess, 120_000)
     exit_code = ctypes.wintypes.DWORD()
-    completed = (
-        wait_result == 0
-        and bool(kernel32.GetExitCodeProcess(sei.hProcess, ctypes.byref(exit_code)))
-        and exit_code.value == 0
-    )
+    exit_code_read = bool(kernel32.GetExitCodeProcess(sei.hProcess, ctypes.byref(exit_code)))
+    completed = wait_result == 0 and exit_code_read and exit_code.value == 0
     kernel32.CloseHandle(sei.hProcess)
+    if completion is not None:
+        completion.update(
+            {
+                'wait_result': wait_result,
+                'exit_code_read': exit_code_read,
+                'exit_code': exit_code.value,
+            }
+        )
     if not completed:
         log_buffer.log(
             'UAC',
@@ -2129,7 +2208,7 @@ def _show_windows_upstream_firewall_dialog(details: dict) -> None:
     if rules_already_present:
         msg.setText(f'Fleasion still cannot connect securely to {host}.')
         msg.setInformativeText(
-            'Fleasion\'s Windows Firewall rules are already installed for both Private and '
+            "Fleasion's Windows Firewall rules are already installed for both Private and "
             'Public networks, so adding them again will not fix this connection.\n\n'
             'Another network control may be blocking Fleasion, such as antivirus, a VPN, '
             'DNS filtering, or an organization policy. Please contact the Fleasion Discord '

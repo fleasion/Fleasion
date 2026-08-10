@@ -18,9 +18,9 @@ from fleasion.app import (
     _show_roblox_permission_failure,
     _show_run_on_boot_failure,
     _show_windows_upstream_firewall_dialog,
-    _windows_ca_permission_denied_dirs,
     _should_reclaim_stale_single_instance,
     _should_sync_autostart_on_launch,
+    _windows_ca_permission_denied_dirs,
     kill_other_fleasion_instances,
 )
 from PyQt6.QtCore import QCoreApplication, QEvent, QSharedMemory, QUrl
@@ -854,6 +854,78 @@ def test_privileged_hosts_cleanup_uses_pkexec_on_linux(monkeypatch):
     assert calls == [True]
 
 
+def test_privileged_hosts_cleanup_waits_for_windows_elevated_child(monkeypatch):
+    calls = []
+    parent = object()
+    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(app_module, '_is_admin', lambda: False)
+    monkeypatch.setattr(
+        app_module, '_window_handle', lambda widget: 123 if widget is parent else None
+    )
+
+    def _relaunch(**kwargs):
+        completion = kwargs.pop('completion')
+        assert completion == {}
+        completion.update({'wait_result': 0, 'exit_code_read': True, 'exit_code': 0})
+        calls.append(kwargs)
+        return True
+
+    monkeypatch.setattr(app_module, '_relaunch_as_admin', _relaunch)
+
+    assert _run_privileged_hosts_cleanup(parent) is True
+    assert calls == [
+        {
+            'extra_args': '--cleanup-hosts',
+            'parent_hwnd': 123,
+            'wait_for_completion': True,
+        }
+    ]
+
+
+def test_privileged_hosts_cleanup_logs_known_elevated_child_failure(monkeypatch):
+    logs = []
+    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(app_module, '_is_admin', lambda: False)
+    monkeypatch.setattr(app_module, '_window_handle', lambda _widget: None)
+
+    def _relaunch(**kwargs):
+        kwargs['completion']['exit_code'] = app_module._HOSTS_CLEANUP_NOT_ADMIN_EXIT
+        return False
+
+    monkeypatch.setattr(app_module, '_relaunch_as_admin', _relaunch)
+    monkeypatch.setattr(app_module.log_buffer, 'log', lambda *args: logs.append(args))
+
+    assert _run_privileged_hosts_cleanup() is False
+    assert any('did not receive an administrator token' in message for _category, message in logs)
+
+
+def test_elevated_hosts_cleanup_reports_write_failure(monkeypatch):
+    from fleasion.proxy import master as proxy_master
+
+    monkeypatch.setattr(app_module, '_is_admin', lambda: True)
+
+    def _remove(_hosts, *, error_details):
+        error_details['error'] = 'access denied by host protection'
+        return False
+
+    monkeypatch.setattr(proxy_master, '_remove_hosts_entries', _remove)
+
+    assert app_module._cleanup_hosts_once() == app_module._HOSTS_CLEANUP_WRITE_FAILED_EXIT
+
+
+def test_elevated_hosts_cleanup_reports_unexpected_exception(monkeypatch):
+    from fleasion.proxy import master as proxy_master
+
+    monkeypatch.setattr(app_module, '_is_admin', lambda: True)
+    monkeypatch.setattr(
+        proxy_master,
+        '_remove_hosts_entries',
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError('boom')),
+    )
+
+    assert app_module._cleanup_hosts_once() == app_module._HOSTS_CLEANUP_UNEXPECTED_EXIT
+
+
 def test_stale_env_hosts_dialog_runs_privileged_repair(monkeypatch):
     from fleasion.proxy import master as proxy_master
 
@@ -865,7 +937,7 @@ def test_stale_env_hosts_dialog_runs_privileged_repair(monkeypatch):
     monkeypatch.setattr(
         app_module,
         '_run_privileged_hosts_cleanup',
-        lambda _parent: calls.append(True) or True,
+        lambda owner: calls.append((owner, owner.visible)) or True,
     )
 
     class _MessageBox:
@@ -892,7 +964,7 @@ def test_stale_env_hosts_dialog_runs_privileged_repair(monkeypatch):
             pass
 
         def addButton(self, text, _role):
-            button = object()
+            button = type('Button', (), {'setEnabled': lambda self, _enabled: None})()
             if text.startswith('Fix Hosts File'):
                 self._clicked = button
             return button
@@ -906,11 +978,28 @@ def test_stale_env_hosts_dialog_runs_privileged_repair(monkeypatch):
         def clickedButton(self):
             return self._clicked
 
+        def show(self):
+            self.visible = True
+
+        def raise_(self):
+            pass
+
+        def activateWindow(self):
+            pass
+
+        def hide(self):
+            self.visible = False
+
     monkeypatch.setattr(app_module, 'QMessageBox', _MessageBox)
+    monkeypatch.setattr(app_module.QApplication, 'processEvents', lambda: None)
 
     _show_env_proxy_stale_hosts_dialog()
 
-    assert calls == [True]
+    assert len(calls) == 1
+    owner, was_visible = calls[0]
+    assert isinstance(owner, _MessageBox)
+    assert was_visible is True
+    assert owner.visible is False
 
 
 def test_windows_upstream_dialog_requests_targeted_firewall_repair(monkeypatch, tmp_path):
