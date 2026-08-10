@@ -27,6 +27,7 @@ import hashlib
 import json
 import logging
 import os
+import platform
 import re
 import shlex
 import shutil
@@ -102,6 +103,13 @@ logger = logging.getLogger(__name__)
 IS_WINDOWS = sys.platform == 'win32'
 IS_MACOS = sys.platform == 'darwin'
 IS_LINUX = sys.platform.startswith('linux')
+_WINDOWS_PROACTOR_ACCEPT_WINERROR = 10014
+
+
+class _RetryProxyWithWindowsSelector(RuntimeError):
+    """Signal the proxy worker to replace a broken Windows Proactor loop."""
+
+
 _ACTIVE_PROXY_CA_DIR = PROXY_CA_DIR
 
 if IS_MACOS or IS_LINUX:
@@ -3282,6 +3290,8 @@ class ProxyMaster:
         self._active_proxy_port: Optional[int] = None
         self._lock = threading.Lock()
         self._env_proxy_ready = threading.Event()
+        self._windows_proactor_accept_fault = False
+        self._windows_selector_fallback_attempted = False
         self._hosts_installed: bool = False
         self._active_env_proxy_mode: bool = False
         self._active_intercept_hosts: set[str] = set(BASE_INTERCEPT_HOSTS)
@@ -4152,6 +4162,99 @@ class ProxyMaster:
         finally:
             self._cert_refresh_lock.release()
 
+    @staticmethod
+    def _is_windows_proactor_accept_fault(loop, context: dict) -> bool:
+        exc = context.get('exception')
+        return bool(
+            IS_WINDOWS
+            and 'proactor' in type(loop).__name__.lower()
+            and context.get('message') == 'Accept failed on a socket'
+            and isinstance(exc, OSError)
+            and getattr(exc, 'winerror', None) == _WINDOWS_PROACTOR_ACCEPT_WINERROR
+        )
+
+    def _install_proxy_loop_diagnostics(self, loop, env_proxy_mode: bool) -> None:
+        """Capture accept failures swallowed by asyncio's Proactor server loop."""
+        self._windows_proactor_accept_fault = False
+        loop_name = type(loop).__name__
+        mode = 'env' if env_proxy_mode else 'hosts'
+        runtime = (
+            f'Python {platform.python_version()} ({platform.python_implementation()}); '
+            f'OS={platform.platform()}; machine={platform.machine() or "unknown"}'
+        )
+        log_buffer.log(
+            'ProxyDiag',
+            f'Proxy event loop: {loop_name}; mode={mode}; '
+            f'selector_fallback={"yes" if getattr(self, "_windows_selector_fallback_attempted", False) else "no"}; '
+            f'{runtime}',
+        )
+
+        previous_handler = loop.get_exception_handler()
+
+        def _handle_loop_exception(active_loop, context: dict) -> None:
+            if self._is_windows_proactor_accept_fault(active_loop, context):
+                exc = context['exception']
+                socket_obj = context.get('socket')
+                try:
+                    local_address = socket_obj.getsockname() if socket_obj is not None else None
+                except OSError:
+                    local_address = None
+                if not self._windows_proactor_accept_fault:
+                    self._windows_proactor_accept_fault = True
+                    log_buffer.log(
+                        'ProxyDiag',
+                        'Windows Proactor accept failed after bind: '
+                        f'winerror={getattr(exc, "winerror", None)}; '
+                        f'errno={getattr(exc, "errno", None)}; '
+                        f'loop={type(active_loop).__name__}; mode={mode}; '
+                        f'local_address={local_address}; {runtime}; exception={exc!r}. '
+                        'The listener may be closed by asyncio; '
+                        'a scoped SelectorEventLoop retry will be attempted.',
+                    )
+
+            if previous_handler is not None:
+                previous_handler(active_loop, context)
+            else:
+                active_loop.default_exception_handler(context)
+
+        loop.set_exception_handler(_handle_loop_exception)
+
+    def _run_proxy_worker(self) -> None:
+        self._windows_selector_fallback_attempted = False
+        try:
+            try:
+                asyncio.run(self._run_proxy())
+            except _RetryProxyWithWindowsSelector:
+                self._windows_selector_fallback_attempted = True
+                log_buffer.log(
+                    'Proxy',
+                    'Retrying proxy startup with Windows SelectorEventLoop after '
+                    f'Proactor accept WinError {_WINDOWS_PROACTOR_ACCEPT_WINERROR}',
+                )
+                asyncio.run(self._run_proxy(), loop_factory=asyncio.SelectorEventLoop)
+        except Exception as exc:
+            log_buffer.log('Error', f'Proxy failed: {exc}')
+            self._running = False
+
+    async def _raise_selector_retry_for_proactor_fault(self) -> None:
+        if not getattr(self, '_windows_proactor_accept_fault', False):
+            return
+        log_buffer.log(
+            'ProxyDiag',
+            'TLS startup self-test was invalidated by the Windows Proactor '
+            'accept failure; cleaning up the failed listener before Selector retry',
+        )
+        try:
+            await self._proxy.stop()
+        except Exception as exc:
+            log_buffer.log('ProxyDiag', f'Failed listener cleanup reported: {exc}')
+        self._proxy = None
+        self._active_proxy_port = None
+        self._env_proxy_ready.clear()
+        _set_active_hosts_loopbacks(None)
+        self._running = False
+        raise _RetryProxyWithWindowsSelector
+
     def start(self) -> None:
         with self._lock:
             if self._running:
@@ -4159,14 +4262,11 @@ class ProxyMaster:
             self._env_proxy_ready.clear()
             self._active_proxy_port = None
 
-            def _run():
-                try:
-                    asyncio.run(self._run_proxy())
-                except Exception as exc:
-                    log_buffer.log('Error', f'Proxy failed: {exc}')
-                    self._running = False
-
-            self._thread = threading.Thread(target=_run, daemon=True, name='fleasion-proxy')
+            self._thread = threading.Thread(
+                target=self._run_proxy_worker,
+                daemon=True,
+                name='fleasion-proxy',
+            )
             self._thread.start()
 
     def restart_for_mode_switch(self) -> None:
@@ -4241,6 +4341,7 @@ class ProxyMaster:
         self._running = True
         self._loop = asyncio.get_running_loop()
         env_proxy_mode = self._use_env_proxy_mode()
+        self._install_proxy_loop_diagnostics(self._loop, env_proxy_mode)
 
         # ── Privileged proxy endpoint check ───────────────────────────────
         if not env_proxy_mode and IS_MACOS:
@@ -4653,6 +4754,7 @@ class ProxyMaster:
         if not await _run_tls_self_test(
             set(active_hosts), ca_cert_path, listen_port, explicit_proxy=env_proxy_mode
         ):
+            await self._raise_selector_retry_for_proactor_fault()
             log_buffer.log(
                 'Error',
                 'Proxy startup aborted: TLS self-test failed for active intercept hosts',
@@ -4662,6 +4764,11 @@ class ProxyMaster:
                 {
                     'hosts': sorted(active_hosts),
                     'proxy_mode': 'env' if env_proxy_mode else 'hosts',
+                    'event_loop': type(self._loop).__name__,
+                    'python': platform.python_version(),
+                    'selector_fallback_attempted': getattr(
+                        self, '_windows_selector_fallback_attempted', False
+                    ),
                 },
             )
             await self._proxy.stop()
