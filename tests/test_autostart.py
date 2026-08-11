@@ -3,12 +3,205 @@ import json
 import plistlib
 import shutil
 import sys
+import types
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from fleasion.utils import autostart
+
+
+def _fake_winreg(monkeypatch):
+    values = {}
+    open_accesses = []
+    module = types.ModuleType('winreg')
+    module.HKEY_CURRENT_USER = object()
+    module.REG_SZ = 1
+    module.KEY_QUERY_VALUE = 0x0001
+    module.KEY_SET_VALUE = 0x0002
+
+    class Key:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def open_key(_root, _path, _reserved=0, access=0):
+        open_accesses.append(access)
+        if not values:
+            raise FileNotFoundError
+        return Key()
+
+    module.OpenKey = open_key
+
+    def create_key_ex(_root, _path, _reserved=0, access=0):
+        open_accesses.append(access)
+        return Key()
+
+    module.CreateKeyEx = create_key_ex
+    module.QueryValueEx = lambda _key, name: values[name]
+    module.SetValueEx = lambda _key, name, _reserved, kind, value: values.__setitem__(
+        name, (value, kind)
+    )
+
+    def delete_value(_key, name):
+        try:
+            del values[name]
+        except KeyError as exc:
+            raise FileNotFoundError from exc
+
+    module.DeleteValue = delete_value
+    monkeypatch.setitem(sys.modules, 'winreg', module)
+    return values, open_accesses
+
+
+def test_packaged_windows_autostart_uses_native_run_key(monkeypatch, tmp_path):
+    values, open_accesses = _fake_winreg(monkeypatch)
+    legacy_cleanup = []
+    launch_info = {
+        'mode': 'exe',
+        'path': r'C:\Program Files\Fleasion\Fleasion.exe',
+        '_fmt': autostart._TASK_FORMAT_VERSION,
+    }
+
+    monkeypatch.setattr(autostart.sys, 'platform', 'win32')
+    monkeypatch.setattr(autostart, '_get_launch_info', lambda: launch_info.copy())
+    monkeypatch.setattr(
+        autostart,
+        '_delete_legacy_windows_task_async',
+        lambda config_dir: legacy_cleanup.append(config_dir),
+    )
+    monkeypatch.setattr(
+        autostart.subprocess,
+        'run',
+        lambda *_args, **_kwargs: pytest.fail('packaged autostart must not start a subprocess'),
+    )
+
+    assert autostart.sync_autostart(True, tmp_path)
+    assert values['Fleasion'] == (
+        r'"C:\Program Files\Fleasion\Fleasion.exe" --no-dashboard',
+        1,
+    )
+    assert legacy_cleanup == [tmp_path]
+    assert json.loads((tmp_path / 'autostart_info.json').read_text()) == launch_info
+    assert open_accesses == [0x0001, 0x0002]
+
+    assert autostart.sync_autostart(True, tmp_path)
+    assert legacy_cleanup == [tmp_path, tmp_path]
+    assert open_accesses[-1] == 0x0001
+
+
+def test_disabling_windows_autostart_removes_native_run_entry(monkeypatch, tmp_path):
+    values, open_accesses = _fake_winreg(monkeypatch)
+    values['Fleasion'] = (r'C:\Fleasion\Fleasion.exe --no-dashboard', 1)
+    monkeypatch.setattr(autostart.sys, 'platform', 'win32')
+    monkeypatch.setattr(autostart, '_task_exists', lambda: False)
+
+    assert autostart.sync_autostart(False, tmp_path)
+    assert 'Fleasion' not in values
+    assert open_accesses == [0x0002]
+
+
+def test_overlong_windows_run_command_falls_back_to_scheduled_task(monkeypatch, tmp_path):
+    values, _open_accesses = _fake_winreg(monkeypatch)
+    launch_info = {
+        'mode': 'exe',
+        'path': 'C:\\' + ('nested\\' * 40) + 'Fleasion.exe',
+        '_fmt': autostart._TASK_FORMAT_VERSION,
+    }
+    created = []
+    monkeypatch.setattr(autostart.sys, 'platform', 'win32')
+    monkeypatch.setattr(autostart, '_get_launch_info', lambda: launch_info.copy())
+    monkeypatch.setattr(autostart, '_task_exists', lambda: False)
+    monkeypatch.setattr(
+        autostart,
+        '_create_task',
+        lambda info, **kwargs: created.append((info, kwargs)) or True,
+    )
+
+    assert len(autostart._windows_run_command(launch_info)) > 260
+    assert autostart.sync_autostart(True, tmp_path)
+    assert values == {}
+    assert created == [(launch_info, {'windows_user_id': None})]
+
+
+def test_switching_to_existing_windows_dev_task_removes_packaged_run_entry(
+    monkeypatch, tmp_path
+):
+    values, open_accesses = _fake_winreg(monkeypatch)
+    values['Fleasion'] = (r'C:\Fleasion.exe --no-dashboard', 1)
+    launch_info = {
+        'mode': 'uv',
+        'path': r'C:\Tools\uv.exe',
+        'project': r'C:\Fleasion',
+        '_fmt': autostart._TASK_FORMAT_VERSION,
+        'log': str(tmp_path / 'autostart_launch_error.log'),
+    }
+    (tmp_path / 'autostart_info.json').write_text(json.dumps(launch_info))
+    monkeypatch.setattr(autostart.sys, 'platform', 'win32')
+    monkeypatch.setattr(
+        autostart,
+        '_get_launch_info',
+        lambda: {key: value for key, value in launch_info.items() if key != 'log'},
+    )
+    monkeypatch.setattr(autostart, '_task_exists', lambda: True)
+    monkeypatch.setattr(
+        autostart,
+        '_create_task',
+        lambda *_args, **_kwargs: pytest.fail('current task should not be recreated'),
+    )
+
+    assert autostart.sync_autostart(True, tmp_path)
+    assert values == {}
+    assert open_accesses == [0x0002]
+
+
+@pytest.mark.parametrize(
+    ('returncodes', 'marker_text', 'expected_call_count'),
+    [
+        ([1], 'legacy task absent\n', 1),
+        ([0, 0], 'legacy task deleted\n', 2),
+    ],
+)
+def test_legacy_windows_task_cleanup_is_background_and_persistent(
+    monkeypatch,
+    tmp_path,
+    returncodes,
+    marker_text,
+    expected_call_count,
+):
+    calls = []
+
+    class ImmediateThread:
+        def __init__(self, *, target, name, daemon):
+            assert name == 'FleasionAutostartMigration'
+            assert daemon is True
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(returncode=returncodes[len(calls) - 1])
+
+    monkeypatch.setattr(autostart, '_legacy_task_cleanup_started', False)
+    monkeypatch.setattr(autostart.threading, 'Thread', ImmediateThread)
+    monkeypatch.setattr(autostart.subprocess, 'run', fake_run)
+    monkeypatch.setattr(autostart.subprocess, 'CREATE_NO_WINDOW', 0x08000000, raising=False)
+
+    autostart._delete_legacy_windows_task_async(tmp_path)
+
+    marker = tmp_path / autostart._LEGACY_TASK_CLEANUP_MARKER
+    assert marker.read_text() == marker_text
+    assert len(calls) == expected_call_count
+    assert all(call[1]['timeout'] == 30 for call in calls)
+    assert all(call[1]['creationflags'] == 0x08000000 for call in calls)
+
+    autostart._delete_legacy_windows_task_async(tmp_path)
+    assert len(calls) == expected_call_count
 
 
 def test_windows_autostart_task_runs_at_least_privilege(monkeypatch):
@@ -33,7 +226,7 @@ def test_windows_autostart_task_runs_at_least_privilege(monkeypatch):
 
 
 def test_windows_autostart_hint_distinguishes_proxy_mode():
-    assert "normal per-user task" in autostart.windows_autostart_privilege_hint("env")
+    assert "normal per-user autostart" in autostart.windows_autostart_privilege_hint("env")
     assert "requires administrator permission" in autostart.windows_autostart_privilege_hint(
         "hosts"
     )
@@ -44,15 +237,21 @@ def test_windows_autostart_refreshes_when_proxy_mode_changes(tmp_path, monkeypat
     monkeypatch.setattr(
         autostart,
         "_get_launch_info",
-        lambda: {"mode": "exe", "path": r"C:\Fleasion\Fleasion.exe", "_fmt": 8},
+        lambda: {
+            "mode": "uv",
+            "path": r"C:\Tools\uv.exe",
+            "project": r"C:\Fleasion",
+            "_fmt": autostart._TASK_FORMAT_VERSION,
+        },
     )
     monkeypatch.setattr(autostart, "_task_exists", lambda: True)
     (tmp_path / "autostart_info.json").write_text(
         json.dumps(
             {
-                "mode": "exe",
-                "path": r"C:\Fleasion\Fleasion.exe",
-                "_fmt": 8,
+                "mode": "uv",
+                "path": r"C:\Tools\uv.exe",
+                "project": r"C:\Fleasion",
+                "_fmt": autostart._TASK_FORMAT_VERSION,
                 "proxy_mode": "hosts",
             }
         ),
@@ -69,9 +268,11 @@ def test_windows_autostart_refreshes_when_proxy_mode_changes(tmp_path, monkeypat
     assert created == [
         (
             {
-                "mode": "exe",
-                "path": r"C:\Fleasion\Fleasion.exe",
-                "_fmt": 8,
+                "mode": "uv",
+                "path": r"C:\Tools\uv.exe",
+                "project": r"C:\Fleasion",
+                "_fmt": autostart._TASK_FORMAT_VERSION,
+                "log": str(tmp_path / "autostart_launch_error.log"),
                 "proxy_mode": "env",
             },
             {"windows_user_id": None},

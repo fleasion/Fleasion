@@ -1,9 +1,9 @@
 """Autostart integration for Fleasion.
 
-Creates a Windows Task Scheduler task or macOS LaunchAgent that runs Fleasion at
-user logon, or an XDG autostart desktop entry on Linux. Detects whether we're
-running as a compiled executable or from a development checkout and updates the
-launch method when it changes.
+Creates a native Windows per-user Run entry (or a Task Scheduler task for
+development launches), a macOS LaunchAgent, or an XDG autostart desktop entry
+on Linux. Detects whether we're running as a compiled executable or from a
+development checkout and updates the launch method when it changes.
 """
 
 import base64
@@ -14,6 +14,7 @@ import plistlib
 import shlex
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 from .paths import USER_HOME
@@ -35,10 +36,124 @@ TASK_NAME = 'Fleasion_Autostart'
 LAUNCH_AGENT_ID = 'com.fleasion.autostart'
 LAUNCH_AGENT_PATH = USER_HOME / 'Library' / 'LaunchAgents' / f'{LAUNCH_AGENT_ID}.plist'
 LINUX_AUTOSTART_PATH = USER_HOME / '.config' / 'autostart' / 'fleasion.desktop'
+_WINDOWS_RUN_KEY = r'Software\Microsoft\Windows\CurrentVersion\Run'
+_WINDOWS_RUN_VALUE = 'Fleasion'
+_WINDOWS_RUN_COMMAND_MAX = 260
+_LEGACY_TASK_CLEANUP_MARKER = 'autostart_task_scheduler_migration_v9.done'
+_legacy_task_cleanup_started = False
 
 
-# Bump this whenever the task XML format changes to force recreation on next launch.
-_TASK_FORMAT_VERSION = 8
+# Bump this whenever an autostart format changes to force reconciliation on next launch.
+_TASK_FORMAT_VERSION = 9
+
+
+def _windows_run_command(launch_info: dict) -> str:
+    """Return the command stored in the current user's Windows Run key."""
+    return subprocess.list2cmdline([str(launch_info['path']), '--no-dashboard'])
+
+
+def _windows_run_entry_matches(launch_info: dict) -> bool:
+    """Return whether the native per-user autostart value is current."""
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            _WINDOWS_RUN_KEY,
+            0,
+            winreg.KEY_QUERY_VALUE,
+        ) as key:
+            value, value_type = winreg.QueryValueEx(key, _WINDOWS_RUN_VALUE)
+        return value_type == winreg.REG_SZ and value == _windows_run_command(launch_info)
+    except (ImportError, OSError):
+        return False
+
+
+def _set_windows_run_entry(launch_info: dict) -> bool:
+    """Create/update packaged Fleasion autostart without starting a subprocess."""
+    try:
+        import winreg
+
+        with winreg.CreateKeyEx(
+            winreg.HKEY_CURRENT_USER,
+            _WINDOWS_RUN_KEY,
+            0,
+            winreg.KEY_SET_VALUE,
+        ) as key:
+            winreg.SetValueEx(
+                key,
+                _WINDOWS_RUN_VALUE,
+                0,
+                winreg.REG_SZ,
+                _windows_run_command(launch_info),
+            )
+        return True
+    except (ImportError, OSError) as exc:
+        _log(f'Failed to update native Windows autostart: {exc}')
+        return False
+
+
+def _delete_windows_run_entry() -> bool:
+    """Remove packaged Fleasion autostart from the current user's Run key."""
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            _WINDOWS_RUN_KEY,
+            0,
+            winreg.KEY_SET_VALUE,
+        ) as key:
+            winreg.DeleteValue(key, _WINDOWS_RUN_VALUE)
+        return True
+    except FileNotFoundError:
+        return True
+    except (ImportError, OSError) as exc:
+        _log(f'Failed to remove native Windows autostart: {exc}')
+        return False
+
+
+def _delete_legacy_windows_task_async(config_dir: Path) -> None:
+    """Remove the old task in a retryable background migration."""
+    global _legacy_task_cleanup_started
+
+    marker = config_dir / _LEGACY_TASK_CLEANUP_MARKER
+    if _legacy_task_cleanup_started or marker.exists():
+        return
+    _legacy_task_cleanup_started = True
+
+    def _cleanup() -> None:
+        flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+        try:
+            query = subprocess.run(
+                ['schtasks', '/Query', '/TN', TASK_NAME],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=flags,
+                timeout=30,
+            )
+            if query.returncode != 0:
+                marker.write_text('legacy task absent\n', encoding='utf-8')
+                return
+            deleted = subprocess.run(
+                ['schtasks', '/Delete', '/TN', TASK_NAME, '/F'],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=flags,
+                timeout=30,
+            )
+            if deleted.returncode == 0:
+                marker.write_text('legacy task deleted\n', encoding='utf-8')
+            else:
+                _log(f'Legacy scheduled-task cleanup failed (rc={deleted.returncode})')
+        except Exception as exc:
+            # No marker means a later Fleasion launch retries, while this slow
+            # or unhealthy Task Scheduler call never delays the current launch.
+            _log(f'Legacy scheduled-task cleanup deferred: {exc}')
+
+    threading.Thread(target=_cleanup, name='FleasionAutostartMigration', daemon=True).start()
 
 
 def _project_root() -> Path:
@@ -79,9 +194,9 @@ def windows_autostart_privilege_hint(proxy_mode: str | None) -> str:
     if proxy_mode == 'hosts':
         return (
             'Hosts File mode requires administrator permission for proxy startup. '
-            'The Run on Boot task itself remains a per-user task.'
+            'The Run on Boot entry itself remains per-user.'
         )
-    return 'Env Proxy mode uses a normal per-user task and does not require Administrator.'
+    return 'Env Proxy mode uses normal per-user autostart and does not require Administrator.'
 
 
 def _desktop_exec_quote(value: str) -> str:
@@ -592,15 +707,18 @@ def sync_autostart(
     windows_user_id: str | None = None,
     proxy_mode: str | None = None,
 ) -> bool:
-    """Ensure the scheduled task matches the desired state.
+    """Ensure the platform autostart entry matches the desired state.
 
     Called on startup (to update if launch method changed) and when the
     user toggles the setting.  Returns True on success.
     """
     if not enabled:
+        registry_ok = True
+        if sys.platform == 'win32':
+            registry_ok = _delete_windows_run_entry()
         if _task_exists():
-            return _delete_task()
-        return True
+            return _delete_task() and registry_ok
+        return registry_ok
 
     current = _get_launch_info()
     if current.get('mode') == 'uv':
@@ -612,6 +730,26 @@ def sync_autostart(
         current['proxy_mode'] = proxy_mode
     stored = _get_stored_launch_info(config_dir)
 
+    # Packaged Windows builds only need a normal per-user logon launch.  The
+    # HKCU Run key provides that directly and avoids blocking startup on both
+    # schtasks.exe and a full PowerShell/Task Scheduler COM initialization.
+    # Keep Task Scheduler for development launches, where PowerShell is still
+    # used to hide uv.exe's console, and for targeted elevated legacy repair.
+    if (
+        sys.platform == 'win32'
+        and current.get('mode') == 'exe'
+        and windows_user_id is None
+        and len(_windows_run_command(current)) <= _WINDOWS_RUN_COMMAND_MAX
+    ):
+        entry_was_current = _windows_run_entry_matches(current)
+        ok = entry_was_current or _set_windows_run_entry(current)
+        if ok:
+            _save_launch_info(config_dir, current)
+            _delete_legacy_windows_task_async(config_dir)
+            if not entry_was_current:
+                _log('Native per-user Windows autostart updated')
+        return ok
+
     # Recreate if: task missing, or launch method changed since last save.
     # NOTE: _create_task uses /F (force-overwrite), so we must NOT pre-delete
     # the old task.  If we deleted first and creation failed, the task would be
@@ -620,5 +758,12 @@ def sync_autostart(
         ok = _create_task(current, windows_user_id=windows_user_id)
         if ok:
             _save_launch_info(config_dir, current)
+            if sys.platform == 'win32' and windows_user_id is None:
+                # Remove a packaged Run entry when switching to a development
+                # launch or when an unusually long command requires the task
+                # fallback. Do this only after the replacement task succeeds.
+                _delete_windows_run_entry()
         return ok
+    if sys.platform == 'win32' and windows_user_id is None:
+        _delete_windows_run_entry()
     return True

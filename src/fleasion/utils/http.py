@@ -207,6 +207,7 @@ def _curl_download_to(
             capture_output=True,
             check=False,
             text=True,
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
         )
         if result.returncode != 0:
             detail = (result.stderr or result.stdout or '').strip()

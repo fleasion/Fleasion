@@ -74,16 +74,18 @@ def test_http_download_to_uses_curl_fallback_after_urllib_failure(monkeypatch, t
     def fake_urlopen(req, timeout, context=None):
         raise original
 
-    def fake_run(cmd, capture_output, check, text):
+    def fake_run(cmd, capture_output, check, text, creationflags):
         calls['cmd'] = cmd
         calls['capture_output'] = capture_output
         calls['check'] = check
         calls['text'] = text
+        calls['creationflags'] = creationflags
         Path(cmd[cmd.index('--output') + 1]).write_bytes(b'from curl')
         return subprocess.CompletedProcess(cmd, 0, '', '')
 
     monkeypatch.setattr(urllib.request, 'urlopen', fake_urlopen)
     monkeypatch.setattr(http.shutil, 'which', lambda name: '/usr/bin/curl')
+    monkeypatch.setattr(http.subprocess, 'CREATE_NO_WINDOW', 0x08000000, raising=False)
     monkeypatch.setattr(http.subprocess, 'run', fake_run)
 
     http.http_download_to(
@@ -112,3 +114,4 @@ def test_http_download_to_uses_curl_fallback_after_urllib_failure(monkeypatch, t
     assert calls['capture_output'] is True
     assert calls['check'] is False
     assert calls['text'] is True
+    assert calls['creationflags'] == 0x08000000
