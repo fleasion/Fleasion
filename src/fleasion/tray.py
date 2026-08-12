@@ -703,6 +703,16 @@ class SystemTray:
             self.config_manager.run_on_boot = checked
             self._refresh_settings_tab()
         else:
+            if sys.platform == 'win32':
+                # Imported on demand to avoid an app <-> tray import cycle during startup.
+                from .app import _show_run_on_boot_failure
+
+                if _show_run_on_boot_failure(
+                    None, self.config_manager.proxy_mode, enabled=checked
+                ):
+                    self.config_manager.run_on_boot = checked
+                    self._refresh_settings_tab()
+                    return
             # Revert UI state and show error dialog with detail
             self.run_on_boot_action.setChecked(not checked)
             from PyQt6.QtCore import Qt

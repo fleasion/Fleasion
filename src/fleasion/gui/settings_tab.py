@@ -736,6 +736,17 @@ class SettingsTab(QWidget):
             if self._tray and hasattr(self._tray, 'run_on_boot_action'):
                 self._tray.run_on_boot_action.setChecked(checked)
         else:
+            if sys.platform == 'win32':
+                # Imported on demand to avoid an app <-> GUI import cycle during startup.
+                from ..app import _show_run_on_boot_failure
+
+                if _show_run_on_boot_failure(
+                    self, self._config.proxy_mode, enabled=checked
+                ):
+                    self._config.run_on_boot = checked
+                    if self._tray and hasattr(self._tray, 'run_on_boot_action'):
+                        self._tray.run_on_boot_action.setChecked(checked)
+                    return
             self._run_on_boot_chk.blockSignals(True)
             self._run_on_boot_chk.setChecked(not checked)
             self._run_on_boot_chk.blockSignals(False)

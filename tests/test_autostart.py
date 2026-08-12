@@ -104,6 +104,42 @@ def test_disabling_windows_autostart_removes_native_run_entry(monkeypatch, tmp_p
     assert open_accesses == [0x0002]
 
 
+def test_disabling_windows_autostart_removes_run_entry_before_legacy_task_fails(
+    monkeypatch, tmp_path
+):
+    values, open_accesses = _fake_winreg(monkeypatch)
+    values['Fleasion'] = (r'C:\\Fleasion\\Fleasion.exe --no-dashboard', 1)
+    messages = []
+    monkeypatch.setattr(autostart.sys, 'platform', 'win32')
+    monkeypatch.setattr(autostart, '_task_exists', lambda: True)
+    monkeypatch.setattr(autostart, '_delete_task', lambda: False)
+    monkeypatch.setattr(autostart, '_log', messages.append)
+
+    assert not autostart.sync_autostart(False, tmp_path)
+    assert 'Fleasion' not in values
+    assert open_accesses == [0x0002]
+    assert any('legacy scheduled task' in message for message in messages)
+
+
+def test_windows_task_deletion_logs_scheduler_diagnostics(monkeypatch):
+    messages = []
+    monkeypatch.setattr(autostart.sys, 'platform', 'win32')
+    monkeypatch.setattr(autostart.subprocess, 'CREATE_NO_WINDOW', 0, raising=False)
+    monkeypatch.setattr(
+        autostart.subprocess,
+        'run',
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=1, stdout=b'', stderr=b'ERROR: Access is denied.'
+        ),
+    )
+    monkeypatch.setattr(autostart, '_log', messages.append)
+
+    assert not autostart._delete_task()
+    assert messages == [
+        "Failed to delete scheduled task 'Fleasion_Autostart' (rc=1): ERROR: Access is denied."
+    ]
+
+
 def test_overlong_windows_run_command_falls_back_to_scheduled_task(monkeypatch, tmp_path):
     values, _open_accesses = _fake_winreg(monkeypatch)
     launch_info = {

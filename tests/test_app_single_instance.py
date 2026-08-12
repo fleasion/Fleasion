@@ -676,6 +676,41 @@ def test_repair_autostart_once_syncs_only_from_admin(monkeypatch, tmp_path):
     ]
 
 
+def test_repair_autostart_once_can_remove_legacy_task(monkeypatch, tmp_path):
+    calls = []
+
+    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(app_module, '_is_admin', lambda: True)
+    monkeypatch.setattr(
+        app_module,
+        'ConfigManager',
+        lambda: SimpleNamespace(proxy_mode='env'),
+    )
+    monkeypatch.setattr(
+        app_module,
+        'log_buffer',
+        type('Log', (), {'log': staticmethod(lambda *args: None)})(),
+    )
+    monkeypatch.setattr(app_module, 'CONFIG_DIR', tmp_path)
+
+    from fleasion.utils import autostart
+
+    monkeypatch.setattr(
+        autostart,
+        'sync_autostart',
+        lambda enabled, config_dir, **kwargs: calls.append((enabled, config_dir, kwargs)) or True,
+    )
+
+    assert _repair_autostart_once(enabled=False) == 0
+    assert calls == [
+        (
+            False,
+            tmp_path,
+            {'windows_user_id': None, 'proxy_mode': 'env'},
+        )
+    ]
+
+
 def test_windows_elevation_carries_original_desktop_sid(monkeypatch):
     from fleasion.utils import windows_permissions
 

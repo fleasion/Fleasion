@@ -411,19 +411,28 @@ def _refresh_desktop_integration_ui(tray, enabled: bool) -> None:
         tray._refresh_settings_tab()
 
 
-def _show_run_on_boot_failure(parent, proxy_mode: str | None = None) -> None:
+def _show_run_on_boot_failure(
+    parent, proxy_mode: str | None = None, *, enabled: bool = True
+) -> bool:
     msg = QMessageBox(parent)
-    msg.setWindowTitle('Run on Boot Needs Repair')
+    msg.setWindowTitle('Run on Boot Needs Repair' if enabled else 'Run on Boot Could Not Be Disabled')
     msg.setIcon(QMessageBox.Icon.Warning)
     if sys.platform == 'win32':
         from .utils.autostart import windows_autostart_privilege_hint
 
-        msg.setText(
-            'Fleasion could not update its Run on Boot task.\n\n'
-            'Repair it now with one administrator approval? The repair updates the task '
-            'for your current Windows account and confirms whether it worked.\n\n'
-            f'{windows_autostart_privilege_hint(proxy_mode)}'
-        )
+        if enabled:
+            msg.setText(
+                'Fleasion could not update its Run on Boot task.\n\n'
+                'Repair it now with one administrator approval? The repair updates the task '
+                'for your current Windows account and confirms whether it worked.\n\n'
+                f'{windows_autostart_privilege_hint(proxy_mode)}'
+            )
+        else:
+            msg.setText(
+                'Fleasion could not remove its legacy Run on Boot task.\n\n'
+                'Remove it now with one administrator approval? This removes startup for '
+                'your current Windows account and confirms whether it worked.'
+            )
     else:
         msg.setText(
             'Failed to register autostart.\n'
@@ -437,7 +446,8 @@ def _show_run_on_boot_failure(parent, proxy_mode: str | None = None) -> None:
 
     repair_button = None
     if sys.platform == 'win32':
-        repair_button = msg.addButton('Repair Now (Recommended)', QMessageBox.ButtonRole.AcceptRole)
+        repair_label = 'Repair Now (Recommended)' if enabled else 'Remove Task Now (Recommended)'
+        repair_button = msg.addButton(repair_label, QMessageBox.ButtonRole.AcceptRole)
         ignore_button = msg.addButton('Keep Run on Boot Enabled', QMessageBox.ButtonRole.RejectRole)
         msg.setDefaultButton(ignore_button)
     else:
@@ -445,25 +455,46 @@ def _show_run_on_boot_failure(parent, proxy_mode: str | None = None) -> None:
     msg.exec()
 
     if repair_button is not None and msg.clickedButton() == repair_button:
+        repair_args = '--repair-autostart' if enabled else '--repair-autostart --disable-autostart'
         if _relaunch_as_admin(
-            extra_args='--repair-autostart',
+            extra_args=repair_args,
             parent_hwnd=_window_handle(parent),
             wait_for_completion=True,
         ):
-            log_buffer.log('Autostart', 'Elevated autostart repair completed')
-            msg.setWindowTitle('Run on Boot Fixed')
-            msg.setIcon(QMessageBox.Icon.Information)
-            msg.setText(
-                'It worked — Fleasion repaired the Run on Boot task for your current '
-                'Windows account.\n\n'
-                'You do not need to run the repair again. Fleasion will start automatically '
-                'the next time you sign in.'
+            log_buffer.log(
+                'Autostart',
+                'Elevated autostart repair completed'
+                if enabled
+                else 'Elevated legacy autostart-task removal completed',
             )
+            msg.setWindowTitle('Run on Boot Fixed' if enabled else 'Run on Boot Disabled')
+            msg.setIcon(QMessageBox.Icon.Information)
+            if enabled:
+                msg.setText(
+                    'It worked — Fleasion repaired the Run on Boot task for your current '
+                    'Windows account.\n\n'
+                    'You do not need to run the repair again. Fleasion will start automatically '
+                    'the next time you sign in.'
+                )
+            else:
+                msg.setText(
+                    'It worked — Fleasion removed the legacy Run on Boot task for your '
+                    'current Windows account.\n\n'
+                    'Fleasion will no longer start automatically when you sign in.'
+                )
             msg.setStandardButtons(QMessageBox.StandardButton.Ok)
             msg.exec()
+            return True
         else:
-            log_buffer.log('Autostart', 'Elevated autostart repair did not complete successfully')
-            msg.setWindowTitle('Run on Boot Repair Incomplete')
+            log_buffer.log(
+                'Autostart',
+                'Elevated autostart repair did not complete successfully'
+                if enabled
+                else 'Elevated legacy autostart-task removal did not complete successfully',
+            )
+            msg.setWindowTitle(
+                'Run on Boot Repair Incomplete' if enabled else 'Run on Boot Disable Incomplete'
+            )
             msg.setIcon(QMessageBox.Icon.Warning)
             msg.setText(
                 'Fleasion could not confirm that the Run on Boot task was repaired.\n\n'
@@ -472,6 +503,7 @@ def _show_run_on_boot_failure(parent, proxy_mode: str | None = None) -> None:
             )
             msg.setStandardButtons(QMessageBox.StandardButton.Ok)
             msg.exec()
+    return False
 
 
 def _show_roblox_permission_failure(
@@ -1033,8 +1065,10 @@ def _relaunch_as_admin(
     return completed
 
 
-def _repair_autostart_once(requesting_user_sid: str | None = None) -> int:
-    """Repair the Windows autostart task from a one-shot elevated process."""
+def _repair_autostart_once(
+    requesting_user_sid: str | None = None, *, enabled: bool = True
+) -> int:
+    """Repair or remove Windows autostart from a one-shot elevated process."""
     if sys.platform != 'win32' or not _is_admin():
         log_buffer.log(
             'Autostart', 'Elevated autostart repair rejected: administrator access is required'
@@ -1042,32 +1076,44 @@ def _repair_autostart_once(requesting_user_sid: str | None = None) -> int:
         return 1
 
     from .utils.autostart import sync_autostart
-    from .utils.windows_permissions import windows_user_id_from_sid
+    windows_user_id = None
+    if enabled:
+        from .utils.windows_permissions import windows_user_id_from_sid
 
-    if not requesting_user_sid:
-        log_buffer.log('Autostart', 'Elevated autostart repair has no requesting user identity')
-        return 1
+        if not requesting_user_sid:
+            log_buffer.log('Autostart', 'Elevated autostart repair has no requesting user identity')
+            return 1
 
-    try:
-        requesting_user_id = windows_user_id_from_sid(requesting_user_sid)
-    except Exception as exc:
-        log_buffer.log('Autostart', f'Invalid requesting Windows identity: {exc}')
-        return 1
+        try:
+            windows_user_id = windows_user_id_from_sid(requesting_user_sid)
+        except Exception as exc:
+            log_buffer.log('Autostart', f'Invalid requesting Windows identity: {exc}')
+            return 1
 
     try:
         proxy_mode = ConfigManager().proxy_mode
     except Exception:
         proxy_mode = None
     if sync_autostart(
-        True,
+        enabled,
         CONFIG_DIR,
-        windows_user_id=requesting_user_id,
+        windows_user_id=windows_user_id,
         proxy_mode=proxy_mode,
     ):
-        log_buffer.log('Autostart', 'Elevated autostart repair completed')
+        log_buffer.log(
+            'Autostart',
+            'Elevated autostart repair completed'
+            if enabled
+            else 'Elevated legacy autostart-task removal completed',
+        )
         return 0
 
-    log_buffer.log('Autostart', 'Elevated autostart repair failed')
+    log_buffer.log(
+        'Autostart',
+        'Elevated autostart repair failed'
+        if enabled
+        else 'Elevated legacy autostart-task removal failed',
+    )
     return 1
 
 
@@ -3282,6 +3328,7 @@ def main():
     _parser.add_argument('--fleasion-user-localappdata', help=_ap.SUPPRESS)
     _parser.add_argument('--fleasion-requesting-user-sid', help=_ap.SUPPRESS)
     _parser.add_argument('--repair-autostart', action='store_true', help=_ap.SUPPRESS)
+    _parser.add_argument('--disable-autostart', action='store_true', help=_ap.SUPPRESS)
     _parser.add_argument('--repair-roblox-permissions', action='store_true', help=_ap.SUPPRESS)
     _parser.add_argument('--repair-firewall', action='store_true', help=_ap.SUPPRESS)
     _parser.add_argument('--cleanup-hosts', action='store_true', help=_ap.SUPPRESS)
@@ -3304,7 +3351,12 @@ def main():
     if _args.cleanup_hosts:
         sys.exit(_cleanup_hosts_once())
     if _args.repair_autostart:
-        sys.exit(_repair_autostart_once(_args.fleasion_requesting_user_sid))
+        sys.exit(
+            _repair_autostart_once(
+                _args.fleasion_requesting_user_sid,
+                enabled=not _args.disable_autostart,
+            )
+        )
     if _args.repair_roblox_permissions:
         sys.exit(_repair_roblox_permissions_once(_args.fleasion_requesting_user_sid))
     if _args.repair_firewall:

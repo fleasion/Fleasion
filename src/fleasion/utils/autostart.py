@@ -32,6 +32,17 @@ def _log(msg: str) -> None:
         logger.info(msg)
 
 
+def _command_output(result) -> str:
+    """Return captured command output without hiding scheduler diagnostics."""
+    parts = []
+    for output in (getattr(result, 'stdout', None), getattr(result, 'stderr', None)):
+        if isinstance(output, bytes):
+            output = output.decode(errors='replace')
+        if output:
+            parts.append(str(output).strip())
+    return ' '.join(parts)
+
+
 TASK_NAME = 'Fleasion_Autostart'
 LAUNCH_AGENT_ID = 'com.fleasion.autostart'
 LAUNCH_AGENT_PATH = USER_HOME / 'Library' / 'LaunchAgents' / f'{LAUNCH_AGENT_ID}.plist'
@@ -128,8 +139,8 @@ def _delete_legacy_windows_task_async(config_dir: Path) -> None:
             query = subprocess.run(
                 ['schtasks', '/Query', '/TN', TASK_NAME],
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 creationflags=flags,
                 timeout=30,
             )
@@ -139,15 +150,18 @@ def _delete_legacy_windows_task_async(config_dir: Path) -> None:
             deleted = subprocess.run(
                 ['schtasks', '/Delete', '/TN', TASK_NAME, '/F'],
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 creationflags=flags,
                 timeout=30,
             )
             if deleted.returncode == 0:
                 marker.write_text('legacy task deleted\n', encoding='utf-8')
             else:
-                _log(f'Legacy scheduled-task cleanup failed (rc={deleted.returncode})')
+                _log(
+                    f'Legacy scheduled-task cleanup failed (rc={deleted.returncode}): '
+                    f'{_command_output(deleted)}'
+                )
         except Exception as exc:
             # No marker means a later Fleasion launch retries, while this slow
             # or unhealthy Task Scheduler call never delays the current launch.
@@ -315,8 +329,18 @@ def _delete_task() -> bool:
             creationflags=subprocess.CREATE_NO_WINDOW,
             timeout=10,
         )
-        return result.returncode == 0 and not _task_exists()
-    except Exception:
+        if result.returncode != 0:
+            _log(
+                f'Failed to delete scheduled task {TASK_NAME!r} (rc={result.returncode}): '
+                f'{_command_output(result)}'
+            )
+            return False
+        if _task_exists():
+            _log(f'Scheduled task {TASK_NAME!r} still exists after deletion')
+            return False
+        return True
+    except Exception as exc:
+        _log(f'Failed to delete scheduled task {TASK_NAME!r}: {exc}')
         return False
 
 
@@ -717,7 +741,13 @@ def sync_autostart(
         if sys.platform == 'win32':
             registry_ok = _delete_windows_run_entry()
         if _task_exists():
-            return _delete_task() and registry_ok
+            task_ok = _delete_task()
+            if not task_ok:
+                _log(
+                    'Run on Boot could not be fully disabled because the legacy '
+                    f'scheduled task {TASK_NAME!r} could not be removed'
+                )
+            return task_ok and registry_ok
         return registry_ok
 
     current = _get_launch_info()
