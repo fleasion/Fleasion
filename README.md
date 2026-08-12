@@ -241,8 +241,6 @@ Fleasion can be configured to launch automatically via **Settings -> Run on Boot
 ├── launcher.py     # Thin launcher used to start the packaged app
 ├── pyproject.toml  # Project metadata and dependency configuration
 ├── README.md       # Project overview, setup, and usage guide
-├── pyinstaller_hooks/
-│   └── rthook_harden_dll_search.py  # Runtime hook used by PyInstaller on Windows
 ├── scripts/
 │   └── clear_first_time_setup.py  # Development utility for resetting initial setup
 ├── src/

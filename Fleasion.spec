@@ -338,9 +338,7 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=['pyinstaller_hooks/rthook_harden_dll_search.py']
-    if sys.platform == 'win32'
-    else [],
+    runtime_hooks=[],
     excludes=[*_BASE_EXCLUDES, *_NUMPY_EXCLUDES, *_QT_EXCLUDES],
     noarchive=False,
     optimize=0,
