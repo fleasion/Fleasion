@@ -3294,6 +3294,7 @@ class ProxyMaster:
         self._windows_selector_fallback_attempted = False
         self._hosts_installed: bool = False
         self._active_env_proxy_mode: bool = False
+        self._sober_env_proxy_override_active: bool = False
         self._active_intercept_hosts: set[str] = set(BASE_INTERCEPT_HOSTS)
         self._env_proxy_intercept_match: str = ''
         # In-memory only, on purpose - never read from or written to
@@ -4296,6 +4297,11 @@ class ProxyMaster:
         if ready_event is not None:
             ready_event.clear()
         self._stop_linux_sober_custom_fflag_timer()
+        if IS_LINUX and getattr(self, '_sober_env_proxy_override_active', False):
+            from ..utils.platform_linux import clear_sober_env_proxy_override
+
+            clear_sober_env_proxy_override()
+            self._sober_env_proxy_override_active = False
         with self._lock:
             if not self._running and not (self._thread and self._thread.is_alive()):
                 return
@@ -4778,6 +4784,12 @@ class ProxyMaster:
         if env_proxy_mode:
             _set_active_hosts_loopbacks(None)
             self._active_env_proxy_mode = True
+            if IS_LINUX:
+                from ..utils.platform_linux import set_sober_env_proxy_override
+
+                self._sober_env_proxy_override_active = set_sober_env_proxy_override(
+                    self.roblox_env_proxy_url()
+                )
             ready_event = getattr(self, '_env_proxy_ready', None)
             if ready_event is not None:
                 ready_event.set()

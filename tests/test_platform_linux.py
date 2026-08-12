@@ -263,7 +263,7 @@ def test_launch_as_standard_user_strips_pyinstaller_env_for_sober_uri(monkeypatc
     assert "LD_LIBRARY_PATH_ORIG" not in calls[0][1]["env"]
 
 
-def test_launch_as_standard_user_restarts_running_sober_before_uri(monkeypatch):
+def test_launch_as_standard_user_does_not_restart_running_sober_for_uri(monkeypatch):
     calls = []
 
     monkeypatch.setattr(platform_linux.os, "geteuid", lambda: 1000)
@@ -273,16 +273,6 @@ def test_launch_as_standard_user_restarts_running_sober_before_uri(monkeypatch):
         lambda name: "flatpak" if name == "flatpak" else None,
     )
     monkeypatch.setattr(platform_linux, "is_roblox_running", lambda: True)
-    monkeypatch.setattr(
-        platform_linux,
-        "terminate_roblox",
-        lambda: calls.append("terminate") or True,
-    )
-    monkeypatch.setattr(
-        platform_linux,
-        "wait_for_roblox_exit",
-        lambda timeout=10.0: calls.append("wait") or True,
-    )
 
     def fake_popen(args, **kwargs):
         calls.append((args, kwargs))
@@ -294,8 +284,6 @@ def test_launch_as_standard_user_restarts_running_sober_before_uri(monkeypatch):
     assert platform_linux.launch_as_standard_user(uri)
 
     assert calls == [
-        "terminate",
-        "wait",
         (
             ["flatpak", "run", platform_linux.SOBER_APP_ID, uri],
             _detached_kwargs_with_env(),
@@ -303,172 +291,27 @@ def test_launch_as_standard_user_restarts_running_sober_before_uri(monkeypatch):
     ]
 
 
-def test_launch_as_standard_user_aborts_uri_when_running_sober_does_not_exit(monkeypatch):
+def test_sober_env_proxy_override_keeps_sober_as_browser_uri_handler(monkeypatch):
     calls = []
+    proxy_url = 'http://127.0.0.1:58443'
 
-    monkeypatch.setattr(
-        platform_linux.shutil,
-        "which",
-        lambda name: "flatpak" if name == "flatpak" else None,
-    )
-    monkeypatch.setattr(platform_linux, "is_roblox_running", lambda: True)
-    monkeypatch.setattr(
-        platform_linux,
-        "terminate_roblox",
-        lambda: calls.append("terminate") or True,
-    )
-    monkeypatch.setattr(
-        platform_linux,
-        "wait_for_roblox_exit",
-        lambda timeout=10.0: calls.append("wait") or False,
-    )
+    monkeypatch.setattr(platform_linux.shutil, 'which', lambda _name: '/usr/bin/flatpak')
     monkeypatch.setattr(
         platform_linux.subprocess,
-        "Popen",
-        lambda *args, **kwargs: calls.append(args),
+        'run',
+        lambda command, **_kwargs: calls.append(command)
+        or platform_linux.subprocess.CompletedProcess(command, 0, '', ''),
     )
 
-    assert not platform_linux.launch_as_standard_user("roblox://experiences/start?placeId=1")
-    assert calls == ["terminate", "wait"]
+    assert platform_linux.set_sober_env_proxy_override(proxy_url)
+    assert platform_linux.clear_sober_env_proxy_override()
 
-
-def _reset_env_proxy_relaunch_state(monkeypatch):
-    monkeypatch.setattr(platform_linux, "_env_proxy_relaunch_at", None)
-    monkeypatch.setattr(platform_linux, "_env_proxy_relaunch_in_progress", False)
-    monkeypatch.setattr(
-        platform_linux, "wait_for_roblox_window", lambda timeout=15.0: True
-    )
-
-
-def test_relaunch_sober_with_env_proxy_waits_for_proxy_and_passes_flatpak_env(monkeypatch):
-    calls = []
-    proxy_url = "http://127.0.0.1:58443"
-    _reset_env_proxy_relaunch_state(monkeypatch)
-    monkeypatch.setattr(
-        platform_linux.shutil,
-        "which",
-        lambda name: "flatpak" if name == "flatpak" else None,
-    )
-    monkeypatch.setattr(
-        platform_linux,
-        "_wait_for_local_proxy",
-        lambda url: calls.append(("wait", url)) or True,
-    )
-    monkeypatch.setattr(platform_linux, "is_roblox_running", lambda: False)
-    monkeypatch.setattr(platform_linux, "wait_for_roblox_window", lambda timeout=15.0: True)
-    monkeypatch.setattr(
-        platform_linux,
-        "_standard_user_popen",
-        lambda args: calls.append(("popen", args)),
-    )
-
-    assert platform_linux.relaunch_roblox_with_proxy_env(proxy_url)
-
-    assert calls[0] == ("wait", proxy_url)
-    args = calls[1][1]
-    assert args[:2] == ["flatpak", "run"]
-    assert f"--env=HTTPS_PROXY={proxy_url}" in args
-    assert f"--env=HTTP_PROXY={proxy_url}" in args
-    assert "--env=FLEASION_PROXY_RELAUNCHED=1" in args
-    assert args[-1] == platform_linux.SOBER_APP_ID
-
-
-def test_relaunch_sober_with_env_proxy_preserves_launch_target(monkeypatch):
-    calls = []
-    proxy_url = "http://127.0.0.1:58443"
-    _reset_env_proxy_relaunch_state(monkeypatch)
-    monkeypatch.setattr(
-        platform_linux.shutil,
-        "which",
-        lambda name: "flatpak" if name == "flatpak" else None,
-    )
-    monkeypatch.setattr(platform_linux, "_wait_for_local_proxy", lambda _url: True)
-    monkeypatch.setattr(platform_linux, "is_roblox_running", lambda: False)
-    monkeypatch.setattr(
-        platform_linux,
-        "_standard_user_popen",
-        lambda args: calls.append(args),
-    )
-
-    target = "roblox://experiences/start?placeId=121814103864070"
-    assert platform_linux.relaunch_roblox_with_proxy_env(proxy_url, target)
-    assert calls[0][-1] == target
-
-
-def test_relaunch_sober_with_env_proxy_does_not_repeat_recent_launch(monkeypatch):
-    calls = []
-    _reset_env_proxy_relaunch_state(monkeypatch)
-    monkeypatch.setattr(
-        platform_linux,
-        "_env_proxy_relaunch_at",
-        platform_linux.time.monotonic(),
-    )
-    monkeypatch.setattr(
-        platform_linux.shutil,
-        "which",
-        lambda name: "flatpak" if name == "flatpak" else None,
-    )
-    monkeypatch.setattr(
-        platform_linux,
-        "_wait_for_local_proxy",
-        lambda *_args: calls.append("wait") or True,
-    )
-    monkeypatch.setattr(
-        platform_linux,
-        "_standard_user_popen",
-        lambda *_args: calls.append("popen"),
-    )
-
-    assert not platform_linux.relaunch_roblox_with_proxy_env("http://127.0.0.1:58443")
-    assert calls == []
-
-
-def test_explicit_sober_uri_launch_can_replace_recent_env_proxy_launch(monkeypatch):
-    calls = []
-    _reset_env_proxy_relaunch_state(monkeypatch)
-    monkeypatch.setattr(
-        platform_linux,
-        "_env_proxy_relaunch_at",
-        platform_linux.time.monotonic(),
-    )
-    monkeypatch.setattr(
-        platform_linux.shutil,
-        "which",
-        lambda name: "flatpak" if name == "flatpak" else None,
-    )
-    monkeypatch.setattr(platform_linux, "_wait_for_local_proxy", lambda *_args: True)
-    monkeypatch.setattr(platform_linux, "is_roblox_running", lambda: False)
-    monkeypatch.setattr(
-        platform_linux,
-        "_standard_user_popen",
-        lambda args: calls.append(args),
-    )
-
-    target = "roblox://experiences/start?placeId=2"
-    assert platform_linux.relaunch_roblox_with_proxy_env(
-        "http://127.0.0.1:58443", target
-    )
-    assert calls[0][-1] == target
-
-
-def test_relaunch_sober_with_env_proxy_does_not_kill_when_proxy_is_not_ready(monkeypatch):
-    calls = []
-    _reset_env_proxy_relaunch_state(monkeypatch)
-    monkeypatch.setattr(
-        platform_linux.shutil,
-        "which",
-        lambda name: "flatpak" if name == "flatpak" else None,
-    )
-    monkeypatch.setattr(platform_linux, "_wait_for_local_proxy", lambda *_args: False)
-    monkeypatch.setattr(platform_linux, "is_roblox_running", lambda: True)
-    monkeypatch.setattr(
-        platform_linux,
-        "terminate_roblox",
-        lambda: calls.append("terminate") or True,
-    )
-
-    assert not platform_linux.relaunch_roblox_with_proxy_env("http://127.0.0.1:58443")
-    assert calls == []
+    assert calls[0][:3] == ['/usr/bin/flatpak', 'override', '--user']
+    assert f'--env=HTTPS_PROXY={proxy_url}' in calls[0]
+    assert calls[0][-1] == platform_linux.SOBER_APP_ID
+    assert calls[1][:3] == ['/usr/bin/flatpak', 'override', '--user']
+    assert '--unset-env=HTTPS_PROXY' in calls[1]
+    assert calls[1][-1] == platform_linux.SOBER_APP_ID
 
 
 def test_open_folder_uses_detached_standard_user_launch(tmp_path, monkeypatch):

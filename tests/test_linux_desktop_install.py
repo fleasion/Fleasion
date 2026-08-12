@@ -44,8 +44,59 @@ def test_install_desktop_entries_writes_user_launcher_and_removes_deprecated(tmp
     assert "pkexec" not in launcher_text
     assert "FLEASION_USER_HOME" in launcher_text
     assert "exec /usr/bin/python3 launcher.py" in launcher_text
+    assert "MimeType=x-scheme-handler/roblox" not in desktop_text
+    assert "%U" not in desktop_text
     assert not deprecated.exists()
     assert result["removed_deprecated_entries"] == [str(deprecated)]
+
+
+def test_install_desktop_entries_restores_sober_when_fleasion_is_uri_handler(tmp_path, monkeypatch):
+    applications = tmp_path / ".local" / "share" / "applications"
+    bin_dir = tmp_path / ".local" / "bin"
+    commands = []
+
+    monkeypatch.setattr(platform_linux, "USER_HOME", tmp_path)
+    monkeypatch.setattr(platform_linux, "LINUX_APPLICATIONS_DIR", applications)
+    monkeypatch.setattr(platform_linux, "LINUX_BIN_DIR", bin_dir)
+    monkeypatch.setattr(platform_linux, "LINUX_DESKTOP_ENTRY_PATH", applications / "fleasion.desktop")
+    monkeypatch.setattr(platform_linux, "LINUX_LAUNCHER_PATH", bin_dir / "fleasion-launch")
+    monkeypatch.setattr(platform_linux, "LINUX_DEPRECATED_DESKTOP_ENTRY_PATHS", ())
+    monkeypatch.setattr(platform_linux, "_copy_linux_app_payload", lambda: (None, None))
+    monkeypatch.setattr(platform_linux, "_linux_app_launch_command", lambda installed_app=None: (["/usr/bin/python3", "launcher.py"], None))
+    monkeypatch.setattr(platform_linux, "get_icon_path", lambda: None)
+    monkeypatch.setattr(
+        platform_linux.shutil,
+        "which",
+        lambda name: "/usr/bin/xdg-mime" if name == "xdg-mime" else None,
+    )
+
+    def run(command, **_kwargs):
+        commands.append(command)
+        if command[1:3] == ["query", "default"]:
+            return platform_linux.subprocess.CompletedProcess(command, 0, "fleasion.desktop\n", "")
+        return platform_linux.subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(platform_linux.subprocess, "run", run)
+
+    result = platform_linux.install_desktop_entries()
+
+    assert result["sober_uri_handler_restored"]
+    assert commands == [
+        ["/usr/bin/xdg-mime", "query", "default", "x-scheme-handler/roblox"],
+        ["/usr/bin/xdg-mime", "query", "default", "x-scheme-handler/roblox-player"],
+        [
+            "/usr/bin/xdg-mime",
+            "default",
+            "org.vinegarhq.Sober.desktop",
+            "x-scheme-handler/roblox",
+        ],
+        [
+            "/usr/bin/xdg-mime",
+            "default",
+            "org.vinegarhq.Sober.desktop",
+            "x-scheme-handler/roblox-player",
+        ],
+    ]
 
 
 def test_copy_linux_app_payload_copies_frozen_binary_and_icon(tmp_path, monkeypatch):

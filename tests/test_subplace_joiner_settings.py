@@ -1,5 +1,6 @@
 import json
 import threading
+from types import SimpleNamespace
 
 from fleasion.gui import subplace_joiner_tab
 
@@ -139,3 +140,21 @@ def test_subplace_recent_name_failure_does_not_cache_raw_place_id(monkeypatch):
     assert done.wait(2) is False
     assert callbacks == []
     assert owner._place_name_cache == {}
+
+
+def test_linux_subplace_uri_uses_sober_handler_without_env_proxy_relaunch(monkeypatch):
+    owner = _settings_owner()
+    owner._config_manager = SimpleNamespace(proxy_mode='env', proxy_features_enabled=True)
+    owner._proxy_master = SimpleNamespace(roblox_env_proxy_url=lambda: 'http://127.0.0.1:58443')
+    launches = []
+    target = 'roblox://experiences/start?placeId=1'
+
+    monkeypatch.setattr(subplace_joiner_tab.sys, 'platform', 'linux')
+    monkeypatch.setattr(
+        subplace_joiner_tab,
+        'launch_as_standard_user',
+        lambda uri: launches.append(uri) or True,
+    )
+
+    assert owner._launch_roblox_uri(target)
+    assert launches == [target]

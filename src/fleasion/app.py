@@ -122,7 +122,7 @@ def _prepare_env_proxy_migration(config_manager: ConfigManager) -> bool:
 
 
 def _show_env_proxy_migration(config_manager: ConfigManager, roblox_monitor) -> None:
-    """Acknowledge the forced legacy migration and optionally relaunch Player."""
+    """Acknowledge the forced legacy migration and apply it to Player."""
     player_running = bool(roblox_monitor.is_player_running())
     if player_running:
         # Do not let the process monitor interpret a Player that predates this
@@ -143,12 +143,17 @@ def _show_env_proxy_migration(config_manager: ConfigManager, roblox_monitor) -> 
     )
     restart_button = None
     if player_running and config_manager.proxy_features_enabled:
-        details += (
-            '\n\nRoblox Player is already running. It must be relaunched before '
-            'the new proxy mode applies to that session.'
-        )
-        restart_button = msg.addButton('Restart Roblox Now', QMessageBox.ButtonRole.AcceptRole)
-        later_button = msg.addButton('Restart Roblox Later', QMessageBox.ButtonRole.RejectRole)
+        if sys.platform.startswith('linux'):
+            details += '\n\nFleasion will apply the proxy to future Sober launches.'
+            restart_button = msg.addButton('Apply for Future Launches', QMessageBox.ButtonRole.AcceptRole)
+            later_button = msg.addButton('Apply Later', QMessageBox.ButtonRole.RejectRole)
+        else:
+            details += (
+                '\n\nRoblox Player is already running. It must be relaunched before '
+                'the new proxy mode applies to that session.'
+            )
+            restart_button = msg.addButton('Restart Roblox Now', QMessageBox.ButtonRole.AcceptRole)
+            later_button = msg.addButton('Restart Roblox Later', QMessageBox.ButtonRole.RejectRole)
         msg.setDefaultButton(restart_button)
         msg.setEscapeButton(later_button)
     else:
@@ -173,10 +178,9 @@ def _show_env_proxy_migration(config_manager: ConfigManager, roblox_monitor) -> 
     if lifecycle is None:
         return
     if sys.platform.startswith('linux'):
-        exe_path = Path('org.vinegarhq.Sober')
+        run_in_thread(lifecycle.handle_adopted_player_launch)(Path('org.vinegarhq.Sober'))
     else:
-        exe_path = get_roblox_player_exe_path()
-    run_in_thread(lifecycle.handle_player_launch)(exe_path)
+        run_in_thread(lifecycle.handle_player_launch)(get_roblox_player_exe_path())
 
 
 class _MacOSAuthSourceDialog(QDialog):
@@ -2704,7 +2708,7 @@ class RobloxExitMonitor(QObject):
                     and proxy_features_enabled
                 ):
                     if self.env_lifecycle is not None:
-                        run_in_thread(self.env_lifecycle.handle_player_launch)(exe_path)
+                        run_in_thread(self.env_lifecycle.handle_adopted_player_launch)(exe_path)
                 elif self._proxy_master is not None and proxy_features_enabled:
                     run_in_thread(self._proxy_master.refresh_and_restart_roblox)(exe_path)
                 elif self._proxy_master is None and proxy_features_enabled:
@@ -3116,7 +3120,12 @@ def _request_running_instance_launch(target: str, timeout_ms: int = 5000) -> boo
 
 
 def _launch_roblox_uri_for_instance(tray: SystemTray, target: str) -> bool:
-    """Launch a URI through the active proxy mode on Linux/Sober."""
+    """Launch a URI through the active proxy mode."""
+    if sys.platform.startswith('linux'):
+        # Flatpak supplies Fleasion's Env Proxy variables to Sober while the
+        # proxy is active; do not replace a one-time URI with a synthetic launch.
+        return launch_as_standard_user(target)
+
     config = tray.config_manager
     proxy_master = tray.proxy_master
     if (
@@ -3821,19 +3830,19 @@ def main():
         _terminate_env_player = terminate_roblox
 
     else:
-        from .utils.platform_linux import relaunch_roblox_with_proxy_env
-
         def _relaunch_env_player(
-            proxy_url: str,
-            target: str | None,
-            force: bool,
-            cancel_event: threading.Event,
+            _proxy_url: str,
+            _target: str | None,
+            _force: bool,
+            _cancel_event: threading.Event,
             _source_exe_path: Path | None,
             _player_already_stopped: bool,
         ) -> bool:
-            return relaunch_roblox_with_proxy_env(
-                proxy_url, target, force=force, cancel_event=cancel_event
+            log_buffer.log(
+                'Launcher',
+                'Linux Sober Env Proxy is supplied by Flatpak; synthetic relaunch skipped',
             )
+            return False
 
         _terminate_env_player = terminate_roblox
 

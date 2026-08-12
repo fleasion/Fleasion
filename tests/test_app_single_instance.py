@@ -220,14 +220,14 @@ def test_completed_env_proxy_migration_preserves_hosts_choice():
     assert config.proxy_mode == 'hosts'
 
 
-def test_env_proxy_migration_acknowledges_then_restarts_running_player(monkeypatch):
+def test_linux_env_proxy_migration_adopts_running_sober_without_relaunch(monkeypatch):
     events = []
     config = SimpleNamespace(
         proxy_features_enabled=True,
         env_proxy_migration_v1_complete=False,
     )
     lifecycle = SimpleNamespace(
-        handle_player_launch=lambda path: events.append(('restart', Path(path)))
+        handle_adopted_player_launch=lambda path: events.append(('adopt', Path(path)))
     )
     monitor = SimpleNamespace(
         is_player_running=lambda: True,
@@ -270,7 +270,7 @@ def test_env_proxy_migration_acknowledges_then_restarts_running_player(monkeypat
 
         def addButton(self, label, _role):
             button = object()
-            if label == 'Restart Roblox Now':
+            if label == 'Apply for Future Launches':
                 self._clicked = button
             return button
 
@@ -296,7 +296,7 @@ def test_env_proxy_migration_acknowledges_then_restarts_running_player(monkeypat
 
     assert events == [
         ('ack-state', False),
-        ('restart', Path('org.vinegarhq.Sober')),
+        ('adopt', Path('org.vinegarhq.Sober')),
     ]
     assert config.env_proxy_migration_v1_complete is True
     assert monitor.was_running is True
@@ -1277,6 +1277,61 @@ def test_windows_desktop_player_launch_uses_env_lifecycle(monkeypatch, tmp_path)
     assert lifecycle_calls == [player_exe]
     assert monitor._suppress_next_player_exit_cache_delete is True
     assert qt_app is not None
+
+
+def test_linux_browser_sober_launch_is_always_adopted_without_relaunch(monkeypatch):
+    qt_app = QCoreApplication.instance() or QCoreApplication([])
+    config = SimpleNamespace(
+        proxy_mode='env',
+        proxy_features_enabled=True,
+        auto_delete_cache_on_exit=False,
+    )
+    lifecycle_calls = []
+
+    class _Lifecycle:
+        owns_player = False
+
+        def handle_player_launch(self, _exe_path):
+            lifecycle_calls.append('relaunch')
+            return True
+
+        def handle_adopted_player_launch(self, exe_path):
+            lifecycle_calls.append(('adopt', Path(exe_path)))
+            return True
+
+    proxy_master = SimpleNamespace(
+        set_roblox_player_running=lambda _running: None,
+        _sober_env_proxy_override_active=False,
+    )
+    monitor = app_module.RobloxExitMonitor(
+        config,
+        proxy_master=proxy_master,
+        env_lifecycle=_Lifecycle(),
+    )
+    monkeypatch.setattr(app_module.sys, 'platform', 'linux')
+    monkeypatch.setattr(app_module, 'is_roblox_running', lambda: True)
+    monkeypatch.setattr(app_module, 'is_studio_running', lambda: False)
+    monkeypatch.setattr(app_module, 'run_in_thread', lambda function: function)
+
+    monitor._check_roblox_status_locked()
+
+    assert lifecycle_calls == [('adopt', Path('org.vinegarhq.Sober'))]
+    assert qt_app is not None
+
+
+def test_linux_instance_uri_uses_sober_without_env_proxy_relaunch(monkeypatch):
+    launches = []
+    tray = SimpleNamespace(
+        config_manager=SimpleNamespace(proxy_mode='env', proxy_features_enabled=True),
+        proxy_master=SimpleNamespace(),
+    )
+    target = 'roblox://experiences/start?placeId=1'
+
+    monkeypatch.setattr(app_module.sys, 'platform', 'linux')
+    monkeypatch.setattr(app_module, 'launch_as_standard_user', lambda uri: launches.append(uri) or True)
+
+    assert app_module._launch_roblox_uri_for_instance(tray, target)
+    assert launches == [target]
 
 
 def test_windows_gdk_arming_waits_for_final_proxy_port(monkeypatch):

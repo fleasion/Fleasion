@@ -1534,17 +1534,17 @@ class SubplaceJoinerTab(QWidget):
             log_buffer.log('subplace', 'Failed to launch Roblox deeplink without elevation')
 
     def _launch_roblox_uri(self, target: str) -> bool:
-        """Launch a join URI with Linux Env Proxy injected from the outset."""
+        """Launch a join URI using the active platform proxy strategy."""
+        if sys.platform.startswith('linux'):
+            return launch_as_standard_user(target)
+
         if (
-            (sys.platform.startswith('linux') or sys.platform == 'darwin')
+            sys.platform == 'darwin'
             and getattr(self._config_manager, 'proxy_mode', 'hosts') == 'env'
             and getattr(self._config_manager, 'proxy_features_enabled', False)
             and self._proxy_master is not None
         ):
-            if sys.platform.startswith('linux'):
-                from ..utils.platform_linux import relaunch_roblox_with_proxy_env
-            else:
-                from ..utils.platform_macos import relaunch_roblox_with_proxy_env
+            from ..utils.platform_macos import relaunch_roblox_with_proxy_env
 
             return relaunch_roblox_with_proxy_env(
                 self._proxy_master.roblox_env_proxy_url(), target

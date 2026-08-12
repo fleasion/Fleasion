@@ -44,6 +44,30 @@ def test_mode_switch_restart_clears_proxy_readiness_before_worker_runs():
     assert started.wait(1.0)
 
 
+def test_linux_proxy_stop_clears_sober_flatpak_env_override(monkeypatch):
+    calls = []
+    proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
+    proxy._env_proxy_ready = threading.Event()
+    proxy._env_proxy_ready.set()
+    proxy._sober_env_proxy_override_active = True
+    proxy._stop_linux_sober_custom_fflag_timer = lambda: None
+    proxy._lock = threading.Lock()
+    proxy._running = False
+    proxy._thread = None
+
+    monkeypatch.setattr(proxy_master, 'IS_LINUX', True)
+    monkeypatch.setattr(
+        'fleasion.utils.platform_linux.clear_sober_env_proxy_override',
+        lambda: calls.append('clear') or True,
+    )
+
+    proxy.stop()
+
+    assert calls == ['clear']
+    assert proxy._sober_env_proxy_override_active is False
+    assert not proxy._env_proxy_ready.is_set()
+
+
 def test_privileged_relay_tls_self_test_retries_representative_host(monkeypatch):
     hosts = {"assetdelivery.roblox.com", "gamejoin.roblox.com"}
     calls = []
@@ -722,6 +746,10 @@ def test_proxy_startup_self_tests_only_active_intercept_routes(tmp_path, monkeyp
         lambda _self: None,
     )
     monkeypatch.setattr(
+        "fleasion.utils.platform_linux.set_sober_env_proxy_override",
+        lambda _url: True,
+    )
+    monkeypatch.setattr(
         proxy_master,
         "log_buffer",
         SimpleNamespace(log=lambda category, message: logs.append((category, message))),
@@ -754,6 +782,7 @@ def test_proxy_startup_self_tests_only_active_intercept_routes(tmp_path, monkeyp
     proxy._active_intercept_hosts = set()
     proxy._hosts_installed = False
     proxy._active_env_proxy_mode = False
+    proxy._sober_env_proxy_override_active = False
     proxy._sober_fflag_timer_stop = None
     proxy._sober_fflag_timer_thread = None
     monkeypatch.setattr(
@@ -766,6 +795,7 @@ def test_proxy_startup_self_tests_only_active_intercept_routes(tmp_path, monkeyp
 
     assert self_test_hosts == [set(proxy_master.BASE_INTERCEPT_HOSTS)]
     assert proxy._active_env_proxy_mode is True
+    assert proxy._sober_env_proxy_override_active is True
 
 
 def test_linux_startup_treats_manual_profile_api_hosts_entry_as_active(monkeypatch, tmp_path):
