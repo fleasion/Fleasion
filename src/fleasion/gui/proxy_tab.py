@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
     QFileDialog,
+    QLabel,
     QHBoxLayout,
     QLineEdit,
     QMenu,
@@ -664,6 +665,11 @@ class ProxyTrafficTab(QWidget):
         footer_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         footer_layout = QHBoxLayout(footer_widget)
         footer_layout.setContentsMargins(8, 4, 8, 4)
+        warning_label = QLabel(
+            'Warning: This tab may expose your Roblox login. Never open or stream it for anyone.'
+        )
+        warning_label.setStyleSheet('color: #ffcc66;')
+        footer_layout.addWidget(warning_label)
         footer_layout.addStretch()
         clear_cache_btn = QPushButton('Clear Cache')
         clear_cache_btn.clicked.connect(self._clear_roblox_cache)
