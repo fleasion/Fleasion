@@ -86,7 +86,7 @@ class ObjViewerWidget(QOpenGLWidget):
         self.setFormat(legacy_gl_format())
 
         # Main update tick: use the monitor's refresh rate where possible
-        self.timer = QTimer()
+        self.timer = QTimer(self)
         self.timer.timeout.connect(self._update_tick)
         try:
             screen = self.screen() or QGuiApplication.primaryScreen()
@@ -778,6 +778,12 @@ class ObjViewerWidget(QOpenGLWidget):
                     self.doneCurrent()
                 except Exception:
                     pass
+
+    def closeEvent(self, event):
+        """Stop updates and release the display list before context teardown."""
+        self.timer.stop()
+        self._discard_mesh_display_list()
+        super().closeEvent(event)
 
 
 class ObjViewerPanel(QWidget):

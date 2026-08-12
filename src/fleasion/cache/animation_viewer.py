@@ -988,7 +988,7 @@ class AnimationGLWidget(QOpenGLWidget):
         self.show_grid = True
 
         # Main update tick: use monitor refresh rate where possible
-        self.timer = QTimer()
+        self.timer = QTimer(self)
         self.timer.timeout.connect(self._update_tick)
         try:
             screen = self.screen() or QGuiApplication.primaryScreen()
@@ -1344,6 +1344,39 @@ class AnimationGLWidget(QOpenGLWidget):
         if part_ref not in self.display_lists:
             self.display_lists[part_ref] = self._compile_mesh_display_list(part_ref, mesh_data)
         return self.display_lists[part_ref]
+
+    def release_display_lists(self, make_current: bool = True) -> None:
+        """Delete cached mesh display lists while their OpenGL context is current."""
+        display_lists = tuple(self.display_lists.values())
+        self.display_lists.clear()
+        self.grid_display_list = 0
+        if not display_lists:
+            return
+
+        made_current = False
+        try:
+            if make_current:
+                if self.context() is None:
+                    return
+                self.makeCurrent()
+                made_current = True
+            for display_list in display_lists:
+                if display_list:
+                    glDeleteLists(display_list, 1)
+        except Exception as exc:
+            log_buffer.log('AnimationViewer', f'Could not delete display lists: {exc}')
+        finally:
+            if made_current:
+                try:
+                    self.doneCurrent()
+                except Exception:
+                    pass
+
+    def closeEvent(self, event):
+        """Release GPU resources before Qt destroys this widget's context."""
+        self.timer.stop()
+        self.release_display_lists()
+        super().closeEvent(event)
 
     def _draw_grid(self):
         """Draw a subtle floor grid to provide spatial context."""
@@ -1735,7 +1768,7 @@ class AnimationViewerPanel(QWidget):
         self.setLayout(layout)
 
         # Playback timer with elapsed time tracking
-        self.timer = QTimer()
+        self.timer = QTimer(self)
         self.timer.timeout.connect(self._update_playback)
         self.slider_pressed = False
         self.last_tick_time: Optional[float] = None
@@ -1768,9 +1801,8 @@ class AnimationViewerPanel(QWidget):
 
     def load_animation(self, anim_data: bytes) -> bool:
         """Load animation from raw bytes."""
-        # Clear display lists before loading new animation
-        self.gl_widget.display_lists.clear()
-        self.gl_widget.grid_display_list = 0
+        # Release the old rig's GPU display lists before loading a new one.
+        self.gl_widget.release_display_lists()
 
         success = self.gl_widget.load_animation_data(anim_data)
         self.is_loaded = success
@@ -1879,8 +1911,7 @@ class AnimationViewerPanel(QWidget):
         self.gl_widget.current_time = 0
         self.gl_widget.duration = 0
         self.gl_widget.world_transforms = {}
-        self.gl_widget.display_lists.clear()
-        self.gl_widget.grid_display_list = 0
+        self.gl_widget.release_display_lists()
         self.gl_widget.update()
 
     def stop(self):
