@@ -1944,6 +1944,15 @@ def repair_hosts_file(
                     }
                 )
             return False
+        backup_deleted = False
+        try:
+            backup_path.unlink(missing_ok=True)
+            backup_deleted = True
+        except OSError as exc:
+            # The repaired hosts file is already valid; a backup-delete
+            # failure must not roll back a successful repair. Keep the issue
+            # visible in the log so it can be cleaned up later.
+            log_buffer.log('Hosts', f'Could not remove temporary repair backup: {exc}')
         if error_details is not None:
             error_details.clear()
             error_details.update(
@@ -1951,6 +1960,7 @@ def repair_hosts_file(
                     'repair_attempted': True,
                     'repair_succeeded': True,
                     'backup_path': str(backup_path),
+                    'backup_deleted': backup_deleted,
                     'hosts_path': str(HOSTS_FILE),
                     'hosts_size_bytes': repaired_size,
                     'repair_output_oversized': repaired_size > _HOSTS_FILE_REPAIR_THRESHOLD_BYTES,
@@ -1961,7 +1971,7 @@ def repair_hosts_file(
         log_buffer.log(
             'Hosts',
             f'Repaired hosts file: removed {removed_blank_lines} blank lines and '
-            f'{removed_proxy_lines} Fleasion-owned lines; backup={backup_path}',
+            f'{removed_proxy_lines} Fleasion-owned lines; temporary backup deleted={backup_deleted}',
         )
         return True
     except OSError as exc:

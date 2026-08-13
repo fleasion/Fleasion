@@ -154,7 +154,8 @@ def test_repair_hosts_file_streams_blank_lines_and_preserves_user_mappings(tmp_p
     assert b'assetdelivery.roblox.com' not in repaired
     assert b'128.116.54.3 unrelated.example #gu_acc\r\n' in repaired
     assert details['repair_succeeded'] is True
-    assert Path(details['backup_path']).is_file()
+    assert details['backup_deleted'] is True
+    assert not Path(details['backup_path']).exists()
 
 
 def test_repair_hosts_file_preserves_original_permissions(tmp_path, monkeypatch):
