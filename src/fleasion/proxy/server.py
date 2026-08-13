@@ -2066,23 +2066,15 @@ class FleasionProxy:
         await writer.drain()
 
         try:
-            loop = asyncio.get_running_loop()
-            protocol = getattr(writer, '_protocol')
-            transport = writer.transport
-            tls_transport = await loop.start_tls(
-                transport,
-                protocol,
+            await writer.start_tls(
                 self._server_ssl_ctx,
-                server_side=True,
                 ssl_handshake_timeout=15.0,
             )
-            if tls_transport is None:
-                writer.close()
-                return
-            writer._transport = tls_transport
-            if hasattr(protocol, '_over_ssl'):
-                protocol._over_ssl = True
-        except ConnectionResetError, BrokenPipeError, OSError:
+        except (ConnectionResetError, BrokenPipeError) as exc:
+            log_buffer.log('TLS', f'Explicit proxy TLS upgrade connection closed for {host}: {exc}')
+            return
+        except OSError as exc:
+            log_buffer.log('TLS', f'Explicit proxy TLS upgrade socket error for {host}: {exc!r}')
             return
         except Exception as exc:
             log_buffer.log('Proxy', f'Explicit proxy TLS upgrade failed for {host}: {exc}')
