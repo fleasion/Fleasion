@@ -45,21 +45,41 @@ MAGIC_HEADER = b'<roblox!\x89\xff\x0d\x0a\x1a\x0a'
 FILE_HEADER_SIZE = 32  # 14 (magic+sig) + 2 (version) + 4 + 4 + 8 (reserved)
 ZSTD_MAGIC = b'\x28\xb5\x2f\xfd'
 
+# These limits are deliberately well above normal model files while keeping
+# malformed headers from turning a small cache entry into an unbounded allocation
+MAX_RBXM_FILE_BYTES = 256 * 1024 * 1024
+MAX_RBXM_TYPES = 4096
+MAX_RBXM_OBJECTS = 1_000_000
+MAX_RBXM_CHUNKS = 65_536
+MAX_RBXM_CHUNK_BYTES = 128 * 1024 * 1024
+MAX_RBXM_TOTAL_CHUNK_BYTES = 256 * 1024 * 1024
+MAX_RBXM_SEQUENCE_KEYS = 100_000
+
 
 def _decompress_chunk(raw: bytes, uncompressed_size: int) -> bytes:
+    if uncompressed_size < 0 or uncompressed_size > MAX_RBXM_CHUNK_BYTES:
+        raise ValueError(
+            f'RBXM chunk expands to {uncompressed_size} bytes; '
+            f'the limit is {MAX_RBXM_CHUNK_BYTES}'
+        )
     if raw.startswith(ZSTD_MAGIC):
         try:
             import zstandard  # type: ignore[import-untyped]
         except ImportError as exc:
             msg = 'RBXM contains a ZSTD-compressed chunk; install zstandard to read it'
             raise RuntimeError(msg) from exc
-        return zstandard.ZstdDecompressor().decompress(  # type: ignore[no-any-return]
+        result = zstandard.ZstdDecompressor().decompress(  # type: ignore[no-any-return]
             raw, max_output_size=uncompressed_size
         )
-
-    return lz4.block.decompress(  # type: ignore[no-any-return]
-        raw, uncompressed_size=uncompressed_size
-    )
+    else:
+        result = lz4.block.decompress(  # type: ignore[no-any-return]
+            raw, uncompressed_size=uncompressed_size
+        )
+    if len(result) != uncompressed_size:
+        raise ValueError(
+            f'RBXM chunk size mismatch: expected {uncompressed_size}, got {len(result)}'
+        )
+    return result
 
 
 # 24 axis-aligned rotation matrices (orientation IDs 0..23).
@@ -96,7 +116,7 @@ class RbxmDeserializer:
     """Deserializes a Roblox binary model (.rbxm) stream."""
 
     def __init__(self) -> None:
-        self._type_infos: list[RbxTypeInfo] = []
+        self._type_infos: dict[int, RbxTypeInfo] = {}
         self._instances: dict[int, RbxInstance] = {}
         self._metadata = RbxMetadata()
         self._shared_strings: list[bytes] = []
@@ -108,6 +128,10 @@ class RbxmDeserializer:
 
     def deserialize(self, data: bytes) -> RbxDocument:
         """Parse a complete RBXM binary blob into an RbxDocument."""
+        if len(data) > MAX_RBXM_FILE_BYTES:
+            raise ValueError(
+                f'RBXM file is {len(data)} bytes; the limit is {MAX_RBXM_FILE_BYTES}'
+            )
         offset = self._read_file_header(data)
         offset = self._read_chunks(data, offset)
         roots = self._build_tree()
@@ -127,6 +151,8 @@ class RbxmDeserializer:
     # --- Header ---
 
     def _read_file_header(self, data: bytes) -> int:
+        if len(data) < FILE_HEADER_SIZE:
+            raise ValueError('RBXM file header is truncated')
         magic = data[:14]
         if magic != MAGIC_HEADER:
             msg = f'Invalid RBXM header: {magic!r}'
@@ -135,6 +161,14 @@ class RbxmDeserializer:
         self._version = struct.unpack_from('<H', data, 14)[0]
         self._type_count = struct.unpack_from('<I', data, 16)[0]
         self._object_count = struct.unpack_from('<I', data, 20)[0]
+        if self._type_count > MAX_RBXM_TYPES:
+            raise ValueError(
+                f'RBXM declares {self._type_count} types; the limit is {MAX_RBXM_TYPES}'
+            )
+        if self._object_count > MAX_RBXM_OBJECTS:
+            raise ValueError(
+                f'RBXM declares {self._object_count} objects; the limit is {MAX_RBXM_OBJECTS}'
+            )
         # bytes 24..31 are reserved
 
         log.info(
@@ -148,12 +182,37 @@ class RbxmDeserializer:
     # --- Chunk reading ---
 
     def _read_chunks(self, data: bytes, offset: int) -> int:
+        chunk_count = 0
+        total_uncompressed = 0
         while offset < len(data):
-            chunk_name = data[offset : offset + 4].decode('ascii')
+            if len(data) - offset < 16:
+                raise ValueError('RBXM chunk header is truncated')
+            chunk_count += 1
+            if chunk_count > MAX_RBXM_CHUNKS:
+                raise ValueError(f'RBXM contains more than {MAX_RBXM_CHUNKS} chunks')
+            try:
+                chunk_name = data[offset : offset + 4].decode('ascii')
+            except UnicodeDecodeError as exc:
+                raise ValueError('RBXM chunk name is not ASCII') from exc
             compressed_size = struct.unpack_from('<I', data, offset + 4)[0]
             uncompressed_size = struct.unpack_from('<I', data, offset + 8)[0]
+            if uncompressed_size > MAX_RBXM_CHUNK_BYTES:
+                raise ValueError(
+                    f'RBXM chunk {chunk_name!r} expands to {uncompressed_size} bytes; '
+                    f'the limit is {MAX_RBXM_CHUNK_BYTES}'
+                )
+            total_uncompressed += uncompressed_size
+            if total_uncompressed > MAX_RBXM_TOTAL_CHUNK_BYTES:
+                raise ValueError(
+                    'RBXM chunks exceed the total uncompressed size limit '
+                    f'of {MAX_RBXM_TOTAL_CHUNK_BYTES} bytes'
+                )
             # offset+12: reserved u32
             offset += 16
+
+            stored_size = compressed_size or uncompressed_size
+            if stored_size > len(data) - offset:
+                raise ValueError(f'RBXM chunk {chunk_name!r} payload is truncated')
 
             chunk_data: bytes
             if compressed_size == 0:
@@ -221,6 +280,22 @@ class RbxmDeserializer:
         is_service = is_service_byte != 0
         id_count, offset = read_u32(data, offset)
 
+        if type_index >= self._type_count:
+            raise ValueError(
+                f'RBXM INST type index {type_index} is outside the declared '
+                f'type count {self._type_count}'
+            )
+        if type_index in self._type_infos:
+            raise ValueError(f'RBXM contains duplicate INST type index {type_index}')
+        if id_count > self._object_count or len(self._instances) + id_count > self._object_count:
+            raise ValueError(
+                f'RBXM INST declares {id_count} objects beyond the file object count '
+                f'{self._object_count}'
+            )
+        required_id_bytes = id_count * 4 + (id_count if is_service else 0)
+        if required_id_bytes > len(data) - offset:
+            raise ValueError('RBXM INST instance ID payload is truncated')
+
         ids, offset = decode_ids(data, offset, id_count)
 
         # If service type, read the service rooted flags
@@ -237,16 +312,6 @@ class RbxmDeserializer:
             instance_ids=ids,
         )
 
-        # Extend list if needed
-        while len(self._type_infos) <= type_index:
-            self._type_infos.append(
-                RbxTypeInfo(
-                    type_index=len(self._type_infos),
-                    class_name='',
-                    is_service=False,
-                    instance_ids=[],
-                )
-            )
         self._type_infos[type_index] = info
 
         # Create instance objects
@@ -280,11 +345,10 @@ class RbxmDeserializer:
             self._preserve_raw_property(type_index, prop_name, fmt_byte, data[offset:])
             return
 
-        if type_index >= len(self._type_infos):
+        info = self._type_infos.get(type_index)
+        if info is None:
             log.warning('PROP references unknown type index %d', type_index)
             return
-
-        info = self._type_infos[type_index]
         count = len(info.instance_ids)
         if fmt == PropertyFormat.UNKNOWN:
             self._preserve_raw_property(type_index, prop_name, fmt_byte, data[offset:])
@@ -311,10 +375,10 @@ class RbxmDeserializer:
     def _preserve_raw_property(
         self, type_index: int, prop_name: str, fmt_byte: int, value_data: bytes
     ) -> None:
-        if type_index >= len(self._type_infos):
+        info = self._type_infos.get(type_index)
+        if info is None:
             log.warning('PROP references unknown type index %d', type_index)
             return
-        info = self._type_infos[type_index]
         self._raw_property_chunks.append(
             RbxRawPropertyChunk(
                 class_name=info.class_name,
@@ -597,6 +661,13 @@ class RbxmDeserializer:
         results: list[list[dict[str, float]]] = []
         for _ in range(count):
             num_keys, offset = read_u32(data, offset)
+            if num_keys > MAX_RBXM_SEQUENCE_KEYS:
+                raise ValueError(
+                    f'RBXM number sequence has {num_keys} keys; '
+                    f'the limit is {MAX_RBXM_SEQUENCE_KEYS}'
+                )
+            if num_keys * 12 > len(data) - offset:
+                raise ValueError('RBXM number sequence payload is truncated')
             keys: list[dict[str, float]] = []
             for _ in range(num_keys):
                 time, offset = read_f32(data, offset)
@@ -612,6 +683,13 @@ class RbxmDeserializer:
         results: list[list[dict[str, float]]] = []
         for _ in range(count):
             num_keys, offset = read_u32(data, offset)
+            if num_keys > MAX_RBXM_SEQUENCE_KEYS:
+                raise ValueError(
+                    f'RBXM color sequence has {num_keys} keys; '
+                    f'the limit is {MAX_RBXM_SEQUENCE_KEYS}'
+                )
+            if num_keys * 20 > len(data) - offset:
+                raise ValueError('RBXM color sequence payload is truncated')
             keys: list[dict[str, float]] = []
             for _ in range(num_keys):
                 time, offset = read_f32(data, offset)
@@ -805,6 +883,13 @@ class RbxmDeserializer:
         offset = 0
         _fmt, offset = read_u8(data, offset)
         link_count, offset = read_u32(data, offset)
+        if link_count > self._object_count:
+            raise ValueError(
+                f'RBXM PRNT declares {link_count} links for only '
+                f'{self._object_count} objects'
+            )
+        if link_count * 8 > len(data) - offset:
+            raise ValueError('RBXM PRNT link payload is truncated')
 
         child_ids, offset = decode_ids(data, offset, link_count)
         parent_ids, offset = decode_ids(data, offset, link_count)

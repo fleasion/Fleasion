@@ -12,16 +12,16 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
 from pathlib import Path
 
-from PyQt6.QtCore import (
+from PySide6.QtCore import (
     QEasingCurve,
     QEvent,
     QPropertyAnimation,
     Qt,
     QTimer,
-    pyqtSignal,
+    Signal,
 )
-from PyQt6.QtGui import QPainter
-from PyQt6.QtWidgets import (
+from PySide6.QtGui import QPainter
+from PySide6.QtWidgets import (
     QAbstractItemDelegate,
     QAbstractItemView,
     QApplication,
@@ -446,8 +446,8 @@ class _RichTextButton(QPushButton):
         return hint
 
     def paintEvent(self, a0):
-        from PyQt6.QtGui import QFont, QFontMetrics, QPainter, QPalette
-        from PyQt6.QtWidgets import QStyle, QStyleOptionButton
+        from PySide6.QtGui import QFont, QFontMetrics, QPainter, QPalette
+        from PySide6.QtWidgets import QStyle, QStyleOptionButton
 
         opt = QStyleOptionButton()
         self.initStyleOption(opt)
@@ -607,8 +607,8 @@ class CollapsibleSection(QWidget):
 
     def paintEvent(self, a0):  # noqa: N802
         """Draw a rounded-rect card that adapts to dark and light themes."""
-        from PyQt6.QtCore import QRectF
-        from PyQt6.QtGui import QPainter, QPainterPath
+        from PySide6.QtCore import QRectF
+        from PySide6.QtGui import QPainter, QPainterPath
 
         colors = ThemeManager.panel_colors(self.palette())
         painter = QPainter(self)
@@ -711,7 +711,7 @@ class DropdownComboBox(QComboBox):
         e.ignore()
 
     def paintEvent(self, e):
-        from PyQt6.QtWidgets import QStyle, QStyleOptionComboBox, QStylePainter
+        from PySide6.QtWidgets import QStyle, QStyleOptionComboBox, QStylePainter
 
         style = self.style()
         if style is None:
@@ -829,7 +829,7 @@ class FastFlagValueDelegate(QStyledItemDelegate):
 class ModRowWidget(QWidget):
     """A single row representing one modification entry."""
 
-    delete_requested = pyqtSignal(str)  # entry_id
+    delete_requested = Signal(str)  # entry_id
 
     def __init__(
         self,
@@ -1334,7 +1334,7 @@ class ModPreviewDialog(QDialog):
                         container.setLayout(layout)
                         return container
 
-            from PyQt6.QtGui import QPixmap
+            from PySide6.QtGui import QPixmap
 
             pixmap = QPixmap()
             pixmap.loadFromData(display_bytes)
@@ -1403,7 +1403,7 @@ class ModPreviewDialog(QDialog):
                     decoded = data.decode('utf-8', errors='replace')
                     json_module.loads(decoded)
                     # It's valid JSON, show as JSON instead
-                    from PyQt6.QtWidgets import QTextEdit
+                    from PySide6.QtWidgets import QTextEdit
 
                     viewer = QTextEdit()
                     viewer.setReadOnly(True)
@@ -1820,8 +1820,8 @@ class FFlagBrowserDialog(QDialog):
         'FFloat',
     )
 
-    flags_loaded = pyqtSignal(object)
-    load_failed = pyqtSignal(str)
+    flags_loaded = Signal(object)
+    load_failed = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -2241,7 +2241,7 @@ class WindowsHotkeyCaptureDialog(QDialog):
 
     @staticmethod
     def _enum_value(value) -> int:
-        """PyQt6 flag enums expose `.value`; they are not reliably int-convertible."""
+        """PySide6 flag enums expose `.value`; they are not reliably int-convertible."""
         return int(getattr(value, 'value', value))
 
     @classmethod
@@ -3910,7 +3910,7 @@ class ModificationsTab(QWidget):
         self._update_container_bg()
 
     def changeEvent(self, a0: QEvent | None):
-        from PyQt6.QtCore import QEvent
+        from PySide6.QtCore import QEvent
 
         super().changeEvent(a0)
         if a0 is not None and a0.type() == QEvent.Type.PaletteChange:

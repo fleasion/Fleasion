@@ -2,8 +2,8 @@
 
 from ..localization import tr
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QDialog, QFrame, QLabel, QPushButton, QVBoxLayout
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QDialog, QFrame, QLabel, QPushButton, QVBoxLayout
 
 from ..utils import (
     APP_AUTHOR,
@@ -33,7 +33,7 @@ class AboutWindow(QDialog):
 
     def _set_icon(self):
         if icon_path := get_icon_path():
-            from PyQt6.QtGui import QIcon
+            from PySide6.QtGui import QIcon
 
             self.setWindowIcon(QIcon(str(icon_path)))
 

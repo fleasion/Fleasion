@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from io import BytesIO
 import gzip
 import re
 import struct
@@ -26,12 +27,29 @@ from .tools.solidmodel_converter.rbxm.types import (
 from .tools.solidmodel_converter.rbxm.xml_writer import write_rbxmx
 
 RBXM_MAGIC = b'<roblox!\x89\xff\x0d\x0a\x1a\x0a'
+MAX_COMPRESSED_DOCUMENT_BYTES = 128 * 1024 * 1024
+MAX_DOCUMENT_BYTES = 256 * 1024 * 1024
 
 
 def decompress_if_needed(data: bytes) -> bytes:
     """Return decompressed document bytes when the cache stored a gzip wrapper."""
     if data.startswith(b'\x1f\x8b'):
-        return gzip.decompress(data)
+        if len(data) > MAX_COMPRESSED_DOCUMENT_BYTES:
+            raise ValueError(
+                f'Compressed Roblox document is {len(data)} bytes; '
+                f'the limit is {MAX_COMPRESSED_DOCUMENT_BYTES}'
+            )
+        with gzip.GzipFile(fileobj=BytesIO(data)) as stream:
+            result = stream.read(MAX_DOCUMENT_BYTES + 1)
+        if len(result) > MAX_DOCUMENT_BYTES:
+            raise ValueError(
+                f'Roblox document expands beyond the {MAX_DOCUMENT_BYTES}-byte limit'
+            )
+        return result
+    if len(data) > MAX_DOCUMENT_BYTES:
+        raise ValueError(
+            f'Roblox document is {len(data)} bytes; the limit is {MAX_DOCUMENT_BYTES}'
+        )
     return data
 
 
@@ -52,6 +70,27 @@ def classify_roblox_document(data: bytes) -> str | None:
         return 'rbxl' if _xml_contains_datamodel(root) else 'rbxmx'
 
     return None
+
+
+def load_roblox_document(data: bytes) -> RbxDocument:
+    """Parse binary or XML Roblox document bytes into the shared document model."""
+    data = decompress_if_needed(data)
+    kind = classify_roblox_document(data)
+    if kind is None:
+        raise ValueError('Data is not an RBXM/RBXMX/RBXL document')
+    if data.startswith(RBXM_MAGIC):
+        return RbxmDeserializer().deserialize(data)
+    return _xml_to_document(data)
+
+
+def serialize_roblox_document(document: RbxDocument, kind: str) -> tuple[bytes, str]:
+    """Serialize an edited shared document model to an explicit Roblox format."""
+    normalized = kind.strip().casefold().lstrip('.')
+    if normalized in {'rbxm', 'rbxl'}:
+        return write_rbxm(document), f'.{normalized}'
+    if normalized == 'rbxmx':
+        return write_rbxmx(document), '.rbxmx'
+    raise ValueError(f'Unsupported Roblox document format: {kind}')
 
 
 def get_roblox_document_export_formats(data: bytes, asset_type: int | None = None) -> list[str]:

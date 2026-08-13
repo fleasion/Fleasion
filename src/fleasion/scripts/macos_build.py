@@ -24,7 +24,7 @@ log = logging.getLogger(__name__)
 
 # Env defaults
 DEFAULT_TARGET_ARCHITECTURE = 'universal2'
-DEFAULT_DEPLOYMENT_TARGET = '11.0'
+DEFAULT_DEPLOYMENT_TARGET = '12.0'
 DEFAULT_X86_ENVIRONMENT_PATH = '.tools/venv-x86'
 ARM64_PYTHON_PLATFORM = 'aarch64-apple-darwin'
 X86_64_PYTHON_PLATFORM = 'x86_64-apple-darwin'
@@ -204,18 +204,6 @@ class MacOSBuilder:
                 f'{build_label} completed, but its executable is missing: {executable_path}'
             )
 
-        self._require_payload(
-            app_path, '_sounddevice_data/portaudio-binaries/libportaudio.dylib', build_label
-        )
-        soundfile_payloads = (
-            '_soundfile_data/libsndfile_arm64.dylib',
-            '_soundfile_data/libsndfile_x86_64.dylib',
-        )
-        if not any(self._payload_path(app_path, payload) for payload in soundfile_payloads):
-            raise RuntimeError(
-                f'{build_label} completed, but bundled payload was not found: '
-                '_soundfile_data/libsndfile_*.dylib'
-            )
 
     @staticmethod
     def _is_allowed_single_arch_macho(app_path: Path, file_path: Path, archs: set[str]) -> bool:
@@ -439,39 +427,6 @@ class MacOSBuilder:
                 continue
             universal_file.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(x86_file, universal_file)
-
-        self._merge_soundfile_library(arm_app, x86_app, universal_app)
-
-    @staticmethod
-    def _merge_soundfile_library(arm_app: Path, x86_app: Path, universal_app: Path) -> None:
-        """Create the universal libsndfile payload expected by soundfile."""
-        relative_directory = Path('Contents/Frameworks/_soundfile_data')
-        arm_library = arm_app / relative_directory / 'libsndfile_arm64.dylib'
-        x86_library = x86_app / relative_directory / 'libsndfile_x86_64.dylib'
-        if not arm_library.is_file() or not x86_library.is_file():
-            return
-
-        universal_directory = universal_app / relative_directory
-        resource_directory = universal_app / 'Contents/Resources/_soundfile_data'
-        universal_directory.mkdir(parents=True, exist_ok=True)
-        resource_directory.mkdir(parents=True, exist_ok=True)
-        universal_library = universal_directory / 'libsndfile_universal.dylib'
-        subprocess_run(
-            [
-                'lipo',
-                '-create',
-                str(arm_library),
-                str(x86_library),
-                '-output',
-                str(universal_library),
-            ]
-        )
-        for architecture in ('arm64', 'x86_64'):
-            library_name = f'libsndfile_{architecture}.dylib'
-            shutil.copy2(universal_library, universal_directory / library_name)
-            resource_library = resource_directory / library_name
-            resource_library.unlink(missing_ok=True)
-            resource_library.symlink_to(Path('../../Frameworks/_soundfile_data') / library_name)
 
     def _verify_zip_package(self) -> None:
         """Extract and validate the finished release archive."""

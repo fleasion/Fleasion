@@ -24,6 +24,9 @@ class ConfigManagerEncodingTests(unittest.TestCase):
         paths_module.CONFIG_DIR = config_dir
         paths_module.CONFIG_FILE = config_dir / 'settings.json'
         paths_module.CONFIGS_FOLDER = config_dir / 'configs'
+        secure_tokens_module = types.ModuleType('fleasion.utils.secure_tokens')
+        secure_tokens_module.decrypt_token = lambda value, _path: value.removeprefix('fernet:')
+        secure_tokens_module.encrypt_token = lambda value, _path: f'fernet:{value}'
 
         module_name = 'fleasion.config.manager'
         spec = importlib.util.spec_from_file_location(module_name, _MANAGER_PATH)
@@ -35,12 +38,27 @@ class ConfigManagerEncodingTests(unittest.TestCase):
                 'fleasion.config': config_pkg,
                 'fleasion.utils': utils_pkg,
                 'fleasion.utils.paths': paths_module,
+                'fleasion.utils.secure_tokens': secure_tokens_module,
                 module_name: module,
             },
         ):
             spec.loader.exec_module(module)
 
         return module
+
+    def test_upstream_passwords_are_encrypted_at_rest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_manager_module = self._load_manager_for(Path(tmp))
+            manager = config_manager_module.ConfigManager()
+
+            manager.upstream_http_connect_password = 'http-secret'
+            manager.upstream_socks5_password = 'socks-secret'
+
+            stored = json.loads((Path(tmp) / 'FleasionNT' / 'settings.json').read_text())
+            self.assertEqual(stored['upstream_http_connect_password'], 'fernet:http-secret')
+            self.assertEqual(stored['upstream_socks5_password'], 'fernet:socks-secret')
+            self.assertEqual(manager.upstream_http_connect_password, 'http-secret')
+            self.assertEqual(manager.upstream_socks5_password, 'socks-secret')
 
     def test_unicode_config_names_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:

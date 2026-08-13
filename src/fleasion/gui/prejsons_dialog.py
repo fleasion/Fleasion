@@ -9,9 +9,9 @@ import uuid
 from pathlib import Path
 
 from PIL import Image, ImageDraw
-from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QFont, QIcon, QImage, QPalette, QPixmap
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QFont, QIcon, QImage, QPalette, QPixmap
+from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QFileDialog,
@@ -238,8 +238,8 @@ def _load_custom_dumps() -> list[tuple[dict, Path]]:
 class _ClogWorker(QThread):
     """Fetches CLOG.json and builds the normalised game list."""
 
-    done = pyqtSignal(list)
-    failed = pyqtSignal(str)
+    done = Signal(list)
+    failed = Signal(str)
 
     def run(self):
         try:
@@ -264,7 +264,7 @@ class _ClogWorker(QThread):
 class _CardMetaWorker(QThread):
     """Fetches real game name + dates for one card via Roblox API."""
 
-    name_ready = pyqtSignal(str, str, str)  # name, created, updated
+    name_ready = Signal(str, str, str)  # name, created, updated
 
     def __init__(self, place_id: int, fallback_cr: str, fallback_up: str):
         super().__init__()
@@ -322,7 +322,7 @@ threading.Thread(target=_get_default_thumb_bytes, daemon=True).start()
 class _CardThumbWorker(QThread):
     """Fetches the thumbnail for one card via Roblox thumbnails API."""
 
-    thumb_ready = pyqtSignal(QPixmap)
+    thumb_ready = Signal(QPixmap)
 
     def __init__(self, place_id: int):
         super().__init__()
@@ -357,8 +357,8 @@ class _CardThumbWorker(QThread):
 class _JsonFetchWorker(QThread):
     """Downloads a JSON file from a URL."""
 
-    done = pyqtSignal(object, str)
-    failed = pyqtSignal(str)
+    done = Signal(object, str)
+    failed = Signal(str)
 
     def __init__(self, url: str):
         super().__init__()
@@ -529,7 +529,7 @@ class GameCard(QFrame):
 class AddCard(QFrame):
     """Clickable '+' card that opens the import dialog."""
 
-    clicked = pyqtSignal()
+    clicked = Signal()
 
     def _apply_style(self, hover=False):
         dark = QApplication.palette().color(QPalette.ColorRole.Window).lightness() < 128

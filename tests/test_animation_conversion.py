@@ -5,7 +5,7 @@ import xml.etree.ElementTree as ET
 import numpy as np
 
 from fleasion.cache import cache_manager as cache_manager_module
-from fleasion.cache.animation_viewer import load_animation_data
+from fleasion.cache.animation_document import load_animation_data
 from fleasion.cache.roblox_document import export_roblox_document
 from fleasion.cache.tools.solidmodel_converter.rbxm.types import (
     RbxDocument,

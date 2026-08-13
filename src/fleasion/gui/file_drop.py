@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import sys
 
-from PyQt6.QtCore import QDir, QMimeData, pyqtSignal
-from PyQt6.QtWidgets import QLineEdit
+from PySide6.QtCore import QDir, QMimeData, Signal
+from PySide6.QtWidgets import QLineEdit
 
 
 def local_file_path_example() -> str:
@@ -33,7 +33,7 @@ def local_file_path_from_mime_data(mime_data: QMimeData) -> str | None:
 class FileDropLineEdit(QLineEdit):
     """QLineEdit that accepts a dragged local file and inserts its path."""
 
-    fileDropped = pyqtSignal(str)
+    fileDropped = Signal(str)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

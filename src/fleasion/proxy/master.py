@@ -5655,15 +5655,6 @@ class ProxyMaster:
         scraper_ips = _endpoint_ip_candidates(real_endpoints)
         self.cache_scraper.set_real_ips(scraper_ips)
 
-        # Wire the scraper into the json_viewer's AssetFetcherThread so the
-        # Preview tab in the standalone JSON viewer also bypasses the hosts file.
-        try:
-            from ..gui.json_viewer import AssetFetcherThread
-
-            AssetFetcherThread.set_scraper(self.cache_scraper)
-        except Exception:
-            pass
-
         # ── Start TLS proxy server ────────────────────────────────────────
         use_linux_helper = (not env_proxy_mode) and _use_linux_privileged_helper()
         env_proxy_intercept_excluded_hosts: set[str] = set()

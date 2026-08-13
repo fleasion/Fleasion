@@ -1,12 +1,20 @@
 """Repository-wide pytest environment guards."""
 
+import os
 import socket
 import threading
 
 import pytest
 
+os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+os.environ.setdefault('QSG_RHI_BACKEND', 'software')
+os.environ.setdefault('QT_QUICK_BACKEND', 'software')
+
+from PySide6.QtWidgets import QApplication
+
 
 _THREADED_ASYNCIO_MARKER = 'threaded_asyncio'
+_QT_APPLICATION = QApplication.instance() or QApplication([])
 
 
 def _cross_thread_socket_wakeup_failure(
@@ -48,9 +56,7 @@ def _cross_thread_socket_wakeup_failure(
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """Fail fast when selected async/thread tests would deadlock in a sandbox."""
-    guarded_items = [
-        item for item in items if item.get_closest_marker(_THREADED_ASYNCIO_MARKER)
-    ]
+    guarded_items = [item for item in items if item.get_closest_marker(_THREADED_ASYNCIO_MARKER)]
     if not guarded_items:
         return
 

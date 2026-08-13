@@ -73,6 +73,78 @@ def is_curve_animation(data: bytes) -> bool:
     return b'CurveAnimation' in data
 
 
+def _xml_property_text(props: ET.Element | None, name: str) -> str:
+    if props is None:
+        return ''
+    folded_name = name.casefold()
+    for prop in props:
+        if prop.attrib.get('name', '').casefold() == folded_name:
+            return prop.text or ''
+    return ''
+
+
+def _xml_animation_part_names(data: bytes) -> set[str]:
+    text = data.decode('utf-8-sig', errors='replace')
+    root = ET.fromstring(text)
+    names: set[str] = set()
+    for item in root.iter('Item'):
+        class_name = item.attrib.get('class', '')
+        if class_name == 'Pose':
+            props = item.find('Properties')
+            weight_text = _xml_property_text(props, 'Weight') or '1'
+            try:
+                weight = float(weight_text)
+            except ValueError:
+                weight = 1.0
+            name = _xml_property_text(props, 'Name')
+            if name and weight > 0:
+                names.add(name)
+            continue
+
+        if class_name != 'Folder':
+            continue
+        has_transform_curve = any(
+            child.attrib.get('class') in {'Vector3Curve', 'EulerRotationCurve'}
+            for child in item.findall('Item')
+        )
+        if has_transform_curve and (name := _xml_property_text(item.find('Properties'), 'Name')):
+            names.add(name)
+    return names
+
+
+def _binary_animation_part_names(data: bytes) -> set[str]:
+    from ..cache.rbxm_parser import parse_rbxm
+
+    instances = parse_rbxm(data)
+    names: set[str] = set()
+    for instance in instances.values():
+        if instance.class_name == 'Pose':
+            name = instance.properties.get('Name', '')
+            weight = instance.properties.get('Weight', 1.0)
+            if isinstance(name, str) and name and isinstance(weight, (int, float)) and weight > 0:
+                names.add(name)
+            continue
+
+        if instance.class_name != 'Folder':
+            continue
+        has_transform_curve = any(
+            child.class_name in {'Vector3Curve', 'EulerRotationCurve'}
+            for child in instance.children
+        )
+        name = instance.properties.get('Name', '')
+        if has_transform_curve and isinstance(name, str) and name:
+            names.add(name)
+    return names
+
+
+def _animation_part_names(data: bytes) -> set[str]:
+    """Return animated body-part names without importing presentation code."""
+    detected = data[3:] if data.startswith(b'\xef\xbb\xbf') else data
+    if detected.startswith(b'<roblox!'):
+        return _binary_animation_part_names(data)
+    return _xml_animation_part_names(data)
+
+
 def detect_rig(data: bytes) -> str:
     """Return 'R6', 'R15', or 'unknown' by fully parsing the animation.
 
@@ -83,14 +155,9 @@ def detect_rig(data: bytes) -> str:
     conversion even on mixed animations.
     """
     try:
-        from ..cache.animation_viewer import load_animation_data
-
-        keyframes = load_animation_data(data)
-        if not keyframes:
+        names = _animation_part_names(data)
+        if not names:
             return 'unknown'
-        names: set[str] = set()
-        for kf in keyframes:
-            names.update(kf.pose_by_part_name.keys())
         if names - _ALL_PLAYER_PARTS:
             return 'unknown'
         if names & _R6_SIGNS:
@@ -111,14 +178,9 @@ def detect_player_rig(data: bytes) -> str:
     player body part names are present at all.
     """
     try:
-        from ..cache.animation_viewer import load_animation_data
-
-        keyframes = load_animation_data(data)
-        if not keyframes:
+        names = _animation_part_names(data)
+        if not names:
             return 'unknown'
-        names: set[str] = set()
-        for kf in keyframes:
-            names.update(kf.pose_by_part_name.keys())
         if names & _R6_SIGNS:
             return 'R6'
         if names & _R15_SIGNS:

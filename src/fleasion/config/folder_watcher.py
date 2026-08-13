@@ -3,11 +3,10 @@
 from ..localization import tr
 
 import os
-from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
-from PyQt6.QtCore import QFileSystemWatcher, QObject, QTimer, pyqtSignal
-from PyQt6.QtWidgets import QApplication, QMessageBox, QWidget
+from PySide6.QtCore import QFileSystemWatcher, QObject, QTimer, Signal, Slot
 
 from ..utils import log_buffer
 from .manager import MAX_CONFIG_ASSET_FOLDER_DEPTH, ConfigManager
@@ -28,7 +27,8 @@ def _is_ignored_name(name: str) -> bool:
 class ConfigFolderWatcher(QObject):
     """Import newly appearing config files while Fleasion is running."""
 
-    configs_changed = pyqtSignal()
+    configs_changed = Signal()
+    import_warning = Signal(str, list)
 
     def __init__(
         self,
@@ -36,7 +36,7 @@ class ConfigFolderWatcher(QObject):
         parent: QObject | None = None,
         *,
         folder: Path | None = None,
-        parent_provider: Callable[[], QWidget | None] | None = None,
+        parent_provider: Any | None = None,
     ):
         super().__init__(parent)
         self.config_manager = config_manager
@@ -46,6 +46,7 @@ class ConfigFolderWatcher(QObject):
         self._stopped = False
         self._scan_scheduled = False
         self._warning_active = False
+        self._active_warning_names: list[str] = []
 
         self._known_names = self._scan_names()
         self._pending_names: set[str] = set()
@@ -245,9 +246,9 @@ class ConfigFolderWatcher(QObject):
 
         if self._pending_names:
             self._retry_timer.start(1000)
-        self._show_next_warning()
+        self._emit_next_warning()
 
-    def _show_next_warning(self) -> None:
+    def _emit_next_warning(self) -> None:
         if self._stopped or self._warning_active or not self._warning_names:
             return
 
@@ -257,25 +258,18 @@ class ConfigFolderWatcher(QObject):
         message = self._warning_message(names, details)
 
         self._warning_active = True
-        try:
-            dialog = QMessageBox(self._parent_widget())
-            dialog.setWindowTitle(tr('ui.config.folder_watcher.config_import_warning'))
-            dialog.setIcon(QMessageBox.Icon.Warning)
-            dialog.setText(message)
-            ok_button = dialog.addButton(
-                tr('ui.config.folder_watcher.ok'), QMessageBox.ButtonRole.AcceptRole
-            )
-            dialog.setDefaultButton(ok_button)
-            result = dialog.exec()
-            if result == int(QMessageBox.DialogCode.Accepted):
-                self._ignored_names.update(names)
-        finally:
-            self._warning_active = False
+        self._active_warning_names = names
+        self.import_warning.emit(message, names)
 
-        # The dialog is modal, so files may have disappeared while it was open.
-        # A follow-up scan is what makes the gone-then-reappeared rule precise.
+    @Slot(list)
+    def acknowledge_import_warning(self, names: list[str]) -> None:
+        """Ignore acknowledged files and continue processing queued warnings."""
+        acknowledged = set(names) or set(self._active_warning_names)
+        self._ignored_names.update(acknowledged)
+        self._active_warning_names = []
+        self._warning_active = False
         self._schedule_scan()
-        QTimer.singleShot(0, self._show_next_warning)
+        QTimer.singleShot(0, self._emit_next_warning)
 
     @staticmethod
     def _warning_message(names: list[str], details: dict[str, str]) -> str:
@@ -311,14 +305,3 @@ class ConfigFolderWatcher(QObject):
             for name, reason in details.items()
         )
         return '\n'.join(lines)
-
-    def _parent_widget(self) -> QWidget | None:
-        if self._parent_provider is not None:
-            try:
-                parent = self._parent_provider()
-                if parent is not None:
-                    return parent
-            except Exception:
-                pass
-        app = QApplication.instance()
-        return app.activeWindow() if app is not None else None

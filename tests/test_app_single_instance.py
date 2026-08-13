@@ -26,7 +26,7 @@ from fleasion.app import (
     _windows_ca_permission_denied_dirs,
     kill_other_fleasion_instances,
 )
-from PyQt6.QtCore import QCoreApplication, QEvent, QSharedMemory, QUrl
+from PySide6.QtCore import QCoreApplication, QEvent, QSharedMemory, QUrl
 
 
 def test_macos_fleasion_process_matching_accepts_real_launch_forms():

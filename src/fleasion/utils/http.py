@@ -1,16 +1,52 @@
-"""Small urllib helpers for verified HTTPS downloads."""
+"""Small urllib helpers for bounded, verified public HTTPS downloads."""
 
 from __future__ import annotations
 
+import ipaddress
 import shutil
+import socket
 import ssl
 import subprocess
 import urllib.error
 import urllib.request
+import uuid
 from functools import lru_cache
 from pathlib import Path
+from typing import Any, Final
+from urllib.parse import urljoin, urlparse
 
-_USER_AGENT = 'FleasionNT/1.2.0'
+_USER_AGENT: Final = 'FleasionNT/1.2.0'
+_DEFAULT_MAX_BYTES: Final = 64 * 1024 * 1024
+_DEFAULT_DOWNLOAD_MAX_BYTES: Final = 128 * 1024 * 1024
+_STREAM_CHUNK_BYTES: Final = 64 * 1024
+_MAX_REDIRECTS: Final = 5
+_REDIRECT_STATUSES: Final = frozenset({301, 302, 303, 307, 308})
+_CREDENTIAL_HEADERS: Final = frozenset(
+    {'authorization', 'cookie', 'cookie2', 'proxy-authorization'}
+)
+
+
+class HttpSafetyError(ValueError):
+    """Raised when a remote URL can reach a non-public network endpoint."""
+
+
+class HttpSizeLimitError(ValueError):
+    """Raised before a remote response can exceed its configured byte limit."""
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Expose redirects to the caller so each destination can be validated."""
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> None:
+        return None
 
 
 def _log_http(message: str) -> None:
@@ -78,11 +114,81 @@ def _is_tls_record_layer_error(exc: BaseException) -> bool:
     return 'RECORD_LAYER_FAILURE' in text or 'RECORD LAYER FAILURE' in text
 
 
+def _resolved_public_https_target(url: str) -> tuple[str, str, int, tuple[str, ...]]:
+    cleaned = url.strip()
+    if not cleaned or any(character in cleaned for character in '\r\n\x00'):
+        raise HttpSafetyError('Enter a valid HTTPS URL.')
+
+    parsed = urlparse(cleaned)
+    if parsed.scheme.casefold() != 'https' or parsed.hostname is None:
+        raise HttpSafetyError('Remote sources must use HTTPS.')
+    if parsed.username is not None or parsed.password is not None:
+        raise HttpSafetyError('Remote URLs cannot contain embedded credentials.')
+
+    try:
+        port = parsed.port or 443
+    except ValueError as exc:
+        raise HttpSafetyError('The remote URL contains an invalid port.') from exc
+
+    hostname = parsed.hostname.rstrip('.')
+    if not hostname or '%' in hostname:
+        raise HttpSafetyError('The remote URL contains an invalid hostname.')
+
+    try:
+        resolved = socket.getaddrinfo(
+            hostname,
+            port,
+            family=socket.AF_UNSPEC,
+            type=socket.SOCK_STREAM,
+        )
+    except socket.gaierror as exc:
+        raise HttpSafetyError(f'The remote hostname could not be resolved: {hostname}') from exc
+
+    addresses: set[ipaddress.IPv4Address | ipaddress.IPv6Address] = set()
+    for result in resolved:
+        sockaddr = result[4]
+        if not sockaddr:
+            continue
+        try:
+            addresses.add(ipaddress.ip_address(sockaddr[0]))
+        except ValueError as exc:
+            raise HttpSafetyError('The remote hostname resolved to an invalid address.') from exc
+
+    if not addresses:
+        raise HttpSafetyError(f'The remote hostname did not resolve to an address: {hostname}')
+    if any(not address.is_global for address in addresses):
+        raise HttpSafetyError(
+            'Private, local, link-local, reserved, and non-global network URLs are not allowed.'
+        )
+    return cleaned, hostname, port, tuple(str(address) for address in sorted(addresses, key=str))
+
+
+def validate_public_https_url(url: str) -> str:
+    """Return a normalized URL after resolving every host address as public.
+
+    A hostname is rejected when any returned address is loopback, private,
+    link-local, reserved, unspecified, multicast, or otherwise non-global.
+    """
+    return _resolved_public_https_target(url)[0]
+
+
+def _open_once(
+    req: urllib.request.Request,
+    timeout: int,
+    context: ssl.SSLContext | None,
+) -> Any:
+    handlers: list[Any] = [_NoRedirectHandler()]
+    if context is not None:
+        handlers.append(urllib.request.HTTPSHandler(context=context))
+    opener = urllib.request.build_opener(*handlers)
+    return opener.open(req, timeout=timeout)
+
+
 def _open_with_contexts(
     req: urllib.request.Request,
     timeout: int,
     contexts: list[ssl.SSLContext | None],
-):
+) -> Any:
     last_exc: urllib.error.URLError | None = None
     seen: set[int] = set()
 
@@ -94,7 +200,7 @@ def _open_with_contexts(
             continue
         seen.add(ident)
         try:
-            return urllib.request.urlopen(req, timeout=timeout, context=ctx)
+            return _open_once(req, timeout, ctx)
         except urllib.error.URLError as exc:
             last_exc = exc
 
@@ -107,13 +213,10 @@ def _open_verified(
     req: urllib.request.Request,
     url: str,
     timeout: int,
-):
+) -> Any:
     try:
-        return urllib.request.urlopen(req, timeout=timeout)
+        return _open_once(req, timeout, None)
     except urllib.error.URLError as exc:
-        if not url.lower().startswith('https://'):
-            raise
-
         if _is_certificate_verify_error(exc):
             _log_http(f'Certificate verification failed for {url}; retrying with certifi')
             ctx = _certifi_context()
@@ -132,24 +235,161 @@ def _open_verified(
         raise
 
 
-def http_get(url: str, timeout: int = 15, headers: dict[str, str] | None = None) -> bytes:
+def _origin(url: str) -> tuple[str, str, int]:
+    parsed = urlparse(url)
+    hostname = parsed.hostname or ''
+    return (parsed.scheme.casefold(), hostname.rstrip('.').casefold(), parsed.port or 443)
+
+
+def _without_cross_origin_credentials(headers: dict[str, str]) -> dict[str, str]:
+    return {
+        key: value
+        for key, value in headers.items()
+        if key.casefold() not in _CREDENTIAL_HEADERS and key.casefold() != 'host'
+    }
+
+
+def _redirect_destination(response: Any, current_url: str) -> str | None:
+    status = getattr(response, 'status', None)
+    if status is None:
+        getcode = getattr(response, 'getcode', None)
+        status = getcode() if callable(getcode) else None
+    if status not in _REDIRECT_STATUSES:
+        return None
+    location = response.headers.get('Location')
+    if not location:
+        raise HttpSafetyError('The remote server returned a redirect without a destination.')
+    return urljoin(current_url, location)
+
+
+def _open_request(
+    url: str,
+    *,
+    method: str,
+    timeout: int,
+    headers: dict[str, str],
+) -> Any:
+    current_url = validate_public_https_url(url)
+    current_headers = dict(headers)
+
+    for redirect_count in range(_MAX_REDIRECTS + 1):
+        req = urllib.request.Request(current_url, headers=current_headers, method=method)
+        try:
+            response = _open_verified(req, current_url, timeout)
+        except urllib.error.HTTPError as exc:
+            if exc.code not in _REDIRECT_STATUSES:
+                raise
+            response = exc
+
+        try:
+            destination = _redirect_destination(response, current_url)
+        except Exception:
+            response.close()
+            raise
+        if destination is None:
+            return response
+
+        response.close()
+        if redirect_count >= _MAX_REDIRECTS:
+            raise HttpSafetyError('The remote server exceeded the redirect limit.')
+        validated_destination = validate_public_https_url(destination)
+        if _origin(validated_destination) != _origin(current_url):
+            current_headers = _without_cross_origin_credentials(current_headers)
+        current_url = validated_destination
+
+    raise HttpSafetyError('The remote server exceeded the redirect limit.')
+
+
+def _content_length(response: Any) -> int | None:
+    value = response.headers.get('Content-Length')
+    if value is None:
+        return None
+    try:
+        length = int(value)
+    except TypeError, ValueError:
+        return None
+    return length if length >= 0 else None
+
+
+def _raise_if_declared_oversized(response: Any, max_bytes: int) -> None:
+    declared = _content_length(response)
+    if declared is not None and declared > max_bytes:
+        raise HttpSizeLimitError(f'The remote response exceeds the {max_bytes} byte safety limit.')
+
+
+def _read_limited(response: Any, max_bytes: int) -> bytes:
+    if max_bytes < 0:
+        raise ValueError('max_bytes must not be negative')
+    _raise_if_declared_oversized(response, max_bytes)
+    data = bytearray()
+    while True:
+        remaining = max_bytes - len(data)
+        chunk = response.read(min(_STREAM_CHUNK_BYTES, remaining + 1))
+        if not chunk:
+            return bytes(data)
+        data.extend(chunk)
+        if len(data) > max_bytes:
+            raise HttpSizeLimitError(
+                f'The remote response exceeds the {max_bytes} byte safety limit.'
+            )
+
+
+def _copy_limited(response: Any, out: Any, max_bytes: int) -> None:
+    if max_bytes < 0:
+        raise ValueError('max_bytes must not be negative')
+    _raise_if_declared_oversized(response, max_bytes)
+    written = 0
+    while True:
+        remaining = max_bytes - written
+        chunk = response.read(min(_STREAM_CHUNK_BYTES, remaining + 1))
+        if not chunk:
+            return
+        written += len(chunk)
+        if written > max_bytes:
+            raise HttpSizeLimitError(
+                f'The remote response exceeds the {max_bytes} byte safety limit.'
+            )
+        out.write(chunk)
+
+
+def http_get(
+    url: str,
+    timeout: int = 15,
+    headers: dict[str, str] | None = None,
+    *,
+    max_bytes: int = _DEFAULT_MAX_BYTES,
+) -> bytes:
+    """Fetch one public HTTPS resource without buffering beyond ``max_bytes``."""
     request_headers = {'User-Agent': _USER_AGENT}
     if headers:
         request_headers.update(headers)
-    req = urllib.request.Request(url, headers=request_headers)
 
-    with _open_verified(req, url, timeout) as resp:
-        return resp.read()
+    with _open_request(
+        url,
+        method='GET',
+        timeout=timeout,
+        headers=request_headers,
+    ) as response:
+        return _read_limited(response, max_bytes)
 
 
-def http_head_status(url: str, timeout: int = 15, headers: dict[str, str] | None = None) -> int:
+def http_head_status(
+    url: str,
+    timeout: int = 15,
+    headers: dict[str, str] | None = None,
+) -> int:
+    """Return the final status of one validated public HTTPS resource."""
     request_headers = {'User-Agent': _USER_AGENT}
     if headers:
         request_headers.update(headers)
-    req = urllib.request.Request(url, headers=request_headers, method='HEAD')
 
-    with _open_verified(req, url, timeout) as resp:
-        return resp.status
+    with _open_request(
+        url,
+        method='HEAD',
+        timeout=timeout,
+        headers=request_headers,
+    ) as response:
+        return int(response.status)
 
 
 def http_download_to(
@@ -157,49 +397,84 @@ def http_download_to(
     dest: Path,
     timeout: int = 15,
     headers: dict[str, str] | None = None,
+    *,
+    max_bytes: int = _DEFAULT_DOWNLOAD_MAX_BYTES,
 ) -> None:
+    """Stream one public HTTPS resource into an atomic bounded destination."""
     request_headers = {'User-Agent': _USER_AGENT}
     if headers:
         request_headers.update(headers)
-    req = urllib.request.Request(url, headers=request_headers)
+    temporary = dest.with_name(f'.{dest.name}.{uuid.uuid4().hex}.download')
 
     try:
-        with _open_verified(req, url, timeout) as resp, dest.open('wb') as out:
-            shutil.copyfileobj(resp, out)
-    except (urllib.error.URLError, OSError) as exc:
-        _curl_download_to(url, dest, timeout, request_headers, exc)
+        try:
+            with (
+                _open_request(
+                    url,
+                    method='GET',
+                    timeout=timeout,
+                    headers=request_headers,
+                ) as response,
+                temporary.open('wb') as out,
+            ):
+                _copy_limited(response, out, max_bytes)
+        except urllib.error.URLError as exc:
+            temporary.unlink(missing_ok=True)
+            _curl_download_to(
+                url,
+                temporary,
+                timeout,
+                request_headers,
+                max_bytes,
+                exc,
+            )
+        temporary.replace(dest)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _curl_download_to(
     url: str,
-    dest: Path,
+    temporary: Path,
     timeout: int,
     headers: dict[str, str],
-    original_exc: Exception,
+    max_bytes: int,
+    original_exc: urllib.error.URLError,
 ) -> None:
     curl = shutil.which('curl')
     if curl is None:
         raise original_exc
 
-    _log_http(f'urllib download failed for {url}; retrying with curl')
-    tmp = dest.with_name(f'{dest.name}.download')
+    cleaned, hostname, port, addresses = _resolved_public_https_target(url)
+    address = addresses[0]
+    curl_address = f'[{address}]' if ':' in address else address
+    _log_http(f'urllib download failed for {cleaned}; retrying with bounded curl')
     cmd = [
         curl,
         '--fail',
-        '--location',
         '--silent',
         '--show-error',
         '--max-time',
         str(max(1, int(timeout))),
+        '--max-filesize',
+        str(max_bytes),
+        '--proto',
+        '=https',
+        '--proto-redir',
+        '=https',
+        '--resolve',
+        f'{hostname}:{port}:{curl_address}',
         '--output',
-        str(tmp),
+        str(temporary),
+        '--write-out',
+        '%{http_code}',
     ]
     for key, value in headers.items():
-        if key.lower() == 'user-agent':
+        if key.casefold() == 'user-agent':
             cmd.extend(['--user-agent', value])
         else:
             cmd.extend(['--header', f'{key}: {value}'])
-    cmd.append(url)
+    cmd.append(cleaned)
 
     try:
         result = subprocess.run(
@@ -209,12 +484,29 @@ def _curl_download_to(
             text=True,
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
         )
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout or '').strip()
-            raise RuntimeError(detail or f'curl exited with code {result.returncode}')
-        tmp.replace(dest)
+        status_text = result.stdout.strip()
+        status = int(status_text[-3:]) if len(status_text) >= 3 else 0
+        if result.returncode != 0 or not 200 <= status < 300:
+            detail = result.stderr.strip()
+            raise RuntimeError(
+                detail or f'curl returned HTTP {status or "unknown"} (redirects are disabled)'
+            )
+        if temporary.stat().st_size > max_bytes:
+            raise HttpSizeLimitError(
+                f'The remote response exceeds the {max_bytes} byte safety limit.'
+            )
     except Exception as exc:
-        tmp.unlink(missing_ok=True)
+        temporary.unlink(missing_ok=True)
         raise RuntimeError(
             f'urllib download failed: {original_exc}; curl fallback failed: {exc}'
         ) from original_exc
+
+
+__all__ = [
+    'HttpSafetyError',
+    'HttpSizeLimitError',
+    'http_download_to',
+    'http_get',
+    'http_head_status',
+    'validate_public_https_url',
+]

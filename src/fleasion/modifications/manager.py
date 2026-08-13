@@ -19,9 +19,9 @@ import sys
 import threading
 import uuid
 from pathlib import Path
-from typing import Iterable
+from typing import Final, Iterable
 
-from PyQt6.QtCore import QObject, pyqtSignal
+from PySide6.QtCore import QObject, Signal
 
 from ..cache.tools.ktx_to_png import strip_prefixed_ktx
 from ..utils import (
@@ -64,6 +64,7 @@ MODIFICATIONS_JSON = CONFIG_DIR / 'modifications.json'
 MOD_ORIGINALS_DIR = CONFIG_DIR / 'ModOriginals'
 MOD_CACHE_DIR = CONFIG_DIR / 'ModCache'
 READ_ONLY_STATE_FILE = CONFIG_DIR / 'read_only_modes.json'
+MODIFICATION_DOWNLOAD_MAX_BYTES: Final = 128 * 1024 * 1024
 
 
 def normalise_target_path(target_path: str | Path) -> Path:
@@ -426,10 +427,10 @@ class PendingModificationsQueue:
 class ModificationManager(QObject):
     """Core engine for modification entries: eager-write, stash, restore."""
 
-    entry_status_changed = pyqtSignal(str, str, str)  # (entry_id, status, error_msg)
-    apply_started = pyqtSignal(str)  # entry_id
-    apply_finished = pyqtSignal(str)  # entry_id
-    restore_finished = pyqtSignal()
+    entry_status_changed = Signal(str, str, str)  # (entry_id, status, error_msg)
+    apply_started = Signal(str)  # entry_id
+    apply_finished = Signal(str)  # entry_id
+    restore_finished = Signal()
 
     def __init__(self, cache_scraper=None, *, read_only_lock_enabled: bool = False):
         super().__init__()
@@ -450,7 +451,8 @@ class ModificationManager(QObject):
         # Lock that serialises all file-system writes/restores.  Prevents
         # a background apply thread from writing to dst after the main thread
         # has already restored the original (Apply → Reset race condition).
-        self._fs_lock = threading.Lock()
+        self._fs_lock = threading.RLock()
+        self._bulk_apply_gen = 0
         self._read_only_lock_enabled = bool(read_only_lock_enabled)
         self._read_only_state_file = READ_ONLY_STATE_FILE
         self._read_only_original_modes = self._load_read_only_original_modes()
@@ -1009,6 +1011,9 @@ class ModificationManager(QObject):
                 if not validate_font_bytes(data):
                     raise ValueError('Not a valid font file (invalid header)')
                 with self._fs_lock:
+                    if entry.get('_apply_gen', 0) != apply_gen:
+                        self.apply_finished.emit(entry_id)
+                        return
                     self._unlock_managed_files_locked()
                     try:
                         apply_custom_font(
@@ -1040,7 +1045,14 @@ class ModificationManager(QObject):
 
             data = self._coerce_replacement_for_target(target, data)
 
-            self._stash_and_write(target, data)
+            if not self._stash_and_write(
+                target,
+                data,
+                entry=entry,
+                apply_gen=apply_gen,
+            ):
+                self.apply_finished.emit(entry_id)
+                return
 
             # Check if a reset/update happened while the write was in progress.
             # The fs_lock serialises file ops, so by the time we get here the
@@ -1120,10 +1132,17 @@ class ModificationManager(QObject):
         cache_file = MOD_CACHE_DIR / f'cdn_{url_hash}{ext}'
 
         if cache_file.is_file():
+            if cache_file.stat().st_size > MODIFICATION_DOWNLOAD_MAX_BYTES:
+                raise ValueError('The cached modification exceeds the 128 MiB safety limit.')
             return cache_file.read_bytes()
 
         try:
-            data = http_get(url, timeout=30, headers={'User-Agent': 'Mozilla/5.0'})
+            data = http_get(
+                url,
+                timeout=30,
+                headers={'User-Agent': 'Mozilla/5.0'},
+                max_bytes=MODIFICATION_DOWNLOAD_MAX_BYTES,
+            )
         except URLError as exc:
             raise RuntimeError(f'CDN download failed: {exc}') from exc
 
@@ -1240,9 +1259,22 @@ class ModificationManager(QObject):
     # but stash is gone → leave dst alone".
     _NEW_FILE_MARKER_SUFFIX = '.fleasion_new'
 
-    def _stash_and_write(self, target_path_rel: str, new_bytes: bytes) -> None:
+    def _stash_and_write(
+        self,
+        target_path_rel: str,
+        new_bytes: bytes,
+        *,
+        entry: dict | None = None,
+        apply_gen: int | None = None,
+    ) -> bool:
         """Stash the original file and write the mod in every Roblox dir."""
         with self._fs_lock:
+            if (
+                entry is not None
+                and apply_gen is not None
+                and entry.get('_apply_gen', 0) != apply_gen
+            ):
+                return False
             self._unlock_managed_files_locked()
             try:
                 failures: list[tuple[Path, PermissionError]] = []
@@ -1280,6 +1312,7 @@ class ModificationManager(QObject):
                     )
             finally:
                 self._protect_managed_files_locked()
+        return True
 
     def _restore_entry(self, entry: dict) -> None:
         """Undo a single entry: restore the stash or delete the mod file."""
@@ -1367,6 +1400,11 @@ class ModificationManager(QObject):
 
     def restore_all(self) -> None:
         """Restore every applied modification and fast-flags."""
+        with self._fs_lock:
+            self._bulk_apply_gen = getattr(self, '_bulk_apply_gen', 0) + 1
+            for entry in self.entries:
+                entry['_apply_gen'] = entry.get('_apply_gen', 0) + 1
+
         self.clear_managed_file_read_only()
 
         try:
@@ -1386,7 +1424,6 @@ class ModificationManager(QObject):
                 except Exception as exc:
                     log_buffer.log('FastFlags', f'Restore failed: {exc}')
 
-            # Restore global settings
             try:
                 self.global_settings_manager.restore()
             except Exception as exc:
@@ -1399,12 +1436,20 @@ class ModificationManager(QObject):
 
     def reapply_all(self) -> None:
         """Re-apply all entries (crash recovery on startup)."""
+        with self._fs_lock:
+            bulk_apply_gen = getattr(self, '_bulk_apply_gen', 0)
+
         for entry in self.entries:
+            with self._fs_lock:
+                if self._bulk_apply_gen != bulk_apply_gen:
+                    return
             if entry.get('source_type') and entry.get('source_value'):
                 self._process_and_apply_entry(entry)
 
         if self._data.get('fast_flags_enabled') and self._data.get('fast_flags'):
             with self._fs_lock:
+                if self._bulk_apply_gen != bulk_apply_gen:
+                    return
                 self._unlock_managed_files_locked()
                 try:
                     failed_dirs = self.fflag_manager.write(self._data['fast_flags'])
@@ -1414,7 +1459,10 @@ class ModificationManager(QObject):
                     self._protect_managed_files_locked()
 
         if self._data.get('fast_flags_enabled'):
-            self.sync_saved_global_settings()
+            with self._fs_lock:
+                if self._bulk_apply_gen != bulk_apply_gen:
+                    return
+                self.sync_saved_global_settings()
 
         log_buffer.log('Modifications', 'Re-applied all modifications (crash recovery)')
 

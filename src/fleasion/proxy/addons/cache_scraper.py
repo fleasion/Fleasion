@@ -8,12 +8,13 @@ everything runs in the same process.
 import base64
 import gzip
 import hashlib
+from io import BytesIO
 import logging
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import requests
 
@@ -39,6 +40,10 @@ CDN_HOSTS = frozenset({'fts.rbxcdn.com', 'contentdelivery.roblox.com'})
 DELIVERY_ENDPOINT = '/v1/assets/batch'
 CREATOR_GAME_PAGE_LIMITS = (50, 25, 10)
 CREATOR_GAME_MAX_SCAN = 300
+HTTPS_GET_MAX_REDIRECTS = 8
+HTTPS_GET_MAX_RESPONSE_BYTES = 128 * 1024 * 1024
+HTTPS_GET_MAX_DECOMPRESSED_BYTES = 256 * 1024 * 1024
+HTTPS_GET_TRUSTED_DOMAINS = ('roblox.com', 'rbxcdn.com')
 
 _TEXPACK_SLOT_NAMES = {
     0: 'Color',
@@ -57,6 +62,36 @@ def _b64decode_padded(value: str) -> bytes:
     raw = str(value).encode('ascii', errors='ignore')
     raw += b'=' * (-len(raw) % 4)
     return base64.urlsafe_b64decode(raw)
+
+
+def _is_trusted_https_host(hostname: str) -> bool:
+    host = str(hostname).strip().casefold().rstrip('.')
+    return bool(host) and any(
+        host == domain or host.endswith(f'.{domain}') for domain in HTTPS_GET_TRUSTED_DOMAINS
+    )
+
+
+def _is_roblox_host(hostname: str) -> bool:
+    host = str(hostname).strip().casefold().rstrip('.')
+    return host == 'roblox.com' or host.endswith('.roblox.com')
+
+
+def _bounded_gzip_decompress(data: bytes) -> bytes:
+    with gzip.GzipFile(fileobj=BytesIO(data)) as stream:
+        result = stream.read(HTTPS_GET_MAX_DECOMPRESSED_BYTES + 1)
+    if len(result) > HTTPS_GET_MAX_DECOMPRESSED_BYTES:
+        raise ValueError('Gzip response exceeds the decompressed response limit')
+    return result
+
+
+def _bounded_zstd_decompress(data: bytes) -> bytes:
+    import zstandard
+
+    with zstandard.ZstdDecompressor().stream_reader(BytesIO(data)) as stream:
+        result = stream.read(HTTPS_GET_MAX_DECOMPRESSED_BYTES + 1)
+    if len(result) > HTTPS_GET_MAX_DECOMPRESSED_BYTES:
+        raise ValueError('Zstandard response exceeds the decompressed response limit')
+    return result
 
 
 def _normalized_build_type(value):
@@ -725,16 +760,16 @@ class CacheScraper:
         import http.client
         import socket
         import ssl
-        from urllib.parse import urlparse
 
         ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+        cur_hostname = str(hostname).strip().casefold().rstrip('.')
+        cur_path = path if str(path).startswith('/') else f'/{path}'
+        if not _is_trusted_https_host(cur_hostname):
+            log_buffer.log('Cache', f'Refused untrusted HTTPS host: {cur_hostname}')
+            return (None, None) if return_status else None
 
-        cur_hostname = hostname
-        cur_path = path
-
-        for _ in range(max_redirects):
+        redirect_limit = min(max(0, int(max_redirects)), HTTPS_GET_MAX_REDIRECTS)
+        for redirect_count in range(redirect_limit + 1):
             with self._lock:
                 real_ips = self._real_ips.get(cur_hostname, ())
             candidates = real_ips or (cur_hostname,)
@@ -776,46 +811,68 @@ class CacheScraper:
                     'Connection': 'close',
                 }
                 if extra_headers:
-                    req_headers.update(extra_headers)
+                    for key, value in extra_headers.items():
+                        header_name = str(key)
+                        if header_name.casefold() == 'host':
+                            continue
+                        if header_name.casefold() == 'cookie' and not _is_roblox_host(
+                            cur_hostname
+                        ):
+                            continue
+                        req_headers[header_name] = str(value)
 
                 conn.request('GET', cur_path, headers=req_headers)
                 resp = conn.getresponse()
 
                 if resp.status in (301, 302, 303, 307, 308):
                     location = resp.headers.get('Location', '')
-                    resp.read()
                     ssl_sock.close()
-                    if not location:
+                    if not location or redirect_count >= redirect_limit:
                         return (None, resp.status) if return_status else None
-                    parsed = urlparse(location)
-                    cur_hostname = (parsed.hostname or cur_hostname).lower()
-                    cur_path = parsed.path
+                    current_url = f'https://{cur_hostname}{cur_path}'
+                    parsed = urlparse(urljoin(current_url, location))
+                    next_hostname = (parsed.hostname or '').casefold().rstrip('.')
+                    if (
+                        parsed.scheme.casefold() != 'https'
+                        or parsed.username is not None
+                        or parsed.password is not None
+                        or parsed.port not in (None, 443)
+                        or not _is_trusted_https_host(next_hostname)
+                    ):
+                        log_buffer.log('Cache', f'Refused untrusted HTTPS redirect: {location}')
+                        return (None, resp.status) if return_status else None
+                    cur_hostname = next_hostname
+                    cur_path = parsed.path or '/'
                     if parsed.query:
                         cur_path += '?' + parsed.query
                     continue
 
                 if resp.status == 200:
-                    data = resp.read()
+                    content_length = resp.headers.get('Content-Length')
+                    if content_length:
+                        try:
+                            if int(content_length) > HTTPS_GET_MAX_RESPONSE_BYTES:
+                                ssl_sock.close()
+                                return (None, 200) if return_status else None
+                        except ValueError:
+                            pass
+                    data = resp.read(HTTPS_GET_MAX_RESPONSE_BYTES + 1)
                     ssl_sock.close()
+                    if len(data) > HTTPS_GET_MAX_RESPONSE_BYTES:
+                        return (None, 200) if return_status else None
                     # Decompress gzip — assetdelivery wraps PNG in gzip when
                     # Accept-Encoding: gzip was advertised
                     ce = resp.headers.get('Content-Encoding', '').lower()
                     if ce == 'gzip' and data:
-                        import gzip as _gzip
-
                         try:
-                            data = _gzip.decompress(data)
+                            data = _bounded_gzip_decompress(data)
                         except Exception:
-                            pass
+                            return (None, 200) if return_status else None
                     elif data[:4] == b'\x28\xb5\x2f\xfd':  # zstd magic
                         try:
-                            import zstandard
-
-                            data = zstandard.ZstdDecompressor().decompress(
-                                data, max_output_size=32 * 1024 * 1024
-                            )
+                            data = _bounded_zstd_decompress(data)
                         except Exception:
-                            pass
+                            return (None, 200) if return_status else None
                     result = data if data else None
                     return (result, 200) if return_status else result
 

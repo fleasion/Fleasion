@@ -79,20 +79,24 @@ class LogBuffer:
 
     def get_all(self) -> list[str]:
         """Get all log entries."""
-        return self._buffer.copy()
+        with self._lock:
+            return self._buffer.copy()
 
     def get_text(self) -> str:
         """Get all logs as a single text string."""
-        return '\n'.join(self._buffer) if self._buffer else 'No logs yet.'
+        with self._lock:
+            return '\n'.join(self._buffer) if self._buffer else 'No logs yet.'
 
     def add_callback(self, callback: Any):
         """Add a callback to be notified when new logs are added."""
-        self._callbacks.append(callback)
+        with self._lock:
+            self._callbacks.append(callback)
 
     def remove_callback(self, callback: Any):
         """Remove a callback."""
-        if callback in self._callbacks:
-            self._callbacks.remove(callback)
+        with self._lock:
+            if callback in self._callbacks:
+                self._callbacks.remove(callback)
 
 
 # Global log buffer

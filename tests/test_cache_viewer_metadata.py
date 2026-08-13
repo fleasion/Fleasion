@@ -1,4 +1,5 @@
-from fleasion.cache.cache_viewer import COL_TOGGLE_WIDTH, _asset_metadata_needs_resolution
+from fleasion.cache.asset_metadata import asset_metadata_needs_resolution
+from fleasion.cache.cache_viewer import COL_TOGGLE_WIDTH
 
 
 def test_cache_viewer_toggle_column_width_constant_is_defined():
@@ -14,7 +15,7 @@ def test_numeric_creator_remains_pending_after_asset_metadata_resolves():
         'updated_at': '2025-11-26T14:44:33Z',
     }
 
-    assert _asset_metadata_needs_resolution(info)
+    assert asset_metadata_needs_resolution(info)
 
 
 def test_named_creator_completes_asset_metadata_resolution():
@@ -26,7 +27,7 @@ def test_named_creator_completes_asset_metadata_resolution():
         'updated_at': '2025-11-26T14:44:33Z',
     }
 
-    assert not _asset_metadata_needs_resolution(info)
+    assert not asset_metadata_needs_resolution(info)
 
 
 def test_asset_without_creator_can_still_complete_resolution():
@@ -38,4 +39,4 @@ def test_asset_without_creator_can_still_complete_resolution():
         'updated_at': '',
     }
 
-    assert not _asset_metadata_needs_resolution(info)
+    assert not asset_metadata_needs_resolution(info)

@@ -35,6 +35,9 @@ MANIFEST
 !FleasionDarwinProxyHelper.spec
 !FleasionLinuxProxyHelper.spec
 
+# Qt for Python generated QML module metadata
+/Fleasion/
+
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt

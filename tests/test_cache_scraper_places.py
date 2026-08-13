@@ -1,10 +1,15 @@
+import gzip
 import json
 import http.client
 import socket
 import struct
+import ssl
 from types import SimpleNamespace
 
+import zstandard
+
 from fleasion.cache import cache_manager as cache_manager_module
+from fleasion.proxy.addons import cache_scraper as cache_scraper_module
 from fleasion.proxy.addons.cache_scraper import CacheScraper, _ktx2_pack_index
 
 
@@ -25,6 +30,46 @@ def _make_scraper():
     CacheScraper._creator_place_cache.clear()
     CacheScraper._creator_last_success.clear()
     return CacheScraper(_CacheManager())
+
+
+class _FakeSocket:
+    def close(self):
+        return None
+
+
+class _FakeResponse:
+    def __init__(self, status, body=b'', headers=None):
+        self.status = status
+        self.body = body
+        self.headers = headers or {}
+        self.read_limits = []
+
+    def read(self, amount=None):
+        self.read_limits.append(amount)
+        return self.body if amount is None else self.body[:amount]
+
+
+def _install_https_fakes(monkeypatch, responses, seen_requests, seen_sni):
+    class _VerifiedContext:
+        check_hostname = True
+        verify_mode = ssl.CERT_REQUIRED
+
+        def wrap_socket(self, raw_sock, server_hostname):
+            assert self.check_hostname
+            assert self.verify_mode == ssl.CERT_REQUIRED
+            seen_sni.append(server_hostname)
+            return raw_sock
+
+    queued = list(responses)
+    monkeypatch.setattr(socket, 'create_connection', lambda *_args, **_kwargs: _FakeSocket())
+    monkeypatch.setattr(ssl, 'create_default_context', lambda: _VerifiedContext())
+    monkeypatch.setattr(http.client.HTTPConnection, '__init__', lambda *_args, **_kwargs: None)
+
+    def capture_request(_self, method, path, *, headers):
+        seen_requests.append((method, path, dict(headers)))
+
+    monkeypatch.setattr(http.client.HTTPConnection, 'request', capture_request)
+    monkeypatch.setattr(http.client.HTTPConnection, 'getresponse', lambda _self: queued.pop(0))
 
 
 def test_user_place_lookup_uses_supported_limits_and_falls_back():
@@ -317,5 +362,107 @@ def test_texturepack_canonical_never_downgrades_when_lower_pack_arrives_late(tmp
 
         assert len(manager.get_texturepack_slot_pack_paths(9920625499, 1)) == 2
         assert manager.get_texturepack_slot_path(9920625499, 1).read_bytes() == high
+    finally:
+        scraper._executor.shutdown(wait=False, cancel_futures=True)
+
+
+def test_https_get_verifies_tls_and_rejects_foreign_redirect(monkeypatch):
+    scraper = _make_scraper()
+    requests = []
+    sni = []
+    _install_https_fakes(
+        monkeypatch,
+        [_FakeResponse(302, headers={'Location': 'https://roblox.com.evil.test/asset'})],
+        requests,
+        sni,
+    )
+
+    try:
+        assert (
+            scraper._https_get(
+                'assetdelivery.roblox.com',
+                '/v1/asset/?id=123',
+                extra_headers={'Cookie': '.ROBLOSECURITY=secret;'},
+            )
+            is None
+        )
+    finally:
+        scraper._executor.shutdown(wait=False, cancel_futures=True)
+
+    assert sni == ['assetdelivery.roblox.com']
+    assert len(requests) == 1
+    assert requests[0][2]['Cookie'] == '.ROBLOSECURITY=secret;'
+
+
+def test_https_get_strips_cookie_on_trusted_cdn_redirect(monkeypatch):
+    scraper = _make_scraper()
+    requests = []
+    sni = []
+    _install_https_fakes(
+        monkeypatch,
+        [
+            _FakeResponse(302, headers={'Location': 'https://c0.rbxcdn.com/content'}),
+            _FakeResponse(200, body=b'asset-data'),
+        ],
+        requests,
+        sni,
+    )
+
+    try:
+        assert scraper._https_get(
+            'assetdelivery.roblox.com',
+            '/v1/asset/?id=123',
+            extra_headers={'Cookie': '.ROBLOSECURITY=secret;'},
+        ) == b'asset-data'
+    finally:
+        scraper._executor.shutdown(wait=False, cancel_futures=True)
+
+    assert sni == ['assetdelivery.roblox.com', 'c0.rbxcdn.com']
+    assert requests[0][2]['Cookie'] == '.ROBLOSECURITY=secret;'
+    assert 'Cookie' not in requests[1][2]
+
+
+def test_https_get_bounds_wire_and_gzip_expansion(monkeypatch):
+    scraper = _make_scraper()
+    requests = []
+    sni = []
+    oversized_wire = _FakeResponse(200, body=b'12345')
+    _install_https_fakes(monkeypatch, [oversized_wire], requests, sni)
+    monkeypatch.setattr(cache_scraper_module, 'HTTPS_GET_MAX_RESPONSE_BYTES', 4)
+
+    try:
+        assert scraper._https_get('assetdelivery.roblox.com', '/asset') is None
+    finally:
+        scraper._executor.shutdown(wait=False, cancel_futures=True)
+
+    scraper = _make_scraper()
+    requests = []
+    sni = []
+    compressed = zstandard.ZstdCompressor().compress(b'12345')
+    _install_https_fakes(monkeypatch, [_FakeResponse(200, body=compressed)], requests, sni)
+    monkeypatch.setattr(cache_scraper_module, 'HTTPS_GET_MAX_RESPONSE_BYTES', len(compressed))
+    monkeypatch.setattr(cache_scraper_module, 'HTTPS_GET_MAX_DECOMPRESSED_BYTES', 4)
+
+    try:
+        assert scraper._https_get('assetdelivery.roblox.com', '/asset') is None
+    finally:
+        scraper._executor.shutdown(wait=False, cancel_futures=True)
+
+    assert oversized_wire.read_limits == [5]
+
+    scraper = _make_scraper()
+    requests = []
+    sni = []
+    compressed = gzip.compress(b'12345')
+    _install_https_fakes(
+        monkeypatch,
+        [_FakeResponse(200, body=compressed, headers={'Content-Encoding': 'gzip'})],
+        requests,
+        sni,
+    )
+    monkeypatch.setattr(cache_scraper_module, 'HTTPS_GET_MAX_RESPONSE_BYTES', len(compressed))
+
+    try:
+        assert scraper._https_get('assetdelivery.roblox.com', '/asset') is None
     finally:
         scraper._executor.shutdown(wait=False, cancel_futures=True)

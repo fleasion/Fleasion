@@ -3,8 +3,8 @@ import os
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from PyQt6.QtCore import QFileSystemWatcher
-from PyQt6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtCore import QFileSystemWatcher
+from PySide6.QtWidgets import QApplication
 
 from fleasion.config import ConfigFolderWatcher
 from fleasion.config import manager as manager_module
@@ -61,10 +61,12 @@ def test_uppercase_extension_is_normalized_without_overwriting_collisions(tmp_pa
     manager, configs_dir = _manager(tmp_path, monkeypatch)
     existing = configs_dir / 'Existing.json'
     existing.write_text(json.dumps({'replacement_rules': []}), encoding='utf-8')
-    watcher = ConfigFolderWatcher(manager, folder=configs_dir)
     messages = []
-    monkeypatch.setattr(QMessageBox, 'setText', lambda dialog, text: messages.append(text))
-    monkeypatch.setattr(QMessageBox, 'exec', lambda _dialog: QMessageBox.DialogCode.Accepted.value)
+    warning_names = []
+    watcher = ConfigFolderWatcher(manager, folder=configs_dir)
+    watcher.import_warning.connect(
+        lambda message, names: (messages.append(message), warning_names.extend(names))
+    )
     try:
         uppercase = configs_dir / 'Upper.JSON'
         uppercase.write_text(json.dumps({'replacement_rules': []}), encoding='utf-8')
@@ -82,6 +84,7 @@ def test_uppercase_extension_is_normalized_without_overwriting_collisions(tmp_pa
         assert collision.exists()
         assert json.loads(existing.read_text(encoding='utf-8')) == {'replacement_rules': []}
         assert messages and 'destination name already exists' in messages[-1]
+        watcher.acknowledge_import_warning(warning_names)
     finally:
         watcher.stop()
     assert app is not None
@@ -260,9 +263,11 @@ def test_invalid_names_are_ignored_until_they_disappear_and_reappear(tmp_path, m
     app = _qapp()
     manager, configs_dir = _manager(tmp_path, monkeypatch)
     messages = []
-    monkeypatch.setattr(QMessageBox, 'setText', lambda dialog, text: messages.append(text))
-    monkeypatch.setattr(QMessageBox, 'exec', lambda _dialog: QMessageBox.DialogCode.Accepted.value)
+    warning_names = []
     watcher = ConfigFolderWatcher(manager, folder=configs_dir)
+    watcher.import_warning.connect(
+        lambda message, names: (messages.append(message), warning_names.extend(names))
+    )
     try:
         names = ['one.txt', 'two.txt', 'three.txt', 'four.txt']
         for name in names:
@@ -273,6 +278,7 @@ def test_invalid_names_are_ignored_until_they_disappear_and_reappear(tmp_path, m
 
         assert len(messages) == 1
         assert 'and 1 more' in messages[0]
+        watcher.acknowledge_import_warning(warning_names)
         assert watcher._ignored_names == set(names)
 
         watcher._scan()

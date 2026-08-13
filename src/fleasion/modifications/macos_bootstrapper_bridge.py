@@ -6,7 +6,7 @@ import threading
 import time
 from pathlib import Path
 
-from PyQt6.QtCore import QFileSystemWatcher, QObject, QTimer
+from PySide6.QtCore import QFileSystemWatcher, QObject, QTimer
 
 from ..utils import log_buffer
 from ..utils.platform_macos import (
@@ -107,10 +107,7 @@ class MacBootstrapperBridge(QObject):
         return directories
 
     def _settings_targets(self) -> list[Path]:
-        return [
-            macos_dir / CLIENT_SETTINGS_REL
-            for macos_dir in self._live_macos_directories()
-        ]
+        return [macos_dir / CLIENT_SETTINGS_REL for macos_dir in self._live_macos_directories()]
 
     def _directories_to_watch(self) -> set[str]:
         candidates: set[Path] = set(self._live_macos_directories())
@@ -178,9 +175,7 @@ class MacBootstrapperBridge(QObject):
                 self._settings_signatures[target] = signature
                 changed = changed or signature is not None
                 launch_rewrite = launch_rewrite or (
-                    was_known
-                    and signature is not None
-                    and not self._internal_reapply_active
+                    was_known and signature is not None and not self._internal_reapply_active
                 )
 
         if changed:
@@ -210,9 +205,7 @@ class MacBootstrapperBridge(QObject):
         """Guard managed Resources while AppleBlox runs its pre-launch mod pass."""
         self._launch_guard_deadline = time.monotonic() + _LAUNCH_GUARD_TIMEOUT_SECONDS
         self._player_seen_at = time.monotonic() if is_roblox_running() else 0.0
-        self._managed_signatures = self._path_signatures(
-            self._manager.managed_resource_paths()
-        )
+        self._managed_signatures = self._path_signatures(self._manager.managed_resource_paths())
         # Two passes avoid accepting an AppleBlox write that races between a
         # Fleasion write and the signature captured at the end of that pass.
         self._managed_reapply_passes = max(self._managed_reapply_passes, 2)
@@ -262,9 +255,7 @@ class MacBootstrapperBridge(QObject):
                         'CustomFFlags',
                         f'Failed to re-seed custom FastFlags after bootstrapper rewrite: {exc}',
                     )
-            self._managed_signatures = self._path_signatures(
-                self._manager.managed_resource_paths()
-            )
+            self._managed_signatures = self._path_signatures(self._manager.managed_resource_paths())
             self._managed_reapply_passes = max(self._managed_reapply_passes - 1, 0)
         finally:
             self._internal_reapply_active = False

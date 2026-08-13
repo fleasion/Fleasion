@@ -4,9 +4,8 @@ import struct
 import sys
 import time
 
-from PyQt6.QtCore import QBuffer, QByteArray, QIODevice, QMimeData
-from PyQt6.QtGui import QImage, QPixmap
-from PyQt6.QtWidgets import QApplication
+from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QMimeData
+from PySide6.QtGui import QGuiApplication, QImage, QPixmap
 
 _BI_BITFIELDS = 3
 _LCS_sRGB = 0x73524742
@@ -121,4 +120,7 @@ def copy_pixmap_to_clipboard(pixmap: QPixmap) -> None:
     mime_data = QMimeData()
     mime_data.setData('image/png', png_data)
     mime_data.setImageData(image)
-    QApplication.clipboard().setMimeData(mime_data)
+    clipboard = QGuiApplication.clipboard()
+    if clipboard is None:
+        raise RuntimeError('The application clipboard is unavailable')
+    clipboard.setMimeData(mime_data)

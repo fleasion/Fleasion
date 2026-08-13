@@ -14,7 +14,6 @@ from fleasion.version import build_artifact_version, macos_bundle_version, read_
 from PyInstaller.utils.hooks import (
     collect_all,
     collect_data_files,
-    collect_submodules,
     copy_metadata,
 )
 
@@ -32,16 +31,38 @@ if TYPE_CHECKING:
 
 
 _QT_HIDDEN_IMPORTS = [
-    'PyQt6.QtCore',
-    'PyQt6.QtGui',
-    'PyQt6.QtNetwork',
-    'PyQt6.QtOpenGL',
-    'PyQt6.QtWidgets',
+    'PySide6.QtCore',
+    'PySide6.QtGui',
+    'PySide6.QtMultimedia',
+    'PySide6.QtNetwork',
+    'PySide6.QtQml',
+    'PySide6.QtQuick',
+    'PySide6.QtQuick3D',
+    'PySide6.QtQuickControls2',
+    'PySide6.QtWidgets',
 ]
 
-_OPENGL_HIDDEN_IMPORTS = [
-    'OpenGL.platform.glx',
-    'OpenGL.platform.egl',
+_QT_QML_MODULES = [
+    'Qt.labs.folderlistmodel',
+    'Qt.labs.platform',
+    'QtQml.Models',
+    'QtQml.WorkerScript',
+    'QtQuick.Controls.Basic',
+    'QtQuick.Controls.FluentWinUI3',
+    'QtQuick.Controls.Fusion',
+    'QtQuick.Controls.impl',
+    'QtQuick.Dialogs',
+    'QtQuick.Layouts',
+    'QtQuick.Templates',
+    'QtQuick.Window',
+]
+
+_QT_QML_ROOT_MODULES = [
+    'QtMultimedia',
+    'QtQml',
+    'QtQuick',
+    'QtQuick.Controls',
+    'QtQuick3D',
 ]
 
 _COMPILED_HIDDEN_IMPORTS = [
@@ -61,7 +82,7 @@ _WINDOWS_HIDDEN_IMPORTS = [
 ]
 
 _BASE_EXCLUDES = [
-    'PySide6',
+    'PyQt6',
     'PyQt5',
     'mitmproxy',  # removed - replaced by proxy/server.py
     'mitmproxy_rs',  # removed
@@ -87,50 +108,44 @@ _NUMPY_UPX_EXCLUDES = [
 ]
 
 _QT_EXCLUDES = [
-    'PyQt6.QAxContainer',
-    'PyQt6.Qsci',
-    'PyQt6.Qt3DAnimation',
-    'PyQt6.Qt3DCore',
-    'PyQt6.Qt3DExtras',
-    'PyQt6.Qt3DInput',
-    'PyQt6.Qt3DLogic',
-    'PyQt6.Qt3DRender',
-    'PyQt6.QtBluetooth',
-    'PyQt6.QtCharts',
-    'PyQt6.QtDataVisualization',
-    'PyQt6.QtDesigner',
-    'PyQt6.QtGraphs',
-    'PyQt6.QtGraphsWidgets',
-    'PyQt6.QtHelp',
-    'PyQt6.QtMultimedia',
-    'PyQt6.QtMultimediaWidgets',
-    'PyQt6.QtNetworkAuth',
-    'PyQt6.QtNfc',
-    'PyQt6.QtPdf',
-    'PyQt6.QtPdfWidgets',
-    'PyQt6.QtPositioning',
-    'PyQt6.QtPrintSupport',
-    'PyQt6.QtQml',
-    'PyQt6.QtQuick',
-    'PyQt6.QtQuick3D',
-    'PyQt6.QtQuickWidgets',
-    'PyQt6.QtRemoteObjects',
-    'PyQt6.QtSensors',
-    'PyQt6.QtSerialPort',
-    'PyQt6.QtSpatialAudio',
-    'PyQt6.QtSql',
-    'PyQt6.QtStateMachine',
-    'PyQt6.QtSvg',
-    'PyQt6.QtSvgWidgets',
-    'PyQt6.QtTest',
-    'PyQt6.QtTextToSpeech',
-    'PyQt6.QtWebChannel',
-    'PyQt6.QtWebEngineCore',
-    'PyQt6.QtWebEngineQuick',
-    'PyQt6.QtWebEngineWidgets',
-    'PyQt6.QtWebSockets',
-    'PyQt6.QtXml',
-    'PyQt6.uic',
+    'PySide6.QAxContainer',
+    'PySide6.Qsci',
+    'PySide6.Qt3DAnimation',
+    'PySide6.Qt3DCore',
+    'PySide6.Qt3DExtras',
+    'PySide6.Qt3DInput',
+    'PySide6.Qt3DLogic',
+    'PySide6.Qt3DRender',
+    'PySide6.QtBluetooth',
+    'PySide6.QtCharts',
+    'PySide6.QtDataVisualization',
+    'PySide6.QtDesigner',
+    'PySide6.QtGraphs',
+    'PySide6.QtGraphsWidgets',
+    'PySide6.QtHelp',
+    'PySide6.QtNetworkAuth',
+    'PySide6.QtNfc',
+    'PySide6.QtPdf',
+    'PySide6.QtPdfWidgets',
+    'PySide6.QtPositioning',
+    'PySide6.QtPrintSupport',
+    'PySide6.QtRemoteObjects',
+    'PySide6.QtSensors',
+    'PySide6.QtSerialPort',
+    'PySide6.QtSpatialAudio',
+    'PySide6.QtSql',
+    'PySide6.QtStateMachine',
+    'PySide6.QtSvg',
+    'PySide6.QtSvgWidgets',
+    'PySide6.QtTest',
+    'PySide6.QtTextToSpeech',
+    'PySide6.QtWebChannel',
+    'PySide6.QtWebEngineCore',
+    'PySide6.QtWebEngineQuick',
+    'PySide6.QtWebEngineWidgets',
+    'PySide6.QtWebSockets',
+    'PySide6.QtXml',
+    'PySide6.uic',
 ]
 
 _UNUSED_QT_RUNTIME_NAMES = {
@@ -146,19 +161,10 @@ _UNUSED_QT_RUNTIME_NAMES = {
 }
 
 _UNUSED_QT_RUNTIME_PATH_PARTS = (
-    '/PyQt6/Qt6/translations/',
-    '\\PyQt6\\Qt6\\translations\\',
-    'PyQt6/Qt6/translations/',
-    'PyQt6\\Qt6\\translations\\',
-)
-
-_HOST_AUDIO_LIB_PREFIXES = (
-    'libportaudio.so',
-    'libasound.so',
-    'libjack.so',
-    'libpulse.so',
-    'libpulsecommon-',
-    'libpipewire-',
+    '/PySide6/Qt/translations/',
+    '\\PySide6\\Qt\\translations\\',
+    'PySide6/Qt/translations/',
+    'PySide6\\Qt\\translations\\',
 )
 
 
@@ -203,7 +209,7 @@ def _entry_path_contains(entry: TocEntry, path_parts: tuple[str, ...]) -> bool:
         normalised = text.replace('\\', '/')
         if any(path_part in text for path_part in path_parts):
             return True
-        if 'PyQt6/Qt6/translations/' in normalised:
+        if 'PySide6/Qt/translations/' in normalised:
             return True
     return False
 
@@ -213,10 +219,6 @@ def _is_unused_qt_runtime_entry(entry: TocEntry) -> bool:
         entry,
         _UNUSED_QT_RUNTIME_NAMES,
     ) or _entry_path_contains(entry, _UNUSED_QT_RUNTIME_PATH_PARTS)
-
-
-def _entry_name_startswith(entry: TocEntry, prefixes: tuple[str, ...]) -> bool:
-    return any(Path(str(part)).name.startswith(prefixes) for part in entry[:2])
 
 
 def _drop_entries(
@@ -258,9 +260,7 @@ if sys.platform == 'win32':
 elif sys.platform.startswith('linux'):
     _exe_name = f'{_exe_name}-Linux'
 _macos_target_arch = (
-    os.environ.get('MACOS_TARGET_ARCH', 'universal2')
-    if sys.platform == 'darwin'
-    else None
+    os.environ.get('MACOS_TARGET_ARCH', 'universal2') if sys.platform == 'darwin' else None
 )
 # Keep UPX's size savings for the Windows one-file build, but leave the native
 # Qt/PyQt graphics stack byte-for-byte as shipped by its wheels. The dashboard
@@ -279,6 +279,7 @@ datas: list[CollectionEntry] = [
     ('src/fleasion/fleasionlogoHR.icns', '.'),
     ('src/fleasion/macos_proxy_helper_daemon.py', '.'),
     ('src/fleasion/cache/tools/animpreview', 'tools/animpreview'),
+    ('src/fleasion/qml', 'fleasion/qml'),
     ('src/fleasion/modifications/bundled/empty.mp3', 'fleasion/modifications/bundled'),
     ('src/fleasion/modifications/bundled/empty.ogg', 'fleasion/modifications/bundled'),
     ('src/fleasion/modifications/bundled/empty.mesh', 'fleasion/modifications/bundled'),
@@ -291,33 +292,45 @@ if sys.platform == 'win32':
 hiddenimports: list[str] = []
 
 # NumPy is imported from feature modules that are not all reached during the
-# launcher import walk.  Collecting the package explicitly also preserves its
+# launcher import walk. Collecting the package explicitly also preserves its
 # native extensions and the external ``numpy.libs`` runtime directory on
-# Windows.  The excludes above remove NumPy's test/build-only modules again.
+# Windows. The excludes above remove NumPy's test/build-only modules again.
 _collect_package('numpy')
 
 # lz4.__init__ imports the platform-specific lz4._version extension during
-# package initialization. Some Windows PyInstaller analyses have omitted that
-# extension even when lz4.block itself was discovered, causing the replacement
-# process used by Env Proxy -> Hosts File mode switches to die before main().
-# Collect the package as a unit so _version and block/frame native modules are
-# guaranteed to travel with the frozen executable.
+# package initialization. Collect the package as a unit so _version and
+# block/frame native modules are guaranteed to travel with the frozen executable.
 _collect_package('lz4')
 
-# Keep Qt collection narrow. collect_all('PyQt6') pulls in QML/QtQuick,
+# Keep Qt collection narrow. collect_all('PySide6') pulls in unrelated modules,
 # Designer, SQL drivers, multimedia, translations, and other modules that the
 # app does not use, which more than doubles the one-file executable size
 hiddenimports.extend(_QT_HIDDEN_IMPORTS)
 
-# PyOpenGL resolves platform backends dynamically. The upstream PyInstaller
-# hook includes GLX on Linux, but Wayland sessions can select EGL instead
-hiddenimports.extend(collect_submodules('OpenGL.arrays'))
-hiddenimports.extend(_OPENGL_HIDDEN_IMPORTS)
+# PySide6's QtQml hook discovers the full QML tree. Keep the modules used by
+# Fleasion and drop unrelated modules after Analysis to control bundle size
+_qt_qml_module_paths = tuple(module_name.replace('.', '/') for module_name in _QT_QML_MODULES)
+_qt_qml_root_paths = tuple(module_name.replace('.', '/') for module_name in _QT_QML_ROOT_MODULES)
 
-# sounddevice/soundfile are single-file modules, but their native runtime
-# libraries live in sibling data packages that PyInstaller does not discover
-for audio_runtime_package in ('_sounddevice_data', '_soundfile_data'):
-    _collect_optional_package(audio_runtime_package)
+
+def _is_unused_qt_qml_entry(entry: TocEntry) -> bool:
+    for part in entry[:2]:
+        normalised = str(part).replace('\\', '/')
+        marker = 'PySide6/Qt/qml/'
+        if marker not in normalised:
+            continue
+        relative = normalised.split(marker, maxsplit=1)[1]
+        if any(
+            relative == module_path or relative.startswith(f'{module_path}/')
+            for module_path in _qt_qml_module_paths
+        ):
+            return False
+        return not any(
+            relative.startswith(f'{module_path}/') and '/' not in relative[len(module_path) + 1 :]
+            for module_path in _qt_qml_root_paths
+        )
+    return False
+
 
 # certifi provides a bundled public CA store for urllib HTTPS fallbacks
 datas.extend(collect_data_files('certifi', includes=['cacert.pem']))
@@ -333,9 +346,7 @@ elif sys.platform == 'darwin':
         if _macos_target_arch in _bundled_macos_helpers
         else list(_bundled_macos_helpers.values())
     )
-    _existing_macos_helpers = [
-        helper for helper in _wanted_macos_helpers if helper.exists()
-    ]
+    _existing_macos_helpers = [helper for helper in _wanted_macos_helpers if helper.exists()]
     if not _existing_macos_helpers and _bundled_legacy_macos_helper.exists():
         _existing_macos_helpers = [_bundled_legacy_macos_helper]
     if not _existing_macos_helpers:
@@ -373,14 +384,8 @@ a = Analysis(
 
 a.binaries = _drop_entries(a.binaries, _is_unused_qt_runtime_entry)
 a.datas = _drop_entries(a.datas, _is_unused_qt_runtime_entry)
-if sys.platform.startswith('linux'):
-    # The sounddevice hook and dependency scan can collect the build machine's
-    # audio backend stack. That can silence playback on other distros, so the
-    # GUI player uses host PortAudio and host audio backend libraries
-    a.binaries = _drop_entries(
-        a.binaries,
-        lambda entry: _entry_name_startswith(entry, _HOST_AUDIO_LIB_PREFIXES),
-    )
+a.binaries = _drop_entries(a.binaries, _is_unused_qt_qml_entry)
+a.datas = _drop_entries(a.datas, _is_unused_qt_qml_entry)
 pyz = PYZ(a.pure)
 
 exe = EXE(
@@ -398,9 +403,13 @@ exe = EXE(
         *_NUMPY_UPX_EXCLUDES,
         'Qt6Core.dll',
         'Qt6Gui.dll',
-        'Qt6Widgets.dll',
         'Qt6Network.dll',
-        'Qt6OpenGL.dll',
+        'Qt6Qml.dll',
+        'Qt6QmlModels.dll',
+        'Qt6Quick.dll',
+        'Qt6QuickControls2.dll',
+        'Qt6QuickTemplates2.dll',
+        'Qt6ShaderTools.dll',
         'Qt6Svg.dll',
         'PyQt6/*.pyd',
         'qwindows.dll',
@@ -448,6 +457,7 @@ if sys.platform == 'darwin':
             'CFBundleShortVersionString': _bundle_version,
             'CFBundleVersion': _bundle_version,
             'LSUIElement': True,
+            'LSMinimumSystemVersion': '12.0',
             'NSHighResolutionCapable': True,
         },
     )

@@ -6,9 +6,9 @@ import io
 import tempfile
 from pathlib import Path
 
-from PyQt6.QtCore import QSize, Qt, QTimer
-from PyQt6.QtGui import QFont, QFontDatabase, QPalette
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtGui import QFont, QFontDatabase, QPalette
+from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,

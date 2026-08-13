@@ -12,9 +12,9 @@ try:
 except ImportError:
     winreg = None
 
-from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QAction, QColor, QDesktopServices, QIcon, QPalette
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QPalette
+from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QHBoxLayout,
@@ -62,7 +62,7 @@ def _is_xfce_desktop() -> bool:
 class _XfceTrayNotification(QWidget):
     """A readable tray notification for XFCE's inconsistent native palette."""
 
-    closed = pyqtSignal(object)
+    closed = Signal(object)
 
     def __init__(self, title: str, message: str, icon: QIcon, dark: bool, timeout: int):
         super().__init__(
@@ -685,7 +685,7 @@ class SystemTray:
         self.always_on_top_action.setChecked(new_state)
 
         # Apply to all open windows (only if they're visible)
-        from PyQt6.QtCore import Qt
+        from PySide6.QtCore import Qt
 
         for window in self.open_windows:
             if window.isVisible():
@@ -737,8 +737,8 @@ class SystemTray:
                     return
             # Revert UI state and show error dialog with detail
             self.run_on_boot_action.setChecked(not checked)
-            from PyQt6.QtCore import Qt
-            from PyQt6.QtWidgets import QApplication, QMessageBox
+            from PySide6.QtCore import Qt
+            from PySide6.QtWidgets import QApplication, QMessageBox
 
             _top = QApplication.topLevelWidgets()
             _parent = next((w for w in _top if w.isVisible()), None)
@@ -774,7 +774,7 @@ class SystemTray:
                     CONFIG_DIR,
                     proxy_mode=self.config_manager.proxy_mode,
                 ):
-                    from PyQt6.QtWidgets import QApplication, QMessageBox
+                    from PySide6.QtWidgets import QApplication, QMessageBox
 
                     _top = QApplication.topLevelWidgets()
                     _parent = next((w for w in _top if w.isVisible()), None)
@@ -786,7 +786,7 @@ class SystemTray:
             self._refresh_settings_tab()
         else:
             self.desktop_integration_action.setChecked(not checked)
-            from PyQt6.QtWidgets import QApplication, QMessageBox
+            from PySide6.QtWidgets import QApplication, QMessageBox
 
             _top = QApplication.topLevelWidgets()
             _parent = next((w for w in _top if w.isVisible()), None)
@@ -869,7 +869,7 @@ class SystemTray:
     def _apply_always_on_top_to_window(self, window):
         """Apply always on top setting to a window."""
         if self.config_manager.always_on_top:
-            from PyQt6.QtCore import Qt
+            from PySide6.QtCore import Qt
 
             flags = window.windowFlags()
             flags |= Qt.WindowType.WindowStaysOnTopHint
@@ -911,7 +911,7 @@ class SystemTray:
             self.dashboard_window.activateWindow()
             return
 
-        from PyQt6.QtCore import Qt
+        from PySide6.QtCore import Qt
 
         window = ReplacerConfigWindow(
             self.config_manager,
@@ -1099,8 +1099,8 @@ class SystemTray:
 
     def _copy_discord(self):
         """Copy Discord invite to clipboard."""
-        from PyQt6.QtCore import Qt
-        from PyQt6.QtWidgets import QApplication, QMessageBox
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QApplication, QMessageBox
 
         QApplication.clipboard().setText(tr('ui.tray.https_value', value0=APP_DISCORD))
 
@@ -1118,7 +1118,7 @@ class SystemTray:
         msg_box.setInformativeText(tr('ui.tray.https_value', value0=APP_DISCORD))
         msg_box.setIcon(QMessageBox.Icon.Information)
         if icon_path := get_icon_path():
-            from PyQt6.QtGui import QIcon
+            from PySide6.QtGui import QIcon
 
             msg_box.setWindowIcon(QIcon(str(icon_path)))
         msg_box.exec()

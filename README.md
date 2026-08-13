@@ -21,9 +21,7 @@ Download the current standalone build from the [Releases](https://github.com/fle
 
 If the `.exe` fails to launch on startup with a `DLL load failed` error, move the executable to a different folder, such as your Documents directory. Windows can sometimes pick up bad DLLs from the same directory as the `.exe`, and placing it elsewhere avoids that conflict. Also clear your windows `%temp%` directory to remove any stale MEI files.
 
-If you're on Linux and having issues with launching the GUI, please install `PortAudio` on your distro. How? Look it up.
-
-Arch-based Linux systems also require Qt's native Widgets/runtime package:
+Arch-based Linux systems may also need Qt's native platform runtime:
 
 ```bash
 sudo pacman -S --needed qt6-base
@@ -31,7 +29,7 @@ sudo pacman -S --needed qt6-base
 
 ## Requirements for Building from Source
 
-- **Windows 10+, macOS 11+, or Linux with the Sober Flatpak**
+- **Windows 10+, macOS 12+, or Linux with Sober Flatpak**
 - [**uv**](https://docs.astral.sh/uv/) package manager
 - **Python 3.14+**
 - Linux desktop installs need `pkexec`/Polkit available (installed by default on Mint and most desktop distributions)
@@ -180,20 +178,12 @@ The cache scraper is a live interception system that captures every asset Roblox
 
 Every asset type Roblox uses &mdash; images, decals, audio, meshes, animations, shirts, pants, hats, faces, accessories (80+ types). Each asset is stored with its type, original URL, content hash, file size, and capture timestamp.
 
-### 3D Viewers & Preview
+### Native Asset Preview
 
-- **Mesh Viewer** (OpenGL-based):
-  - 3D mesh preview with orbit and FPS camera modes
-  - Wireframe and grid visualization (grid on by default for new users)
-  - Optimized rendering with display list caching
-  - Vertex color support
-  - Auto-rotation capability
-
-- **Animation Viewer**:
-  - Live 3D animation playback with R15/R6 rig support
-  - **Freecam movement** for better viewing angles
-  - **Timescale controls** for slowing down or speeding up animations
-  - Grid visualization (on by default)
+- **Qt Quick 3D mesh preview** with orbit controls, lighting, and a reference grid
+- **QtMultimedia audio playback** embedded directly in the cache workspace
+- Image, JSON/text, and hexadecimal previews selected from the cached asset type
+- Preview parsing and conversion stay in Python; QML owns only presentation and interaction
 
 - **Asset Conversion Support**:
   - **Mesh to CSG** &mdash; auto-convert `.mesh` files to `.obj` before injecting as CSG
@@ -240,6 +230,34 @@ On first launch, Fleasion will:
 
 Fleasion can be configured to launch automatically via **Settings -> Run on Boot**. Windows creates a per-user Task Scheduler task with `InteractiveToken` and `LeastPrivilege`; macOS creates an unprivileged per-user LaunchAgent; Linux creates a per-user XDG autostart entry. Env Proxy boot launches do not elevate the GUI. If a user selects Hosts File mode, Fleasion can still request the platform-specific helper or administrator access after launch. **Settings -> Create desktop/start menu integration on boot** adds or refreshes the OS launcher entry on Windows, macOS, and Linux.
 
+## UI Architecture
+
+Fleasion's desktop interface is built with **PySide6, Qt Quick, and QML**. The runtime selects
+Qt's `FluentWinUI3` Controls style. Fleasion-owned buttons, inputs, delegates, dialogs, and sliders
+also use custom QML surfaces, so they keep the same Fluent appearance if Qt has to load its Fusion
+fallback internally. A shared design-token module supplies compact spacing, color, typography,
+high-contrast, reduced-motion, and light/dark behavior consistently across every screen.
+
+The UI boundary is deliberately narrow:
+
+- `qml/` contains the application window, navigation shell, pages, dialogs, reusable controls,
+  and theme tokens. `Main.qml` is bootstrap-only.
+- `qml_api/` contains focused `QObject` controllers and `QAbstractListModel` adapters. QML never
+  mutates manager dictionaries or backend collections directly.
+- Existing config, proxy, cache, modification, conversion, authentication, and platform modules
+  remain Python domain services. Slow network and disk operations run outside the GUI thread and
+  publish their results back through Qt signals.
+- Cached meshes are converted to `QQuick3DGeometry`, cached images use an `image://` provider, and
+  media playback uses QtMultimedia instead of embedding legacy widgets.
+
+For QML development, rebuild registered type metadata and validate the whole scene with:
+
+```bash
+uv run pyside6-project clean
+uv run pyside6-project build
+uv run pyside6-qmllint -I src/fleasion/qml -i Fleasion/qmldir src/fleasion/qml/**/*.qml
+```
+
 ## Project Structure
 
 <details>
@@ -247,7 +265,7 @@ Fleasion can be configured to launch automatically via **Settings -> Run on Boot
 
 ```text
 ├── Fleasion.spec   # PyInstaller specification for the standalone build
-├── launcher.py     # Thin launcher used to start the packaged app
+├── launcher.py     # Thin launcher used to start the QML runtime
 ├── pyproject.toml  # Project metadata and dependency configuration
 ├── README.md       # Project overview, setup, and usage guide
 ├── scripts/
@@ -255,21 +273,31 @@ Fleasion can be configured to launch automatically via **Settings -> Run on Boot
 ├── src/
 │   └── fleasion/
 │       ├── __init__.py                   # Package marker
-│       ├── app.py                        # Application entrypoint, lifecycle, and startup wiring
+│       ├── qml_runtime.py                # PySide6 engine, service wiring, and lifecycle
+│       ├── qml/
+│       │   ├── Main.qml                  # Bootstrap-only QML root
+│       │   ├── Fleasion/
+│       │   │   ├── Theme/                # Fluent-inspired design tokens and motion
+│       │   │   └── Components/           # Reusable cards, tables, inputs, and feedback
+│       │   ├── shell/                     # Window, navigation rail, tray, and status bar
+│       │   ├── screens/                   # Feature pages and page-local components
+│       │   └── dialogs/                   # Application-wide dialogs and coordinators
+│       ├── qml_api/
+│       │   ├── context.py                # Strongly-owned application controller graph
+│       │   ├── models.py                 # QML-safe list and selection models
+│       │   ├── tasks.py                  # GUI-thread-safe asynchronous task state
+│       │   ├── replacer.py               # Replacement profile adapter
+│       │   ├── cache.py                  # Cache browser and preview adapter
+│       │   ├── modifications.py          # Modifications and FastFlag adapter
+│       │   ├── proxy.py                  # Proxy lifecycle and traffic adapter
+│       │   ├── subplaces.py              # Subplace discovery and launch adapter
+│       │   ├── utilities.py              # Accounts, rejoin, identity, and instance tools
+│       │   └── settings.py               # Typed settings and side-effect requests
 │       ├── macos_proxy_helper_daemon.py  # macOS helper daemon for the privileged proxy relay
-│       ├── tray.py                       # System tray / menu bar icon and menu wiring
 │       ├── cache/
-│       │   ├── __init__.py            # Cache package marker
-│       │   ├── animation_viewer.py    # 3D animation preview with R15/R6 rigs
-│       │   ├── audio_player.py        # Audio playback widget
-│       │   ├── cache_json_viewer.py   # JSON viewer for cached asset metadata
 │       │   ├── cache_manager.py       # Asset storage, indexing, and export logic
-│       │   ├── cache_viewer.py        # Cache browsing UI with search and preview
-│       │   ├── font_viewer.py         # Font file preview widget
 │       │   ├── mesh_processing.py     # Mesh format conversion helpers
-│       │   ├── obj_viewer.py          # OpenGL mesh viewer with orbit/FPS camera modes
 │       │   ├── rbxm_parser.py         # Roblox binary model file parser
-│       │   ├── rbxm_preview.py        # Roblox model preview helpers
 │       │   ├── roblox_class_names.py  # Roblox class name lookup table
 │       │   ├── roblox_document.py     # Roblox document helpers for cached content
 │       │   └── tools/
@@ -298,20 +326,6 @@ Fleasion can be configured to launch automatically via **Settings -> Run on Boot
 │       ├── config/
 │       │   ├── __init__.py  # Config package marker
 │       │   └── manager.py   # Settings persistence and config management
-│       ├── gui/
-│       │   ├── __init__.py             # GUI package marker
-│       │   ├── about.py                # About dialog
-│       │   ├── delete_cache.py         # Cache deletion window
-│       │   ├── json_viewer.py          # JSON tree viewer with search and preview
-│       │   ├── logs.py                 # Real-time log viewer
-│       │   ├── modifications_tab.py    # Client modifications tab
-│       │   ├── prejsons_dialog.py      # Community preset browser dialog
-│       │   ├── proxy_gate.py           # Proxy gate / connection flow UI
-│       │   ├── rando_stuff_tab.py      # Misc tab for extra tools and helpers
-│       │   ├── replacer_config.py      # Main Dashboard window with profile management
-│       │   ├── settings_tab.py         # Settings tab mirroring tray menu options
-│       │   ├── subplace_joiner_tab.py  # Subplace browser and joiner tab
-│       │   └── theme.py                # Theme management (System / Light / Dark)
 │       ├── modifications/
 │       │   ├── __init__.py                 # Modifications package marker
 │       │   ├── dds_to_png.py               # DDS texture to PNG conversion
@@ -355,7 +369,7 @@ Fleasion can be configured to launch automatically via **Settings -> Run on Boot
 │           ├── roblox_dirs.py         # Roblox directory discovery helpers
 │           ├── threading.py           # Threading utilities
 │           ├── time_tracker.py        # Session time tracking
-│           ├── updater.py             # Update checker
+│           ├── updater.py             # Non-visual update checker
 │           └── windows.py             # Windows compatibility wrapper
 ├── tests/
 │   ├── test_account_cookie_storage.py  # Cookie storage tests
@@ -369,7 +383,9 @@ Fleasion can be configured to launch automatically via **Settings -> Run on Boot
 │   ├── test_rgba_ktx2.py               # KTX/RGBA conversion tests
 │   ├── test_roblox_browser_auth.py     # Roblox browser auth tests
 │   ├── test_roblox_document.py         # Roblox document tests
-│   ├── test_tray_dashboard.py          # Tray and dashboard integration tests
+│   ├── test_qml_api.py                 # Typed bridge and model tests
+│   ├── test_qml_runtime.py             # Real-engine page and lazy-loader smoke tests
+│   ├── test_qml_workflows.py           # Subplace/account/rejoin workflow tests
 │   ├── test_upstream.py                # Upstream proxy tests
 │   └── test_username_spoofer.py        # Username spoofer tests
 └── build/  # Generated PyInstaller output (not source)

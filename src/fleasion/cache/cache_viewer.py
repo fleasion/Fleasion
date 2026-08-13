@@ -9,8 +9,8 @@ import sys
 import threading
 
 from PIL import Image
-from PyQt6.QtCore import QEvent, Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import (
+from PySide6.QtCore import QEvent, Qt, QThread, QTimer, Signal
+from PySide6.QtGui import (
     QAction,
     QColor,
     QCursor,
@@ -20,7 +20,7 @@ from PyQt6.QtGui import (
     QPalette,
     QPixmap,
 )
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
@@ -52,6 +52,7 @@ from ..utils.roblox_auth import get_roblosecurity as _get_roblosecurity
 from . import mesh_processing
 from .audio_player import AudioPlayerWidget
 from .asset_type_filter import CategoryFilterPopup, asset_type_display_name
+from .asset_metadata import asset_metadata_needs_resolution
 from .cache_json_viewer import CacheJsonViewer
 from .cache_manager import CacheManager
 from .font_viewer import FontViewerWidget
@@ -114,23 +115,6 @@ def _format_table_timestamp(value) -> str:
     return text
 
 
-def _asset_metadata_needs_resolution(info: dict) -> bool:
-    """Return whether an asset still has display metadata to resolve.
-
-    Creator lookup can fail independently of the asset metadata request.  A
-    numeric creator ID is therefore not a completed creator resolution: keep
-    the asset eligible for a later retry until the display name is stored.
-    """
-    if (
-        info.get('resolved_name') is None
-        or info.get('created_at') is None
-        or info.get('updated_at') is None
-    ):
-        return True
-
-    return info.get('creator_id') is not None and info.get('creator_name') is None
-
-
 class NumericSortItem(QTableWidgetItem):
     """Custom table item that sorts based on a numeric value rather than text."""
 
@@ -147,7 +131,7 @@ class NumericSortItem(QTableWidgetItem):
 class SearchWorkerThread(QThread):
     """Worker thread for filtering assets without blocking UI."""
 
-    results_ready = pyqtSignal(list)
+    results_ready = Signal(list)
 
     def __init__(self, assets: list, search_text: str, asset_info: dict, search_columns=None):
         super().__init__()
@@ -253,7 +237,7 @@ class SearchWorkerThread(QThread):
 class TypeProbeWorker(QThread):
     """Resolve corrected asset types from small payload headers off the UI thread."""
 
-    results_ready = pyqtSignal(list)
+    results_ready = Signal(list)
 
     def __init__(self, cache_manager: CacheManager, requests: list[tuple]):
         super().__init__()
@@ -287,8 +271,8 @@ class TypeProbeWorker(QThread):
 class DeleteWorkerThread(QThread):
     """Worker thread for deleting multiple assets without blocking UI."""
 
-    progress = pyqtSignal(int, int)  # (current, total)
-    deletion_complete = pyqtSignal(int, int)  # (deleted_count, failed_count)
+    progress = Signal(int, int)  # (current, total)
+    deletion_complete = Signal(int, int)  # (deleted_count, failed_count)
 
     def __init__(self, assets: list, cache_manager):
         super().__init__()
@@ -318,8 +302,8 @@ class DeleteWorkerThread(QThread):
 class ImageLoaderThread(QThread):
     """Worker thread for loading and processing images."""
 
-    image_ready = pyqtSignal(QPixmap)
-    error = pyqtSignal(str)
+    image_ready = Signal(QPixmap)
+    error = Signal(str)
 
     def __init__(self, data: bytes):
         super().__init__()
@@ -380,8 +364,8 @@ class ImageLoaderThread(QThread):
 class MeshLoaderThread(QThread):
     """Worker thread for loading and converting meshes."""
 
-    mesh_ready = pyqtSignal(str)  # OBJ content
-    error = pyqtSignal(str)
+    mesh_ready = Signal(str)  # OBJ content
+    error = Signal(str)
 
     def __init__(self, data: bytes, asset_id: str):
         super().__init__()
@@ -426,8 +410,8 @@ class MeshLoaderThread(QThread):
 class SolidModelLoaderThread(QThread):
     """Worker thread for loading and converting solid models (CSG)."""
 
-    mesh_ready = pyqtSignal(str)  # OBJ content
-    error = pyqtSignal(str)
+    mesh_ready = Signal(str)  # OBJ content
+    error = Signal(str)
 
     def __init__(self, data: bytes, asset_id: str):
         super().__init__()
@@ -495,8 +479,8 @@ class SolidModelLoaderThread(QThread):
 class AnimationLoaderThread(QThread):
     """Worker thread for loading animation data asynchronously."""
 
-    animation_ready = pyqtSignal(bytes)  # Animation data ready to load into viewer
-    error = pyqtSignal(str)
+    animation_ready = Signal(bytes)  # Animation data ready to load into viewer
+    error = Signal(str)
 
     def __init__(self, data: bytes, asset_id: str):
         super().__init__()
@@ -531,9 +515,9 @@ class AnimationLoaderThread(QThread):
 class TexturePackLoaderThread(QThread):
     """Worker thread for loading texture pack images asynchronously."""
 
-    texture_loaded = pyqtSignal(str, str, str, bytes)  # map_name, map_id, hash, image_data
-    texture_error = pyqtSignal(str, str)  # map_name, error_message
-    finished_loading = pyqtSignal()
+    texture_loaded = Signal(str, str, str, bytes)  # map_name, map_id, hash, image_data
+    texture_error = Signal(str, str)  # map_name, error_message
+    finished_loading = Signal()
 
     def __init__(self, maps: dict, cache_manager: 'CacheManager', cache_scraper=None):
         super().__init__()
@@ -618,10 +602,10 @@ class TexturePackLoaderThread(QThread):
 class AssetLoaderThread(QThread):
     """Worker thread for downloading assets from Roblox API and storing them in the cache."""
 
-    progress = pyqtSignal(int, int)  # (current, total)
-    asset_loaded = pyqtSignal(str, str, int)  # (asset_id, name, asset_type)
-    finished_loading = pyqtSignal(int, int)  # (loaded_count, failed_count)
-    status_message = pyqtSignal(str)  # status text for the dialog
+    progress = Signal(int, int)  # (current, total)
+    asset_loaded = Signal(str, str, int)  # (asset_id, name, asset_type)
+    finished_loading = Signal(int, int)  # (loaded_count, failed_count)
+    status_message = Signal(str)  # status text for the dialog
 
     def __init__(self, asset_ids: list[int], cache_manager: 'CacheManager', cache_scraper=None):
         super().__init__()
@@ -1061,7 +1045,7 @@ _DEFAULT_SEARCH_COL_KEYS = frozenset(k for k, default in _SEARCH_COLUMN_META if 
 class ColumnFilterPopup(QMenu):
     """Simple popup to pick which fields are included in the text search."""
 
-    cols_changed = pyqtSignal(set)
+    cols_changed = Signal(set)
 
     def __init__(self, parent=None, active_cols=None):
         super().__init__(parent)
@@ -1136,7 +1120,7 @@ class ColumnVisibilityMenu(QMenu):
     checkable actions).  The menu only closes when the user clicks outside it.
     """
 
-    visibility_changed = pyqtSignal(dict)  # {col_key: bool}
+    visibility_changed = Signal(dict)  # {col_key: bool}
 
     def __init__(self, column_visibility: dict, parent=None):
         super().__init__(parent)
@@ -1202,7 +1186,7 @@ class CacheViewerTab(QWidget):
     """Tab for viewing and managing cached Roblox assets."""
 
     # Signal to request table sync from background threads (thread-safe)
-    _sync_table_requested = pyqtSignal()
+    _sync_table_requested = Signal()
 
     def __init__(
         self,
@@ -1760,8 +1744,8 @@ class CacheViewerTab(QWidget):
         #   3. Prefer below the button; flip above if it overflows bottom.
         #   4. Clamp X so the right edge stays within the screen.
         #   5. If neither above nor below fits, pin to bottom of screen on same monitor.
-        from PyQt6.QtCore import QPoint
-        from PyQt6.QtGui import QScreen
+        from PySide6.QtCore import QPoint
+        from PySide6.QtGui import QScreen
 
         # Force layout so sizeHint reflects real dimensions
         self.popup.adjustSize()
@@ -1853,8 +1837,8 @@ class CacheViewerTab(QWidget):
             )
 
     def _show_search_col_popup(self):
-        from PyQt6.QtCore import QPoint
-        from PyQt6.QtGui import QScreen
+        from PySide6.QtCore import QPoint
+        from PySide6.QtGui import QScreen
 
         self._col_popup = ColumnFilterPopup(self, self._active_search_cols)
         self._col_popup.cols_changed.connect(self._on_search_cols_changed)
@@ -3165,7 +3149,7 @@ class CacheViewerTab(QWidget):
             visible = []
             hidden = []
             for asset_id, info in self._asset_info.items():
-                if not _asset_metadata_needs_resolution(info):
+                if not asset_metadata_needs_resolution(info):
                     continue
                 row = info.get('row')
                 if row is not None and row < _row_count:
@@ -3705,7 +3689,7 @@ class CacheViewerTab(QWidget):
         # Remove global audio key event filter if installed
         try:
             if self._audio_key_filter_installed:
-                from PyQt6.QtWidgets import QApplication
+                from PySide6.QtWidgets import QApplication
 
                 QApplication.instance().removeEventFilter(self)
                 self._audio_key_filter_installed = False
@@ -4005,7 +3989,7 @@ class CacheViewerTab(QWidget):
         import threading
         from pathlib import Path
 
-        from PyQt6.QtWidgets import QFileDialog
+        from PySide6.QtWidgets import QFileDialog
 
         asset_id = asset.get('id', 'animation')
         default_name = f'{asset_id}_{target.lower()}.rbxmx'
@@ -4141,7 +4125,7 @@ class CacheViewerTab(QWidget):
             return
 
         result = {t: by_type[t] for t in sorted(by_type)}
-        from PyQt6.QtWidgets import QFileDialog
+        from PySide6.QtWidgets import QFileDialog
 
         path, _ = QFileDialog.getSaveFileName(
             self,
@@ -4183,7 +4167,7 @@ class CacheViewerTab(QWidget):
                 values.append(item.text())
 
         if values:
-            from PyQt6.QtWidgets import QApplication
+            from PySide6.QtWidgets import QApplication
 
             clipboard = QApplication.clipboard()
             clipboard.setText('\n'.join(values))
@@ -4195,7 +4179,7 @@ class CacheViewerTab(QWidget):
         Args:
             mode: 'name' to copy creator display name, 'id' to copy creator ID.
         """
-        from PyQt6.QtWidgets import QApplication
+        from PySide6.QtWidgets import QApplication
 
         selected_rows = self.table.selectionModel().selectedRows()
         if not selected_rows:
@@ -4283,8 +4267,8 @@ class CacheViewerTab(QWidget):
         import tempfile
         from pathlib import Path
 
-        from PyQt6.QtCore import QMimeData, QUrl
-        from PyQt6.QtWidgets import QApplication
+        from PySide6.QtCore import QMimeData, QUrl
+        from PySide6.QtWidgets import QApplication
 
         selected_rows = self.table.selectionModel().selectedRows()
         if not selected_rows:
@@ -4702,7 +4686,7 @@ class CacheViewerTab(QWidget):
             )
         else:
             # Fallback: copy to clipboard if not in replacer window
-            from PyQt6.QtWidgets import QApplication
+            from PySide6.QtWidgets import QApplication
 
             clipboard = QApplication.clipboard()
             clipboard.setText(', '.join(asset_ids))
@@ -4740,7 +4724,7 @@ class CacheViewerTab(QWidget):
                 tr('ui.cache.cache_viewer.replace_with_set_to_asset_id_value', value0=asset_id),
             )
         else:
-            from PyQt6.QtWidgets import QApplication
+            from PySide6.QtWidgets import QApplication
 
             QApplication.clipboard().setText(asset_id)
             log_buffer.log(
@@ -4845,7 +4829,7 @@ class CacheViewerTab(QWidget):
             if event.type() == QEvent.Type.KeyPress:
                 # Space toggles play/pause when audio preview is active
                 if event.key() == Qt.Key.Key_Space:
-                    from PyQt6.QtWidgets import QApplication
+                    from PySide6.QtWidgets import QApplication
 
                     focus_widget = QApplication.focusWidget()
                     if isinstance(focus_widget, (QLineEdit, QTextEdit, QPlainTextEdit)):
@@ -4866,7 +4850,7 @@ class CacheViewerTab(QWidget):
         """Remove global audio key event filter if installed."""
         try:
             if self._audio_key_filter_installed:
-                from PyQt6.QtWidgets import QApplication
+                from PySide6.QtWidgets import QApplication
 
                 QApplication.instance().removeEventFilter(self)
                 self._audio_key_filter_installed = False
@@ -5274,7 +5258,7 @@ class CacheViewerTab(QWidget):
 
     def _show_texturepack_context_menu(self, pos, label: QLabel):
         """Show context menu for texturepack image."""
-        from PyQt6.QtWidgets import QApplication
+        from PySide6.QtWidgets import QApplication
 
         map_name = label.property('map_name')
         map_id = label.property('map_id')
@@ -5339,7 +5323,7 @@ class CacheViewerTab(QWidget):
         """Export canonical per-slot KTX2s plus every captured Roblox mip pack."""
         if not asset_id:
             return
-        from PyQt6.QtWidgets import QFileDialog
+        from PySide6.QtWidgets import QFileDialog
 
         slot_dir = self.cache_manager.get_texturepack_slot_dir()
         _SLOT_NAMES = {0: 'Color', 1: 'Normal', 2: 'ORM'}
@@ -5353,7 +5337,7 @@ class CacheViewerTab(QWidget):
                 found.append((pack_src, f'{asset_id}_slot{slot}_{name}_{pack_suffix}'))
 
         if not found:
-            from PyQt6.QtWidgets import QMessageBox
+            from PySide6.QtWidgets import QMessageBox
 
             QMessageBox.information(
                 self,
@@ -5450,7 +5434,7 @@ class CacheViewerTab(QWidget):
 
             # Install global event filter to catch Space for play/pause while audio preview is active
             try:
-                from PyQt6.QtWidgets import QApplication
+                from PySide6.QtWidgets import QApplication
 
                 QApplication.instance().installEventFilter(self)
                 self._audio_key_filter_installed = True
@@ -5734,7 +5718,7 @@ class CacheViewerTab(QWidget):
         dialog.setWindowTitle(tr('ui.cache.cache_viewer.blacklist_ids_2'))
         dialog.resize(400, 350)
         if icon_path := get_icon_path():
-            from PyQt6.QtGui import QIcon
+            from PySide6.QtGui import QIcon
 
             dialog.setWindowIcon(QIcon(str(icon_path)))
 
@@ -5851,7 +5835,7 @@ class CacheViewerTab(QWidget):
         dialog.setWindowTitle(tr('ui.cache.cache_viewer.load_assets'))
         dialog.resize(400, 350)
         if icon_path := get_icon_path():
-            from PyQt6.QtGui import QIcon
+            from PySide6.QtGui import QIcon
 
             dialog.setWindowIcon(QIcon(str(icon_path)))
 

@@ -7,9 +7,9 @@ import json
 from datetime import datetime
 from typing import Optional
 
-from PyQt6.QtCore import QEvent, QObject, Qt, QItemSelectionModel, QTimer
-from PyQt6.QtGui import QBrush, QColor, QKeySequence, QPainter, QShortcut
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import QEvent, QObject, Qt, QItemSelectionModel, QTimer
+from PySide6.QtGui import QBrush, QColor, QKeySequence, QPainter, QShortcut
+from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QDialog,

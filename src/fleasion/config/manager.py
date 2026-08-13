@@ -3,6 +3,7 @@
 import json
 import locale
 import os
+import re
 import stat
 import threading
 from copy import deepcopy
@@ -11,6 +12,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from ..utils.paths import CONFIG_DIR, CONFIG_FILE, CONFIGS_FOLDER
+from ..utils.secure_tokens import decrypt_token, encrypt_token
 
 # Windows forbids these characters in file and folder names.
 _INVALID_FILENAME_CHARS = frozenset('\\/:*?"<>|')
@@ -25,6 +27,21 @@ _FALLBACK_JSON_ENCODINGS = (
     'utf-32-be',
     'cp1252',
 )
+_UPSTREAM_CREDENTIAL_KEY = CONFIG_DIR / 'upstream_credentials.key'
+
+
+def _read_secret(settings: dict[str, Any], key: str) -> str:
+    stored = str(settings.get(key, '') or '')
+    if not stored:
+        return ''
+    if stored.startswith(('dpapi:', 'fernet:')):
+        return decrypt_token(stored, _UPSTREAM_CREDENTIAL_KEY) or ''
+    return stored
+
+
+def _store_secret(settings: dict[str, Any], key: str, value: str) -> None:
+    secret = str(value or '')
+    settings[key] = encrypt_token(secret, _UPSTREAM_CREDENTIAL_KEY) if secret else ''
 
 
 def _normalise_linux_client(value: str | None) -> str:
@@ -256,6 +273,9 @@ DEFAULT_SETTINGS = {
     'last_config': 'Default',
     'theme': 'System',  # System, Light, Dark
     'language': 'en',
+    'accent_color': '#5b4cf0',
+    'high_contrast': False,
+    'reduced_motion': False,
     'audio_volume': 70,  # 0-100
     'always_on_top': False,
     'open_dashboard_on_launch': True,
@@ -371,7 +391,7 @@ def _normalize_custom_fflag_keybinds(value: Any) -> dict[str, dict[str, int | bo
     if not isinstance(value, dict):
         return {}
 
-    normalized: dict[str, dict[str, int | bool]] = {}
+    normalized: dict[str, dict[str, int | bool | str]] = {}
     for raw_name, raw_binding in value.items():
         name = str(raw_name).strip()
         if not name or not isinstance(raw_binding, dict):
@@ -760,6 +780,42 @@ class ConfigManager:
         self._save_settings()
 
     @property
+    def accent_color(self) -> str:
+        """Get the QML accent color."""
+        value = str(self.settings.get('accent_color', '#5b4cf0'))
+        return value if re.fullmatch(r'#[0-9a-fA-F]{6}', value) else '#5b4cf0'
+
+    @accent_color.setter
+    def accent_color(self, value: str) -> None:
+        """Set the QML accent color."""
+        if not re.fullmatch(r'#[0-9a-fA-F]{6}', value):
+            return
+        self.settings['accent_color'] = value.lower()
+        self._save_settings()
+
+    @property
+    def high_contrast(self) -> bool:
+        """Get the high-contrast interface preference."""
+        return bool(self.settings.get('high_contrast', False))
+
+    @high_contrast.setter
+    def high_contrast(self, value: bool) -> None:
+        """Set the high-contrast interface preference."""
+        self.settings['high_contrast'] = bool(value)
+        self._save_settings()
+
+    @property
+    def reduced_motion(self) -> bool:
+        """Get the reduced-motion interface preference."""
+        return bool(self.settings.get('reduced_motion', False))
+
+    @reduced_motion.setter
+    def reduced_motion(self, value: bool) -> None:
+        """Set the reduced-motion interface preference."""
+        self.settings['reduced_motion'] = bool(value)
+        self._save_settings()
+
+    @property
     def audio_volume(self) -> int:
         """Get audio volume setting (0-100)."""
         return self.settings.get('audio_volume', 70)
@@ -1055,11 +1111,11 @@ class ConfigManager:
 
     @property
     def upstream_http_connect_password(self) -> str:
-        return str(self.settings.get('upstream_http_connect_password', '') or '')
+        return _read_secret(self.settings, 'upstream_http_connect_password')
 
     @upstream_http_connect_password.setter
     def upstream_http_connect_password(self, value: str):
-        self.settings['upstream_http_connect_password'] = str(value or '')
+        _store_secret(self.settings, 'upstream_http_connect_password', value)
         self._save_settings()
 
     @property
@@ -1094,11 +1150,11 @@ class ConfigManager:
 
     @property
     def upstream_socks5_password(self) -> str:
-        return str(self.settings.get('upstream_socks5_password', '') or '')
+        return _read_secret(self.settings, 'upstream_socks5_password')
 
     @upstream_socks5_password.setter
     def upstream_socks5_password(self, value: str):
-        self.settings['upstream_socks5_password'] = str(value or '')
+        _store_secret(self.settings, 'upstream_socks5_password', value)
         self._save_settings()
 
     @property
@@ -1675,7 +1731,7 @@ class ConfigManager:
                     removals.update(parsed_ids)
                 elif mode == 'cdn':
                     cdn_url = rule.get('cdn_url')
-                    if cdn_url:
+                    if isinstance(cdn_url, str) and cdn_url:
                         cdn_replacements.update(dict.fromkeys(parsed_ids, cdn_url))
                     else:
                         # Empty CDN URL means remove

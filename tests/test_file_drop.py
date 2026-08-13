@@ -1,4 +1,4 @@
-from PyQt6.QtCore import QDir, QMimeData, QUrl
+from PySide6.QtCore import QDir, QMimeData, QUrl
 
 from fleasion.gui.file_drop import local_file_path_from_mime_data
 from fleasion.gui.modifications_tab import _relative_target_path_for_resource_file

@@ -1,12 +1,12 @@
-"""Theme management for PyQt6."""
+"""Theme management for PySide6."""
 
 import sys
 from dataclasses import dataclass
 from typing import ClassVar
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QColor, QPalette
-from PyQt6.QtWidgets import QApplication
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QPalette
+from PySide6.QtWidgets import QApplication
 
 
 @dataclass(frozen=True)

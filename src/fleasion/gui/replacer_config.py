@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import Union
 from urllib.error import URLError
 
-from PyQt6.QtCore import QByteArray, QRect, QSize, Qt, pyqtSignal
-from PyQt6.QtGui import (
+from PySide6.QtCore import QByteArray, QRect, QSize, Qt, Signal
+from PySide6.QtGui import (
     QBrush,
     QColor,
     QFontMetrics,
@@ -22,7 +22,7 @@ from PyQt6.QtGui import (
     QPen,
     QPixmap,
 )
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QComboBox,
@@ -345,8 +345,8 @@ class ReplacerRulesTree(QTreeWidget):
 class _ConfigMenuRow(QWidget):
     """Full-width row painted with the native QMenu item style."""
 
-    activated = pyqtSignal(str)
-    toggled = pyqtSignal(str, bool)
+    activated = Signal(str)
+    toggled = Signal(str, bool)
 
     def __init__(
         self,
@@ -469,8 +469,8 @@ class _ConfigMenuRow(QWidget):
 class _ScrollableConfigMenu(QMenu):
     """Config picker popup that scrolls when the config list exceeds the screen."""
 
-    item_selected = pyqtSignal(str)
-    item_toggled = pyqtSignal(str, bool)
+    item_selected = Signal(str)
+    item_toggled = Signal(str, bool)
 
     def __init__(self, parent=None, *, checkable: bool = False):
         super().__init__(parent)
@@ -622,7 +622,7 @@ class _ScrollableConfigMenu(QMenu):
         return False
 
     def eventFilter(self, obj, event):
-        from PyQt6.QtCore import QEvent
+        from PySide6.QtCore import QEvent
 
         if event.type() == QEvent.Type.MouseButtonPress:
             self._opening_release_deadline = 0.0
@@ -726,7 +726,7 @@ class ReplacerConfigWindow(QDialog):
     def _set_icon(self):
         """Set window icon."""
         if icon_path := get_icon_path():
-            from PyQt6.QtGui import QIcon
+            from PySide6.QtGui import QIcon
 
             self.setWindowIcon(QIcon(str(icon_path)))
 
@@ -815,7 +815,7 @@ class ReplacerConfigWindow(QDialog):
         self.set_proxy_features_enabled(self.config_manager.proxy_features_enabled)
 
         # Setup keyboard shortcuts
-        from PyQt6.QtGui import QKeySequence, QShortcut
+        from PySide6.QtGui import QKeySequence, QShortcut
 
         undo_shortcut = QShortcut(QKeySequence('Ctrl+Z'), self)
         undo_shortcut.activated.connect(self._do_undo)
@@ -1163,7 +1163,7 @@ class ReplacerConfigWindow(QDialog):
         window.show()
 
     def _show_keybinds_help(self):
-        from PyQt6.QtWidgets import QMessageBox
+        from PySide6.QtWidgets import QMessageBox
 
         msg = QMessageBox(self)
         msg.setWindowTitle(tr('ui.gui.replacer_config.keybinds'))
@@ -2123,7 +2123,7 @@ class ReplacerConfigWindow(QDialog):
         dialog.setWindowTitle(tr('ui.gui.replacer_config.asset_ids_value', value0=name))
         dialog.resize(400, 350)
         if icon_path := get_icon_path():
-            from PyQt6.QtGui import QIcon
+            from PySide6.QtGui import QIcon
 
             dialog.setWindowIcon(QIcon(str(icon_path)))
 
@@ -2169,7 +2169,7 @@ class ReplacerConfigWindow(QDialog):
             )
 
         def copy_all():
-            from PyQt6.QtWidgets import QApplication
+            from PySide6.QtWidgets import QApplication
 
             QApplication.clipboard().setText(', '.join(str(i) for i in ids))
 
@@ -2219,8 +2219,8 @@ class ReplacerConfigWindow(QDialog):
 
             import time as _time
 
-            from PyQt6.QtCore import QPoint
-            from PyQt6.QtWidgets import QApplication
+            from PySide6.QtCore import QPoint
+            from PySide6.QtWidgets import QApplication
 
             from ..cache.asset_type_filter import CategoryFilterPopup
             from ..cache.cache_manager import CacheManager
@@ -2301,7 +2301,7 @@ class ReplacerConfigWindow(QDialog):
         dialog.setWindowTitle(tr('ui.gui.replacer_config.edit_replacement'))
         dialog.resize(400, 100)
         if icon_path := get_icon_path():
-            from PyQt6.QtGui import QIcon
+            from PySide6.QtGui import QIcon
 
             dialog.setWindowIcon(QIcon(str(icon_path)))
 
@@ -2420,8 +2420,8 @@ class ReplacerConfigWindow(QDialog):
 
     def _show_asset_types_popup(self):
         """Show the asset types popup menu."""
-        from PyQt6.QtCore import QPoint
-        from PyQt6.QtWidgets import QApplication
+        from PySide6.QtCore import QPoint
+        from PySide6.QtWidgets import QApplication
 
         from ..cache.cache_manager import CacheManager
 

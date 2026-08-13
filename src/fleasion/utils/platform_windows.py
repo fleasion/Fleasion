@@ -157,7 +157,7 @@ def _gdk_debugger_command_line() -> str:
     if getattr(sys, 'frozen', False):
         command = [sys.executable, _GDK_DEBUGGER_SWITCH]
     else:
-        command = [sys.executable, '-m', 'fleasion.app', _GDK_DEBUGGER_SWITCH]
+        command = [sys.executable, '-m', 'fleasion.qml_runtime', _GDK_DEBUGGER_SWITCH]
     return subprocess.list2cmdline(command)
 
 

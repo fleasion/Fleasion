@@ -16,9 +16,9 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 import requests as _requests
-from PyQt6.QtCore import QEvent, QObject, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QPalette
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
+from PySide6.QtGui import QPalette
+from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
     QFileDialog,
@@ -477,8 +477,8 @@ def _build_auth_ticket_private_server_uri(
 class AddAccountDialog(QDialog):
     """Dialog for pasting a .ROBLOSECURITY cookie and validating it."""
 
-    _validated = pyqtSignal(str, str)  # username, cookie
-    _failed = pyqtSignal(str)  # error message
+    _validated = Signal(str, str)  # username, cookie
+    _failed = Signal(str)  # error message
 
     def __init__(self, parent=None, title: str | None = None):
         super().__init__(parent)
@@ -563,7 +563,7 @@ class AddAccountDialog(QDialog):
 
 
 class _Invoker(QObject):
-    call = pyqtSignal(object)
+    call = Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -582,7 +582,7 @@ class _Invoker(QObject):
 class RandoStuffTab(QWidget):
     """Rando Stuff tab – proxy interceptor + UI combined."""
 
-    selected_account_changed = pyqtSignal(str)
+    selected_account_changed = Signal(str)
 
     _WANTED_ENDPOINTS = (
         '/v1/join-game',
@@ -1351,7 +1351,7 @@ class RandoStuffTab(QWidget):
         dialog.setWindowTitle(tr('ui.gui.rando_stuff_tab.blacklist_subplace'))
         dialog.resize(400, 350)
         if icon_path := get_icon_path():
-            from PyQt6.QtGui import QIcon
+            from PySide6.QtGui import QIcon
 
             dialog.setWindowIcon(QIcon(str(icon_path)))
 

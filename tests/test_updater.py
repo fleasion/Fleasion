@@ -8,6 +8,7 @@ from fleasion.utils import update_resolver
 from fleasion.utils.metadata import APP_REPO
 from fleasion.utils.update_resolver import ReleaseCandidate, UpdateResolver
 from fleasion.utils.updater import QtUpdateChecker
+from fleasion.qml_api.update import UpdateApi
 
 _REPOSITORY_URL = 'https://github.com/fleasion/Fleasion'
 _LATEST_RELEASE_API = 'https://api.github.com/repos/fleasion/Fleasion/releases/latest'
@@ -209,3 +210,41 @@ def test_qt_checker_injects_repository_metadata_into_default_resolver() -> None:
     checker = QtUpdateChecker()
 
     assert checker.resolver.repository_url == APP_REPO
+
+
+def test_qml_update_bridge_exposes_release_without_owning_widgets() -> None:
+    controller = UpdateApi(_resolver('2.4.0'))  # pyright: ignore[reportCallIssue]
+    available: list[None] = []
+    controller.updateAvailable.connect(lambda: available.append(None))
+    try:
+        controller._apply_result(
+            ReleaseCandidate(
+                version=Version('2.4.1'),
+                tag='v2.4.1',
+                html_url='https://example.invalid/v2.4.1',
+            )
+        )
+
+        assert controller.hasUpdate
+        assert controller.latestVersion == '2.4.1'
+        assert controller.releaseUrl == 'https://example.invalid/v2.4.1'
+        assert available == [None]
+    finally:
+        controller.shutdown()
+
+
+def test_qml_update_bridge_reports_current_release_after_manual_check() -> None:
+    controller = UpdateApi(_resolver('2.4.0'))  # pyright: ignore[reportCallIssue]
+    notifications: list[tuple[str, str, str]] = []
+    controller.notificationRequested.connect(lambda *values: notifications.append(values))
+    try:
+        controller._manual_check = True
+        controller._apply_result(None)
+
+        assert not controller.hasUpdate
+        assert controller.statusText == 'Fleasion 2.4.0 is up to date.'
+        assert notifications == [
+            ('No update available', 'Fleasion 2.4.0 is up to date.', 'success')
+        ]
+    finally:
+        controller.shutdown()

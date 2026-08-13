@@ -39,6 +39,30 @@ def _raise_permission_denied(_entry):
     raise PermissionError("Permission denied")
 
 
+def test_cdn_modification_download_uses_hard_size_cap(tmp_path, monkeypatch):
+    cache_dir = tmp_path / 'ModCache'
+    calls = []
+
+    def fake_http_get(url, timeout, headers, *, max_bytes):
+        calls.append((url, timeout, headers, max_bytes))
+        return b'modification'
+
+    monkeypatch.setattr(modifications_manager, 'MOD_CACHE_DIR', cache_dir)
+    monkeypatch.setattr('fleasion.utils.http.http_get', fake_http_get)
+    manager = ModificationManager.__new__(ModificationManager)
+
+    assert manager._fetch_cdn_url('https://cdn.example/cursor.png') == b'modification'
+    assert calls == [
+        (
+            'https://cdn.example/cursor.png',
+            30,
+            {'User-Agent': 'Mozilla/5.0'},
+            modifications_manager.MODIFICATION_DOWNLOAD_MAX_BYTES,
+        )
+    ]
+    assert next(cache_dir.iterdir()).read_bytes() == b'modification'
+
+
 def test_normalise_target_path_converts_windows_separators_on_posix():
     assert normalise_target_path(r"content\textures\MouseLockedCursor.png").as_posix() == (
         "content/textures/MouseLockedCursor.png"
@@ -125,6 +149,61 @@ def test_stash_write_records_permission_denials_and_continues(tmp_path, monkeypa
 
     assert manager.take_permission_denied_dirs() == [denied_dir.resolve()]
     assert (writable_dir / 'content' / 'example.bin').read_bytes() == b'modified'
+
+
+def test_stale_background_apply_cannot_write_after_restore_generation_changes(tmp_path):
+    roblox_dir = tmp_path / 'Roblox'
+    target = roblox_dir / 'content' / 'example.bin'
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b'original')
+    entry = {'_apply_gen': 2}
+
+    manager = ModificationManager.__new__(ModificationManager)
+    manager._roblox_dirs = [roblox_dir]
+    manager._stash_dir = tmp_path / 'stash'
+    manager._fs_lock = threading.RLock()
+
+    written = manager._stash_and_write(
+        'content/example.bin',
+        b'stale modification',
+        entry=entry,
+        apply_gen=1,
+    )
+
+    assert not written
+    assert target.read_bytes() == b'original'
+
+
+def test_reapply_all_stops_before_next_entry_after_restore_generation_changes():
+    first = {
+        'id': 'first',
+        'source_type': 'local_file',
+        'source_value': 'first.bin',
+    }
+    second = {
+        'id': 'second',
+        'source_type': 'local_file',
+        'source_value': 'second.bin',
+    }
+    manager = ModificationManager.__new__(ModificationManager)
+    manager._fs_lock = threading.RLock()
+    manager._bulk_apply_gen = 0
+    manager._data = {
+        'entries': [first, second],
+        'fast_flags_enabled': False,
+        'fast_flags': {},
+    }
+    applied: list[str] = []
+
+    def apply_entry(entry):
+        applied.append(entry['id'])
+        manager._bulk_apply_gen += 1
+
+    manager._process_and_apply_entry = apply_entry
+
+    manager.reapply_all()
+
+    assert applied == ['first']
 
 
 def test_read_only_guard_protects_managed_files_and_clears_on_close(tmp_path):

@@ -1,0 +1,4 @@
+module Fleasion.Theme
+singleton Theme 1.0 Theme.qml
+singleton TypeScale 1.0 TypeScale.qml
+singleton Motion 1.0 Motion.qml
