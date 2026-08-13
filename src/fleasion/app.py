@@ -60,6 +60,8 @@ _SINGLE_INSTANCE_KEY = 'FleasionSingleInstance'
 _SINGLE_INSTANCE_CONTROL_SERVER = 'FleasionSingleInstanceControl'
 _WINDOWS_REPAIR_RESULT_TIMEOUT_SECONDS = 120.0
 _WINDOWS_FIREWALL_REPAIR_RESULT_TIMEOUT_SECONDS = 120.0
+_WINDOWS_HOSTS_CLEANUP_TIMEOUT_SECONDS = 15 * 60
+_WINDOWS_WAIT_TIMEOUT = 0x102
 _HOSTS_CLEANUP_NOT_ADMIN_EXIT = 10
 _HOSTS_CLEANUP_WRITE_FAILED_EXIT = 11
 _HOSTS_CLEANUP_UNEXPECTED_EXIT = 12
@@ -296,12 +298,20 @@ def _run_privileged_hosts_cleanup(parent=None) -> bool:
         extra_args='--cleanup-hosts',
         parent_hwnd=_window_handle(parent),
         wait_for_completion=True,
+        wait_timeout_ms=int(_WINDOWS_HOSTS_CLEANUP_TIMEOUT_SECONDS * 1000),
         completion=completion,
     )
     if completed:
         return True
 
     exit_code = completion.get('exit_code')
+    if completion.get('wait_result') == _WINDOWS_WAIT_TIMEOUT:
+        log_buffer.log(
+            'Hosts',
+            'Privileged cleanup child is still running after the extended wait; '
+            'the hosts file may still be under repair',
+        )
+        return False
     reasons = {
         _HOSTS_CLEANUP_NOT_ADMIN_EXIT: 'the child did not receive an administrator token',
         _HOSTS_CLEANUP_WRITE_FAILED_EXIT: 'Windows or security software blocked the hosts write',
@@ -371,7 +381,8 @@ def _show_oversized_hosts_file_dialog(details: dict, on_repaired=None) -> bool:
         msg.setText('Waiting for administrator permission...')
         msg.setInformativeText(
             'Approve the operating-system permission prompt. Fleasion will make a backup before '
-            'installing the repaired hosts file.'
+            'installing the repaired hosts file. A multi-gigabyte hosts file may take several '
+            'minutes to process; keep this window open while cleanup runs.'
         )
         msg.show()
         msg.raise_()
@@ -981,6 +992,7 @@ def _relaunch_as_admin(
     parent_hwnd: int | None = None,
     *,
     wait_for_completion: bool = False,
+    wait_timeout_ms: int = 120_000,
     completion: dict[str, int | bool] | None = None,
 ) -> bool:
     """Silently attempt to relaunch elevated via the platform prompt.
@@ -1181,9 +1193,11 @@ def _relaunch_as_admin(
     kernel32.GetExitCodeProcess.restype = ctypes.wintypes.BOOL
     kernel32.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
     kernel32.CloseHandle.restype = ctypes.wintypes.BOOL
-    wait_result = kernel32.WaitForSingleObject(sei.hProcess, 120_000)
+    wait_result = kernel32.WaitForSingleObject(sei.hProcess, wait_timeout_ms)
     exit_code = ctypes.wintypes.DWORD()
-    exit_code_read = bool(kernel32.GetExitCodeProcess(sei.hProcess, ctypes.byref(exit_code)))
+    exit_code_read = False
+    if wait_result != _WINDOWS_WAIT_TIMEOUT:
+        exit_code_read = bool(kernel32.GetExitCodeProcess(sei.hProcess, ctypes.byref(exit_code)))
     completed = wait_result == 0 and exit_code_read and exit_code.value == 0
     kernel32.CloseHandle(sei.hProcess)
     if completion is not None:
@@ -1191,15 +1205,22 @@ def _relaunch_as_admin(
             {
                 'wait_result': wait_result,
                 'exit_code_read': exit_code_read,
-                'exit_code': exit_code.value,
+                'exit_code': exit_code.value if exit_code_read else None,
             }
         )
     if not completed:
-        log_buffer.log(
-            'UAC',
-            f'Elevated child did not complete successfully (wait={wait_result}, '
-            f'exit={exit_code.value})',
-        )
+        if wait_result == _WINDOWS_WAIT_TIMEOUT:
+            log_buffer.log(
+                'UAC',
+                f'Elevated child is still running after {wait_timeout_ms / 1000:.0f}s; '
+                'the synchronous wait timed out',
+            )
+        else:
+            log_buffer.log(
+                'UAC',
+                f'Elevated child did not complete successfully (wait={wait_result}, '
+                f'exit={exit_code.value if exit_code_read else "unknown"})',
+            )
     return completed
 
 

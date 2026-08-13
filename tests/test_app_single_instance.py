@@ -933,6 +933,7 @@ def test_privileged_hosts_cleanup_waits_for_windows_elevated_child(monkeypatch):
             'extra_args': '--cleanup-hosts',
             'parent_hwnd': 123,
             'wait_for_completion': True,
+            'wait_timeout_ms': 15 * 60 * 1000,
         }
     ]
 
@@ -952,6 +953,24 @@ def test_privileged_hosts_cleanup_logs_known_elevated_child_failure(monkeypatch)
 
     assert _run_privileged_hosts_cleanup() is False
     assert any('did not receive an administrator token' in message for _category, message in logs)
+
+
+def test_privileged_hosts_cleanup_classifies_still_active_timeout(monkeypatch):
+    logs = []
+    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(app_module, '_is_admin', lambda: False)
+    monkeypatch.setattr(app_module, '_window_handle', lambda _widget: None)
+
+    def _relaunch(**kwargs):
+        kwargs['completion'].update({'wait_result': 258, 'exit_code_read': False, 'exit_code': None})
+        return False
+
+    monkeypatch.setattr(app_module, '_relaunch_as_admin', _relaunch)
+    monkeypatch.setattr(app_module.log_buffer, 'log', lambda *args: logs.append(args))
+
+    assert _run_privileged_hosts_cleanup() is False
+    assert any('still running' in message for _category, message in logs)
+    assert not any('exit=259' in message for _category, message in logs)
 
 
 def test_elevated_hosts_cleanup_reports_write_failure(monkeypatch):
