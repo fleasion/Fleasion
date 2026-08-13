@@ -66,6 +66,7 @@ def _kernel32():
     kernel32.CloseHandle.restype = wintypes.BOOL
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.GetCurrentProcess.argtypes = []
     return kernel32
 
 
@@ -177,10 +178,21 @@ def _process_cpu_seconds(process_handle: Any) -> float | None:
     return _filetime_seconds(kernel_time) + _filetime_seconds(user_time)
 
 
-def _process_memory(process_handle: Any) -> dict[str, int] | None:
-    """Read working-set/private-memory counters for the current process."""
+def _psapi():
+    """Return psapi with its process-memory API declared safely."""
     psapi = ctypes.windll.psapi
     psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
+    psapi.GetProcessMemoryInfo.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(_ProcessMemoryCountersEx),
+        wintypes.DWORD,
+    ]
+    return psapi
+
+
+def _process_memory(process_handle: Any) -> dict[str, int] | None:
+    """Read working-set/private-memory counters for the current process."""
+    psapi = _psapi()
     counters = _ProcessMemoryCountersEx()
     counters.cb = ctypes.sizeof(_ProcessMemoryCountersEx)
     if not psapi.GetProcessMemoryInfo(
@@ -332,15 +344,25 @@ class MicroProfiler:
             reverse=True,
         )
 
-        return {
+        memory_error = None
+        try:
+            memory = _process_memory(self._process_handle)
+        except Exception as exc:  # Keep CPU/thread samples if memory inspection fails.
+            memory = None
+            memory_error = f'{type(exc).__name__}: {exc}'
+
+        result = {
             'record_type': 'sample',
             'timestamp': time.time(),
             'monotonic_seconds': now,
             'process_cpu_percent_one_core': process_cpu_percent,
             'thread_count': len(thread_records),
-            'memory': _process_memory(self._process_handle),
+            'memory': memory,
             'threads': thread_records,
         }
+        if memory_error is not None:
+            result['memory_error'] = memory_error
+        return result
 
 
 def _output_path() -> Path:
