@@ -31,10 +31,40 @@ _THREAD_QUERY_INFORMATION = 0x0040
 
 
 def _kernel32():
-    """Return kernel32 with handle-returning APIs declared as pointer-sized."""
+    """Return kernel32 with pointer-sized handles and explicit signatures."""
     kernel32 = ctypes.windll.kernel32
     kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    kernel32.Thread32First.restype = wintypes.BOOL
+    kernel32.Thread32First.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(_ThreadEntry32),
+    ]
+    kernel32.Thread32Next.restype = wintypes.BOOL
+    kernel32.Thread32Next.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(_ThreadEntry32),
+    ]
     kernel32.OpenThread.restype = wintypes.HANDLE
+    kernel32.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.GetThreadTimes.restype = wintypes.BOOL
+    kernel32.GetThreadTimes.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(_FileTime),
+        ctypes.POINTER(_FileTime),
+        ctypes.POINTER(_FileTime),
+        ctypes.POINTER(_FileTime),
+    ]
+    kernel32.GetProcessTimes.restype = wintypes.BOOL
+    kernel32.GetProcessTimes.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(_FileTime),
+        ctypes.POINTER(_FileTime),
+        ctypes.POINTER(_FileTime),
+        ctypes.POINTER(_FileTime),
+    ]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel32.GetCurrentProcess.restype = wintypes.HANDLE
     return kernel32
 
