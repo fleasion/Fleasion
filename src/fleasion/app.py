@@ -256,11 +256,17 @@ def _cleanup_hosts_once() -> int:
         _cancel_hosts_cleanup_on_reboot,
         _flush_dns,
         _remove_hosts_entries,
+        hosts_file_is_oversized,
+        repair_hosts_file,
     )
 
     error_details: dict = {}
     try:
-        if not _remove_hosts_entries(set(INTERCEPT_HOSTS), error_details=error_details):
+        if hosts_file_is_oversized(error_details):
+            cleaned = repair_hosts_file(set(INTERCEPT_HOSTS), error_details=error_details)
+        else:
+            cleaned = _remove_hosts_entries(set(INTERCEPT_HOSTS), error_details=error_details)
+        if not cleaned:
             detail = error_details.get('error') or 'unknown hosts write failure'
             log_buffer.log(
                 'Hosts', f'Elevated hosts cleanup child could not update the hosts file: {detail}'
@@ -311,12 +317,135 @@ def _run_privileged_hosts_cleanup(parent=None) -> bool:
     return False
 
 
-def _show_env_proxy_stale_hosts_dialog() -> None:
-    """Offer a one-shot privileged repair for stale Env Proxy hosts entries."""
+def _show_oversized_hosts_file_dialog(details: dict, on_repaired=None) -> bool:
+    """Offer a streaming repair for an abnormally large system hosts file."""
+    import os
+
+    hosts_path = str(details.get('hosts_path') or r'C:\Windows\System32\drivers\etc\hosts')
+    hosts_directory = str(
+        details.get('hosts_directory') or os.path.dirname(hosts_path) or r'C:\Windows\System32\drivers\etc'
+    )
+    size = int(details.get('hosts_size_bytes') or 0)
+    limit = int(details.get('hosts_size_limit_bytes') or 512 * 1024)
+    size_mib = size / (1024 * 1024)
+    limit_kib = limit / 1024
+    parent = _visible_parent_widget()
+
+    while True:
+        msg = QMessageBox(parent)
+        msg.setWindowTitle('Fleasion - Hosts File Is Abnormally Large')
+        msg.setIcon(QMessageBox.Icon.Warning)
+        msg.setText(
+            f'Your system hosts file is abnormally large ({size_mib:.1f} MiB).'
+        )
+        msg.setInformativeText(
+            f'Fleasion will not load hosts files larger than {limit_kib:.0f} KiB because a '
+            'damaged file can consume all available memory and CPU. This can happen when '
+            'another program repeatedly appends blank lines.\n\n'
+            'Attempt Safe Repair creates a timestamped backup, removes blank lines and '
+            'Fleasion-owned entries, and preserves every other non-empty line byte-for-byte. '
+            'This is required even in Env Proxy mode so stale Fleasion redirects cannot remain '
+            'active for other programs.'
+        )
+        repair_button = msg.addButton(
+            'Attempt Safe Repair (Recommended)', QMessageBox.ButtonRole.AcceptRole
+        )
+        open_dir_button = msg.addButton('Open Hosts Directory', QMessageBox.ButtonRole.ActionRole)
+        cancel_button = msg.addButton('Cancel', QMessageBox.ButtonRole.RejectRole)
+        msg.setDefaultButton(repair_button)
+        msg.exec()
+
+        if msg.clickedButton() == open_dir_button:
+            try:
+                open_folder(Path(hosts_directory))
+            except OSError as exc:
+                log_buffer.log('Hosts', f'Could not open hosts directory: {exc}')
+            continue
+        if msg.clickedButton() != repair_button:
+            log_buffer.log('Hosts', 'User declined oversized hosts file repair')
+            return False
+
+        repair_button.setEnabled(False)
+        open_dir_button.setEnabled(False)
+        cancel_button.setEnabled(False)
+        msg.setText('Waiting for administrator permission...')
+        msg.setInformativeText(
+            'Approve the operating-system permission prompt. Fleasion will make a backup before '
+            'installing the repaired hosts file.'
+        )
+        msg.show()
+        msg.raise_()
+        msg.activateWindow()
+        QApplication.processEvents()
+        try:
+            repaired = _run_privileged_hosts_cleanup(msg)
+        finally:
+            msg.hide()
+
+        if repaired:
+            from .proxy.master import has_stale_hosts_entries, hosts_file_size
+
+            repaired_size = hosts_file_size()
+            if repaired_size is not None and repaired_size <= limit and not has_stale_hosts_entries():
+                log_buffer.log('Hosts', 'Verified oversized hosts file was repaired successfully')
+                if on_repaired is not None:
+                    on_repaired()
+                return True
+
+        failure_details = dict(details)
+        failure_details.update(
+            {
+                'error_code': 'hosts_file_repair_failed',
+                'error': (
+                    'Fleasion could not reduce the hosts file to a safe size. Rename or delete '
+                    'the hosts file manually, then restart Fleasion.'
+                ),
+            }
+        )
+        log_buffer.log('Hosts', 'Safe repair did not produce a usable hosts file')
+        _show_hosts_write_exhausted_dialog(failure_details)
+        return False
+
+
+def _show_hosts_capacity_dialog(details: dict) -> None:
+    """Explain that a normal-sized hosts file cannot fit new mappings safely."""
+    import os
+
+    hosts_path = str(details.get('hosts_path') or r'C:\Windows\System32\drivers\etc\hosts')
+    hosts_directory = str(
+        details.get('hosts_directory')
+        or os.path.dirname(hosts_path)
+        or r'C:\Windows\System32\drivers\etc'
+    )
+    limit = int(details.get('hosts_size_limit_bytes') or 512 * 1024)
+    candidate_size = int(details.get('hosts_size_bytes') or 0)
+    msg = QMessageBox(_visible_parent_widget())
+    msg.setWindowTitle('Fleasion - Hosts File Near Safety Limit')
+    msg.setIcon(QMessageBox.Icon.Warning)
+    msg.setText('Fleasion did not modify your hosts file.')
+    msg.setInformativeText(
+        f'Adding Fleasion entries would make it {candidate_size / (1024 * 1024):.1f} MiB, '
+        f'which exceeds Fleasion’s {limit / 1024:.0f} KiB safety limit. No mappings were '
+        'added. Remove obsolete hosts-file lines or rename the file, then restart Fleasion.'
+        f'\n\nHosts file path:\n{hosts_path}'
+    )
+    open_dir_button = msg.addButton('Open Hosts Directory', QMessageBox.ButtonRole.ActionRole)
+    msg.addButton(QMessageBox.StandardButton.Ok)
+    msg.exec()
+    if msg.clickedButton() == open_dir_button:
+        try:
+            open_folder(Path(hosts_directory))
+        except OSError as exc:
+            log_buffer.log('Hosts', f'Could not open hosts directory: {exc}')
+
+
+def _show_env_proxy_stale_hosts_dialog() -> bool:
+    """Offer a one-shot privileged repair for oversized or stale Env Proxy hosts entries."""
     from .proxy.master import (
         INTERCEPT_HOSTS,
         _other_proxy_owner_alive,
         has_stale_hosts_entries,
+        hosts_file_is_oversized,
     )
 
     if _other_proxy_owner_alive():
@@ -324,9 +453,12 @@ def _show_env_proxy_stale_hosts_dialog() -> None:
             'Hosts',
             'Skipped Env Proxy stale hosts prompt because another proxy owns the hosts file',
         )
-        return
+        return True
+    oversized_details: dict = {}
+    if hosts_file_is_oversized(oversized_details):
+        return _show_oversized_hosts_file_dialog(oversized_details)
     if not has_stale_hosts_entries(set(INTERCEPT_HOSTS)):
-        return
+        return True
 
     parent = _visible_parent_widget()
     msg = QMessageBox(parent)
@@ -349,7 +481,7 @@ def _show_env_proxy_stale_hosts_dialog() -> None:
 
     if msg.clickedButton() != fix_button:
         log_buffer.log('Hosts', 'User deferred privileged Env Proxy stale hosts cleanup')
-        return
+        return True
 
     fix_button.setEnabled(False)
     continue_button.setEnabled(False)
@@ -377,7 +509,7 @@ def _show_env_proxy_stale_hosts_dialog() -> None:
     if repaired:
         if not has_stale_hosts_entries(set(INTERCEPT_HOSTS)):
             log_buffer.log('Hosts', 'Verified stale Env Proxy hosts entries were removed')
-            return
+            return True
         detail = 'The administrator child completed, but stale Fleasion entries are still present.'
     else:
         detail = 'Fleasion could not obtain administrator permission or the cleanup child failed.'
@@ -388,6 +520,7 @@ def _show_env_proxy_stale_hosts_dialog() -> None:
         'Fleasion - Hosts File Still Needs Repair',
         f'{detail}\n\nEnv Proxy may start, but the stale entries can still affect other applications.',
     )
+    return True
 
 
 def _should_sync_autostart_on_launch(run_on_boot: bool) -> bool:
@@ -2372,6 +2505,10 @@ class _ProxyErrorInvoker(QObject):
             _show_proxy_bind_error_dialog(details)
         elif code == 'hosts_write_exhausted':
             _show_hosts_write_exhausted_dialog(details)
+        elif code == 'hosts_entries_would_exceed_limit':
+            _show_hosts_capacity_dialog(details)
+        elif code in ('hosts_file_too_large', 'hosts_file_repair_failed'):
+            _show_oversized_hosts_file_dialog(details, on_repaired=self.retry_proxy.emit)
         elif code == 'linux_hosts_read_only':
             _show_linux_hosts_read_only_dialog(details)
         elif code == 'macos_ca_patch_failed':
@@ -3409,11 +3546,8 @@ def main():
         )
         sys.exit(1)
 
-    # TEMPORARY DIAGNOSTIC BUILD: keep this automatic so the affected user
-    # does not need to edit a shortcut or launch Fleasion from a terminal.
-    # Before release, comment this line and uncomment the launch-argument gate:
-    _microprofiler = start_microprofiler(enabled=True)
-    # _microprofiler = start_microprofiler(enabled=_args.microprofile)
+    # The profiler is opt-in so normal releases do not collect diagnostics.
+    _microprofiler = start_microprofiler(enabled=_args.microprofile)
     if _microprofiler is not None:
         log_buffer.log('MicroProfiler', f'Writing diagnostics to {_microprofiler.output_path}')
 
@@ -3658,6 +3792,9 @@ def main():
         if code not in (
             'port_bind_failed',
             'hosts_write_exhausted',
+            'hosts_entries_would_exceed_limit',
+            'hosts_file_too_large',
+            'hosts_file_repair_failed',
             'macos_ca_patch_failed',
             'roblox_ca_patch_failed',
             'macos_ca_trust_failed',
@@ -3767,7 +3904,12 @@ def main():
 
     # Start proxy only if enabled and we have admin rights
     if start_proxy and config_manager.proxy_features_enabled and config_manager.proxy_mode == 'env':
-        _show_env_proxy_stale_hosts_dialog()
+        if not _show_env_proxy_stale_hosts_dialog():
+            start_proxy = False
+            log_buffer.log(
+                'Proxy',
+                'Proxy startup cancelled because the oversized hosts file was not repaired',
+            )
 
     if start_proxy:
         proxy_master.start()

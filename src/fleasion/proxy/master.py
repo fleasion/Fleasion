@@ -121,6 +121,7 @@ else:
     )
     _PLATFORM_TEMP_DIR = Path(os.environ.get('TEMP', r'C:\Windows\Temp'))
 _HOSTS_MARKER = '# Fleasion proxy entry'
+_HOSTS_FILE_REPAIR_THRESHOLD_BYTES = 512 * 1024
 SOBER_CUSTOM_FFLAG_ROUTE_ARM_DELAY_SECONDS = 30.0
 _SOBER_CUSTOM_FFLAG_POLL_SECONDS = 0.25
 
@@ -1021,6 +1022,12 @@ def _schedule_hosts_cleanup_on_reboot() -> None:
     """
     if not IS_WINDOWS:
         return
+    if hosts_file_is_oversized():
+        log_buffer.log(
+            'Hosts',
+            'Skipped reboot hosts cleanup because the hosts file is too large to read safely',
+        )
+        return
     try:
         # Build a clean copy of the current hosts file (strip Fleasion lines)
         try:
@@ -1509,6 +1516,45 @@ def _record_hosts_error(error_details: Optional[dict], exc_or_text) -> None:
     )
 
 
+def hosts_file_size() -> int | None:
+    """Return the system hosts-file size without opening or reading it."""
+    try:
+        return HOSTS_FILE.stat().st_size
+    except FileNotFoundError:
+        return 0
+    except OSError:
+        return None
+
+
+def _record_oversized_hosts_error(error_details: Optional[dict], size: int) -> None:
+    if error_details is None:
+        return
+    error_details.clear()
+    error_details.update(
+        {
+            'error_code': 'hosts_file_too_large',
+            'hosts_path': str(HOSTS_FILE),
+            'hosts_directory': str(HOSTS_FILE.parent),
+            'hosts_size_bytes': size,
+            'hosts_size_limit_bytes': _HOSTS_FILE_REPAIR_THRESHOLD_BYTES,
+            'error': (
+                f'Hosts file is {size} bytes; Fleasion will not read files larger than '
+                f'{_HOSTS_FILE_REPAIR_THRESHOLD_BYTES} bytes without repair.'
+            ),
+            'notify_user': True,
+        }
+    )
+
+
+def hosts_file_is_oversized(error_details: Optional[dict] = None) -> bool:
+    """Return whether the hosts file is too large for whole-file operations."""
+    size = hosts_file_size()
+    if size is None or size <= _HOSTS_FILE_REPAIR_THRESHOLD_BYTES:
+        return False
+    _record_oversized_hosts_error(error_details, size)
+    return True
+
+
 def _log_hosts_conflicts(conflicts: list[tuple[str, dict]]) -> None:
     for host, entry in conflicts:
         log_buffer.log(
@@ -1519,6 +1565,8 @@ def _log_hosts_conflicts(conflicts: list[tuple[str, dict]]) -> None:
 
 def _verify_hosts_entries(hosts: Set[str], error_details: Optional[dict] = None) -> bool:
     """Verify exact active hosts mappings after a write and DNS flush."""
+    if hosts_file_is_oversized(error_details):
+        return False
     try:
         existing = HOSTS_FILE.read_text(encoding='utf-8', errors='replace')
     except OSError as exc:
@@ -1568,6 +1616,8 @@ def _hosts_line_has_target_loopback(raw_line: str, hosts: Set[str]) -> bool:
 
 def has_stale_hosts_entries(hosts: Set[str] | None = None) -> bool:
     """Return whether Fleasion-owned hosts entries need privileged cleanup."""
+    if hosts_file_is_oversized():
+        return True
     target_hosts = set(hosts or INTERCEPT_HOSTS)
     try:
         existing = HOSTS_FILE.read_text(encoding='utf-8', errors='replace')
@@ -1581,6 +1631,8 @@ def has_stale_hosts_entries(hosts: Set[str] | None = None) -> bool:
 
 def _hosts_file_loopback_hosts(hosts: Set[str]) -> set[str]:
     """Return requested hosts that already have active loopback mappings."""
+    if hosts_file_is_oversized():
+        return set()
     try:
         existing = HOSTS_FILE.read_text(encoding='utf-8', errors='replace')
     except OSError:
@@ -1611,6 +1663,8 @@ def _is_voidstrap_gu_acc_line(raw_line: str, hosts: Set[str]) -> bool:
 
 def _remove_voidstrap_gu_acc_entries(hosts: Set[str], error_details: Optional[dict] = None) -> bool:
     """Remove known Voidstrap ``#gu_acc`` entries for Fleasion proxy hosts."""
+    if hosts_file_is_oversized(error_details):
+        return False
     try:
         existing = HOSTS_FILE.read_text(encoding='utf-8', errors='replace')
     except FileNotFoundError:
@@ -1639,6 +1693,288 @@ def _remove_voidstrap_gu_acc_entries(hosts: Set[str], error_details: Optional[di
         f'{"y" if removed_count == 1 else "ies"}',
     )
     return True
+
+
+def _spilled_hosts_line_should_remove(line_file, hosts: Set[str]) -> bool:
+    """Classify an unterminated hosts line without loading it into memory."""
+    line_file.seek(0)
+    prefix = line_file.read(4096)
+    first_token = prefix.lstrip(b' \t\r\n').split(None, 1)[0].lower() if prefix.strip() else b''
+    is_loopback = first_token in {b'127.0.0.1', b'::1'}
+
+    target_patterns = [
+        re.compile(rb'(?<!\S)' + re.escape(host.encode('ascii')) + rb'(?!\S)', re.IGNORECASE)
+        for host in hosts
+    ]
+    marker = _HOSTS_MARKER.encode('ascii')
+    voidstrap_marker = _VOIDSTRAP_GU_ACC_MARKER.encode('ascii')
+    marker_tail = b''
+    voidstrap_tail = b''
+    target_tail = b''
+    active_tail = b''
+    marker_found = False
+    voidstrap_marker_found = False
+    target_found = False
+    active_target_found = False
+    active_done = False
+    max_target_len = max((len(host.encode('ascii')) for host in hosts), default=1)
+
+    line_file.seek(0)
+    while chunk := line_file.read(64 * 1024):
+        marker_scan = marker_tail + chunk
+        if marker in marker_scan:
+            marker_found = True
+        marker_tail = marker_scan[-(len(marker) - 1) :]
+
+        voidstrap_scan = voidstrap_tail + chunk.lower()
+        if voidstrap_marker in voidstrap_scan:
+            voidstrap_marker_found = True
+        voidstrap_tail = voidstrap_scan[-(len(voidstrap_marker) - 1) :]
+
+        target_scan = target_tail + chunk
+        if any(pattern.search(target_scan) for pattern in target_patterns):
+            target_found = True
+        target_tail = target_scan[-(max_target_len + 1) :]
+
+        if is_loopback and not active_done:
+            active_scan = active_tail + chunk
+            comment_start = active_scan.find(b'#')
+            if comment_start >= 0:
+                active_scan = active_scan[:comment_start]
+                active_done = True
+            if any(pattern.search(active_scan) for pattern in target_patterns):
+                active_target_found = True
+            if not active_done:
+                active_tail = active_scan[-(max_target_len + 1) :]
+
+    return marker_found or (is_loopback and active_target_found) or (
+        voidstrap_marker_found and target_found
+    )
+
+
+def repair_hosts_file(
+    hosts: Set[str] | None = None,
+    error_details: Optional[dict] = None,
+    *,
+    require_safe_size: bool = True,
+) -> bool:
+    """Stream-repair an oversized hosts file without loading it into memory.
+
+    Blank lines and Fleasion-owned/stale mappings are removed. Every other
+    non-empty line is copied byte-for-byte so user and VM mappings remain
+    intact. The original file is renamed to a timestamped backup before the
+    repaired file is atomically installed.
+    """
+    target_hosts = set(hosts or INTERCEPT_HOSTS)
+    size = hosts_file_size()
+    if size is None:
+        _record_hosts_error(error_details, 'Could not stat the hosts file before repair.')
+        return False
+    if size == 0:
+        return True
+
+    temp_path: Path | None = None
+    original_mode: int | None = None
+    removed_blank_lines = 0
+    removed_proxy_lines = 0
+    output_size = 0
+    try:
+        fd, temp_name = tempfile.mkstemp(
+            dir=HOSTS_FILE.parent,
+            prefix='.fleasion_hosts_repair_',
+        )
+        temp_path = Path(temp_name)
+        try:
+            original_mode = stat.S_IMODE(HOSTS_FILE.stat().st_mode)
+        except OSError as exc:
+            _record_hosts_error(error_details, exc)
+            return False
+        with HOSTS_FILE.open('rb') as source, os.fdopen(fd, 'wb') as target:
+            # Process blocks so a file containing billions of blank lines does
+            # not turn into billions of Python loop iterations. Only the
+            # incomplete final line of each block is carried forward. If that
+            # line has no terminator, it is spilled to disk rather than
+            # accumulated in memory.
+            pending = b''
+            pending_spill = None
+            stop_after_oversized = False
+
+            def _write_repair_line(raw_line: bytes) -> None:
+                nonlocal removed_blank_lines, removed_proxy_lines, stop_after_oversized
+                if not raw_line.strip(b' \t\r\n'):
+                    removed_blank_lines += 1
+                    return
+                line = raw_line.decode('utf-8', errors='replace')
+                if (
+                    _HOSTS_MARKER in line
+                    or _hosts_line_has_target_loopback(line, target_hosts)
+                    or _is_voidstrap_gu_acc_line(line, target_hosts)
+                ):
+                    removed_proxy_lines += 1
+                    return
+                target.write(raw_line)
+                if require_safe_size and target.tell() > _HOSTS_FILE_REPAIR_THRESHOLD_BYTES:
+                    stop_after_oversized = True
+
+            def _process_complete_block(data: bytes) -> bytes:
+                nonlocal removed_blank_lines
+                if b'\n' not in data:
+                    return data
+                last_newline = data.rfind(b'\n')
+                complete, remainder = data[: last_newline + 1], data[last_newline + 1 :]
+                complete, blank_count = re.subn(
+                    rb'(?m)^[ \t]*(?:\r\n|\n|\r)', b'', complete
+                )
+                removed_blank_lines += blank_count
+                for raw_line in complete.splitlines(keepends=True):
+                    _write_repair_line(raw_line)
+                    if stop_after_oversized:
+                        break
+                return remainder
+
+            while not stop_after_oversized and (chunk := source.read(1024 * 1024)):
+                if pending_spill is not None:
+                    newline = chunk.find(b'\n')
+                    if newline < 0:
+                        pending_spill.write(chunk)
+                        continue
+                    pending_spill.write(chunk[: newline + 1])
+                    pending_spill.flush()
+                    if _spilled_hosts_line_should_remove(pending_spill, target_hosts):
+                        removed_proxy_lines += 1
+                    else:
+                        pending_spill.seek(0)
+                        shutil.copyfileobj(pending_spill, target, length=64 * 1024)
+                        if require_safe_size and target.tell() > _HOSTS_FILE_REPAIR_THRESHOLD_BYTES:
+                            stop_after_oversized = True
+                    pending_spill.close()
+                    pending_spill = None
+                    pending = b''
+                    if stop_after_oversized:
+                        break
+                    chunk = chunk[newline + 1 :]
+                    if not chunk:
+                        continue
+
+                if pending:
+                    newline = chunk.find(b'\n')
+                    if newline < 0:
+                        if len(pending) + len(chunk) <= 1024 * 1024:
+                            pending += chunk
+                        else:
+                            pending_spill = tempfile.TemporaryFile(mode='w+b')
+                            pending_spill.write(pending)
+                            pending_spill.write(chunk)
+                            pending = b''
+                        continue
+                    _write_repair_line(pending + chunk[: newline + 1])
+                    pending = b''
+                    if stop_after_oversized:
+                        break
+                    chunk = chunk[newline + 1 :]
+                    if not chunk:
+                        continue
+
+                if b'\n' in chunk:
+                    pending = _process_complete_block(chunk)
+                elif chunk.strip(b' \t\r'):
+                    pending = chunk
+                else:
+                    removed_blank_lines += 1
+
+            if not stop_after_oversized:
+                if pending_spill is not None:
+                    pending_spill.flush()
+                    if _spilled_hosts_line_should_remove(pending_spill, target_hosts):
+                        removed_proxy_lines += 1
+                    else:
+                        pending_spill.seek(0)
+                        shutil.copyfileobj(pending_spill, target, length=64 * 1024)
+                    pending_spill.close()
+                    pending_spill = None
+                elif pending:
+                    _write_repair_line(pending)
+            if pending_spill is not None:
+                pending_spill.close()
+            output_size = target.tell()
+
+        output_is_oversized = output_size > _HOSTS_FILE_REPAIR_THRESHOLD_BYTES
+        if output_is_oversized and require_safe_size:
+            _record_oversized_hosts_error(error_details, output_size)
+            if error_details is not None:
+                error_details.update(
+                    {
+                        'error_code': 'hosts_file_repair_failed',
+                        'repair_attempted': True,
+                        'repair_output_size_bytes': output_size,
+                    }
+                )
+            return False
+
+        if original_mode is not None:
+            os.chmod(temp_path, original_mode)
+
+        timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+        backup_path = HOSTS_FILE.with_name(f'{HOSTS_FILE.name}.fleasion-backup-{timestamp}')
+        suffix = 1
+        while backup_path.exists():
+            backup_path = HOSTS_FILE.with_name(
+                f'{HOSTS_FILE.name}.fleasion-backup-{timestamp}-{suffix}'
+            )
+            suffix += 1
+
+        os.replace(HOSTS_FILE, backup_path)
+        try:
+            os.replace(temp_path, HOSTS_FILE)
+            temp_path = None
+        except Exception:
+            os.replace(backup_path, HOSTS_FILE)
+            raise
+
+        repaired_size = hosts_file_size()
+        if repaired_size is None or (
+            require_safe_size and repaired_size > _HOSTS_FILE_REPAIR_THRESHOLD_BYTES
+        ):
+            if error_details is not None:
+                error_details.update(
+                    {
+                        'error_code': 'hosts_file_repair_failed',
+                        'repair_attempted': True,
+                        'repair_output_size_bytes': repaired_size,
+                    }
+                )
+            return False
+        if error_details is not None:
+            error_details.clear()
+            error_details.update(
+                {
+                    'repair_attempted': True,
+                    'repair_succeeded': True,
+                    'backup_path': str(backup_path),
+                    'hosts_path': str(HOSTS_FILE),
+                    'hosts_size_bytes': repaired_size,
+                    'repair_output_oversized': repaired_size > _HOSTS_FILE_REPAIR_THRESHOLD_BYTES,
+                    'removed_blank_lines': removed_blank_lines,
+                    'removed_proxy_lines': removed_proxy_lines,
+                }
+            )
+        log_buffer.log(
+            'Hosts',
+            f'Repaired hosts file: removed {removed_blank_lines} blank lines and '
+            f'{removed_proxy_lines} Fleasion-owned lines; backup={backup_path}',
+        )
+        return True
+    except OSError as exc:
+        _record_hosts_error(error_details, exc)
+        if error_details is not None:
+            error_details.update({'error_code': 'hosts_file_repair_failed', 'repair_attempted': True})
+        return False
+    finally:
+        if temp_path is not None:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def _write_hosts_file(content: str) -> None:
@@ -1740,6 +2076,9 @@ def _add_hosts_entries(hosts: Set[str], error_details: Optional[dict] = None) ->
         _record_hosts_error(error_details, 'macOS proxy helper failed to apply hosts entries')
         return False
 
+    if hosts_file_is_oversized(error_details):
+        return False
+
     try:
         existing = HOSTS_FILE.read_text(encoding='utf-8', errors='replace')
     except FileNotFoundError:
@@ -1812,6 +2151,25 @@ def _add_hosts_entries(hosts: Set[str], error_details: Optional[dict] = None) ->
         return True
 
     new_content = existing.rstrip('\n') + '\n' + '\n'.join(lines_to_add) + '\n'
+    candidate_size = len(new_content.encode('utf-8'))
+    if candidate_size > _HOSTS_FILE_REPAIR_THRESHOLD_BYTES:
+        _record_oversized_hosts_error(error_details, candidate_size)
+        if error_details is not None:
+            error_details.update(
+                {
+                    'error_code': 'hosts_entries_would_exceed_limit',
+                    'error': (
+                        f'Adding Fleasion mappings would make the hosts file {candidate_size} '
+                        f'bytes, above the {_HOSTS_FILE_REPAIR_THRESHOLD_BYTES}-byte safety limit.'
+                    ),
+                    'hosts_size_before_write_bytes': len(existing.encode('utf-8')),
+                }
+            )
+        log_buffer.log(
+            'Hosts',
+            'Refused hosts update because the new Fleasion mappings would exceed the safety limit',
+        )
+        return False
     try:
         _write_hosts_file(new_content)
         for entry in lines_to_add:
@@ -1843,6 +2201,17 @@ def _remove_hosts_entries(hosts: Set[str], error_details: Optional[dict] = None)
             return True
         _record_hosts_error(error_details, 'macOS proxy helper failed to clear hosts entries')
         return False
+
+    if hosts_file_is_oversized(error_details):
+        # The file may remain above the advisory threshold because it contains
+        # legitimate VM/user mappings, but stale Fleasion redirects must still
+        # be removed during rollback and shutdown. The bounded repair preserves
+        # those mappings and atomically installs the cleaned file.
+        return repair_hosts_file(
+            hosts,
+            error_details=error_details,
+            require_safe_size=False,
+        )
 
     def _record_error(exc: OSError) -> None:
         if error_details is None:
@@ -4316,7 +4685,16 @@ class ProxyMaster:
 
                     hosts_cleaned = stop_helper()
                 else:
-                    hosts_cleaned = _remove_hosts_entries(set(INTERCEPT_HOSTS))
+                    cleanup_details: dict = {}
+                    hosts_cleaned = _remove_hosts_entries(
+                        set(INTERCEPT_HOSTS), error_details=cleanup_details
+                    )
+                    if not hosts_cleaned:
+                        log_buffer.log(
+                            'Error',
+                            'Proxy shutdown could not remove Fleasion hosts entries; '
+                            f'they may still redirect traffic: {cleanup_details.get("error") or "unknown cleanup failure"}',
+                        )
                     _flush_dns()  # Clear stale 127.0.0.1 cache so new connections stop coming in
                 self._hosts_installed = False
                 # Only cancel the reboot guard if the hosts file was actually cleaned.
@@ -4502,6 +4880,16 @@ class ProxyMaster:
                 # Unlike the hosts-mode branch below, a failure here doesn't
                 # abort startup: env mode doesn't depend on the hosts file
                 # working.
+                oversized_hosts_details: dict = {}
+                if hosts_file_is_oversized(oversized_hosts_details):
+                    log_buffer.log(
+                        'Error',
+                        'Hosts file is still too large after Env Proxy startup checks; '
+                        'aborting to avoid leaving unsafe stale redirects in place',
+                    )
+                    self._emit_proxy_start_error('hosts_file_too_large', oversized_hosts_details)
+                    self._running = False
+                    return
                 if has_stale_hosts_entries(set(INTERCEPT_HOSTS)):
                     log_buffer.log(
                         'Error',
@@ -4538,7 +4926,10 @@ class ProxyMaster:
                     f'lines from {HOSTS_FILE} and restart.',
                 )
                 if stale_hosts_error_details.get('notify_user'):
-                    self._emit_proxy_start_error('hosts_write_exhausted', stale_hosts_error_details)
+                    self._emit_proxy_start_error(
+                        stale_hosts_error_details.get('error_code', 'hosts_write_exhausted'),
+                        stale_hosts_error_details,
+                    )
                 self._running = False
                 return
             _flush_dns()
@@ -4929,7 +5320,10 @@ class ProxyMaster:
             self._hosts_installed = True
         elif not _add_hosts_entries(active_hosts, error_details=hosts_error_details):
             if hosts_error_details.get('notify_user'):
-                self._emit_proxy_start_error('hosts_write_exhausted', hosts_error_details)
+                self._emit_proxy_start_error(
+                    hosts_error_details.get('error_code', 'hosts_write_exhausted'),
+                    hosts_error_details,
+                )
             # Hosts write failed - stop the server and bail
             await self._proxy.stop()
             _set_active_hosts_loopbacks(None)
@@ -4944,7 +5338,15 @@ class ProxyMaster:
 
                 stop_helper()
             else:
-                _remove_hosts_entries(set(INTERCEPT_HOSTS))
+                rollback_details: dict = {}
+                if not _remove_hosts_entries(
+                    set(INTERCEPT_HOSTS), error_details=rollback_details
+                ):
+                    log_buffer.log(
+                        'Error',
+                        'Proxy startup rollback could not remove Fleasion hosts entries: '
+                        f'{rollback_details.get("error") or "unknown cleanup failure"}',
+                    )
                 _flush_dns()
             self._hosts_installed = False
             await self._proxy.stop()
@@ -4996,7 +5398,16 @@ class ProxyMaster:
             # Ensure hosts file is cleaned up even if stop() wasn't called
             if self._hosts_installed:
                 self._stop_watchdog()
-                hosts_cleaned = _remove_hosts_entries(set(INTERCEPT_HOSTS))
+                cleanup_details: dict = {}
+                hosts_cleaned = _remove_hosts_entries(
+                    set(INTERCEPT_HOSTS), error_details=cleanup_details
+                )
+                if not hosts_cleaned:
+                    log_buffer.log(
+                        'Error',
+                        'Proxy worker shutdown could not remove Fleasion hosts entries; '
+                        f'they may still redirect traffic: {cleanup_details.get("error") or "unknown cleanup failure"}',
+                    )
                 self._hosts_installed = False
                 _flush_dns()
                 if hosts_cleaned:

@@ -579,6 +579,26 @@ def test_windows_ca_nonpermission_failure_keeps_diagnostic_dialog(monkeypatch, t
     assert shown == [details]
 
 
+def test_hosts_capacity_error_does_not_retry_proxy(monkeypatch):
+    shown = []
+    retries = []
+    monkeypatch.setattr(
+        app_module,
+        '_show_hosts_capacity_dialog',
+        lambda details: shown.append(details),
+    )
+
+    invoker = app_module._ProxyErrorInvoker()
+    invoker.retry_proxy.connect(lambda: retries.append(True))
+    invoker.handle_proxy_error(
+        'hosts_entries_would_exceed_limit',
+        {'hosts_size_bytes': 600_000},
+    )
+
+    assert shown == [{'hosts_size_bytes': 600_000}]
+    assert retries == []
+
+
 def test_successful_permission_repair_runs_proxy_retry_callback(monkeypatch, tmp_path):
     from fleasion.utils import windows_permissions
 
