@@ -105,8 +105,7 @@ def test_proxy_worker_retries_once_with_selector_loop(monkeypatch):
     assert any('SelectorEventLoop' in message for _, message in logs)
 
 
-@pytest.mark.parametrize('accept_fault', [False, True])
-def test_proactor_tls_failure_cleanup_raises_retry_signal(monkeypatch, accept_fault):
+def test_proactor_accept_fault_cleanup_raises_retry_signal(monkeypatch):
     monkeypatch.setattr(proxy_master, 'IS_WINDOWS', True)
     stopped = []
     loopbacks = []
@@ -122,7 +121,7 @@ def test_proactor_tls_failure_cleanup_raises_retry_signal(monkeypatch, accept_fa
     )
     monkeypatch.setattr(proxy_master, 'log_buffer', SimpleNamespace(log=lambda *_args: None))
     proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
-    proxy._windows_proactor_accept_fault = accept_fault
+    proxy._windows_proactor_accept_fault = True
     proxy._windows_selector_fallback_attempted = False
     proxy._loop = FakeProactorEventLoop()
     proxy._proxy = FakeProxy()
@@ -132,7 +131,7 @@ def test_proactor_tls_failure_cleanup_raises_retry_signal(monkeypatch, accept_fa
     proxy._running = True
 
     with pytest.raises(proxy_master._RetryProxyWithWindowsSelector):
-        asyncio.run(proxy._raise_selector_retry_for_proactor_tls_failure())
+        asyncio.run(proxy._raise_selector_retry_for_proactor_accept_fault())
 
     assert stopped == [True]
     assert proxy._proxy is None
@@ -142,11 +141,30 @@ def test_proactor_tls_failure_cleanup_raises_retry_signal(monkeypatch, accept_fa
     assert loopbacks == [None]
 
 
-def test_proactor_tls_failure_does_not_retry_after_selector_fallback(monkeypatch):
+def test_proactor_tls_timeout_does_not_retry_with_selector(monkeypatch):
+    monkeypatch.setattr(proxy_master, 'IS_WINDOWS', True)
+    stopped = []
+
+    class FakeProxy:
+        async def stop(self):
+            stopped.append(True)
+
+    proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
+    proxy._loop = FakeProactorEventLoop()
+    proxy._windows_selector_fallback_attempted = False
+    proxy._windows_proactor_accept_fault = False
+    proxy._proxy = FakeProxy()
+
+    asyncio.run(proxy._raise_selector_retry_for_proactor_accept_fault())
+
+    assert stopped == []
+
+
+def test_proactor_accept_fault_does_not_retry_twice(monkeypatch):
     monkeypatch.setattr(proxy_master, 'IS_WINDOWS', True)
     proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
     proxy._loop = FakeProactorEventLoop()
     proxy._windows_selector_fallback_attempted = True
-    proxy._windows_proactor_accept_fault = False
+    proxy._windows_proactor_accept_fault = True
 
-    asyncio.run(proxy._raise_selector_retry_for_proactor_tls_failure())
+    asyncio.run(proxy._raise_selector_retry_for_proactor_accept_fault())

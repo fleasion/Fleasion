@@ -76,6 +76,11 @@ INTERCEPT_HOSTS: frozenset = (
 ASSET_TRAFFIC_MISSING_DIAGNOSTIC_SECONDS = 20.0
 UPSTREAM_ENDPOINT_REFRESH_COOLDOWN_SECONDS = 5.0
 UPSTREAM_ENDPOINT_REFRESH_RETRY_TIMEOUT = 3.0
+# Temporary Windows compatibility cap for the TLS endpoint that Roblox talks
+# to locally.  Keep the upstream client context unrestricted; this only
+# isolates the local interception handshake while diagnosing Windows/OpenSSL
+# middlebox failures.
+PROXY_TLS_MAX_VERSION = ssl.TLSVersion.TLSv1_2
 
 _ZSTD_MAGIC = b'\x28\xb5\x2f\xfd'
 _GZIP_MAGIC = b'\x1f\x8b'
@@ -1271,6 +1276,7 @@ class FleasionProxy:
             ctx.load_cert_chain(str(cert_path), str(key_path))
             ctx.verify_mode = ssl.CERT_NONE
             ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+            ctx.maximum_version = PROXY_TLS_MAX_VERSION
             ctx.set_alpn_protocols(['http/1.1'])
             self._host_ssl_ctxs[host] = ctx
 
@@ -1287,6 +1293,7 @@ class FleasionProxy:
         self._server_ssl_ctx.load_cert_chain(str(default_cert_path), str(default_key_path))
         self._server_ssl_ctx.verify_mode = ssl.CERT_NONE
         self._server_ssl_ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        self._server_ssl_ctx.maximum_version = PROXY_TLS_MAX_VERSION
         self._server_ssl_ctx.set_alpn_protocols(['http/1.1'])
         self._server_ssl_ctx.set_servername_callback(self._sni_callback)
 
@@ -1367,6 +1374,7 @@ class FleasionProxy:
             ctx.load_cert_chain(str(cert_path), str(key_path))
             ctx.verify_mode = ssl.CERT_NONE
             ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+            ctx.maximum_version = PROXY_TLS_MAX_VERSION
             ctx.set_alpn_protocols(['http/1.1'])
         except Exception as exc:
             try:

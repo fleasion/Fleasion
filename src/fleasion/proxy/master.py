@@ -92,6 +92,7 @@ from .server import (
     CUSTOM_FFLAGS_INTERCEPT_HOSTS,
     GAMEJOIN_HOST,
     INTERCEPT_HOSTS,
+    PROXY_TLS_MAX_VERSION,
     USERNAME_SPOOFER_INTERCEPT_HOSTS,
     FleasionProxy,
 )
@@ -686,6 +687,7 @@ def _manual_socks5_proxy_from_settings(config_manager) -> Optional[Socks5ProxyCo
 def _connect_tls_for_self_test(host: str | None, ca_cert_path: Path, port: int) -> dict:
     ctx = ssl.create_default_context(cafile=str(ca_cert_path))
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.maximum_version = PROXY_TLS_MAX_VERSION
     if host is None:
         ctx.check_hostname = False
     with socket.create_connection(('127.0.0.1', port), timeout=5.0) as raw_sock:
@@ -701,6 +703,7 @@ def _connect_explicit_proxy_tls_for_self_test(
         return _connect_tls_for_self_test(host, ca_cert_path, port)
     ctx = ssl.create_default_context(cafile=str(ca_cert_path))
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.maximum_version = PROXY_TLS_MAX_VERSION
     with socket.create_connection(('127.0.0.1', port), timeout=5.0) as raw_sock:
         request = (
             f'CONNECT {host}:443 HTTP/1.1\r\n'
@@ -4560,6 +4563,8 @@ class ProxyMaster:
         mode = 'env' if env_proxy_mode else 'hosts'
         runtime = (
             f'Python {platform.python_version()} ({platform.python_implementation()}); '
+            f'OpenSSL={ssl.OPENSSL_VERSION}; '
+            f'local_tls_max={PROXY_TLS_MAX_VERSION.name}; '
             f'OS={platform.platform()}; machine={platform.machine() or "unknown"}'
         )
         log_buffer.log(
@@ -4609,7 +4614,7 @@ class ProxyMaster:
                 reason = (
                     f'Proactor accept WinError {_WINDOWS_PROACTOR_ACCEPT_WINERROR}'
                     if getattr(self, '_windows_proactor_accept_fault', False)
-                    else 'Proactor TLS self-test failure'
+                    else 'unknown Proactor accept fault'
                 )
                 log_buffer.log(
                     'Proxy',
@@ -4620,23 +4625,20 @@ class ProxyMaster:
             log_buffer.log('Error', f'Proxy failed: {exc}')
             self._running = False
 
-    async def _raise_selector_retry_for_proactor_tls_failure(self) -> None:
+    async def _raise_selector_retry_for_proactor_accept_fault(self) -> None:
         loop = getattr(self, '_loop', None)
         if (
             not IS_WINDOWS
             or loop is None
             or 'proactor' not in type(loop).__name__.lower()
+            or not getattr(self, '_windows_proactor_accept_fault', False)
             or getattr(self, '_windows_selector_fallback_attempted', False)
         ):
             return
-        reason = (
-            f'Windows Proactor accept WinError {_WINDOWS_PROACTOR_ACCEPT_WINERROR}'
-            if getattr(self, '_windows_proactor_accept_fault', False)
-            else 'Windows Proactor TLS self-test failure'
-        )
         log_buffer.log(
             'ProxyDiag',
-            f'TLS startup self-test failed with {reason}; cleaning up the failed '
+            f'TLS startup self-test failed after Windows Proactor accept WinError '
+            f'{_WINDOWS_PROACTOR_ACCEPT_WINERROR}; cleaning up the failed '
             'listener before Selector retry',
         )
         try:
@@ -5176,7 +5178,7 @@ class ProxyMaster:
         if not await _run_tls_self_test(
             set(active_hosts), ca_cert_path, listen_port, explicit_proxy=env_proxy_mode
         ):
-            await self._raise_selector_retry_for_proactor_tls_failure()
+            await self._raise_selector_retry_for_proactor_accept_fault()
             log_buffer.log(
                 'Error',
                 'Proxy startup aborted: TLS self-test failed for active intercept hosts',
