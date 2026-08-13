@@ -105,7 +105,9 @@ def test_proxy_worker_retries_once_with_selector_loop(monkeypatch):
     assert any('SelectorEventLoop' in message for _, message in logs)
 
 
-def test_proactor_fault_cleanup_raises_retry_signal(monkeypatch):
+@pytest.mark.parametrize('accept_fault', [False, True])
+def test_proactor_tls_failure_cleanup_raises_retry_signal(monkeypatch, accept_fault):
+    monkeypatch.setattr(proxy_master, 'IS_WINDOWS', True)
     stopped = []
     loopbacks = []
 
@@ -120,7 +122,9 @@ def test_proactor_fault_cleanup_raises_retry_signal(monkeypatch):
     )
     monkeypatch.setattr(proxy_master, 'log_buffer', SimpleNamespace(log=lambda *_args: None))
     proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
-    proxy._windows_proactor_accept_fault = True
+    proxy._windows_proactor_accept_fault = accept_fault
+    proxy._windows_selector_fallback_attempted = False
+    proxy._loop = FakeProactorEventLoop()
     proxy._proxy = FakeProxy()
     proxy._active_proxy_port = 58443
     proxy._env_proxy_ready = threading.Event()
@@ -128,7 +132,7 @@ def test_proactor_fault_cleanup_raises_retry_signal(monkeypatch):
     proxy._running = True
 
     with pytest.raises(proxy_master._RetryProxyWithWindowsSelector):
-        asyncio.run(proxy._raise_selector_retry_for_proactor_fault())
+        asyncio.run(proxy._raise_selector_retry_for_proactor_tls_failure())
 
     assert stopped == [True]
     assert proxy._proxy is None
@@ -136,3 +140,13 @@ def test_proactor_fault_cleanup_raises_retry_signal(monkeypatch):
     assert not proxy._env_proxy_ready.is_set()
     assert not proxy._running
     assert loopbacks == [None]
+
+
+def test_proactor_tls_failure_does_not_retry_after_selector_fallback(monkeypatch):
+    monkeypatch.setattr(proxy_master, 'IS_WINDOWS', True)
+    proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
+    proxy._loop = FakeProactorEventLoop()
+    proxy._windows_selector_fallback_attempted = True
+    proxy._windows_proactor_accept_fault = False
+
+    asyncio.run(proxy._raise_selector_retry_for_proactor_tls_failure())

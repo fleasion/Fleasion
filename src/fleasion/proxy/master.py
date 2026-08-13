@@ -4606,23 +4606,38 @@ class ProxyMaster:
                 asyncio.run(self._run_proxy())
             except _RetryProxyWithWindowsSelector:
                 self._windows_selector_fallback_attempted = True
+                reason = (
+                    f'Proactor accept WinError {_WINDOWS_PROACTOR_ACCEPT_WINERROR}'
+                    if getattr(self, '_windows_proactor_accept_fault', False)
+                    else 'Proactor TLS self-test failure'
+                )
                 log_buffer.log(
                     'Proxy',
-                    'Retrying proxy startup with Windows SelectorEventLoop after '
-                    f'Proactor accept WinError {_WINDOWS_PROACTOR_ACCEPT_WINERROR}',
+                    'Retrying proxy startup with Windows SelectorEventLoop after ' + reason,
                 )
                 asyncio.run(self._run_proxy(), loop_factory=asyncio.SelectorEventLoop)
         except Exception as exc:
             log_buffer.log('Error', f'Proxy failed: {exc}')
             self._running = False
 
-    async def _raise_selector_retry_for_proactor_fault(self) -> None:
-        if not getattr(self, '_windows_proactor_accept_fault', False):
+    async def _raise_selector_retry_for_proactor_tls_failure(self) -> None:
+        loop = getattr(self, '_loop', None)
+        if (
+            not IS_WINDOWS
+            or loop is None
+            or 'proactor' not in type(loop).__name__.lower()
+            or getattr(self, '_windows_selector_fallback_attempted', False)
+        ):
             return
+        reason = (
+            f'Windows Proactor accept WinError {_WINDOWS_PROACTOR_ACCEPT_WINERROR}'
+            if getattr(self, '_windows_proactor_accept_fault', False)
+            else 'Windows Proactor TLS self-test failure'
+        )
         log_buffer.log(
             'ProxyDiag',
-            'TLS startup self-test was invalidated by the Windows Proactor '
-            'accept failure; cleaning up the failed listener before Selector retry',
+            f'TLS startup self-test failed with {reason}; cleaning up the failed '
+            'listener before Selector retry',
         )
         try:
             await self._proxy.stop()
@@ -5161,7 +5176,7 @@ class ProxyMaster:
         if not await _run_tls_self_test(
             set(active_hosts), ca_cert_path, listen_port, explicit_proxy=env_proxy_mode
         ):
-            await self._raise_selector_retry_for_proactor_fault()
+            await self._raise_selector_retry_for_proactor_tls_failure()
             log_buffer.log(
                 'Error',
                 'Proxy startup aborted: TLS self-test failed for active intercept hosts',
