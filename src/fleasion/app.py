@@ -54,6 +54,7 @@ from .utils import (
     time_tracker,
     wait_for_roblox_exit,
 )
+from .utils.microprofiler import start_microprofiler
 
 _SINGLE_INSTANCE_KEY = 'FleasionSingleInstance'
 _SINGLE_INSTANCE_CONTROL_SERVER = 'FleasionSingleInstanceControl'
@@ -3342,6 +3343,7 @@ def main():
     _parser.add_argument('--repair-firewall', action='store_true', help=_ap.SUPPRESS)
     _parser.add_argument('--cleanup-hosts', action='store_true', help=_ap.SUPPRESS)
     _parser.add_argument('--fleasion-gdk-debugger', action='store_true', help=_ap.SUPPRESS)
+    _parser.add_argument('--microprofile', action='store_true', help=_ap.SUPPRESS)
     _parser.add_argument(
         '--install-linux-privileged-helper',
         action='store_true',
@@ -3406,6 +3408,14 @@ def main():
             QMessageBox.StandardButton.Ok,
         )
         sys.exit(1)
+
+    # TEMPORARY DIAGNOSTIC BUILD: keep this automatic so the affected user
+    # does not need to edit a shortcut or launch Fleasion from a terminal.
+    # Before release, comment this line and uncomment the launch-argument gate:
+    _microprofiler = start_microprofiler(enabled=True)
+    # _microprofiler = start_microprofiler(enabled=_args.microprofile)
+    if _microprofiler is not None:
+        log_buffer.log('MicroProfiler', f'Writing diagnostics to {_microprofiler.output_path}')
 
     _configure_opengl_for_legacy_viewers()
 
