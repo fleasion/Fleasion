@@ -17,6 +17,15 @@ def test_windows_packaging_uses_no_custom_python_runtime_hook() -> None:
     assert 'rthook_harden_dll_search' not in spec_source
 
 
+def test_packaging_collects_numpy_extensions_without_upx() -> None:
+    spec_path = Path(__file__).resolve().parents[1] / 'Fleasion.spec'
+    spec_source = spec_path.read_text(encoding='utf-8')
+
+    assert "_collect_package('numpy')" in spec_source
+    assert "'numpy/*/*.pyd'" in spec_source
+    assert "'numpy.libs/*.dll'" in spec_source
+
+
 def _set_reproducible_environment(monkeypatch: MonkeyPatch) -> None:
     for name, value in build.REPRODUCIBLE_ENV.items():
         monkeypatch.setenv(name, value)

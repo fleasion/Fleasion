@@ -77,6 +77,16 @@ _NUMPY_EXCLUDES = [
     'numpy.f2py',
 ]
 
+# NumPy's native extensions are sensitive to binary rewriting.  Keep them
+# uncompressed so endpoint security products and older Windows loaders see the
+# original wheel binaries after PyInstaller extracts the one-file bundle.
+_NUMPY_UPX_EXCLUDES = [
+    'numpy/*.pyd',
+    'numpy/*/*.pyd',
+    'numpy/*/*/*.pyd',
+    'numpy.libs/*.dll',
+]
+
 _QT_EXCLUDES = [
     'PyQt6.QAxContainer',
     'PyQt6.Qsci',
@@ -277,6 +287,12 @@ if sys.platform == 'win32':
     binaries.append(('src/fleasion/cache/tools/ktx_to_png/ktx.dll', '.'))
 hiddenimports: list[str] = []
 
+# NumPy is imported from feature modules that are not all reached during the
+# launcher import walk.  Collecting the package explicitly also preserves its
+# native extensions and the external ``numpy.libs`` runtime directory on
+# Windows.  The excludes above remove NumPy's test/build-only modules again.
+_collect_package('numpy')
+
 # Keep Qt collection narrow. collect_all('PyQt6') pulls in QML/QtQuick,
 # Designer, SQL drivers, multimedia, translations, and other modules that the
 # app does not use, which more than doubles the one-file executable size
@@ -368,6 +384,7 @@ exe = EXE(
     strip=False,
     upx=_use_upx,
     upx_exclude=[
+        *_NUMPY_UPX_EXCLUDES,
         'Qt6Core.dll',
         'Qt6Gui.dll',
         'Qt6Widgets.dll',
