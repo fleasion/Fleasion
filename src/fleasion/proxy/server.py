@@ -1333,9 +1333,9 @@ class FleasionProxy:
             )
             return
         if name in self._host_ssl_ctxs:
-            ssl_obj.context = self._host_ssl_ctxs[name]
             self._log_sni_once(
-                f'known:{name}', f'SNI matched {name}; using host-specific certificate'
+                f'known:{name}',
+                f'SNI matched {name}; using default multi-host certificate',
             )
             return
         if name and self._intercept_all_hosts:
