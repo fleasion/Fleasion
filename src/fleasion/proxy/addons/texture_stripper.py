@@ -421,6 +421,8 @@ class TextureStripper:
     _local_redirects: Dict[str, str] = {}  # base_cdn_url -> local_path
     _solidmodel_injections: Dict[str, str] = {}  # base_cdn_url -> obj_path
     _solidmodel_force_v3: set = set()  # base_cdn_url values that should force v3 CSG export
+    _batch_generations: Dict[str, int] = {}  # batch_id -> route generation
+    _routes_generation: int = 0
     # ─────────────────────────────────────────────────────────────────────
 
     ASSET_TYPES: Dict[int, str] = {
@@ -504,6 +506,71 @@ class TextureStripper:
     def __init__(self, config_manager) -> None:
         self.config_manager = config_manager
         self._cache_scraper = None  # Set by ProxyMaster after construction
+        self._seen_replacements_generation = getattr(
+            config_manager, 'replacements_generation', None
+        )
+
+    @classmethod
+    def reset_routes(cls, reason: str = '') -> dict[str, int]:
+        """Discard every request-derived route without deleting reusable assets."""
+        with cls._lock:
+            counts = {
+                'pending': len(cls._pending),
+                'local': len(cls._local_redirects),
+                'cdn': len(cls._cdn_redirects),
+                'solid': len(cls._solidmodel_injections),
+                'batches': len(cls._batch_generations),
+            }
+            cls._pending.clear()
+            cls._local_redirects.clear()
+            cls._cdn_redirects.clear()
+            cls._solidmodel_injections.clear()
+            cls._solidmodel_force_v3.clear()
+            cls._batch_generations.clear()
+            cls._routes_generation += 1
+        with cls._anim_lock:
+            counts['anim_pending'] = len(cls._anim_local_pending)
+            counts['anim_routes'] = len(cls._anim_rig_local)
+            cls._anim_local_pending.clear()
+            cls._anim_rig_local.clear()
+
+        if reason and any(counts.values()):
+            summary = ', '.join(f'{name}={count}' for name, count in counts.items())
+            log_buffer.log('Replacer', f'Cleared stale routes ({reason}): {summary}')
+        return counts
+
+    def _sync_replacements_generation(self) -> None:
+        generation = getattr(self.config_manager, 'replacements_generation', None)
+        if generation is None or generation == self._seen_replacements_generation:
+            return
+        self.reset_routes('replacement configuration changed')
+        self._seen_replacements_generation = generation
+
+    def _register_batch(self, batch_id: str) -> int:
+        self._sync_replacements_generation()
+        with self._lock:
+            generation = self._routes_generation
+            self._batch_generations[batch_id] = generation
+            return generation
+
+    def _queue_pending(self, req_id: str, value: Tuple[str, str]) -> bool:
+        batch_id = req_id.split('_', 1)[0]
+        with self._lock:
+            generation = self._batch_generations.get(batch_id)
+            if generation is None or generation != self._routes_generation:
+                return False
+            self._pending[req_id] = value
+            return True
+
+    def _queue_anim_pending(self, req_id: str, value: Tuple[str, str]) -> bool:
+        batch_id = req_id.split('_', 1)[0]
+        with self._lock:
+            generation = self._batch_generations.get(batch_id)
+            if generation is None or generation != self._routes_generation:
+                return False
+            with self._anim_lock:
+                self._anim_local_pending[req_id] = value
+            return True
 
     def set_cache_scraper(self, scraper) -> None:
         """Wire in the CacheScraper for place-ID lookups on replacement assets."""
@@ -1087,6 +1154,12 @@ class TextureStripper:
             return body
         if not isinstance(data, list):
             return body
+        self._register_batch(batch_id)
+        # The server's tuple may have been read just before a UI config toggle.
+        # Resolve it again after synchronizing the generation so this batch is
+        # never populated from the old config snapshot.
+        if getattr(self.config_manager, 'replacements_generation', None) is not None:
+            replacements_tuple = self.config_manager.get_all_replacements()
 
         replacements, removals, cdn_replacements, local_replacements = replacements_tuple
         replacements = {
@@ -1490,11 +1563,10 @@ class TextureStripper:
                             )
                         else:
                             _required_rig = 'any'
-                        with self._anim_lock:
-                            self._anim_local_pending[f'{batch_id}_{req_id}'] = (
-                                str(_repl_local_path),
-                                _required_rig,
-                            )
+                        self._queue_anim_pending(
+                            f'{batch_id}_{req_id}',
+                            (str(_repl_local_path), _required_rig),
+                        )
                 elif cdn_key is not None:
                     is_texpack_cdn = (
                         (':' in str(cdn_key))
@@ -1558,6 +1630,7 @@ class TextureStripper:
                 req_data = []
                 req_ids_by_index = []
 
+        self._sync_replacements_generation()
         _, _, cdn_replacements, local_replacements = self.config_manager.get_all_replacements()
         _GLOBAL_INDEX_CHANNEL = {
             2: 'metalness',
@@ -1591,6 +1664,9 @@ class TextureStripper:
         _texpack_request_slots = self._build_texpack_request_slot_map(req_data, _slot_target_ids)
 
         with self._lock:
+            batch_generation = self._batch_generations.pop(batch_id, None)
+            if batch_generation is None or batch_generation != self._routes_generation:
+                return
             for idx, item in enumerate(resp_data):
                 if not isinstance(item, dict):
                     continue
@@ -1700,6 +1776,7 @@ class TextureStripper:
         can read the original response bytes, detect the rig, then serve the
         rig-matched local replacement file instead.
         """
+        self._sync_replacements_generation()
         base_url = f'https://{host}{path}'.split('?')[0]
 
         def _log_cdn_match(action: str, value) -> None:
@@ -1751,6 +1828,7 @@ class TextureStripper:
         Used by the server to decide whether to wait briefly for the batch
         response coroutine to register a CDN URL before giving up.
         """
+        self._sync_replacements_generation()
         with self._lock:
             return bool(self._pending)
 
@@ -1878,28 +1956,23 @@ class TextureStripper:
             local_cache = APP_CACHE_DIR / f'{url_hash}.obj'
             if _download_remote_file(cdn_url, local_cache, '.obj'):
                 kind = 'solid_obj' if is_solidmodel else 'local'
-                with self._lock:
-                    self._pending[req_id] = (kind, str(local_cache))
+                self._queue_pending(req_id, (kind, str(local_cache)))
                 return
-            with self._lock:
-                self._pending[req_id] = ('cdn', cdn_url)
+            self._queue_pending(req_id, ('cdn', cdn_url))
             return
 
         if ext == '.mesh':
             if not is_solidmodel:
-                with self._lock:
-                    self._pending[req_id] = ('cdn', cdn_url)
+                self._queue_pending(req_id, ('cdn', cdn_url))
                 log_buffer.log('CDN', f'Queued direct .mesh redirect for {aid}')
                 return
             local_cache = APP_CACHE_DIR / f'{url_hash}.mesh'
             if _download_remote_file(cdn_url, local_cache, '.mesh'):
                 obj = _try_mesh_to_obj(local_cache, f'SolidModel CDN {aid}')
                 if obj:
-                    with self._lock:
-                        self._pending[req_id] = ('solid', str(obj))
+                    self._queue_pending(req_id, ('solid', str(obj)))
                     return
-            with self._lock:
-                self._pending[req_id] = ('cdn', cdn_url)
+            self._queue_pending(req_id, ('cdn', cdn_url))
             return
 
         if ext == '.bin':
@@ -1910,19 +1983,16 @@ class TextureStripper:
                     obj = _try_bin_to_obj(local_cache, f'CDN {aid}')
                     if obj:
                         kind = 'solid' if is_solidmodel else 'local'
-                        with self._lock:
-                            self._pending[req_id] = (kind, str(obj))
+                        self._queue_pending(req_id, (kind, str(obj)))
                         return
                     # Conversion failed, fall back to CDN redirect
                     log_buffer.log('CDN', f'{aid}: CSGMDL conversion failed, redirecting to CDN')
                 else:
                     # Not a CSGMDL, serve the .bin directly
                     kind = 'solid' if is_solidmodel else 'local'
-                    with self._lock:
-                        self._pending[req_id] = (kind, str(local_cache))
+                    self._queue_pending(req_id, (kind, str(local_cache)))
                     return
-            with self._lock:
-                self._pending[req_id] = ('cdn', cdn_url)
+            self._queue_pending(req_id, ('cdn', cdn_url))
             return
 
         # Any other extension
@@ -1941,8 +2011,7 @@ class TextureStripper:
                 f'CDN TexturePack map download failed for aid={aid}; falling back to CDN redirect',
             )
 
-        with self._lock:
-            self._pending[req_id] = ('cdn', cdn_url)
+        self._queue_pending(req_id, ('cdn', cdn_url))
         log_buffer.log('CDN', f'Queued CDN redirect for {aid}')
 
     def _route_local(
@@ -2016,13 +2085,11 @@ class TextureStripper:
 
         if is_solidmodel:
             if ext == '.obj':
-                with self._lock:
-                    self._pending[req_id] = ('solid_obj', local_path)
+                self._queue_pending(req_id, ('solid_obj', local_path))
             elif ext == '.mesh':
                 obj = _try_mesh_to_obj(path, f'SolidModel {aid}')
                 val = ('solid', str(obj)) if obj else ('local', local_path)
-                with self._lock:
-                    self._pending[req_id] = val
+                self._queue_pending(req_id, val)
             elif ext == '.bin':
                 # Only try conversion if it's actually a CSGMDL
                 if _is_csgmdl_bin(path):
@@ -2031,36 +2098,29 @@ class TextureStripper:
                 else:
                     # Not a CSGMDL, serve as-is
                     val = ('local', local_path)
-                with self._lock:
-                    self._pending[req_id] = val
+                self._queue_pending(req_id, val)
             elif ext == '.rbxmx':
                 obj = _try_rbxmx_to_obj(path, f'SolidModel {aid}')
                 val = ('solid', str(obj)) if obj else ('local', local_path)
-                with self._lock:
-                    self._pending[req_id] = val
+                self._queue_pending(req_id, val)
             else:
-                with self._lock:
-                    self._pending[req_id] = ('local', local_path)
+                self._queue_pending(req_id, ('local', local_path))
         else:
             if ext == '.bin':
                 # Only try conversion if it's actually a CSGMDL
                 if _is_csgmdl_bin(path):
                     obj = _try_bin_to_obj(path, f'Mesh {aid}')
                     if obj:
-                        with self._lock:
-                            self._pending[req_id] = ('local', str(obj))
+                        self._queue_pending(req_id, ('local', str(obj)))
                     else:
                         _log_local_queued('Failed to convert CSGMDL; serving .bin as-is')
-                        with self._lock:
-                            self._pending[req_id] = ('local', local_path)
+                        self._queue_pending(req_id, ('local', local_path))
                 else:
                     # Not a CSGMDL, serve as-is
                     _log_local_queued('Queued local .bin (not CSGMDL)')
-                    with self._lock:
-                        self._pending[req_id] = ('local', local_path)
+                    self._queue_pending(req_id, ('local', local_path))
             else:
-                with self._lock:
-                    self._pending[req_id] = ('local', local_path)
+                self._queue_pending(req_id, ('local', local_path))
                 _log_local_queued()
 
     def _build_orm_composite(

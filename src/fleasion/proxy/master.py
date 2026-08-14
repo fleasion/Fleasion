@@ -4692,6 +4692,9 @@ class ProxyMaster:
         ready_event = getattr(self, '_env_proxy_ready', None)
         if ready_event is not None:
             ready_event.clear()
+        texture_stripper = getattr(self, '_texture_stripper', None)
+        if texture_stripper is not None:
+            texture_stripper.reset_routes('proxy stop')
         self._stop_linux_sober_custom_fflag_timer()
         if IS_LINUX and getattr(self, '_sober_env_proxy_override_active', False):
             from ..utils.platform_linux import clear_sober_env_proxy_override

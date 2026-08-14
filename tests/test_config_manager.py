@@ -337,6 +337,64 @@ class ConfigManagerEncodingTests(unittest.TestCase):
             self.assertEqual(cdn_replacements, {})
             self.assertEqual(local_replacements, {})
 
+    def test_reserved_numeric_asset_type_range_is_not_treated_as_a_type(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_manager_module = self._load_manager_for(Path(tmp))
+
+            manager = config_manager_module.ConfigManager()
+            manager.enabled_configs = ['Default']
+            manager.replacement_rules = [
+                {
+                    'name': 'Crystal Scythe inspect',
+                    'enabled': True,
+                    'replace_ids': [14098254579, 1, '80', 81.9],
+                    'mode': 'id',
+                    'with_id': 94820576007871,
+                }
+            ]
+
+            replacements, _, _, _ = manager.get_all_replacements()
+
+            self.assertEqual(replacements, {14098254579: 94820576007871})
+
+    def test_word_asset_types_keep_the_existing_wildcard_behavior(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_manager_module = self._load_manager_for(Path(tmp))
+
+            manager = config_manager_module.ConfigManager()
+            manager.enabled_configs = ['Default']
+            manager.replacement_rules = [
+                {
+                    'name': 'All images',
+                    'enabled': True,
+                    'replace_ids': ['Image'],
+                    'mode': 'id',
+                    'with_id': 999,
+                }
+            ]
+
+            replacements, _, _, _ = manager.get_all_replacements()
+
+            self.assertEqual(replacements, {1: 999})
+
+    def test_reserved_numeric_replacement_target_is_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_manager_module = self._load_manager_for(Path(tmp))
+
+            manager = config_manager_module.ConfigManager()
+            manager.enabled_configs = ['Default']
+            manager.replacement_rules = [
+                {
+                    'name': 'Reserved target',
+                    'enabled': True,
+                    'replace_ids': [1000],
+                    'mode': 'id',
+                    'with_id': 80,
+                }
+            ]
+
+            self.assertEqual(manager.get_all_replacements()[0], {})
+
     def test_portable_local_replacement_resolves_below_configs(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_manager_module = self._load_manager_for(Path(tmp))

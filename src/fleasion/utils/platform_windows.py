@@ -1375,6 +1375,55 @@ def _delete_db_file(db_path: Path, messages: list, label: str = 'Storage databas
         messages.append(f'{label}: Failed: {e}')
 
 
+def _delete_cache_file(path: Path, messages: list, label: str) -> None:
+    if not path.exists():
+        return
+    try:
+        _clear_read_only(path)
+        path.unlink()
+        messages.append(f'{label} deleted successfully')
+    except OSError as exc:
+        messages.append(f'{label}: Failed: {exc}')
+
+
+def _delete_storage_family(db_path: Path, messages: list, suffix: str = '') -> None:
+    """Delete one complete Roblox RbxStorage database and file-cache family."""
+    import shutil
+
+    label_suffix = f' ({suffix})' if suffix else ''
+    _delete_db_file(db_path, messages, f'Storage database{label_suffix}')
+    for companion_suffix, companion_label in (
+        ('-wal', 'Storage database WAL'),
+        ('-shm', 'Storage database shared memory'),
+        ('-journal', 'Storage database journal'),
+    ):
+        _delete_cache_file(
+            Path(f'{db_path}{companion_suffix}'),
+            messages,
+            f'{companion_label}{label_suffix}',
+        )
+    _delete_cache_file(
+        db_path.parent / 'rbx-storage.id',
+        messages,
+        f'Storage identifier{label_suffix}',
+    )
+
+    for folder_name, folder_label in (
+        ('rbx-storage', 'Storage folder'),
+        ('rbx-storage-sc', 'Session storage folder'),
+    ):
+        folder = db_path.parent / folder_name
+        if not folder.exists():
+            if folder_name == 'rbx-storage':
+                messages.append(f'{folder_label}{label_suffix} not found')
+            continue
+        try:
+            shutil.rmtree(folder, onerror=_rmtree_clear_readonly_retry)
+            messages.append(f'{folder_label}{label_suffix} deleted successfully')
+        except OSError as exc:
+            messages.append(f'Failed to delete {folder_label.lower()}{label_suffix}: {exc}')
+
+
 def delete_cache() -> list[str]:
     """Delete Roblox cache with cleanup. Returns list of status messages."""
     messages = []
@@ -1394,27 +1443,24 @@ def delete_cache() -> list[str]:
     else:
         messages.append('Roblox was closed')
 
-    # Delete rbx-storage.db (standard install)
-    _delete_db_file(STORAGE_DB, messages, 'Storage database')
+    # Routes are request-derived state, not reusable cache.  Clear them before
+    # deleting disk data so an old batch response cannot immediately repopulate
+    # Roblox's fresh cache with a disabled config's replacement.
+    try:
+        from ..proxy.addons.texture_stripper import TextureStripper
 
-    # Delete rbx-storage.db (Microsoft Store / GDK install) if it exists
-    if STORAGE_DB_GDK.parent.exists():
-        _delete_db_file(STORAGE_DB_GDK, messages, 'Storage database (GDK)')
+        route_counts = TextureStripper.reset_routes('cache clear')
+        if any(route_counts.values()):
+            messages.append('Fleasion replacement routes cleared successfully')
+    except Exception as exc:
+        log_buffer.log('Cache', f'Could not clear live replacement routes: {exc}')
 
-    # Delete rbx-storage folder
+    # Delete the complete standard and Microsoft Store/GDK cache families.
+    _delete_storage_family(Path(STORAGE_DB), messages)
+    if Path(STORAGE_DB_GDK) != Path(STORAGE_DB) and Path(STORAGE_DB_GDK).parent.exists():
+        _delete_storage_family(Path(STORAGE_DB_GDK), messages, 'GDK')
+
     import shutil
-
-    storage_folder = STORAGE_DB.parent / 'rbx-storage'
-    if storage_folder.exists():
-        try:
-            shutil.rmtree(storage_folder, onerror=_rmtree_clear_readonly_retry)
-            messages.append('Storage folder deleted successfully')
-        except PermissionError:
-            messages.append('Failed to delete storage folder: Permission denied')
-        except OSError as e:
-            messages.append(f'Failed to delete storage folder: {e}')
-    else:
-        messages.append('Storage folder not found')
 
     # Delete Fleasion APP_CACHE_DIR (preserve predownloaded assets only)
     from .paths import APP_CACHE_DIR

@@ -28,6 +28,19 @@ from ..utils import format_count, get_icon_path
 from ..utils.clipboard import copy_pixmap_to_clipboard
 
 
+def _coerce_import_value(value) -> int | str | None:
+    """Return a safe replacer value without truncating JSON metadata floats."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.isdigit():
+            return int(stripped)
+    return None
+
+
 class JsonSearchWorker(QThread):
     """Worker thread for searching JSON tree without blocking UI."""
 
@@ -682,15 +695,16 @@ class JsonTreeViewer(QDialog):
         values: list[int | str] = []
         for item in leaves:
             val = self.node_values.get(id(item))
-            if isinstance(val, bool):
-                continue
-            # Try to parse as integer first
-            try:
-                values.append(int(val))
-            except ValueError, TypeError:
-                # Check if it's a link or file path
-                if self._is_link_or_path(val):
-                    values.append(val)
+            # JSON floats are metadata surprisingly often (animation Length,
+            # EndTime, playback rates, and so on).  int(1.25) silently turning
+            # into asset ID 1 caused a config selected from a parent node to
+            # target every Image request, so accept only values that were
+            # actually encoded as integers.
+            coerced = _coerce_import_value(val)
+            if coerced is not None:
+                values.append(coerced)
+            elif isinstance(val, str) and self._is_link_or_path(val):
+                values.append(val)
         return values
 
     def _on_selection_change(self):

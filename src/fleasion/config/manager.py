@@ -163,6 +163,7 @@ _ASSET_TYPE_IDS = {
     'dynamichead': 79,
     'codesnippet': 80,
 }
+_RESERVED_ASSET_TYPE_ID_MAX = max(_ASSET_TYPE_IDS.values())
 _VIRTUAL_ANIM_TYPES = {
     'r6animation': 'R6Animation',
     'r15animation': 'R15Animation',
@@ -171,6 +172,20 @@ _VIRTUAL_ANIM_TYPES = {
     'r15 animation': 'R15Animation',
     'non-player animation': 'NonPlayerAnimation',
 }
+
+
+def _parse_config_asset_id(value) -> int | None:
+    """Parse an actual integer ID without truncating JSON floats."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.isdigit():
+            return int(stripped)
+    return None
+
 
 ConfigFileStatus = Literal['valid', 'invalid', 'binary', 'unreadable']
 
@@ -417,6 +432,7 @@ class ConfigManager:
             ]
             | None
         ) = None
+        self._replacements_generation = 0
         self.settings = self._load_settings()
         self._ensure_default_config()
         self.reconcile_configs(save=False)
@@ -444,8 +460,16 @@ class ConfigManager:
         )
 
     def _mark_replacements_dirty(self) -> None:
-        self._all_replacements_cache_signature = None
-        self._all_replacements_cache = None
+        with self._lock:
+            self._all_replacements_cache_signature = None
+            self._all_replacements_cache = None
+            self._replacements_generation += 1
+
+    @property
+    def replacements_generation(self) -> int:
+        """Monotonic version used to invalidate in-flight proxy routes."""
+        with self._lock:
+            return self._replacements_generation
 
     def invalidate_replacements_cache(self) -> None:
         """Invalidate resolved replacement mappings after an external asset change."""
@@ -1567,7 +1591,8 @@ class ConfigManager:
                         parts = v.split(':', 1)
                         # "parentId:mapIndex" slot key (e.g. "7547298786:1") — keep as str
                         if parts[0].isdigit() and parts[1].isdigit():
-                            parsed_ids.append(v)
+                            if int(parts[0]) > _RESERVED_ASSET_TYPE_ID_MAX:
+                                parsed_ids.append(v)
                             continue
                         # "TexturePack:N" wildcard — replace N-th slot of every TexturePack
                         if parts[0] == 'TexturePack' and parts[1].isdigit():
@@ -1575,15 +1600,21 @@ class ConfigManager:
                             continue
                         continue
 
-                    # Try to parse as integer ID first
-                    try:
-                        parsed_ids.append(int(v))
+                    # Try to parse as an actual integer ID first. Floats are
+                    # metadata, not IDs, and must never be truncated.
+                    numeric_id = _parse_config_asset_id(v)
+                    if numeric_id is not None:
+                        # Roblox reserves this range for asset-type IDs.  Bare
+                        # numbers in configs are asset IDs, never type selectors;
+                        # users select types by their existing names ("Image",
+                        # "TexturePack", etc.).  Ignoring the reserved range
+                        # prevents a stray 1 from becoming an Image wildcard.
+                        if not 1 <= numeric_id <= _RESERVED_ASSET_TYPE_ID_MAX:
+                            parsed_ids.append(numeric_id)
                         continue
-                    except TypeError, ValueError:
-                        pass
 
-                    # Check if it's a known asset type name (case-insensitive)
-                    # Convert to numeric ID for proper texture_stripper matching
+                    # Known asset type names retain the established config
+                    # syntax and convert to the proxy's internal numeric key.
                     if isinstance(v, str):
                         v_lower = v.lower()
                         # Virtual animation rig-filter types - kept as canonical string keys
@@ -1614,11 +1645,10 @@ class ConfigManager:
                     # Empty with_id means remove. Replacement IDs 0 and 1 are
                     # known dummy values and should be invisible to the proxy.
                     if (target := rule.get('with_id')) is not None:
-                        try:
-                            target_id = int(target)
-                        except TypeError, ValueError:
+                        target_id = _parse_config_asset_id(target)
+                        if target_id is None:
                             continue
-                        if target_id in (0, 1):
+                        if 0 <= target_id <= _RESERVED_ASSET_TYPE_ID_MAX:
                             continue
                         replacements.update(dict.fromkeys(parsed_ids, target_id))
                     else:

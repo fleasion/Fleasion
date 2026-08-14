@@ -64,6 +64,75 @@ def _touch(path: Path, mtime: float) -> Path:
     return path
 
 
+def test_delete_storage_family_removes_sqlite_and_session_companions(monkeypatch, tmp_path):
+    module = _load_platform_windows(monkeypatch)
+    db_path = tmp_path / 'Roblox' / 'rbx-storage.db'
+    db_path.parent.mkdir()
+    for path in (
+        db_path,
+        Path(f'{db_path}-wal'),
+        Path(f'{db_path}-shm'),
+        Path(f'{db_path}-journal'),
+        db_path.parent / 'rbx-storage.id',
+    ):
+        path.write_bytes(b'cache')
+    for folder_name in ('rbx-storage', 'rbx-storage-sc'):
+        folder = db_path.parent / folder_name
+        folder.mkdir()
+        (folder / 'entry').write_bytes(b'cache')
+
+    messages = []
+    module._delete_storage_family(db_path, messages)
+
+    assert not db_path.exists()
+    assert not Path(f'{db_path}-wal').exists()
+    assert not Path(f'{db_path}-shm').exists()
+    assert not Path(f'{db_path}-journal').exists()
+    assert not (db_path.parent / 'rbx-storage.id').exists()
+    assert not (db_path.parent / 'rbx-storage').exists()
+    assert not (db_path.parent / 'rbx-storage-sc').exists()
+    assert 'Storage database deleted successfully' in messages
+    assert 'Session storage folder deleted successfully' in messages
+
+
+def test_delete_cache_resets_live_replacement_routes(monkeypatch, tmp_path):
+    module = _load_platform_windows(monkeypatch)
+    roblox_dir = tmp_path / 'Roblox'
+    roblox_dir.mkdir()
+    db_path = roblox_dir / 'rbx-storage.db'
+    db_path.write_bytes(b'db')
+    app_cache = tmp_path / 'FleasionCache'
+    app_cache.mkdir()
+
+    module.STORAGE_DB = db_path
+    module.STORAGE_DB_GDK = db_path
+    monkeypatch.setattr(module, 'is_roblox_running', lambda: False)
+    sys.modules['fleasion.utils.paths'].APP_CACHE_DIR = app_cache
+
+    proxy_pkg = types.ModuleType('fleasion.proxy')
+    proxy_pkg.__path__ = []
+    addons_pkg = types.ModuleType('fleasion.proxy.addons')
+    addons_pkg.__path__ = []
+    texture_module = types.ModuleType('fleasion.proxy.addons.texture_stripper')
+    reset_reasons = []
+
+    class _TextureStripper:
+        @classmethod
+        def reset_routes(cls, reason):
+            reset_reasons.append(reason)
+            return {'pending': 1}
+
+    texture_module.TextureStripper = _TextureStripper
+    monkeypatch.setitem(sys.modules, 'fleasion.proxy', proxy_pkg)
+    monkeypatch.setitem(sys.modules, 'fleasion.proxy.addons', addons_pkg)
+    monkeypatch.setitem(sys.modules, 'fleasion.proxy.addons.texture_stripper', texture_module)
+
+    messages = module.delete_cache()
+
+    assert reset_reasons == ['cache clear']
+    assert 'Fleasion replacement routes cleared successfully' in messages
+
+
 def _skip_immediate_close_for_relaunch_test(monkeypatch, module):
     monkeypatch.setattr(
         module,

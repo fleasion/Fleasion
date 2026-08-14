@@ -9,6 +9,10 @@ class _Config:
         return {}, set(), {}, {}
 
 
+def setup_function():
+    TextureStripper.reset_routes()
+
+
 def test_batch_request_ignores_dummy_id_replacements():
     stripper = TextureStripper(_Config())
     body = json.dumps([
@@ -221,4 +225,58 @@ def test_animation_replacement_rig_detection_strips_bin_metadata(tmp_path):
     with patch("fleasion.utils.anim_converter.detect_rig", return_value="R15") as detect_rig:
         assert stripper._detect_repl_rig(str(replacement)) == "R15"
 
-    detect_rig.assert_called_once_with(b"<roblox!binary animation")
+    detect_rig.assert_called_once_with(b'<roblox!binary animation')
+
+
+def test_disabling_config_invalidates_queued_local_route(tmp_path):
+    class _MutableConfig:
+        replacements_generation = 0
+
+        def __init__(self):
+            self.replacements = ({}, set(), {}, {1234: str(replacement)})
+
+        def get_all_replacements(self):
+            return self.replacements
+
+    replacement = tmp_path / 'replacement.dat'
+    replacement.write_bytes(b'animation')
+    config = _MutableConfig()
+    stripper = TextureStripper(config)
+    body = json.dumps(
+        [{'assetId': 1234, 'assetType': 'Image', 'assetTypeId': 1, 'requestId': 'a'}]
+    ).encode()
+
+    stripper.process_batch_request(body, {}, config.replacements, 'old-batch')
+    assert stripper.has_pending()
+
+    config.replacements = ({}, set(), {}, {})
+    config.replacements_generation += 1
+
+    assert not stripper.has_pending()
+    assert stripper.check_cdn_request('fts.rbxcdn.com', '/old-content') is None
+
+
+def test_reset_rejects_response_from_old_batch(tmp_path):
+    class _MutableConfig:
+        replacements_generation = 0
+
+        def get_all_replacements(self):
+            return {}, set(), {}, {1234: str(replacement)}
+
+    replacement = tmp_path / 'replacement.dat'
+    replacement.write_bytes(b'animation')
+    config = _MutableConfig()
+    stripper = TextureStripper(config)
+    body = json.dumps([{'assetId': 1234, 'requestId': 'a'}]).encode()
+    response = json.dumps(
+        [{'requestId': 'a', 'location': 'https://fts.rbxcdn.com/stale-content'}]
+    ).encode()
+
+    stripper.process_batch_request(body, {}, config.get_all_replacements(), 'old-batch')
+    assert stripper.has_pending()
+
+    TextureStripper.reset_routes('test cache clear')
+    stripper.process_batch_response(body, response, {}, 'old-batch')
+
+    assert not stripper.has_pending()
+    assert stripper.check_cdn_request('fts.rbxcdn.com', '/stale-content') is None
