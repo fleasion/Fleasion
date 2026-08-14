@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 import fleasion.proxy.master as proxy_master
+from fleasion.utils.certs import generate_ca, generate_multi_host_cert
 
 
 class FakeProactorEventLoop:
@@ -168,3 +169,24 @@ def test_proactor_accept_fault_does_not_retry_twice(monkeypatch):
     proxy._windows_proactor_accept_fault = True
 
     asyncio.run(proxy._raise_selector_retry_for_proactor_accept_fault())
+
+
+def test_raw_tls_loopback_probe_bypasses_asyncio_transports(tmp_path):
+    ca_cert, ca_key = generate_ca(tmp_path)
+    cert, key = generate_multi_host_cert(
+        'default',
+        {'assetdelivery.roblox.com'},
+        ca_cert,
+        ca_key,
+        tmp_path,
+    )
+
+    ok, detail = proxy_master._run_raw_tls_loopback_probe_sync(
+        'assetdelivery.roblox.com',
+        ca_cert,
+        cert,
+        key,
+    )
+
+    assert ok, detail
+    assert 'protocol=TLSv1.2' in detail
