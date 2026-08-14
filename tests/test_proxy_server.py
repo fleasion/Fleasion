@@ -568,6 +568,41 @@ def test_explicit_tunnel_dialer_prefers_ipv4_and_falls_back(monkeypatch):
     asyncio.run(run_test())
 
 
+def test_explicit_tunnel_single_candidate_receives_full_connection_budget(monkeypatch):
+    async def run_test():
+        loop = asyncio.get_running_loop()
+
+        async def fake_getaddrinfo(*_args, **_kwargs):
+            return [
+                (socket.AF_INET, socket.SOCK_STREAM, 6, '', ('192.0.2.1', 443)),
+            ]
+
+        async def fake_open_connection(*_args, **_kwargs):
+            return asyncio.StreamReader(), _FakeUpstreamWriter()
+
+        timeouts = []
+
+        async def recording_wait_for(awaitable, timeout):
+            timeouts.append(timeout)
+            return await awaitable
+
+        monkeypatch.setattr(loop, 'getaddrinfo', fake_getaddrinfo)
+        monkeypatch.setattr(asyncio, 'open_connection', fake_open_connection)
+        monkeypatch.setattr(asyncio, 'wait_for', recording_wait_for)
+
+        result = await _open_explicit_proxy_tunnel(
+            'silver.roblox.com',
+            443,
+            timeout=10.0,
+        )
+
+        assert result.writer is not None
+        assert timeouts[0] == 10.0
+        assert timeouts[1] > 9.9
+
+    asyncio.run(run_test())
+
+
 def test_explicit_tunnel_dialer_falls_back_to_ipv6(monkeypatch):
     async def run_test():
         loop = asyncio.get_running_loop()

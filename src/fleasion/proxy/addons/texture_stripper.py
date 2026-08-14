@@ -509,6 +509,7 @@ class TextureStripper:
         self._cache_scraper = None  # Set by ProxyMaster after construction
         self._precheck_state_lock = Lock()
         self._precheck_retry_after: Dict[int, float] = {}
+        self._precheck_network_failure_count = 0
         self._seen_replacements_generation = getattr(
             config_manager, 'replacements_generation', None
         )
@@ -588,7 +589,8 @@ class TextureStripper:
     _precheck_pending: set = set()
 
     _PREDOWNLOAD_DIR: Path = APP_CACHE_DIR / 'predownloaded'
-    _PRECHECK_NETWORK_RETRY_SECONDS = 120.0
+    _PRECHECK_NETWORK_RETRY_BASE_SECONDS = 120.0
+    _PRECHECK_NETWORK_RETRY_MAX_SECONDS = 15 * 60.0
     _PRECHECK_HTTP_RETRY_SECONDS = 15 * 60.0
 
     # Animation type IDs (main + all subtypes)
@@ -783,7 +785,7 @@ class TextureStripper:
                 )
                 failed_count += 1
                 retry_seconds = (
-                    self._PRECHECK_NETWORK_RETRY_SECONDS
+                    self._PRECHECK_NETWORK_RETRY_BASE_SECONDS
                     if dl_status is None
                     else self._PRECHECK_HTTP_RETRY_SECONDS
                 )
@@ -795,7 +797,17 @@ class TextureStripper:
 
         with self._precheck_state_lock:
             self._precheck_pending -= unique_targets
-            retry_at = time.monotonic() + self._PRECHECK_NETWORK_RETRY_SECONDS
+            if network_deferred:
+                self._precheck_network_failure_count += 1
+                exponent = min(self._precheck_network_failure_count - 1, 3)
+                network_retry_seconds = min(
+                    self._PRECHECK_NETWORK_RETRY_BASE_SECONDS * (2**exponent),
+                    self._PRECHECK_NETWORK_RETRY_MAX_SECONDS,
+                )
+            else:
+                self._precheck_network_failure_count = 0
+                network_retry_seconds = self._PRECHECK_NETWORK_RETRY_BASE_SECONDS
+            retry_at = time.monotonic() + network_retry_seconds
             for target_id in network_deferred:
                 self._precheck_retry_after[target_id] = retry_at
         if network_deferred:
@@ -803,7 +815,7 @@ class TextureStripper:
                 'Replacer',
                 f'Paused replacement precheck after a network failure; '
                 f'{len(network_deferred)} target(s) deferred for '
-                f'{self._PRECHECK_NETWORK_RETRY_SECONDS:.0f}s',
+                f'{network_retry_seconds:.0f}s',
             )
         log_buffer.log(
             'Replacer',

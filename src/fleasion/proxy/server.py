@@ -550,7 +550,6 @@ class _ExplicitTunnelConnectResult:
 
 
 _EXPLICIT_TUNNEL_CONNECT_TIMEOUT = 10.0
-_EXPLICIT_TUNNEL_PER_CANDIDATE_TIMEOUT = 3.0
 _EXPLICIT_TUNNEL_MAX_CANDIDATES = 3
 
 
@@ -618,13 +617,18 @@ async def _open_explicit_proxy_tunnel(
             attempt_candidates[-1] = ipv6_candidate
 
     failures: list[str] = []
-    for family, address in attempt_candidates:
+    for candidate_index, (family, address) in enumerate(attempt_candidates):
         remaining = timeout - (time.monotonic() - started)
         if remaining <= 0:
             failures.append('phase=connect budget_exhausted')
             break
         attempt_started = time.monotonic()
-        attempt_timeout = min(_EXPLICIT_TUNNEL_PER_CANDIDATE_TIMEOUT, remaining)
+        # Share the remaining total budget between the candidates still to be
+        # tried. Most Roblox names expose only one usable address; the old
+        # fixed three-second cap discarded seven seconds of the ten-second
+        # budget and produced avoidable Error 279/asset failures on lossy Wi-Fi.
+        candidates_left = len(attempt_candidates) - candidate_index
+        attempt_timeout = remaining / candidates_left
         family_name = 'IPv4' if family == socket.AF_INET else 'IPv6'
         try:
             reader, writer = await asyncio.wait_for(

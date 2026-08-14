@@ -282,7 +282,9 @@ def test_reset_rejects_response_from_old_batch(tmp_path):
     assert stripper.check_cdn_request('fts.rbxcdn.com', '/stale-content') is None
 
 
-def test_replacement_precheck_stops_and_cools_down_after_network_failure(tmp_path):
+def test_replacement_precheck_stops_and_backs_off_after_network_failure(
+    tmp_path, monkeypatch
+):
     class _ReplacementConfig:
         def get_all_replacements(self):
             return {100: 900001, 101: 900002}, set(), {}, {}
@@ -303,6 +305,11 @@ def test_replacement_precheck_stops_and_cools_down_after_network_failure(tmp_pat
     stripper._PREDOWNLOAD_DIR = tmp_path / 'predownloaded'
     stripper.set_cache_scraper(scraper)
     TextureStripper._precheck_pending.difference_update({900001, 900002})
+    now = [100.0]
+    monkeypatch.setattr(
+        'fleasion.proxy.addons.texture_stripper.time.monotonic',
+        lambda: now[0],
+    )
 
     stripper.precheck_replacements()
     stripper.precheck_replacements()
@@ -312,3 +319,12 @@ def test_replacement_precheck_stops_and_cools_down_after_network_failure(tmp_pat
     ]
     assert not ({900001, 900002} & TextureStripper._precheck_pending)
     assert set(stripper._precheck_retry_after) == {900001, 900002}
+    assert stripper._precheck_network_failure_count == 1
+    assert set(stripper._precheck_retry_after.values()) == {220.0}
+
+    now[0] = 221.0
+    stripper.precheck_replacements()
+
+    assert len(scraper.calls) == 2
+    assert stripper._precheck_network_failure_count == 2
+    assert set(stripper._precheck_retry_after.values()) == {461.0}
