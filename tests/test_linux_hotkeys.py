@@ -1,10 +1,14 @@
+import errno
+import os
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from fleasion.gui.linux_hotkeys import (
     LinuxCustomFFlagHotkeyController,
+    LinuxHotkeyService,
     MOD_ALT,
     MOD_CTRL,
     MOD_SHIFT,
@@ -15,16 +19,21 @@ from fleasion.gui.linux_hotkeys import (
 from fleasion.gui.windows_hotkeys import binding_text as windows_binding_text
 
 
-pytestmark = pytest.mark.skipif(sys.platform == 'win32', reason='Linux-only hotkey translation tests')
+pytestmark = pytest.mark.skipif(
+    sys.platform == 'win32', reason='Linux-only hotkey translation tests'
+)
 
 
 def test_linux_keybinding_uses_tagged_evdev_codes():
     assert normalize_binding(
         {'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': MOD_CTRL | MOD_SHIFT}
     ) == {'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': MOD_CTRL | MOD_SHIFT}
-    assert binding_text(
-        {'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': MOD_CTRL | MOD_SHIFT}
-    ) == 'Ctrl+Shift+A'
+    assert (
+        binding_text(
+            {'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': MOD_CTRL | MOD_SHIFT}
+        )
+        == 'Ctrl+Shift+A'
+    )
     assert binding_text({'platform': 'linux_evdev', 'scan_code': 76, 'modifiers': 0}) == 'Numpad 5'
 
 
@@ -32,7 +41,10 @@ def test_linux_keybinding_uses_the_complete_smu_evdev_translation_table():
     assert binding_text({'platform': 'linux_evdev', 'scan_code': 1, 'modifiers': 0}) == 'Escape'
     assert binding_text({'platform': 'linux_evdev', 'scan_code': 183, 'modifiers': 0}) == 'F13'
     assert binding_text({'platform': 'linux_evdev', 'scan_code': 194, 'modifiers': 0}) == 'F24'
-    assert binding_text({'platform': 'linux_evdev', 'scan_code': 0x110, 'modifiers': 0}) == 'Mouse Left'
+    assert (
+        binding_text({'platform': 'linux_evdev', 'scan_code': 0x110, 'modifiers': 0})
+        == 'Mouse Left'
+    )
     # SMU's KeyNameFallback also deliberately retains its hexadecimal label
     # for keypad operators which do not have a named virtual key entry.
     assert binding_text({'platform': 'linux_evdev', 'scan_code': 98, 'modifiers': 0}) == '0x6F'
@@ -40,17 +52,31 @@ def test_linux_keybinding_uses_the_complete_smu_evdev_translation_table():
 
 def test_windows_and_linux_bindings_share_smu_key_names():
     assert windows_binding_text({'scan_code': 0x1E, 'extended': False, 'modifiers': 0}) == 'A'
-    assert windows_binding_text({'scan_code': 0x4C, 'extended': False, 'modifiers': 0}) == 'Numpad 5'
+    assert (
+        windows_binding_text({'scan_code': 0x4C, 'extended': False, 'modifiers': 0}) == 'Numpad 5'
+    )
     assert windows_binding_text({'scan_code': 0x4B, 'extended': True, 'modifiers': 0}) == 'Left'
     assert binding_text({'platform': 'linux_evdev', 'scan_code': 30, 'modifiers': 0}) == 'A'
     assert binding_text({'platform': 'linux_evdev', 'scan_code': 76, 'modifiers': 0}) == 'Numpad 5'
     assert binding_text({'platform': 'linux_evdev', 'scan_code': 105, 'modifiers': 0}) == 'Left'
-    assert windows_binding_text(
-        {'platform': 'windows', 'kind': 'mouse_button', 'scan_code': 5, 'extended': False, 'modifiers': 0}
-    ) == 'Mouse X1'
-    assert windows_binding_text(
-        {'platform': 'windows', 'kind': 'mouse_wheel', 'direction': 'down', 'modifiers': 0}
-    ) == 'Mouse Wheel Down'
+    assert (
+        windows_binding_text(
+            {
+                'platform': 'windows',
+                'kind': 'mouse_button',
+                'scan_code': 5,
+                'extended': False,
+                'modifiers': 0,
+            }
+        )
+        == 'Mouse X1'
+    )
+    assert (
+        windows_binding_text(
+            {'platform': 'windows', 'kind': 'mouse_wheel', 'direction': 'down', 'modifiers': 0}
+        )
+        == 'Mouse Wheel Down'
+    )
 
 
 def test_linux_keybinding_rejects_windows_or_malformed_settings():
@@ -60,7 +86,12 @@ def test_linux_keybinding_rejects_windows_or_malformed_settings():
 
 
 def test_linux_mouse_buttons_and_wheel_use_smu_codes():
-    mouse_four = {'platform': 'linux_evdev', 'kind': 'mouse_button', 'scan_code': 0x113, 'modifiers': 0}
+    mouse_four = {
+        'platform': 'linux_evdev',
+        'kind': 'mouse_button',
+        'scan_code': 0x113,
+        'modifiers': 0,
+    }
     wheel_up = {'platform': 'linux_evdev', 'kind': 'mouse_wheel', 'direction': 'up', 'modifiers': 0}
     assert normalize_binding(mouse_four) == mouse_four
     assert binding_text(mouse_four) == 'Mouse X1'
@@ -96,3 +127,43 @@ def test_linux_hotkey_controller_toggles_without_the_dashboard():
     assert proxy.refresh_calls == 1
     assert toggled == ['FFlagExample']
     controller.stop()
+
+
+def test_linux_hotkey_reader_drops_disconnected_evdev_device(monkeypatch):
+    service = LinuxHotkeyService()
+    service._fds = {43: set()}
+    service._fd_paths = {43: Path('/dev/input/event27')}
+    closed = []
+    monkeypatch.setattr(
+        os,
+        'read',
+        lambda *_args: (_ for _ in ()).throw(OSError(errno.ENODEV, 'No such device')),
+    )
+    monkeypatch.setattr(os, 'close', closed.append)
+
+    service._drain_device(43)
+
+    assert service._fds == {}
+    assert service._fd_paths == {}
+    assert closed == [43]
+
+
+def test_linux_hotkey_reader_does_not_spin_after_all_devices_disconnect(monkeypatch):
+    service = LinuxHotkeyService()
+    service._fds = {43: set()}
+    service._fd_paths = {43: Path('/dev/input/event27')}
+    select_calls = []
+    monkeypatch.setattr(
+        'fleasion.gui.linux_hotkeys.select.select',
+        lambda *args: select_calls.append(args) or ([43], [], []),
+    )
+    monkeypatch.setattr(
+        os,
+        'read',
+        lambda *_args: (_ for _ in ()).throw(OSError(errno.ENODEV, 'No such device')),
+    )
+    monkeypatch.setattr(os, 'close', lambda _fd: None)
+
+    service._run()
+
+    assert len(select_calls) == 1

@@ -44,27 +44,129 @@ _KEY_RIGHTSHIFT = 54
 # Retaining this single source of truth means the Linux UI names every key the
 # same way as SMU instead of maintaining an incomplete, separate label list.
 _SMU_EVDEV_TO_VK = {
-    0x110: 0x01, 0x111: 0x02, 0x112: 0x04, 0x113: 0x05, 0x114: 0x06,
-    1: 0x1B, 2: 0x31, 3: 0x32, 4: 0x33, 5: 0x34, 6: 0x35, 7: 0x36,
-    8: 0x37, 9: 0x38, 10: 0x39, 11: 0x30, 12: 0xBD, 13: 0xBB, 14: 0x08,
-    15: 0x09, 16: 0x51, 17: 0x57, 18: 0x45, 19: 0x52, 20: 0x54, 21: 0x59,
-    22: 0x55, 23: 0x49, 24: 0x4F, 25: 0x50, 26: 0xDB, 27: 0xDD, 28: 0x0D,
-    29: 0x11, 30: 0x41, 31: 0x53, 32: 0x44, 33: 0x46, 34: 0x47, 35: 0x48,
-    36: 0x4A, 37: 0x4B, 38: 0x4C, 39: 0xBA, 40: 0xDE, 41: 0xC0, 42: 0x10,
-    43: 0xDC, 44: 0x5A, 45: 0x58, 46: 0x43, 47: 0x56, 48: 0x42, 49: 0x4E,
-    50: 0x4D, 51: 0xBC, 52: 0xBE, 53: 0xBF, 54: 0x10, 55: 0x6A, 56: 0x12,
-    57: 0x20, 58: 0x14, 59: 0x70, 60: 0x71, 61: 0x72, 62: 0x73, 63: 0x74,
-    64: 0x75, 65: 0x76, 66: 0x77, 67: 0x78, 68: 0x79, 69: 0x90, 70: 0x91,
-    71: 0x67, 72: 0x68, 73: 0x69, 74: 0x6D, 75: 0x64, 76: 0x65, 77: 0x66,
-    78: 0x6B, 79: 0x61, 80: 0x62, 81: 0x63, 82: 0x60, 83: 0x6E, 87: 0x7A,
-    88: 0x7B, 96: 0x0D, 97: 0x11, 98: 0x6F, 99: 0x2C, 100: 0x12,
-    102: 0x24, 103: 0x26, 104: 0x21, 105: 0x25, 106: 0x27, 107: 0x23,
-    108: 0x28, 109: 0x22, 110: 0x2D, 111: 0x2E, 119: 0x13, 125: 0x5B,
-    126: 0x5C, 127: 0x5D, 183: 0x7C, 184: 0x7D, 185: 0x7E, 186: 0x7F,
-    187: 0x80, 188: 0x81, 189: 0x82, 190: 0x83, 191: 0x84, 192: 0x85,
-    193: 0x86, 194: 0x87,
+    0x110: 0x01,
+    0x111: 0x02,
+    0x112: 0x04,
+    0x113: 0x05,
+    0x114: 0x06,
+    1: 0x1B,
+    2: 0x31,
+    3: 0x32,
+    4: 0x33,
+    5: 0x34,
+    6: 0x35,
+    7: 0x36,
+    8: 0x37,
+    9: 0x38,
+    10: 0x39,
+    11: 0x30,
+    12: 0xBD,
+    13: 0xBB,
+    14: 0x08,
+    15: 0x09,
+    16: 0x51,
+    17: 0x57,
+    18: 0x45,
+    19: 0x52,
+    20: 0x54,
+    21: 0x59,
+    22: 0x55,
+    23: 0x49,
+    24: 0x4F,
+    25: 0x50,
+    26: 0xDB,
+    27: 0xDD,
+    28: 0x0D,
+    29: 0x11,
+    30: 0x41,
+    31: 0x53,
+    32: 0x44,
+    33: 0x46,
+    34: 0x47,
+    35: 0x48,
+    36: 0x4A,
+    37: 0x4B,
+    38: 0x4C,
+    39: 0xBA,
+    40: 0xDE,
+    41: 0xC0,
+    42: 0x10,
+    43: 0xDC,
+    44: 0x5A,
+    45: 0x58,
+    46: 0x43,
+    47: 0x56,
+    48: 0x42,
+    49: 0x4E,
+    50: 0x4D,
+    51: 0xBC,
+    52: 0xBE,
+    53: 0xBF,
+    54: 0x10,
+    55: 0x6A,
+    56: 0x12,
+    57: 0x20,
+    58: 0x14,
+    59: 0x70,
+    60: 0x71,
+    61: 0x72,
+    62: 0x73,
+    63: 0x74,
+    64: 0x75,
+    65: 0x76,
+    66: 0x77,
+    67: 0x78,
+    68: 0x79,
+    69: 0x90,
+    70: 0x91,
+    71: 0x67,
+    72: 0x68,
+    73: 0x69,
+    74: 0x6D,
+    75: 0x64,
+    76: 0x65,
+    77: 0x66,
+    78: 0x6B,
+    79: 0x61,
+    80: 0x62,
+    81: 0x63,
+    82: 0x60,
+    83: 0x6E,
+    87: 0x7A,
+    88: 0x7B,
+    96: 0x0D,
+    97: 0x11,
+    98: 0x6F,
+    99: 0x2C,
+    100: 0x12,
+    102: 0x24,
+    103: 0x26,
+    104: 0x21,
+    105: 0x25,
+    106: 0x27,
+    107: 0x23,
+    108: 0x28,
+    109: 0x22,
+    110: 0x2D,
+    111: 0x2E,
+    119: 0x13,
+    125: 0x5B,
+    126: 0x5C,
+    127: 0x5D,
+    183: 0x7C,
+    184: 0x7D,
+    185: 0x7E,
+    186: 0x7F,
+    187: 0x80,
+    188: 0x81,
+    189: 0x82,
+    190: 0x83,
+    191: 0x84,
+    192: 0x85,
+    193: 0x86,
+    194: 0x87,
 }
-_PERMISSION_INSTALLER = '''set -eu
+_PERMISSION_INSTALLER = """set -eu
 target_user="${SMU_TARGET_USER:-}"
 if [ -z "$target_user" ] && [ -n "${PKEXEC_UID:-}" ]; then
     target_user="$(getent passwd "$PKEXEC_UID" | cut -d: -f1 || true)"
@@ -87,7 +189,7 @@ if command -v setfacl >/dev/null 2>&1; then
     done
 fi
 echo "Installed Fleasion Linux keybind permissions for $target_user."
-'''
+"""
 
 
 def modifier_mask_for_evdev_code(code: int) -> int:
@@ -109,19 +211,17 @@ def normalize_binding(binding) -> dict[str, int | str] | None:
         return None
     kind = binding.get('kind', 'key')
     modifiers = binding.get('modifiers', 0)
-    if (
-        not isinstance(modifiers, int)
-        or isinstance(modifiers, bool)
-        or modifiers & ~MODIFIER_MASK
-    ):
+    if not isinstance(modifiers, int) or isinstance(modifiers, bool) or modifiers & ~MODIFIER_MASK:
         return None
     if kind == 'mouse_wheel':
         direction = binding.get('direction')
         if direction not in ('up', 'down'):
             return None
         return {
-            'platform': 'linux_evdev', 'kind': 'mouse_wheel',
-            'direction': direction, 'modifiers': modifiers,
+            'platform': 'linux_evdev',
+            'kind': 'mouse_wheel',
+            'direction': direction,
+            'modifiers': modifiers,
         }
     scan_code = binding.get('scan_code')
     if (
@@ -129,11 +229,14 @@ def normalize_binding(binding) -> dict[str, int | str] | None:
         or not isinstance(scan_code, int)
         or isinstance(scan_code, bool)
         or not 0 < scan_code <= 0x2FF
-        or kind == 'mouse_button' and scan_code not in (0x110, 0x111, 0x112, 0x113, 0x114)
+        or kind == 'mouse_button'
+        and scan_code not in (0x110, 0x111, 0x112, 0x113, 0x114)
     ):
         return None
     result: dict[str, int | str] = {
-        'platform': 'linux_evdev', 'scan_code': scan_code, 'modifiers': modifiers,
+        'platform': 'linux_evdev',
+        'scan_code': scan_code,
+        'modifiers': modifiers,
     }
     if kind == 'mouse_button':
         result['kind'] = kind
@@ -148,7 +251,12 @@ def binding_text(binding) -> str:
     modifiers = int(normalized['modifiers'])
     labels = [
         label
-        for flag, label in ((MOD_WIN, 'Super'), (MOD_CTRL, 'Ctrl'), (MOD_ALT, 'Alt'), (MOD_SHIFT, 'Shift'))
+        for flag, label in (
+            (MOD_WIN, 'Super'),
+            (MOD_CTRL, 'Ctrl'),
+            (MOD_ALT, 'Alt'),
+            (MOD_SHIFT, 'Shift'),
+        )
         if modifiers & flag
     ]
     if normalized.get('kind') == 'mouse_wheel':
@@ -182,6 +290,7 @@ class LinuxHotkeyService(QObject):
         self._qt_deleted = threading.Event()
         self._lock = threading.Lock()
         self._fds: dict[int, set[int]] = {}
+        self._fd_paths: dict[int, Path] = {}
         self._pressed: set[int] = set()
         self._bindings: dict[str, dict[str, int | str]] = {}
         self._was_active: dict[str, bool] = {}
@@ -229,6 +338,7 @@ class LinuxHotkeyService(QObject):
             return False
 
         opened: dict[int, set[int]] = {}
+        opened_paths: dict[int, Path] = {}
         errors: list[str] = []
         for path in paths:
             try:
@@ -237,6 +347,7 @@ class LinuxHotkeyService(QObject):
                 errors.append(f'{path.name}: {exc.strerror or exc}')
                 continue
             opened[fd] = set()
+            opened_paths[fd] = path
         if not opened:
             self.last_error = 'Cannot read /dev/input/event*' + (
                 f' ({"; ".join(errors)})' if errors else '.'
@@ -245,6 +356,7 @@ class LinuxHotkeyService(QObject):
 
         with self._lock:
             self._fds = opened
+            self._fd_paths = opened_paths
             self._pressed.clear()
             self._was_active = {
                 name: self._binding_is_active(binding) for name, binding in self._bindings.items()
@@ -254,7 +366,9 @@ class LinuxHotkeyService(QObject):
             target=self._run, daemon=True, name='fleasion-linux-fflag-hotkeys'
         )
         self._thread.start()
-        log_buffer.log('CustomFFlags', f'Linux keybind reader opened {len(opened)} input device(s).')
+        log_buffer.log(
+            'CustomFFlags', f'Linux keybind reader opened {len(opened)} input device(s).'
+        )
         return True
 
     def _run(self) -> None:
@@ -277,8 +391,10 @@ class LinuxHotkeyService(QObject):
             except OSError as exc:
                 if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
                     return
+                self._drop_device(fd, exc)
                 return
             if not raw:
+                self._drop_device(fd, 'end-of-device')
                 return
             complete_size = len(raw) - len(raw) % _INPUT_EVENT.size
             for offset in range(0, complete_size, _INPUT_EVENT.size):
@@ -287,6 +403,32 @@ class LinuxHotkeyService(QObject):
                     self._set_key_state(fd, code, value == 1)
                 elif event_type == _EV_REL and code == _REL_WHEEL and value:
                     self._handle_wheel(value)
+
+    def _drop_device(self, fd: int, reason: OSError | str) -> None:
+        """Remove an input device that was disconnected or became unusable.
+
+        Linux evdev descriptors remain readable after a device node is removed,
+        but every read then returns ``ENODEV``.  Leaving that descriptor in the
+        select set turns the reader into a tight loop that consumes a CPU core.
+        """
+        with self._lock:
+            if fd not in self._fds:
+                return
+            path = self._fd_paths.pop(fd, Path(f'fd:{fd}'))
+            self._fds.pop(fd, None)
+            self._pressed = set().union(*self._fds.values()) if self._fds else set()
+            self._was_active = {
+                name: self._binding_is_active(binding) for name, binding in self._bindings.items()
+            }
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        detail = reason.strerror or reason if isinstance(reason, OSError) else reason
+        log_buffer.log(
+            'CustomFFlags',
+            f'Linux keybind reader dropped {path.name} after input-device error: {detail}',
+        )
 
     def _set_key_state(self, fd: int, code: int, pressed: bool) -> None:
         with self._lock:
@@ -352,15 +494,17 @@ class LinuxHotkeyService(QObject):
         for name in activations:
             self._emit_signal('activated', name)
 
-    def _binding_is_active(self, binding: Mapping[str, int | str], modifiers: int | None = None) -> bool:
+    def _binding_is_active(
+        self, binding: Mapping[str, int | str], modifiers: int | None = None
+    ) -> bool:
         if binding.get('kind') == 'mouse_wheel':
             return False
         code = int(binding['scan_code'])
         if modifiers is None:
             modifiers = self._active_modifiers()
-        return code in self._pressed and (
-            modifiers & ~modifier_mask_for_evdev_code(code)
-        ) == int(binding['modifiers'])
+        return code in self._pressed and (modifiers & ~modifier_mask_for_evdev_code(code)) == int(
+            binding['modifiers']
+        )
 
     def stop(self) -> None:
         self._stop.set()
@@ -371,6 +515,7 @@ class LinuxHotkeyService(QObject):
         with self._lock:
             fds = tuple(self._fds)
             self._fds.clear()
+            self._fd_paths.clear()
             self._pressed.clear()
             self._was_active.clear()
         for fd in fds:
