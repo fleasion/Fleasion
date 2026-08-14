@@ -280,3 +280,35 @@ def test_reset_rejects_response_from_old_batch(tmp_path):
 
     assert not stripper.has_pending()
     assert stripper.check_cdn_request('fts.rbxcdn.com', '/stale-content') is None
+
+
+def test_replacement_precheck_stops_and_cools_down_after_network_failure(tmp_path):
+    class _ReplacementConfig:
+        def get_all_replacements(self):
+            return {100: 900001, 101: 900002}, set(), {}, {}
+
+    class _OfflineScraper:
+        def __init__(self):
+            self.calls = []
+
+        def _get_roblosecurity(self, wait=False):
+            return None
+
+        def _https_get(self, hostname, path, **_kwargs):
+            self.calls.append((hostname, path))
+            return None, None
+
+    scraper = _OfflineScraper()
+    stripper = TextureStripper(_ReplacementConfig())
+    stripper._PREDOWNLOAD_DIR = tmp_path / 'predownloaded'
+    stripper.set_cache_scraper(scraper)
+    TextureStripper._precheck_pending.difference_update({900001, 900002})
+
+    stripper.precheck_replacements()
+    stripper.precheck_replacements()
+
+    assert scraper.calls == [
+        ('assetdelivery.roblox.com', '/v1/asset/?id=900001'),
+    ]
+    assert not ({900001, 900002} & TextureStripper._precheck_pending)
+    assert set(stripper._precheck_retry_after) == {900001, 900002}

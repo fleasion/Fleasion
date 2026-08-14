@@ -1946,6 +1946,9 @@ class FleasionProxy:
                         first_ok_method = result.method
                     try:
                         result.writer.close()
+                        wait_closed = getattr(result.writer, 'wait_closed', None)
+                        if callable(wait_closed):
+                            await wait_closed()
                     except Exception:
                         pass
                 else:
@@ -1971,7 +1974,12 @@ class FleasionProxy:
                     'VPN may not route Fleasion direct-IP sockets.',
                 )
 
-        await asyncio.gather(*(probe(host) for host in hosts_to_test))
+        # Several Roblox hostnames commonly resolve to the same edge IP. Probe
+        # them serially so startup does not look like a connection burst to
+        # fragile home-router flood protection, and fully close each probe
+        # before opening the next one.
+        for host in hosts_to_test:
+            await probe(host)
 
     async def _handle_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter

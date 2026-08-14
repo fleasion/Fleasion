@@ -9,8 +9,9 @@ import hashlib
 import io
 import json
 import logging
+import time
 from pathlib import Path
-from threading import Lock
+from threading import Lock, Thread
 from typing import Dict, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -506,6 +507,8 @@ class TextureStripper:
     def __init__(self, config_manager) -> None:
         self.config_manager = config_manager
         self._cache_scraper = None  # Set by ProxyMaster after construction
+        self._precheck_state_lock = Lock()
+        self._precheck_retry_after: Dict[int, float] = {}
         self._seen_replacements_generation = getattr(
             config_manager, 'replacements_generation', None
         )
@@ -585,6 +588,8 @@ class TextureStripper:
     _precheck_pending: set = set()
 
     _PREDOWNLOAD_DIR: Path = APP_CACHE_DIR / 'predownloaded'
+    _PRECHECK_NETWORK_RETRY_SECONDS = 120.0
+    _PRECHECK_HTTP_RETRY_SECONDS = 15 * 60.0
 
     # Animation type IDs (main + all subtypes)
     _ANIM_TYPE_IDS: frozenset = frozenset({24, 48, 49, 50, 51, 52, 53, 54, 55, 56, 61, 78})
@@ -635,13 +640,21 @@ class TextureStripper:
         if not replacements:
             return
 
-        # Deduplicate: multiple originals can map to the same replacement ID
-        unique_targets = set(replacements.values())
-        # Filter out IDs already pending in another thread
-        unique_targets -= self._precheck_pending
+        # Deduplicate and keep failed probes on a cooldown. A failed target used
+        # to become immediately "unknown" again, so the first asset batch could
+        # start all 100+ startup probes a second time while the network was
+        # already failing.
+        now = time.monotonic()
+        with self._precheck_state_lock:
+            unique_targets = {
+                int(target_id)
+                for target_id in replacements.values()
+                if int(target_id) not in self._precheck_pending
+                and self._precheck_retry_after.get(int(target_id), 0.0) <= now
+            }
+            self._precheck_pending.update(unique_targets)
         if not unique_targets:
             return
-        self._precheck_pending.update(unique_targets)
         log_buffer.log(
             'Replacer',
             f'Pre-checking {format_count(unique_targets, "replacement asset")}...',
@@ -658,7 +671,9 @@ class TextureStripper:
         private_count = 0
         failed_count = 0
 
-        for target_id in unique_targets:
+        targets = sorted(unique_targets)
+        network_deferred: set[int] = set()
+        for index, target_id in enumerate(targets):
             local_path = self._PREDOWNLOAD_DIR / f'{target_id}.dat'
             legacy_path = self._PREDOWNLOAD_DIR / f'{target_id}.bin'
 
@@ -708,6 +723,10 @@ class TextureStripper:
                     f'Replacement asset {target_id} not found (404) — skipping',
                 )
                 failed_count += 1
+                with self._precheck_state_lock:
+                    self._precheck_retry_after[target_id] = (
+                        time.monotonic() + self._PRECHECK_HTTP_RETRY_SECONDS
+                    )
                 continue
 
             if status != 403:
@@ -716,6 +735,16 @@ class TextureStripper:
                     f'Replacement asset {target_id} returned status {status} — skipping',
                 )
                 failed_count += 1
+                if status is None:
+                    # A transport failure is not an asset verdict. Stop the
+                    # batch instead of hammering every remaining target while
+                    # Windows, the router, or a WFP filter is unhealthy.
+                    network_deferred.update(targets[index:])
+                    break
+                with self._precheck_state_lock:
+                    self._precheck_retry_after[target_id] = (
+                        time.monotonic() + self._PRECHECK_HTTP_RETRY_SECONDS
+                    )
                 continue
 
             # 403 — private asset, download via place-ID bypass
@@ -753,8 +782,29 @@ class TextureStripper:
                     f'Could not pre-download private asset {target_id} (status {dl_status})',
                 )
                 failed_count += 1
+                retry_seconds = (
+                    self._PRECHECK_NETWORK_RETRY_SECONDS
+                    if dl_status is None
+                    else self._PRECHECK_HTTP_RETRY_SECONDS
+                )
+                with self._precheck_state_lock:
+                    self._precheck_retry_after[target_id] = time.monotonic() + retry_seconds
+                if dl_status is None:
+                    network_deferred.update(targets[index:])
+                    break
 
-        self._precheck_pending -= unique_targets
+        with self._precheck_state_lock:
+            self._precheck_pending -= unique_targets
+            retry_at = time.monotonic() + self._PRECHECK_NETWORK_RETRY_SECONDS
+            for target_id in network_deferred:
+                self._precheck_retry_after[target_id] = retry_at
+        if network_deferred:
+            log_buffer.log(
+                'Replacer',
+                f'Paused replacement precheck after a network failure; '
+                f'{len(network_deferred)} target(s) deferred for '
+                f'{self._PRECHECK_NETWORK_RETRY_SECONDS:.0f}s',
+            )
         log_buffer.log(
             'Replacer',
             f'Pre-check complete: {public_count} public, {private_count} private (pre-downloaded), {failed_count} failed',
@@ -1224,17 +1274,18 @@ class TextureStripper:
         # If any replacement targets are newly added (not yet checked),
         # trigger a background precheck so the next batch can serve them locally.
         if replacements and self._cache_scraper is not None:
-            unknown = {
-                int(v)
-                for v in replacements.values()
-                if int(v) not in self._predownloaded
-                and int(v) not in self._checked_public
-                and int(v) not in self._precheck_pending
-            }
+            now = time.monotonic()
+            with self._precheck_state_lock:
+                unknown = {
+                    int(v)
+                    for v in replacements.values()
+                    if int(v) not in self._predownloaded
+                    and int(v) not in self._checked_public
+                    and int(v) not in self._precheck_pending
+                    and self._precheck_retry_after.get(int(v), 0.0) <= now
+                }
             if unknown:
-                import threading as _thr
-
-                _thr.Thread(
+                Thread(
                     target=self.precheck_replacements,
                     name='ReplacementPrecheck',
                     daemon=True,

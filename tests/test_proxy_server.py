@@ -53,6 +53,54 @@ class _FakeUpstreamWriter:
         self.closed = True
 
 
+def test_upstream_self_test_serializes_and_fully_closes_probes():
+    events = []
+
+    class _ProbeWriter:
+        def __init__(self, host):
+            self.host = host
+
+        def close(self):
+            events.append(('close', self.host))
+
+        async def wait_closed(self):
+            events.append(('wait_closed', self.host))
+
+    class _ProbeConnector:
+        async def connect(self, host, _endpoints, _ssl_ctx, timeout):
+            assert timeout == 3.0
+            events.append(('connect', host))
+            return UpstreamConnectResult(
+                reader=object(),
+                writer=_ProbeWriter(host),
+                method='direct_ip',
+                endpoint='192.0.2.1',
+            )
+
+    proxy = FleasionProxy.__new__(FleasionProxy)
+    proxy._upstream_endpoints = {
+        'a.example': [UpstreamEndpoint(host='a.example', ip='192.0.2.1')],
+        'b.example': [UpstreamEndpoint(host='b.example', ip='192.0.2.2')],
+    }
+    proxy._direct_connector = _ProbeConnector()
+    proxy._system_http_connector = None
+    proxy._manual_http_connector = None
+    proxy._manual_socks5_connector = None
+    proxy._upstream_ssl_ctx = None
+    proxy._connector = proxy._direct_connector
+
+    asyncio.run(proxy.log_upstream_self_test({'b.example', 'a.example'}))
+
+    assert events == [
+        ('connect', 'a.example'),
+        ('close', 'a.example'),
+        ('wait_closed', 'a.example'),
+        ('connect', 'b.example'),
+        ('close', 'b.example'),
+        ('wait_closed', 'b.example'),
+    ]
+
+
 class ProxyServerRawHttpTests(unittest.TestCase):
     def test_raw_header_preservation_duplicate_headers_and_casing(self):
         data = (

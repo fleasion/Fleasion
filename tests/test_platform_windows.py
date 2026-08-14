@@ -64,6 +64,35 @@ def _touch(path: Path, mtime: float) -> Path:
     return path
 
 
+def test_run_cmd_decodes_localized_console_output_with_windows_oem_page(monkeypatch):
+    module = _load_platform_windows(monkeypatch)
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(returncode=0, stdout='Opération réussie', stderr='')
+
+    monkeypatch.setattr(module, '_windows_oem_encoding', lambda: 'cp850')
+    monkeypatch.setattr(module.subprocess, 'run', fake_run)
+
+    assert module.run_cmd(['taskkill', '/PID', '100']) == (0, 'Opération réussie')
+    assert calls[0][1]['encoding'] == 'cp850'
+
+
+def test_gdk_package_lookup_allows_slow_powershell_startup(monkeypatch):
+    module = _load_platform_windows(monkeypatch)
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(returncode=0, stdout='', stderr='')
+
+    monkeypatch.setattr(module.subprocess, 'run', fake_run)
+
+    assert module._find_installed_roblox_gdk_package_identity() is None
+    assert calls[0][1]['timeout'] == 20
+
+
 def test_delete_storage_family_removes_sqlite_and_session_companions(monkeypatch, tmp_path):
     module = _load_platform_windows(monkeypatch)
     db_path = tmp_path / 'Roblox' / 'rbx-storage.db'

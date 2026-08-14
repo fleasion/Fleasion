@@ -3,6 +3,7 @@
 import ctypes
 import ctypes.wintypes
 import hashlib
+import locale
 import os
 import re
 import stat
@@ -71,15 +72,27 @@ _CLSID_APPLICATION_ACTIVATION_MANAGER = _guid('45BA127D-10A8-46EA-8AB7-56EA90789
 _IID_APPLICATION_ACTIVATION_MANAGER = _guid('2E941141-7F97-4756-BA1D-9DECDE894A3D')
 
 
+def _windows_oem_encoding() -> str:
+    """Return the code page used by localized Windows console programs."""
+    try:
+        windll = getattr(ctypes, 'windll')
+        code_page = int(windll.kernel32.GetOEMCP())
+        if code_page > 0:
+            return f'cp{code_page}'
+    except (AttributeError, OSError, TypeError, ValueError):
+        pass
+    return locale.getpreferredencoding(False) or 'utf-8'
+
+
 def run_cmd(args: list[str], timeout: float = 10.0) -> tuple[int, str]:
     """Run a Windows command and return (return_code, combined output)."""
     result = subprocess.run(
         args,
         capture_output=True,
         text=True,
-        encoding='utf-8',
+        encoding=_windows_oem_encoding(),
         errors='replace',
-        creationflags=subprocess.CREATE_NO_WINDOW,
+        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
         timeout=timeout,
     )
     output = '\n'.join(
@@ -575,8 +588,8 @@ def _find_installed_roblox_gdk_package_identity(
             text=True,
             encoding='utf-8',
             errors='replace',
-            creationflags=subprocess.CREATE_NO_WINDOW,
-            timeout=5,
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+            timeout=20,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         if report_diagnostics:
