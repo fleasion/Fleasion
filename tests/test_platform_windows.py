@@ -442,31 +442,6 @@ def test_force_close_kills_immediately_before_waiting_for_process_exit(monkeypat
     ]
 
 
-def test_force_close_continues_when_exact_pid_already_exited(monkeypatch):
-    module = _load_platform_windows(monkeypatch)
-    logs = []
-
-    monkeypatch.setattr(
-        module,
-        "run_cmd",
-        lambda _args: (128, 'ERROR: The process "100" not found.'),
-    )
-    monkeypatch.setattr(module, "_pid_is_running", lambda _pid, _name: False)
-    monkeypatch.setattr(
-        module.log_buffer,
-        "log",
-        lambda category, message: logs.append((category, message)),
-    )
-
-    assert module._force_close_process_immediately(
-        100,
-        "RobloxPlayerBeta.exe",
-        label="Roblox",
-    )
-    assert any("already exited before taskkill completed" in message for _, message in logs)
-    assert not any("failed with exit code" in message for _, message in logs)
-
-
 def test_terminate_roblox_logs_taskkill_result_for_every_process(monkeypatch):
     module = _load_platform_windows(monkeypatch)
     commands = []
@@ -749,6 +724,105 @@ def test_env_proxy_relaunch_allows_new_process_after_crash(monkeypatch, tmp_path
     assert module._relaunch_roblox_exe_with_proxy_env(
         "http://127.0.0.1:58443", **kwargs
     )
+
+
+def test_env_proxy_relaunch_rechecks_a_replacement_player_pid(monkeypatch, tmp_path):
+    module = _load_platform_windows(monkeypatch)
+    exe = _touch(tmp_path / "Content" / "RobloxPlayerBeta.exe", 3000)
+    snapshots = iter(
+        (
+            [
+                {
+                    "ProcessId": 100,
+                    "ExecutablePath": str(exe),
+                    "CommandLine": "RobloxPlayerBeta.exe roblox-player:stale-uri",
+                }
+            ],
+            [
+                {
+                    "ProcessId": 200,
+                    "ExecutablePath": str(exe),
+                    "CommandLine": "RobloxPlayerBeta.exe roblox-player:successor-uri",
+                }
+            ],
+        )
+    )
+    close_calls = []
+    popen_calls = []
+    logs = []
+
+    monkeypatch.setattr(module, "_pid_is_running", lambda _pid, _name: False)
+    monkeypatch.setattr(
+        module,
+        "_force_close_process_immediately",
+        lambda pid, *_args, **_kwargs: close_calls.append(pid) or pid == 200,
+    )
+    monkeypatch.setattr(module, "_proxy_environment", lambda _url: {})
+    monkeypatch.setattr(
+        module.subprocess,
+        "Popen",
+        lambda args, **_kwargs: popen_calls.append(args) or SimpleNamespace(pid=300),
+    )
+    monkeypatch.setattr(
+        module.log_buffer,
+        "log",
+        lambda category, message: logs.append((category, message)),
+    )
+
+    assert module._relaunch_roblox_exe_with_proxy_env(
+        "http://127.0.0.1:58443",
+        label="Roblox",
+        query_processes=lambda: next(snapshots),
+        extract_launch_arg=lambda command: command.split()[-1],
+        wait_pid_exe_name="RobloxPlayerBeta.exe",
+        fallback_exe_path=lambda: exe,
+    )
+    assert close_calls == [100, 200]
+    assert popen_calls == [[str(exe), "roblox-player:successor-uri"]]
+    assert any("rechecking successor PID(s): 200" in message for _, message in logs)
+
+
+def test_env_proxy_relaunch_does_not_replay_uri_when_no_successor_is_found(monkeypatch, tmp_path):
+    module = _load_platform_windows(monkeypatch)
+    exe = _touch(tmp_path / "Content" / "RobloxPlayerBeta.exe", 3000)
+    snapshots = iter(
+        (
+            [
+                {
+                    "ProcessId": 100,
+                    "ExecutablePath": str(exe),
+                    "CommandLine": "RobloxPlayerBeta.exe roblox-player:one-time-uri",
+                }
+            ],
+            [],
+        )
+    )
+    popen_calls = []
+    logs = []
+
+    monkeypatch.setattr(module, "_pid_is_running", lambda _pid, _name: False)
+    monkeypatch.setattr(module, "_force_close_process_immediately", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        module.subprocess,
+        "Popen",
+        lambda args, **_kwargs: popen_calls.append(args) or SimpleNamespace(pid=300),
+    )
+    monkeypatch.setattr(
+        module.log_buffer,
+        "log",
+        lambda category, message: logs.append((category, message)),
+    )
+
+    assert not module._relaunch_roblox_exe_with_proxy_env(
+        "http://127.0.0.1:58443",
+        label="Roblox",
+        query_processes=lambda: next(snapshots),
+        extract_launch_arg=lambda command: command.split()[-1],
+        wait_pid_exe_name="RobloxPlayerBeta.exe",
+        fallback_exe_path=lambda: exe,
+    )
+    assert popen_calls == []
+    assert any("not replaying a potentially consumed launch URI" in message for _, message in logs)
 
 
 def test_roblox_launch_resolver_upgrades_registry_path_when_versions_scan_finds_it(tmp_path, monkeypatch):

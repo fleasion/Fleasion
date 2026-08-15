@@ -462,19 +462,6 @@ def _force_close_process_immediately(
             f'{_summarize_command_output(output)}',
         )
         if returncode != 0:
-            # ``taskkill`` reports exit code 128 when the exact Player exits
-            # between the process snapshot and the kill request.  The desired
-            # state is still reached in that case, so do not abandon the Env
-            # Proxy relaunch before spawning the replacement.  Keep real
-            # failures (for example, access denied) fatal while that PID is
-            # still present.
-            if not _pid_is_running(pid, exe_name):
-                log_buffer.log(
-                    'Launcher',
-                    f'{label} Player PID {pid} already exited before taskkill completed; '
-                    'continuing Env Proxy relaunch',
-                )
-                return True
             log_buffer.log(
                 'Launcher',
                 f'{label} taskkill /PID {pid} failed with exit code {returncode}',
@@ -1061,7 +1048,11 @@ def _relaunch_roblox_exe_with_proxy_env(
         if now - timestamp > _ENV_PROXY_RELAUNCH_TTL_SECONDS:
             _env_proxy_relaunches.pop(key, None)
 
-    for proc in query_processes():
+    pending_processes = list(query_processes())
+    attempted_pids: set[int] = set()
+    retried_after_pid_replacement = False
+    while pending_processes:
+        proc = pending_processes.pop(0)
         try:
             pid = int(proc.get('ProcessId') or 0)
         except (TypeError, ValueError):
@@ -1070,8 +1061,9 @@ def _relaunch_roblox_exe_with_proxy_env(
         launch_arg = extract_launch_arg(command_line)
         exe_text = str(proc.get('ExecutablePath') or '')
         exe_path = Path(exe_text) if exe_text else fallback_exe_path()
-        if pid <= 0 or exe_path is None or not exe_path.is_file():
+        if pid <= 0 or pid in attempted_pids or exe_path is None or not exe_path.is_file():
             continue
+        attempted_pids.add(pid)
 
         relaunch_key = hashlib.sha256(
             f'{str(exe_path).casefold()}\n{launch_arg or "<no-arg>"}'.encode(
@@ -1151,6 +1143,38 @@ def _relaunch_roblox_exe_with_proxy_env(
             timeout=8.0,
             cancel_event=cancel_event,
         ):
+            # Roblox can replace a just-observed Player process itself.  Its
+            # original URI may be one-time data, so never blindly replay that
+            # stale command after the PID is gone.  Instead, take one fresh
+            # snapshot and only retry against the successor's own command
+            # line.  This is immediate discovery, not a launch-settling delay.
+            if (
+                not retried_after_pid_replacement
+                and not _pid_is_running(pid, wait_pid_exe_name)
+            ):
+                successor_processes = list(query_processes())
+                successor_pids = []
+                for successor in successor_processes:
+                    try:
+                        successor_pid = int(successor.get('ProcessId') or 0)
+                    except (AttributeError, TypeError, ValueError):
+                        continue
+                    if successor_pid > 0 and successor_pid not in attempted_pids:
+                        successor_pids.append(successor_pid)
+                if successor_pids:
+                    retried_after_pid_replacement = True
+                    log_buffer.log(
+                        'Launcher',
+                        f'{label} Player PID {pid} exited before taskkill completed; '
+                        f'rechecking successor PID(s): {", ".join(map(str, successor_pids))}',
+                    )
+                    pending_processes = successor_processes
+                    continue
+            log_buffer.log(
+                'Launcher',
+                f'{label} Env Proxy relaunch stopped after Player PID {pid} changed; '
+                'not replaying a potentially consumed launch URI',
+            )
             return False
 
         # Fishstrap can finish replacing the active version after the first
