@@ -462,6 +462,19 @@ def _force_close_process_immediately(
             f'{_summarize_command_output(output)}',
         )
         if returncode != 0:
+            # ``taskkill`` reports exit code 128 when the exact Player exits
+            # between the process snapshot and the kill request.  The desired
+            # state is still reached in that case, so do not abandon the Env
+            # Proxy relaunch before spawning the replacement.  Keep real
+            # failures (for example, access denied) fatal while that PID is
+            # still present.
+            if not _pid_is_running(pid, exe_name):
+                log_buffer.log(
+                    'Launcher',
+                    f'{label} Player PID {pid} already exited before taskkill completed; '
+                    'continuing Env Proxy relaunch',
+                )
+                return True
             log_buffer.log(
                 'Launcher',
                 f'{label} taskkill /PID {pid} failed with exit code {returncode}',

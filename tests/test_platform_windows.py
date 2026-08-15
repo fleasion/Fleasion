@@ -442,6 +442,31 @@ def test_force_close_kills_immediately_before_waiting_for_process_exit(monkeypat
     ]
 
 
+def test_force_close_continues_when_exact_pid_already_exited(monkeypatch):
+    module = _load_platform_windows(monkeypatch)
+    logs = []
+
+    monkeypatch.setattr(
+        module,
+        "run_cmd",
+        lambda _args: (128, 'ERROR: The process "100" not found.'),
+    )
+    monkeypatch.setattr(module, "_pid_is_running", lambda _pid, _name: False)
+    monkeypatch.setattr(
+        module.log_buffer,
+        "log",
+        lambda category, message: logs.append((category, message)),
+    )
+
+    assert module._force_close_process_immediately(
+        100,
+        "RobloxPlayerBeta.exe",
+        label="Roblox",
+    )
+    assert any("already exited before taskkill completed" in message for _, message in logs)
+    assert not any("failed with exit code" in message for _, message in logs)
+
+
 def test_terminate_roblox_logs_taskkill_result_for_every_process(monkeypatch):
     module = _load_platform_windows(monkeypatch)
     commands = []
