@@ -1437,6 +1437,81 @@ def _delete_storage_family(db_path: Path, messages: list, suffix: str = '') -> N
             messages.append(f'Failed to delete {folder_label.lower()}{label_suffix}: {exc}')
 
 
+_CACHE_STORAGE_SUCCESS_LABELS = {
+    'Storage database': 'database',
+    'Storage database WAL': 'database WAL',
+    'Storage database shared memory': 'database shared memory',
+    'Storage database journal': 'database journal',
+    'Storage identifier': 'identifier',
+    'Storage folder': 'folder',
+    'Session storage folder': 'session storage folder',
+}
+
+
+def _cache_storage_success_label(message: str) -> str | None:
+    """Return a short label for a routine storage-deletion success message."""
+    suffix = ' deleted successfully'
+    if not message.endswith(suffix):
+        return None
+    label = message.removesuffix(suffix)
+    is_gdk = label.endswith(' (GDK)')
+    if is_gdk:
+        label = label.removesuffix(' (GDK)')
+    if compact_label := _CACHE_STORAGE_SUCCESS_LABELS.get(label):
+        return f'GDK {compact_label}' if is_gdk else compact_label
+    return None
+
+
+def _summarize_cache_messages(messages: list[str]) -> list[str]:
+    """Combine routine cache-cleanup statuses without hiding failures."""
+    summary: list[str] = []
+    index = 0
+    while index < len(messages):
+        message = messages[index]
+        if (
+            message == 'Roblox is running, terminating...'
+            and index + 1 < len(messages)
+            and messages[index + 1] == 'Roblox terminated successfully'
+        ):
+            summary.append('Roblox was running; terminated successfully')
+            index += 2
+            continue
+
+        if compact_label := _cache_storage_success_label(message):
+            labels = [compact_label]
+            index += 1
+            while index < len(messages):
+                next_label = _cache_storage_success_label(messages[index])
+                if next_label is None:
+                    break
+                labels.append(next_label)
+                index += 1
+            if len(labels) == 1:
+                summary.append(message)
+            else:
+                summary.append(f"Roblox cache storage deleted successfully ({', '.join(labels)})")
+            continue
+
+        if message == 'Storage database (GDK) not found':
+            missing_gdk_storage = [message]
+            index += 1
+            while (
+                index < len(messages)
+                and messages[index] in {'Storage database (GDK) not found', 'Storage folder (GDK) not found'}
+            ):
+                missing_gdk_storage.append(messages[index])
+                index += 1
+            if len(missing_gdk_storage) == 1:
+                summary.append(message)
+            else:
+                summary.append('Microsoft Store / GDK cache storage not found')
+            continue
+
+        summary.append(message)
+        index += 1
+    return summary
+
+
 def delete_cache() -> list[str]:
     """Delete Roblox cache with cleanup. Returns list of status messages."""
     messages = []
@@ -1495,7 +1570,7 @@ def delete_cache() -> list[str]:
         except OSError as e:
             messages.append(f'Failed to delete obj cache: {e}')
 
-    return messages
+    return _summarize_cache_messages(messages)
 
 
 def _is_process_elevated() -> bool:

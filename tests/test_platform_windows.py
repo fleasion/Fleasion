@@ -124,6 +124,33 @@ def test_delete_storage_family_removes_sqlite_and_session_companions(monkeypatch
     assert 'Session storage folder deleted successfully' in messages
 
 
+def test_cache_cleanup_messages_combine_routine_storage_statuses(monkeypatch):
+    module = _load_platform_windows(monkeypatch)
+
+    messages = module._summarize_cache_messages(
+        [
+            'Roblox is running, terminating...',
+            'Roblox terminated successfully',
+            'Storage database deleted successfully',
+            'Storage database WAL deleted successfully',
+            'Storage database shared memory deleted successfully',
+            'Storage identifier deleted successfully',
+            'Storage folder deleted successfully',
+            'Storage database (GDK) not found',
+            'Storage folder (GDK) not found',
+            'Fleasion obj cache deleted successfully',
+        ]
+    )
+
+    assert messages == [
+        'Roblox was running; terminated successfully',
+        'Roblox cache storage deleted successfully '
+        '(database, database WAL, database shared memory, identifier, folder)',
+        'Microsoft Store / GDK cache storage not found',
+        'Fleasion obj cache deleted successfully',
+    ]
+
+
 def test_delete_cache_resets_live_replacement_routes(monkeypatch, tmp_path):
     module = _load_platform_windows(monkeypatch)
     roblox_dir = tmp_path / 'Roblox'

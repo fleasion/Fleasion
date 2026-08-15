@@ -90,7 +90,7 @@ class DeleteCacheWindow(QDialog):
             for msg in delete_cache():
                 log_buffer.log('Cache', msg)
                 self.log_signal.emit(msg)
-                time.sleep(0.3)
+                time.sleep(0.25)
             self.done_signal.emit()
 
         thread = threading.Thread(target=perform, daemon=True)
