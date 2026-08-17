@@ -38,14 +38,14 @@ Rectangle {
         if (root.statusText === "error" || root.errorMessage.length > 0)
             return qsTr("Error");
         if (root.statusText === "orphaned_stash")
-            return qsTr("Recovery")
+            return qsTr("Recovery");
         return qsTr("Default");
     }
     readonly property string statusTone: !root.supported ? "warning" : root.statusText === "applied" ? "success" : root.statusText === "pending" ? "info" : root.statusText === "error" || root.errorMessage.length > 0 ? "error" : root.statusText === "orphaned_stash" ? "warning" : "neutral"
 
     implicitHeight: Math.max(Theme.largeControlHeight + Theme.spaceXs, content.implicitHeight + Theme.spaceSm)
     color: pointer.hovered ? Theme.surfaceHover : "transparent"
-    radius: Theme.radiusMd
+    radius: 0
     Accessible.role: Accessible.ListItem
     Accessible.name: qsTr("%1, %2").arg(root.entryName).arg(root.statusLabel)
     Accessible.description: root.errorMessage.length > 0 ? root.errorMessage : root.limitation.length > 0 ? root.limitation : root.targetPath
@@ -125,5 +125,14 @@ Rectangle {
 
     HoverHandler {
         id: pointer
+    }
+
+    Rectangle {
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        height: 1
+        color: Theme.border
+        Accessible.ignored: true
     }
 }

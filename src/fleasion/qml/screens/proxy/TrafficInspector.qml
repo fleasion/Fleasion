@@ -69,9 +69,9 @@ FluentDialog {
 
                 SplitView.fillWidth: true
                 SplitView.minimumWidth: 260
-                heading: root.details.pendingStage === "request" ? qsTr("Request · held and editable") : qsTr("Request · editable for replay")
+                heading: root.details.archived ? qsTr("Request · preserved read-only copy") : root.details.pendingStage === "request" ? qsTr("Request · held and editable") : qsTr("Request · editable for replay")
                 accessibleName: qsTr("HTTP request content")
-                readOnly: false
+                readOnly: Boolean(root.details.archived)
             }
 
             PreviewEditor {

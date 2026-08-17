@@ -77,7 +77,7 @@ FluentDialog {
                 }
             }
 
-            ScrollBar.vertical: ScrollBar {}
+            ScrollBar.vertical: FluentScrollBar {}
         }
 
         EmptyState {

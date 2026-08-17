@@ -273,6 +273,7 @@ class QmlRuntime(QObject):
             ('stop utilities controller', self._context._utilities.shutdown),
             ('stop update controller', self._context._updates.shutdown),
             ('stop startup repair controller', self._context._startup_repair.shutdown),
+            ('cancel pending modification work', self._modifications.cancel_pending_operations),
             ('join startup modification reapply', self._join_startup_reapply),
             ('close owned Roblox player', self._close_owned_player),
             ('clear managed read-only flags', self._modifications.clear_managed_file_read_only),

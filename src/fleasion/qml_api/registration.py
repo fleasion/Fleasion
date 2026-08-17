@@ -10,6 +10,7 @@ from . import community_presets as community_presets
 from . import font_preview as font_preview
 from . import logs as logs
 from . import modifications as modifications
+from . import payload_preview as payload_preview
 from . import proxy as proxy
 from . import replacer as replacer
 from . import roblox_document_preview as roblox_document_preview
@@ -30,6 +31,7 @@ __all__ = [
     'font_preview',
     'logs',
     'modifications',
+    'payload_preview',
     'proxy',
     'replacer',
     'roblox_document_preview',

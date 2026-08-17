@@ -52,6 +52,10 @@ Card {
             onClicked: bulkDropLoader.active = true
         }
 
+        TrafficPreserveControl {
+            controller: root.controller
+        }
+
         FluentButton {
             text: qsTr("Clear")
             enabled: Boolean(root.controller && root.controller.model && root.controller.model.count > 0)
@@ -73,7 +77,7 @@ Card {
             model: root.controller ? root.controller.model : null
             reuseItems: true
             boundsBehavior: Flickable.StopAtBounds
-            ScrollBar.vertical: ScrollBar {}
+            ScrollBar.vertical: FluentScrollBar {}
 
             delegate: ProxyTrafficDelegate {
                 required property string key

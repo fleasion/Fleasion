@@ -31,7 +31,7 @@ ColumnLayout {
         Layout.fillWidth: true
         Layout.preferredHeight: headerRow.implicitHeight + Theme.spaceSm
         color: headerPointer.hovered ? Theme.surfaceHover : Theme.surfaceSubtle
-        radius: Theme.radiusMd
+        radius: 0
         activeFocusOnTab: true
         Accessible.role: Accessible.Button
         Accessible.name: root.expanded ? qsTr("Collapse %1").arg(root.title) : qsTr("Expand %1").arg(root.title)
@@ -115,6 +115,15 @@ ColumnLayout {
         }
         HoverHandler {
             id: headerPointer
+        }
+
+        Rectangle {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            height: 1
+            color: Theme.border
+            Accessible.ignored: true
         }
         Keys.onReturnPressed: event => {
             root.expanded = !root.expanded;

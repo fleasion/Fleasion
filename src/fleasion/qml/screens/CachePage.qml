@@ -163,6 +163,13 @@ FocusScope {
                         }
 
                         FluentButton {
+                            text: root.width >= 900 ? qsTr("Use as targets") : qsTr("Replacer")
+                            enabled: !root.controller.task.busy
+                            Accessible.description: qsTr("Create one replacement rule targeting every selected asset ID")
+                            onClicked: root.controller.sendSelectionToReplacer(root.controller.selection.values())
+                        }
+
+                        FluentButton {
                             text: qsTr("Delete")
                             onClicked: deleteDialogLoader.active = true
                         }
@@ -244,7 +251,7 @@ FocusScope {
                             onExportRequested: key => root.exportAsset(key)
                         }
 
-                        ScrollBar.vertical: ScrollBar {}
+                        ScrollBar.vertical: FluentScrollBar {}
                     }
 
                     EmptyState {

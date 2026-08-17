@@ -74,7 +74,7 @@ FluentDialog {
                 model: root.controller.rulesModel
                 reuseItems: true
                 boundsBehavior: Flickable.StopAtBounds
-                ScrollBar.vertical: ScrollBar {}
+                ScrollBar.vertical: FluentScrollBar {}
 
                 delegate: AutoReplaceRuleDelegate {
                     required property string key

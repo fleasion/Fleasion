@@ -33,6 +33,7 @@ _BOOLEAN_SETTINGS: Final = (
     'show_replacer_notifications',
     'wire_preserving_passthrough',
 )
+_EXPORT_NAMING_OPTIONS: Final = ('name', 'id', 'hash')
 
 
 @QmlElement
@@ -156,6 +157,26 @@ class SettingsApi(QObject):
         self.alwaysOnTopChanged.emit()
         self.valuesChanged.emit()
         self.changed.emit('always_on_top')
+
+    @Property(bool, notify=valuesChanged)
+    def exportNameEnabled(self) -> bool:  # noqa: N802
+        return 'name' in self._config.export_naming
+
+    @Property(bool, notify=valuesChanged)
+    def closeViewerOnReplace(self) -> bool:  # pyright: ignore[reportRedeclaration]  # noqa: N802
+        return self._config.close_viewer_on_replace
+
+    @closeViewerOnReplace.setter  # pyright: ignore[reportRedeclaration]
+    def closeViewerOnReplace(self, value: bool) -> None:  # pyright: ignore[reportRedeclaration]  # noqa: N802
+        self._set_boolean('close_viewer_on_replace', value)
+
+    @Property(bool, notify=valuesChanged)
+    def exportIdEnabled(self) -> bool:  # noqa: N802
+        return 'id' in self._config.export_naming
+
+    @Property(bool, notify=valuesChanged)
+    def exportHashEnabled(self) -> bool:  # noqa: N802
+        return 'hash' in self._config.export_naming
 
     @Property(str, constant=True)
     def platformName(self) -> str:  # noqa: N802
@@ -323,6 +344,24 @@ class SettingsApi(QObject):
         self.changed.emit(key)
         if key == 'wire_preserving_passthrough':
             self.proxyRestartRequested.emit()
+
+    @Slot(str, bool, result=bool)
+    def setExportNamingEnabled(self, option: str, enabled: bool) -> bool:  # noqa: N802
+        if option not in _EXPORT_NAMING_OPTIONS:
+            self.errorOccurred.emit(f'Unsupported export naming option: {option}')
+            return False
+        selected = set(self._config.export_naming)
+        if enabled:
+            selected.add(option)
+        else:
+            selected.discard(option)
+        normalized = [value for value in _EXPORT_NAMING_OPTIONS if value in selected]
+        if normalized == self._config.export_naming:
+            return True
+        self._config.export_naming = normalized
+        self.valuesChanged.emit()
+        self.changed.emit('export_naming')
+        return True
 
     @Slot(str, str)
     def setText(self, key: str, value: str) -> None:  # noqa: N802

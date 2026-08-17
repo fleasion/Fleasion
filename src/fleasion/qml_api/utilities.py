@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 import time
 from collections.abc import Mapping
 from typing import Any, Final
@@ -16,7 +17,14 @@ from .animation_conversion import AnimationConversionApi
 from .models import DictListModel
 from .multi_instance import MultiInstanceController
 from .reserved_rejoin import ReservedRejoinInterceptor
-from .roblox_launch import AccountLauncher, RobloxAccountClient
+from .roblox_launch import (
+    AccountLaunchCancelled,
+    AccountLaunchRequest,
+    AccountLauncher,
+    RobloxAccountClient,
+    parse_account_launch_request,
+)
+from .roblox_target_launcher import launch_roblox_target
 from .subplace_blacklist import GameJoinInterceptorChain, SubplaceBlacklistApi
 from .subplace_join import SubplaceJoinCoordinator
 from .tasks import TaskState
@@ -57,14 +65,20 @@ class UtilitiesApi(QObject):
         self._proxy = proxy_master
         self._store = account_store or AccountStore()
         self._account_client = account_client or RobloxAccountClient()
-        self._account_launcher = account_launcher or AccountLauncher(self._account_client)
+        self._account_launcher = account_launcher or AccountLauncher(
+            self._account_client,
+            lambda target: launch_roblox_target(proxy_master, target),
+        )
         self._multi_instance = multi_instance or MultiInstanceController()
         self._subplace_join = subplace_join or SubplaceJoinCoordinator()
         self._accounts = self._store.load()
         self._account_status: dict[str, str] = {}
+        self._account_cookie_lock = threading.Lock()
+        self._pending_account_cookie = ''
         self._model = DictListModel(_ACCOUNT_ROLES, parent=self)
         self._account_task = TaskState(self)
         self._launch_task = TaskState(self)
+        self._launch_cancel_event: threading.Event | None = None
         self._validation_task = TaskState(self)
         self._selected_username = ''
         self._username_state = self._load_username_state()
@@ -253,10 +267,16 @@ class UtilitiesApi(QObject):
         if not cleaned:
             self.errorOccurred.emit('Paste a .ROBLOSECURITY cookie first.')
             return False
-        return self._account_task.run(
+        if self._account_task.busy:
+            return False
+        self._store_pending_account_cookie(cleaned)
+        started = self._account_task.run(
             'Validating account with Roblox…',
-            lambda: {'operation': 'add', **self._account_client.validate(cleaned)},
+            lambda: self._validated_account_result(cleaned, operation='add'),
         )
+        if not started:
+            self._consume_pending_account_cookie()
+        return started
 
     @Slot(result=bool)
     def importBrowserAccount(self) -> bool:  # noqa: N802
@@ -290,8 +310,14 @@ class UtilitiesApi(QObject):
         self._refresh_model()
         self.notificationRequested.emit('Account removed', username, 'success')
 
-    @Slot(int, str, str, result=bool)
-    def launchAccount(self, row: int, place_id: str = '', job_id: str = '') -> bool:  # noqa: N802
+    @Slot(int, str, str, str, result=bool)
+    def launchAccount(  # noqa: N802
+        self,
+        row: int,
+        target: str = '',
+        job_id: str = '',
+        subplace: str = '',
+    ) -> bool:
         if not 0 <= row < len(self._accounts):
             return False
         account = self._accounts[row]
@@ -303,20 +329,30 @@ class UtilitiesApi(QObject):
                 'The stored cookie could not be decrypted. Re-add this account.'
             )
             return False
-        normalized_place = place_id.strip()
-        if normalized_place and not normalized_place.isdigit():
-            self.errorOccurred.emit('The launch place ID must be numeric.')
+        try:
+            request = parse_account_launch_request(target, job_id, subplace)
+        except ValueError as exc:
+            self.errorOccurred.emit(str(exc))
             return False
         self._selected_username = account.username
         self._push_username_current_user(account)
         self.selectedAccountChanged.emit()
-        return self._launch_task.run(
+        cancel_event = threading.Event()
+        started = self._launch_task.run(
             f'Launching Roblox as {account.username}…',
-            lambda: {
-                'username': account.username,
-                'launched': self._account_launcher.launch(cookie, normalized_place, job_id.strip()),
-            },
+            lambda: self._launch_account_worker(account, cookie, request, cancel_event),
         )
+        if started:
+            self._launch_cancel_event = cancel_event
+        return started
+
+    @Slot()
+    def cancelAccountLaunch(self) -> None:  # noqa: N802
+        cancel_event = self._launch_cancel_event
+        if cancel_event is None or not self._launch_task.busy:
+            return
+        cancel_event.set()
+        self._subplace_join.cancel()
 
     @Slot(int, result=bool)
     def switchToAccount(self, row: int) -> bool:  # noqa: N802
@@ -364,12 +400,14 @@ class UtilitiesApi(QObject):
     def shutdown(self) -> None:
         self._countdown.stop()
         self._multi_instance.stop()
+        self.cancelAccountLaunch()
         self._account_task.shutdown()
         self._launch_task.shutdown()
         self._validation_task.shutdown()
         self._animation_conversion.shutdown()
         self._subplace_blacklist.shutdown()
         self._subplace_join.cancel()
+        self._consume_pending_account_cookie()
 
     def _discover_browser_account(self) -> dict[str, str]:
         cookie, source = discover_browser_roblosecurity(
@@ -378,7 +416,48 @@ class UtilitiesApi(QObject):
         )
         if not cookie:
             raise RuntimeError('No signed-in Roblox account was found in supported browsers')
-        return {'operation': 'browser', 'source': source, **self._account_client.validate(cookie)}
+        result = self._validated_account_result(cookie, operation='browser', source=source)
+        self._store_pending_account_cookie(cookie)
+        return result
+
+    def _validated_account_result(
+        self,
+        cookie: str,
+        *,
+        operation: str,
+        source: str = '',
+    ) -> dict[str, str]:
+        result = dict(self._account_client.validate(cookie))
+        result.pop('cookie', None)
+        return {'operation': operation, **({'source': source} if source else {}), **result}
+
+    def _store_pending_account_cookie(self, cookie: str) -> None:
+        with self._account_cookie_lock:
+            self._pending_account_cookie = cookie
+
+    def _consume_pending_account_cookie(self) -> str:
+        with self._account_cookie_lock:
+            cookie = self._pending_account_cookie
+            self._pending_account_cookie = ''
+        return cookie
+
+    def _launch_account_worker(
+        self,
+        account: StoredAccount,
+        cookie: str,
+        request: AccountLaunchRequest,
+        cancel_event: threading.Event,
+    ) -> dict[str, str | bool]:
+        try:
+            launched = self._account_launcher.launch_request(
+                cookie,
+                request,
+                join_coordinator=self._subplace_join,
+                cancel_event=cancel_event,
+            )
+        except AccountLaunchCancelled:
+            return {'username': account.username, 'launched': False, 'cancelled': True}
+        return {'username': account.username, 'launched': launched, 'cancelled': False}
 
     def _validate_stored_accounts(self) -> dict[str, object]:
         results: dict[str, str] = {}
@@ -409,10 +488,11 @@ class UtilitiesApi(QObject):
     @Slot(object)
     def _apply_account_operation(self, result: object) -> None:
         if not isinstance(result, Mapping):
+            self._consume_pending_account_cookie()
             self._on_account_operation_failed('Roblox returned invalid account data')
             return
         username = str(result.get('username') or '').strip()
-        cookie = str(result.get('cookie') or '').strip()
+        cookie = self._consume_pending_account_cookie()
         if not username or not cookie:
             self._on_account_operation_failed('Roblox returned invalid account data')
             return
@@ -431,10 +511,19 @@ class UtilitiesApi(QObject):
 
     @Slot(str)
     def _on_account_operation_failed(self, message: str) -> None:
+        self._consume_pending_account_cookie()
         self.errorOccurred.emit(f'Account validation failed: {message}')
 
     @Slot(object)
     def _on_launch_finished(self, result: object) -> None:
+        self._launch_cancel_event = None
+        if isinstance(result, Mapping) and bool(result.get('cancelled')):
+            self.notificationRequested.emit(
+                'Launch cancelled',
+                'The selected-account launch was stopped.',
+                'info',
+            )
+            return
         if not isinstance(result, Mapping) or not bool(result.get('launched')):
             self.errorOccurred.emit('Roblox could not be opened for the selected account.')
             return
@@ -446,6 +535,7 @@ class UtilitiesApi(QObject):
 
     @Slot(str)
     def _on_launch_failed(self, message: str) -> None:
+        self._launch_cancel_event = None
         self.errorOccurred.emit(f'Account launch failed: {message}')
 
     @Slot(object)

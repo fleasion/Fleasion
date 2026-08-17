@@ -11,15 +11,15 @@ ColumnLayout {
 
     required property var controller
     signal inspectRequested(string name, string targetPath)
-    signal restoreRequested(string targetPath)
+    signal restoreRequested(string targetPath, string recoveryKind)
 
     visible: root.controller.orphanedModel.count > 0
     spacing: Theme.spaceXxs
 
     SectionHeader {
         Layout.fillWidth: true
-        title: qsTr("Original backups needing attention")
-        subtitle: qsTr("Fleasion found backups without active mappings, usually after an interrupted restore or an external file change.")
+        title: qsTr("Recovery items")
+        subtitle: qsTr("These files have recovery data but no active mapping. Review whether recovery restores an original or removes a Fleasion-created file.")
     }
 
     Repeater {
@@ -29,13 +29,20 @@ ColumnLayout {
             id: orphanDelegate
 
             required property var model
+            readonly property string recoveryLabel: orphanDelegate.model.kind === "created" ? qsTr("Remove") : orphanDelegate.model.kind === "mixed" ? qsTr("Mixed") : qsTr("Restore")
+            readonly property string recoveryDetail: {
+                if (orphanDelegate.model.kind === "created")
+                    return qsTr("%1 · no original existed · %n installation(s)", "", orphanDelegate.model.installationCount).arg(orphanDelegate.model.targetPath);
+                if (orphanDelegate.model.kind === "mixed")
+                    return qsTr("%1 · %2 original backup(s) · %3 created file(s)").arg(orphanDelegate.model.targetPath).arg(orphanDelegate.model.backupCount).arg(orphanDelegate.model.createdCount);
+                return qsTr("%1 · %2 · %n installation(s)", "", orphanDelegate.model.installationCount).arg(orphanDelegate.model.targetPath).arg(orphanDelegate.model.sizeText);
+            }
 
             Layout.fillWidth: true
             implicitHeight: Theme.largeControlHeight + Theme.spaceXs
-            color: orphanHover.hovered ? Theme.surfaceHover : Theme.warningSubtle
-            radius: Theme.radiusSm
+            color: orphanHover.hovered ? Theme.surfaceHover : "transparent"
             Accessible.role: Accessible.ListItem
-            Accessible.name: qsTr("Backup for %1").arg(orphanDelegate.model.targetPath)
+            Accessible.name: qsTr("Recovery item for %1").arg(orphanDelegate.model.targetPath)
 
             RowLayout {
                 anchors.fill: parent
@@ -44,7 +51,7 @@ ColumnLayout {
                 spacing: Theme.spaceSm
 
                 StatusPill {
-                    text: qsTr("Recovery")
+                    text: orphanDelegate.recoveryLabel
                     status: "warning"
                 }
 
@@ -63,7 +70,7 @@ ColumnLayout {
 
                     Label {
                         Layout.fillWidth: true
-                        text: qsTr("%1 · %2 · %n installation(s)", "", orphanDelegate.model.installationCount).arg(orphanDelegate.model.targetPath).arg(orphanDelegate.model.sizeText)
+                        text: orphanDelegate.recoveryDetail
                         color: Theme.textSecondary
                         font.pointSize: TypeScale.label
                         elide: Text.ElideMiddle
@@ -77,11 +84,20 @@ ColumnLayout {
                 }
 
                 FluentButton {
-                    text: qsTr("Restore original")
+                    text: orphanDelegate.model.kind === "created" ? qsTr("Remove override") : qsTr("Recover")
                     compact: true
                     highlighted: true
-                    onClicked: root.restoreRequested(orphanDelegate.model.targetPath)
+                    onClicked: root.restoreRequested(orphanDelegate.model.targetPath, orphanDelegate.model.kind)
                 }
+            }
+
+            Rectangle {
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                height: 1
+                color: Theme.border
+                Accessible.ignored: true
             }
 
             HoverHandler {

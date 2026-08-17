@@ -16,8 +16,18 @@ FluentDialog {
     width: Math.min(600, parent.width - Theme.spaceXxl)
     modal: true
     title: replacing ? qsTr("Replace source file") : qsTr("Add file modification")
-    standardButtons: Dialog.Save | Dialog.Cancel
+    standardButtons: Dialog.NoButton
     closePolicy: Popup.CloseOnEscape
+
+    footer: DialogActionBar {
+        acceptText: qsTr("Save")
+        onCancelRequested: root.reject()
+        onAcceptRequested: {
+            const saved = root.replacing ? root.controller.replaceSource(root.entryId, sourceField.text) : root.controller.addModification(nameField.text, targetField.text, sourceField.text);
+            if (saved)
+                root.accept();
+        }
+    }
 
     ColumnLayout {
         width: parent.width
@@ -88,11 +98,5 @@ FluentDialog {
             sourceField.forceActiveFocus();
         else
             nameField.forceActiveFocus();
-    }
-    onAccepted: {
-        if (replacing)
-            controller.replaceSource(entryId, sourceField.text);
-        else
-            controller.addModification(nameField.text, targetField.text, sourceField.text);
     }
 }

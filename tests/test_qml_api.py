@@ -612,6 +612,14 @@ def test_modifications_bridge_imports_exports_and_manages_profiles(tmp_path: Pat
         proxy_master=proxy,
     )
 
+    assert not controller.customFastFlagsWarningAccepted
+    controller.fastFlagsEnabled = True
+    assert controller.fastFlagsEnabled
+    assert controller.customFastFlagsWarningAccepted
+    controller.fastFlagsEnabled = False
+    assert not controller.fastFlagsEnabled
+    assert controller.customFastFlagsWarningAccepted
+
     assert controller.importFastFlagsJson('{"DFIntTarget": 144}', False)
     assert config.custom_fflags == {'FFlagExisting': 'True', 'DFIntTarget': '144'}
     assert manager.fast_flags['rendering_mode'] == 'D3D11'
@@ -707,9 +715,7 @@ def test_modifications_bridge_persists_custom_local_sources_as_local_file(tmp_pa
     source = tmp_path / 'cursor.png'
     source.write_bytes(b'image')
 
-    assert controller.addModification(
-        'Cursor', 'content/textures/cursor.png', str(source)
-    )
+    assert controller.addModification('Cursor', 'content/textures/cursor.png', str(source))
     assert manager.entries[0]['source_type'] == 'local_file'
     assert manager.entries[0]['source_value'] == str(source)
 
@@ -742,9 +748,7 @@ def test_modifications_bridge_exposes_builtins_bulk_sky_mute_and_font(tmp_path: 
     assert muted['source_value'] == 'bundled:empty.ogg'
 
     assert controller.applyBuiltIn('custom-font', str(font))
-    custom_font = next(
-        entry for entry in manager.entries if entry['display_name'] == 'Custom Font'
-    )
+    custom_font = next(entry for entry in manager.entries if entry['display_name'] == 'Custom Font')
     assert custom_font['_is_font'] is True
     controller.shutdown()
 
@@ -779,7 +783,10 @@ def test_settings_bridge_updates_typed_values_and_signals(config_manager):
     controller.reducedMotion = True
     controller.proxyMode = 'hosts'
     controller.proxyFeaturesEnabled = False
+    controller.closeViewerOnReplace = False
     controller.setBool('wire_preserving_passthrough', True)
+    controller.setExportNamingEnabled('hash', True)
+    controller.setExportNamingEnabled('name', False)
 
     assert controller.theme == 'Dark'
     assert controller.accentColor == '#0067c0'
@@ -787,7 +794,11 @@ def test_settings_bridge_updates_typed_values_and_signals(config_manager):
     assert controller.reducedMotion
     assert controller.proxyMode == 'hosts'
     assert not controller.proxyFeaturesEnabled
+    assert not controller.closeViewerOnReplace
     assert controller.value('wire_preserving_passthrough') is True
+    assert not controller.exportNameEnabled
+    assert controller.exportIdEnabled
+    assert controller.exportHashEnabled
     assert changed == [
         'theme',
         'accent_color',
@@ -795,7 +806,10 @@ def test_settings_bridge_updates_typed_values_and_signals(config_manager):
         'reduced_motion',
         'proxy_mode',
         'proxy_features_enabled',
+        'close_viewer_on_replace',
         'wire_preserving_passthrough',
+        'export_naming',
+        'export_naming',
     ]
     assert restarts == ['The proxy mode changed.']
     controller.shutdown()

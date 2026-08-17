@@ -10,6 +10,7 @@ Item {
     id: root
 
     required property var controller
+    required property var appController
 
     signal backRequested
     signal draftPrepared
@@ -87,62 +88,85 @@ Item {
             }
         }
 
-        DataTableHeader {
-            Layout.fillWidth: true
-
-            DataTableHeaderCell {
-                fillWidth: true
-                text: qsTr('JSON key')
-            }
-
-            DataTableHeaderCell {
-                preferredWidth: 220
-                text: qsTr('Value')
-            }
-
-            DataTableHeaderCell {
-                preferredWidth: 92
-                text: qsTr('Type')
-            }
-        }
-
-        Item {
+        RowLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            clip: true
+            spacing: Theme.spaceSm
 
-            TreeView {
-                id: valueTree
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.minimumWidth: 270
+                spacing: 0
 
-                objectName: 'presetValueTree'
-                anchors.fill: parent
-                visible: root.controller.valueTreeModel.count > 0
-                model: root.controller.valueTreeModel
-                boundsBehavior: Flickable.StopAtBounds
-                reuseItems: true
-                selectionBehavior: TableView.SelectionDisabled
-                columnWidthProvider: _column => valueTree.width
-                Accessible.name: qsTr('Expandable preset JSON')
+                DataTableHeader {
+                    Layout.fillWidth: true
 
-                delegate: CommunityPresetTreeDelegate {
-                    width: valueTree.width
-                    selectionModel: root.controller.valueSelection
+                    DataTableHeaderCell {
+                        fillWidth: true
+                        text: qsTr('JSON key')
+                    }
+
+                    DataTableHeaderCell {
+                        preferredWidth: valueTree.width < 520 ? 118 : 220
+                        text: qsTr('Value')
+                    }
+
+                    DataTableHeaderCell {
+                        preferredWidth: 92
+                        visible: valueTree.width >= 520
+                        text: qsTr('Type')
+                    }
                 }
 
-                ScrollBar.vertical: ScrollBar {}
+                Item {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    clip: true
+
+                    TreeView {
+                        id: valueTree
+
+                        objectName: 'presetValueTree'
+                        anchors.fill: parent
+                        visible: root.controller.valueTreeModel.count > 0
+                        model: root.controller.valueTreeModel
+                        boundsBehavior: Flickable.StopAtBounds
+                        reuseItems: true
+                        selectionBehavior: TableView.SelectionDisabled
+                        columnWidthProvider: _column => valueTree.width
+                        Accessible.name: qsTr('Expandable preset JSON')
+
+                        delegate: CommunityPresetTreeDelegate {
+                            width: valueTree.width
+                            selectionModel: root.controller.valueSelection
+                        }
+
+                        ScrollBar.vertical: FluentScrollBar {}
+                    }
+
+                    EmptyState {
+                        anchors.fill: parent
+                        visible: root.controller.valueTreeModel.count === 0
+                        iconText: '⌕'
+                        title: valueSearch.text.length > 0 ? qsTr('No matching JSON values') : qsTr('This JSON is empty')
+                        description: valueSearch.text.length > 0 ? qsTr('Try a broader search or clear the filter.') : qsTr('The selected source does not contain any values to browse.')
+                        actionText: valueSearch.text.length > 0 ? qsTr('Clear search') : ''
+                        onActionTriggered: {
+                            valueSearch.clear();
+                            root.controller.valueQuery = '';
+                        }
+                    }
+                }
             }
 
-            EmptyState {
-                anchors.fill: parent
-                visible: root.controller.valueTreeModel.count === 0
-                iconText: '⌕'
-                title: valueSearch.text.length > 0 ? qsTr('No matching JSON values') : qsTr('This JSON is empty')
-                description: valueSearch.text.length > 0 ? qsTr('Try a broader search or clear the filter.') : qsTr('The selected source does not contain any values to browse.')
-                actionText: valueSearch.text.length > 0 ? qsTr('Clear search') : ''
-                onActionTriggered: {
-                    valueSearch.clear();
-                    root.controller.valueQuery = '';
-                }
+            CommunityValuePreviewPanel {
+                Layout.fillHeight: true
+                Layout.preferredWidth: Math.min(380, Math.max(280, root.width * 0.4))
+                Layout.minimumWidth: 260
+                visible: root.controller.selectedCount === 1
+                controller: root.controller
+                appController: root.appController
             }
         }
 

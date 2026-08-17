@@ -10,6 +10,7 @@ ColumnLayout {
 
     required property var controller
     signal editRequested(string entryId)
+    signal inspectRequested(string name, string targetPath)
     signal resetRequested(string entryId)
 
     spacing: Theme.spaceXs
@@ -35,7 +36,7 @@ ColumnLayout {
             text: qsTr("File mapping")
         }
         DataTableHeaderCell {
-            preferredWidth: Theme.controlHeight * 2 + Theme.spaceXs
+            preferredWidth: Theme.controlHeight * 3 + Theme.spaceXs * 2
             text: qsTr("Actions")
         }
     }
@@ -56,6 +57,7 @@ ColumnLayout {
             statusText: model.status
             errorMessage: model.errorMessage
             onReplaceRequested: entryId => root.editRequested(entryId)
+            onInspectRequested: (name, targetPath) => root.inspectRequested(name, targetPath)
             onResetRequested: entryId => root.resetRequested(entryId)
         }
     }

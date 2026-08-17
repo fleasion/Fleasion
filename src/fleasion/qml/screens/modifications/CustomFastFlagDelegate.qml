@@ -23,7 +23,7 @@ Rectangle {
 
     width: ListView.view ? ListView.view.width : implicitWidth
     height: Theme.largeControlHeight + Theme.spaceXxs
-    radius: Theme.radiusSm
+    radius: 0
     color: flagHover.hovered ? Theme.surfaceHover : "transparent"
     Accessible.role: Accessible.ListItem
     Accessible.name: qsTr("%1, %2").arg(flagName).arg(flagEnabled ? qsTr("enabled") : qsTr("disabled"))
@@ -85,5 +85,14 @@ Rectangle {
 
     HoverHandler {
         id: flagHover
+    }
+
+    Rectangle {
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        height: 1
+        color: Theme.border
+        Accessible.ignored: true
     }
 }

@@ -11,6 +11,7 @@ from fleasion.cache.roblox_document import classify_roblox_document
 from fleasion.qml_api.animation_preview import AnimationPreviewApi
 from fleasion.qml_api.cache import CacheApi
 from fleasion.qml_api.font_preview import FontPreviewApi
+from fleasion.qml_api.json_preview import JsonPreviewApi
 from fleasion.qml_api.roblox_document_preview import RobloxDocumentPreviewApi
 
 DOCUMENT_XML = b"""<roblox version="4">
@@ -77,6 +78,7 @@ class _PreviewCache:
         self.config_manager = None
         self.payloads = {
             ('font', 74): b'OTTOfont-data',
+            ('json', 1): b'{"nested":{"id":123,"enabled":true},"items":["alpha",null]}',
             ('model', 10): DOCUMENT_XML,
             ('walk', 24): _animation_xml(),
         }
@@ -91,6 +93,7 @@ class _PreviewCache:
             }
             for asset_id, asset_type, type_name in (
                 ('font', 74, 'FontFace'),
+                ('json', 1, 'JSON'),
                 ('model', 10, 'Model'),
                 ('walk', 24, 'Animation'),
             )
@@ -220,6 +223,24 @@ def test_document_preview_filters_hierarchy_and_validates_refs() -> None:
     assert '"X": 4' in api.propertiesModel.get(size_row)['valueText']
 
 
+def test_json_preview_preserves_hierarchy_and_filters_ancestors() -> None:
+    api = JsonPreviewApi()
+
+    assert api.load_bytes(
+        b'{"nested":{"id":123,"enabled":true},"items":["alpha",null]}'
+    )
+    model = api._model
+    assert model.count == 6
+
+    api.query = 'alpha'  # pyright: ignore[reportAttributeAccessIssue]
+
+    assert model.count == 2
+    api.query = ''  # pyright: ignore[reportAttributeAccessIssue]
+    assert model.count == 6
+    assert not api.load_bytes(b'{"oversized":"' + b'x' * (4 * 1024 * 1024) + b'"}')
+    assert model.count == 0
+
+
 def test_animation_preview_exposes_tracks_converter_and_removes_temp_source() -> None:
     api = AnimationPreviewApi()  # pyright: ignore[reportCallIssue]
     api.set_export_directory(Path('/tmp/exports'))
@@ -290,6 +311,10 @@ def test_cache_preview_router_prefers_rich_payload_controllers(monkeypatch) -> N
         assert api.previewKind == 'animation'
         assert api.animationPreview.keyframeCount == 2
         _wait_for_task(api.animationPreview.converter.task)
+
+        api.loadPreview('1_json')
+        assert api.previewKind == 'json'
+        assert api.jsonPreview.model.count == 6
     finally:
         api.shutdown()
 

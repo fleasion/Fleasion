@@ -150,9 +150,7 @@ FocusScope {
                 onClicked: root.pageRequested(model.pageId)
             }
 
-            ScrollBar.vertical: ScrollBar {
-                policy: navigationView.contentHeight > navigationView.height ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff
-            }
+            ScrollBar.vertical: FluentScrollBar {}
         }
 
         Rectangle {

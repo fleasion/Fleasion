@@ -23,8 +23,10 @@ Rectangle {
     property bool clearCacheOnLaunch: false
     property bool closeRobloxOnExit: false
     property bool readOnlyGuard: false
+    property bool closeViewerOnReplace: true
     property bool showReplacerNotifications: false
     property bool wirePreservingPassthrough: false
+    property bool proxyFeaturesEnabled: false
 
     function settingValue(key) {
         return controller ? Boolean(controller.value(key)) : false;
@@ -39,8 +41,10 @@ Rectangle {
         clearCacheOnLaunch = settingValue("clear_cache_on_launch");
         closeRobloxOnExit = settingValue("close_env_proxy_roblox_on_exit");
         readOnlyGuard = settingValue("lock_roblox_files_read_only");
+        closeViewerOnReplace = controller ? controller.closeViewerOnReplace : true;
         showReplacerNotifications = settingValue("show_replacer_notifications");
         wirePreservingPassthrough = settingValue("wire_preserving_passthrough");
+        proxyFeaturesEnabled = controller ? controller.proxyFeaturesEnabled : false;
     }
 
     function setBooleanSetting(key, value) {
@@ -72,12 +76,12 @@ Rectangle {
         }
     }
 
-    ScrollView {
+    FluentScrollView {
         id: settingsScroll
 
         anchors.fill: parent
         contentWidth: availableWidth
-        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+        horizontalScrollBarEnabled: false
 
         ColumnLayout {
             x: Theme.pageGutter
@@ -287,10 +291,17 @@ Rectangle {
                     iconText: "⇄"
 
                     FluentSwitch {
-                        checked: root.controller ? root.controller.proxyFeaturesEnabled : false
+                        checked: root.proxyFeaturesEnabled
+                        checkable: false
                         enabled: Boolean(root.controller)
                         Accessible.name: qsTr("Enable proxy features")
-                        onToggled: root.controller.proxyFeaturesEnabled = checked
+                        onClicked: {
+                            if (root.proxyFeaturesEnabled) {
+                                proxyDisableDialog.open();
+                            } else if (root.controller) {
+                                root.controller.proxyFeaturesEnabled = true;
+                            }
+                        }
                     }
                 }
 
@@ -353,6 +364,35 @@ Rectangle {
                     }
                 }
 
+                SettingRow {
+                    Layout.fillWidth: true
+                    title: qsTr("Export filenames")
+                    description: qsTr("Choose which asset details are combined in exported filenames. Asset ID is used as a fallback if none are selected.")
+                    iconText: "Aa"
+
+                    RowLayout {
+                        spacing: Theme.spaceSm
+
+                        FluentCheckBox {
+                            text: qsTr("Name")
+                            checked: root.controller ? root.controller.exportNameEnabled : false
+                            onToggled: root.controller.setExportNamingEnabled("name", checked)
+                        }
+
+                        FluentCheckBox {
+                            text: qsTr("ID")
+                            checked: root.controller ? root.controller.exportIdEnabled : false
+                            onToggled: root.controller.setExportNamingEnabled("id", checked)
+                        }
+
+                        FluentCheckBox {
+                            text: qsTr("Hash")
+                            checked: root.controller ? root.controller.exportHashEnabled : false
+                            onToggled: root.controller.setExportNamingEnabled("hash", checked)
+                        }
+                    }
+                }
+
                 SettingSwitchRow {
                     Layout.fillWidth: true
                     title: qsTr("Delete cache on exit")
@@ -377,6 +417,17 @@ Rectangle {
 
                 SettingSwitchRow {
                     Layout.fillWidth: true
+                    title: qsTr("Close community browser after use")
+                    description: qsTr("Close the preset browser when a selection opens the replacement editor.")
+                    checked: root.closeViewerOnReplace
+                    onToggled: value => {
+                        root.closeViewerOnReplace = value;
+                        root.controller.closeViewerOnReplace = value;
+                    }
+                }
+
+                SettingSwitchRow {
+                    Layout.fillWidth: true
                     title: qsTr("Replacement notifications")
                     description: qsTr("Show a notification when a replacement action finishes.")
                     checked: root.showReplacerNotifications
@@ -391,6 +442,15 @@ Rectangle {
                 Layout.fillWidth: true
                 Layout.preferredHeight: Theme.pageBottomGutter
             }
+        }
+    }
+
+    Settings.ProxyFeaturesDisableDialog {
+        id: proxyDisableDialog
+
+        onConfirmed: {
+            root.proxyFeaturesEnabled = false;
+            root.controller.proxyFeaturesEnabled = false;
         }
     }
 }

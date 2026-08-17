@@ -27,6 +27,7 @@ from .tasks import TaskState
 
 if TYPE_CHECKING:
     from ..config.manager import ConfigManager
+    from ..modifications.manager import ModificationManager
 
 QML_IMPORT_NAME = 'Fleasion'
 QML_IMPORT_MAJOR_VERSION = 1
@@ -57,6 +58,8 @@ _ORPHAN_ROLES: Final = (
     'name',
     'targetPath',
     'installationCount',
+    'backupCount',
+    'createdCount',
     'sizeText',
     'kind',
 )
@@ -82,6 +85,9 @@ _HEAD_VARIANT_ROLES: Final = ('catalogKey', 'name')
 _RENDERING_MODES: Final = frozenset({'Default', 'D3D11', 'Vulkan', 'OpenGL'})
 _MSAA_LEVELS: Final = frozenset({'Default', '1', '2', '4'})
 _TEXTURE_LEVELS: Final = frozenset({'Default', '0', '1', '2', '3'})
+_FAST_FLAG_FAMILIES: Final = ('All', *FastFlagCatalog.FAMILIES, 'Other')
+_MAX_FAST_FLAG_IMPORT_BYTES: Final = 8 * 1024 * 1024
+_MAX_FAST_FLAGS: Final = 10_000
 _PRESET_DEFAULTS: Final[dict[str, str | bool | int | None]] = {
     'rendering_mode': 'Default',
     'msaa': 'Default',
@@ -105,7 +111,7 @@ def _bounded_int(value: object, *, default: int, maximum: int) -> int:
         return default
     try:
         parsed = int(value)
-    except (OverflowError, ValueError):
+    except OverflowError, ValueError:
         parsed = default
     return max(0, min(parsed, maximum))
 
@@ -125,6 +131,7 @@ class ModificationsApi(QObject):
 
     modelChanged = Signal()
     fastFlagsEnabledChanged = Signal()
+    customFastFlagsWarningAcceptedChanged = Signal()
     allowlistedFastFlagsEnabledChanged = Signal()
     presetSettingsChanged = Signal()
     presetDirtyChanged = Signal()
@@ -172,9 +179,7 @@ class ModificationsApi(QObject):
                 'fonts',
             )
         }
-        self._available_head_variants_model = DictListModel(
-            _HEAD_VARIANT_ROLES, parent=self
-        )
+        self._available_head_variants_model = DictListModel(_HEAD_VARIANT_ROLES, parent=self)
         self._catalog_task = TaskState(self)
         self._preset_task = TaskState(self)
         self._catalog_values: dict[str, str | None] = {}
@@ -187,9 +192,7 @@ class ModificationsApi(QObject):
         self._migrate_misfiled_custom_flags()
         self._preset_revision = 1 if self._preset_settings != _PRESET_DEFAULTS else 0
         self._preset_applied_revision = (
-            self._preset_revision
-            if manager is not None and manager.fast_flags_enabled
-            else 0
+            self._preset_revision if manager is not None and manager.fast_flags_enabled else 0
         )
         self._preset_apply_pending = False
         self._disposed = False
@@ -273,7 +276,11 @@ class ModificationsApi(QObject):
 
     @Property(list, constant=True)
     def fastFlagFamilies(self) -> list[str]:  # noqa: N802
-        return ['All', *FastFlagCatalog.FAMILIES, 'Other']
+        return list(_FAST_FLAG_FAMILIES)
+
+    @Property(bool, constant=True)
+    def linuxHotkeyPermissionSetupAvailable(self) -> bool:  # noqa: N802
+        return self._hotkeys.permission_setup_available
 
     @Property(bool, constant=True)
     def hotkeysSupported(self) -> bool:  # noqa: N802
@@ -292,9 +299,7 @@ class ModificationsApi(QObject):
         if self._manager is None:
             return ''
         directories = list(getattr(self._manager, 'roblox_dirs', ()))
-        return (
-            QUrl.fromLocalFile(str(directories[0])).toString() if directories else ''
-        )
+        return QUrl.fromLocalFile(str(directories[0])).toString() if directories else ''
 
     @Property(QObject, constant=True)
     def catalogModel(self) -> QObject:  # noqa: N802
@@ -326,10 +331,22 @@ class ModificationsApi(QObject):
             return
         self._config.custom_fflags_enabled = enabled
         if enabled:
+            warning_was_accepted = bool(
+                getattr(self._config, 'custom_fflags_warning_accepted', False)
+            )
             self._config.custom_fflags_warning_accepted = True
+            if not warning_was_accepted:
+                self.customFastFlagsWarningAcceptedChanged.emit()
         self._hotkeys.sync()
         self._refresh_custom_fflag_interception()
         self.fastFlagsEnabledChanged.emit()
+
+    @Property(bool, notify=customFastFlagsWarningAcceptedChanged)
+    def customFastFlagsWarningAccepted(self) -> bool:  # noqa: N802
+        return bool(
+            self._config is not None
+            and getattr(self._config, 'custom_fflags_warning_accepted', False)
+        )
 
     @Property(bool, constant=True)
     def customFastFlagsAvailable(self) -> bool:  # noqa: N802
@@ -349,9 +366,7 @@ class ModificationsApi(QObject):
 
     @presetRenderingMode.setter  # pyright: ignore[reportRedeclaration]
     def presetRenderingMode(self, value: str) -> None:  # pyright: ignore[reportRedeclaration]  # noqa: N802
-        self._set_preset_value(
-            'rendering_mode', value if value in _RENDERING_MODES else 'Default'
-        )
+        self._set_preset_value('rendering_mode', value if value in _RENDERING_MODES else 'Default')
 
     @Property(str, notify=presetSettingsChanged)
     def presetMsaa(self) -> str:  # pyright: ignore[reportRedeclaration]  # noqa: N802
@@ -383,9 +398,7 @@ class ModificationsApi(QObject):
 
     @presetTextureQuality.setter  # pyright: ignore[reportRedeclaration]
     def presetTextureQuality(self, value: str) -> None:  # pyright: ignore[reportRedeclaration]  # noqa: N802
-        self._set_preset_value(
-            'texture_quality', value if value in _TEXTURE_LEVELS else 'Default'
-        )
+        self._set_preset_value('texture_quality', value if value in _TEXTURE_LEVELS else 'Default')
 
     @Property(bool, notify=presetSettingsChanged)
     def presetMeshLodEnabled(self) -> bool:  # pyright: ignore[reportRedeclaration]  # noqa: N802
@@ -499,13 +512,9 @@ class ModificationsApi(QObject):
                 }
             )
         self._model.replace_items(rows)
-        built_in_targets = {
-            self._target_key(entry.target_path) for entry in self._built_in_entries
-        }
+        built_in_targets = {self._target_key(entry.target_path) for entry in self._built_in_entries}
         self._custom_model.replace_items(
-            row
-            for row in rows
-            if self._target_key(str(row['targetPath'])) not in built_in_targets
+            row for row in rows if self._target_key(str(row['targetPath'])) not in built_in_targets
         )
         self._refresh_built_in_models()
         self._refresh_fast_flags()
@@ -541,11 +550,7 @@ class ModificationsApi(QObject):
         if self._manager is None:
             return False
         entry = next(
-            (
-                value
-                for value in self._manager.entries
-                if str(value.get('id', '')) == entry_id
-            ),
+            (value for value in self._manager.entries if str(value.get('id', '')) == entry_id),
             None,
         )
         if entry is None:
@@ -581,7 +586,7 @@ class ModificationsApi(QObject):
             try:
                 root = Path(raw_root).resolve(strict=True)
                 relative = normalise_target_path(selected.relative_to(root)).as_posix()
-            except (OSError, ValueError):
+            except OSError, ValueError:
                 continue
             return relative
         self.errorOccurred.emit(
@@ -623,9 +628,7 @@ class ModificationsApi(QObject):
             self.errorOccurred.emit(definition.limitation)
             return False
         try:
-            source_type, source_value = detect_modification_source(
-                definition.target_path, source
-            )
+            source_type, source_value = detect_modification_source(definition.target_path, source)
         except (FileNotFoundError, ValueError) as exc:
             self.errorOccurred.emit(str(exc))
             return False
@@ -683,9 +686,7 @@ class ModificationsApi(QObject):
 
     @Slot(str, result=bool)
     def applySkyToAll(self, source: str) -> bool:  # noqa: N802
-        sky_entries = [
-            entry for entry in self._built_in_entries if entry.category == 'skybox'
-        ]
+        sky_entries = [entry for entry in self._built_in_entries if entry.category == 'skybox']
         try:
             resolved = [
                 (entry, *detect_modification_source(entry.target_path, source))
@@ -783,7 +784,7 @@ class ModificationsApi(QObject):
     @Slot(str, str)
     def filterFastFlags(self, query: str, family: str) -> None:  # noqa: N802
         normalized_query = query.strip().casefold()
-        normalized_family = family if family in self.fastFlagFamilies else 'All'
+        normalized_family = family if family in _FAST_FLAG_FAMILIES else 'All'
         if (
             normalized_query == self._fast_flag_query
             and normalized_family == self._fast_flag_family
@@ -820,14 +821,22 @@ class ModificationsApi(QObject):
     def captureFastFlagNativeKey(  # noqa: N802
         self,
         native_scan_code: int,
-        native_virtual_key: int,
+        qt_key: int,
         modifiers: int,
     ) -> bool:
         return self._hotkeys.capture_native_key(
             native_scan_code,
-            native_virtual_key,
+            qt_key,
             modifiers,
         )
+
+    @Slot(int, int, result=bool)
+    def releaseFastFlagNativeKey(  # noqa: N802
+        self,
+        native_scan_code: int,
+        qt_key: int,
+    ) -> bool:
+        return self._hotkeys.release_native_key(native_scan_code, qt_key)
 
     @Slot(str, int, int, result=bool)
     def captureFastFlagPointer(  # noqa: N802
@@ -842,8 +851,15 @@ class ModificationsApi(QObject):
             self._refresh_fast_flags()
         return result
 
+    @Slot(result=bool)
+    def setupLinuxHotkeyPermissions(self) -> bool:  # noqa: N802
+        return self._hotkeys.setup_linux_permissions()
+
     @Slot(str, bool, result=bool)
     def importFastFlagsJson(self, text: str, replace: bool = False) -> bool:  # noqa: N802
+        if len(text.encode('utf-8')) > _MAX_FAST_FLAG_IMPORT_BYTES:
+            self.errorOccurred.emit('The FastFlag JSON exceeds the 8 MiB import limit.')
+            return False
         try:
             payload = json.loads(text)
         except json.JSONDecodeError as exc:
@@ -851,6 +867,9 @@ class ModificationsApi(QObject):
             return False
         if not isinstance(payload, dict):
             self.errorOccurred.emit('The JSON root must contain FastFlag name/value pairs.')
+            return False
+        if len(payload) > _MAX_FAST_FLAGS:
+            self.errorOccurred.emit('The FastFlag JSON exceeds the 10,000-entry limit.')
             return False
         normalized = normalize_custom_fflags(payload)
         if len(normalized) != len(payload):
@@ -870,8 +889,15 @@ class ModificationsApi(QObject):
 
     @Slot(str, bool, result=bool)
     def importFastFlagsFile(self, value: str, replace: bool = False) -> bool:  # noqa: N802
+        path = self._local_path(value)
         try:
-            text = self._local_path(value).read_text(encoding='utf-8')
+            if path.stat().st_size > _MAX_FAST_FLAG_IMPORT_BYTES:
+                self.errorOccurred.emit('The FastFlag JSON exceeds the 8 MiB import limit.')
+                return False
+            text = path.read_text(encoding='utf-8')
+        except UnicodeDecodeError:
+            self.errorOccurred.emit('The FastFlag file must contain UTF-8 JSON text.')
+            return False
         except OSError as exc:
             self.errorOccurred.emit(str(exc))
             return False
@@ -896,7 +922,9 @@ class ModificationsApi(QObject):
 
     @Slot()
     def refreshProfiles(self) -> None:  # noqa: N802
-        self._profiles_model.replace_items({'name': name} for name in self._profiles.list_profiles())
+        self._profiles_model.replace_items(
+            {'name': name} for name in self._profiles.list_profiles()
+        )
 
     @Slot(str, result=bool)
     def saveProfile(self, name: str) -> bool:  # noqa: N802
@@ -957,7 +985,7 @@ class ModificationsApi(QObject):
             ):
                 try:
                     signal.disconnect(slot)
-                except (RuntimeError, TypeError):
+                except RuntimeError, TypeError:
                     pass
             self._manager_connected = False
         self._catalog_task.shutdown()
@@ -1015,12 +1043,8 @@ class ModificationsApi(QObject):
 
     def _refresh_fast_flags(self) -> None:
         flags = self._custom_fast_flags()
-        disabled = (
-            set(self._config.custom_fflag_disabled) if self._config is not None else set()
-        )
-        bindings = (
-            self._config.custom_fflag_keybinds if self._config is not None else {}
-        )
+        disabled = set(self._config.custom_fflag_disabled) if self._config is not None else set()
+        bindings = self._config.custom_fflag_keybinds if self._config is not None else {}
         self._fast_flags_model.replace_items(
             {
                 'name': name,
@@ -1048,9 +1072,7 @@ class ModificationsApi(QObject):
             self._orphaned_targets = set()
             self._orphaned_model.replace_items(())
             return
-        tracked = {
-            self._target_key(str(entry.get('target_path', ''))) for entry in entries
-        }
+        tracked = {self._target_key(str(entry.get('target_path', ''))) for entry in entries}
         stash_root = Path(getattr(manager, '_stash_dir', MOD_ORIGINALS_DIR))
         grouped: dict[str, dict[str, Any]] = {}
         for raw_roblox_dir in getattr(manager, 'roblox_dirs', ()):
@@ -1066,9 +1088,7 @@ class ModificationsApi(QObject):
                 except ValueError:
                     continue
                 marker = relative.endswith('.fleasion_new')
-                target_path = (
-                    relative.removesuffix('.fleasion_new') if marker else relative
-                )
+                target_path = relative.removesuffix('.fleasion_new') if marker else relative
                 target_key = self._target_key(target_path)
                 if not target_key or target_key in tracked:
                     continue
@@ -1078,13 +1098,16 @@ class ModificationsApi(QObject):
                         'name': Path(target_path).name,
                         'targetPath': target_path,
                         'installations': set(),
+                        'backups': set(),
+                        'created': set(),
                         'size': 0,
-                        'markerOnly': True,
                     },
                 )
                 row['installations'].add(roblox_dir.name)
-                row['markerOnly'] = bool(row['markerOnly']) and marker
-                if not marker:
+                if marker:
+                    row['created'].add(roblox_dir.name)
+                else:
+                    row['backups'].add(roblox_dir.name)
                     try:
                         row['size'] = int(row['size']) + stash.stat().st_size
                     except OSError:
@@ -1098,8 +1121,16 @@ class ModificationsApi(QObject):
                 'name': str(row['name']),
                 'targetPath': str(row['targetPath']),
                 'installationCount': len(row['installations']),
+                'backupCount': len(row['backups']),
+                'createdCount': len(row['created']),
                 'sizeText': _format_bytes(int(row['size'])),
-                'kind': 'Created file' if row['markerOnly'] else 'Original backup',
+                'kind': (
+                    'mixed'
+                    if row['backups'] and row['created']
+                    else 'backup'
+                    if row['backups']
+                    else 'created'
+                ),
             }
             for _key, row in sorted(grouped.items())
         )
@@ -1112,14 +1143,12 @@ class ModificationsApi(QObject):
         if self._manager is None:
             return set()
         configured_targets = {
-            self._target_key(str(entry.get('target_path', '')))
-            for entry in self._manager.entries
+            self._target_key(str(entry.get('target_path', ''))) for entry in self._manager.entries
         }
         return {
             key
             for key in self._head_variant_keys
-            if self._target_key(self._built_in_by_key[key].target_path)
-            in configured_targets
+            if self._target_key(self._built_in_by_key[key].target_path) in configured_targets
         }
 
     def _manager_entry_for_target(self, target_path: str) -> dict[str, Any] | None:
@@ -1146,9 +1175,7 @@ class ModificationsApi(QObject):
             manager_entry = self._manager_entry_for_target(definition.target_path)
             orphaned = self._target_key(definition.target_path) in self._orphaned_targets
             source_type = (
-                ''
-                if manager_entry is None
-                else str(manager_entry.get('source_type') or '')
+                '' if manager_entry is None else str(manager_entry.get('source_type') or '')
             )
             source_value = (
                 '' if manager_entry is None else str(manager_entry.get('source_value') or '')
@@ -1164,9 +1191,7 @@ class ModificationsApi(QObject):
                     'supported': definition.supported,
                     'limitation': definition.limitation,
                     'configured': manager_entry is not None,
-                    'entryId': ''
-                    if manager_entry is None
-                    else str(manager_entry.get('id', '')),
+                    'entryId': '' if manager_entry is None else str(manager_entry.get('id', '')),
                     'sourceType': source_type,
                     'sourceValue': source_value,
                     'sourceName': self._source_name(source_type, source_value),
@@ -1255,12 +1280,8 @@ class ModificationsApi(QObject):
             'pause_voxelizer',
         ):
             settings[key] = bool(values.get(key, _PRESET_DEFAULTS[key]))
-        settings['mesh_lod'] = _bounded_int(
-            values.get('mesh_lod'), default=4, maximum=4
-        )
-        settings['frm_quality'] = _bounded_int(
-            values.get('frm_quality'), default=21, maximum=21
-        )
+        settings['mesh_lod'] = _bounded_int(values.get('mesh_lod'), default=4, maximum=4)
+        settings['frm_quality'] = _bounded_int(values.get('frm_quality'), default=21, maximum=21)
         for key in ('grass_max', 'grass_min', 'grass_motion'):
             value = _bounded_int(values.get(key), default=0, maximum=100_000)
             settings[key] = value or None

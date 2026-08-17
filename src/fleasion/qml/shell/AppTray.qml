@@ -24,6 +24,12 @@ Item {
 
             Platform.MenuSeparator {}
 
+            TrayProfilesMenu {
+                controller: root.appController.replacer
+            }
+
+            Platform.MenuSeparator {}
+
             Platform.MenuItem {
                 text: qsTr("Clear Roblox cache")
                 onTriggered: root.appController.cacheCleanupRequested()

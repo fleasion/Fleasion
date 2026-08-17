@@ -60,6 +60,17 @@ class ConfigManagerEncodingTests(unittest.TestCase):
             self.assertEqual(manager.upstream_http_connect_password, 'http-secret')
             self.assertEqual(manager.upstream_socks5_password, 'socks-secret')
 
+    def test_proxy_traffic_preserve_property_round_trips(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_manager_module = self._load_manager_for(Path(tmp))
+            manager = config_manager_module.ConfigManager()
+
+            self.assertFalse(manager.proxy_traffic_preserve)
+            manager.proxy_traffic_preserve = True
+
+            restored = config_manager_module.ConfigManager()
+            self.assertTrue(restored.proxy_traffic_preserve)
+
     def test_unicode_config_names_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_manager_module = self._load_manager_for(Path(tmp))

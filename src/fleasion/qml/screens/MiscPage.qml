@@ -1,7 +1,6 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
-import QtQuick.Controls
 import QtQuick.Layouts
 import Fleasion.Theme
 import Fleasion.Components
@@ -19,7 +18,7 @@ Rectangle {
         cleanupDialogLoader.active = true;
     }
 
-    ScrollView {
+    FluentScrollView {
         anchors.fill: parent
         contentWidth: availableWidth
 

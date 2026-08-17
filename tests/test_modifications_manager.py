@@ -206,6 +206,43 @@ def test_reapply_all_stops_before_next_entry_after_restore_generation_changes():
     assert applied == ['first']
 
 
+def test_cancel_pending_operations_invalidates_bulk_and_entry_workers():
+    entries = [{'_apply_gen': 1}, {}]
+    manager = ModificationManager.__new__(ModificationManager)
+    manager._fs_lock = threading.RLock()
+    manager._bulk_apply_gen = 4
+    manager._data = {'entries': entries}
+
+    manager.cancel_pending_operations()
+
+    assert manager._bulk_apply_gen == 5
+    assert [entry['_apply_gen'] for entry in entries] == [2, 1]
+
+
+def test_orphan_restore_removes_conflicting_new_file_marker(tmp_path):
+    roblox_dir = tmp_path / 'Roblox'
+    target_path = Path('content/example.bin')
+    destination = roblox_dir / target_path
+    destination.parent.mkdir(parents=True)
+    destination.write_bytes(b'modified')
+    stash_root = tmp_path / 'stash'
+    stash = resource_stash_dir(stash_root, roblox_dir) / target_path
+    stash.parent.mkdir(parents=True)
+    stash.write_bytes(b'original')
+    marker = stash.with_name(stash.name + '.fleasion_new')
+    marker.touch()
+    manager = ModificationManager.__new__(ModificationManager)
+    manager._roblox_dirs = [roblox_dir]
+    manager._stash_dir = stash_root
+    manager._fs_lock = threading.RLock()
+
+    assert manager.restore_orphaned_stash(target_path.as_posix())
+
+    assert destination.read_bytes() == b'original'
+    assert not stash.exists()
+    assert not marker.exists()
+
+
 def test_read_only_guard_protects_managed_files_and_clears_on_close(tmp_path):
     roblox_dir = tmp_path / "Roblox.app" / "Contents" / "Resources"
     target = roblox_dir / "content" / "textures" / "MouseLockedCursor.png"

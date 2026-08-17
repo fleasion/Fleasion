@@ -11,18 +11,19 @@ FluentDialog {
 
     required property var controller
     property string flagName
+    property bool captureReady: false
 
     parent: Overlay.overlay
     anchors.centerIn: parent
     width: Math.min(520, parent.width - Theme.spaceXxl)
     modal: true
     title: qsTr("Set a global FastFlag hotkey")
-    closePolicy: Popup.CloseOnEscape
+    closePolicy: Popup.NoAutoClose
 
     onOpened: {
-        captureSurface.forceActiveFocus();
-        if (!root.controller.beginFastFlagHotkeyCapture(root.flagName))
-            root.close();
+        root.captureReady = root.controller.beginFastFlagHotkeyCapture(root.flagName);
+        if (root.captureReady)
+            captureSurface.forceActiveFocus();
     }
     onClosed: root.controller.cancelFastFlagHotkeyCapture()
 
@@ -40,7 +41,7 @@ FluentDialog {
 
         Label {
             Layout.fillWidth: true
-            text: qsTr("Assign a physical key, mouse button, or wheel direction to toggle %1 while Roblox is focused.").arg(root.flagName)
+            text: qsTr("Assign a physical key, mouse button, or wheel direction to toggle %1 while Roblox is focused. Escape can be assigned; use Cancel to leave unchanged.").arg(root.flagName)
             color: Theme.textSecondary
             font.pointSize: TypeScale.body
             wrapMode: Text.Wrap
@@ -51,8 +52,8 @@ FluentDialog {
 
             Layout.fillWidth: true
             Layout.preferredHeight: 116
-            color: activeFocus ? Theme.accentSubtle : Theme.surfaceSubtle
-            radius: Theme.radiusMd
+            color: !root.captureReady ? Theme.warningSubtle : activeFocus ? Theme.accentSubtle : Theme.surfaceSubtle
+            radius: Theme.radiusSm
             border.width: activeFocus ? 2 : 1
             border.color: activeFocus ? Theme.focusRing : Theme.border
             activeFocusOnTab: true
@@ -72,13 +73,17 @@ FluentDialog {
             Keys.onPressed: event => {
                 if (event.isAutoRepeat)
                     return;
-                if (event.key === Qt.Key_Control || event.key === Qt.Key_Shift || event.key === Qt.Key_Alt || event.key === Qt.Key_Meta || event.key === Qt.Key_AltGr)
+                event.accepted = root.controller.captureFastFlagNativeKey(event.nativeScanCode, event.key, event.modifiers);
+            }
+            Keys.onReleased: event => {
+                if (event.isAutoRepeat)
                     return;
-                event.accepted = root.controller.captureFastFlagNativeKey(event.nativeScanCode, event.nativeVirtualKey, event.modifiers);
+                event.accepted = root.controller.releaseFastFlagNativeKey(event.nativeScanCode, event.key);
             }
 
             MouseArea {
                 anchors.fill: parent
+                enabled: root.captureReady
                 acceptedButtons: Qt.AllButtons
                 onPressed: mouse => {
                     let code = 0;
@@ -113,6 +118,22 @@ FluentDialog {
 
             Item {
                 Layout.fillWidth: true
+            }
+
+            FluentButton {
+                visible: !root.captureReady && root.controller.linuxHotkeyPermissionSetupAvailable
+                text: qsTr("Set up access…")
+                onClicked: root.controller.setupLinuxHotkeyPermissions()
+            }
+
+            FluentButton {
+                visible: !root.captureReady
+                text: qsTr("Retry")
+                onClicked: {
+                    root.captureReady = root.controller.beginFastFlagHotkeyCapture(root.flagName);
+                    if (root.captureReady)
+                        captureSurface.forceActiveFocus();
+                }
             }
 
             FluentButton {

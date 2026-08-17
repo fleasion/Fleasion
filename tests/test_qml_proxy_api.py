@@ -97,6 +97,11 @@ class ProxyStub:
         self.rules = [dict(rule) for rule in rules]
 
 
+class PreserveConfigStub:
+    def __init__(self, enabled: bool) -> None:
+        self.proxy_traffic_preserve = enabled
+
+
 def wait_until(predicate, timeout: float = 1.0) -> None:
     deadline = time.monotonic() + timeout
     while not predicate():
@@ -340,6 +345,124 @@ def test_proxy_shutdown_linearizes_with_restart_start_gate():
     assert proxy.starts_during_shutdown == 0
     assert proxy.actions == ['stop', 'start', 'stop']
     assert not proxy.is_running
+
+
+def test_proxy_preserve_restores_sanitized_read_only_traffic(tmp_path):
+    archive_path = tmp_path / 'traffic.json'
+    config = PreserveConfigStub(True)
+    proxy = ProxyStub()
+    proxy.traffic[0]['request_raw'] = (
+        b'GET /one?accessCode=private-code HTTP/1.1\r\n'
+        b'Authorization: Bearer bearer-secret\r\n\r\n'
+    )
+    controller = ProxyApi(  # pyright: ignore[reportCallIssue]
+        proxy,
+        config_manager=config,  # pyright: ignore[reportArgumentType]
+        traffic_archive_path=archive_path,
+    )
+    controller.shutdown()
+
+    restored_proxy = ProxyStub()
+    restored_proxy.traffic = []
+    restored = ProxyApi(  # pyright: ignore[reportCallIssue]
+        restored_proxy,
+        config_manager=config,  # pyright: ignore[reportArgumentType]
+        traffic_archive_path=archive_path,
+    )
+    assert restored.trafficPreserve
+    assert restored.preservedCount == 1
+    assert restored.model.count == 1
+    row = restored.model.get(0)
+    assert row['requestId'] == -1
+    assert row['archived'] is True
+    details = restored.trafficEntry('-1')
+    assert details['archived'] is True
+    assert details['pending'] is False
+    assert 'private-code' not in details['requestText']
+    assert 'bearer-secret' not in details['requestText']
+    assert not restored.replay(-1, details['requestText'])
+    restored.shutdown()
+
+
+def test_proxy_preserve_checkpoints_live_rows_across_service_restart(tmp_path):
+    archive_path = tmp_path / 'traffic.json'
+    config = PreserveConfigStub(True)
+    proxy = ProxyStub()
+    controller = ProxyApi(  # pyright: ignore[reportCallIssue]
+        proxy,
+        config_manager=config,  # pyright: ignore[reportArgumentType]
+        traffic_archive_path=archive_path,
+    )
+
+    assert controller.restart()
+    wait_until(lambda: not controller.lifecycleTask.busy)
+    assert controller.model.count == 1
+    assert controller.model.get(0)['requestId'] == -1
+    assert controller.model.get(0)['archived'] is True
+
+    proxy.traffic.append(proxy.entry(0, status=201))
+    controller.refresh()
+    assert [controller.model.get(index)['requestId'] for index in range(2)] == [-1, 0]
+    assert controller.model.get(1)['archived'] is False
+
+    assert controller.restart()
+    wait_until(lambda: not controller.lifecycleTask.busy)
+    assert [controller.model.get(index)['requestId'] for index in range(2)] == [-1, -2]
+    assert all(controller.model.get(index)['archived'] for index in range(2))
+    controller.shutdown()
+
+
+def test_proxy_preserve_checkpoint_does_not_block_qt_thread(tmp_path):
+    archive_path = tmp_path / 'traffic.json'
+    config = PreserveConfigStub(True)
+    proxy = ProxyStub()
+    controller = ProxyApi(  # pyright: ignore[reportCallIssue]
+        proxy,
+        config_manager=config,  # pyright: ignore[reportArgumentType]
+        traffic_archive_path=archive_path,
+    )
+    checkpoint_entered = threading.Event()
+    allow_checkpoint = threading.Event()
+    original_checkpoint = controller._traffic_archive.checkpoint
+
+    def blocking_checkpoint(entries: list[dict[str, Any]]) -> bool:
+        checkpoint_entered.set()
+        assert allow_checkpoint.wait(1.0)
+        return original_checkpoint(entries)
+
+    controller._traffic_archive.checkpoint = blocking_checkpoint  # pyright: ignore[reportAttributeAccessIssue]
+
+    assert controller.restart()
+    assert checkpoint_entered.wait(1.0)
+    assert controller.lifecycleTask.busy
+    controller.refresh()
+    assert controller.model.get(0)['requestId'] == 1
+
+    allow_checkpoint.set()
+    wait_until(lambda: not controller.lifecycleTask.busy)
+    assert controller.model.get(0)['requestId'] == -1
+    controller.shutdown()
+
+
+def test_proxy_preserve_toggle_updates_config_and_removes_archive(tmp_path):
+    archive_path = tmp_path / 'traffic.json'
+    config = PreserveConfigStub(False)
+    proxy = ProxyStub()
+    controller = ProxyApi(  # pyright: ignore[reportCallIssue]
+        proxy,
+        config_manager=config,  # pyright: ignore[reportArgumentType]
+        traffic_archive_path=archive_path,
+    )
+
+    controller.setTrafficPreserve(True)
+    assert config.proxy_traffic_preserve
+    assert archive_path.exists()
+
+    controller.setTrafficPreserve(False)
+    assert not config.proxy_traffic_preserve
+    assert not archive_path.exists()
+    assert controller.model.count == 1
+    controller.shutdown()
 
 
 def test_proxy_rules_round_trip_json_file(tmp_path):

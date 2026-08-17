@@ -28,7 +28,7 @@ Control {
             elide: Text.ElideRight
         }
 
-        ScrollView {
+        FluentScrollView {
             Layout.fillWidth: true
             Layout.fillHeight: true
 

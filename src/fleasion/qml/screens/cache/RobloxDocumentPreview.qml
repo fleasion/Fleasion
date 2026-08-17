@@ -137,7 +137,7 @@ Item {
                         controller: root.controller
                     }
 
-                    ScrollBar.vertical: ScrollBar {}
+                    ScrollBar.vertical: FluentScrollBar {}
                 }
             }
 
@@ -219,7 +219,7 @@ Item {
                         editableValue: editable
                     }
 
-                    ScrollBar.vertical: ScrollBar {}
+                    ScrollBar.vertical: FluentScrollBar {}
                 }
 
                 RowLayout {

@@ -103,7 +103,7 @@ Item {
                     onDeleteRequested: (presetId, name) => root.deleteRequested(presetId, name)
                 }
 
-                ScrollBar.vertical: ScrollBar {}
+                ScrollBar.vertical: FluentScrollBar {}
             }
 
             BusyIndicator {

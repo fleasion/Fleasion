@@ -16,6 +16,7 @@ FocusScope {
     property string pendingOperation: "restore"
     property bool pendingFastFlagsEnabled: false
     property string pendingTargetPath
+    property string pendingRecoveryKind: "backup"
     property string inspectName
     property string inspectTargetPath
 
@@ -93,12 +94,10 @@ FocusScope {
             Layout.fillHeight: true
             currentIndex: sectionTabs.currentIndex
 
-            ScrollView {
+            FluentScrollView {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 contentWidth: availableWidth
-                clip: true
-
                 ColumnLayout {
                     width: parent.width
                     spacing: Theme.sectionGap
@@ -113,8 +112,9 @@ FocusScope {
                         Layout.fillWidth: true
                         controller: root.controller
                         onInspectRequested: (name, targetPath) => root.inspect(name, targetPath)
-                        onRestoreRequested: targetPath => {
+                        onRestoreRequested: (targetPath, recoveryKind) => {
                             root.pendingTargetPath = targetPath;
+                            root.pendingRecoveryKind = recoveryKind;
                             root.confirm("orphan", false);
                         }
                     }
@@ -139,7 +139,7 @@ FocusScope {
                 }
             }
 
-            ScrollView {
+            FluentScrollView {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 contentWidth: availableWidth
@@ -147,7 +147,6 @@ FocusScope {
                 Modifications.FastFlagsPanel {
                     width: parent.width
                     controller: root.controller
-                    onEnableRequested: enabled => root.confirm("fastFlags", enabled)
                 }
             }
         }
@@ -176,6 +175,7 @@ FocusScope {
             Modifications.ModificationConfirmDialog {
                 operation: root.pendingOperation
                 enabling: root.pendingFastFlagsEnabled
+                recoveryKind: root.pendingRecoveryKind
                 onConfirmed: (operation, enabling) => {
                     if (operation === "fastFlags")
                         root.controller.fastFlagsEnabled = enabling;

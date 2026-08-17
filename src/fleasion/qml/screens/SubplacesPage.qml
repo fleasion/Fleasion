@@ -38,8 +38,8 @@ Rectangle {
             iconText: "◎"
 
             StatusPill {
-                text: root.controller && root.controller.task.busy ? qsTr("Searching") : qsTr("Ready")
-                status: root.controller && root.controller.task.busy ? "info" : "success"
+                text: root.controller && root.controller.launchTask.busy ? qsTr("Launching") : root.controller && root.controller.task.busy ? qsTr("Searching") : qsTr("Ready")
+                status: root.controller && (root.controller.task.busy || root.controller.launchTask.busy) ? "info" : "success"
             }
         }
 
@@ -118,6 +118,13 @@ Rectangle {
                     onActivated: if (root.controller)
                         root.controller.sortMode = currentValue
                 }
+
+                FluentButton {
+                    visible: root.width < 940
+                    text: qsTr("Saved")
+                    compact: true
+                    onClicked: savedPlacesLoader.active = true
+                }
             }
 
             Label {
@@ -145,6 +152,9 @@ Rectangle {
                     heading: qsTr("Favorites")
                     savedModel: root.controller ? root.controller.favoritesModel : null
                     controller: root.controller
+                    favoriteEntries: true
+                    onPlaceRequested: placeId => root.controller.usePlace(placeId)
+                    onRenameRequested: (placeId, name) => renameDialog.show(placeId, name)
                 }
 
                 SavedPlacesPanel {
@@ -153,6 +163,8 @@ Rectangle {
                     savedModel: root.controller ? root.controller.recentModel : null
                     controller: root.controller
                     allowRemove: true
+                    onPlaceRequested: placeId => root.controller.usePlace(placeId)
+                    onRenameRequested: (placeId, name) => renameDialog.show(placeId, name)
                 }
 
                 Item {
@@ -193,7 +205,7 @@ Rectangle {
                         onServersRequested: (placeId, placeName) => root.openServers(placeId, placeName)
                     }
 
-                    ScrollBar.vertical: ScrollBar {}
+                    ScrollBar.vertical: FluentScrollBar {}
                 }
 
                 EmptyState {
@@ -204,6 +216,32 @@ Rectangle {
                     description: root.controller && root.controller.currentPlaceId.length > 0 ? qsTr("Try a broader name or place ID filter.") : qsTr("Enter an experience above to discover every place it contains.")
                 }
             }
+        }
+    }
+
+    SavedPlaceRenameDialog {
+        id: renameDialog
+
+        anchors.centerIn: parent
+        controller: root.controller
+    }
+
+    Loader {
+        id: savedPlacesLoader
+
+        anchors.fill: parent
+        active: false
+        sourceComponent: Component {
+            SavedPlacesDialog {
+                anchors.centerIn: parent
+                controller: root.controller
+                onRenameRequested: (placeId, name) => renameDialog.show(placeId, name)
+                onClosed: savedPlacesLoader.active = false
+            }
+        }
+        onLoaded: {
+            if (status === Loader.Ready)
+                (item as SavedPlacesDialog).open();
         }
     }
 

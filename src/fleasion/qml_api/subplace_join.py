@@ -14,14 +14,26 @@ import requests
 
 from ..utils.logging import log_buffer
 
-_JOIN_PATHS: Final = frozenset(
+_NORMAL_JOIN_PATHS: Final = frozenset(
     {
         '/v1/join-game',
         '/v1/join-play-together-game',
         '/v1/join-game-instance',
     }
 )
+_JOIN_PATHS: Final = _NORMAL_JOIN_PATHS | {
+    '/v1/join-private-game',
+    '/v1/join-reserved-game',
+}
 _ARM_SECONDS: Final = 90.0
+
+
+def _normalized_place_id(value: object) -> str:
+    text = str(value or '').strip()
+    if not text.isdecimal():
+        return ''
+    normalized = str(int(text))
+    return normalized if normalized != '0' else ''
 
 
 class JoinSession(Protocol):
@@ -47,6 +59,7 @@ class SubplaceJoinCoordinator:
         self._armed = False
         self._active_attempt_id = ''
         self._job_id = ''
+        self._place_id = ''
         self._expires_at = 0.0
 
     def prepare(
@@ -57,8 +70,8 @@ class SubplaceJoinCoordinator:
         cookie: str | None,
     ) -> bool:
         """Pre-seed a non-root place and arm interception for its launch."""
-        normalized_place = place_id.strip()
-        normalized_root = root_place_id.strip()
+        normalized_place = _normalized_place_id(place_id)
+        normalized_root = _normalized_place_id(root_place_id)
         seeded = True
         if (
             normalized_root.isdecimal()
@@ -66,12 +79,12 @@ class SubplaceJoinCoordinator:
             and normalized_root != normalized_place
         ):
             seeded = self.preseed_root(normalized_root, cookie)
-        self.arm(job_id)
+        self.arm(job_id, normalized_place)
         return seeded
 
     def preseed_root(self, root_place_id: str, cookie: str | None) -> bool:
-        normalized_root = root_place_id.strip()
-        if not normalized_root.isdecimal() or not cookie:
+        normalized_root = _normalized_place_id(root_place_id)
+        if not normalized_root or not cookie:
             return False
         session = self._session_factory()
         session.trust_env = False
@@ -113,11 +126,12 @@ class SubplaceJoinCoordinator:
         )
         return succeeded
 
-    def arm(self, job_id: str = '') -> None:
+    def arm(self, job_id: str = '', place_id: str = '') -> None:
         with self._lock:
             self._armed = True
             self._active_attempt_id = ''
             self._job_id = job_id.strip()
+            self._place_id = _normalized_place_id(place_id)
             self._expires_at = self._clock() + _ARM_SECONDS
 
     def cancel(self) -> None:
@@ -125,6 +139,7 @@ class SubplaceJoinCoordinator:
             self._armed = False
             self._active_attempt_id = ''
             self._job_id = ''
+            self._place_id = ''
             self._expires_at = 0.0
 
     def request(self, flow: Any) -> None:
@@ -138,10 +153,15 @@ class SubplaceJoinCoordinator:
         if not isinstance(payload, dict):
             return
         attempt_id = str(payload.get('gameJoinAttemptId') or '<unidentified>')
+        payload_place_id = _normalized_place_id(payload.get('placeId'))
         with self._lock:
             if self._clock() >= self._expires_at:
                 self._armed = False
                 self._active_attempt_id = ''
+                self._job_id = ''
+                self._place_id = ''
+            if self._armed and self._place_id and payload_place_id != self._place_id:
+                return
             if self._armed:
                 self._armed = False
                 self._active_attempt_id = attempt_id
@@ -149,7 +169,7 @@ class SubplaceJoinCoordinator:
                 return
             job_id = self._job_id
         payload.setdefault('isTeleport', True)
-        if job_id:
+        if job_id and parsed.path in _NORMAL_JOIN_PATHS:
             payload['gameId'] = job_id
             flow.request.url = 'https://gamejoin.roblox.com/v1/join-game-instance'
         flow.request.raw_content = json.dumps(payload, separators=(',', ':')).encode('utf-8')

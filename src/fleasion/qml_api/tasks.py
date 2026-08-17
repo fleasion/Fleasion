@@ -75,6 +75,11 @@ class TaskState(QObject):
         self._thread.start()
         return True
 
+    @Slot()
+    def cancel(self) -> None:
+        """Request cancellation of the active operation."""
+        self._cancel_event.set()
+
     def _finish(self, future: Future[Any]) -> None:
         if self._shutting_down:
             return

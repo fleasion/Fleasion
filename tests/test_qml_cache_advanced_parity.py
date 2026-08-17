@@ -211,6 +211,19 @@ def test_cache_view_search_sort_and_columns_persist(tmp_path: Path) -> None:
         restored.shutdown()
 
 
+def test_cache_selection_can_be_sent_as_one_replacer_target_set(tmp_path: Path) -> None:
+    controller = CacheApi(  # pyright: ignore[reportArgumentType, reportCallIssue]
+        _AdvancedCacheStub(tmp_path)
+    )
+    requested: list[list[str]] = []
+    controller.sendSelectionToReplacerRequested.connect(requested.append)
+    try:
+        assert controller.sendSelectionToReplacer(['1_20', '1_3', '1_20'])
+        assert requested == [['20', '3']]
+    finally:
+        controller.shutdown()
+
+
 def test_cache_copy_converted_files_uses_export_pipeline_and_file_clipboard(
     tmp_path: Path,
     monkeypatch,

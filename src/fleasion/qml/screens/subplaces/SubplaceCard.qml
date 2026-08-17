@@ -109,7 +109,7 @@ Card {
                     text: qsTr("Join")
                     compact: true
                     highlighted: true
-                    enabled: Boolean(root.controller)
+                    enabled: Boolean(root.controller) && !root.controller.launchTask.busy
                     onClicked: root.controller.launch(root.placeId, jobIdField.text, root.universeRootPlaceId)
                 }
 

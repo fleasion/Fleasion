@@ -9,6 +9,12 @@ FluentDialog {
 
     required property var controller
 
+    function submit() {
+        const started = root.controller.importCustom(catalogSource.text, nameField.text, placeField.text, originalsSource.text, replacementsSource.text, creditField.text);
+        if (started)
+            root.accept();
+    }
+
     parent: Overlay.overlay
     anchors.centerIn: parent
     width: Math.min(620, parent ? parent.width - Theme.spaceXxl : 620)
@@ -16,7 +22,7 @@ FluentDialog {
     modal: true
     focus: true
     title: qsTr('Import custom community preset')
-    standardButtons: Dialog.Ok | Dialog.Cancel
+    standardButtons: Dialog.NoButton
     closePolicy: Popup.CloseOnEscape
     onOpened: {
         catalogSource.text = '';
@@ -27,9 +33,15 @@ FluentDialog {
         creditField.clear();
         catalogSource.forceActiveFocus();
     }
-    onAccepted: root.controller.importCustom(catalogSource.text, nameField.text, placeField.text, originalsSource.text, replacementsSource.text, creditField.text)
 
-    contentItem: ScrollView {
+    footer: DialogActionBar {
+        acceptText: qsTr('Import')
+        acceptEnabled: !root.controller.task.busy
+        onCancelRequested: root.reject()
+        onAcceptRequested: root.submit()
+    }
+
+    contentItem: FluentScrollView {
         contentWidth: availableWidth
 
         ColumnLayout {

@@ -16,8 +16,18 @@ FluentDialog {
     width: Math.min(620, parent.width - Theme.spaceXxl)
     modal: true
     title: editing ? qsTr("Edit replacement") : qsTr("Add replacement")
-    standardButtons: Dialog.Save | Dialog.Cancel
+    standardButtons: Dialog.NoButton
     closePolicy: Popup.CloseOnEscape
+
+    footer: DialogActionBar {
+        acceptText: qsTr("Save")
+        onCancelRequested: root.reject()
+        onAcceptRequested: {
+            const saved = root.editing ? root.controller.updateRule(root.entryPath, nameField.text, targetsField.text, replacementField.text) : root.controller.addRule(nameField.text, targetsField.text, replacementField.text);
+            if (saved)
+                root.accept();
+        }
+    }
 
     ColumnLayout {
         width: parent.width
@@ -114,13 +124,5 @@ FluentDialog {
         targetsField.text = values.targets || "";
         replacementField.text = values.replacement || "";
         nameField.forceActiveFocus();
-    }
-
-    onAccepted: {
-        if (editing) {
-            controller.updateRule(entryPath, nameField.text, targetsField.text, replacementField.text);
-        } else {
-            controller.addRule(nameField.text, targetsField.text, replacementField.text);
-        }
     }
 }

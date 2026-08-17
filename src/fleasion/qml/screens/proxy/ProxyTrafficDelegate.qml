@@ -18,12 +18,13 @@ Rectangle {
     required property bool pending
     required property bool dropped
     required property bool intercepted
+    required property bool archived
     signal activated(string entryKey)
 
     implicitHeight: 54
     activeFocusOnTab: true
     Accessible.role: Accessible.Button
-    Accessible.name: qsTr("%1 request to %2, %3").arg(root.method).arg(root.host).arg(root.statusText)
+    Accessible.name: root.archived ? qsTr("Preserved %1 request to %2, %3").arg(root.method).arg(root.host).arg(root.statusText) : qsTr("%1 request to %2, %3").arg(root.method).arg(root.host).arg(root.statusText)
     color: root.pending ? Theme.warningSubtle : pointer.hovered || activeFocus ? Theme.surfaceHover : "transparent"
     radius: Theme.radiusMd
     border.width: activeFocus ? 2 : root.pending ? 1 : 0
@@ -45,7 +46,7 @@ Rectangle {
         Label {
             Layout.preferredWidth: 54
             text: root.method
-            color: root.pending ? Theme.warning : Theme.accent
+            color: root.archived ? Theme.textTertiary : root.pending ? Theme.warning : Theme.accent
             font.pointSize: TypeScale.caption
             font.weight: TypeScale.semibold
         }

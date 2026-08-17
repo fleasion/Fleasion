@@ -48,13 +48,12 @@ FluentDialog {
             }
         }
 
-        ScrollView {
+        FluentScrollView {
             id: scrollView
 
             Layout.fillWidth: true
             Layout.fillHeight: true
-            clip: true
-            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+            horizontalScrollBarEnabled: false
 
             ColumnLayout {
                 width: scrollView.availableWidth

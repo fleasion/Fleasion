@@ -1,9 +1,19 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
+from pathlib import Path
 from types import SimpleNamespace
 
+from PySide6.QtCore import QCoreApplication
+
 from fleasion.qml_api.subplace_join import SubplaceJoinCoordinator
+from fleasion.qml_api.subplaces import (
+    SubplaceSettingsStore,
+    SubplacesApi,
+    build_place_launch_uri,
+)
 
 
 class SessionStub:
@@ -80,3 +90,50 @@ def test_subplace_join_ignores_unrelated_attempt_after_first_request() -> None:
 
     assert second.request.url.endswith('/v1/join-game')
     assert 'gameId' not in json.loads(second.request.content)
+
+
+def test_subplace_launch_preparation_does_not_block_qml_thread(tmp_path: Path) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    prepared: list[tuple[str, str, str]] = []
+    launched: list[str] = []
+
+    class CoordinatorStub:
+        def prepare(
+            self,
+            place_id: str,
+            root_place_id: str,
+            job_id: str,
+            _cookie: str | None,
+        ) -> bool:
+            prepared.append((place_id, root_place_id, job_id))
+            entered.set()
+            release.wait(1)
+            return True
+
+        def cancel(self) -> None:
+            release.set()
+
+    controller = SubplacesApi(
+        client=SimpleNamespace(),
+        settings_store=SubplaceSettingsStore(tmp_path / 'settings.json'),
+        launcher=lambda target: launched.append(target) or True,
+        join_coordinator=CoordinatorStub(),
+    )  # pyright: ignore[reportArgumentType, reportCallIssue]
+    try:
+        assert controller.launch('202', 'job-id', '101')
+        assert entered.wait(0.5)
+        assert controller.launchTask.busy
+        assert launched == []
+
+        release.set()
+        deadline = time.monotonic() + 1
+        while controller.launchTask.busy and time.monotonic() < deadline:
+            QCoreApplication.processEvents()
+            time.sleep(0.005)
+
+        assert not controller.launchTask.busy
+        assert prepared == [('202', '101', 'job-id')]
+        assert launched == [build_place_launch_uri('202')]
+    finally:
+        controller.shutdown()

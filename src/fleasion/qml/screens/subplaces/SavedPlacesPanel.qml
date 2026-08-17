@@ -13,7 +13,10 @@ Card {
     property var savedModel
     property var controller
     property bool allowRemove: false
+    property bool favoriteEntries: false
     readonly property bool hasEntries: Boolean(savedModel) && savedModel.count > 0
+    signal placeRequested(string placeId)
+    signal renameRequested(string placeId, string name)
 
     title: heading
     flat: true
@@ -32,6 +35,7 @@ Card {
         spacing: 0
         clip: true
         reuseItems: true
+        boundsBehavior: Flickable.StopAtBounds
 
         delegate: FluentItemDelegate {
             id: savedDelegate
@@ -42,7 +46,7 @@ Card {
             width: ListView.view.width
             text: name
             Accessible.description: qsTr("Place ID %1").arg(placeId)
-            onClicked: root.controller.usePlace(placeId)
+            onClicked: root.placeRequested(placeId)
 
             ToolTip.visible: hovered
             ToolTip.text: qsTr("Place ID %1").arg(placeId)
@@ -61,17 +65,34 @@ Card {
                     font.pointSize: TypeScale.caption
                 }
 
-                FluentButton {
-                    visible: root.allowRemove
+                IconButton {
+                    objectName: "renameSavedPlaceButton"
+                    iconText: "✎"
+                    text: qsTr("Rename")
+                    flat: true
+                    controlSize: 30
+                    onClicked: root.renameRequested(savedDelegate.placeId, savedDelegate.name)
+                }
+
+                IconButton {
+                    objectName: "removeSavedPlaceButton"
+                    visible: root.allowRemove || root.favoriteEntries
+                    iconText: "×"
                     text: qsTr("Remove")
                     flat: true
-                    compact: true
-                    onClicked: root.controller.removeRecent(savedDelegate.placeId)
+                    controlSize: 30
+                    danger: true
+                    onClicked: {
+                        if (root.favoriteEntries)
+                            root.controller.toggleFavorite(savedDelegate.placeId);
+                        else
+                            root.controller.removeRecent(savedDelegate.placeId);
+                    }
                 }
             }
         }
 
-        ScrollBar.vertical: ScrollBar {}
+        ScrollBar.vertical: FluentScrollBar {}
     }
 
     Label {

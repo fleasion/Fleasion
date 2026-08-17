@@ -275,6 +275,7 @@ def test_runtime_shutdown_restores_proxy_and_files_after_controller_failure(
     )
     runtime._lifecycle = SimpleNamespace(cancel=record('lifecycle.cancel'))
     runtime._modifications = SimpleNamespace(
+        cancel_pending_operations=record('modifications.cancel'),
         clear_managed_file_read_only=record('modifications.unlock'),
         restore_all=record('modifications.restore'),
     )
@@ -291,6 +292,7 @@ def test_runtime_shutdown_restores_proxy_and_files_after_controller_failure(
     runtime.shutdown()
 
     assert 'cache.fail' in calls
+    assert calls.index('modifications.cancel') < calls.index('modifications.restore')
     assert 'proxy.stop' in calls
     assert 'modifications.restore' in calls
     assert 'time.save' in calls
@@ -435,6 +437,8 @@ def test_pyinstaller_qml_allowlist_covers_import_scanner_modules():
     assert imports <= {
         'Qt.labs.platform',
         'QtMultimedia',
+        'QtQml',
+        'QtQml.Models',
         'QtQuick',
         'QtQuick.Controls',
         'QtQuick.Controls.Basic',

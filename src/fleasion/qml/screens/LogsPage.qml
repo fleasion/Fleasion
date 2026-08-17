@@ -83,7 +83,7 @@ Rectangle {
                     model: root.controller ? root.controller.model : null
                     reuseItems: true
                     boundsBehavior: Flickable.StopAtBounds
-                    ScrollBar.vertical: ScrollBar {}
+                    ScrollBar.vertical: FluentScrollBar {}
 
                     delegate: LogDelegate {
                         width: ListView.view.width

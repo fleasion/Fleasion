@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-import sys
+import threading
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, Final, Protocol
@@ -17,8 +17,8 @@ from PySide6.QtQml import QmlElement
 from ..utils.logging import log_buffer
 from ..utils.paths import CONFIG_DIR
 from ..utils.roblox_auth import get_roblosecurity
-from ..utils.windows import launch_as_standard_user
 from .models import DictListModel
+from .roblox_target_launcher import launch_roblox_target
 from .subplace_join import SubplaceJoinCoordinator
 from .tasks import TaskState
 
@@ -69,21 +69,6 @@ class JsonResponse(Protocol):
 
 JsonFetcher = Callable[[str], JsonResponse]
 PlaceLauncher = Callable[[str], bool]
-
-
-def _launch_place_target(proxy_master: Any | None, target: str) -> bool:
-    if proxy_master is not None and (sys.platform == 'darwin' or sys.platform.startswith('linux')):
-        config = getattr(proxy_master, 'config_manager', None)
-        if getattr(config, 'proxy_mode', '') == 'env' and bool(
-            getattr(config, 'proxy_features_enabled', False)
-        ):
-            if sys.platform == 'darwin':
-                from ..utils.platform_macos import relaunch_roblox_with_proxy_env
-            else:
-                from ..utils.platform_linux import relaunch_roblox_with_proxy_env
-
-            return relaunch_roblox_with_proxy_env(proxy_master.roblox_env_proxy_url(), target)
-    return launch_as_standard_user(target)
 
 
 def extract_place_id(value: str) -> str:
@@ -378,7 +363,7 @@ class SubplacesApi(QObject):
         super().__init__(parent)
         self._client = client or RobloxPlacesClient()
         self._settings_store = settings_store or SubplaceSettingsStore()
-        self._launcher = launcher or (lambda target: _launch_place_target(proxy_master, target))
+        self._launcher = launcher or (lambda target: launch_roblox_target(proxy_master, target))
         self._join_coordinator = join_coordinator
         self._model = DictListModel(_PLACE_ROLES, parent=self)
         self._recent_model = DictListModel(_HISTORY_ROLES, parent=self)
@@ -386,6 +371,7 @@ class SubplacesApi(QObject):
         self._server_model = DictListModel(_SERVER_ROLES, parent=self)
         self._task = TaskState(self)
         self._server_task = TaskState(self)
+        self._launch_task = TaskState(self)
         self._query = ''
         self._sort_mode = 'rootFirst'
         self._current_place_id = ''
@@ -404,6 +390,8 @@ class SubplacesApi(QObject):
         self._server_task.succeeded.connect(self._apply_server_result)
         self._server_task.failed.connect(self._on_server_failed)
         self._server_task.busyChanged.connect(self.serverStateChanged)
+        self._launch_task.succeeded.connect(self._on_launch_succeeded)
+        self._launch_task.failed.connect(self._on_launch_failed)
         self._refresh_history_models()
 
     @Property(QObject, constant=True)
@@ -429,6 +417,10 @@ class SubplacesApi(QObject):
     @Property(QObject, constant=True)
     def serverTask(self) -> QObject:  # noqa: N802
         return self._server_task
+
+    @Property(QObject, constant=True)
+    def launchTask(self) -> QObject:  # noqa: N802
+        return self._launch_task
 
     @Property(str, notify=queryChanged)
     def query(self) -> str:  # pyright: ignore[reportRedeclaration]
@@ -576,18 +568,21 @@ class SubplacesApi(QObject):
             return False
         coordinator = self._join_coordinator
         if coordinator is not None:
-            seeded = coordinator.prepare(
-                place_id,
-                extract_place_id(root_place_id) or root_place_id,
-                job_id,
-                get_roblosecurity(),
+            normalized_root = extract_place_id(root_place_id) or root_place_id.strip()
+            accepted = self._launch_task.run_cancellable(
+                'Preparing the selected place…',
+                lambda cancel_event: self._prepare_intercepted_launch(
+                    place_id,
+                    normalized_root,
+                    job_id,
+                    cancel_event,
+                ),
             )
-            if root_place_id and root_place_id != place_id and not seeded:
-                log_buffer.log(
-                    'subplace',
-                    f'Continuing after root-place pre-seed failed for {root_place_id}',
-                )
-        target = build_place_launch_uri(place_id)
+            if not accepted:
+                self.errorOccurred.emit('Another place launch is already being prepared.')
+            return accepted
+
+        target = build_place_launch_uri(place_id, job_id)
         try:
             launched = self._launcher(target)
         except Exception as exc:
@@ -602,6 +597,65 @@ class SubplacesApi(QObject):
             return False
         self.notificationRequested.emit('Joining place', f'Opening place {place_id}', 'success')
         return True
+
+    def _prepare_intercepted_launch(
+        self,
+        place_id: str,
+        root_place_id: str,
+        job_id: str,
+        cancel_event: threading.Event,
+    ) -> dict[str, Any]:
+        coordinator = self._join_coordinator
+        if coordinator is None or cancel_event.is_set():
+            return {'cancelled': True}
+        seeded = coordinator.prepare(
+            place_id,
+            root_place_id,
+            job_id,
+            get_roblosecurity(),
+        )
+        if cancel_event.is_set():
+            coordinator.cancel()
+            return {'cancelled': True}
+        if root_place_id and root_place_id != place_id and not seeded:
+            log_buffer.log(
+                'subplace',
+                f'Continuing after root-place pre-seed failed for {root_place_id}',
+            )
+        try:
+            launched = self._launcher(build_place_launch_uri(place_id))
+        except Exception as exc:
+            coordinator.cancel()
+            return {'error': f'Roblox could not be launched: {exc}'}
+        if not launched:
+            coordinator.cancel()
+            return {
+                'error': 'Roblox could not be launched. Check that Roblox Player is installed.'
+            }
+        return {'placeId': place_id}
+
+    @Slot(object)
+    def _on_launch_succeeded(self, result: object) -> None:
+        if not isinstance(result, Mapping) or result.get('cancelled'):
+            return
+        error = str(result.get('error') or '')
+        if error:
+            self.errorOccurred.emit(error)
+            return
+        place_id = str(result.get('placeId') or '')
+        if place_id:
+            self.notificationRequested.emit(
+                'Joining place',
+                f'Opening place {place_id}',
+                'success',
+            )
+
+    @Slot(str)
+    def _on_launch_failed(self, message: str) -> None:
+        coordinator = self._join_coordinator
+        if coordinator is not None:
+            coordinator.cancel()
+        self.errorOccurred.emit(f'Roblox could not be launched: {message}')
 
     @Slot(str, result=bool)
     def openBrowser(self, value: str) -> bool:  # noqa: N802
@@ -715,6 +769,7 @@ class SubplacesApi(QObject):
     def shutdown(self) -> None:
         self._task.shutdown()
         self._server_task.shutdown()
+        self._launch_task.shutdown()
         if self._join_coordinator is not None:
             self._join_coordinator.cancel()
 

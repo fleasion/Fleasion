@@ -10,7 +10,7 @@ Card {
     id: root
 
     required property var controller
-    signal enableRequested(bool enabled)
+    property string pendingHotkeyName
 
     title: qsTr("FastFlags")
     subtitle: qsTr("Tune Roblox with allowlisted local presets and optional advanced live overrides.")
@@ -74,11 +74,17 @@ Card {
 
         FluentSwitch {
             checked: root.controller.fastFlagsEnabled
+            checkable: false
             enabled: root.controller.customFastFlagsAvailable
             Accessible.name: qsTr("Enable custom FastFlags")
-            onToggled: {
-                if (checked !== root.controller.fastFlagsEnabled)
-                    root.enableRequested(checked);
+            onClicked: {
+                if (root.controller.fastFlagsEnabled) {
+                    root.controller.fastFlagsEnabled = false;
+                } else if (root.controller.customFastFlagsWarningAccepted) {
+                    root.controller.fastFlagsEnabled = true;
+                } else {
+                    riskLoader.active = true;
+                }
             }
         }
     }
@@ -154,6 +160,29 @@ Card {
         }
     }
 
+    RowLayout {
+        Layout.fillWidth: true
+        spacing: Theme.spaceSm
+
+        SearchBox {
+            id: customFlagSearch
+
+            Layout.fillWidth: true
+            placeholderText: qsTr("Search custom FastFlags")
+            accessibleName: qsTr("Search custom FastFlags")
+            onTextChanged: root.controller.filterFastFlags(text, familyFilter.currentText)
+        }
+
+        FluentComboBox {
+            id: familyFilter
+
+            Layout.preferredWidth: 156
+            model: root.controller.fastFlagFamilies
+            Accessible.name: qsTr("FastFlag family")
+            onActivated: root.controller.filterFastFlags(customFlagSearch.text, currentText)
+        }
+    }
+
     ListView {
         Layout.fillWidth: true
         Layout.preferredHeight: Math.min(contentHeight, 260)
@@ -164,59 +193,27 @@ Card {
         boundsBehavior: Flickable.StopAtBounds
         reuseItems: true
 
-        delegate: Rectangle {
+        delegate: CustomFastFlagDelegate {
             id: flagDelegate
 
-            required property string name
-            required property string value
-            required property string family
+            required property var model
 
-            width: ListView.view.width
-            height: Theme.largeControlHeight
-            radius: Theme.radiusSm
-            color: mouseArea.hovered ? Theme.surfaceHover : Theme.surfaceSubtle
-
-            RowLayout {
-                anchors.fill: parent
-                anchors.leftMargin: Theme.spaceSm
-                anchors.rightMargin: Theme.spaceXs
-                spacing: Theme.spaceSm
-
-                StatusPill {
-                    text: flagDelegate.family
-                    status: "neutral"
-                }
-
-                Label {
-                    Layout.fillWidth: true
-                    text: flagDelegate.name
-                    color: Theme.textPrimary
-                    font.pointSize: TypeScale.label
-                    font.family: "monospace"
-                    elide: Text.ElideMiddle
-                }
-
-                Label {
-                    Layout.preferredWidth: 150
-                    text: flagDelegate.value || qsTr("No value")
-                    color: Theme.textSecondary
-                    font.pointSize: TypeScale.label
-                    elide: Text.ElideRight
-                }
-
-                IconButton {
-                    iconText: "×"
-                    text: qsTr("Remove %1").arg(flagDelegate.name)
-                    onClicked: root.controller.removeFastFlag(flagDelegate.name)
-                }
+            flagName: model.name
+            flagValue: model.value
+            family: model.family
+            flagEnabled: model.enabled
+            keybind: model.keybind
+            hasKeybind: model.hasKeybind
+            hotkeysSupported: root.controller.hotkeysSupported
+            onEnabledRequested: enabled => root.controller.setFastFlagEnabled(flagDelegate.flagName, enabled)
+            onHotkeyRequested: {
+                root.pendingHotkeyName = flagDelegate.flagName;
+                hotkeyLoader.active = true;
             }
-
-            HoverHandler {
-                id: mouseArea
-            }
+            onRemoveRequested: root.controller.removeFastFlag(flagDelegate.flagName)
         }
 
-        ScrollBar.vertical: ScrollBar {}
+        ScrollBar.vertical: FluentScrollBar {}
     }
 
     EmptyState {
@@ -224,10 +221,34 @@ Card {
         Layout.preferredHeight: 148
         visible: root.controller.fastFlagsModel.count === 0
         iconText: "⚑"
-        title: qsTr("No custom FastFlags")
-        description: qsTr("Add one manually or browse the Roblox catalog.")
-        actionText: qsTr("Browse catalog")
-        onActionTriggered: catalogLoader.active = true
+        title: customFlagSearch.text.length > 0 || familyFilter.currentIndex > 0 ? qsTr("No matching FastFlags") : qsTr("No custom FastFlags")
+        description: customFlagSearch.text.length > 0 || familyFilter.currentIndex > 0 ? qsTr("Clear the search or choose another family.") : qsTr("Add one manually or browse the Roblox catalog.")
+        actionText: customFlagSearch.text.length > 0 || familyFilter.currentIndex > 0 ? qsTr("Clear filters") : qsTr("Browse catalog")
+        onActionTriggered: {
+            if (customFlagSearch.text.length > 0 || familyFilter.currentIndex > 0) {
+                customFlagSearch.clear();
+                familyFilter.currentIndex = 0;
+                root.controller.filterFastFlags("", "All");
+            } else {
+                catalogLoader.active = true;
+            }
+        }
+    }
+
+    Loader {
+        id: riskLoader
+
+        active: false
+        sourceComponent: Component {
+            CustomFastFlagRiskDialog {
+                onConfirmed: root.controller.fastFlagsEnabled = true
+                onClosed: riskLoader.active = false
+            }
+        }
+        onLoaded: {
+            if (status === Loader.Ready)
+                (item as CustomFastFlagRiskDialog).open();
+        }
     }
 
     Loader {
@@ -275,6 +296,23 @@ Card {
         onLoaded: {
             if (status === Loader.Ready)
                 (item as FastFlagProfilesDialog).open();
+        }
+    }
+
+    Loader {
+        id: hotkeyLoader
+
+        active: false
+        sourceComponent: Component {
+            FastFlagHotkeyDialog {
+                controller: root.controller
+                flagName: root.pendingHotkeyName
+                onClosed: hotkeyLoader.active = false
+            }
+        }
+        onLoaded: {
+            if (status === Loader.Ready)
+                (item as FastFlagHotkeyDialog).open();
         }
     }
 }

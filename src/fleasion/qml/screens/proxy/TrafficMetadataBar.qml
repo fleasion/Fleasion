@@ -11,7 +11,7 @@ RowLayout {
     spacing: Theme.spaceSm
 
     Label {
-        text: qsTr("Request #%1").arg(String(root.details.requestId ?? ""))
+        text: root.details.archived ? qsTr("Preserved request") : qsTr("Request #%1").arg(String(root.details.requestId ?? ""))
         color: Theme.textSecondary
         font.pointSize: TypeScale.label
     }
@@ -36,6 +36,12 @@ RowLayout {
 
     Item {
         Layout.fillWidth: true
+    }
+
+    StatusPill {
+        visible: Boolean(root.details.archived)
+        text: qsTr("Read-only history")
+        status: "neutral"
     }
 
     StatusPill {

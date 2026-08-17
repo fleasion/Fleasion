@@ -51,26 +51,24 @@ def modifier_mask_for_virtual_key(virtual_key: int) -> int:
     return 0
 
 
-def normalize_binding(binding) -> dict[str, int | bool] | None:
+def normalize_binding(binding) -> dict[str, int | bool | str] | None:
     """Validate a persisted physical-key binding."""
     if not isinstance(binding, Mapping) or binding.get('platform') not in (None, 'windows'):
         return None
     kind = binding.get('kind', 'key')
     modifiers = binding.get('modifiers', 0)
     extended = binding.get('extended', False)
-    if (
-        not isinstance(modifiers, int)
-        or isinstance(modifiers, bool)
-        or modifiers & ~MODIFIER_MASK
-    ):
+    if not isinstance(modifiers, int) or isinstance(modifiers, bool) or modifiers & ~MODIFIER_MASK:
         return None
     if kind == 'mouse_wheel':
         direction = binding.get('direction')
         if binding.get('platform') != 'windows' or direction not in ('up', 'down'):
             return None
         return {
-            'platform': 'windows', 'kind': 'mouse_wheel',
-            'direction': direction, 'modifiers': modifiers,
+            'platform': 'windows',
+            'kind': 'mouse_wheel',
+            'direction': direction,
+            'modifiers': modifiers,
         }
     scan_code = binding.get('scan_code')
     if (
@@ -79,11 +77,14 @@ def normalize_binding(binding) -> dict[str, int | bool] | None:
         or isinstance(scan_code, bool)
         or not 0 < scan_code <= 0xFF
         or not isinstance(extended, bool)
-        or kind == 'mouse_button' and scan_code not in (1, 2, 4, 5, 6)
+        or kind == 'mouse_button'
+        and scan_code not in (1, 2, 4, 5, 6)
     ):
         return None
     result: dict[str, int | bool | str] = {
-        'scan_code': scan_code, 'extended': extended, 'modifiers': modifiers,
+        'scan_code': scan_code,
+        'extended': extended,
+        'modifiers': modifiers,
     }
     if kind == 'mouse_button':
         result['platform'] = 'windows'
@@ -95,26 +96,108 @@ def normalize_binding(binding) -> dict[str, int | bool] | None:
 # itself performs this conversion at runtime; the table keeps stored bindings
 # readable in tests and on non-Windows systems with identical SMU names.
 _SMU_WINDOWS_SCAN_TO_VK = {
-    0x01: 0x1B, 0x02: 0x31, 0x03: 0x32, 0x04: 0x33, 0x05: 0x34, 0x06: 0x35,
-    0x07: 0x36, 0x08: 0x37, 0x09: 0x38, 0x0A: 0x39, 0x0B: 0x30, 0x0C: 0xBD,
-    0x0D: 0xBB, 0x0E: 0x08, 0x0F: 0x09, 0x10: 0x51, 0x11: 0x57, 0x12: 0x45,
-    0x13: 0x52, 0x14: 0x54, 0x15: 0x59, 0x16: 0x55, 0x17: 0x49, 0x18: 0x4F,
-    0x19: 0x50, 0x1A: 0xDB, 0x1B: 0xDD, 0x1C: 0x0D, 0x1D: 0xA2, 0x1E: 0x41,
-    0x1F: 0x53, 0x20: 0x44, 0x21: 0x46, 0x22: 0x47, 0x23: 0x48, 0x24: 0x4A,
-    0x25: 0x4B, 0x26: 0x4C, 0x27: 0xBA, 0x28: 0xDE, 0x29: 0xC0, 0x2A: 0xA0,
-    0x2B: 0xDC, 0x2C: 0x5A, 0x2D: 0x58, 0x2E: 0x43, 0x2F: 0x56, 0x30: 0x42,
-    0x31: 0x4E, 0x32: 0x4D, 0x33: 0xBC, 0x34: 0xBE, 0x35: 0xBF, 0x36: 0xA1,
-    0x37: 0x6A, 0x38: 0xA4, 0x39: 0x20, 0x3A: 0x14, 0x3B: 0x70, 0x3C: 0x71,
-    0x3D: 0x72, 0x3E: 0x73, 0x3F: 0x74, 0x40: 0x75, 0x41: 0x76, 0x42: 0x77,
-    0x43: 0x78, 0x44: 0x79, 0x45: 0x90, 0x46: 0x91, 0x47: 0x67, 0x48: 0x68,
-    0x49: 0x69, 0x4A: 0x6D, 0x4B: 0x64, 0x4C: 0x65, 0x4D: 0x66, 0x4E: 0x6B,
-    0x4F: 0x61, 0x50: 0x62, 0x51: 0x63, 0x52: 0x60, 0x53: 0x6E, 0x57: 0x7A,
+    0x01: 0x1B,
+    0x02: 0x31,
+    0x03: 0x32,
+    0x04: 0x33,
+    0x05: 0x34,
+    0x06: 0x35,
+    0x07: 0x36,
+    0x08: 0x37,
+    0x09: 0x38,
+    0x0A: 0x39,
+    0x0B: 0x30,
+    0x0C: 0xBD,
+    0x0D: 0xBB,
+    0x0E: 0x08,
+    0x0F: 0x09,
+    0x10: 0x51,
+    0x11: 0x57,
+    0x12: 0x45,
+    0x13: 0x52,
+    0x14: 0x54,
+    0x15: 0x59,
+    0x16: 0x55,
+    0x17: 0x49,
+    0x18: 0x4F,
+    0x19: 0x50,
+    0x1A: 0xDB,
+    0x1B: 0xDD,
+    0x1C: 0x0D,
+    0x1D: 0xA2,
+    0x1E: 0x41,
+    0x1F: 0x53,
+    0x20: 0x44,
+    0x21: 0x46,
+    0x22: 0x47,
+    0x23: 0x48,
+    0x24: 0x4A,
+    0x25: 0x4B,
+    0x26: 0x4C,
+    0x27: 0xBA,
+    0x28: 0xDE,
+    0x29: 0xC0,
+    0x2A: 0xA0,
+    0x2B: 0xDC,
+    0x2C: 0x5A,
+    0x2D: 0x58,
+    0x2E: 0x43,
+    0x2F: 0x56,
+    0x30: 0x42,
+    0x31: 0x4E,
+    0x32: 0x4D,
+    0x33: 0xBC,
+    0x34: 0xBE,
+    0x35: 0xBF,
+    0x36: 0xA1,
+    0x37: 0x6A,
+    0x38: 0xA4,
+    0x39: 0x20,
+    0x3A: 0x14,
+    0x3B: 0x70,
+    0x3C: 0x71,
+    0x3D: 0x72,
+    0x3E: 0x73,
+    0x3F: 0x74,
+    0x40: 0x75,
+    0x41: 0x76,
+    0x42: 0x77,
+    0x43: 0x78,
+    0x44: 0x79,
+    0x45: 0x90,
+    0x46: 0x91,
+    0x47: 0x67,
+    0x48: 0x68,
+    0x49: 0x69,
+    0x4A: 0x6D,
+    0x4B: 0x64,
+    0x4C: 0x65,
+    0x4D: 0x66,
+    0x4E: 0x6B,
+    0x4F: 0x61,
+    0x50: 0x62,
+    0x51: 0x63,
+    0x52: 0x60,
+    0x53: 0x6E,
+    0x57: 0x7A,
     0x58: 0x7B,
 }
 _SMU_WINDOWS_EXTENDED_SCAN_TO_VK = {
-    0x1D: 0xA3, 0x35: 0x6F, 0x38: 0xA5, 0x47: 0x24, 0x48: 0x26, 0x49: 0x21,
-    0x4B: 0x25, 0x4D: 0x27, 0x4F: 0x23, 0x50: 0x28, 0x51: 0x22, 0x52: 0x2D,
-    0x53: 0x2E, 0x5B: 0x5B, 0x5C: 0x5C,
+    0x1D: 0xA3,
+    0x35: 0x6F,
+    0x38: 0xA5,
+    0x47: 0x24,
+    0x48: 0x26,
+    0x49: 0x21,
+    0x4B: 0x25,
+    0x4D: 0x27,
+    0x4F: 0x23,
+    0x50: 0x28,
+    0x51: 0x22,
+    0x52: 0x2D,
+    0x53: 0x2E,
+    0x5B: 0x5B,
+    0x5C: 0x5C,
 }
 
 
@@ -122,10 +205,10 @@ def _virtual_key_for_binding(scan_code: int, extended: bool) -> int:
     if sys.platform == 'win32':
         try:
             mapped_scan_code = scan_code | (0xE000 if extended else 0)
-            virtual_key = int(ctypes.windll.user32.MapVirtualKeyW(mapped_scan_code, 3))
+            virtual_key = int(getattr(ctypes, 'windll').user32.MapVirtualKeyW(mapped_scan_code, 3))
             if virtual_key:
                 return virtual_key
-        except (AttributeError, OSError):
+        except AttributeError, OSError:
             pass
     if extended and scan_code in _SMU_WINDOWS_EXTENDED_SCAN_TO_VK:
         return _SMU_WINDOWS_EXTENDED_SCAN_TO_VK[scan_code]
@@ -139,7 +222,13 @@ def binding_text(binding) -> str:
         return 'Not assigned'
     modifiers = int(normalized['modifiers'])
     labels = [
-        label for flag, label in ((MOD_WIN, 'Win'), (MOD_CTRL, 'Ctrl'), (MOD_ALT, 'Alt'), (MOD_SHIFT, 'Shift'))
+        label
+        for flag, label in (
+            (MOD_WIN, 'Win'),
+            (MOD_CTRL, 'Ctrl'),
+            (MOD_ALT, 'Alt'),
+            (MOD_SHIFT, 'Shift'),
+        )
         if modifiers & flag
     ]
     if normalized.get('kind') == 'mouse_wheel':
@@ -187,7 +276,7 @@ class WindowsHotkeyService(QObject):
         self._thread.start()
 
     def _run(self, bindings: Mapping[str, Mapping[str, int | bool | str]]) -> None:
-        user32 = ctypes.windll.user32
+        user32 = getattr(ctypes, 'windll').user32
         user32.GetAsyncKeyState.argtypes = (ctypes.c_int,)
         user32.GetAsyncKeyState.restype = ctypes.c_short
         user32.MapVirtualKeyW.argtypes = (wintypes.UINT, wintypes.UINT)
@@ -232,9 +321,7 @@ class WindowsHotkeyService(QObject):
         def binding_is_active(virtual_key: int, required_modifiers: int) -> bool:
             modifiers = active_modifiers()
             main_modifier = modifier_mask_for_virtual_key(virtual_key)
-            return is_pressed(virtual_key) and (
-                modifiers & ~main_modifier
-            ) == required_modifiers
+            return is_pressed(virtual_key) and (modifiers & ~main_modifier) == required_modifiers
 
         wheel_events: queue.SimpleQueue[str] = queue.SimpleQueue()
         mouse_hook = self._install_mouse_wheel_hook(wheel_events) if wheel_bindings else None
@@ -262,14 +349,14 @@ class WindowsHotkeyService(QObject):
                     was_active[name] = active
         finally:
             if mouse_hook is not None:
-                ctypes.windll.user32.UnhookWindowsHookEx(mouse_hook[0])
+                getattr(ctypes, 'windll').user32.UnhookWindowsHookEx(mouse_hook[0])
 
     @staticmethod
     def _pump_windows_messages() -> None:
         if sys.platform != 'win32':
             return
         message = wintypes.MSG()
-        user32 = ctypes.windll.user32
+        user32 = getattr(ctypes, 'windll').user32
         while user32.PeekMessageW(ctypes.byref(message), None, 0, 0, 1):
             user32.TranslateMessage(ctypes.byref(message))
             user32.DispatchMessageW(ctypes.byref(message))
@@ -285,12 +372,18 @@ class WindowsHotkeyService(QObject):
 
         class MSLLHOOKSTRUCT(ctypes.Structure):
             _fields_ = [
-                ('pt', POINT), ('mouseData', wintypes.DWORD), ('flags', wintypes.DWORD),
-                ('time', wintypes.DWORD), ('dwExtraInfo', ctypes.c_size_t),
+                ('pt', POINT),
+                ('mouseData', wintypes.DWORD),
+                ('flags', wintypes.DWORD),
+                ('time', wintypes.DWORD),
+                ('dwExtraInfo', ctypes.c_size_t),
             ]
 
-        callback_type = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
-        user32 = ctypes.windll.user32
+        callback_type = ctypes.WINFUNCTYPE(
+            ctypes.c_ssize_t, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM
+        )
+        windows_dlls = getattr(ctypes, 'windll')
+        user32 = windows_dlls.user32
 
         @callback_type
         def callback(code, message, lparam):
@@ -301,7 +394,12 @@ class WindowsHotkeyService(QObject):
                     wheel_events.put('up' if delta > 0 else 'down')
             return user32.CallNextHookEx(None, code, message, lparam)
 
-        hook = user32.SetWindowsHookExW(14, callback, ctypes.windll.kernel32.GetModuleHandleW(None), 0)
+        hook = user32.SetWindowsHookExW(
+            14,
+            callback,
+            windows_dlls.kernel32.GetModuleHandleW(None),
+            0,
+        )
         return (hook, callback) if hook else None
 
     def stop(self) -> None:

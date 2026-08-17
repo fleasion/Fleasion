@@ -9,13 +9,14 @@ FluentDialog {
 
     property string operation: "restore"
     property bool enabling: false
+    property string recoveryKind: "backup"
     signal confirmed(string operation, bool enabling)
 
     parent: Overlay.overlay
     anchors.centerIn: parent
     width: Math.min(500, parent.width - Theme.spaceXxl)
     modal: true
-    title: operation === "fastFlags" ? enabling ? qsTr("Enable custom FastFlags?") : qsTr("Disable custom FastFlags?") : operation === "reset" ? qsTr("Reset this modification?") : operation === "orphan" ? qsTr("Restore this untracked backup?") : qsTr("Restore all original files?")
+    title: operation === "fastFlags" ? enabling ? qsTr("Enable custom FastFlags?") : qsTr("Disable custom FastFlags?") : operation === "reset" ? qsTr("Reset this modification?") : operation === "orphan" ? recoveryKind === "created" ? qsTr("Remove this untracked override?") : qsTr("Recover this untracked change?") : qsTr("Restore all original files?")
     standardButtons: Dialog.Yes | Dialog.Cancel
     closePolicy: Popup.CloseOnEscape
 
@@ -30,8 +31,13 @@ FluentDialog {
                     return root.enabling ? qsTr("Roblox may moderate accounts that use unsupported FastFlags. Fleasion cannot determine whether a flag is safe.") : qsTr("Fleasion will stop merging your custom FastFlags into ClientSettings responses.");
                 if (root.operation === "reset")
                     return qsTr("The selected modification will be cleared and its original Roblox file restored.");
-                if (root.operation === "orphan")
+                if (root.operation === "orphan") {
+                    if (root.recoveryKind === "created")
+                        return qsTr("No original file existed at this path. Recovery removes the file Fleasion created.");
+                    if (root.recoveryKind === "mixed")
+                        return qsTr("Original files will be restored where backups exist; Fleasion-created files will be removed from the other installations.");
                     return qsTr("The detected original backup will replace the current Roblox file. Any external change at that path will be overwritten.");
+                }
                 return qsTr("Every managed file will be restored from Fleasion's original backups.");
             }
             color: Theme.textPrimary

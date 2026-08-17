@@ -11,14 +11,20 @@ FluentDialog {
     id: root
 
     required property var controller
+    required property var appController
     property string pendingDeleteId
     property string pendingDeleteName
 
     signal draftPrepared
 
+    function restoreViewerFocus() {
+        if (root.visible && root.contentItem)
+            root.contentItem.forceActiveFocus(Qt.OtherFocusReason);
+    }
+
     parent: Overlay.overlay
     anchors.centerIn: parent
-    width: Math.min(940, parent ? parent.width - Theme.spaceXxl : 940)
+    width: Math.min(1040, parent ? parent.width - Theme.spaceXxl : 1040)
     height: Math.min(720, parent ? parent.height - Theme.spaceXxl : 720)
     modal: true
     focus: true
@@ -87,10 +93,10 @@ FluentDialog {
 
         CommunityPresetValuesView {
             controller: root.controller
+            appController: root.appController
             onBackRequested: root.controller.closePayload()
             onDraftPrepared: {
                 root.draftPrepared();
-                root.close();
             }
         }
     }

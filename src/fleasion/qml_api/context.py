@@ -52,7 +52,11 @@ class AppContext(QObject):
         super().__init__(parent)
         cache_manager = getattr(proxy_master, 'cache_manager', None)
         cache_scraper = getattr(proxy_master, 'cache_scraper', None)
-        self._replacer = ReplacerApi(config_manager, self)  # pyright: ignore[reportCallIssue]
+        self._replacer = ReplacerApi(  # pyright: ignore[reportCallIssue]
+            config_manager,
+            self,
+            cache_manager=cache_manager,
+        )
         self._cache = CacheApi(  # pyright: ignore[reportCallIssue]
             cache_manager, cache_scraper, self
         )
@@ -62,7 +66,11 @@ class AppContext(QObject):
             config_manager=config_manager,
             proxy_master=proxy_master,
         )
-        self._proxy = ProxyApi(proxy_master, self)  # pyright: ignore[reportCallIssue]
+        self._proxy = ProxyApi(  # pyright: ignore[reportCallIssue]
+            proxy_master,
+            self,
+            config_manager=config_manager,
+        )
         self._settings = SettingsApi(config_manager, self)  # pyright: ignore[reportCallIssue]
         self._logs = LogsApi(self)  # pyright: ignore[reportCallIssue]
         subplace_join = SubplaceJoinCoordinator()
@@ -98,6 +106,9 @@ class AppContext(QObject):
         self._settings.errorOccurred.connect(self.errorOccurred)
         self._settings.restartRequired.connect(lambda _reason: self.restartRequested.emit())
         self._cache.sendToReplacerRequested.connect(self._prepare_replacer_from_cache)
+        self._cache.sendSelectionToReplacerRequested.connect(
+            self._prepare_replacer_selection_from_cache
+        )
         self._startup_repair.presentationRequested.connect(
             lambda: self.dashboardVisibilityRequested.emit(True)
         )
@@ -105,6 +116,11 @@ class AppContext(QObject):
     @Slot(str, bool)
     def _prepare_replacer_from_cache(self, asset_id: str, as_replacement: bool) -> None:
         self._replacer.prepareCachedAsset(asset_id, as_replacement)
+        self.pageRequested.emit('replacer')
+
+    @Slot(list)
+    def _prepare_replacer_selection_from_cache(self, asset_ids: list[str]) -> None:
+        self._replacer.prepareCachedTargets(asset_ids)
         self.pageRequested.emit('replacer')
 
     @Property(QObject, constant=True)

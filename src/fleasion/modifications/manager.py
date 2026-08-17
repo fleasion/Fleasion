@@ -1346,6 +1346,7 @@ class ModificationManager(QObject):
                     shutil.copy2(stash, dst)
                     _clear_read_only(stash)
                     stash.unlink()
+                    marker.unlink(missing_ok=True)
                 elif marker.exists():
                     # Was a brand-new file (no original existed) — delete it
                     # and clean up the marker.
@@ -1385,6 +1386,7 @@ class ModificationManager(QObject):
                     shutil.copy2(stash, dst)
                     _clear_read_only(stash)
                     stash.unlink()
+                    marker.unlink(missing_ok=True)
                     restored = True
                 elif marker.exists():
                     marker.unlink(missing_ok=True)
@@ -1398,12 +1400,16 @@ class ModificationManager(QObject):
     # Bulk operations
     # ------------------------------------------------------------------
 
-    def restore_all(self) -> None:
-        """Restore every applied modification and fast-flags."""
+    def cancel_pending_operations(self) -> None:
+        """Invalidate in-flight entry and bulk apply operations."""
         with self._fs_lock:
             self._bulk_apply_gen = getattr(self, '_bulk_apply_gen', 0) + 1
             for entry in self.entries:
                 entry['_apply_gen'] = entry.get('_apply_gen', 0) + 1
+
+    def restore_all(self) -> None:
+        """Restore every applied modification and fast-flags."""
+        self.cancel_pending_operations()
 
         self.clear_managed_file_read_only()
 

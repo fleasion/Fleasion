@@ -94,7 +94,7 @@ Item {
                     cacheBusy: root.cacheBusy
                 }
 
-                ScrollBar.vertical: ScrollBar {}
+                ScrollBar.vertical: FluentScrollBar {}
             }
 
             EmptyState {

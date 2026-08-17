@@ -17,9 +17,10 @@ from PySide6.QtQml import QmlElement
 
 from ..cache.cache_manager import CacheManager
 from ..cache.roblox_document import classify_roblox_document
+from ..utils import open_folder
 from .animation_preview import AnimationPreviewApi
 from .font_preview import FontPreviewApi
-from ..utils import open_folder
+from .json_preview import JsonPreviewApi
 from .models import DictListModel, SelectionModel
 from .roblox_document_preview import RobloxDocumentPreviewApi
 from .tasks import TaskState
@@ -174,6 +175,7 @@ class CacheApi(QObject):
     errorOccurred = Signal(str)
     notificationRequested = Signal(str, str, str)
     sendToReplacerRequested = Signal(str, bool)
+    sendSelectionToReplacerRequested = Signal(list)
     previewChanged = Signal()
 
     def __init__(
@@ -228,6 +230,7 @@ class CacheApi(QObject):
         self._preview_source = ''
         self._mesh_geometry: QObject | None = None
         self._font_preview = FontPreviewApi(self)  # pyright: ignore[reportCallIssue]
+        self._json_preview = JsonPreviewApi(self)
         self._document_preview = RobloxDocumentPreviewApi(self)  # pyright: ignore[reportCallIssue]
         self._document_preview.set_export_directory(getattr(self._cache, 'export_dir', None))
         self._animation_preview = AnimationPreviewApi(self)  # pyright: ignore[reportCallIssue]
@@ -444,6 +447,10 @@ class CacheApi(QObject):
     @Property(QObject, constant=True)
     def fontPreview(self) -> QObject:  # noqa: N802
         return self._font_preview
+
+    @Property(QObject, constant=True)
+    def jsonPreview(self) -> JsonPreviewApi:  # noqa: N802
+        return self._json_preview
 
     @Property(QObject, constant=True)
     def documentPreview(self) -> QObject:  # noqa: N802
@@ -858,6 +865,23 @@ class CacheApi(QObject):
         if row:
             self.sendToReplacerRequested.emit(str(row['assetId']), as_replacement)
 
+    @Slot(list, result=bool)
+    def sendSelectionToReplacer(self, keys: list[str]) -> bool:  # noqa: N802
+        asset_ids: list[str] = []
+        seen: set[str] = set()
+        for key in keys:
+            row = self._row_for_key(str(key))
+            asset_id = str(row.get('assetId') or '')
+            if not asset_id.isdecimal() or asset_id in seen:
+                continue
+            seen.add(asset_id)
+            asset_ids.append(asset_id)
+        if not asset_ids:
+            self.errorOccurred.emit('The selection does not contain any reusable asset IDs.')
+            return False
+        self.sendSelectionToReplacerRequested.emit(asset_ids)
+        return True
+
     @Slot(str, result=dict)
     def asset(self, key: str) -> dict[str, Any]:
         return self._row_for_key(key)
@@ -915,14 +939,14 @@ class CacheApi(QObject):
             geometry.setParent(None)
             geometry.deleteLater()
         if type_name in {'json', 'fontfamily'} or payload.lstrip().startswith((b'{', b'[')):
-            try:
-                import json
-
-                value = json.loads(payload)
-                text = json.dumps(value, indent=2, ensure_ascii=False)
-            except UnicodeDecodeError, json.JSONDecodeError:
-                text = payload.decode('utf-8', errors='replace')
-            self._set_preview('text', text[:500_000], '')
+            if self._json_preview.load_bytes(payload):
+                self._set_preview('json', '', '')
+            else:
+                self._set_preview(
+                    'text',
+                    payload.decode('utf-8', errors='replace')[:500_000],
+                    '',
+                )
             return
         if type_name in {'fontface', 'html', 'text'}:
             self._set_preview('text', payload.decode('utf-8', errors='replace')[:500_000], '')
@@ -1051,6 +1075,8 @@ class CacheApi(QObject):
             self._release_mesh_geometry()
         if kind != 'font':
             self._font_preview.clear()
+        if kind != 'json':
+            self._json_preview.clear()
         if kind != 'document':
             self._document_preview.detach()
         if kind != 'animation':
@@ -1084,6 +1110,7 @@ class CacheApi(QObject):
         self._task.shutdown()
         self._release_mesh_geometry()
         self._font_preview.shutdown()
+        self._json_preview.clear()
         self._document_preview.reset()
         self._animation_preview.shutdown()
         self._texture_pack_preview.clear()

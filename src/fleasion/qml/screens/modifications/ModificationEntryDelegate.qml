@@ -16,6 +16,7 @@ Rectangle {
     required property string statusText
     required property string errorMessage
     signal replaceRequested(string entryId)
+    signal inspectRequested(string name, string targetPath)
     signal resetRequested(string entryId)
 
     readonly property string statusLabel: {
@@ -38,7 +39,7 @@ Rectangle {
 
     implicitHeight: errorMessage.length > 0 ? 72 : 58
     color: pointer.hovered ? Theme.surfaceHover : "transparent"
-    radius: Theme.radiusMd
+    radius: 0
     border.width: activeFocus ? 2 : 0
     border.color: Theme.focusRing
     activeFocusOnTab: true
@@ -80,6 +81,12 @@ Rectangle {
         }
 
         IconButton {
+            iconText: "◉"
+            text: qsTr("Inspect current and original files for %1").arg(root.entryName)
+            onClicked: root.inspectRequested(root.entryName, root.targetPath)
+        }
+
+        IconButton {
             iconText: "⇄"
             text: qsTr("Choose a new source for %1").arg(root.entryName)
             onClicked: root.replaceRequested(root.entryId)
@@ -95,6 +102,15 @@ Rectangle {
 
     HoverHandler {
         id: pointer
+    }
+
+    Rectangle {
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        height: 1
+        color: Theme.border
+        Accessible.ignored: true
     }
     Keys.onReturnPressed: event => {
         root.replaceRequested(root.entryId);

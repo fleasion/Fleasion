@@ -1,5 +1,4 @@
 import QtQuick
-import QtQuick.Controls
 import QtQuick.Layouts
 import Fleasion.Theme
 import Fleasion.Components
@@ -17,6 +16,7 @@ Card {
         const available = detailsScroll.availableHeight > 0 ? detailsScroll.availableHeight : root.height;
         switch (kind) {
         case 'document':
+        case 'json':
             return Math.min(500, Math.max(root.width < 520 ? 410 : 310, available * 0.72));
         case 'animation':
             return Math.min(390, Math.max(270, available * 0.58));
@@ -35,7 +35,7 @@ Card {
     padding: Theme.spaceXs
     contentSpacing: Theme.spaceXs
 
-    ScrollView {
+    FluentScrollView {
         id: detailsScroll
 
         Layout.fillWidth: true

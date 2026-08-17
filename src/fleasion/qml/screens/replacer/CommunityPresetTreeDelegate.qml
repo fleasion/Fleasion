@@ -26,6 +26,7 @@ ItemDelegate {
     readonly property string nodeKind: root.model !== undefined && root.model !== null ? root.model.valueKind : 'string'
     readonly property string nodeRowId: root.model !== undefined && root.model !== null ? root.model.rowId : ''
     readonly property int nodeChildCount: root.model !== undefined && root.model !== null ? root.model.childCount : 0
+    readonly property bool narrow: root.treeView.width < 520
 
     function syncSelection() {
         root.valueSelected = root.importableValue && root.selectionModel.contains(root.nodeRowId);
@@ -89,7 +90,7 @@ ItemDelegate {
         spacing: Theme.spaceSm
 
         Item {
-            Layout.preferredWidth: root.depth * Theme.spaceLg
+            Layout.preferredWidth: Math.min(root.depth * Theme.spaceLg, root.narrow ? 56 : 160)
             Layout.preferredHeight: 1
         }
 
@@ -149,7 +150,7 @@ ItemDelegate {
         }
 
         Label {
-            Layout.preferredWidth: 220
+            Layout.preferredWidth: root.narrow ? 118 : 220
             text: root.hasChildren ? qsTr('%n item(s)', '', root.nodeChildCount) : root.nodeValue
             color: root.hasChildren ? Theme.textTertiary : Theme.textSecondary
             font.family: root.hasChildren ? '' : 'monospace'
@@ -160,6 +161,7 @@ ItemDelegate {
 
         StatusPill {
             Layout.preferredWidth: 92
+            visible: !root.narrow
             text: {
                 switch (root.nodeKind) {
                 case 'object':

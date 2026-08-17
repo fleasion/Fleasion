@@ -52,7 +52,7 @@ RowLayout {
 
     FluentButton {
         text: qsTr("Replay request")
-        enabled: !root.replaying && root.requestText.length > 0
+        enabled: !root.details.archived && !root.replaying && root.requestText.length > 0
         onClicked: root.replayRequested()
     }
 

@@ -12,6 +12,8 @@ Rectangle {
     required property var controller
     required property var appController
     property string assetKey
+    property bool autoLoad: true
+    property bool flat: false
     readonly property bool canPreview: controller.previewKind !== 'none'
     property real meshYaw: 25
     property real meshPitch: -12
@@ -23,18 +25,22 @@ Rectangle {
     }
 
     implicitHeight: 240
-    radius: Theme.radiusMd
-    color: Theme.surfaceSubtle
+    radius: root.flat ? 0 : Theme.radiusMd
+    color: root.flat ? Theme.surface : Theme.surfaceSubtle
+    border.width: root.flat ? 0 : 1
     border.color: Theme.border
     clip: true
 
-    onAssetKeyChanged: controller.loadPreview(assetKey)
+    onAssetKeyChanged: {
+        if (root.autoLoad)
+            controller.loadPreview(assetKey);
+    }
 
     StackLayout {
         anchors.fill: parent
         anchors.margins: Theme.spaceXs
         currentIndex: {
-            const kinds = ['image', 'audio', 'mesh', 'text', 'hex', 'font', 'document', 'animation', 'texturepack'];
+            const kinds = ['image', 'audio', 'mesh', 'json', 'text', 'hex', 'font', 'document', 'animation', 'texturepack'];
             const index = kinds.indexOf(root.controller.previewKind);
             return index >= 0 ? index : kinds.length;
         }
@@ -43,6 +49,7 @@ Rectangle {
             Layout.fillWidth: true
             Layout.fillHeight: true
             source: root.controller.previewSource
+            sourceSize: Qt.size(1024, 1024)
             asynchronous: true
             cache: true
             fillMode: Image.PreserveAspectFit
@@ -160,8 +167,12 @@ Rectangle {
             }
         }
 
-        ScrollView {
-            clip: true
+        JsonPreview {
+            controller: root.controller.jsonPreview
+            appController: root.appController
+        }
+
+        FluentScrollView {
 
             FluentTextArea {
                 text: root.controller.previewText
@@ -175,8 +186,7 @@ Rectangle {
             }
         }
 
-        ScrollView {
-            clip: true
+        FluentScrollView {
 
             FluentTextArea {
                 text: root.controller.previewText

@@ -15,6 +15,8 @@ FocusScope {
     property int selectedCount: 0
     property string pendingNameAction: "create"
     property string pendingRulePath
+    property string pendingGroupPath
+    property string pendingCurrentName
     property string pendingDeleteKind: "entries"
     property bool pendingExport: false
 
@@ -26,12 +28,16 @@ FocusScope {
         selectedCount = controller.selection.values().length;
     }
 
-    function openNameDialog(action) {
+    function openNameDialog(action, path, currentName) {
         pendingNameAction = action;
+        pendingGroupPath = path || "";
+        pendingCurrentName = currentName || "";
         nameDialogLoader.active = true;
     }
 
     function openRuleEditor(path) {
+        if (ruleEditorLoader.active)
+            return;
         pendingRulePath = path;
         ruleEditorLoader.active = true;
     }
@@ -43,8 +49,25 @@ FocusScope {
 
     Component.onCompleted: {
         root.syncSelection();
-        if (controller.hasDraft)
-            root.openRuleEditor("");
+        communityDraftFlow.presentDraft();
+    }
+
+    Replacer.CommunityDraftFlow {
+        id: communityDraftFlow
+
+        hasDraft: root.controller.hasDraft
+        closeViewerOnReplace: root.appController && root.appController.settings ? root.appController.settings.closeViewerOnReplace : true
+        communityViewerOpen: communityPresetDialogLoader.active
+        ruleEditorOpen: ruleEditorLoader.active
+        onCloseCommunityViewerRequested: {
+            if (communityPresetDialogLoader.status === Loader.Ready)
+                (communityPresetDialogLoader.item as Replacer.CommunityPresetsDialog).close();
+        }
+        onOpenRuleEditorRequested: root.openRuleEditor("")
+        onRestoreCommunityViewerRequested: {
+            if (communityPresetDialogLoader.status === Loader.Ready)
+                (communityPresetDialogLoader.item as Replacer.CommunityPresetsDialog).restoreViewerFocus();
+        }
     }
 
     Rectangle {
@@ -123,44 +146,30 @@ FocusScope {
                     color: Theme.textSecondary
                     font.pointSize: TypeScale.label
                 }
+
+                IconButton {
+                    controlSize: 32
+                    flat: true
+                    iconText: "⌄"
+                    text: qsTr("Expand all groups")
+                    onClicked: root.controller.setAllGroupsExpanded(true)
+                }
+
+                IconButton {
+                    controlSize: 32
+                    flat: true
+                    iconText: "›"
+                    text: qsTr("Collapse all groups")
+                    onClicked: root.controller.setAllGroupsExpanded(false)
+                }
             }
 
-            Rectangle {
+            Replacer.ReplacerSelectionBar {
                 Layout.fillWidth: true
-                Layout.preferredHeight: selectionRow.implicitHeight + Theme.spaceSm
-                visible: root.selectedCount > 0
-                radius: Theme.radiusMd
-                color: Theme.accentSubtle
-                border.width: 1
-                border.color: Theme.accent
-
-                RowLayout {
-                    id: selectionRow
-
-                    anchors.fill: parent
-                    anchors.leftMargin: Theme.spaceSm
-                    anchors.rightMargin: Theme.spaceXs
-                    spacing: Theme.spaceSm
-
-                    Label {
-                        Layout.fillWidth: true
-                        text: qsTr("%n selected", "", root.selectedCount)
-                        color: Theme.textPrimary
-                        font.pointSize: TypeScale.body
-                        font.weight: TypeScale.medium
-                    }
-
-                    FluentButton {
-                        text: qsTr("Clear selection")
-                        flat: true
-                        onClicked: root.controller.selection.clear()
-                    }
-
-                    FluentButton {
-                        text: qsTr("Delete")
-                        onClicked: root.openDeleteDialog("entries")
-                    }
-                }
+                visible: selectedCount > 0
+                controller: root.controller
+                onGroupRequested: root.openNameDialog("groupSelection", "", "")
+                onDeleteRequested: root.openDeleteDialog("entries")
             }
 
             DataTableHeader {
@@ -188,9 +197,8 @@ FocusScope {
                 }
 
                 DataTableHeaderCell {
-                    preferredWidth: Theme.controlHeight
-                    text: ""
-                    Accessible.name: qsTr("Actions")
+                    preferredWidth: 92
+                    text: qsTr("Organize")
                 }
             }
 
@@ -206,7 +214,7 @@ FocusScope {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     model: root.controller.model
-                    spacing: 2
+                    spacing: 0
                     boundsBehavior: Flickable.StopAtBounds
                     clip: true
                     reuseItems: true
@@ -223,6 +231,10 @@ FocusScope {
                         entryName: model.name
                         entryEnabled: model.enabled
                         entryState: model.state
+                        entryExpanded: model.expanded
+                        childCount: model.childCount
+                        canMoveUp: model.canMoveUp
+                        canMoveDown: model.canMoveDown
                         actionText: model.action
                         replacementText: model.replacement
                         targetsText: model.targets
@@ -231,9 +243,12 @@ FocusScope {
                             root.controller.setEntryEnabled(path, enabled);
                         }
                         onEditRequested: path => root.openRuleEditor(path)
+                        onGroupRenameRequested: (path, name) => root.openNameDialog("renameGroup", path, name)
+                        onExpansionToggled: (path, expanded) => root.controller.setGroupExpanded(path, expanded)
+                        onMoveRequested: (path, direction) => root.controller.moveEntry(path, direction)
                     }
 
-                    ScrollBar.vertical: ScrollBar {}
+                    ScrollBar.vertical: FluentScrollBar {}
                 }
 
                 EmptyState {
@@ -263,37 +278,15 @@ FocusScope {
         sourceComponent: Component {
             Replacer.ProfileNameDialog {
                 action: root.pendingNameAction
-                currentName: root.controller.activeConfig
-                onSubmitted: (action, name) => {
-                    switch (action) {
-                    case "rename":
-                        root.controller.renameConfig(root.controller.activeConfig, name);
-                        break;
-                    case "duplicate":
-                        root.controller.duplicateConfig(root.controller.activeConfig, name);
-                        break;
-                    case "group":
-                        root.controller.addGroup(name);
-                        break;
-                    default:
-                        root.controller.createConfig(name);
-                    }
-                }
+                currentName: root.pendingCurrentName.length > 0 ? root.pendingCurrentName : root.controller.activeConfig
+                groupPath: root.pendingGroupPath
+                controller: root.controller
                 onClosed: nameDialogLoader.active = false
             }
         }
         onLoaded: {
             if (status === Loader.Ready)
                 (item as Replacer.ProfileNameDialog).open();
-        }
-    }
-
-    Connections {
-        target: root.controller
-
-        function onDraftChanged() {
-            if (root.controller.hasDraft && !communityPresetDialogLoader.active)
-                root.openRuleEditor("");
         }
     }
 
@@ -304,10 +297,11 @@ FocusScope {
         sourceComponent: Component {
             Replacer.CommunityPresetsDialog {
                 controller: root.controller.communityPresets
+                appController: root.appController
+                onDraftPrepared: communityDraftFlow.communityDraftPrepared()
                 onClosed: {
                     communityPresetDialogLoader.active = false;
-                    if (root.controller.hasDraft)
-                        Qt.callLater(() => root.openRuleEditor(""));
+                    communityDraftFlow.communityViewerClosed();
                 }
             }
         }
@@ -325,7 +319,10 @@ FocusScope {
             Replacer.RuleEditorDialog {
                 controller: root.controller
                 entryPath: root.pendingRulePath
-                onClosed: ruleEditorLoader.active = false
+                onClosed: {
+                    ruleEditorLoader.active = false;
+                    communityDraftFlow.ruleEditorClosed();
+                }
             }
         }
         onLoaded: {

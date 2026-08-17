@@ -16,8 +16,11 @@ FluentButton 1.0 FluentButton.qml
 FluentCheckBox 1.0 FluentCheckBox.qml
 FluentComboBox 1.0 FluentComboBox.qml
 FluentDialog 1.0 FluentDialog.qml
+DialogActionBar 1.0 DialogActionBar.qml
 FluentItemDelegate 1.0 FluentItemDelegate.qml
 FluentRadioButton 1.0 FluentRadioButton.qml
+FluentScrollBar 1.0 FluentScrollBar.qml
+FluentScrollView 1.0 FluentScrollView.qml
 FluentSlider 1.0 FluentSlider.qml
 FluentSpinBox 1.0 FluentSpinBox.qml
 FluentSwitch 1.0 FluentSwitch.qml

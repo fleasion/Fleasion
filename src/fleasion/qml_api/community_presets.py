@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Final
 from PySide6.QtCore import QObject, Property, Qt, Signal, Slot
 from PySide6.QtQml import QmlElement
 
+from ..cache.cache_manager import CacheManager
 from ..prejsons import (
     CatalogSnapshot,
     CommunityPreset,
@@ -19,7 +20,9 @@ from ..prejsons import (
     RobloxPresetMetadataClient,
     flatten_preset_values,
 )
+from .community_value_preview import CommunityValueResolver
 from .models import DictListModel, SelectionModel
+from .payload_preview import PayloadPreviewApi
 from .preset_tree import PresetJsonTreeModel
 from .tasks import TaskState
 
@@ -94,6 +97,8 @@ class CommunityPresetsApi(QObject):
         store: CommunityPresetCatalog | None = None,
         metadata_client: RobloxPresetMetadataClient | None = None,
         parent: QObject | None = None,
+        *,
+        cache_manager: CacheManager | None = None,
     ) -> None:
         super().__init__(parent)
         self._store = store or CommunityPresetCatalog()
@@ -102,6 +107,11 @@ class CommunityPresetsApi(QObject):
         self._value_model = DictListModel(_VALUE_ROLES, parent=self)
         self._value_tree_model = PresetJsonTreeModel(self)
         self._value_selection = SelectionModel(self)
+        self._value_preview = PayloadPreviewApi(  # pyright: ignore[reportCallIssue]
+            cache_manager,
+            self,
+        )
+        self._value_resolver = CommunityValueResolver(cache_manager)
         self._task = TaskState(self)
         self._metadata_threads: list[threading.Thread] = []
         self._presets: list[CommunityPreset] = []
@@ -122,6 +132,10 @@ class CommunityPresetsApi(QObject):
         self._task.succeeded.connect(self._on_task_succeeded)
         self._task.failed.connect(self._on_task_failed)
         self._value_selection.selectionChanged.connect(self.selectedCountChanged)
+        self._value_selection.selectionChanged.connect(self._sync_value_preview)
+        self._value_preview.errorOccurred.connect(self.errorOccurred)
+        self._value_preview.notificationRequested.connect(self.notificationRequested)
+        self._value_preview.childAssetRequested.connect(self._load_preview_child)
         self._metadataResult.connect(
             self._apply_metadata,
             Qt.ConnectionType.QueuedConnection,
@@ -142,6 +156,10 @@ class CommunityPresetsApi(QObject):
     @Property(QObject, constant=True)
     def valueSelection(self) -> QObject:  # noqa: N802
         return self._value_selection
+
+    @Property(QObject, constant=True)
+    def valuePreview(self) -> QObject:  # noqa: N802
+        return self._value_preview
 
     @Property(QObject, constant=True)
     def task(self) -> QObject:
@@ -203,6 +221,21 @@ class CommunityPresetsApi(QObject):
         selected = set(self._value_selection.values())
         return sum(value.row_id in selected and value.kind == 'id' for value in self._values)
 
+    @Property(str, notify=selectedCountChanged)
+    def selectedValuePath(self) -> str:  # noqa: N802
+        values = self._selected_values()
+        return values[0].path if len(values) == 1 else ''
+
+    @Property(str, notify=selectedCountChanged)
+    def selectedValueText(self) -> str:  # noqa: N802
+        values = self._selected_values()
+        return values[0].value_text if len(values) == 1 else ''
+
+    @Property(str, notify=selectedCountChanged)
+    def selectedValueKind(self) -> str:  # noqa: N802
+        values = self._selected_values()
+        return values[0].kind if len(values) == 1 else ''
+
     @Slot(result=bool)
     def ensureLoaded(self) -> bool:  # noqa: N802
         return False if self._catalog_loaded else self.refresh()
@@ -259,6 +292,7 @@ class CommunityPresetsApi(QObject):
         self._value_model.replace_items(())
         self._value_tree_model.clear()
         self._value_selection.clear()
+        self._value_preview.clear()
         self._value_query = ''
         self.valueQueryChanged.emit()
         self.payloadChanged.emit()
@@ -343,6 +377,7 @@ class CommunityPresetsApi(QObject):
         self._disposed = True
         self._metadata_generation += 1
         self._task.shutdown()
+        self._value_preview.shutdown()
 
     @Slot(object)
     def _on_task_succeeded(self, result: object) -> None:
@@ -387,6 +422,7 @@ class CommunityPresetsApi(QObject):
         self._payload_open = True
         self._value_query = ''
         self._value_selection.clear()
+        self._sync_value_preview()
         self._refresh_value_model()
         self._set_status('')
         self.valueQueryChanged.emit()
@@ -500,6 +536,34 @@ class CommunityPresetsApi(QObject):
 
     def _draft_name(self) -> str:
         return f'{self._selected_preset_name} preset'
+
+    def _selected_values(self) -> list[PresetValue]:
+        selected = set(self._value_selection.values())
+        return [value for value in self._values if value.row_id in selected]
+
+    @Slot()
+    def _sync_value_preview(self) -> None:
+        values = self._selected_values()
+        if len(values) != 1:
+            self._value_preview.clear()
+            return
+        selected = values[0]
+        self._value_preview.load_async(
+            'Loading selected value preview…',
+            lambda cancel_event: self._value_resolver.resolve(selected, cancel_event),
+        )
+
+    @Slot(str)
+    def _load_preview_child(self, asset_id: str) -> None:
+        self._value_preview.load_child_async(
+            asset_id,
+            'Loading TexturePack map…',
+            lambda cancel_event: self._value_resolver.resolve_asset_id(
+                asset_id,
+                cancel_event,
+                label=f'Texture map {asset_id}',
+            ),
+        )
 
     def _set_status(self, value: str) -> None:
         if value == self._status:

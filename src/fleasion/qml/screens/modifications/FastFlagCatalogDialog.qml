@@ -151,7 +151,7 @@ FluentDialog {
                     }
                 }
 
-                ScrollBar.vertical: ScrollBar {}
+                ScrollBar.vertical: FluentScrollBar {}
             }
 
             BusyIndicator {

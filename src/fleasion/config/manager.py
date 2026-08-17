@@ -915,6 +915,21 @@ class ConfigManager:
         self._save_settings()
 
     @property
+    def proxy_traffic_preserve(self) -> bool:
+        """Whether sanitized proxy traffic snapshots persist across restarts."""
+        return bool(self.settings.get('proxy_traffic_preserve', False))
+
+    @proxy_traffic_preserve.setter
+    def proxy_traffic_preserve(self, value: bool) -> None:
+        self.settings['proxy_traffic_preserve'] = bool(value)
+        self._save_settings()
+
+    @property
+    def proxy_traffic_archive_path(self) -> Path:
+        """Return the snapshot path associated with this configuration store."""
+        return Path(CONFIG_DIR) / 'proxy_traffic.json'
+
+    @property
     def env_proxy_migration_v1_complete(self) -> bool:
         """Whether the one-time Env Proxy default migration was acknowledged."""
         return bool(self.settings.get('env_proxy_migration_v1_complete', False))

@@ -93,10 +93,11 @@ FluentDialog {
                 spacing: 0
                 reuseItems: true
                 boundsBehavior: Flickable.StopAtBounds
-                ScrollBar.vertical: ScrollBar {}
+                ScrollBar.vertical: FluentScrollBar {}
 
                 delegate: PublicServerDelegate {
                     width: ListView.view.width
+                    enabled: !root.controller.launchTask.busy
                     onCopyRequested: jobId => root.appController.copyText(jobId)
                     onJoinRequested: jobId => root.controller.joinServer(jobId)
                 }

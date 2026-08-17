@@ -7,6 +7,7 @@ import shutil
 import socket
 import ssl
 import subprocess
+import threading
 import urllib.error
 import urllib.request
 import uuid
@@ -32,6 +33,10 @@ class HttpSafetyError(ValueError):
 
 class HttpSizeLimitError(ValueError):
     """Raised before a remote response can exceed its configured byte limit."""
+
+
+class HttpCancelledError(RuntimeError):
+    """Raised when a caller cancels a bounded HTTP operation."""
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -268,11 +273,14 @@ def _open_request(
     method: str,
     timeout: int,
     headers: dict[str, str],
+    cancel_event: threading.Event | None = None,
 ) -> Any:
     current_url = validate_public_https_url(url)
     current_headers = dict(headers)
 
     for redirect_count in range(_MAX_REDIRECTS + 1):
+        if cancel_event is not None and cancel_event.is_set():
+            raise HttpCancelledError('The HTTPS request was cancelled.')
         req = urllib.request.Request(current_url, headers=current_headers, method=method)
         try:
             response = _open_verified(req, current_url, timeout)
@@ -317,12 +325,18 @@ def _raise_if_declared_oversized(response: Any, max_bytes: int) -> None:
         raise HttpSizeLimitError(f'The remote response exceeds the {max_bytes} byte safety limit.')
 
 
-def _read_limited(response: Any, max_bytes: int) -> bytes:
+def _read_limited(
+    response: Any,
+    max_bytes: int,
+    cancel_event: threading.Event | None = None,
+) -> bytes:
     if max_bytes < 0:
         raise ValueError('max_bytes must not be negative')
     _raise_if_declared_oversized(response, max_bytes)
     data = bytearray()
     while True:
+        if cancel_event is not None and cancel_event.is_set():
+            raise HttpCancelledError('The HTTPS request was cancelled.')
         remaining = max_bytes - len(data)
         chunk = response.read(min(_STREAM_CHUNK_BYTES, remaining + 1))
         if not chunk:
@@ -358,6 +372,7 @@ def http_get(
     headers: dict[str, str] | None = None,
     *,
     max_bytes: int = _DEFAULT_MAX_BYTES,
+    cancel_event: threading.Event | None = None,
 ) -> bytes:
     """Fetch one public HTTPS resource without buffering beyond ``max_bytes``."""
     request_headers = {'User-Agent': _USER_AGENT}
@@ -369,8 +384,9 @@ def http_get(
         method='GET',
         timeout=timeout,
         headers=request_headers,
+        cancel_event=cancel_event,
     ) as response:
-        return _read_limited(response, max_bytes)
+        return _read_limited(response, max_bytes, cancel_event)
 
 
 def http_head_status(
@@ -505,6 +521,7 @@ def _curl_download_to(
 __all__ = [
     'HttpSafetyError',
     'HttpSizeLimitError',
+    'HttpCancelledError',
     'http_download_to',
     'http_get',
     'http_head_status',

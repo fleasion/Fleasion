@@ -7,9 +7,10 @@ import io
 import shutil
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Any, Final
 
-from PySide6.QtCore import QObject, Property, Signal, Slot
+from PySide6.QtCore import QObject, Property, QUrl, Signal, Slot
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtQml import QmlElement
 
@@ -105,6 +106,9 @@ class TexturePackPreviewApi(QObject):
         self._xml_text = ''
         self._error_text = ''
         self._maps: list[tuple[str, int, str]] = []
+        self._loaded_maps: dict[str, bytes] = {}
+        self._loaded_map_urls: dict[str, str] = {}
+        self._preview_files: set[Path] = set()
         self._slot_directory = APP_CACHE_DIR / 'texpack_slots'
         self._export_directory: Path | None = None
 
@@ -201,9 +205,11 @@ class TexturePackPreviewApi(QObject):
     def copyMapImage(self, row: int) -> bool:  # noqa: N802
         entry = self._model.get(row)
         asset_id = str(entry.get('assetId') or '')
-        if self._cache is None or not asset_id:
+        if not asset_id:
             return False
-        data = self._cache.get_asset(asset_id, 1)
+        data = self._loaded_maps.get(asset_id)
+        if data is None and self._cache is not None:
+            data = self._cache.get_asset(asset_id, 1)
         if not data:
             self.errorOccurred.emit('Load this TexturePack map before copying its image.')
             return False
@@ -224,6 +230,39 @@ class TexturePackPreviewApi(QObject):
             f'{entry.get("name", "Texture")} map copied to the clipboard',
             'success',
         )
+        return True
+
+    def set_map_bytes(self, asset_id: str, data: bytes) -> bool:
+        """Attach one bounded, decoded map image without persisting it to cache."""
+        normalized = asset_id.strip()
+        if (
+            not normalized.isdecimal()
+            or normalized == '0'
+            or len(data) > _MAX_CLIPBOARD_IMAGE_BYTES
+        ):
+            return False
+        image = QImage.fromData(data)
+        if image.isNull() or image.width() * image.height() > 64 * 1024 * 1024:
+            return False
+        previous_url = self._loaded_map_urls.get(normalized, '')
+        previous_path = Path(QUrl(previous_url).toLocalFile()) if previous_url else None
+        with NamedTemporaryFile(
+            prefix='fleasion-texture-map-preview-',
+            suffix='.png',
+            delete=False,
+        ) as handle:
+            path = Path(handle.name)
+        if not image.save(str(path)):
+            path.unlink(missing_ok=True)
+            return False
+        self._loaded_maps[normalized] = data
+        self._loaded_map_urls[normalized] = QUrl.fromLocalFile(str(path)).toString()
+        self._preview_files.add(path)
+        if previous_path is not None:
+            previous_path.unlink(missing_ok=True)
+            self._preview_files.discard(previous_path)
+        self._replace_rows()
+        self.changed.emit()
         return True
 
     @Slot(int, result=bool)
@@ -280,11 +319,25 @@ class TexturePackPreviewApi(QObject):
 
     @Slot()
     def clear(self) -> None:
-        changed = bool(self._pack_asset_id or self._xml_text or self._error_text or self._maps)
+        changed = bool(
+            self._pack_asset_id
+            or self._xml_text
+            or self._error_text
+            or self._maps
+            or self._loaded_maps
+        )
         self._pack_asset_id = ''
         self._xml_text = ''
         self._error_text = ''
         self._maps = []
+        self._loaded_maps = {}
+        self._loaded_map_urls = {}
+        for path in tuple(self._preview_files):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                continue
+            self._preview_files.discard(path)
         self._model.replace_items(())
         if changed:
             self.changed.emit()
@@ -293,7 +346,8 @@ class TexturePackPreviewApi(QObject):
         rows: list[dict[str, Any]] = []
         for name, slot_index, asset_id in self._maps:
             info = self._asset_info(asset_id)
-            cached = bool(info)
+            loaded_url = self._loaded_map_urls.get(asset_id, '')
+            cached = bool(info) or bool(loaded_url)
             hash_value = str(info.get('hash') or '')
             size = int(info.get('raw_size', info.get('size', 0)) or 0)
             captured_path = self._captured_path(slot_index)
@@ -308,7 +362,12 @@ class TexturePackPreviewApi(QObject):
                     'hash': hash_value,
                     'sizeText': _format_bytes(size) if cached else '',
                     'imageSource': (
-                        f'image://fleasion-cache/1/{asset_id}?v={hash_value}' if cached else ''
+                        loaded_url
+                        or (
+                            f'image://fleasion-cache/1/{asset_id}?v={hash_value}'
+                            if info
+                            else ''
+                        )
                     ),
                     'cached': cached,
                     'captured': captured_size > 0,

@@ -7,20 +7,25 @@ import re
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from PySide6.QtCore import QObject, Property, QTimer, QUrl, Signal, Slot
 from PySide6.QtQml import QmlElement
 
+from ..proxy.traffic_archive import ProxyTrafficArchive
 from .models import DictListModel
 from .tasks import TaskState
+
+if TYPE_CHECKING:
+    from ..config.manager import ConfigManager
 
 QML_IMPORT_NAME = 'Fleasion'
 QML_IMPORT_MAJOR_VERSION = 1
 QML_IMPORT_MINOR_VERSION = 0
 
 _SENSITIVE_HEADER_PATTERN: Final = re.compile(
-    r'(?im)^(authorization|proxy-authorization|cookie|set-cookie|x-csrf-token):[^\r\n]*'
+    r'(?im)^([\w-]*(?:authorization|cookie|credential|csrf|password|secret|ticket|token|'
+    r'api-key)[\w-]*):[^\r\n]*'
 )
 
 
@@ -43,6 +48,7 @@ _TRAFFIC_ROLES: Final = (
     'pending',
     'dropped',
     'intercepted',
+    'archived',
     'searchText',
 )
 _RULE_ROLES: Final = (
@@ -81,7 +87,7 @@ _TUNNEL_NOTE: Final = (
 def _time_text(timestamp: Any) -> str:
     try:
         return datetime.fromtimestamp(float(timestamp)).strftime('%H:%M:%S')
-    except (TypeError, ValueError, OSError):
+    except (TypeError, ValueError, OSError, OverflowError):
         return ''
 
 
@@ -143,23 +149,38 @@ class ProxyApi(QObject):
     queryChanged = Signal()
     interceptionChanged = Signal()
     lifecycleChanged = Signal()
+    preserveChanged = Signal()
     errorOccurred = Signal(str)
 
-    def __init__(self, proxy_master: Any | None = None, parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        proxy_master: Any | None = None,
+        parent: QObject | None = None,
+        *,
+        config_manager: ConfigManager | None = None,
+        traffic_archive_path: Path | None = None,
+    ) -> None:
         super().__init__(parent)
         self._shutdown_requested = threading.Event()
         self._lifecycle_gate = threading.Lock()
         self._proxy = proxy_master
+        self._traffic_archive = ProxyTrafficArchive(config_manager, traffic_archive_path)
         self._model = DictListModel(_TRAFFIC_ROLES, parent=self)
         self._rules_model = DictListModel(_RULE_ROLES, parent=self)
         self._lifecycle_task = TaskState(self)
         self._lifecycle_task.failed.connect(self._lifecycle_failed)
         self._lifecycle_task.succeeded.connect(self._lifecycle_succeeded)
         self._lifecycle_task.busyChanged.connect(self._lifecycle_busy_changed)
+        self._preserve_task = TaskState(self)
         self._query = ''
         self._intercept_match = ''
         self._capture_all_hosts = False
         self._entries_by_id: dict[int, dict[str, Any]] = {}
+        self._last_live_snapshot: list[dict[str, Any]] = []
+        self._lifecycle_preserve_snapshot: list[dict[str, Any]] = []
+        self._lifecycle_preserve_view: list[dict[str, Any]] = []
+        self._lifecycle_preserve_previous_count = 0
+        self._lifecycle_checkpoint_pending = False
         self._last_signature: tuple[Any, ...] = ()
         self._last_running = self.running
         self._last_pending_count = 0
@@ -172,6 +193,10 @@ class ProxyApi(QObject):
         self._timer.setInterval(400)
         self._timer.timeout.connect(self.refresh)
         self._timer.start()
+        self._preserve_timer = QTimer(self)
+        self._preserve_timer.setInterval(3_000)
+        self._preserve_timer.timeout.connect(self._save_preserved_snapshot)
+        self._preserve_timer.start()
         self.refresh()
 
     @Property(QObject, constant=True)
@@ -185,6 +210,14 @@ class ProxyApi(QObject):
     @Property(QObject, constant=True)
     def lifecycleTask(self) -> QObject:  # noqa: N802
         return self._lifecycle_task
+
+    @Property(bool, notify=preserveChanged)
+    def trafficPreserve(self) -> bool:  # noqa: N802
+        return self._traffic_archive.enabled
+
+    @Property(int, notify=preserveChanged)
+    def preservedCount(self) -> int:  # noqa: N802
+        return self._traffic_archive.count
 
     @Property(bool, notify=statusChanged)
     def running(self) -> bool:
@@ -256,6 +289,21 @@ class ProxyApi(QObject):
             self.statusChanged.emit()
 
     def _traffic_snapshot(self) -> list[dict[str, Any]]:
+        if self._lifecycle_checkpoint_pending:
+            return [dict(entry) for entry in self._lifecycle_preserve_view]
+        live = self._read_live_traffic()
+        if self._traffic_archive.enabled:
+            if self._live_generation_reset(self._last_live_snapshot, live):
+                previous_count = self._traffic_archive.count
+                self._traffic_archive.checkpoint(self._last_live_snapshot)
+                if self._traffic_archive.count != previous_count:
+                    self.preserveChanged.emit()
+            self._last_live_snapshot = [dict(entry) for entry in live]
+            return self._traffic_archive.combined(live)
+        self._last_live_snapshot = [dict(entry) for entry in live]
+        return live
+
+    def _read_live_traffic(self) -> list[dict[str, Any]]:
         if self._proxy is None or not hasattr(self._proxy, 'get_env_proxy_traffic'):
             return []
         try:
@@ -263,6 +311,35 @@ class ProxyApi(QObject):
         except Exception as exc:
             self.errorOccurred.emit(f'Could not read proxy traffic: {exc}')
             return []
+
+    @staticmethod
+    def _live_generation_reset(
+        previous: list[dict[str, Any]],
+        current: list[dict[str, Any]],
+    ) -> bool:
+        if not previous:
+            return False
+        if not current:
+            return True
+        previous_by_id = {
+            entry['id']: entry
+            for entry in previous
+            if isinstance(entry.get('id'), int) and int(entry['id']) >= 0
+        }
+        current_by_id = {
+            entry['id']: entry
+            for entry in current
+            if isinstance(entry.get('id'), int) and int(entry['id']) >= 0
+        }
+        if not previous_by_id or not current_by_id:
+            return False
+        if max(current_by_id) < max(previous_by_id):
+            return True
+        return any(
+            request_id in previous_by_id
+            and current_entry.get('time') != previous_by_id[request_id].get('time')
+            for request_id, current_entry in current_by_id.items()
+        )
 
     @staticmethod
     def _entry_signature(entry: dict[str, Any]) -> tuple[Any, ...]:
@@ -309,6 +386,7 @@ class ProxyApi(QObject):
             'pending': bool(pending_stage),
             'dropped': bool(entry.get('dropped_request') or entry.get('dropped_response')),
             'intercepted': bool(entry.get('was_intercepted')),
+            'archived': bool(entry.get('archived')),
             'searchText': search_text,
         }
 
@@ -348,6 +426,10 @@ class ProxyApi(QObject):
 
     @Slot()
     def clear(self) -> None:
+        self._last_live_snapshot = []
+        if self._traffic_archive.enabled:
+            self._traffic_archive.clear()
+            self.preserveChanged.emit()
         if self._proxy is not None and hasattr(self._proxy, 'clear_env_proxy_traffic'):
             try:
                 self._proxy.clear_env_proxy_traffic()
@@ -357,6 +439,32 @@ class ProxyApi(QObject):
         self._last_signature = ()
         self._force_model_reset = True
         self.refresh()
+
+    @Slot(bool)
+    def setTrafficPreserve(self, enabled: bool) -> None:  # noqa: N802
+        if enabled == self._traffic_archive.enabled:
+            return
+        live = self._read_live_traffic()
+        self._last_live_snapshot = [dict(entry) for entry in live]
+        self._traffic_archive.set_enabled(enabled, [])
+        self._last_signature = ()
+        self.preserveChanged.emit()
+        self.refresh()
+        if enabled:
+            self._queue_preserved_snapshot(live)
+
+    @Slot()
+    def _save_preserved_snapshot(self) -> None:
+        self._queue_preserved_snapshot(self._read_live_traffic())
+
+    def _queue_preserved_snapshot(self, live: list[dict[str, Any]]) -> None:
+        if not self._traffic_archive.enabled or self._preserve_task.busy:
+            return
+        snapshot = [dict(entry) for entry in live]
+        self._preserve_task.run(
+            'Saving traffic history',
+            lambda: self._traffic_archive.save_snapshot(snapshot),
+        )
 
     @Slot(result=bool)
     def start(self) -> bool:
@@ -379,6 +487,8 @@ class ProxyApi(QObject):
         if self._lifecycle_task.busy:
             self._queued_lifecycle_action = action
             return True
+        if action in {'stop', 'restart'}:
+            self._prepare_lifecycle_checkpoint()
         self._lifecycle_action = action
         self.lifecycleChanged.emit()
         self.statusChanged.emit()
@@ -387,10 +497,45 @@ class ProxyApi(QObject):
             lambda cancel_event: self._run_lifecycle(action, cancel_event),
         )
 
+    def _prepare_lifecycle_checkpoint(self) -> None:
+        if not self._traffic_archive.enabled:
+            return
+        live = self._read_live_traffic()
+        if not live:
+            return
+        self._lifecycle_preserve_snapshot = [dict(entry) for entry in live]
+        self._lifecycle_preserve_view = self._traffic_archive.combined(live)
+        self._lifecycle_preserve_previous_count = self._traffic_archive.count
+        self._lifecycle_checkpoint_pending = True
+        self._last_live_snapshot = []
+
+    def _run_lifecycle_checkpoint(self) -> None:
+        if not self._lifecycle_checkpoint_pending:
+            return
+        self._traffic_archive.checkpoint(self._lifecycle_preserve_snapshot)
+        if self._proxy is not None and hasattr(self._proxy, 'clear_env_proxy_traffic'):
+            try:
+                self._proxy.clear_env_proxy_traffic()
+            except Exception as exc:
+                self.errorOccurred.emit(f'Could not checkpoint proxy traffic: {exc}')
+
+    def _finish_lifecycle_checkpoint(self) -> None:
+        if not self._lifecycle_checkpoint_pending:
+            return
+        previous_count = self._lifecycle_preserve_previous_count
+        self._lifecycle_checkpoint_pending = False
+        self._lifecycle_preserve_snapshot = []
+        self._lifecycle_preserve_view = []
+        self._lifecycle_preserve_previous_count = 0
+        self._last_signature = ()
+        if self._traffic_archive.count != previous_count:
+            self.preserveChanged.emit()
+
     def _run_lifecycle(self, action: str, cancel_event: threading.Event) -> str:
         proxy = self._proxy
         if proxy is None:
             raise RuntimeError('The proxy service is unavailable')
+        self._run_lifecycle_checkpoint()
         if action == 'restart':
             proxy.stop()
             self._start_if_active(proxy, cancel_event)
@@ -416,6 +561,7 @@ class ProxyApi(QObject):
         self._finish_lifecycle()
 
     def _finish_lifecycle(self) -> None:
+        self._finish_lifecycle_checkpoint()
         self._lifecycle_action = ''
         self.lifecycleChanged.emit()
         self.refresh()
@@ -456,6 +602,9 @@ class ProxyApi(QObject):
 
     @Slot(int, str, str, str, result=bool)
     def resolve(self, request_id: int, stage: str, action: str, edited_text: str) -> bool:
+        if request_id < 0:
+            self.errorOccurred.emit('Preserved traffic is read-only.')
+            return False
         if stage not in {'request', 'response'} or action not in {'forward', 'drop'}:
             self.errorOccurred.emit('The held traffic action is invalid.')
             return False
@@ -496,6 +645,9 @@ class ProxyApi(QObject):
 
     @Slot(int, str, result=bool)
     def replay(self, request_id: int, edited_text: str) -> bool:
+        if request_id < 0:
+            self.errorOccurred.emit('Preserved traffic cannot be replayed.')
+            return False
         if self._proxy is None or not hasattr(self._proxy, 'replay_env_proxy_request'):
             return False
         try:
@@ -540,6 +692,7 @@ class ProxyApi(QObject):
             'wasIntercepted': bool(entry.get('was_intercepted')),
             'droppedRequest': bool(entry.get('dropped_request')),
             'droppedResponse': bool(entry.get('dropped_response')),
+            'archived': bool(entry.get('archived')),
         }
 
     def _format_preview(self, entry: dict[str, Any], stage: str) -> str:
@@ -558,6 +711,9 @@ class ProxyApi(QObject):
         formatter = getattr(self._proxy, formatter_name, None) if self._proxy is not None else None
         try:
             text = str(formatter(preview_entry) or '') if callable(formatter) else ''
+            if not text:
+                raw = preview_entry.get(f'{stage}_raw')
+                text = bytes(raw).decode('utf-8', errors='replace') if raw else ''
         except Exception as exc:
             return f'Preview unavailable: {exc}'
         if not text and entry.get('method') == 'CONNECT':
@@ -786,6 +942,10 @@ class ProxyApi(QObject):
             self._shutdown_requested.set()
             self._queued_lifecycle_action = ''
         self._timer.stop()
+        self._preserve_timer.stop()
+        self._preserve_task.shutdown(wait=True)
+        if self._traffic_archive.enabled:
+            self._traffic_archive.save_snapshot(self._read_live_traffic())
         self._lifecycle_task.shutdown(wait=True)
         if self._proxy is not None and hasattr(self._proxy, 'stop'):
             self._proxy.stop()

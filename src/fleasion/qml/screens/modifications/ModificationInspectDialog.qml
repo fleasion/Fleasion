@@ -54,18 +54,22 @@ FluentDialog {
                 previewUrl: root.details.replacementPreviewUrl || ""
                 previewKind: root.details.previewKind || "binary"
                 summary: root.details.replacementSummary || qsTr("Unavailable")
+                convertedAvailable: root.details.convertedAvailable || false
+                meshGeometry: root.controller.inspector.replacementMeshGeometry
                 onExportRequested: replacementExport.open()
+                onConvertedExportRequested: convertedExport.open()
             }
 
             ModificationPreviewPane {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                title: qsTr("Original backup")
+                title: qsTr("Original file")
                 available: root.details.originalAvailable || false
                 sizeText: root.details.originalSize || ""
                 previewUrl: root.details.originalPreviewUrl || ""
                 previewKind: root.details.previewKind || "binary"
                 summary: root.details.originalSummary || qsTr("Unavailable")
+                meshGeometry: root.controller.inspector.originalMeshGeometry
                 onExportRequested: originalExport.open()
             }
         }
@@ -82,8 +86,17 @@ FluentDialog {
     FileDialog {
         id: originalExport
 
-        title: qsTr("Export original backup")
+        title: qsTr("Export original file")
         fileMode: FileDialog.SaveFile
         onAccepted: root.controller.inspector.exportFile("original", selectedFile)
+    }
+
+    FileDialog {
+        id: convertedExport
+
+        title: qsTr("Export converted replacement")
+        fileMode: FileDialog.SaveFile
+        defaultSuffix: (root.details.convertedSuffix || ".bin").replace(".", "")
+        onAccepted: root.controller.inspector.exportFile("converted", selectedFile)
     }
 }
