@@ -1,3 +1,6 @@
+> [!CAUTION]
+> The only official places to download Fleasion are this GitHub repository and the Discord. Any other websites offering downloads or claiming to be us are not owned by us.
+
 # Fleasion
 
 A Windows, macOS, and Linux/Sober application for intercepting and replacing Roblox game assets in real time. Fleasion runs a local proxy that sits between Roblox and its servers, letting you swap textures, audio, meshes, animations, and other assets before they reach the game client.
