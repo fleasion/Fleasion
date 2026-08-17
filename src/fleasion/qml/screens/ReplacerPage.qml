@@ -10,6 +10,7 @@ import "replacer" as Replacer
 FocusScope {
     id: root
 
+    objectName: "replacerPage"
     required property var controller
     required property var appController
     property int selectedCount: 0
@@ -19,6 +20,25 @@ FocusScope {
     property string pendingCurrentName
     property string pendingDeleteKind: "entries"
     property bool pendingExport: false
+    property string pendingContextPath
+    property string pendingContextKind
+    property string pendingContextName
+    property bool pendingContextExpanded: false
+    property bool pendingContextCanMoveUp: false
+    property bool pendingContextCanMoveDown: false
+    property real pendingContextSceneX: 0
+    property real pendingContextSceneY: 0
+    property var pendingMovePaths: []
+    property bool dragActive: false
+    property var dragPaths: []
+    property string dragTargetPath
+    property string dragDropPosition
+    property real dragIndicatorY: -1
+    readonly property real stateColumnWidth: 80
+    readonly property real actionColumnWidth: 110
+    readonly property real sourceColumnWidth: 230
+    readonly property real organizeColumnWidth: 88
+    readonly property bool showSourceColumn: width >= 920
 
     function focusSearch() {
         searchBox.forceActiveFocus();
@@ -45,6 +65,74 @@ FocusScope {
     function openDeleteDialog(kind) {
         pendingDeleteKind = kind;
         deleteDialogLoader.active = true;
+    }
+
+    function sortDirection(key) {
+        if (controller.sortKey !== key)
+            return "none";
+        return controller.sortDescending ? "descending" : "ascending";
+    }
+
+    function openContextMenu(path, kind, name, expanded, canMoveUp, canMoveDown, sceneX, sceneY) {
+        controller.selectForContext(path);
+        pendingContextPath = path;
+        pendingContextKind = kind;
+        pendingContextName = name;
+        pendingContextExpanded = expanded;
+        pendingContextCanMoveUp = canMoveUp;
+        pendingContextCanMoveDown = canMoveDown;
+        pendingContextSceneX = sceneX;
+        pendingContextSceneY = sceneY;
+        contextMenuLoader.active = true;
+    }
+
+    function updateDragTarget(sceneX, sceneY) {
+        const point = rulesView.mapFromItem(null, sceneX, sceneY);
+        const rowIndex = rulesView.indexAt(point.x + rulesView.contentX, point.y + rulesView.contentY);
+        if (rowIndex < 0) {
+            dragTargetPath = "";
+            dragDropPosition = "root";
+            dragIndicatorY = Math.min(rulesView.height - 2, rulesView.contentHeight - rulesView.contentY);
+            return;
+        }
+        const row = controller.model.get(rowIndex);
+        const delegateItem = rulesView.itemAtIndex(rowIndex);
+        if (!delegateItem) {
+            dragTargetPath = "";
+            dragDropPosition = "";
+            dragIndicatorY = -1;
+            return;
+        }
+        const delegatePoint = delegateItem.mapFromItem(null, sceneX, sceneY);
+        dragTargetPath = String(row.path || "");
+        if (row.kind === "group" && delegatePoint.y >= delegateItem.height * 0.25 && delegatePoint.y <= delegateItem.height * 0.75) {
+            dragDropPosition = "into";
+            dragIndicatorY = -1;
+            return;
+        }
+        dragDropPosition = delegatePoint.y < delegateItem.height / 2 ? "before" : "after";
+        const edge = delegateItem.mapToItem(rulesView, 0, dragDropPosition === "before" ? 0 : delegateItem.height);
+        dragIndicatorY = edge.y;
+    }
+
+    function beginDrag(path, sceneX, sceneY) {
+        controller.selectForContext(path);
+        dragPaths = controller.selection.values();
+        dragActive = true;
+        updateDragTarget(sceneX, sceneY);
+    }
+
+    function finishDrag(sceneX, sceneY) {
+        if (!dragActive)
+            return;
+        updateDragTarget(sceneX, sceneY);
+        if (dragDropPosition.length > 0)
+            controller.dropEntries(dragPaths, dragTargetPath, dragDropPosition);
+        dragActive = false;
+        dragPaths = [];
+        dragTargetPath = "";
+        dragDropPosition = "";
+        dragIndicatorY = -1;
     }
 
     Component.onCompleted: {
@@ -142,9 +230,36 @@ FocusScope {
                 }
 
                 Label {
+                    visible: root.selectedCount === 0
                     text: qsTr("%n item(s)", "", root.controller.model.count)
                     color: Theme.textSecondary
                     font.pointSize: TypeScale.label
+                }
+
+                Label {
+                    visible: root.selectedCount > 0
+                    text: qsTr("%n selected", "", root.selectedCount)
+                    color: Theme.accent
+                    font.pointSize: TypeScale.label
+                    font.weight: TypeScale.semibold
+                }
+
+                IconButton {
+                    visible: root.selectedCount > 0
+                    controlSize: 32
+                    flat: true
+                    iconText: "×"
+                    text: qsTr("Clear selection")
+                    onClicked: root.controller.selection.clear()
+                }
+
+                FluentButton {
+                    visible: root.controller.sortKey.length > 0
+                    compact: true
+                    flat: true
+                    text: qsTr("Manual order")
+                    Accessible.description: qsTr("Clear sorting to enable drag reordering")
+                    onClicked: root.controller.clearSort()
                 }
 
                 IconButton {
@@ -164,40 +279,44 @@ FocusScope {
                 }
             }
 
-            Replacer.ReplacerSelectionBar {
-                Layout.fillWidth: true
-                visible: selectedCount > 0
-                controller: root.controller
-                onGroupRequested: root.openNameDialog("groupSelection", "", "")
-                onDeleteRequested: root.openDeleteDialog("entries")
-            }
-
             DataTableHeader {
                 Layout.fillWidth: true
 
                 DataTableHeaderCell {
-                    preferredWidth: 80
+                    preferredWidth: root.stateColumnWidth
                     text: qsTr("State")
+                    sortable: true
+                    sortDirection: root.sortDirection("state")
+                    onSortRequested: root.controller.toggleSort("state")
                 }
 
                 DataTableHeaderCell {
                     fillWidth: true
                     text: qsTr("Replacement")
+                    sortable: true
+                    sortDirection: root.sortDirection("name")
+                    onSortRequested: root.controller.toggleSort("name")
                 }
 
                 DataTableHeaderCell {
-                    preferredWidth: 110
+                    preferredWidth: root.actionColumnWidth
                     text: qsTr("Action")
+                    sortable: true
+                    sortDirection: root.sortDirection("action")
+                    onSortRequested: root.controller.toggleSort("action")
                 }
 
                 DataTableHeaderCell {
-                    preferredWidth: 230
-                    visible: root.width >= 920
+                    preferredWidth: root.sourceColumnWidth
+                    visible: root.showSourceColumn
                     text: qsTr("Source")
+                    sortable: true
+                    sortDirection: root.sortDirection("replacement")
+                    onSortRequested: root.controller.toggleSort("replacement")
                 }
 
                 DataTableHeaderCell {
-                    preferredWidth: 92
+                    preferredWidth: root.organizeColumnWidth
                     text: qsTr("Organize")
                 }
             }
@@ -221,6 +340,8 @@ FocusScope {
                     Accessible.name: qsTr("Replacement rules")
 
                     delegate: Replacer.ReplacerRuleDelegate {
+                        id: ruleDelegate
+
                         required property var model
 
                         width: ListView.view.width
@@ -239,13 +360,38 @@ FocusScope {
                         replacementText: model.replacement
                         targetsText: model.targets
                         targetCount: model.targetCount
+                        showSource: root.showSourceColumn
+                        manualOrder: root.controller.manualOrder
+                        filtering: root.controller.query.length > 0
+                        stateColumnWidth: root.stateColumnWidth
+                        actionColumnWidth: root.actionColumnWidth
+                        sourceColumnWidth: root.sourceColumnWidth
+                        organizeColumnWidth: root.organizeColumnWidth
+                        dropPosition: root.dragActive && root.dragTargetPath === model.path ? root.dragDropPosition : ""
                         onEnabledToggled: (path, enabled) => {
                             root.controller.setEntryEnabled(path, enabled);
                         }
                         onEditRequested: path => root.openRuleEditor(path)
                         onGroupRenameRequested: (path, name) => root.openNameDialog("renameGroup", path, name)
                         onExpansionToggled: (path, expanded) => root.controller.setGroupExpanded(path, expanded)
-                        onMoveRequested: (path, direction) => root.controller.moveEntry(path, direction)
+                        onSelectionRequested: (path, toggle, extend) => root.controller.selectEntry(path, toggle, extend)
+                        onContextMenuRequested: (path, sceneX, sceneY) => root.openContextMenu(path, ruleDelegate.entryKind, ruleDelegate.entryName, ruleDelegate.entryExpanded, ruleDelegate.canMoveUp, ruleDelegate.canMoveDown, sceneX, sceneY)
+                        onDragStarted: (path, sceneX, sceneY) => root.beginDrag(path, sceneX, sceneY)
+                        onDragMoved: (sceneX, sceneY) => root.updateDragTarget(sceneX, sceneY)
+                        onDragFinished: (sceneX, sceneY) => root.finishDrag(sceneX, sceneY)
+                    }
+
+                    Rectangle {
+                        parent: rulesView
+                        x: Theme.spaceSm
+                        y: root.dragIndicatorY - 1
+                        z: 10
+                        width: rulesView.width - Theme.spaceSm * 2
+                        height: 2
+                        visible: root.dragActive && root.dragIndicatorY >= 0 && root.dragDropPosition !== "into"
+                        color: Theme.accent
+                        radius: 1
+                        Accessible.ignored: true
                     }
 
                     ScrollBar.vertical: FluentScrollBar {}
@@ -268,6 +414,49 @@ FocusScope {
                     }
                 }
             }
+        }
+    }
+
+    Loader {
+        id: contextMenuLoader
+
+        active: false
+        sourceComponent: Component {
+            Replacer.ReplacerContextMenu {
+                controller: root.controller
+                appController: root.appController
+                hostItem: root
+                onEditRequested: path => root.openRuleEditor(path)
+                onRenameGroupRequested: (path, name) => root.openNameDialog("renameGroup", path, name)
+                onGroupRequested: root.openNameDialog("groupSelection", "", "")
+                onMoveToRequested: paths => {
+                    root.pendingMovePaths = paths;
+                    moveDialogLoader.active = true;
+                }
+                onDeleteRequested: root.openDeleteDialog("entries")
+                onClosed: contextMenuLoader.active = false
+            }
+        }
+        onLoaded: {
+            if (status === Loader.Ready)
+                (item as Replacer.ReplacerContextMenu).present(root.pendingContextPath, root.pendingContextKind, root.pendingContextName, root.pendingContextExpanded, root.pendingContextCanMoveUp, root.pendingContextCanMoveDown, root.pendingContextSceneX, root.pendingContextSceneY);
+        }
+    }
+
+    Loader {
+        id: moveDialogLoader
+
+        active: false
+        sourceComponent: Component {
+            Replacer.ReplacerMoveDialog {
+                controller: root.controller
+                selectedPaths: root.pendingMovePaths
+                onClosed: moveDialogLoader.active = false
+            }
+        }
+        onLoaded: {
+            if (status === Loader.Ready)
+                (item as Replacer.ReplacerMoveDialog).open();
         }
     }
 
@@ -377,6 +566,20 @@ FocusScope {
 
         function onSelectionChanged() {
             root.syncSelection();
+        }
+    }
+
+    Keys.onPressed: event => {
+        const commandModifier = (event.modifiers & Qt.ControlModifier) !== 0 || (event.modifiers & Qt.MetaModifier) !== 0;
+        if (commandModifier && event.key === Qt.Key_A) {
+            root.controller.selectAllVisible();
+            event.accepted = true;
+        } else if (event.key === Qt.Key_Escape && root.selectedCount > 0) {
+            root.controller.selection.clear();
+            event.accepted = true;
+        } else if (event.key === Qt.Key_Delete && root.selectedCount > 0) {
+            root.openDeleteDialog("entries");
+            event.accepted = true;
         }
     }
 }

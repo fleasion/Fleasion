@@ -65,6 +65,7 @@ _TOKEN_SPLIT = re.compile(r'[,;\s]+')
 _KNOWN_ASSET_TYPES: Final[dict[str, str]] = {
     value.casefold(): value for value in CacheManager.ASSET_TYPES.values()
 }
+_SORT_KEYS: Final = frozenset({'state', 'name', 'action', 'replacement'})
 
 
 @dataclass(slots=True)
@@ -98,6 +99,7 @@ class ReplacerApi(QObject):
     activeConfigChanged = Signal()
     historyChanged = Signal()
     queryChanged = Signal()
+    sortChanged = Signal()
     draftChanged = Signal()
     errorOccurred = Signal(str)
     notificationRequested = Signal(str, str, str)
@@ -116,6 +118,9 @@ class ReplacerApi(QObject):
         self._undo: list[_ReplacerState] = []
         self._redo: list[_ReplacerState] = []
         self._query = ''
+        self._sort_key = ''
+        self._sort_descending = False
+        self._selection_anchor = ''
         self._draft: dict[str, str] = {}
         self._community_presets = CommunityPresetsApi(  # pyright: ignore[reportCallIssue]
             parent=self,
@@ -171,6 +176,18 @@ class ReplacerApi(QObject):
         self.queryChanged.emit()
         self._refresh_model()
 
+    @Property(str, notify=sortChanged)
+    def sortKey(self) -> str:  # noqa: N802
+        return self._sort_key
+
+    @Property(bool, notify=sortChanged)
+    def sortDescending(self) -> bool:  # noqa: N802
+        return self._sort_descending
+
+    @Property(bool, notify=sortChanged)
+    def manualOrder(self) -> bool:  # noqa: N802
+        return not self._sort_key
+
     @Property(bool, notify=draftChanged)
     def hasDraft(self) -> bool:  # noqa: N802
         return bool(self._draft)
@@ -208,6 +225,7 @@ class ReplacerApi(QObject):
         self._undo.clear()
         self._redo.clear()
         self._selection.clear()
+        self._selection_anchor = ''
         self.activeConfigChanged.emit()
         self.historyChanged.emit()
         self._refresh_model()
@@ -346,6 +364,69 @@ class ReplacerApi(QObject):
             return
         self._config.replacement_rules = rules
         self._refresh_model()
+
+    @Slot(str)
+    def toggleSort(self, key: str) -> None:  # noqa: N802
+        if key not in _SORT_KEYS:
+            return
+        if self._sort_key != key:
+            self._sort_key = key
+            self._sort_descending = False
+        elif not self._sort_descending:
+            self._sort_descending = True
+        else:
+            self._sort_key = ''
+            self._sort_descending = False
+        self.sortChanged.emit()
+        self._refresh_model()
+
+    @Slot()
+    def clearSort(self) -> None:  # noqa: N802
+        if not self._sort_key:
+            return
+        self._sort_key = ''
+        self._sort_descending = False
+        self.sortChanged.emit()
+        self._refresh_model()
+
+    @Slot(str, bool, bool)
+    def selectEntry(self, path_value: str, toggle: bool, extend: bool) -> None:  # noqa: N802
+        if path_value not in {
+            _path_to_string(path)
+            for path, _entry in _iter_entries(self._config.replacement_rules)
+        }:
+            return
+        visible_paths = [str(row.get('path', '')) for row in self._model.snapshot()]
+        if extend and self._selection_anchor in visible_paths and path_value in visible_paths:
+            anchor_index = visible_paths.index(self._selection_anchor)
+            target_index = visible_paths.index(path_value)
+            first, last = sorted((anchor_index, target_index))
+            range_paths = visible_paths[first : last + 1]
+            if toggle:
+                range_paths = [*self._selection.values(), *range_paths]
+            self._replace_selection(range_paths)
+            return
+        if toggle:
+            self._selection.setSelected(
+                path_value,
+                not self._selection.contains(path_value),
+            )
+        else:
+            self._replace_selection([path_value])
+        self._selection_anchor = path_value
+
+    @Slot(str)
+    def selectForContext(self, path_value: str) -> None:  # noqa: N802
+        if self._selection.contains(path_value):
+            return
+        self.selectEntry(path_value, False, False)
+
+    @Slot()
+    def selectAllVisible(self) -> None:  # noqa: N802
+        paths = [str(row.get('path', '')) for row in self._model.snapshot()]
+        self._replace_selection([path for path in paths if path])
+        if paths:
+            self._selection_anchor = paths[0]
 
     @Slot(list, result=bool)
     def canGroupEntries(self, path_values: list[str]) -> bool:  # noqa: N802
@@ -508,11 +589,18 @@ class ReplacerApi(QObject):
             destination_group = _entry_at_path(rules, adjusted_destination)
             if destination_group is not None:
                 destination_group['expanded'] = True
-        resolved_index = (
-            len(destination_entries)
-            if insert_index < 0
-            else max(0, min(insert_index, len(destination_entries)))
-        )
+        if insert_index < 0:
+            resolved_index = len(destination_entries)
+        else:
+            removed_before = sum(
+                1
+                for path in source_paths
+                if path[:-1] == destination_path and path[-1] < insert_index
+            )
+            resolved_index = max(
+                0,
+                min(insert_index - removed_before, len(destination_entries)),
+            )
         for offset, entry in enumerate(moving_entries):
             destination_entries.insert(resolved_index + offset, entry)
 
@@ -526,6 +614,35 @@ class ReplacerApi(QObject):
             'success',
         )
         return True
+
+    @Slot(list, str, str, result=bool)
+    def dropEntries(  # noqa: N802
+        self,
+        path_values: list[str],
+        target_path_value: str,
+        position: str,
+    ) -> bool:
+        if not self.manualOrder or self._query:
+            self.errorOccurred.emit('Clear sorting and search before reordering replacements.')
+            return False
+        if position == 'root':
+            return self.moveEntries(path_values, '', -1)
+        target_path = _path_from_string(target_path_value)
+        target = _entry_at_path(self._config.replacement_rules, target_path)
+        if not target_path or target is None:
+            return False
+        if position == 'into':
+            if target.get('type') != 'group':
+                return False
+            return self.moveEntries(path_values, target_path_value, -1)
+        if position not in {'before', 'after'}:
+            return False
+        insert_index = target_path[-1] + (1 if position == 'after' else 0)
+        return self.moveEntries(
+            path_values,
+            _path_to_string(target_path[:-1]),
+            insert_index,
+        )
 
     @Slot(list, result=bool)
     def deleteEntries(self, path_values: list[str]) -> bool:  # noqa: N802
@@ -706,7 +823,13 @@ class ReplacerApi(QObject):
         *,
         respect_expanded: bool,
     ) -> Iterator[dict[str, Any]]:
-        for index, entry in enumerate(entries):
+        indexed_entries = list(enumerate(entries))
+        if self._sort_key:
+            indexed_entries.sort(
+                key=lambda item: self._entry_sort_value(item[1]),
+                reverse=self._sort_descending,
+            )
+        for index, entry in indexed_entries:
             if not isinstance(entry, dict):
                 continue
             path = (*parent_path, index)
@@ -772,6 +895,31 @@ class ReplacerApi(QObject):
                 'searchText': f'{name} {targets} {action} {replacement}',
             }
 
+    def _entry_sort_value(self, entry: dict[str, Any]) -> tuple[str, str]:
+        name = str(entry.get('name', '')).casefold()
+        if self._sort_key == 'name':
+            return name, name
+        if self._sort_key == 'state':
+            if entry.get('type') == 'group':
+                children = entry.get('children', [])
+                profile_count, enabled_count = _summarize_entries(
+                    children if isinstance(children, list) else []
+                )
+                state = (
+                    '2'
+                    if profile_count > 0 and enabled_count == profile_count
+                    else '0'
+                    if profile_count > 0 and enabled_count == 0
+                    else '1'
+                )
+            else:
+                state = '2' if bool(entry.get('enabled', True)) else '0'
+            return state, name
+        action, replacement = _replacement_display(entry)
+        if self._sort_key == 'action':
+            return action.casefold(), name
+        return replacement.casefold(), name
+
     def _capture_state(self) -> _ReplacerState:
         return _ReplacerState(
             rules=deepcopy(self._config.replacement_rules),
@@ -807,6 +955,8 @@ class ReplacerApi(QObject):
         self._replace_selection(
             [path_value for path_value in self._selection.values() if path_value in valid_paths]
         )
+        if self._selection_anchor not in valid_paths:
+            self._selection_anchor = ''
 
     def _make_rule(
         self,

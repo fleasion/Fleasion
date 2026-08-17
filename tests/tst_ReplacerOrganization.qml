@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import QtQuick.Controls
 import QtTest
 
 import "../src/fleasion/qml/screens/replacer" as Replacer
@@ -43,6 +44,16 @@ Item {
     }
 
     QtObject {
+        id: appControllerStub
+
+        property string copiedText
+
+        function copyText(value) {
+            copiedText = value;
+        }
+    }
+
+    QtObject {
         id: controllerStub
 
         property var selection: selectionStub
@@ -60,6 +71,7 @@ Item {
         property bool lastEnabled: false
         property bool profileRequestResult: false
         property int profileRequestCount: 0
+        property bool manualOrder: true
         signal modelChanged
 
         function canGroupEntries(paths) {
@@ -78,6 +90,44 @@ Item {
             profileRequestCount += 1;
             return profileRequestResult;
         }
+
+        function entry(_path) {
+            return {
+                "targets": "1, 2",
+                "replacement": "3"
+            };
+        }
+
+        function setGroupExpanded(_path, _expanded) {
+        }
+
+        function selectAllVisible() {
+        }
+
+        function moveEntry(_path, _direction) {
+        }
+    }
+
+    Component {
+        id: contextWindowComponent
+
+        ApplicationWindow {
+            id: contextWindow
+
+            width: 720
+            height: 560
+            visible: true
+            property alias contextMenu: contextMenu
+
+            Replacer.ReplacerContextMenu {
+                id: contextMenu
+
+                objectName: "replacementContextMenu"
+                controller: controllerStub
+                appController: appControllerStub
+                hostItem: contextWindow.contentItem
+            }
+        }
     }
 
     Component {
@@ -91,16 +141,6 @@ Item {
     }
 
     Component {
-        id: selectionBarComponent
-
-        Replacer.ReplacerSelectionBar {
-            width: 900
-            height: implicitHeight
-            controller: controllerStub
-        }
-    }
-
-    Component {
         id: groupDelegateComponent
 
         Item {
@@ -108,7 +148,10 @@ Item {
             height: delegate.implicitHeight
             property int expansionCalls: 0
             property bool expandedValue: false
-            property int moveDirection: 0
+            property int selectionCalls: 0
+            property bool selectionToggle: false
+            property bool selectionExtend: false
+            property int contextCalls: 0
 
             Replacer.ReplacerRuleDelegate {
                 id: delegate
@@ -130,11 +173,23 @@ Item {
                 replacementText: ""
                 targetsText: ""
                 targetCount: 3
+                showSource: true
+                manualOrder: true
+                filtering: false
+                stateColumnWidth: 80
+                actionColumnWidth: 110
+                sourceColumnWidth: 230
+                organizeColumnWidth: 72
                 onExpansionToggled: (path, expanded) => {
                     parent.expansionCalls += path === "0" ? 1 : 0;
                     parent.expandedValue = expanded;
                 }
-                onMoveRequested: (_path, direction) => parent.moveDirection = direction
+                onSelectionRequested: (_path, toggle, extend) => {
+                    parent.selectionCalls += 1;
+                    parent.selectionToggle = toggle;
+                    parent.selectionExtend = extend;
+                }
+                onContextMenuRequested: (_path, _sceneX, _sceneY) => parent.contextCalls += 1
             }
         }
     }
@@ -167,47 +222,56 @@ Item {
             tryCompare(dialog, "visible", false);
         }
 
-        function test_selectionBarFoldsWithoutClipping() {
-            const bar = createTemporaryObject(selectionBarComponent, root);
-            verify(!!bar);
-            compare(bar.compactLayout, false);
-
-            bar.width = 680;
-            tryCompare(bar, "compactLayout", true);
-            tryVerify(() => bar.height > 64);
-
-            const controls = [findChild(bar, "groupSelectionButton"), findChild(bar, "moveDestinationPicker"), findChild(bar, "moveSelectionButton"), findChild(bar, "clearSelectionButton"), findChild(bar, "deleteSelectionButton")];
-            for (const control of controls) {
-                verify(!!control);
-                const topLeft = control.mapToItem(bar, 0, 0);
-                verify(topLeft.x >= 0);
-                verify(topLeft.y >= 0);
-                verify(topLeft.x + control.width <= bar.width);
-                verify(topLeft.y + control.height <= bar.height);
-            }
-
-            const moveButton = findChild(bar, "moveSelectionButton");
-            mouseClick(moveButton);
-            compare(controllerStub.lastDestination, "");
-        }
-
-        function test_groupDelegateExposesCollapseAndOrderingActions() {
+        function test_groupDelegateExposesSelectionAndContextActions() {
             const wrapper = createTemporaryObject(groupDelegateComponent, root);
             verify(!!wrapper);
             const expansionButton = findChild(wrapper, "groupExpansionButton");
-            const upButton = findChild(wrapper, "moveEntryUpButton");
-            const downButton = findChild(wrapper, "moveEntryDownButton");
+            const contextButton = findChild(wrapper, "entryContextMenuButton");
             verify(!!expansionButton);
-            verify(!!upButton);
-            verify(!!downButton);
-            compare(upButton.enabled, false);
-            compare(downButton.enabled, true);
+            verify(!!contextButton);
 
             mouseClick(expansionButton);
             compare(wrapper.expansionCalls, 1);
             compare(wrapper.expandedValue, true);
-            mouseClick(downButton);
-            compare(wrapper.moveDirection, 1);
+            mouseClick(contextButton);
+            compare(wrapper.contextCalls, 1);
+
+            const delegate = findChild(wrapper, "replacerRuleDelegate");
+            delegate.forceActiveFocus();
+            keyClick(Qt.Key_Space);
+            compare(wrapper.selectionCalls, 1);
+            compare(wrapper.selectionToggle, true);
+            compare(wrapper.selectionExtend, false);
+
+            mouseClick(delegate, 360, delegate.height / 2, Qt.LeftButton, Qt.ControlModifier | Qt.ShiftModifier);
+            compare(wrapper.selectionCalls, 2);
+            compare(wrapper.selectionToggle, true);
+            compare(wrapper.selectionExtend, true);
+        }
+
+        function test_contextMenuExposesBulkActionsAndFitsMinimumWindow() {
+            selectionStub.keys = ["0"];
+            selectionStub.selectionChanged();
+            controllerStub.lastEnabled = true;
+            const window = createTemporaryObject(contextWindowComponent, root);
+            verify(!!window);
+            tryCompare(window, "visible", true);
+
+            window.contextMenu.present("0", "rule", "Face", false, false, true, 680, 520);
+            tryCompare(window.contextMenu, "visible", true);
+            tryVerify(() => window.contextMenu.x >= 0);
+            tryVerify(() => window.contextMenu.y >= 0);
+            tryVerify(() => window.contextMenu.x + window.contextMenu.width <= window.width);
+            tryVerify(() => window.contextMenu.y + window.contextMenu.height <= window.height);
+
+            const expectedActions = ["editEntryAction", "enableSelectionAction", "disableSelectionAction", "groupSelectionAction", "moveSelectionAction", "selectAllAction", "deleteSelectionAction"];
+            for (const objectName of expectedActions)
+                verify(!!findChild(window.contextMenu, objectName), objectName);
+
+            const disableAction = findChild(window.contextMenu, "disableSelectionAction");
+            mouseClick(disableAction);
+            compare(controllerStub.lastEnabled, false);
+            tryCompare(window.contextMenu, "visible", false);
         }
     }
 }

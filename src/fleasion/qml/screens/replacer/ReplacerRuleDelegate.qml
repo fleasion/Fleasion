@@ -24,12 +24,25 @@ Rectangle {
     required property string replacementText
     required property string targetsText
     required property int targetCount
+    required property bool showSource
+    required property bool manualOrder
+    required property bool filtering
+    required property real stateColumnWidth
+    required property real actionColumnWidth
+    required property real sourceColumnWidth
+    required property real organizeColumnWidth
     property bool selected: false
+    property string dropPosition
+    readonly property bool dragAllowed: manualOrder && !filtering
     signal enabledToggled(string entryPath, bool enabled)
     signal editRequested(string entryPath)
     signal groupRenameRequested(string entryPath, string entryName)
     signal expansionToggled(string entryPath, bool expanded)
-    signal moveRequested(string entryPath, int direction)
+    signal selectionRequested(string entryPath, bool toggle, bool extend)
+    signal contextMenuRequested(string entryPath, real sceneX, real sceneY)
+    signal dragStarted(string entryPath, real sceneX, real sceneY)
+    signal dragMoved(real sceneX, real sceneY)
+    signal dragFinished(real sceneX, real sceneY)
 
     function syncSelection() {
         if (!root.selectionModel)
@@ -38,117 +51,206 @@ Rectangle {
     }
 
     implicitHeight: root.entryKind === "group" ? 42 : 52
-    color: root.selected ? Theme.accentSubtle : pointer.hovered ? Theme.surfaceHover : "transparent"
-    border.width: root.activeFocus ? 2 : 0
-    border.color: Theme.focusRing
+    color: root.selected ? Theme.accentSubtle : rowPointer.containsMouse ? Theme.surfaceHover : "transparent"
+    border.width: root.dropPosition === "into" || root.activeFocus ? 2 : 0
+    border.color: root.dropPosition === "into" ? Theme.accent : Theme.focusRing
     activeFocusOnTab: true
     Accessible.role: Accessible.ListItem
     Accessible.name: root.entryKind === "group" ? qsTr("Group %1, %2 replacements, %3").arg(root.entryName).arg(root.targetCount).arg(root.entryExpanded ? qsTr("expanded") : qsTr("collapsed")) : qsTr("%1, replaces %2 targets with %3").arg(root.entryName).arg(root.targetCount).arg(root.actionText)
 
+    MouseArea {
+        id: rowPointer
+
+        anchors.fill: parent
+        acceptedButtons: Qt.LeftButton | Qt.RightButton
+        hoverEnabled: true
+        onClicked: mouse => {
+            root.forceActiveFocus();
+            if (mouse.button === Qt.RightButton) {
+                const scenePoint = root.mapToItem(null, mouse.x, mouse.y);
+                root.contextMenuRequested(root.entryPath, scenePoint.x, scenePoint.y);
+                return;
+            }
+            const toggle = (mouse.modifiers & Qt.ControlModifier) !== 0 || (mouse.modifiers & Qt.MetaModifier) !== 0;
+            const extend = (mouse.modifiers & Qt.ShiftModifier) !== 0;
+            root.selectionRequested(root.entryPath, toggle, extend);
+        }
+        onDoubleClicked: mouse => {
+            if (mouse.button !== Qt.LeftButton)
+                return;
+            if (root.entryKind === "group")
+                root.expansionToggled(root.entryPath, !root.entryExpanded);
+            else
+                root.editRequested(root.entryPath);
+        }
+    }
+
     RowLayout {
         anchors.fill: parent
-        anchors.leftMargin: Theme.spaceXs + root.entryDepth * 18
-        anchors.rightMargin: Theme.spaceXs
+        anchors.leftMargin: Theme.spaceSm
+        anchors.rightMargin: Theme.spaceSm
         spacing: Theme.spaceXs
 
         Item {
-            Layout.preferredWidth: 28
-            Layout.preferredHeight: 28
+            Layout.preferredWidth: root.stateColumnWidth
+            Layout.fillHeight: true
 
-            IconButton {
-                objectName: "groupExpansionButton"
-                anchors.fill: parent
-                visible: root.entryKind === "group"
-                controlSize: 28
-                flat: true
-                iconText: root.entryExpanded ? "⌄" : "›"
-                text: root.entryExpanded ? qsTr("Collapse %1").arg(root.entryName) : qsTr("Expand %1").arg(root.entryName)
-                onClicked: root.expansionToggled(root.entryPath, !root.entryExpanded)
+            FluentCheckBox {
+                anchors.centerIn: parent
+                tristate: root.entryKind === "group"
+                checkState: root.entryState === "mixed" ? Qt.PartiallyChecked : root.entryEnabled ? Qt.Checked : Qt.Unchecked
+                Accessible.name: root.entryKind === "group" ? qsTr("Enable all replacements in %1").arg(root.entryName) : qsTr("Enable %1").arg(root.entryName)
+                onClicked: root.enabledToggled(root.entryPath, checkState === Qt.Checked)
             }
         }
 
-        FluentCheckBox {
-            checked: root.selected
-            Accessible.name: qsTr("Select %1").arg(root.entryName)
-            onToggled: root.selectionModel.setSelected(root.entryPath, checked)
-        }
-
-        FluentCheckBox {
-            tristate: root.entryKind === "group"
-            checkState: root.entryState === "mixed" ? Qt.PartiallyChecked : root.entryEnabled ? Qt.Checked : Qt.Unchecked
-            Accessible.name: root.entryKind === "group" ? qsTr("Enable all replacements in %1").arg(root.entryName) : qsTr("Enable %1").arg(root.entryName)
-            onClicked: root.enabledToggled(root.entryPath, checkState === Qt.Checked)
-        }
-
-        ColumnLayout {
+        RowLayout {
             Layout.fillWidth: true
-            Layout.minimumWidth: 100
-            spacing: 1
+            Layout.minimumWidth: 120
+            spacing: Theme.spaceXxs
 
-            Label {
-                Layout.fillWidth: true
-                text: root.entryName
-                color: Theme.textPrimary
-                font.pointSize: TypeScale.body
-                font.weight: root.entryKind === "group" ? TypeScale.semibold : TypeScale.medium
-                elide: Text.ElideRight
+            Item {
+                Layout.preferredWidth: root.entryDepth * 18
+                Layout.fillHeight: true
             }
 
-            Label {
+            Item {
+                Layout.preferredWidth: 28
+                Layout.preferredHeight: 28
+
+                IconButton {
+                    objectName: "groupExpansionButton"
+                    anchors.fill: parent
+                    visible: root.entryKind === "group"
+                    controlSize: 28
+                    flat: true
+                    iconText: root.entryExpanded ? "⌄" : "›"
+                    text: root.entryExpanded ? qsTr("Collapse %1").arg(root.entryName) : qsTr("Expand %1").arg(root.entryName)
+                    onClicked: root.expansionToggled(root.entryPath, !root.entryExpanded)
+                }
+            }
+
+            ColumnLayout {
                 Layout.fillWidth: true
-                visible: root.entryKind !== "group"
-                text: root.targetsText.length > 0 ? qsTr("Targets: %1").arg(root.targetsText) : qsTr("No targets")
-                color: Theme.textSecondary
-                font.pointSize: TypeScale.label
-                elide: Text.ElideMiddle
+                spacing: 1
+
+                Label {
+                    objectName: "replacementNameLabel"
+                    Layout.fillWidth: true
+                    text: root.entryName
+                    color: Theme.textPrimary
+                    font.pointSize: TypeScale.body
+                    font.weight: root.entryKind === "group" ? TypeScale.semibold : TypeScale.medium
+                    verticalAlignment: Text.AlignVCenter
+                    elide: Text.ElideRight
+                }
+
+                Label {
+                    Layout.fillWidth: true
+                    visible: root.entryKind !== "group"
+                    text: root.targetsText.length > 0 ? qsTr("Targets: %1").arg(root.targetsText) : qsTr("No targets")
+                    color: Theme.textSecondary
+                    font.pointSize: TypeScale.label
+                    verticalAlignment: Text.AlignVCenter
+                    elide: Text.ElideMiddle
+                }
             }
         }
 
-        StatusPill {
-            text: root.entryKind === "group" ? qsTr("%n rule(s)", "", root.targetCount) : root.actionText
-            status: root.entryKind === "group" ? "neutral" : root.actionText === "Remove" ? "warning" : "info"
+        Item {
+            Layout.preferredWidth: root.actionColumnWidth
+            Layout.fillHeight: true
+
+            StatusPill {
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                text: root.entryKind === "group" ? qsTr("%n rule(s)", "", root.targetCount) : root.actionText
+                status: root.entryKind === "group" ? "neutral" : root.actionText === "Remove" ? "warning" : "info"
+            }
         }
 
         Label {
-            Layout.preferredWidth: 160
-            visible: root.width >= 740 && root.entryKind !== "group"
-            text: root.replacementText.length > 0 ? root.replacementText : qsTr("Original removed")
+            Layout.preferredWidth: root.sourceColumnWidth
+            Layout.fillHeight: true
+            visible: root.showSource
+            text: root.entryKind === "group" ? "" : root.replacementText.length > 0 ? root.replacementText : qsTr("Original removed")
             color: Theme.textSecondary
             font.pointSize: TypeScale.label
+            verticalAlignment: Text.AlignVCenter
             elide: Text.ElideMiddle
         }
 
-        IconButton {
-            objectName: "moveEntryUpButton"
-            controlSize: 28
-            flat: true
-            iconText: "↑"
-            text: qsTr("Move %1 up").arg(root.entryName)
-            enabled: root.canMoveUp
-            onClicked: root.moveRequested(root.entryPath, -1)
-        }
+        Item {
+            Layout.preferredWidth: root.organizeColumnWidth
+            Layout.fillHeight: true
 
-        IconButton {
-            objectName: "moveEntryDownButton"
-            controlSize: 28
-            flat: true
-            iconText: "↓"
-            text: qsTr("Move %1 down").arg(root.entryName)
-            enabled: root.canMoveDown
-            onClicked: root.moveRequested(root.entryPath, 1)
-        }
+            Row {
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: Theme.spaceXxs
 
-        IconButton {
-            objectName: "editEntryButton"
-            controlSize: 28
-            flat: true
-            iconText: "✎"
-            text: root.entryKind === "group" ? qsTr("Rename %1").arg(root.entryName) : qsTr("Edit %1").arg(root.entryName)
-            onClicked: {
-                if (root.entryKind === "group")
-                    root.groupRenameRequested(root.entryPath, root.entryName);
-                else
-                    root.editRequested(root.entryPath);
+                Item {
+                    width: 28
+                    height: 28
+
+                    Label {
+                        anchors.centerIn: parent
+                        text: "≡"
+                        color: root.dragAllowed ? dragPointer.containsMouse || dragPointer.dragging ? Theme.accent : Theme.textSecondary : Theme.textDisabled
+                        font.pointSize: TypeScale.title
+                        Accessible.ignored: true
+                    }
+
+                    MouseArea {
+                        id: dragPointer
+
+                        property bool dragging: false
+                        property point pressScene
+
+                        anchors.fill: parent
+                        enabled: root.dragAllowed
+                        cursorShape: enabled ? Qt.SizeAllCursor : Qt.ArrowCursor
+                        hoverEnabled: true
+                        Accessible.role: Accessible.Button
+                        Accessible.name: root.dragAllowed ? qsTr("Drag %1 to reorder").arg(root.entryName) : qsTr("Clear sorting and search to reorder %1").arg(root.entryName)
+                        onPressed: mouse => {
+                            pressScene = mapToItem(null, mouse.x, mouse.y);
+                            dragging = false;
+                        }
+                        onPositionChanged: mouse => {
+                            if (!pressed)
+                                return;
+                            const scenePoint = mapToItem(null, mouse.x, mouse.y);
+                            const distance = Math.abs(scenePoint.x - pressScene.x) + Math.abs(scenePoint.y - pressScene.y);
+                            if (!dragging && distance >= 6) {
+                                dragging = true;
+                                root.dragStarted(root.entryPath, scenePoint.x, scenePoint.y);
+                            }
+                            if (dragging)
+                                root.dragMoved(scenePoint.x, scenePoint.y);
+                        }
+                        onReleased: mouse => {
+                            if (dragging) {
+                                const scenePoint = mapToItem(null, mouse.x, mouse.y);
+                                root.dragFinished(scenePoint.x, scenePoint.y);
+                            }
+                            dragging = false;
+                        }
+                        onCanceled: dragging = false
+                    }
+                }
+
+                IconButton {
+                    objectName: "entryContextMenuButton"
+                    controlSize: 28
+                    flat: true
+                    iconText: "⋯"
+                    text: qsTr("More actions for %1").arg(root.entryName)
+                    onClicked: {
+                        const scenePoint = mapToItem(null, width, height);
+                        root.contextMenuRequested(root.entryPath, scenePoint.x, scenePoint.y);
+                    }
+                }
             }
         }
     }
@@ -160,10 +262,6 @@ Rectangle {
         height: 1
         color: Theme.border
         Accessible.ignored: true
-    }
-
-    HoverHandler {
-        id: pointer
     }
 
     Keys.onReturnPressed: event => {
@@ -184,7 +282,12 @@ Rectangle {
         event.accepted = root.entryKind === "group";
     }
     Keys.onSpacePressed: event => {
-        root.selectionModel.setSelected(root.entryPath, !root.selected);
+        root.selectionRequested(root.entryPath, true, false);
+        event.accepted = true;
+    }
+    Keys.onMenuPressed: event => {
+        const scenePoint = root.mapToItem(null, root.width - root.organizeColumnWidth, root.height / 2);
+        root.contextMenuRequested(root.entryPath, scenePoint.x, scenePoint.y);
         event.accepted = true;
     }
 

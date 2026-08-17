@@ -208,3 +208,113 @@ def test_group_destinations_include_nested_paths(config_manager) -> None:
         ('0/0', 'Inner', 1),
     ]
     controller.shutdown()
+
+
+def test_sorting_is_hierarchical_and_returns_to_manual_order(config_manager) -> None:
+    config_manager.replacement_rules = [
+        _rule('Zulu'),
+        {
+            'type': 'group',
+            'name': 'Middle',
+            'expanded': True,
+            'children': [_rule('Bravo'), _rule('Alpha')],
+        },
+        _rule('Able'),
+    ]
+    controller = ReplacerApi(config_manager)  # pyright: ignore[reportCallIssue]
+
+    controller.toggleSort('name')
+    assert controller.sortKey == 'name'
+    assert not controller.sortDescending
+    assert [controller.model.get(index)['name'] for index in range(controller.model.count)] == [
+        'Able',
+        'Middle',
+        'Alpha',
+        'Bravo',
+        'Zulu',
+    ]
+    assert controller.model.get(2)['path'] == '1/1'
+    assert not controller.manualOrder
+
+    controller.toggleSort('name')
+    assert controller.sortDescending
+    assert [controller.model.get(index)['name'] for index in range(controller.model.count)] == [
+        'Zulu',
+        'Middle',
+        'Bravo',
+        'Alpha',
+        'Able',
+    ]
+
+    controller.toggleSort('name')
+    assert controller.manualOrder
+    assert [controller.model.get(index)['name'] for index in range(controller.model.count)] == [
+        'Zulu',
+        'Middle',
+        'Bravo',
+        'Alpha',
+        'Able',
+    ]
+    controller.shutdown()
+
+
+def test_pointer_selection_supports_replace_toggle_and_visible_range(config_manager) -> None:
+    config_manager.replacement_rules = [_rule('A'), _rule('B'), _rule('C'), _rule('D')]
+    controller = ReplacerApi(config_manager)  # pyright: ignore[reportCallIssue]
+
+    controller.selectEntry('1', False, False)
+    assert controller.selection.values() == ['1']
+
+    controller.selectEntry('3', True, False)
+    assert controller.selection.values() == ['1', '3']
+
+    controller.selectEntry('0', False, True)
+    assert controller.selection.values() == ['0', '1', '2', '3']
+
+    controller.selectEntry('2', False, False)
+    controller.selectEntry('0', True, True)
+    assert controller.selection.values() == ['0', '1', '2']
+
+    controller.selectAllVisible()
+    assert controller.selection.values() == ['0', '1', '2', '3']
+    controller.selectForContext('2')
+    assert controller.selection.values() == ['0', '1', '2', '3']
+    controller.selectForContext('not-a-path')
+    assert controller.selection.values() == ['0', '1', '2', '3']
+    controller.shutdown()
+
+
+def test_drop_reorders_same_parent_and_moves_into_group(config_manager) -> None:
+    config_manager.replacement_rules = [
+        _rule('A'),
+        _rule('B'),
+        _rule('C'),
+        {'type': 'group', 'name': 'Group', 'expanded': False, 'children': []},
+    ]
+    controller = ReplacerApi(config_manager)  # pyright: ignore[reportCallIssue]
+
+    assert controller.dropEntries(['0'], '2', 'before')
+    assert [entry['name'] for entry in config_manager.replacement_rules] == [
+        'B',
+        'A',
+        'C',
+        'Group',
+    ]
+
+    assert controller.dropEntries(['2'], '3', 'into')
+    assert [entry['name'] for entry in config_manager.replacement_rules] == [
+        'B',
+        'A',
+        'Group',
+    ]
+    assert config_manager.replacement_rules[2]['expanded'] is True
+    assert [entry['name'] for entry in config_manager.replacement_rules[2]['children']] == ['C']
+
+    controller.toggleSort('name')
+    assert not controller.dropEntries(['0'], '1', 'after')
+    assert [entry['name'] for entry in config_manager.replacement_rules] == [
+        'B',
+        'A',
+        'Group',
+    ]
+    controller.shutdown()
