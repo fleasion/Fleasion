@@ -1,5 +1,7 @@
 > [!CAUTION]
-> The only official places to download Fleasion are this GitHub repository and the Discord. Any other websites offering downloads or claiming to be us are not owned by us.
+> The only official places to download Fleasion are this **GitHub repository** and the **Discord**. Any other websites offering downloads or claiming to be us are **not owned by us**.
+> 
+> fleasion.com is a **fake website**.
 
 # Fleasion
 
