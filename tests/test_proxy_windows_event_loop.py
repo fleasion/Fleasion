@@ -106,6 +106,36 @@ def test_proxy_worker_retries_once_with_selector_loop(monkeypatch):
     assert any('SelectorEventLoop' in message for _, message in logs)
 
 
+def test_proxy_worker_cleans_exact_owned_linux_override_after_failure(monkeypatch):
+    cleared = []
+
+    def fail_run(coro, **_kwargs):
+        coro.close()
+        raise RuntimeError('worker failed')
+
+    async def fake_run_proxy():
+        return None
+
+    monkeypatch.setattr(proxy_master, 'IS_LINUX', True)
+    monkeypatch.setattr(proxy_master.asyncio, 'run', fail_run)
+    monkeypatch.setattr(proxy_master, 'log_buffer', SimpleNamespace(log=lambda *_args: None))
+    monkeypatch.setattr(
+        'fleasion.utils.platform_linux.clear_linux_client_env_proxy_override',
+        lambda *, client_key: cleared.append(client_key) or True,
+    )
+    proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
+    proxy._run_proxy = fake_run_proxy
+    proxy._running = True
+    proxy._linux_env_proxy_override_client_key = 'sober'
+    proxy._sober_env_proxy_override_active = True
+
+    proxy._run_proxy_worker()
+
+    assert cleared == ['sober']
+    assert proxy._linux_env_proxy_override_client_key is None
+    assert proxy._sober_env_proxy_override_active is False
+
+
 def test_proactor_accept_fault_cleanup_raises_retry_signal(monkeypatch):
     monkeypatch.setattr(proxy_master, 'IS_WINDOWS', True)
     stopped = []

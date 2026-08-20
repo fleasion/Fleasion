@@ -48,8 +48,10 @@ from .font_utils import (
 )
 from .global_settings_manager import GlobalSettingsManager
 from .platform_targets import (
+    canonical_target_path,
+    content_prefixed_resource_root,
     read_current_platform_original_asset,
-    target_path_for_current_platform,
+    target_path_for_resource_dir,
 )
 from .stash_paths import resource_stash_dir
 
@@ -83,6 +85,27 @@ def normalise_target_path(target_path: str | Path) -> Path:
     if any(part == '..' for part in parts):
         raise ValueError('Target path cannot contain ".." segments')
     return Path(*parts)
+
+
+def target_path_for_roblox_dir(target_path: str | Path, roblox_dir: Path) -> Path:
+    """Return a safe target path relative to one client resource root."""
+    return normalise_target_path(target_path_for_resource_dir(target_path, roblox_dir))
+
+
+def _font_helper_dirs(roblox_dirs: Iterable[Path]) -> list[Path]:
+    """Adapt root-aware directories for legacy ``content/...`` font helpers."""
+    result: list[Path] = []
+    seen: set[str] = set()
+    for roblox_dir in roblox_dirs:
+        root = content_prefixed_resource_root(roblox_dir)
+        try:
+            key = str(root.resolve()).casefold()
+        except OSError:
+            key = str(root).casefold()
+        if key not in seen:
+            seen.add(key)
+            result.append(root)
+    return result
 
 
 def _clear_read_only(path: Path) -> None:
@@ -521,8 +544,9 @@ class ModificationManager(QObject):
                 if not (entry.get('source_type') and entry.get('source_value')):
                     continue
                 if target.lower().endswith(('customfont.ttf',)) or entry.get('_is_font'):
-                    _add(roblox_dir / CUSTOM_FONT_REL)
-                    families_dir = roblox_dir / FAMILIES_REL
+                    font_root = content_prefixed_resource_root(roblox_dir)
+                    _add(font_root / CUSTOM_FONT_REL)
+                    families_dir = font_root / FAMILIES_REL
                     try:
                         for json_path in families_dir.glob('*.json'):
                             _add(json_path)
@@ -530,7 +554,7 @@ class ModificationManager(QObject):
                         pass
                     continue
                 try:
-                    _add(roblox_dir / normalise_target_path(target))
+                    _add(roblox_dir / target_path_for_roblox_dir(target, roblox_dir))
                 except ValueError as exc:
                     log_buffer.log(
                         'Modifications',
@@ -552,7 +576,7 @@ class ModificationManager(QObject):
             return {}
         try:
             payload = json.loads(Path(state_file).read_text(encoding='utf-8'))
-        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        except OSError, ValueError, TypeError, json.JSONDecodeError:
             return {}
         if not isinstance(payload, dict):
             return {}
@@ -560,7 +584,7 @@ class ModificationManager(QObject):
         for raw_path, raw_mode in payload.items():
             try:
                 modes[Path(raw_path)] = int(raw_mode)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 continue
         return modes
 
@@ -658,14 +682,10 @@ class ModificationManager(QObject):
         """Clear Fleasion's read-only guard from managed Roblox files."""
         lock = _instance_attr(self, '_fs_lock')
         if lock is None:
-            self._clear_managed_file_read_only_locked(
-                extra_paths, clear_untracked=clear_untracked
-            )
+            self._clear_managed_file_read_only_locked(extra_paths, clear_untracked=clear_untracked)
             return
         with lock:
-            self._clear_managed_file_read_only_locked(
-                extra_paths, clear_untracked=clear_untracked
-            )
+            self._clear_managed_file_read_only_locked(extra_paths, clear_untracked=clear_untracked)
 
     def set_read_only_lock_enabled(self, enabled: bool) -> None:
         """Apply or remove the optional persistent modification-file guard."""
@@ -793,12 +813,13 @@ class ModificationManager(QObject):
             json.dump(self._data, fp, indent=2)
 
     def _migrate_target_paths_for_current_platform(self) -> bool:
+        """Migrate resolved Linux paths back to portable logical targets."""
         changed = False
         for entry in self._data.get('entries', []):
             target = entry.get('target_path')
             if not target:
                 continue
-            mapped = target_path_for_current_platform(target)
+            mapped = canonical_target_path(target)
             if mapped.replace('\\', '/').strip('/') != str(target).replace('\\', '/').strip('/'):
                 entry['target_path'] = mapped
                 changed = True
@@ -975,7 +996,11 @@ class ModificationManager(QObject):
                 with self._fs_lock:
                     self._unlock_managed_files_locked()
                     try:
-                        apply_custom_font(data, self._roblox_dirs, self._stash_dir)
+                        apply_custom_font(
+                            data,
+                            _font_helper_dirs(self._roblox_dirs),
+                            self._stash_dir,
+                        )
                     finally:
                         self._protect_managed_files_locked()
                 if entry.get('_apply_gen', 0) != apply_gen:
@@ -1140,8 +1165,13 @@ class ModificationManager(QObject):
         if self._is_ktx(data):
             return data
 
-        original = read_current_platform_original_asset(target_path)
-        if original is None or not self._is_ktx(original):
+        originals = [
+            read_current_platform_original_asset(target_path, roblox_dir)
+            for roblox_dir in _instance_attr(self, '_roblox_dirs', [])
+        ]
+        if not originals:
+            originals.append(read_current_platform_original_asset(target_path))
+        if not any(original is not None and self._is_ktx(original) for original in originals):
             return data
 
         try:
@@ -1181,7 +1211,7 @@ class ModificationManager(QObject):
                 failures: list[tuple[Path, PermissionError]] = []
                 for roblox_dir in self._roblox_dirs:
                     try:
-                        target_path = normalise_target_path(target_path_rel)
+                        target_path = target_path_for_roblox_dir(target_path_rel, roblox_dir)
                         dst = roblox_dir / target_path
                         stash = resource_stash_dir(self._stash_dir, roblox_dir) / target_path
                         marker = stash.with_name(stash.name + self._NEW_FILE_MARKER_SUFFIX)
@@ -1208,7 +1238,9 @@ class ModificationManager(QObject):
                         failures.append((roblox_dir, exc))
                 if failures:
                     failed_paths = ', '.join(str(path) for path, _exc in failures)
-                    raise PermissionError(f'Permission denied in Roblox installation(s): {failed_paths}')
+                    raise PermissionError(
+                        f'Permission denied in Roblox installation(s): {failed_paths}'
+                    )
             finally:
                 self._protect_managed_files_locked()
 
@@ -1219,20 +1251,22 @@ class ModificationManager(QObject):
         # Font special-case
         if target.lower().endswith(('customfont.ttf',)) or entry.get('_is_font'):
             with self._fs_lock:
-                restore_font_families(self._roblox_dirs, self._stash_dir)
-            return
-
-        try:
-            target_path = normalise_target_path(target)
-        except ValueError as exc:
-            log_buffer.log(
-                'Modifications',
-                f'Skipping restore for invalid target path {target!r}: {exc}',
-            )
+                restore_font_families(
+                    _font_helper_dirs(self._roblox_dirs),
+                    self._stash_dir,
+                )
             return
 
         with self._fs_lock:
             for roblox_dir in self._roblox_dirs:
+                try:
+                    target_path = target_path_for_roblox_dir(target, roblox_dir)
+                except ValueError as exc:
+                    log_buffer.log(
+                        'Modifications',
+                        f'Skipping restore for invalid target path {target!r}: {exc}',
+                    )
+                    continue
                 dst = roblox_dir / target_path
                 stash = resource_stash_dir(self._stash_dir, roblox_dir) / target_path
                 marker = stash.with_name(stash.name + self._NEW_FILE_MARKER_SUFFIX)
@@ -1260,18 +1294,18 @@ class ModificationManager(QObject):
         the UI when a row detects a stash on disk (e.g. manual file edit, crash)
         but has no active modification entry to clear.
         """
-        try:
-            target_rel = normalise_target_path(target_path)
-        except ValueError as exc:
-            log_buffer.log(
-                'Modifications',
-                f'Cannot restore orphaned stash for invalid target path {target_path!r}: {exc}',
-            )
-            return False
-
         with self._fs_lock:
             restored = False
             for roblox_dir in self._roblox_dirs:
+                try:
+                    target_rel = target_path_for_roblox_dir(target_path, roblox_dir)
+                except ValueError as exc:
+                    log_buffer.log(
+                        'Modifications',
+                        f'Cannot restore orphaned stash for invalid target path '
+                        f'{target_path!r}: {exc}',
+                    )
+                    continue
                 dst = roblox_dir / target_rel
                 stash = resource_stash_dir(self._stash_dir, roblox_dir) / target_rel
                 marker = stash.with_name(stash.name + self._NEW_FILE_MARKER_SUFFIX)
@@ -1444,9 +1478,7 @@ class ModificationManager(QObject):
         if not self._data.get('fast_flags_enabled') or not self._data.get('fast_flags'):
             return 0
         with self._fs_lock:
-            updated = self.fflag_manager.reassert_macos_bootstrapper_flags(
-                self._data['fast_flags']
-            )
+            updated = self.fflag_manager.reassert_macos_bootstrapper_flags(self._data['fast_flags'])
             if updated:
                 self._protect_managed_files_locked()
             return updated
@@ -1456,6 +1488,7 @@ class ModificationManager(QObject):
         previous = {str(path.resolve()).lower() for path in self._roblox_dirs}
         self._roblox_dirs = _find_roblox_dirs()
         self.fflag_manager._roblox_dirs = self._roblox_dirs
+        self.global_settings_manager.refresh_roblox_dirs()
         current = {str(path.resolve()).lower() for path in self._roblox_dirs}
         log_buffer.log(
             'Modifications',

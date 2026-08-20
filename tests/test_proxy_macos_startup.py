@@ -21,6 +21,44 @@ from fleasion.utils import linux_proxy_helper, macos_proxy_helper, platform_maco
 pytestmark = pytest.mark.skipif(sys.platform == 'win32', reason='Linux/macOS proxy startup tests')
 
 
+def test_linux_proxy_constructor_recovers_stale_flatpak_env_override(monkeypatch):
+    recovered = []
+
+    class CacheManagerStub:
+        def __init__(self, _config_manager):
+            pass
+
+        def set_scraper(self, _scraper):
+            pass
+
+    class CacheScraperStub:
+        def __init__(self, _cache_manager):
+            pass
+
+        def set_enabled(self, _enabled):
+            pass
+
+    monkeypatch.setattr(proxy_master, 'IS_LINUX', True)
+    monkeypatch.setattr(proxy_master, 'CacheManager', CacheManagerStub)
+    monkeypatch.setattr(proxy_master, 'CacheScraper', CacheScraperStub)
+    monkeypatch.setattr(proxy_master, 'UsernameSpoofer', lambda _config_manager: object())
+    monkeypatch.setattr(
+        proxy_master,
+        'CustomFFlagModifier',
+        lambda _config_manager, **_kwargs: object(),
+    )
+    monkeypatch.setattr(proxy_master, '_selected_linux_client_installation', lambda: None)
+    monkeypatch.setattr(
+        'fleasion.utils.platform_linux.recover_stale_linux_client_env_proxy_override',
+        lambda: recovered.append(True) or True,
+    )
+
+    proxy = proxy_master.ProxyMaster(SimpleNamespace())
+
+    assert recovered == [True]
+    assert proxy._linux_env_proxy_override_client_key is None
+
+
 def test_mode_switch_restart_clears_proxy_readiness_before_worker_runs():
     proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
     proxy._env_proxy_ready = threading.Event()
@@ -44,11 +82,12 @@ def test_mode_switch_restart_clears_proxy_readiness_before_worker_runs():
     assert started.wait(1.0)
 
 
-def test_linux_proxy_stop_clears_sober_flatpak_env_override(monkeypatch):
+def test_linux_proxy_stop_clears_exact_owned_flatpak_env_override(monkeypatch):
     calls = []
     proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
     proxy._env_proxy_ready = threading.Event()
     proxy._env_proxy_ready.set()
+    proxy._linux_env_proxy_override_client_key = 'sober'
     proxy._sober_env_proxy_override_active = True
     proxy._stop_linux_sober_custom_fflag_timer = lambda: None
     proxy._lock = threading.Lock()
@@ -57,15 +96,40 @@ def test_linux_proxy_stop_clears_sober_flatpak_env_override(monkeypatch):
 
     monkeypatch.setattr(proxy_master, 'IS_LINUX', True)
     monkeypatch.setattr(
-        'fleasion.utils.platform_linux.clear_sober_env_proxy_override',
-        lambda: calls.append('clear') or True,
+        'fleasion.utils.platform_linux.clear_linux_client_env_proxy_override',
+        lambda *, client_key: calls.append(client_key) or True,
     )
 
     proxy.stop()
 
-    assert calls == ['clear']
+    assert calls == ['sober']
+    assert proxy._linux_env_proxy_override_client_key is None
     assert proxy._sober_env_proxy_override_active is False
     assert not proxy._env_proxy_ready.is_set()
+
+
+def test_linux_resource_discovery_keeps_saved_resource_dirs(tmp_path, monkeypatch):
+    from fleasion.utils import platform_linux
+
+    discovered = tmp_path / 'discovered'
+    saved = tmp_path / 'saved'
+    persisted = []
+    monkeypatch.setattr(proxy_master, 'IS_MACOS', False)
+    monkeypatch.setattr(proxy_master, 'IS_LINUX', True)
+    monkeypatch.setattr(
+        platform_linux,
+        'find_roblox_resource_dirs',
+        lambda **_kwargs: [discovered],
+    )
+    monkeypatch.setattr(proxy_master, 'load_saved_roblox_dirs', lambda: [saved])
+    monkeypatch.setattr(
+        proxy_master,
+        'save_saved_roblox_dirs',
+        lambda paths: persisted.append(list(paths)),
+    )
+
+    assert proxy_master._find_roblox_dirs() == [discovered, saved]
+    assert persisted == [[discovered, saved]]
 
 
 def test_privileged_relay_tls_self_test_retries_representative_host(monkeypatch):
@@ -615,11 +679,25 @@ def test_linux_custom_fflags_wait_for_sober_engine_bootstrap_window(monkeypatch)
     proxy.config_manager = SimpleNamespace(settings={})
     proxy.username_spoofer = SimpleNamespace(is_enabled=lambda: False)
     proxy.custom_fflag_modifier = SimpleNamespace(is_enabled=lambda: True)
+    installation = SimpleNamespace(
+        key='sober',
+        client=SimpleNamespace(clientsettings_route_delay_seconds=30.0),
+    )
+    proxy._active_linux_client_installation = installation
+    proxy._active_linux_client_key = 'sober'
 
-    monkeypatch.setattr(platform_linux, "sober_main_process", lambda: (1001, 100.1))
+    monkeypatch.setattr(
+        platform_linux,
+        "linux_client_main_process",
+        lambda _installation: (1001, 100.1),
+    )
     assert proxy._desired_intercept_hosts() == set(proxy_master.BASE_INTERCEPT_HOSTS)
 
-    monkeypatch.setattr(platform_linux, "sober_main_process", lambda: (1001, 100.0))
+    monkeypatch.setattr(
+        platform_linux,
+        "linux_client_main_process",
+        lambda _installation: (1001, 100.0),
+    )
     assert proxy._desired_intercept_hosts() == (
         set(proxy_master.BASE_INTERCEPT_HOSTS)
         | set(proxy_master.CUSTOM_FFLAGS_INTERCEPT_HOSTS)
@@ -627,8 +705,28 @@ def test_linux_custom_fflags_wait_for_sober_engine_bootstrap_window(monkeypatch)
 
     # A quick close/reopen produces a new process identity and starts a fresh
     # bootstrap guard rather than inheriting the old process's elapsed time.
-    monkeypatch.setattr(platform_linux, "sober_main_process", lambda: (1002, 129.9))
+    monkeypatch.setattr(
+        platform_linux,
+        "linux_client_main_process",
+        lambda _installation: (1002, 129.9),
+    )
     assert proxy._desired_intercept_hosts() == set(proxy_master.BASE_INTERCEPT_HOSTS)
+
+
+def test_linux_env_proxy_exclusions_come_from_selected_descriptor():
+    proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
+    proxy._active_linux_client_key = 'sober'
+    proxy._active_linux_client_installation = SimpleNamespace(
+        key='sober',
+        client=SimpleNamespace(
+            proxy_passthrough_hosts=frozenset({'bootstrap.example'}),
+            clientsettings_route_delay_seconds=30.0,
+        ),
+    )
+
+    assert proxy._linux_env_proxy_excluded_hosts() == (
+        {'bootstrap.example'} | set(proxy_master.CUSTOM_FFLAGS_INTERCEPT_HOSTS)
+    )
 
 
 def test_linux_sober_clientsettings_stays_tunneled_until_route_is_armed():
@@ -649,7 +747,10 @@ def test_linux_sober_clientsettings_stays_tunneled_until_route_is_armed():
 
 
 def test_proxy_startup_self_tests_only_active_intercept_routes(tmp_path, monkeypatch):
+    from fleasion.utils.linux_clients import SOBER_CLIENT
+
     self_test_hosts = []
+    override_calls = []
     logs = []
     ca_cert = tmp_path / "ca.crt"
     ca_key = tmp_path / "ca.key"
@@ -700,6 +801,11 @@ def test_proxy_startup_self_tests_only_active_intercept_routes(tmp_path, monkeyp
     monkeypatch.setattr(proxy_master, "IS_MACOS", False)
     monkeypatch.setattr(proxy_master, "IS_WINDOWS", False)
     monkeypatch.setattr(proxy_master, "IS_LINUX", True)
+    monkeypatch.setattr(
+        proxy_master,
+        "_selected_linux_client_installation",
+        lambda: SimpleNamespace(key='sober', display_name='Sober', client=SOBER_CLIENT),
+    )
     monkeypatch.setattr(proxy_master, "_use_linux_privileged_helper", lambda: False)
     monkeypatch.setattr(proxy_master, "generate_ca", lambda _dir: (ca_cert, ca_key))
     monkeypatch.setattr(
@@ -746,8 +852,8 @@ def test_proxy_startup_self_tests_only_active_intercept_routes(tmp_path, monkeyp
         lambda _self: None,
     )
     monkeypatch.setattr(
-        "fleasion.utils.platform_linux.set_sober_env_proxy_override",
-        lambda _url: True,
+        "fleasion.utils.platform_linux.set_linux_client_env_proxy_override",
+        lambda url, *, client_key: override_calls.append((url, client_key)) or True,
     )
     monkeypatch.setattr(
         proxy_master,
@@ -794,6 +900,7 @@ def test_proxy_startup_self_tests_only_active_intercept_routes(tmp_path, monkeyp
     asyncio.run(proxy._run_proxy())
 
     assert self_test_hosts == [set(proxy_master.BASE_INTERCEPT_HOSTS)]
+    assert override_calls == [('http://127.0.0.1:58443', 'sober')]
     assert proxy._active_env_proxy_mode is True
     assert proxy._sober_env_proxy_override_active is True
 

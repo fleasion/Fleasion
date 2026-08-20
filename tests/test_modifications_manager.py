@@ -9,8 +9,8 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from fleasion.modifications import fflag_manager, platform_targets
 from fleasion.modifications import manager as modifications_manager
-from fleasion.modifications import fflag_manager
 from fleasion.cache.tools.rgba_ktx2 import read_rgba8_ktx2
 from fleasion.modifications.fflag_manager import FastFlagManager
 from fleasion.modifications.manager import ModificationManager, normalise_target_path
@@ -58,6 +58,12 @@ def test_normalise_target_path_converts_windows_separators_on_posix():
 def test_normalise_target_path_rejects_escape_paths(target):
     with pytest.raises(ValueError):
         normalise_target_path(target)
+
+
+@pytest.mark.parametrize('target', ['/tmp/outside.bin', r'C:\outside.bin', r'\\server\share\file.bin'])
+def test_resource_target_resolution_preserves_absolute_path_rejection(tmp_path, target):
+    with pytest.raises(ValueError):
+        modifications_manager.target_path_for_roblox_dir(target, tmp_path / 'resources')
 
 
 @pytest.mark.skipif(sys.platform == 'win32', reason='POSIX path-separator fixture')
@@ -502,6 +508,53 @@ def test_macos_same_named_resource_roots_have_distinct_stashes(tmp_path, monkeyp
     manager._restore_entry({"target_path": str(relative)})
     assert (first / relative).read_bytes() == b"regular"
     assert (second / relative).read_bytes() == b"froststrap"
+
+
+def test_linux_same_named_resource_roots_have_distinct_stashes(tmp_path, monkeypatch):
+    monkeypatch.setattr(modifications_manager.sys, 'platform', 'linux')
+    first = tmp_path / '.var' / 'app' / 'example.one' / 'data' / 'client' / 'asset_overlay'
+    second = tmp_path / '.var' / 'app' / 'example.two' / 'data' / 'client' / 'asset_overlay'
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+
+    first_stash = resource_stash_dir(tmp_path / 'stash', first)
+    second_stash = resource_stash_dir(tmp_path / 'stash', second)
+
+    assert first_stash != second_stash
+    assert first_stash.name.startswith('Resources-LinuxRoblox-asset_overlay-')
+    assert second_stash.name.startswith('Resources-LinuxRoblox-asset_overlay-')
+
+
+def test_logical_target_resolves_per_linux_resource_backend(tmp_path, monkeypatch):
+    monkeypatch.setattr(modifications_manager.sys, 'platform', 'linux')
+    sober_root = tmp_path / 'sober' / 'resources'
+    future_root = tmp_path / 'future' / 'resources'
+    sober_target = sober_root / 'android' / 'textures' / 'sky' / 'sky512_bk.tex'
+    future_target = (
+        future_root / 'PlatformContent' / 'pc' / 'textures' / 'sky' / 'sky512_bk.tex'
+    )
+    for target, original in ((sober_target, b'sober'), (future_target, b'future')):
+        target.parent.mkdir(parents=True)
+        target.write_bytes(original)
+
+    monkeypatch.setattr(
+        platform_targets,
+        '_linux_resource_client_key',
+        lambda resource_dir: 'sober' if Path(resource_dir) == sober_root else 'future',
+    )
+    manager = ModificationManager.__new__(ModificationManager)
+    manager._roblox_dirs = [sober_root, future_root]
+    manager._stash_dir = tmp_path / 'stash'
+    manager._fs_lock = threading.Lock()
+
+    logical = r'PlatformContent\pc\textures\sky\sky512_bk.tex'
+    manager._stash_and_write(logical, b'modified')
+
+    assert sober_target.read_bytes() == b'modified'
+    assert future_target.read_bytes() == b'modified'
+    manager._restore_entry({'target_path': logical})
+    assert sober_target.read_bytes() == b'sober'
+    assert future_target.read_bytes() == b'future'
 
 
 def test_fast_flags_write_to_sober_config(tmp_path, monkeypatch):

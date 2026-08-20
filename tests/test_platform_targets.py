@@ -5,12 +5,35 @@ from fleasion.modifications.manager import ModificationManager
 from fleasion.utils import platform_linux
 
 
-def test_linux_sober_target_path_maps_pc_sky_to_android(monkeypatch):
+def test_linux_sober_resource_target_maps_pc_sky_to_android(tmp_path, monkeypatch):
     monkeypatch.setattr(platform_targets.sys, "platform", "linux")
+    monkeypatch.setattr(
+        platform_targets,
+        '_linux_resource_client_key',
+        lambda _resource_dir: 'sober',
+    )
 
-    assert platform_targets.target_path_for_current_platform(
-        r"PlatformContent\pc\textures\sky\sky512_bk.tex"
+    assert platform_targets.target_path_for_resource_dir(
+        r"PlatformContent\pc\textures\sky\sky512_bk.tex",
+        tmp_path / 'sober-resources',
     ) == "android/textures/sky/sky512_bk.tex"
+
+
+def test_linux_resource_target_seam_preserves_logical_content_paths(tmp_path, monkeypatch):
+    monkeypatch.setattr(platform_targets.sys, 'platform', 'linux')
+    monkeypatch.setattr(
+        platform_targets,
+        '_linux_resource_client_key',
+        lambda _resource_dir: 'future',
+    )
+    resource_root = tmp_path / 'future-client' / 'resources'
+
+    assert platform_targets.target_path_for_resource_dir(
+        r'content\sounds\oof.ogg', resource_root
+    ) == 'content/sounds/oof.ogg'
+    assert platform_targets.target_path_for_resource_dir(
+        r'PlatformContent\pc\textures\sky\sky512_bk.tex', resource_root
+    ) == 'PlatformContent/pc/textures/sky/sky512_bk.tex'
 
 
 def test_non_linux_target_path_keeps_existing_storage_form(monkeypatch):
@@ -37,17 +60,19 @@ def test_read_linux_sober_original_asset_from_apk(tmp_path, monkeypatch):
     ) == b"sky"
 
 
-def test_modification_manager_migrates_saved_sober_builtin_targets(monkeypatch):
+def test_modification_manager_migrates_saved_sober_path_to_logical_target(monkeypatch):
     monkeypatch.setattr(platform_targets.sys, "platform", "linux")
     manager = ModificationManager.__new__(ModificationManager)
     manager._data = {
         "entries": [
             {
-                "target_path": r"PlatformContent\pc\textures\sky\sky512_bk.tex",
+                "target_path": "android/textures/sky/sky512_bk.tex",
                 "source_type": "local_file",
             }
         ]
     }
 
     assert manager._migrate_target_paths_for_current_platform() is True
-    assert manager._data["entries"][0]["target_path"] == "android/textures/sky/sky512_bk.tex"
+    assert manager._data["entries"][0]["target_path"] == (
+        "PlatformContent/pc/textures/sky/sky512_bk.tex"
+    )

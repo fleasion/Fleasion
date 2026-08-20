@@ -372,6 +372,8 @@ class CustomFFlagModifier:
 
     def prime_startup_flag_cache(self) -> bool:
         """Seed the platform-specific local flag source used before networking."""
+        # Explicit resource-dir injection is also the cross-platform test and
+        # helper contract for macOS; it must take precedence over the host OS.
         if self._macos_resource_dirs is not None or sys.platform == 'darwin':
             return self.prime_macos_client_settings()
         return self.prime_windows_flag_cache()

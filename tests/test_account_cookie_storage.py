@@ -91,6 +91,7 @@ def test_set_roblosecurity_clears_read_only_before_write(tmp_path, monkeypatch):
         encoding='utf-8',
     )
     cookie_path.chmod(0o444)
+    monkeypatch.setattr(roblox_auth.sys, 'platform', 'win32')
     monkeypatch.setattr(
         roblox_auth,
         'win32crypt',
@@ -266,6 +267,34 @@ def test_account_plain_windows_launch_uses_app_auth_ticket_uri(monkeypatch):
 
     assert len(launched) == 1
     assert launched[0].startswith("roblox-player:1+launchmode:app+gameinfo:ticket-123")
+
+
+def test_linux_switch_account_never_writes_windows_cookie_storage(monkeypatch):
+    owner = _account_manager_owner()
+    account = {'username': 'LinuxUser', 'cookie': 'encrypted-cookie'}
+    owner._accounts = [account]
+    owner._account_list = SimpleNamespace(currentRow=lambda: 0)
+    selected = []
+    owner._set_selected_account = selected.append
+    owner._write_cookie_to_dat = lambda _cookie: (_ for _ in ()).throw(
+        AssertionError('Linux must not write RobloxCookies.dat')
+    )
+
+    monkeypatch.setattr(rando_stuff_tab, 'IS_WINDOWS', False)
+    monkeypatch.setattr(rando_stuff_tab, 'IS_MACOS', False)
+    monkeypatch.setattr(rando_stuff_tab, 'IS_LINUX', True)
+    monkeypatch.setattr(rando_stuff_tab, '_decrypt_cookie', lambda _value: 'cookie-secret')
+    monkeypatch.setattr(rando_stuff_tab, '_linux_client_display_name', lambda: 'Sober')
+    monkeypatch.setattr(
+        rando_stuff_tab.QMessageBox,
+        'information',
+        lambda *_args, **_kwargs: None,
+    )
+
+    owner._on_switch_account()
+
+    assert owner._last_switched_account is account
+    assert selected == ['LinuxUser']
 
 
 def test_account_subplace_root_preseed_disables_proxy_cert_verification(monkeypatch):

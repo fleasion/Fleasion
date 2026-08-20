@@ -224,13 +224,13 @@ def _remove_linux_desktop_entries() -> bool:
             LINUX_APPLICATIONS_DIR,
             LINUX_DESKTOP_ENTRY_PATH,
             LINUX_LAUNCHER_PATH,
-            _restore_sober_uri_handler,
+            _restore_linux_roblox_uri_handler,
         )
 
         for path in (LINUX_DESKTOP_ENTRY_PATH, LINUX_LAUNCHER_PATH):
             path.unlink(missing_ok=True)
         if LINUX_DESKTOP_ENTRY_PATH.parent == LINUX_APPLICATIONS_DIR:
-            _restore_sober_uri_handler()
+            _restore_linux_roblox_uri_handler()
         return True
     except Exception as exc:
         _log(f'Failed to remove Linux desktop integration: {exc}')

@@ -1,8 +1,4 @@
-"""GlobalBasicSettings manager — reads/writes GlobalBasicSettings_13.xml.
-
-Finds all Roblox installations across all user accounts and modifies the
-FramerateCap setting in GlobalBasicSettings_13.xml.
-"""
+"""GlobalBasicSettings manager — reads/writes GlobalBasicSettings_13.xml."""
 
 from __future__ import annotations
 
@@ -14,16 +10,46 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from ..utils import USER_HOME, format_count, log_buffer
+from .stash_paths import resource_stash_dir
 
 GLOBAL_SETTINGS_REL = Path('GlobalBasicSettings_13.xml')
 DEFAULT_FRAMERATE_CAP = 60
 
 
+def _global_settings_stash_path(stash_dir: Path, roblox_dir: Path) -> Path:
+    """Return a collision-free settings stash, migrating legacy Sober data."""
+    if not sys.platform.startswith('linux'):
+        return Path(stash_dir) / roblox_dir.parent.name / GLOBAL_SETTINGS_REL
+
+    destination = resource_stash_dir(stash_dir, roblox_dir) / GLOBAL_SETTINGS_REL
+    if 'org.vinegarhq.Sober' not in roblox_dir.parts or destination.exists():
+        return destination
+
+    # Previous Linux builds used the generic parent name (normally ``data``),
+    # which collides across Flatpaks.  Claim it only for the known Sober root.
+    legacy = Path(stash_dir) / roblox_dir.parent.name / GLOBAL_SETTINGS_REL
+    if not legacy.is_file():
+        return destination
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        legacy.replace(destination)
+    except OSError:
+        try:
+            shutil.copy2(legacy, destination)
+        except OSError:
+            pass
+    return destination
+
+
 class GlobalSettingsManager:
-    """Manages the GlobalBasicSettings_13.xml file across all user Roblox installations."""
+    """Manage GlobalBasicSettings_13.xml for the current platform/client roots."""
 
     def __init__(self, stash_dir: Path):
         self._stash_dir = stash_dir
+        self._user_roblox_dirs = self._find_all_user_roblox_dirs()
+
+    def refresh_roblox_dirs(self) -> None:
+        """Refresh client-scoped settings roots after a Linux selection change."""
         self._user_roblox_dirs = self._find_all_user_roblox_dirs()
 
     @staticmethod
@@ -39,14 +65,17 @@ class GlobalSettingsManager:
             return roblox_dirs
 
         if sys.platform.startswith('linux'):
-            sober_local = USER_HOME / '.var' / 'app' / 'org.vinegarhq.Sober' / 'data' / 'sober'
-            if sober_local.exists():
-                roblox_dirs.append(sober_local)
-            else:
+            try:
+                from ..utils.platform_linux import find_linux_global_settings_dirs
+
+                roblox_dirs.extend(find_linux_global_settings_dirs())
+            except Exception as exc:
                 log_buffer.log(
                     'GlobalSettings',
-                    '~/.var/app/org.vinegarhq.Sober/data/sober directory not found',
+                    f'Could not discover Linux Roblox settings directories: {exc}',
                 )
+            if not roblox_dirs:
+                log_buffer.log('GlobalSettings', 'Linux Roblox settings directories not found')
             return roblox_dirs
 
         users_dir = Path('C:/Users')
@@ -197,7 +226,7 @@ class GlobalSettingsManager:
 
         for roblox_dir in self._user_roblox_dirs:
             dst = roblox_dir / GLOBAL_SETTINGS_REL
-            stash = self._stash_dir / roblox_dir.parent.name / GLOBAL_SETTINGS_REL
+            stash = _global_settings_stash_path(self._stash_dir, roblox_dir)
 
             # Stash original once
             if dst.exists() and not stash.exists():
@@ -230,7 +259,7 @@ class GlobalSettingsManager:
 
         for roblox_dir in self._user_roblox_dirs:
             dst = roblox_dir / GLOBAL_SETTINGS_REL
-            stash = self._stash_dir / roblox_dir.parent.name / GLOBAL_SETTINGS_REL
+            stash = _global_settings_stash_path(self._stash_dir, roblox_dir)
 
             if stash.exists():
                 self._remove_read_only(stash)
@@ -242,17 +271,14 @@ class GlobalSettingsManager:
 
         log_buffer.log(
             'GlobalSettings',
-            (
-                f'Reset FramerateCap={DEFAULT_FRAMERATE_CAP} in '
-                f'{format_count(reset, "Roblox dir")}'
-            ),
+            (f'Reset FramerateCap={DEFAULT_FRAMERATE_CAP} in {format_count(reset, "Roblox dir")}'),
         )
 
     def restore(self) -> None:
         """Restore GlobalBasicSettings_13.xml in all user Roblox dirs from stash."""
         for roblox_dir in self._user_roblox_dirs:
             dst = roblox_dir / GLOBAL_SETTINGS_REL
-            stash = self._stash_dir / roblox_dir.parent.name / GLOBAL_SETTINGS_REL
+            stash = _global_settings_stash_path(self._stash_dir, roblox_dir)
 
             if stash.exists():
                 # Make sure destination is writable before restoring

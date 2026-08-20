@@ -1,0 +1,222 @@
+import subprocess
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+
+from fleasion.utils.linux_clients import (
+    LINUX_CLIENTS,
+    LINUX_CLIENTS_BY_KEY,
+    SOBER_CLIENT,
+    LinuxClientInstallation,
+    detect_installed_clients,
+    get_linux_client,
+    identify_resource_owner,
+    query_default_roblox_handlers,
+    select_linux_client,
+)
+
+
+def _installation(client, tmp_path: Path) -> LinuxClientInstallation:
+    return LinuxClientInstallation(
+        client=client,
+        paths=client.paths(home=tmp_path, environ={}),
+        executable=Path('/usr/bin/flatpak'),
+    )
+
+
+def test_registry_contains_only_sober():
+    assert LINUX_CLIENTS == (SOBER_CLIENT,)
+    assert dict(LINUX_CLIENTS_BY_KEY) == {'sober': SOBER_CLIENT}
+    assert get_linux_client('SOBER') is SOBER_CLIENT
+    assert SOBER_CLIENT.app_id == 'org.vinegarhq.Sober'
+    assert SOBER_CLIENT.desktop_id == 'org.vinegarhq.Sober.desktop'
+
+
+def test_sober_flatpak_paths_match_existing_layout(tmp_path):
+    paths = SOBER_CLIENT.paths(home=tmp_path, environ={})
+    root = tmp_path / '.var' / 'app' / 'org.vinegarhq.Sober'
+
+    assert paths.flatpak_root == root
+    assert paths.config_root == root / 'config' / 'sober'
+    assert paths.data_root == root / 'data' / 'sober'
+    assert paths.cache_root == root / 'cache' / 'sober'
+    assert paths.config_file == root / 'config' / 'sober' / 'config.json'
+    assert paths.resource_roots == (
+        root / 'data' / 'sober' / 'asset_overlay',
+        root / 'data' / 'sober' / 'exe',
+    )
+    assert paths.storage_db == root / 'data' / 'sober' / 'appData' / 'rbx-storage.db'
+    assert paths.cache_storage_dir == root / 'cache' / 'sober' / 'rbx-storage'
+
+
+def test_paths_use_explicit_environment_home(tmp_path):
+    home = tmp_path / 'desktop-user'
+    paths = SOBER_CLIENT.paths(environ={'HOME': str(home)})
+
+    assert paths.home == home
+    assert paths.flatpak_root == home / '.var' / 'app' / SOBER_CLIENT.app_id
+
+
+def test_detect_installed_clients_uses_flatpak_info(tmp_path):
+    commands = []
+
+    def run(command, **_kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, '', '')
+
+    installed = detect_installed_clients(
+        home=tmp_path,
+        environ={},
+        which=lambda name: '/usr/bin/flatpak' if name == 'flatpak' else None,
+        run=run,
+    )
+
+    assert [item.key for item in installed] == ['sober']
+    assert commands == [['/usr/bin/flatpak', 'info', 'org.vinegarhq.Sober']]
+    assert installed[0].launch_command('roblox://experiences/start?placeId=1818') == [
+        '/usr/bin/flatpak',
+        'run',
+        'org.vinegarhq.Sober',
+        'roblox://experiences/start?placeId=1818',
+    ]
+
+
+def test_detect_installed_clients_falls_back_to_flatpak_filesystem(tmp_path):
+    root = tmp_path / '.var' / 'app' / SOBER_CLIENT.app_id
+    root.mkdir(parents=True)
+
+    installed = detect_installed_clients(
+        home=tmp_path,
+        environ={},
+        which=lambda _name: None,
+    )
+
+    assert len(installed) == 1
+    assert installed[0].client is SOBER_CLIENT
+    assert installed[0].executable is None
+
+
+def test_detect_installed_clients_returns_empty_without_metadata(tmp_path):
+    installed = detect_installed_clients(
+        home=tmp_path,
+        environ={},
+        which=lambda _name: None,
+    )
+
+    assert installed == ()
+
+
+def test_query_default_handlers_uses_scheme_order_and_explicit_home(tmp_path):
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs['env']['HOME']))
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            'org.vinegarhq.Sober.desktop\n',
+            '',
+        )
+
+    handlers = query_default_roblox_handlers(
+        home=tmp_path,
+        environ={},
+        which=lambda name: '/usr/bin/xdg-mime' if name == 'xdg-mime' else None,
+        run=run,
+    )
+
+    assert handlers == ('org.vinegarhq.Sober.desktop',)
+    assert calls == [
+        (
+            [
+                '/usr/bin/xdg-mime',
+                'query',
+                'default',
+                'x-scheme-handler/roblox',
+            ],
+            str(tmp_path),
+        ),
+        (
+            [
+                '/usr/bin/xdg-mime',
+                'query',
+                'default',
+                'x-scheme-handler/roblox-player',
+            ],
+            str(tmp_path),
+        ),
+    ]
+
+
+def test_auto_selection_prefers_current_handler_for_future_descriptor(tmp_path):
+    future = replace(
+        SOBER_CLIENT,
+        key='future',
+        display_name='Future Client',
+        app_id='org.example.Future',
+        desktop_ids=('org.example.Future.desktop',),
+        xdg_namespace='future',
+        process_names=('future-client',),
+        cgroup_marker='app-flatpak-org.example.Future',
+    )
+    installations = (
+        _installation(SOBER_CLIENT, tmp_path),
+        _installation(future, tmp_path),
+    )
+
+    selected = select_linux_client(
+        installed=installations,
+        home=tmp_path,
+        environ={},
+        which=lambda name: '/usr/bin/xdg-mime' if name == 'xdg-mime' else None,
+        run=lambda command, **_kwargs: subprocess.CompletedProcess(
+            command,
+            0,
+            'org.example.Future.desktop\n',
+            '',
+        ),
+    )
+
+    assert selected is installations[1]
+
+
+def test_auto_selection_has_deterministic_registry_fallback(tmp_path):
+    future = replace(
+        SOBER_CLIENT,
+        key='future',
+        display_name='Future Client',
+        app_id='org.example.Future',
+        desktop_ids=('org.example.Future.desktop',),
+    )
+    sober = _installation(SOBER_CLIENT, tmp_path)
+
+    selected = select_linux_client(
+        installed=(_installation(future, tmp_path), sober),
+        home=tmp_path,
+        environ={},
+        which=lambda _name: None,
+    )
+
+    assert selected is sober
+
+
+def test_explicit_selection_never_falls_back(tmp_path):
+    sober = _installation(SOBER_CLIENT, tmp_path)
+
+    assert select_linux_client('sober', installed=(sober,)) is sober
+    assert select_linux_client('sober', installed=()) is None
+    with pytest.raises(ValueError, match='auto, sober'):
+        select_linux_client('unknown', installed=(sober,))
+
+
+def test_resource_owner_uses_exact_registered_roots(tmp_path):
+    installation = _installation(SOBER_CLIENT, tmp_path)
+    overlay, legacy = installation.paths.resource_roots
+
+    assert identify_resource_owner(overlay / 'content' / 'sounds', (installation,)) is installation
+    assert identify_resource_owner(legacy / 'PlatformContent', (installation,)) is installation
+    assert identify_resource_owner(overlay.parent / 'asset_overlay-old', (installation,)) is None
+    assert (
+        identify_resource_owner(tmp_path / 'unrelated' / 'asset_overlay', (installation,)) is None
+    )

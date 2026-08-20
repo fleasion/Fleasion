@@ -1,7 +1,7 @@
 > [!CAUTION]
-> The only official places to download Fleasion are this **GitHub repository** and the **Discord**. Any other websites offering downloads or claiming to be us are **not owned by us**.
-> 
-> fleasion.com is a **fake website**.
+> The only official sources for Fleasion are this **GitHub repository** and our **65,000+ member Discord server**. We do not currently operate an official website. Any other website offering downloads or claiming to be Fleasion is **not owned by us**.
+>
+> `fleasion.com` was not operated by us and is now offline.
 
 # Fleasion
 
@@ -31,7 +31,7 @@ sudo pacman -S --needed qt6-base
 
 ## Requirements for Building from Source
 
-- **Windows 10+, macOS 11+, or Linux with Sober Flatpak**
+- **Windows 10+, macOS 11+, or Linux with the Sober Flatpak**
 - [**uv**](https://docs.astral.sh/uv/) package manager
 - **Python 3.14+**
 - Linux desktop installs need `pkexec`/Polkit available (installed by default on Mint and most desktop distributions)
@@ -116,7 +116,11 @@ When custom FastFlags are enabled, Fleasion also intercepts Roblox ClientSetting
 
 All interception happens locally on your machine. Env Proxy runs the Fleasion GUI and proxy as the normal user on Windows, macOS, and Linux. A one-time administrator prompt can still be needed to repair an unusually protected Player installation or an inaccessible legacy Windows autostart task. Hosts File mode retains its existing administrator/helper requirements.
 
-On Linux, Fleasion targets the Sober Flatpak client (`org.vinegarhq.Sober`). It uses Sober's asset overlay at `~/.var/app/org.vinegarhq.Sober/data/sober/asset_overlay` and writes Sober FFlags to `~/.var/app/org.vinegarhq.Sober/config/sober/config.json`.
+### Linux client
+
+Fleasion currently supports the Sober Flatpak (`org.vinegarhq.Sober`). It uses Sober's asset overlay at `~/.var/app/org.vinegarhq.Sober/data/sober/asset_overlay` and writes Sober FastFlags to `~/.var/app/org.vinegarhq.Sober/config/sober/config.json`.
+
+Linux client identity, paths, launch behavior, process detection, and proxy capabilities are routed through a client registry so another backend can be added without spreading platform-specific assumptions throughout Fleasion. Sober is the only registered implementation today.
 
 **VPN compatibility:** Env Proxy is scoped to the Player process and normally coexists with system VPN settings. Hosts File mode depends on the VPN respecting local hosts-file resolution.
 

@@ -100,6 +100,8 @@ class SettingsTab(QWidget):
         self._container_layout.setContentsMargins(10, 10, 10, 10)
 
         self._container_layout.addWidget(self._build_appearance_section())
+        if sys.platform.startswith('linux'):
+            self._container_layout.addWidget(self._build_linux_client_section())
         self._container_layout.addWidget(self._build_proxy_section())
         self._container_layout.addWidget(self._build_convenience_section())
         if sys.platform == 'darwin':
@@ -160,6 +162,60 @@ class SettingsTab(QWidget):
         section.add_widget(row_widget)
 
         return section
+
+    def _build_linux_client_section(self) -> CollapsibleSection:
+        from ..utils.linux_clients import LINUX_CLIENTS
+
+        section = CollapsibleSection('Linux Roblox Client', expanded=True)
+
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(QLabel('Client'))
+        self._linux_client_combo = DropdownComboBox()
+        self._linux_client_combo.addItem('Auto (desktop handler)', 'auto')
+        for client in LINUX_CLIENTS:
+            self._linux_client_combo.addItem(client.display_name, client.key)
+        index = self._linux_client_combo.findData(
+            getattr(self._config, 'linux_client', 'auto')
+        )
+        self._linux_client_combo.setCurrentIndex(max(0, index))
+        self._linux_client_combo.activated.connect(self._on_linux_client_changed)
+        if len(LINUX_CLIENTS) <= 1:
+            self._linux_client_combo.setEnabled(False)
+            self._linux_client_combo.setToolTip(
+                f'{LINUX_CLIENTS[0].display_name} is currently the only supported Linux client.'
+            )
+        row.addWidget(self._linux_client_combo)
+        row.addStretch()
+        row_widget = QWidget()
+        row_widget.setLayout(row)
+        section.add_widget(row_widget)
+
+        self._linux_client_status = QLabel()
+        self._linux_client_status.setWordWrap(True)
+        self._refresh_linux_client_status()
+        section.add_widget(self._linux_client_status)
+        return section
+
+    def _refresh_linux_client_status(self) -> None:
+        if not sys.platform.startswith('linux'):
+            return
+        try:
+            from ..utils.platform_linux import (
+                linux_client_installations,
+                selected_linux_client_display_name,
+            )
+
+            installed = ', '.join(item.display_name for item in linux_client_installations())
+            selected = selected_linux_client_display_name()
+            detail = installed or 'none detected'
+            self._linux_client_status.setText(
+                f'Active: {selected}. Installed: {detail}. '
+                'Fleasion routes Linux launches and client-specific operations through '
+                'the active registered client.'
+            )
+        except Exception:
+            self._linux_client_status.setText('Unable to detect Linux Roblox clients.')
 
     def _build_macos_auth_section(self) -> CollapsibleSection:
         section = CollapsibleSection('Roblox Login', expanded=True)
@@ -361,7 +417,7 @@ class SettingsTab(QWidget):
         self._close_env_roblox_chk = QCheckBox('Close Env-Proxied Roblox Player on Exit')
         self._close_env_roblox_chk.setChecked(self._config.close_env_proxy_roblox_on_exit)
         self._close_env_roblox_chk.setToolTip(
-            'Roblox Player and Sober depend on Fleasion while Env Proxy is active. '
+            'Roblox Player and supported Linux clients depend on Fleasion while Env Proxy is active. '
             'Turn this off only if you intentionally want Player left open without Fleasion.'
         )
         self._close_env_roblox_chk.toggled.connect(self._on_close_env_roblox_toggled)
@@ -518,6 +574,15 @@ class SettingsTab(QWidget):
         self._proxy_mode_combo.setCurrentIndex(max(0, idx))
         self._proxy_mode_combo.blockSignals(False)
 
+        if sys.platform.startswith('linux'):
+            idx = self._linux_client_combo.findData(
+                getattr(self._config, 'linux_client', 'auto')
+            )
+            self._linux_client_combo.blockSignals(True)
+            self._linux_client_combo.setCurrentIndex(max(0, idx))
+            self._linux_client_combo.blockSignals(False)
+            self._refresh_linux_client_status()
+
         for widget, value in [
             (self._http_proxy_host, self._config.upstream_http_connect_host),
             (self._http_proxy_user, self._config.upstream_http_connect_username),
@@ -603,6 +668,36 @@ class SettingsTab(QWidget):
         self._config.upstream_transport_mode = self._upstream_mode_combo.currentData()
         self._sync_manual_proxy_credentials_timer()
 
+    def _on_linux_client_changed(self, *_args):
+        if not sys.platform.startswith('linux'):
+            return
+        new_client = str(self._linux_client_combo.currentData() or 'auto')
+        previous_client = getattr(self._config, 'linux_client', 'auto')
+        if new_client == previous_client:
+            return
+
+        proxy_master = getattr(self._tray, 'proxy_master', None) if self._tray else None
+        proxy_was_running = bool(proxy_master is not None and proxy_master.is_running)
+        # Stop first so the old client's app-scoped Flatpak override is disarmed.
+        if proxy_was_running:
+            proxy_master.stop()
+
+        mod_manager = getattr(self._tray, 'mod_manager', None) if self._tray else None
+        if mod_manager is not None:
+            # Restore the old client's files before changing the selection.
+            mod_manager.restore_all()
+
+        self._config.linux_client = new_client
+        from ..utils.platform_linux import set_linux_client_preference
+
+        set_linux_client_preference(new_client)
+
+        if mod_manager is not None:
+            mod_manager.refresh_roblox_dirs(reapply_if_changed=True)
+        if proxy_was_running:
+            proxy_master.start()
+        self._refresh_linux_client_status()
+
     def _on_proxy_mode_changed(self, *_args):
         previous_mode = self._config.proxy_mode
         new_mode = self._proxy_mode_combo.currentData()
@@ -653,7 +748,9 @@ class SettingsTab(QWidget):
                 and monitor.is_player_running()
             ):
                 if sys.platform.startswith('linux'):
-                    exe_path = Path('org.vinegarhq.Sober')
+                    from ..utils.platform_linux import selected_linux_client_app_id
+
+                    exe_path = Path(selected_linux_client_app_id())
                 else:
                     from ..utils import get_roblox_player_exe_path
 

@@ -27,6 +27,20 @@ _FALLBACK_JSON_ENCODINGS = (
 )
 
 
+def _normalise_linux_client(value: str | None) -> str:
+    """Return ``auto`` or a key from the live Linux client registry."""
+    normalized = str(value or 'auto').casefold()
+    try:
+        from ..utils.linux_clients import LINUX_CLIENTS_BY_KEY
+
+        supported = LINUX_CLIENTS_BY_KEY
+    except (ImportError, AttributeError):
+        # Keep isolated config loading and recovery usable even when platform
+        # modules are unavailable. Sober is the compatibility implementation.
+        supported = {'sober': None}
+    return normalized if normalized == 'auto' or normalized in supported else 'auto'
+
+
 def _config_asset_parts(value: str | Path) -> tuple[str, ...] | None:
     """Return valid portable Configs asset parts, or ``None`` for a normal path."""
     text = str(value or '').strip()
@@ -248,6 +262,9 @@ DEFAULT_SETTINGS = {
     'clear_cache_on_launch': True,
     'proxy_features_enabled': True,
     'proxy_mode': 'env',
+    # Linux client selection is registry-backed. Sober is the only registered
+    # implementation today; ``auto`` leaves room for future backends.
+    'linux_client': 'auto',
     'env_proxy_migration_v1_complete': False,
     'lock_roblox_files_read_only': False,
     'read_only_lock_migration_v1_complete': False,
@@ -814,6 +831,16 @@ class ConfigManager:
     def proxy_mode(self, value: str):
         value = str(value or 'env').lower()
         self.settings['proxy_mode'] = value if value in {'hosts', 'env'} else 'env'
+        self._save_settings()
+
+    @property
+    def linux_client(self) -> str:
+        """Preferred registered Linux Roblox client."""
+        return _normalise_linux_client(self.settings.get('linux_client', 'auto'))
+
+    @linux_client.setter
+    def linux_client(self, value: str):
+        self.settings['linux_client'] = _normalise_linux_client(value)
         self._save_settings()
 
     @property

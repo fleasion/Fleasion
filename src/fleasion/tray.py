@@ -578,7 +578,9 @@ class SystemTray:
                 lifecycle = getattr(self.roblox_monitor, 'env_lifecycle', None)
                 if lifecycle is not None and self.roblox_monitor.is_player_running():
                     if sys.platform.startswith('linux'):
-                        exe_path = Path('org.vinegarhq.Sober')
+                        from .utils.platform_linux import selected_linux_client_app_id
+
+                        exe_path = Path(selected_linux_client_app_id())
                     else:
                         from .utils import get_roblox_player_exe_path
 

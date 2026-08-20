@@ -68,6 +68,19 @@ _HOSTS_CLEANUP_UNEXPECTED_EXIT = 12
 _MACOS_PLAIN_LAUNCH_CLASSIFICATION_SECONDS = 2.0
 
 
+def _linux_client_launch_path() -> Path:
+    """Return the selected Linux client's stable launch identity."""
+    from .utils.platform_linux import selected_linux_client_app_id
+
+    return Path(selected_linux_client_app_id())
+
+
+def _linux_client_display_name() -> str:
+    from .utils.platform_linux import selected_linux_client_display_name
+
+    return selected_linux_client_display_name()
+
+
 class _FirstTimeSetupMessageBox(QMessageBox):
     """Message box that must be acknowledged with OK."""
 
@@ -147,7 +160,10 @@ def _show_env_proxy_migration(config_manager: ConfigManager, roblox_monitor) -> 
     restart_button = None
     if player_running and config_manager.proxy_features_enabled:
         if sys.platform.startswith('linux'):
-            details += '\n\nFleasion will apply the proxy to future Sober launches.'
+            details += (
+                f'\n\nFleasion will apply the proxy to future '
+                f'{_linux_client_display_name()} launches.'
+            )
             restart_button = msg.addButton('Apply for Future Launches', QMessageBox.ButtonRole.AcceptRole)
             later_button = msg.addButton('Apply Later', QMessageBox.ButtonRole.RejectRole)
         else:
@@ -181,7 +197,7 @@ def _show_env_proxy_migration(config_manager: ConfigManager, roblox_monitor) -> 
     if lifecycle is None:
         return
     if sys.platform.startswith('linux'):
-        run_in_thread(lifecycle.handle_adopted_player_launch)(Path('org.vinegarhq.Sober'))
+        run_in_thread(lifecycle.handle_adopted_player_launch)(_linux_client_launch_path())
     else:
         run_in_thread(lifecycle.handle_player_launch)(get_roblox_player_exe_path())
 
@@ -1499,7 +1515,7 @@ def _show_admin_required_dialog(parent=None):
             'The helper owns port 443, updates /etc/hosts, and patches Roblox SSL trust while the app stays unprivileged.'
         )
     elif sys.platform.startswith('linux'):
-        msg.setText('Fleasion needs administrator permission for Linux/Sober interception.')
+        msg.setText('Fleasion needs administrator permission for Linux interception.')
         msg.setInformativeText(
             'Linux support targets the Sober Flatpak client.\n\n'
             'Asset interception, scraping, replacement, hosts-file changes, and the local HTTPS proxy need root access '
@@ -2857,7 +2873,7 @@ class RobloxExitMonitor(QObject):
         # --- Roblox Player: launch detection - check CA cert on new launch ---
         if not self._player_was_running and is_running:
             if sys.platform.startswith('linux'):
-                exe_path = Path('org.vinegarhq.Sober')
+                exe_path = _linux_client_launch_path()
                 if self._mod_manager is not None:
                     self._mod_manager.refresh_roblox_dirs(reapply_if_changed=True)
                 proxy_features_enabled = self.config_manager.proxy_features_enabled
@@ -2875,7 +2891,8 @@ class RobloxExitMonitor(QObject):
                 elif not proxy_features_enabled:
                     log_buffer.log(
                         'Certificate',
-                        'Sober launch detected: proxy features disabled, skipping proxy CA refresh',
+                        f'{_linux_client_display_name()} launch detected: proxy features '
+                        'disabled, skipping proxy CA refresh',
                     )
             else:
                 exe_path = get_roblox_player_exe_path()
@@ -3281,7 +3298,7 @@ def _request_running_instance_launch(target: str, timeout_ms: int = 5000) -> boo
 def _launch_roblox_uri_for_instance(tray: SystemTray, target: str) -> bool:
     """Launch a URI through the active proxy mode."""
     if sys.platform.startswith('linux'):
-        # Flatpak supplies Fleasion's Env Proxy variables to Sober while the
+        # Flatpak supplies Fleasion's Env Proxy variables to the selected client while the
         # proxy is active; do not replace a one-time URI with a synthetic launch.
         return launch_as_standard_user(target)
 
@@ -3296,7 +3313,7 @@ def _launch_roblox_uri_for_instance(tray: SystemTray, target: str) -> bool:
         lifecycle = getattr(getattr(tray, 'roblox_monitor', None), 'env_lifecycle', None)
         if lifecycle is not None:
             exe_path = (
-                Path('org.vinegarhq.Sober')
+                _linux_client_launch_path()
                 if sys.platform.startswith('linux')
                 else get_roblox_player_exe_path()
             )
@@ -3562,7 +3579,7 @@ def main():
         QMessageBox.critical(
             None,
             'Unsupported Operating System',
-            'Fleasion supports Windows, macOS, and Linux/Sober.\n\nThis application will now exit.',
+            'Fleasion supports Windows, macOS, and Linux.\n\nThis application will now exit.',
             QMessageBox.StandardButton.Ok,
         )
         sys.exit(1)
@@ -3718,6 +3735,10 @@ def main():
     # Initialize config manager before the elevation gate so the non-elevated
     # process can still build the prompt UI and show a fallback dialog.
     config_manager = ConfigManager()
+    if sys.platform.startswith('linux'):
+        from .utils.platform_linux import set_linux_client_preference
+
+        set_linux_client_preference(config_manager.linux_client)
     _env_proxy_migration_pending = _prepare_env_proxy_migration(config_manager)
     config_manager.settings['_runtime_proxy_debug'] = bool(_args.proxy_debug)
     config_manager.settings['_runtime_proxy_debug_mode'] = _args.proxy_debug_mode or 'full'
@@ -3950,7 +3971,7 @@ def main():
     ):
         _arm_windows_gdk_env_proxy_when_ready(proxy_master)
 
-    # Env Proxy owns Player/Sober lifecycle independently of Studio.
+    # Env Proxy owns the selected Player/client lifecycle independently of Studio.
     from .proxy.env_lifecycle import EnvProxyLifecycleController
 
     if sys.platform == 'win32':
@@ -4013,7 +4034,8 @@ def main():
         ) -> bool:
             log_buffer.log(
                 'Launcher',
-                'Linux Sober Env Proxy is supplied by Flatpak; synthetic relaunch skipped',
+                'Linux client Env Proxy is supplied by the client launcher; '
+                'synthetic relaunch skipped',
             )
             return False
 

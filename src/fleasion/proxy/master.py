@@ -3593,6 +3593,18 @@ def _install_ca_into_macos_login_keychain(ca_cert_path: Path, ca_pem: str) -> tu
     }
 
 
+def _selected_linux_client_installation():
+    """Resolve the selected Linux client without importing Linux helpers elsewhere."""
+    if not IS_LINUX:
+        return None
+    try:
+        from ..utils.platform_linux import get_selected_linux_client_installation
+
+        return get_selected_linux_client_installation()
+    except OSError, RuntimeError, ValueError:
+        return None
+
+
 def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
     """Check if the currently running Roblox instance has our CA in its cacert.pem.
 
@@ -3741,8 +3753,17 @@ class ProxyMaster:
         on_proxy_start_error: Optional[Callable[[str, dict], None]] = None,
     ) -> None:
         self.config_manager = config_manager
-        self.cache_manager = CacheManager(config_manager)
         self._on_proxy_start_error = on_proxy_start_error
+        if IS_LINUX:
+            from ..utils.platform_linux import recover_stale_linux_client_env_proxy_override
+
+            if not recover_stale_linux_client_env_proxy_override():
+                log_buffer.log(
+                    'Launcher',
+                    'Could not recover a stale Linux Env Proxy override during startup; '
+                    'the persisted ownership marker was kept for a later retry',
+                )
+        self.cache_manager = CacheManager(config_manager)
 
         # Singleton addon instances - GUI holds references to these directly
         self.cache_scraper = CacheScraper(self.cache_manager)
@@ -3768,6 +3789,14 @@ class ProxyMaster:
         self._windows_selector_fallback_attempted = False
         self._hosts_installed: bool = False
         self._active_env_proxy_mode: bool = False
+        self._active_linux_client_installation = (
+            _selected_linux_client_installation() if IS_LINUX else None
+        )
+        self._active_linux_client_key: str | None = getattr(
+            self._active_linux_client_installation, 'key', None
+        )
+        self._linux_env_proxy_override_client_key: str | None = None
+        # Compatibility alias retained for callers/tests that only knew Sober.
         self._sober_env_proxy_override_active: bool = False
         self._active_intercept_hosts: set[str] = set(BASE_INTERCEPT_HOSTS)
         self._env_proxy_intercept_match: str = ''
@@ -3807,6 +3836,90 @@ class ProxyMaster:
     def roblox_env_proxy_url(self) -> str:
         port = self._active_proxy_port or MACOS_PROXY_BACKEND_PORT
         return f'http://127.0.0.1:{port}'
+
+    def _linux_client_installation(self):
+        installation = getattr(self, '_active_linux_client_installation', None)
+        if installation is not None:
+            return installation
+        # Raw ``__new__`` test doubles predate selected-client state. Resolve
+        # the configured client when possible and otherwise retain Sober's
+        # historical behavior.
+        return _selected_linux_client_installation()
+
+    def _linux_client_key(self) -> str | None:
+        if hasattr(self, '_active_linux_client_key'):
+            return self._active_linux_client_key
+        installation = self._linux_client_installation()
+        return getattr(installation, 'key', None) or ('sober' if IS_LINUX else None)
+
+    def _linux_client_descriptor(self):
+        installation = self._linux_client_installation()
+        descriptor = getattr(installation, 'client', None)
+        if descriptor is not None:
+            return descriptor
+        client_key = self._linux_client_key()
+        if client_key is None:
+            return None
+        try:
+            from ..utils.linux_clients import get_linux_client
+
+            return get_linux_client(client_key)
+        except ValueError:
+            return None
+
+    def _linux_proxy_passthrough_hosts(self) -> set[str]:
+        """Return bootstrap hosts that the selected client must tunnel."""
+        descriptor = self._linux_client_descriptor()
+        return set(getattr(descriptor, 'proxy_passthrough_hosts', ()))
+
+    def _linux_env_proxy_excluded_hosts(self) -> set[str]:
+        """Return selected-client hosts that explicit mode must tunnel."""
+        hosts = self._linux_proxy_passthrough_hosts()
+        descriptor = self._linux_client_descriptor()
+        route_delay = getattr(descriptor, 'clientsettings_route_delay_seconds', 0.0)
+        if route_delay > 0:
+            # The first ClientSettings request is made by Sober's pinned
+            # bootstrap client, so keep it tunneled until the descriptor's
+            # route-arm delay has elapsed.
+            hosts.update(CUSTOM_FFLAGS_INTERCEPT_HOSTS)
+        return hosts
+
+    def _arm_linux_env_proxy_override(self) -> bool:
+        """Arm the explicit proxy for exactly the selected Linux client."""
+        client_key = self._linux_client_key()
+        if client_key is None:
+            log_buffer.log('Launcher', 'Cannot arm Linux Env Proxy: no client is selected')
+            return False
+        from ..utils.platform_linux import set_linux_client_env_proxy_override
+
+        armed = set_linux_client_env_proxy_override(
+            self.roblox_env_proxy_url(),
+            client_key=client_key,
+        )
+        if armed:
+            self._linux_env_proxy_override_client_key = client_key
+            self._sober_env_proxy_override_active = client_key == 'sober'
+        return bool(armed)
+
+    def _clear_linux_env_proxy_override(self) -> bool:
+        """Clear only the client override armed by this proxy instance."""
+        client_key = getattr(self, '_linux_env_proxy_override_client_key', None)
+        if client_key is None and getattr(self, '_sober_env_proxy_override_active', False):
+            client_key = 'sober'
+        if client_key is None:
+            return True
+        from ..utils.platform_linux import clear_linux_client_env_proxy_override
+
+        cleared = clear_linux_client_env_proxy_override(client_key=client_key)
+        if cleared:
+            self._linux_env_proxy_override_client_key = None
+            self._sober_env_proxy_override_active = False
+        return bool(cleared)
+
+    def _cleanup_linux_client_proxy_state(self) -> None:
+        """Restore selected-client state after any proxy shutdown path."""
+        if IS_LINUX:
+            self._clear_linux_env_proxy_override()
 
     def wait_for_env_proxy_ready(self, timeout: float = 15.0) -> bool:
         """Wait for bind and TLS self-test, not merely proxy thread startup."""
@@ -4096,19 +4209,32 @@ class ProxyMaster:
         return time.clock_gettime(clock_id)
 
     def _linux_sober_custom_fflag_routes_ready(self) -> bool:
-        """Keep Sober's pinned bootstrap fetch outside Fleasion's TLS route."""
+        """Return when selected-client ClientSettings interception is safe."""
         # Tests (and platform-specific callers) can override one platform flag
         # without clearing the host platform flag.  Treat the Linux delay as
         # active only when Linux is the selected platform.
         if not IS_LINUX or IS_WINDOWS or IS_MACOS:
             return True
-        from ..utils.platform_linux import sober_main_process
+        installation = self._linux_client_installation()
+        descriptor = self._linux_client_descriptor()
+        route_delay = float(
+            getattr(
+                descriptor,
+                'clientsettings_route_delay_seconds',
+                SOBER_CUSTOM_FFLAG_ROUTE_ARM_DELAY_SECONDS,
+            )
+        )
+        if route_delay <= 0:
+            return True
+        if installation is None:
+            return False
+        from ..utils.platform_linux import linux_client_main_process
 
-        process = sober_main_process()
+        process = linux_client_main_process(installation)
         if process is None:
             return False
         _pid, started_at = process
-        return self._sober_boottime() - started_at >= SOBER_CUSTOM_FFLAG_ROUTE_ARM_DELAY_SECONDS
+        return self._sober_boottime() - started_at >= route_delay
 
     def _set_linux_sober_clientsettings_passthrough(self, enabled: bool) -> None:
         """Keep Sober's pinned ClientSettings bootstrap outside TLS interception."""
@@ -4126,8 +4252,21 @@ class ProxyMaster:
 
     def _start_linux_sober_custom_fflag_timer(self) -> None:
         """Arm Linux ClientSettings interception after Sober's bootstrap window."""
-        if not IS_LINUX or (
-            self._sober_fflag_timer_thread and self._sober_fflag_timer_thread.is_alive()
+        installation = self._linux_client_installation()
+        descriptor = self._linux_client_descriptor()
+        client_name = getattr(installation, 'display_name', 'Linux Roblox client')
+        route_delay = float(
+            getattr(
+                descriptor,
+                'clientsettings_route_delay_seconds',
+                SOBER_CUSTOM_FFLAG_ROUTE_ARM_DELAY_SECONDS,
+            )
+        )
+        if (
+            not IS_LINUX
+            or installation is None
+            or route_delay <= 0
+            or (self._sober_fflag_timer_thread and self._sober_fflag_timer_thread.is_alive())
         ):
             return
 
@@ -4135,13 +4274,13 @@ class ProxyMaster:
         self._sober_fflag_timer_stop = stop_event
 
         def _poll() -> None:
-            from ..utils.platform_linux import sober_main_process
+            from ..utils.platform_linux import linux_client_main_process
 
             previous_process: tuple[int, float] | None = None
             previous_ready: bool | None = None
             previous_custom_fflags_enabled: bool | None = None
             while not stop_event.is_set():
-                process = sober_main_process()
+                process = linux_client_main_process(installation)
                 custom_fflags_enabled = bool(
                     getattr(self.config_manager, 'custom_fflags_enabled', False)
                 )
@@ -4150,25 +4289,23 @@ class ProxyMaster:
                     _pid, started_at = process
                     ready = (
                         custom_fflags_enabled
-                        and self._sober_boottime() - started_at
-                        >= SOBER_CUSTOM_FFLAG_ROUTE_ARM_DELAY_SECONDS
+                        and self._sober_boottime() - started_at >= route_delay
                     )
 
                 if process != previous_process:
                     if process is None and previous_process is not None:
                         log_buffer.log(
                             'CustomFFlags',
-                            'Sober closed; Linux ClientSettings interception timer reset',
+                            f'{client_name} closed; Linux ClientSettings interception timer reset',
                         )
                     elif process is not None:
                         remaining = max(
                             0.0,
-                            SOBER_CUSTOM_FFLAG_ROUTE_ARM_DELAY_SECONDS
-                            - (self._sober_boottime() - process[1]),
+                            route_delay - (self._sober_boottime() - process[1]),
                         )
                         log_buffer.log(
                             'CustomFFlags',
-                            'Detected Sober engine; delaying Linux ClientSettings interception '
+                            f'Detected {client_name} engine; delaying Linux ClientSettings interception '
                             f'for {remaining:.0f} seconds to pass the pinned bootstrap fetch',
                         )
                     previous_process = process
@@ -4181,7 +4318,7 @@ class ProxyMaster:
                         log_buffer.log(
                             'CustomFFlags',
                             'Linux ClientSettings interception armed; custom FastFlags will '
-                            "arrive on Sober's 120-second dynamic refresh",
+                            f"arrive on {client_name}'s 120-second dynamic refresh",
                         )
                     self._set_linux_sober_clientsettings_passthrough(not ready)
                     self.refresh_username_spoofer_interception()
@@ -4190,7 +4327,7 @@ class ProxyMaster:
                 stop_event.wait(_SOBER_CUSTOM_FFLAG_POLL_SECONDS)
 
         self._sober_fflag_timer_thread = threading.Thread(
-            target=_poll, daemon=True, name='fleasion-sober-fflag-timer'
+            target=_poll, daemon=True, name='fleasion-linux-clientsettings-timer'
         )
         self._sober_fflag_timer_thread.start()
 
@@ -4716,6 +4853,11 @@ class ProxyMaster:
         except Exception as exc:
             log_buffer.log('Error', f'Proxy failed: {exc}')
             self._running = False
+        finally:
+            # Flatpak overrides outlive this process.  Always disarm the exact
+            # client captured by this worker, including when serve_forever()
+            # returns unexpectedly or startup aborts after flags were primed.
+            self._cleanup_linux_client_proxy_state()
 
     async def _raise_selector_retry_for_proactor_accept_fault(self) -> None:
         loop = getattr(self, '_loop', None)
@@ -4788,11 +4930,7 @@ class ProxyMaster:
         if texture_stripper is not None:
             texture_stripper.reset_routes('proxy stop')
         self._stop_linux_sober_custom_fflag_timer()
-        if IS_LINUX and getattr(self, '_sober_env_proxy_override_active', False):
-            from ..utils.platform_linux import clear_sober_env_proxy_override
-
-            clear_sober_env_proxy_override()
-            self._sober_env_proxy_override_active = False
+        self._cleanup_linux_client_proxy_state()
         with self._lock:
             if not self._running and not (self._thread and self._thread.is_alive()):
                 return
@@ -4847,6 +4985,13 @@ class ProxyMaster:
         self._running = True
         self._loop = asyncio.get_running_loop()
         env_proxy_mode = self._use_env_proxy_mode()
+        if IS_LINUX:
+            self._active_linux_client_installation = _selected_linux_client_installation()
+            self._active_linux_client_key = getattr(
+                self._active_linux_client_installation,
+                'key',
+                None,
+            )
         self._install_proxy_loop_diagnostics(self._loop, env_proxy_mode)
 
         # ── Privileged proxy endpoint check ───────────────────────────────
@@ -4938,8 +5083,9 @@ class ProxyMaster:
         elapsed_ms = (time.perf_counter() - t0) * 1000
         log_buffer.log('Certificate', f'Certificates ready in {elapsed_ms:.0f} ms')
 
-        # Install CA into Roblox ssl dirs
+        # Install CA into Roblox ssl dirs.
         ca_pem = get_ca_pem(ca_cert_path)
+        selected_linux_client_key = self._linux_client_key()
         ca_patch_ok, ca_patch_details = _install_ca_into_roblox(
             ca_pem, include_studio=not env_proxy_mode
         )
@@ -5112,14 +5258,7 @@ class ProxyMaster:
         use_linux_helper = (not env_proxy_mode) and _use_linux_privileged_helper()
         env_proxy_intercept_excluded_hosts: set[str] = set()
         if env_proxy_mode and IS_LINUX:
-            from ..utils.platform_linux import SOBER_ENV_PROXY_PASSTHROUGH_HOSTS
-
-            env_proxy_intercept_excluded_hosts.update(SOBER_ENV_PROXY_PASSTHROUGH_HOSTS)
-            # Sober's first ClientSettings request is made by its pinned
-            # bootstrap client. Keep it tunneled until the Roblox engine has
-            # passed the bootstrap window and custom FastFlag interception is
-            # safe to arm.
-            env_proxy_intercept_excluded_hosts.update(CUSTOM_FFLAGS_INTERCEPT_HOSTS)
+            env_proxy_intercept_excluded_hosts.update(self._linux_env_proxy_excluded_hosts())
         self._env_proxy_intercept_excluded_hosts = set(env_proxy_intercept_excluded_hosts)
         listen_port = (
             MACOS_PROXY_BACKEND_PORT
@@ -5308,21 +5447,35 @@ class ProxyMaster:
             return
         if env_proxy_mode:
             _set_active_hosts_loopbacks(None)
-            self._active_env_proxy_mode = True
             if IS_LINUX:
-                from ..utils.platform_linux import set_sober_env_proxy_override
-
-                self._sober_env_proxy_override_active = set_sober_env_proxy_override(
-                    self.roblox_env_proxy_url()
-                )
+                if not self._arm_linux_env_proxy_override():
+                    log_buffer.log(
+                        'Error',
+                        'Linux Env Proxy startup aborted because the selected client override '
+                        'could not be armed',
+                    )
+                    self._emit_proxy_start_error(
+                        'linux_env_proxy_override_failed',
+                        {'client': selected_linux_client_key or 'unknown'},
+                    )
+                    await self._proxy.stop()
+                    self._running = False
+                    return
+            self._active_env_proxy_mode = True
             ready_event = getattr(self, '_env_proxy_ready', None)
             if ready_event is not None:
                 ready_event.set()
             if env_proxy_intercept_excluded_hosts:
+                client_name = getattr(
+                    self._linux_client_installation(),
+                    'display_name',
+                    'Linux Roblox client',
+                )
                 log_buffer.log(
                     'Proxy',
-                    'Linux/Sober pinned bootstrap hosts remain tunneled even when '
-                    f'Proxy-tab intercept-all is enabled: {", ".join(sorted(SOBER_ENV_PROXY_PASSTHROUGH_HOSTS))}',
+                    f'{client_name} bootstrap hosts remain tunneled even when Proxy-tab '
+                    'intercept-all is enabled: '
+                    f'{", ".join(sorted(env_proxy_intercept_excluded_hosts))}',
                 )
             # The self-test above just probed every active intercept host itself;
             # wipe that from the log so the traffic tab only ever shows genuine

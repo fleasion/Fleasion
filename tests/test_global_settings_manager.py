@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from fleasion.modifications.global_settings_manager import GlobalSettingsManager
+from fleasion.modifications.global_settings_manager import (
+    GlobalSettingsManager,
+    _global_settings_stash_path,
+)
 
 
 def _manager(tmp_path, roblox_dir):
@@ -31,7 +34,7 @@ def test_reset_framerate_cap_restores_stashed_original(tmp_path):
     _write_settings(settings, 55)
 
     manager = _manager(tmp_path, roblox_dir)
-    stash = manager._stash_dir / roblox_dir.parent.name / settings.name
+    stash = _global_settings_stash_path(manager._stash_dir, roblox_dir)
     stash.parent.mkdir(parents=True)
     _write_settings(stash, 60)
 

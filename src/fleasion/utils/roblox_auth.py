@@ -8,8 +8,12 @@ import stat
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
+from typing import Callable, Mapping
 
+from .linux_clients import SOBER_CLIENT, LinuxClientInstallation
 from .logging import log_buffer
 from .paths import CONFIG_DIR, CONFIG_FILE, LOCAL_APPDATA, USER_HOME
 from .secure_tokens import decrypt_token, encrypt_token
@@ -20,11 +24,15 @@ except Exception:
     win32crypt = None
 
 
+_SOBER_LOCAL_COOKIE_RELATIVE_PATH = Path('cookies')
 if sys.platform == 'darwin':
     ROBLOX_COOKIES_PATH = USER_HOME / 'Library' / 'Roblox' / 'RobloxCookies.dat'
 elif sys.platform.startswith('linux'):
+    # Compatibility export for callers that only use this constant on Windows.
+    # Linux discovery below resolves the selected installation through its
+    # provider instead of probing this path unconditionally.
     ROBLOX_COOKIES_PATH = (
-        USER_HOME / '.var' / 'app' / 'org.vinegarhq.Sober' / 'data' / 'sober' / 'cookies'
+        SOBER_CLIENT.paths(home=USER_HOME).data_root / _SOBER_LOCAL_COOKIE_RELATIVE_PATH
     )
 else:
     ROBLOX_COOKIES_PATH = LOCAL_APPDATA / 'Roblox' / 'LocalStorage' / 'RobloxCookies.dat'
@@ -35,9 +43,6 @@ _ROBLOX_COOKIE_RELATIVE_PATH = (
 _MACOS_COOKIE_CANDIDATES = (
     Path('Library') / 'Roblox' / 'RobloxCookies.dat',
     Path('Library') / 'Roblox' / 'LocalStorage' / 'RobloxCookies.dat',
-)
-_LINUX_COOKIE_CANDIDATES = (
-    Path('.var') / 'app' / 'org.vinegarhq.Sober' / 'data' / 'sober' / 'cookies',
 )
 _SUCCESSFUL_COOKIE_PATH: Path | None = None
 _LAST_AUTH_FAILURE_DETAILS: dict[str, object] = {}
@@ -141,6 +146,75 @@ def _extract_roblosecurity(cookie_text: str) -> str | None:
     return None
 
 
+def _parse_plaintext_roblosecurity(payload: bytes) -> str | None:
+    """Extract a token from a backend-owned plaintext cookie payload."""
+    for encoding in ('latin-1', 'utf-8'):
+        try:
+            cookie = _extract_roblosecurity(payload.decode(encoding, errors='ignore'))
+        except Exception:
+            continue
+        if cookie:
+            return cookie
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class LinuxLocalAuthProvider:
+    """Opt-in reader for one selected Linux client's local auth store."""
+
+    client_key: str
+    source_name: str
+    cookie_relative_path: Path
+    parse_payload: Callable[[bytes], str | None]
+
+    def cookie_path(self, installation: LinuxClientInstallation) -> Path:
+        return installation.paths.data_root / self.cookie_relative_path
+
+    def read_roblosecurity(self, path: Path) -> str | None:
+        if not _path_exists(path):
+            _log_auth_failure(
+                f'linux-cookie-missing:{self.client_key}:{path}',
+                f'{self.source_name} local cookie file not found at {path}',
+            )
+            return None
+        try:
+            payload = path.read_bytes()
+        except Exception as exc:
+            _log_auth_failure(
+                f'linux-cookie-read:{self.client_key}:{path}:{type(exc).__name__}',
+                f'Failed to read {self.source_name} local cookie file at {path}: '
+                f'{type(exc).__name__}',
+            )
+            return None
+        try:
+            cookie = self.parse_payload(payload)
+        except Exception as exc:
+            _log_auth_failure(
+                f'linux-cookie-parse:{self.client_key}:{path}:{type(exc).__name__}',
+                f'Failed to parse {self.source_name} local cookie file at {path}: '
+                f'{type(exc).__name__}',
+            )
+            return None
+        if cookie:
+            return cookie
+        _log_auth_failure(
+            f'linux-cookie-not-found:{self.client_key}:{path}',
+            f'{self.source_name} local cookie file at {path} does not contain .ROBLOSECURITY',
+        )
+        return None
+
+
+SOBER_LOCAL_AUTH_PROVIDER = LinuxLocalAuthProvider(
+    client_key=SOBER_CLIENT.key,
+    source_name=SOBER_CLIENT.display_name,
+    cookie_relative_path=_SOBER_LOCAL_COOKIE_RELATIVE_PATH,
+    parse_payload=_parse_plaintext_roblosecurity,
+)
+LINUX_LOCAL_AUTH_PROVIDERS_BY_KEY: Mapping[str, LinuxLocalAuthProvider] = MappingProxyType(
+    {SOBER_LOCAL_AUTH_PROVIDER.client_key: SOBER_LOCAL_AUTH_PROVIDER}
+)
+
+
 def _replace_roblosecurity(cookie_text: str, cookie: str) -> tuple[str, int]:
     """Replace .ROBLOSECURITY in known Roblox cookie-store text formats."""
     patterns = (
@@ -195,6 +269,33 @@ def _path_exists(path: Path) -> bool:
         return False
 
 
+def _selected_linux_client_installation() -> LinuxClientInstallation | None:
+    """Resolve only the configured Linux client; discovery reads no auth data."""
+    from .platform_linux import get_selected_linux_client_installation
+
+    return get_selected_linux_client_installation()
+
+
+def _selected_linux_local_auth_candidate(
+) -> tuple[LinuxLocalAuthProvider, Path] | None:
+    """Return the selected client's opt-in local auth provider and path."""
+    try:
+        installation = _selected_linux_client_installation()
+    except Exception as exc:
+        _log_auth_failure(
+            f'linux-auth-provider-selection:{type(exc).__name__}',
+            'Could not resolve the selected Linux Roblox client auth provider: '
+            f'{type(exc).__name__}',
+        )
+        return None
+    if installation is None:
+        return None
+    provider = LINUX_LOCAL_AUTH_PROVIDERS_BY_KEY.get(installation.key)
+    if provider is None:
+        return None
+    return provider, provider.cookie_path(installation)
+
+
 def _add_candidate(
     candidates: list[tuple[str, Path]], seen: set[str], source: str, path: Path
 ) -> None:
@@ -209,16 +310,17 @@ def _iter_user_profile_cookie_candidates() -> list[tuple[str, Path]]:
     candidates: list[tuple[str, Path]] = []
     seen: set[str] = set()
 
+    # Linux local stores have backend-specific formats and privacy semantics.
+    # They are resolved through the selected backend provider in
+    # ``get_roblosecurity`` and must not enter the generic path scanner.
+    if sys.platform.startswith('linux'):
+        return candidates
+
     _add_candidate(candidates, seen, 'LOCALAPPDATA', ROBLOX_COOKIES_PATH)
 
     if sys.platform == 'darwin':
         for relative in _MACOS_COOKIE_CANDIDATES:
             _add_candidate(candidates, seen, 'macOS-home', USER_HOME / relative)
-        return candidates
-
-    if sys.platform.startswith('linux'):
-        for relative in _LINUX_COOKIE_CANDIDATES:
-            _add_candidate(candidates, seen, 'Sober', USER_HOME / relative)
         return candidates
 
     userprofile = os.environ.get('USERPROFILE')
@@ -270,16 +372,6 @@ def _read_cookie_payload(path: Path) -> tuple[dict, bytes] | None:
         )
         return None
 
-    if sys.platform.startswith('linux') and path.name == 'cookies':
-        try:
-            return {}, path.read_bytes()
-        except Exception as exc:
-            _log_auth_failure(
-                f'linux-cookie-read:{path}:{type(exc).__name__}',
-                f'Failed to read Sober cookie file at {path}: {type(exc).__name__}: {exc}',
-            )
-            return None
-
     try:
         with path.open('r', encoding='utf-8') as f:
             data = json.load(f)
@@ -306,9 +398,6 @@ def _read_cookie_payload(path: Path) -> tuple[dict, bytes] | None:
             f'Failed to decode RobloxCookies.dat CookiesData at {path}: {type(exc).__name__}: {exc}',
         )
         return None
-
-    if sys.platform.startswith('linux'):
-        return data, enc
 
     if win32crypt is None:
         if sys.platform == 'darwin':
@@ -971,12 +1060,30 @@ def get_roblosecurity(
     global _SUCCESSFUL_COOKIE_PATH, _LAST_AUTH_FAILURE_DETAILS
 
     if path is not None:
+        if sys.platform.startswith('linux'):
+            candidate = _selected_linux_local_auth_candidate()
+            if candidate is not None and Path(path) == candidate[1]:
+                return candidate[0].read_roblosecurity(candidate[1])
         return _get_roblosecurity_from_path(Path(path))
 
     attempted: list[str] = []
     existing: list[str] = []
 
-    if _SUCCESSFUL_COOKIE_PATH is not None:
+    if sys.platform.startswith('linux'):
+        candidate = _selected_linux_local_auth_candidate()
+        if candidate is not None:
+            provider, cookie_path = candidate
+            attempted.append(str(cookie_path))
+            if _path_exists(cookie_path):
+                existing.append(str(cookie_path))
+            cookie = provider.read_roblosecurity(cookie_path)
+            if cookie:
+                _SUCCESSFUL_COOKIE_PATH = cookie_path
+                _LAST_AUTH_FAILURE_DETAILS = {}
+                _mark_auth_cookie_available(cookie)
+                return cookie
+
+    if _SUCCESSFUL_COOKIE_PATH is not None and not sys.platform.startswith('linux'):
         attempted.append(str(_SUCCESSFUL_COOKIE_PATH))
         cookie = _get_roblosecurity_from_path(_SUCCESSFUL_COOKIE_PATH)
         if cookie:
@@ -1069,6 +1176,12 @@ def get_roblosecurity(
 def set_roblosecurity(cookie: str, path: Path | None = None) -> bool:
     """Replace the .ROBLOSECURITY value in RobloxCookies.dat and re-encrypt it."""
     cookie_path = Path(path) if path is not None else ROBLOX_COOKIES_PATH
+    if sys.platform != 'win32' or win32crypt is None:
+        _log_auth_failure(
+            f'write-unsupported:{cookie_path}',
+            f'Cannot encrypt RobloxCookies.dat at {cookie_path} on this platform',
+        )
+        return False
     try:
         payload = _read_cookie_payload(cookie_path)
         if payload is None:
@@ -1077,12 +1190,6 @@ def set_roblosecurity(cookie: str, path: Path | None = None) -> bool:
         data, dec = payload
         cookie_text = dec.decode('latin-1')
         new_text, _count = _replace_roblosecurity(cookie_text, cookie)
-        if win32crypt is None:
-            _log_auth_failure(
-                f'write-unsupported:{cookie_path}',
-                f'Cannot encrypt RobloxCookies.dat at {cookie_path} on this platform',
-            )
-            return False
         new_enc = win32crypt.CryptProtectData(new_text.encode('latin-1'), None, None, None, None, 0)
         data['CookiesData'] = base64.b64encode(new_enc).decode('ascii')
         restore_read_only = _path_is_read_only(cookie_path)

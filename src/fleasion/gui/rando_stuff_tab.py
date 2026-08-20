@@ -48,10 +48,7 @@ from ..utils.roblox_auth import (
     set_roblosecurity,
 )
 from ..utils.secure_tokens import decrypt_token, encrypt_token
-from ..utils.windows import (
-    launch_as_standard_user,
-    resolve_roblox_player_exe_for_launch,
-)
+from ..utils.windows import launch_as_standard_user, resolve_roblox_player_exe_for_launch
 from .proxy_gate import ProxyGate
 
 ACCOUNTS_FILE = CONFIG_DIR / 'accounts.json'
@@ -347,6 +344,18 @@ def _find_roblox_exe() -> str | None:
     """Return best Roblox executable path using shared resolver fallbacks."""
     exe_path = resolve_roblox_player_exe_for_launch()
     return str(exe_path) if exe_path is not None else None
+
+
+def _linux_client_display_name() -> str:
+    """Return the active registered Linux client name without hard-coding it."""
+    if not IS_LINUX:
+        return 'Linux Roblox client'
+    try:
+        from ..utils.platform_linux import selected_linux_client_display_name
+
+        return selected_linux_client_display_name()
+    except Exception:
+        return 'Linux Roblox client'
 
 
 def _build_roblox_player_uri(
@@ -1898,18 +1907,19 @@ class RandoStuffTab(QWidget):
             QMessageBox.warning(self, 'Error', 'Could not decrypt the stored cookie.')
             return
         username = acc.get('username', '(unknown)')
-        if IS_MACOS:
+        if IS_MACOS or IS_LINUX:
             self._last_switched_account = acc
             self._set_selected_account(username)
+            platform_name = 'macOS' if IS_MACOS else _linux_client_display_name()
             log_buffer.log(
                 'accounts',
-                f'Selected account for Fleasion launches on macOS: {username} '
+                f'Selected account for Fleasion launches on {platform_name}: {username} '
                 '(RobloxCookies.dat switching is Windows-only)',
             )
             QMessageBox.information(
                 self,
                 'Account Selected',
-                'This account will be used for Fleasion launches. macOS Roblox does not expose '
+                f'This account will be used for Fleasion launches. {platform_name} does not use '
                 'the Windows RobloxCookies.dat file for local cookie switching.',
             )
             return
@@ -1956,9 +1966,10 @@ class RandoStuffTab(QWidget):
             except Exception as exc:
                 log_buffer.log('accounts', f'Failed to write cookie file: {exc}')
         else:
+            platform_name = 'macOS' if IS_MACOS else _linux_client_display_name()
             log_buffer.log(
                 'accounts',
-                'Skipping RobloxCookies.dat write on macOS; using auth-ticket launch',
+                f'Skipping RobloxCookies.dat write on {platform_name}; using auth-ticket launch',
             )
 
         exe = _find_roblox_exe()

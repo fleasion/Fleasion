@@ -15,4 +15,4 @@ elif sys.platform == 'darwin':
 elif sys.platform.startswith('linux'):
     from .platform_linux import *  # noqa: F403
 else:
-    raise RuntimeError('Fleasion supports Windows, macOS, and Linux/Sober only.')
+    raise RuntimeError('Fleasion supports Windows, macOS, and Linux only.')

@@ -228,6 +228,40 @@ class ConfigManagerEncodingTests(unittest.TestCase):
             manager.close_env_proxy_roblox_on_exit = False
             self.assertFalse(manager.close_env_proxy_roblox_on_exit)
 
+    def test_linux_client_selection_is_validated_and_persisted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_manager_module = self._load_manager_for(Path(tmp))
+
+            manager = config_manager_module.ConfigManager()
+            self.assertEqual(manager.linux_client, 'auto')
+
+            manager.linux_client = 'Sober'
+            self.assertEqual(manager.linux_client, 'sober')
+            self.assertEqual(
+                config_manager_module.ConfigManager().linux_client,
+                'sober',
+            )
+
+            manager.linux_client = 'not-a-client'
+            self.assertEqual(manager.linux_client, 'auto')
+
+    def test_linux_client_selection_uses_live_registry_keys(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_manager_module = self._load_manager_for(Path(tmp))
+            registry_module = types.ModuleType('fleasion.utils.linux_clients')
+            registry_module.LINUX_CLIENTS_BY_KEY = {
+                'sober': object(),
+                'future-client': object(),
+            }
+
+            with patch.dict(
+                sys.modules,
+                {'fleasion.utils.linux_clients': registry_module},
+            ):
+                manager = config_manager_module.ConfigManager()
+                manager.linux_client = 'Future-Client'
+                self.assertEqual(manager.linux_client, 'future-client')
+
     def test_requested_defaults_for_boot_and_export_naming(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_manager_module = self._load_manager_for(Path(tmp))

@@ -56,12 +56,17 @@ from PyQt6.QtWidgets import (
 )
 
 from ..cache.tools.ktx_to_png import convert as ktx_to_png, strip_prefixed_ktx
-from ..modifications.manager import ModificationManager, normalise_target_path
+from ..modifications.manager import (
+    ModificationManager,
+    normalise_target_path,
+    target_path_for_roblox_dir,
+)
 from ..modifications.fflag_profiles import FastFlagProfileManager
 from ..modifications.platform_targets import (
     read_current_platform_original_asset,
     target_path_for_current_platform,
 )
+from ..modifications.stash_paths import resource_stash_dir
 from ..utils import APP_CACHE_DIR, format_count, log_buffer, open_folder
 from ..utils.http import http_get
 from ..utils.threading import run_in_thread
@@ -609,9 +614,7 @@ class FastFlagValueDelegate(QStyledItemDelegate):
         if name.startswith(self._BOOLEAN_FLAG_PREFIXES):
             editor = CompactBooleanComboBox(parent)
             editor.addItems(['True', 'False'])
-            editor.activated.connect(
-                partial(self._commit_and_close_boolean_editor, editor)
-            )
+            editor.activated.connect(partial(self._commit_and_close_boolean_editor, editor))
             return editor
         return super().createEditor(parent, option, index)
 
@@ -778,16 +781,16 @@ class ModRowWidget(QWidget):
 
     def _check_for_orphaned_stash(self):
         """Show a warning if a stash file exists but Fleasion has no active record."""
-        from ..modifications.manager import MOD_ORIGINALS_DIR, normalise_target_path
+        from ..modifications.manager import MOD_ORIGINALS_DIR
 
         roblox_dirs = self._manager.roblox_dirs
         if not roblox_dirs:
             return
         try:
-            target_path = normalise_target_path(self._target_path)
+            target_path = target_path_for_roblox_dir(self._target_path, roblox_dirs[0])
         except ValueError:
             return
-        stash = MOD_ORIGINALS_DIR / roblox_dirs[0].name / target_path
+        stash = resource_stash_dir(MOD_ORIGINALS_DIR, roblox_dirs[0]) / target_path
         if stash.is_file():
             self._update_status('orphaned_stash')
             self._status_label.setToolTip(
@@ -1233,22 +1236,22 @@ class ModPreviewDialog(QDialog):
 
     def _load_data(self, mode: str) -> bytes | None:
         """Load file bytes for preview. mode='mod' or 'original'."""
-        from ..modifications.manager import MOD_ORIGINALS_DIR, normalise_target_path
+        from ..modifications.manager import MOD_ORIGINALS_DIR
 
         if not self._manager.roblox_dirs:
             return None
         roblox_dir = self._manager.roblox_dirs[0]
         try:
-            target_path = normalise_target_path(self._target_path)
+            target_path = target_path_for_roblox_dir(self._target_path, roblox_dir)
         except ValueError:
             return None
 
         if mode == 'original':
             # Try stash first
-            stash = MOD_ORIGINALS_DIR / roblox_dir.name / target_path
+            stash = resource_stash_dir(MOD_ORIGINALS_DIR, roblox_dir) / target_path
             if stash.is_file():
                 return stash.read_bytes()
-            original = read_current_platform_original_asset(self._target_path)
+            original = read_current_platform_original_asset(self._target_path, roblox_dir)
             if original is not None:
                 return original
             mod_active = any(
@@ -1263,7 +1266,7 @@ class ModPreviewDialog(QDialog):
         dst = roblox_dir / target_path
         if dst.is_file():
             return dst.read_bytes()
-        return read_current_platform_original_asset(self._target_path)
+        return read_current_platform_original_asset(self._target_path, roblox_dir)
 
     def _on_export(self):
         path, _ = QFileDialog.getSaveFileName(
@@ -1354,7 +1357,7 @@ class CustomFFlagWarningDialog(QDialog):
 
         message = QLabel(
             'Roblox only permits a small allowlist of local FastFlags. This feature bypasses '
-            'that restriction by modifying Roblox\'s remote ClientSettings response. Fleasion '
+            "that restriction by modifying Roblox's remote ClientSettings response. Fleasion "
             'cannot determine whether a flag is safe, and the Fleasion contributors accept no '
             'liability for account moderation, data loss, crashes, or other consequences.\n\n'
             'Only continue if you understand the risk and accept full responsibility.'
@@ -1363,9 +1366,7 @@ class CustomFFlagWarningDialog(QDialog):
         layout.addWidget(message)
 
         self._buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
-        self._confirm_button = self._buttons.addButton(
-            '', QDialogButtonBox.ButtonRole.AcceptRole
-        )
+        self._confirm_button = self._buttons.addButton('', QDialogButtonBox.ButtonRole.AcceptRole)
         self._confirm_button.setEnabled(False)
         self._buttons.accepted.connect(self.accept)
         self._buttons.rejected.connect(self.reject)
@@ -1532,7 +1533,9 @@ class FastFlagProfilesDialog(QDialog):
         old_name = self._selected_name()
         if not old_name:
             return
-        new_name, ok = QInputDialog.getText(self, 'Rename FastFlag Profile', 'New name:', text=old_name)
+        new_name, ok = QInputDialog.getText(
+            self, 'Rename FastFlag Profile', 'New name:', text=old_name
+        )
         if not ok:
             return
         try:
@@ -1546,7 +1549,10 @@ class FastFlagProfilesDialog(QDialog):
         name = self._selected_name()
         if not name:
             return
-        if QMessageBox.question(self, 'Delete FastFlag Profile', f'Delete “{name}”?') != QMessageBox.StandardButton.Yes:
+        if (
+            QMessageBox.question(self, 'Delete FastFlag Profile', f'Delete “{name}”?')
+            != QMessageBox.StandardButton.Yes
+        ):
             return
         try:
             self._profiles.delete(name)
@@ -1577,8 +1583,7 @@ class FFlagBrowserDialog(QDialog):
     )
     _SETTINGS_BUCKETS = ('', '/bucket/zcanary', '/bucket/zintegration')
     _TRACKER_VARIABLES_URL = (
-        'https://raw.githubusercontent.com/MaximumADHD/Roblox-Client-Tracker/'
-        'roblox/FVariables.txt'
+        'https://raw.githubusercontent.com/MaximumADHD/Roblox-Client-Tracker/roblox/FVariables.txt'
     )
     _HISTORICAL_TRACKER_VARIABLES_URL = (
         'https://raw.githubusercontent.com/MaximumADHD/Roblox-Client-Tracker/'
@@ -1742,7 +1747,7 @@ class FFlagBrowserDialog(QDialog):
             raw_flags = cached['flags']
             if not 0 <= age < cls._CACHE_TTL_SECONDS or not isinstance(raw_flags, dict):
                 return None
-        except (OSError, ValueError, TypeError, AttributeError, KeyError, json.JSONDecodeError):
+        except OSError, ValueError, TypeError, AttributeError, KeyError, json.JSONDecodeError:
             return None
 
         flags: dict[str, str | None] = {}
@@ -1816,7 +1821,7 @@ class FFlagBrowserDialog(QDialog):
                     url = futures[future]
                     try:
                         settings = self._extract_flags(json.loads(future.result()))
-                    except (OSError, ValueError, json.JSONDecodeError):
+                    except OSError, ValueError, json.JSONDecodeError:
                         # Some platform/channel combinations are intentionally
                         # unavailable. The remaining published endpoints are
                         # still useful to the browser.
@@ -1832,11 +1837,13 @@ class FFlagBrowserDialog(QDialog):
             ):
                 try:
                     tracker_flags = self._extract_tracker_flags(http_get(tracker_url, timeout=20))
-                except (OSError, ValueError):
+                except OSError, ValueError:
                     # A tracker snapshot should add names when available, but a
                     # temporary GitHub failure must not hide published values.
                     continue
-                flags.update({name: value for name, value in tracker_flags.items() if name not in flags})
+                flags.update(
+                    {name: value for name, value in tracker_flags.items() if name not in flags}
+                )
 
             if not flags:
                 raise ValueError('No configured FastFlag source returned usable data.')
@@ -1979,7 +1986,9 @@ class WindowsHotkeyCaptureDialog(QDialog):
         layout.addWidget(self._preview)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
-        clear_button = buttons.addButton('Clear Keybind', QDialogButtonBox.ButtonRole.DestructiveRole)
+        clear_button = buttons.addButton(
+            'Clear Keybind', QDialogButtonBox.ButtonRole.DestructiveRole
+        )
         clear_button.clicked.connect(self._clear)
         buttons.rejected.connect(self.reject)
         clear_button.installEventFilter(self)
@@ -2018,8 +2027,20 @@ class WindowsHotkeyCaptureDialog(QDialog):
         if not 0 < scan_code <= 0xFF:
             return None
         extended = virtual_key in {
-            0xA3, 0xA5, 0x2D, 0x2E, 0x24, 0x23, 0x21, 0x22,
-            0x25, 0x26, 0x27, 0x28, 0x5B, 0x5C,
+            0xA3,
+            0xA5,
+            0x2D,
+            0x2E,
+            0x24,
+            0x23,
+            0x21,
+            0x22,
+            0x25,
+            0x26,
+            0x27,
+            0x28,
+            0x5B,
+            0x5C,
         }
         return {
             'scan_code': scan_code,
@@ -2092,8 +2113,10 @@ class WindowsHotkeyCaptureDialog(QDialog):
         }
         if virtual_key := button_map.get(event.button()):
             self.binding = {
-                'platform': 'windows', 'kind': 'mouse_button',
-                'scan_code': virtual_key, 'extended': False,
+                'platform': 'windows',
+                'kind': 'mouse_button',
+                'scan_code': virtual_key,
+                'extended': False,
                 'modifiers': self._modifier_mask(event.modifiers()),
             }
             self.accept()
@@ -2104,7 +2127,8 @@ class WindowsHotkeyCaptureDialog(QDialog):
         delta = event.angleDelta().y()
         if delta:
             self.binding = {
-                'platform': 'windows', 'kind': 'mouse_wheel',
+                'platform': 'windows',
+                'kind': 'mouse_wheel',
                 'direction': 'up' if delta > 0 else 'down',
                 'modifiers': self._modifier_mask(event.modifiers()),
             }
@@ -2142,7 +2166,9 @@ class LinuxHotkeyCaptureDialog(QDialog):
         self._preview.setStyleSheet('color: #999; padding: 10px 0;')
         layout.addWidget(self._preview)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
-        clear_button = buttons.addButton('Clear Keybind', QDialogButtonBox.ButtonRole.DestructiveRole)
+        clear_button = buttons.addButton(
+            'Clear Keybind', QDialogButtonBox.ButtonRole.DestructiveRole
+        )
         clear_button.clicked.connect(self._clear)
         buttons.rejected.connect(self.reject)
         clear_button.installEventFilter(self)
@@ -2190,8 +2216,10 @@ class LinuxHotkeyCaptureDialog(QDialog):
         if self._suppress_mouse_capture or not self.isVisible():
             return
         self.binding = {
-            'platform': 'linux_evdev', 'kind': 'mouse_button',
-            'scan_code': code, 'modifiers': modifiers,
+            'platform': 'linux_evdev',
+            'kind': 'mouse_button',
+            'scan_code': code,
+            'modifiers': modifiers,
         }
         self.accept()
 
@@ -2333,9 +2361,7 @@ class CustomFFlagEditor(QWidget):
         column_count = 4 if self._hotkeys_supported else 2
         self._table = QTableWidget(0, column_count)
         self._table.setHorizontalHeaderLabels(
-            ['Name', 'Value', 'Status', 'Keybind']
-            if self._hotkeys_supported
-            else ['Name', 'Value']
+            ['Name', 'Value', 'Status', 'Keybind'] if self._hotkeys_supported else ['Name', 'Value']
         )
         header = self._table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
@@ -2348,9 +2374,7 @@ class CustomFFlagEditor(QWidget):
         self._table.verticalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
         self._table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._table.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
-        )
+        self._table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._table.setMinimumHeight(180)
@@ -2467,7 +2491,9 @@ class CustomFFlagEditor(QWidget):
         try:
             value_item = self._table.item(row, 1)
             normalized_value = (
-                'True' if str(value).strip().lower() == 'true' else 'False'
+                'True'
+                if str(value).strip().lower() == 'true'
+                else 'False'
                 if self._is_boolean_flag(name)
                 else str(value)
             )
@@ -2744,9 +2770,7 @@ class CustomFFlagEditor(QWidget):
             return
         flags = self._flags_from_table()
         flags[name] = (
-            value_combo.currentText()
-            if self._is_boolean_flag(name)
-            else value_edit.text()
+            value_combo.currentText() if self._is_boolean_flag(name) else value_edit.text()
         )
         self._set_flags(flags)
 
@@ -2839,6 +2863,7 @@ class CustomFFlagEditor(QWidget):
             )
             for row in range(self._table.rowCount())
         ]
+
         def sort_value(entry: tuple[str, str]) -> str:
             if column == 0:
                 return entry[0]
@@ -2849,7 +2874,11 @@ class CustomFFlagEditor(QWidget):
             return self._keybind_text(self._keybinds().get(entry[0]))
 
         rows.sort(
-            key=lambda entry: (sort_value(entry).casefold(), entry[0].casefold(), entry[1].casefold()),
+            key=lambda entry: (
+                sort_value(entry).casefold(),
+                entry[0].casefold(),
+                entry[1].casefold(),
+            ),
             reverse=not self._sort_ascending,
         )
 
@@ -2857,9 +2886,7 @@ class CustomFFlagEditor(QWidget):
 
         self._table.horizontalHeader().setSortIndicator(
             column,
-            Qt.SortOrder.AscendingOrder
-            if self._sort_ascending
-            else Qt.SortOrder.DescendingOrder,
+            Qt.SortOrder.AscendingOrder if self._sort_ascending else Qt.SortOrder.DescendingOrder,
         )
         self._filter_rows(self._search.text())
 
@@ -3435,7 +3462,7 @@ class ModificationsTab(QWidget):
         if sys.platform.startswith('linux'):
             sober_mesh_warning = QLabel(
                 '<b>Linux / Sober limitation:</b> R6 default avatar mesh replacements '
-                'do not work in Sober. Sober developers have stated that Sober\'s '
+                "do not work in Sober. Sober developers have stated that Sober's "
                 'asset_overlay does not respect R6 mesh replacements because of '
                 'concerns around inappropriate meshes and cheats.'
             )

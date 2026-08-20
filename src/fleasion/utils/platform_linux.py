@@ -1,53 +1,59 @@
-"""Linux/Sober desktop utilities."""
+"""Linux desktop utilities for registered Roblox clients."""
 
 from __future__ import annotations
 
+import json
 import os
+
 try:
     import pwd
 except ModuleNotFoundError:  # pragma: no cover - exercised by Windows collection
     pwd = None
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Optional
 
+from .linux_clients import (
+    LINUX_CLIENTS,
+    LINUX_CLIENTS_BY_KEY,
+    SOBER_CLIENT,
+    LinuxClientInstallation,
+    detect_installed_clients,
+    get_linux_client,
+    select_linux_client,
+)
 from .logging import log_buffer
 from .metadata import APP_NAME
-from .paths import APP_CACHE_DIR, STORAGE_DB, USER_HOME, get_icon_path
+from .paths import (
+    APP_CACHE_DIR,
+    CONFIG_DIR,
+    CONFIG_FILE,
+    USER_HOME,
+    get_icon_path,
+)
 
-SOBER_APP_ID = 'org.vinegarhq.Sober'
+SOBER_APP_ID = SOBER_CLIENT.app_id
 SOBER_FLATPAK_ROOT = USER_HOME / '.var' / 'app' / SOBER_APP_ID
 SOBER_DATA_DIR = SOBER_FLATPAK_ROOT / 'data' / 'sober'
-SOBER_CACHE_DIR = SOBER_FLATPAK_ROOT / 'cache' / 'sober'
 SOBER_CONFIG_FILE = SOBER_FLATPAK_ROOT / 'config' / 'sober' / 'config.json'
 SOBER_ASSET_OVERLAY_DIR = SOBER_DATA_DIR / 'asset_overlay'
 SOBER_LEGACY_EXE_DIR = SOBER_DATA_DIR / 'exe'
-SOBER_CACHE_STORAGE_DIR = SOBER_CACHE_DIR / 'rbx-storage'
-SOBER_PROCESS_NAMES = ('sober', 'Sober', SOBER_APP_ID)
-SOBER_CGROUP_MARKER = 'app-flatpak-org.vinegarhq.Sober'
+SOBER_CGROUP_MARKER = SOBER_CLIENT.cgroup_marker
+LINUX_PROXY_OVERRIDE_STATE = CONFIG_DIR / 'linux_proxy_override.json'
 # Sober fetches its update/feature manifest before the Roblox engine starts.
 # That bootstrap client uses certificate pinning and does not trust Fleasion's
 # generated CA, so these connections must remain tunneled when the Proxy tab's
 # intercept-all switch is enabled. Roblox traffic is still intercepted normally.
-SOBER_ENV_PROXY_PASSTHROUGH_HOSTS = frozenset(
-    {'sober.vinegarhq.org', 'raw.githubusercontent.com'}
-)
+SOBER_ENV_PROXY_PASSTHROUGH_HOSTS = SOBER_CLIENT.proxy_passthrough_hosts
 PROC_ROOT = Path('/proc')
 _ROBLOX_URI_SCHEMES = ('x-scheme-handler/roblox', 'x-scheme-handler/roblox-player')
-_SOBER_PROXY_ENVIRONMENT_NAMES = (
-    'ALL_PROXY',
-    'HTTPS_PROXY',
-    'HTTP_PROXY',
-    'all_proxy',
-    'https_proxy',
-    'http_proxy',
-    'NO_PROXY',
-    'no_proxy',
-)
+_linux_client_preference: str | None = None
+_active_linux_proxy_client_key: str | None = None
 _FLEASION_ROBLOX_URI_HANDLER_IDS = frozenset(
     {
         'fleasion.desktop',
@@ -164,6 +170,100 @@ def run_cmd(args: list[str]) -> str:
     ).stdout
 
 
+def _normalized_linux_client_preference(value: object) -> str:
+    normalized = str(value or 'auto').strip().casefold()
+    return normalized if normalized == 'auto' or normalized in LINUX_CLIENTS_BY_KEY else 'auto'
+
+
+def set_linux_client_preference(value: str | None) -> None:
+    """Set the in-process Linux client preference from ``ConfigManager``."""
+    global _linux_client_preference
+    _linux_client_preference = _normalized_linux_client_preference(value)
+
+
+def _configured_linux_client_preference() -> str:
+    if _linux_client_preference is not None:
+        return _linux_client_preference
+    try:
+        payload = json.loads(CONFIG_FILE.read_text(encoding='utf-8'))
+        value = str(payload.get('linux_client', 'auto') if isinstance(payload, dict) else 'auto')
+    except OSError, UnicodeDecodeError, json.JSONDecodeError:
+        value = 'auto'
+    return _normalized_linux_client_preference(value)
+
+
+def linux_client_installations() -> tuple[LinuxClientInstallation, ...]:
+    """Return installed clients using metadata-only discovery."""
+    return detect_installed_clients(home=USER_HOME)
+
+
+def _fallback_sober_installation() -> LinuxClientInstallation:
+    """Preserve historical Sober behavior when installation probing is unavailable."""
+    flatpak = shutil.which('flatpak')
+    return LinuxClientInstallation(
+        client=SOBER_CLIENT,
+        paths=SOBER_CLIENT.paths(home=USER_HOME),
+        executable=Path(flatpak) if flatpak else None,
+    )
+
+
+def get_selected_linux_client_installation() -> LinuxClientInstallation | None:
+    """Resolve the configured/desktop-selected Linux Roblox installation."""
+    preference = _configured_linux_client_preference()
+    # A single initialized Flatpak layout is an unambiguous, side-effect-free
+    # answer when no MIME query tool is available.  Besides keeping launch
+    # resilient in restricted desktop sessions, this avoids making a Roblox
+    # URI launch depend on a successful ``flatpak info`` subprocess.
+    if preference == 'auto' and shutil.which('xdg-mime') is None:
+        rooted: list[LinuxClientInstallation] = []
+        flatpak = shutil.which('flatpak')
+        for client in LINUX_CLIENTS:
+            paths = client.paths(home=USER_HOME)
+            if paths.flatpak_root.is_dir():
+                rooted.append(
+                    LinuxClientInstallation(
+                        client=client,
+                        paths=paths,
+                        executable=Path(flatpak) if flatpak else None,
+                    )
+                )
+        if len(rooted) == 1:
+            return rooted[0]
+
+    installed = linux_client_installations()
+    selected = select_linux_client(preference, installed=installed, home=USER_HOME)
+    if selected is not None:
+        return selected
+    if not installed and (preference == 'auto' or preference == SOBER_CLIENT.key):
+        return _fallback_sober_installation()
+    return None
+
+
+def selected_linux_client_key() -> str:
+    selected = get_selected_linux_client_installation()
+    return selected.key if selected is not None else _configured_linux_client_preference()
+
+
+def _configured_linux_client_descriptor():
+    return LINUX_CLIENTS_BY_KEY.get(_configured_linux_client_preference())
+
+
+def selected_linux_client_display_name() -> str:
+    selected = get_selected_linux_client_installation()
+    configured = _configured_linux_client_descriptor()
+    if selected is not None:
+        return selected.display_name
+    return configured.display_name if configured is not None else 'Linux Roblox client'
+
+
+def selected_linux_client_app_id() -> str:
+    selected = get_selected_linux_client_installation()
+    configured = _configured_linux_client_descriptor()
+    if selected is not None:
+        return selected.app_id
+    return configured.app_id if configured is not None else SOBER_APP_ID
+
+
 def _process_pids(name: str) -> list[int]:
     try:
         result = subprocess.run(
@@ -183,14 +283,6 @@ def _process_pids(name: str) -> list[int]:
     return pids
 
 
-def _first_sober_pid() -> int | None:
-    for name in SOBER_PROCESS_NAMES:
-        pids = _process_pids(name)
-        if pids:
-            return pids[0]
-    return None
-
-
 def sober_main_process() -> tuple[int, float] | None:
     """Return the Sober Roblox engine PID and its boot-time start timestamp.
 
@@ -200,7 +292,7 @@ def sober_main_process() -> tuple[int, float] | None:
     """
     try:
         ticks_per_second = float(os.sysconf('SC_CLK_TCK'))
-    except (AttributeError, OSError, ValueError):
+    except AttributeError, OSError, ValueError:
         return None
     if ticks_per_second <= 0:
         return None
@@ -208,9 +300,7 @@ def sober_main_process() -> tuple[int, float] | None:
     for pid in _process_pids('Main'):
         process_dir = PROC_ROOT / str(pid)
         try:
-            cgroup = (process_dir / 'cgroup').read_text(
-                encoding='utf-8', errors='replace'
-            )
+            cgroup = (process_dir / 'cgroup').read_text(encoding='utf-8', errors='replace')
             if SOBER_CGROUP_MARKER not in cgroup:
                 continue
             stat_text = (process_dir / 'stat').read_text(encoding='utf-8', errors='replace')
@@ -218,10 +308,50 @@ def sober_main_process() -> tuple[int, float] | None:
             # remaining fields begin at field 3, so starttime (field 22) is 19.
             fields = stat_text.rsplit(')', 1)[1].split()
             start_ticks = int(fields[19])
-        except (IndexError, OSError, ValueError):
+        except IndexError, OSError, ValueError:
             continue
         return pid, start_ticks / ticks_per_second
     return None
+
+
+def linux_client_main_process(
+    installation: LinuxClientInstallation | None = None,
+) -> tuple[int, float] | None:
+    installation = installation or get_selected_linux_client_installation()
+    if installation is None or installation.key != SOBER_CLIENT.key:
+        return None
+    return sober_main_process()
+
+
+def _client_pids(installation: LinuxClientInstallation) -> list[int]:
+    """Return only process IDs owned by the installation's Flatpak cgroup."""
+    found: list[int] = []
+    seen: set[int] = set()
+    for name in installation.client.process_names:
+        for pid in _process_pids(name):
+            if pid in seen:
+                continue
+            marker = installation.client.cgroup_marker
+            if marker:
+                try:
+                    cgroup = (PROC_ROOT / str(pid) / 'cgroup').read_text(
+                        encoding='utf-8', errors='replace'
+                    )
+                except OSError:
+                    continue
+                if marker not in cgroup:
+                    continue
+            seen.add(pid)
+            found.append(pid)
+    return found
+
+
+def _first_client_pid(installation: LinuxClientInstallation | None = None) -> int | None:
+    installation = installation or get_selected_linux_client_installation()
+    if installation is None:
+        return None
+    pids = _client_pids(installation)
+    return pids[0] if pids else None
 
 
 def _process_command(pid: int) -> Path | None:
@@ -239,7 +369,7 @@ def _process_command(pid: int) -> Path | None:
 
 
 def wait_for_roblox_window(timeout: float = 60.0) -> bool:
-    """Wait until Sober's Roblox runtime process is running."""
+    """Wait until the selected Linux Roblox client is running."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         if is_roblox_running():
@@ -249,16 +379,19 @@ def wait_for_roblox_window(timeout: float = 60.0) -> bool:
 
 
 def is_roblox_running() -> bool:
-    """Check if Sober is currently running."""
-    return _first_sober_pid() is not None
+    """Check if the selected Linux Roblox client is currently running."""
+    return _first_client_pid() is not None
 
 
 def get_roblox_process_identity() -> tuple[str, int, float] | tuple[str, int] | None:
-    """Return Sober's engine generation, falling back to its launcher PID."""
-    engine = sober_main_process()
+    """Return the engine generation, falling back to the launcher PID."""
+    installation = get_selected_linux_client_installation()
+    if installation is None:
+        return None
+    engine = linux_client_main_process(installation)
     if engine is not None:
         return 'engine', engine[0], engine[1]
-    pid = _first_sober_pid()
+    pid = _first_client_pid(installation)
     return ('launcher', pid) if pid is not None else None
 
 
@@ -268,12 +401,12 @@ def is_studio_running() -> bool:
 
 
 def get_roblox_player_exe_path() -> Optional[Path]:
-    """Linux/Sober does not expose a stable RobloxPlayerBeta.exe path.
+    """Linux clients do not expose a stable RobloxPlayerBeta.exe path.
 
     The running process is the Flatpak launcher or wrapper, not the resource
     root that callers need for cert/modification discovery. Returning a
     fabricated path would send downstream code to the wrong directory, so we
-    intentionally return ``None`` and let callers use the Sober resource-root
+    intentionally return ``None`` and let callers use the Linux resource-root
     discovery helpers instead.
     """
     return None
@@ -285,41 +418,43 @@ def get_roblox_studio_exe_path() -> Optional[Path]:
 
 
 def terminate_roblox() -> bool:
-    """Terminate Sober if it is running. Returns True if it was running."""
-    if not is_roblox_running():
+    """Terminate only the selected Linux Roblox client."""
+    installation = get_selected_linux_client_installation()
+    if installation is None:
         return False
-    terminated = False
+    pids = _client_pids(installation)
+    if not pids:
+        return False
 
     flatpak = shutil.which('flatpak')
     if flatpak:
         try:
             result = subprocess.run(
-                [flatpak, 'kill', SOBER_APP_ID],
+                [flatpak, 'kill', installation.app_id],
                 env=_host_subprocess_env(),
                 capture_output=True,
                 text=True,
                 timeout=10,
             )
-            terminated = result.returncode == 0
+            if result.returncode == 0:
+                return True
         except Exception:
             pass
 
-    for name in SOBER_PROCESS_NAMES:
+    signalled = False
+    for pid in pids:
         try:
-            result = subprocess.run(
-                ['pkill', '-x', name],
-                env=_host_subprocess_env(),
-                capture_output=True,
-                timeout=5,
-            )
-            terminated = result.returncode == 0 or terminated
-        except Exception:
+            os.kill(pid, signal.SIGTERM)
+            signalled = True
+        except ProcessLookupError:
+            signalled = True
+        except OSError:
             pass
-    return terminated or is_roblox_running()
+    return signalled or not is_roblox_running()
 
 
 def wait_for_roblox_exit(timeout: float = 10.0) -> bool:
-    """Wait for Sober to exit. Returns True if it exited before timeout."""
+    """Wait for the selected Linux client to exit."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         if not is_roblox_running():
@@ -345,30 +480,41 @@ def _delete_path(path: Path, messages: list[str], label: str) -> None:
 
 
 def delete_cache() -> list[str]:
-    """Delete Sober/Roblox cache files and Fleasion's converted-object cache."""
+    """Delete cache files for only the selected Linux client and Fleasion."""
     messages: list[str] = []
+    installation = get_selected_linux_client_installation()
+    if installation is None:
+        return [
+            'Selected Linux Roblox client is not installed',
+            'Cache deletion aborted',
+        ]
+    client_name = installation.display_name
 
     if is_roblox_running():
-        messages.append('Sober is running, terminating...')
+        messages.append(f'{client_name} is running, terminating...')
         terminate_roblox()
         if wait_for_roblox_exit():
-            messages.append('Sober terminated successfully')
+            messages.append(f'{client_name} terminated successfully')
         else:
-            messages.extend(['Sober termination timed out', 'Cache deletion aborted'])
+            messages.extend([f'{client_name} termination timed out', 'Cache deletion aborted'])
             return messages
     else:
-        messages.append('Sober was closed')
+        messages.append(f'{client_name} was closed')
 
-    _delete_path(STORAGE_DB, messages, 'Storage database')
-    for suffix in ('-wal', '-shm'):
-        sidecar = Path(str(STORAGE_DB) + suffix)
-        if sidecar.exists():
-            _delete_path(sidecar, messages, f'Storage database {suffix}')
+    storage_db = installation.paths.storage_db
+    storage_folder: Path | None = None
+    if storage_db is not None:
+        _delete_path(storage_db, messages, 'Storage database')
+        for suffix in ('-wal', '-shm'):
+            sidecar = Path(str(storage_db) + suffix)
+            if sidecar.exists():
+                _delete_path(sidecar, messages, f'Storage database {suffix}')
 
-    storage_folder = STORAGE_DB.parent / 'rbx-storage'
-    _delete_path(storage_folder, messages, 'Storage folder')
-    if SOBER_CACHE_STORAGE_DIR != storage_folder:
-        _delete_path(SOBER_CACHE_STORAGE_DIR, messages, 'Cache storage folder')
+        storage_folder = storage_db.parent / 'rbx-storage'
+        _delete_path(storage_folder, messages, 'Storage folder')
+    cache_storage = installation.paths.cache_storage_dir
+    if cache_storage is not None and cache_storage != storage_folder:
+        _delete_path(cache_storage, messages, 'Cache storage folder')
 
     if APP_CACHE_DIR.exists():
         try:
@@ -390,7 +536,7 @@ def delete_cache() -> list[str]:
 
 
 def find_roblox_resource_dirs(include_studio: bool = True) -> list[Path]:
-    """Return Sober resource roots used by patch/modification code."""
+    """Return resource roots for only the selected Linux client."""
     found: list[Path] = []
     seen: set[str] = set()
 
@@ -403,14 +549,15 @@ def find_roblox_resource_dirs(include_studio: bool = True) -> list[Path]:
         seen.add(key)
         found.append(path)
 
-    if SOBER_DATA_DIR.exists():
-        SOBER_ASSET_OVERLAY_DIR.mkdir(parents=True, exist_ok=True)
-        _add(SOBER_ASSET_OVERLAY_DIR)
+    installation = get_selected_linux_client_installation()
+    if installation is None:
+        return found
 
-    # Older Sober builds exposed a Roblox-like extracted tree here.
-    if SOBER_LEGACY_EXE_DIR.is_dir():
-        _add(SOBER_LEGACY_EXE_DIR)
-
+    resource_roots = installation.paths.resource_roots
+    if installation.paths.data_root.exists() and resource_roots:
+        resource_roots[0].mkdir(parents=True, exist_ok=True)
+    for resource_root in resource_roots:
+        _add(resource_root)
     return found
 
 
@@ -426,10 +573,18 @@ def is_sober_resource_dir(path: Path) -> bool:
         return False
 
 
+def find_linux_global_settings_dirs() -> list[Path]:
+    """Return the selected client's data root for Roblox settings XML."""
+    installation = get_selected_linux_client_installation()
+    if installation is None or not installation.paths.data_root.exists():
+        return []
+    return [installation.paths.data_root]
+
+
 def resolve_roblox_player_exe_for_launch() -> Optional[Path]:
-    """Return a launcher path if Sober can be launched through Flatpak."""
-    flatpak = shutil.which('flatpak')
-    return Path(flatpak) if flatpak else None
+    """Return the selected client's Flatpak launcher path."""
+    installation = get_selected_linux_client_installation()
+    return installation.executable if installation is not None else None
 
 
 _DETACHED_POPEN_KWARGS = {
@@ -553,61 +708,154 @@ def _open_with_desktop_handler(target: str, label: str) -> bool:
         return False
 
 
+def _launch_target_for_log(target: str) -> str:
+    """Return a useful label without exposing URI credentials or tickets."""
+    if target.startswith(('roblox:', 'roblox-player:')):
+        return 'Roblox URI'
+    if target.startswith(('http://', 'https://')):
+        return 'URL'
+    return target
+
+
 def launch_as_standard_user(target: str | Path) -> bool:
-    """Launch a Roblox URI or Sober itself."""
+    """Launch a URI or the selected Linux client explicitly."""
     target_str = str(target).strip()
     if not target_str:
         return False
     try:
         if target_str.startswith(('roblox:', 'roblox-player:')):
-            flatpak = shutil.which('flatpak')
-            if not flatpak:
-                log_buffer.log('Launch', 'Cannot launch Sober URI: flatpak command not found')
+            installation = get_selected_linux_client_installation()
+            if installation is None or installation.executable is None:
+                log_buffer.log('Launch', 'Cannot launch Roblox URI: selected client not found')
                 return False
-            _standard_user_popen([flatpak, 'run', SOBER_APP_ID, target_str])
+            command = installation.launch_command(target_str)
+            if command is None:
+                log_buffer.log('Launch', 'Cannot launch Roblox URI: launcher not found')
+                return False
+            _standard_user_popen(command)
             return True
 
         if target_str.startswith(('http://', 'https://')):
             return _open_with_desktop_handler(target_str, 'URL')
 
         path = Path(target_str)
+        installation = get_selected_linux_client_installation()
         flatpak = shutil.which('flatpak')
-        if flatpak and (path.name == 'flatpak' or target_str == SOBER_APP_ID):
-            _standard_user_popen([flatpak, 'run', SOBER_APP_ID])
+        if (
+            installation is not None
+            and flatpak
+            and (path.name == 'flatpak' or target_str == installation.app_id)
+        ):
+            _standard_user_popen([flatpak, 'run', installation.app_id])
             return True
 
         if path.exists():
             return _open_with_desktop_handler(str(path), 'path')
     except Exception as exc:
-        log_buffer.log('Launch', f'Failed to launch {target_str}: {exc}')
+        log_buffer.log('Launch', f'Failed to launch {_launch_target_for_log(target_str)}: {exc}')
         return False
 
-    log_buffer.log('Launch', f'Launch target not found: {target_str}')
+    log_buffer.log('Launch', f'Launch target not found: {_launch_target_for_log(target_str)}')
     return False
 
 
-def set_sober_env_proxy_override(proxy_url: str) -> bool:
-    """Inject Fleasion's proxy environment into Sober's normal Flatpak launches.
-
-    This deliberately leaves Sober as the browser URI handler.  A browser can
-    therefore pass its one-time Roblox URI to Sober unchanged, while Flatpak
-    supplies the same proxy variables Fleasion uses for explicit relaunches.
-    """
+def _installation_for_client_key(key: str) -> LinuxClientInstallation | None:
+    """Build a deterministic installation for scoped override cleanup."""
+    try:
+        client = get_linux_client(key)
+    except ValueError:
+        return None
     flatpak = shutil.which('flatpak')
-    if not flatpak:
-        log_buffer.log('Launcher', 'Cannot arm Sober Env Proxy: flatpak command not found')
+    return LinuxClientInstallation(
+        client=client,
+        paths=client.paths(home=USER_HOME),
+        executable=Path(flatpak) if flatpak else None,
+    )
+
+
+def _proxy_environment_for_installation(
+    installation: LinuxClientInstallation,
+    proxy_url: str,
+) -> dict[str, str]:
+    bypass = 'localhost,127.0.0.1,::1'
+    return {
+        name: bypass if name.casefold() == 'no_proxy' else proxy_url
+        for name in installation.client.proxy_environment_names
+    }
+
+
+def _read_linux_proxy_override_state() -> str | None:
+    try:
+        if LINUX_PROXY_OVERRIDE_STATE.is_symlink():
+            return None
+        payload = json.loads(LINUX_PROXY_OVERRIDE_STATE.read_text(encoding='utf-8'))
+    except OSError, UnicodeError, json.JSONDecodeError:
+        return None
+    key = payload.get('client') if isinstance(payload, dict) else None
+    return key if key in LINUX_CLIENTS_BY_KEY else None
+
+
+def _write_linux_proxy_override_state(key: str | None) -> None:
+    try:
+        if key is None:
+            LINUX_PROXY_OVERRIDE_STATE.unlink(missing_ok=True)
+            return
+        LINUX_PROXY_OVERRIDE_STATE.parent.mkdir(parents=True, exist_ok=True)
+        temporary = LINUX_PROXY_OVERRIDE_STATE.with_name(
+            f'.{LINUX_PROXY_OVERRIDE_STATE.name}.{os.getpid()}.tmp'
+        )
+        try:
+            temporary.write_text(json.dumps({'client': key}) + '\n', encoding='utf-8')
+            temporary.chmod(0o600)
+            temporary.replace(LINUX_PROXY_OVERRIDE_STATE)
+        finally:
+            temporary.unlink(missing_ok=True)
+    except OSError as exc:
+        log_buffer.log('Launcher', f'Could not persist Linux Env Proxy ownership: {exc}')
+
+
+def set_linux_client_env_proxy_override(
+    proxy_url: str,
+    *,
+    client_key: str | None = None,
+    ca_cert_path: Path | None = None,
+) -> bool:
+    """Arm Env Proxy for exactly one selected Linux client."""
+    global _active_linux_proxy_client_key
+    # Retained for call-site compatibility; registered clients currently need
+    # no client-specific certificate-bundle preparation here.
+    _ = ca_cert_path
+    installation = (
+        _installation_for_client_key(client_key)
+        if client_key is not None
+        else get_selected_linux_client_installation()
+    )
+    if installation is None:
+        log_buffer.log('Launcher', 'Cannot arm Linux Env Proxy: selected client not installed')
+        return False
+    previous_key = _active_linux_proxy_client_key or _read_linux_proxy_override_state()
+    if previous_key not in {None, installation.key} and not clear_linux_client_env_proxy_override(
+        client_key=previous_key
+    ):
+        log_buffer.log(
+            'Launcher',
+            f'Refusing to arm {installation.display_name} while the prior Fleasion '
+            f'override for {previous_key} could not be cleared',
+        )
         return False
 
-    proxy_env = {
-        'ALL_PROXY': proxy_url,
-        'HTTPS_PROXY': proxy_url,
-        'HTTP_PROXY': proxy_url,
-        'all_proxy': proxy_url,
-        'https_proxy': proxy_url,
-        'http_proxy': proxy_url,
-        'NO_PROXY': 'localhost,127.0.0.1,::1',
-        'no_proxy': 'localhost,127.0.0.1,::1',
-    }
+    proxy_env = _proxy_environment_for_installation(
+        installation,
+        proxy_url,
+    )
+
+    flatpak = shutil.which('flatpak')
+    if not flatpak:
+        log_buffer.log(
+            'Launcher',
+            f'Cannot arm {installation.display_name} Env Proxy: flatpak command not found',
+        )
+        return False
     try:
         result = _standard_user_run(
             [
@@ -615,32 +863,47 @@ def set_sober_env_proxy_override(proxy_url: str) -> bool:
                 'override',
                 '--user',
                 *(f'--env={key}={value}' for key, value in proxy_env.items()),
-                SOBER_APP_ID,
+                installation.app_id,
             ],
             capture_output=True,
             text=True,
             timeout=10,
         )
     except Exception as exc:
-        log_buffer.log('Launcher', f'Could not arm Sober Env Proxy: {exc}')
+        log_buffer.log('Launcher', f'Could not arm {installation.display_name} Env Proxy: {exc}')
         return False
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
         log_buffer.log(
             'Launcher',
-            'Could not arm Sober Env Proxy'
+            f'Could not arm {installation.display_name} Env Proxy'
             + (f': {detail}' if detail else ''),
         )
         return False
-    log_buffer.log('Launcher', 'Armed Sober Env Proxy for normal browser launches')
+    _active_linux_proxy_client_key = installation.key
+    _write_linux_proxy_override_state(installation.key)
+    log_buffer.log(
+        'Launcher', f'Armed {installation.display_name} Env Proxy for normal browser launches'
+    )
     return True
 
 
-def clear_sober_env_proxy_override() -> bool:
-    """Remove Fleasion's proxy environment from future normal Sober launches."""
+def clear_linux_client_env_proxy_override(*, client_key: str | None = None) -> bool:
+    """Clear only the exact client environment names managed by Fleasion."""
+    global _active_linux_proxy_client_key
+    key = client_key or _active_linux_proxy_client_key or _read_linux_proxy_override_state()
+    if key is None:
+        return True
+    installation = _installation_for_client_key(key)
+    if installation is None:
+        return False
+    names = installation.client.proxy_environment_names
     flatpak = shutil.which('flatpak')
     if not flatpak:
-        log_buffer.log('Launcher', 'Cannot disarm Sober Env Proxy: flatpak command not found')
+        log_buffer.log(
+            'Launcher',
+            f'Cannot disarm {installation.display_name} Env Proxy: flatpak command not found',
+        )
         return False
     try:
         result = _standard_user_run(
@@ -648,26 +911,54 @@ def clear_sober_env_proxy_override() -> bool:
                 flatpak,
                 'override',
                 '--user',
-                *(f'--unset-env={name}' for name in _SOBER_PROXY_ENVIRONMENT_NAMES),
-                SOBER_APP_ID,
+                *(f'--unset-env={name}' for name in names),
+                installation.app_id,
             ],
             capture_output=True,
             text=True,
             timeout=10,
         )
     except Exception as exc:
-        log_buffer.log('Launcher', f'Could not disarm Sober Env Proxy: {exc}')
+        log_buffer.log('Launcher', f'Could not disarm {installation.display_name} Env Proxy: {exc}')
         return False
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
         log_buffer.log(
             'Launcher',
-            'Could not disarm Sober Env Proxy'
+            f'Could not disarm {installation.display_name} Env Proxy'
             + (f': {detail}' if detail else ''),
         )
         return False
-    log_buffer.log('Launcher', 'Disarmed Sober Env Proxy for normal browser launches')
+    if _active_linux_proxy_client_key == key:
+        _active_linux_proxy_client_key = None
+    if _read_linux_proxy_override_state() == key:
+        _write_linux_proxy_override_state(None)
+    log_buffer.log('Launcher', f'Disarmed {installation.display_name} Env Proxy')
     return True
+
+
+def recover_stale_linux_client_env_proxy_override() -> bool:
+    """Clear a persisted Env Proxy override left by an earlier Fleasion process."""
+    if _active_linux_proxy_client_key is not None:
+        return True
+    key = _read_linux_proxy_override_state()
+    if key is None:
+        return True
+    log_buffer.log(
+        'Launcher',
+        f'Recovering stale Linux Env Proxy override for {key}',
+    )
+    return clear_linux_client_env_proxy_override(client_key=key)
+
+
+def set_sober_env_proxy_override(proxy_url: str) -> bool:
+    """Backward-compatible explicit Sober override helper."""
+    return set_linux_client_env_proxy_override(proxy_url, client_key='sober')
+
+
+def clear_sober_env_proxy_override() -> bool:
+    """Backward-compatible explicit Sober override cleanup helper."""
+    return clear_linux_client_env_proxy_override(client_key='sober')
 
 
 def _set_default_roblox_uri_handler(desktop_id: str) -> bool:
@@ -707,8 +998,8 @@ def _set_default_roblox_uri_handler(desktop_id: str) -> bool:
     return ok
 
 
-def _restore_sober_uri_handler() -> bool:
-    """Restore Sober only when Fleasion is currently a Roblox URI handler."""
+def _restore_linux_roblox_uri_handler() -> bool:
+    """Restore the selected client only when Fleasion owns a Roblox scheme."""
     xdg_mime = shutil.which('xdg-mime')
     if not xdg_mime:
         log_buffer.log('DesktopIntegration', 'xdg-mime not found; Roblox URI handler unchanged')
@@ -727,9 +1018,7 @@ def _restore_sober_uri_handler() -> bool:
                 timeout=10,
             )
         except Exception as exc:
-            log_buffer.log(
-                'DesktopIntegration', f'Failed to query the {scheme} handler: {exc}'
-            )
+            log_buffer.log('DesktopIntegration', f'Failed to query the {scheme} handler: {exc}')
             continue
         if result.returncode != 0:
             continue
@@ -738,7 +1027,14 @@ def _restore_sober_uri_handler() -> bool:
 
     if not fleasion_handler_detected:
         return False
-    return _set_default_roblox_uri_handler(f'{SOBER_APP_ID}.desktop')
+    selected = get_selected_linux_client_installation()
+    if selected is None:
+        log_buffer.log(
+            'DesktopIntegration',
+            'Roblox URI handler was not restored because no selected client is installed',
+        )
+        return False
+    return _set_default_roblox_uri_handler(selected.desktop_id)
 
 
 def _find_project_root() -> Path | None:
@@ -868,7 +1164,7 @@ exec {command_literal} "$@"
             timeout=10,
         )
 
-    sober_uri_handler_restored = _restore_sober_uri_handler()
+    roblox_uri_handler_restored = _restore_linux_roblox_uri_handler()
 
     return {
         'desktop_entry': str(LINUX_DESKTOP_ENTRY_PATH),
@@ -876,7 +1172,9 @@ exec {command_literal} "$@"
         'installed_app': str(installed_app) if installed_app is not None else None,
         'installed_icon': str(installed_icon) if installed_icon is not None else None,
         'removed_deprecated_entries': removed,
-        'sober_uri_handler_restored': sober_uri_handler_restored,
+        # Keep the old result key for callers while exposing the generic name.
+        'sober_uri_handler_restored': roblox_uri_handler_restored,
+        'roblox_uri_handler_restored': roblox_uri_handler_restored,
     }
 
 

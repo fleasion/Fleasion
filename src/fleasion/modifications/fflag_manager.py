@@ -48,9 +48,7 @@ EXTRA_FLAGS: dict[str, str] = {
 }
 
 CLIENT_SETTINGS_REL = Path('ClientSettings') / 'ClientAppSettings.json'
-APPLEBLOX_CLIENT_SETTINGS_REL = (
-    Path('MacOS') / 'ClientSettings' / 'ClientAppSettings.json'
-)
+APPLEBLOX_CLIENT_SETTINGS_REL = Path('MacOS') / 'ClientSettings' / 'ClientAppSettings.json'
 
 LOD_LEVELS = ('L0', 'L12', 'L23', 'L34')
 
@@ -233,9 +231,6 @@ class FastFlagManager:
                     failed += 1
                     failed_dirs.add(roblox_dir)
                     log_buffer.log('FastFlags', f'Permission denied writing {dst}: {exc}')
-            if wrote_dir:
-                written_dirs += 1
-
             sober_config = _sober_config_path_for_resource_dir(roblox_dir)
             if sober_config is not None:
                 stash_config = install_stash / 'sober_config.json'
@@ -278,9 +273,11 @@ class FastFlagManager:
                         f'Failed writing Sober config {sober_config}: {exc}',
                     )
 
+            if wrote_dir:
+                written_dirs += 1
+
         message = (
-            f'Wrote {format_count(flags, "flag")} to '
-            f'{format_count(written_dirs, "Roblox dir")}'
+            f'Wrote {format_count(flags, "flag")} to {format_count(written_dirs, "Roblox dir")}'
         )
         if failed:
             message += f'; skipped {format_count(failed, "Roblox dir")} due to permission errors'
@@ -319,7 +316,7 @@ class FastFlagManager:
             try:
                 try:
                     existing = json.loads(target.read_text(encoding='utf-8'))
-                except (UnicodeDecodeError, json.JSONDecodeError):
+                except UnicodeDecodeError, json.JSONDecodeError:
                     existing = {}
                 if not isinstance(existing, dict):
                     existing = {}
