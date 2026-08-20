@@ -757,11 +757,82 @@ class SettingsTab(QWidget):
                     exe_path = get_roblox_player_exe_path()
                 run_in_thread(lifecycle.handle_player_launch)(exe_path)
         if new_mode == 'hosts' and previous_mode != 'hosts':
-            # Hosts mode may need admin this process doesn't hold - restart
-            # the app instead of live-swapping so the new process's own
-            # startup flow can request elevation if needed.
-            if self._tray and hasattr(self._tray, 'restart_fleasion'):
-                self._tray.restart_fleasion()
+            proxy_master = getattr(self._tray, 'proxy_master', None) if self._tray else None
+            can_live_switch = bool(
+                proxy_master is not None
+                and hasattr(proxy_master, 'can_live_switch_to_hosts')
+                and proxy_master.can_live_switch_to_hosts()
+            )
+            if not self._config.proxy_features_enabled:
+                # There is no active route to swap. Persisting Hosts File mode
+                # is sufficient; enabling proxy features later owns any helper
+                # install/elevation that mode requires.
+                pass
+            elif can_live_switch and hasattr(proxy_master, 'restart_for_mode_switch'):
+                # Prefer an in-process transition when this process already has
+                # a safe privileged path. stop() disarms Env Proxy state before
+                # start() applies hosts routing, so no stale route is left behind.
+                proxy_master.restart_for_mode_switch()
+            else:
+                # Windows normal-user mode (and macOS without its helper) needs
+                # a new startup path. Do not tear down the working Env Proxy
+                # until the final replacement owns single-instance state and
+                # has established the configured Hosts File proxy.
+                restart_result = False
+                if self._tray and hasattr(self._tray, 'restart_fleasion'):
+                    restart_result = self._tray.restart_fleasion()
+                if restart_result is True:
+                    return
+                if restart_result is None:
+                    # Fail closed when the final replacement cannot be proven
+                    # dead. It may still own Hosts/single-instance resources, so
+                    # automatically rewriting config/autostart back to Env would
+                    # create a second contradictory owner. Keep the user's Hosts
+                    # selection persisted and require a clean manual restart.
+                    QMessageBox.critical(
+                        self,
+                        'Proxy Mode Change Incomplete',
+                        'Fleasion could not confirm that the replacement process stopped. '
+                        'The current Env Proxy process was left running, but ownership was not '
+                        'reclaimed and the Hosts File selection was not rolled back.\n\n'
+                        'Close all Fleasion windows/processes and start Fleasion again before '
+                        'changing proxy mode.',
+                    )
+                    return
+
+                # The replacement never became viable and was confirmed gone.
+                # Restore every persisted
+                # surface so the still-running process and launch integration
+                # continue to describe the Env Proxy that is actually active.
+                self._config.proxy_mode = previous_mode
+                previous_index = self._proxy_mode_combo.findData(previous_mode)
+                if previous_index >= 0:
+                    self._proxy_mode_combo.blockSignals(True)
+                    self._proxy_mode_combo.setCurrentIndex(previous_index)
+                    self._proxy_mode_combo.blockSignals(False)
+                if self._config.run_on_boot:
+                    try:
+                        sync_autostart(
+                            True,
+                            CONFIG_DIR,
+                            proxy_mode=previous_mode,
+                        )
+                    except Exception as exc:
+                        try:
+                            from ..utils.logging import log_buffer
+
+                            log_buffer.log(
+                                'Autostart',
+                                f'Run on Boot rollback after failed mode switch failed: {exc}',
+                            )
+                        except Exception:
+                            pass
+                QMessageBox.warning(
+                    self,
+                    'Proxy Mode Change Failed',
+                    'Fleasion could not verify that the Hosts File replacement started correctly. '
+                    'Env Proxy mode has been restored and the current proxy was left running.',
+                )
                 return
         if self._tray and hasattr(self._tray, 'notify_proxy_mode_changed'):
             self._tray.notify_proxy_mode_changed()

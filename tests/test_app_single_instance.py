@@ -1,5 +1,8 @@
+import threading
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from fleasion import app as app_module
 from fleasion import __version__ as APP_VERSION
@@ -1418,6 +1421,696 @@ def test_windows_gdk_arming_stops_when_proxy_is_not_ready(monkeypatch):
     )
 
     assert not app_module._arm_windows_gdk_env_proxy_when_ready(proxy)
+
+
+def test_restart_handoff_token_cannot_select_an_arbitrary_path(monkeypatch, tmp_path):
+    monkeypatch.setattr(app_module, 'CONFIG_DIR', tmp_path)
+
+    assert app_module._restart_handoff_path('../outside') is None
+    assert app_module._restart_handoff_path('A' * 32) is None
+    assert app_module._restart_handoff_path('0' * 32, '../ready') is None
+    assert app_module._restart_handoff_path('0' * 32, 'prepared') == (
+        tmp_path / f'.restart-prepared-{"0" * 32}'
+    )
+    assert app_module._restart_handoff_path('0' * 32, 'release') == (
+        tmp_path / f'.restart-release-{"0" * 32}'
+    )
+    assert app_module._restart_handoff_path('0' * 32, 'abort') == (
+        tmp_path / f'.restart-abort-{"0" * 32}'
+    )
+    assert app_module._restart_handoff_path('0' * 32) == (
+        tmp_path / f'.restart-ready-{"0" * 32}'
+    )
+
+
+def test_restart_child_joins_only_after_parent_release(monkeypatch, tmp_path):
+    token = '9' * 32
+    parent_pid = 2121
+    child_pid = 3131
+    monkeypatch.setattr(app_module, 'CONFIG_DIR', tmp_path)
+    monkeypatch.setattr(app_module.os, 'getpid', lambda: child_pid)
+    (tmp_path / f'.restart-release-{token}').write_text(str(parent_pid), encoding='utf-8')
+
+    assert app_module._join_restart_handoff(token, parent_pid)
+    assert (tmp_path / f'.restart-prepared-{token}').read_text(encoding='utf-8') == str(
+        child_pid
+    )
+    assert not (tmp_path / f'.restart-release-{token}').exists()
+
+
+def test_restart_child_consumes_abort_before_ownership_transfer(monkeypatch, tmp_path):
+    token = '5' * 32
+    parent_pid = 4141
+    monkeypatch.setattr(app_module, 'CONFIG_DIR', tmp_path)
+    (tmp_path / f'.restart-abort-{token}').write_text(str(parent_pid), encoding='utf-8')
+
+    assert not app_module._wait_for_restart_release(token, parent_pid)
+    assert not (tmp_path / f'.restart-abort-{token}').exists()
+
+
+def test_restart_handoff_parent_reclaims_only_after_application_exit(monkeypatch):
+    token = 'a' * 32
+    launcher_pid = 4242
+    application_pid = 4243
+    events = []
+    state = {'attached': True}
+
+    def wait_marker(_token, phase, *, is_launcher_alive, expected_value=None, timeout=0):
+        assert _token == token
+        assert is_launcher_alive()
+        events.append(f'wait-{phase}')
+        if phase == 'prepared':
+            assert expected_value is None
+            return application_pid
+        assert expected_value == application_pid
+        return None
+
+    def suspend():
+        events.append('suspend')
+        state['attached'] = False
+        return True
+
+    def resume():
+        events.append('resume')
+        state['attached'] = True
+        return True
+
+    monkeypatch.setattr(app_module, '_wait_for_restart_marker', wait_marker)
+    monkeypatch.setattr(app_module, '_pid_is_alive', lambda pid: pid == application_pid)
+    monkeypatch.setattr(app_module, '_suspend_single_instance_for_handoff', suspend)
+    monkeypatch.setattr(
+        app_module,
+        '_write_restart_handoff_marker',
+        lambda _token, phase, value: events.append((phase, value)) or True,
+    )
+    monkeypatch.setattr(
+        app_module,
+        '_abort_restart_child_and_wait',
+        lambda *_args, **_kwargs: events.append('abort-confirmed') or True,
+    )
+    monkeypatch.setattr(app_module, '_resume_single_instance_after_handoff_failure', resume)
+    monkeypatch.setattr(
+        app_module,
+        '_cleanup_restart_handoff',
+        lambda _token: events.append('cleanup'),
+    )
+
+    assert not app_module._run_restart_handoff_parent(
+        token,
+        launcher_pid,
+        is_launcher_alive=lambda: True,
+        terminate_launcher=lambda: events.append('terminate-launcher'),
+    )
+    assert events == [
+        'wait-prepared',
+        'suspend',
+        ('release', app_module.os.getpid()),
+        'wait-ready',
+        'abort-confirmed',
+        'resume',
+        'cleanup',
+    ]
+
+
+def test_restart_handoff_reclaim_failure_is_uncertain_even_after_application_exit(monkeypatch):
+    token = '4' * 32
+    application_pid = 4546
+    events = []
+
+    def wait_marker(_token, phase, *, is_launcher_alive, expected_value=None, timeout=0):
+        assert _token == token
+        assert is_launcher_alive()
+        if phase == 'prepared':
+            return application_pid
+        assert expected_value == application_pid
+        return None
+
+    monkeypatch.setattr(app_module, '_wait_for_restart_marker', wait_marker)
+    monkeypatch.setattr(app_module, '_pid_is_alive', lambda pid: pid == application_pid)
+    monkeypatch.setattr(
+        app_module,
+        '_suspend_single_instance_for_handoff',
+        lambda: events.append('suspend') or True,
+    )
+    monkeypatch.setattr(app_module, '_write_restart_handoff_marker', lambda *_args: True)
+    monkeypatch.setattr(
+        app_module,
+        '_abort_restart_child_and_wait',
+        lambda *_args, **_kwargs: events.append('abort-confirmed') or True,
+    )
+    monkeypatch.setattr(
+        app_module,
+        '_resume_single_instance_after_handoff_failure',
+        lambda: events.append('resume-failed') or False,
+    )
+    monkeypatch.setattr(app_module, '_cleanup_restart_handoff', lambda _token: None)
+
+    with pytest.raises(
+        app_module.RestartHandoffUncertain,
+        match='could not restore single-instance ownership',
+    ):
+        app_module._run_restart_handoff_parent(
+            token,
+            4545,
+            is_launcher_alive=lambda: True,
+            terminate_launcher=lambda: events.append('terminate-launcher'),
+        )
+
+    assert events == ['suspend', 'abort-confirmed', 'resume-failed']
+
+
+def test_resume_single_instance_fails_when_control_server_cannot_be_restored(monkeypatch):
+    shared_memory = SimpleNamespace(isAttached=lambda: True)
+    monkeypatch.setattr(app_module, '_single_instance_shared_memory', shared_memory)
+    monkeypatch.setattr(app_module, '_single_instance_app', object())
+    monkeypatch.setattr(app_module, '_single_instance_tray', object())
+    monkeypatch.setattr(app_module, '_single_instance_control_server', None)
+    monkeypatch.setattr(app_module, '_start_single_instance_control_server', lambda *_args: None)
+
+    assert not app_module._resume_single_instance_after_handoff_failure()
+    assert app_module._single_instance_control_server is None
+
+
+def test_restart_handoff_does_not_reclaim_if_application_exit_is_unconfirmed(monkeypatch):
+    token = '7' * 32
+    application_pid = 5152
+    events = []
+
+    def wait_marker(_token, phase, *, is_launcher_alive, expected_value=None, timeout=0):
+        assert _token == token
+        assert is_launcher_alive()
+        if phase == 'prepared':
+            return application_pid
+        assert expected_value == application_pid
+        return None
+
+    monkeypatch.setattr(app_module, '_wait_for_restart_marker', wait_marker)
+    monkeypatch.setattr(app_module, '_pid_is_alive', lambda pid: pid == application_pid)
+    monkeypatch.setattr(
+        app_module,
+        '_suspend_single_instance_for_handoff',
+        lambda: events.append('suspend') or True,
+    )
+    monkeypatch.setattr(app_module, '_write_restart_handoff_marker', lambda *_args: True)
+    monkeypatch.setattr(
+        app_module,
+        '_abort_restart_child_and_wait',
+        lambda *_args, **_kwargs: events.append('abort-unconfirmed') or False,
+    )
+    monkeypatch.setattr(
+        app_module,
+        '_resume_single_instance_after_handoff_failure',
+        lambda: events.append('resume') or True,
+    )
+    monkeypatch.setattr(
+        app_module,
+        '_cleanup_restart_handoff',
+        lambda _token, **_kwargs: None,
+    )
+
+    with pytest.raises(app_module.RestartHandoffUncertain):
+        app_module._run_restart_handoff_parent(
+            token,
+            5151,
+            is_launcher_alive=lambda: True,
+            terminate_launcher=lambda: events.append('terminate-launcher'),
+        )
+    assert events == ['suspend', 'abort-unconfirmed']
+
+
+def test_abort_does_not_treat_dead_onefile_launcher_as_dead_application(
+    monkeypatch, tmp_path
+):
+    token = '6' * 32
+    parent_pid = 6161
+    application_pid = 6163
+    state = {'launcher_alive': True}
+    monkeypatch.setattr(app_module, 'CONFIG_DIR', tmp_path)
+    monkeypatch.setattr(app_module, '_pid_is_alive', lambda pid: pid == application_pid)
+
+    assert not app_module._abort_restart_child_and_wait(
+        token,
+        parent_pid,
+        application_pid,
+        is_launcher_alive=lambda: state['launcher_alive'],
+        terminate_launcher=lambda: state.__setitem__('launcher_alive', False),
+        timeout=0.02,
+    )
+    assert not state['launcher_alive']
+    assert (tmp_path / f'.restart-abort-{token}').read_text(encoding='utf-8') == str(
+        parent_pid
+    )
+
+
+def test_restart_handoff_success_accepts_onefile_launcher_and_application_pids(
+    monkeypatch,
+):
+    token = '8' * 32
+    launcher_pid = 4343
+    application_pid = 4344
+    events = []
+
+    def wait_marker(_token, phase, *, is_launcher_alive, expected_value=None, timeout=0):
+        assert _token == token
+        assert is_launcher_alive()
+        events.append(f'wait-{phase}')
+        if phase == 'prepared':
+            assert expected_value is None
+            return application_pid
+        assert expected_value == application_pid
+        return application_pid
+
+    monkeypatch.setattr(app_module, '_wait_for_restart_marker', wait_marker)
+    monkeypatch.setattr(app_module, '_pid_is_alive', lambda pid: pid == application_pid)
+    monkeypatch.setattr(
+        app_module,
+        '_suspend_single_instance_for_handoff',
+        lambda: events.append('suspend') or True,
+    )
+    monkeypatch.setattr(
+        app_module,
+        '_write_restart_handoff_marker',
+        lambda _token, phase, value: events.append((phase, value)) or True,
+    )
+    monkeypatch.setattr(
+        app_module,
+        '_resume_single_instance_after_handoff_failure',
+        lambda: events.append('resume') or True,
+    )
+    monkeypatch.setattr(
+        app_module,
+        '_cleanup_restart_handoff',
+        lambda _token: events.append('cleanup'),
+    )
+
+    assert app_module._run_restart_handoff_parent(
+        token,
+        launcher_pid,
+        is_launcher_alive=lambda: True,
+        terminate_launcher=lambda: events.append('terminate-launcher'),
+    )
+    assert events == [
+        'wait-prepared',
+        'suspend',
+        ('release', app_module.os.getpid()),
+        'wait-ready',
+        'cleanup',
+    ]
+
+
+def test_restart_marker_rejects_launcher_that_dies_after_writing_marker(
+    monkeypatch, tmp_path
+):
+    token = 'b' * 32
+    application_pid = 5252
+    alive_checks = iter([True, False])
+    monkeypatch.setattr(app_module, 'CONFIG_DIR', tmp_path)
+    (tmp_path / f'.restart-ready-{token}').write_text(str(application_pid), encoding='utf-8')
+
+    assert (
+        app_module._wait_for_restart_marker(
+            token,
+            'ready',
+            is_launcher_alive=lambda: next(alive_checks),
+            expected_value=application_pid,
+            timeout=0.1,
+        )
+        is None
+    )
+
+
+def test_verified_restart_uses_protocol_args_without_kill_others(monkeypatch, tmp_path):
+    token = 'c' * 32
+    launches = []
+    handoffs = []
+
+    class _Process:
+        pid = 6262
+
+        def poll(self):
+            return None
+
+    def popen(launch, **kwargs):
+        launches.append((launch, kwargs))
+        return _Process()
+
+    monkeypatch.setattr(app_module, 'CONFIG_DIR', tmp_path)
+    monkeypatch.setattr(app_module.secrets, 'token_hex', lambda _bytes: token)
+    monkeypatch.setattr(app_module.subprocess, 'Popen', popen)
+    monkeypatch.setattr(
+        app_module,
+        '_run_restart_handoff_parent',
+        lambda handoff_token, child_pid, **_kwargs: handoffs.append(
+            (handoff_token, child_pid)
+        )
+        or True,
+    )
+    monkeypatch.setattr(app_module.sys, 'frozen', True, raising=False)
+    monkeypatch.setattr(app_module.sys, 'platform', 'linux')
+    monkeypatch.setattr(
+        app_module.sys,
+        'argv',
+        [
+            'Fleasion',
+            '--restart-handoff-token',
+            'd' * 32,
+            '--restart-handoff-parent-pid',
+            '1',
+            '--kill-others',
+        ],
+    )
+    monkeypatch.setattr(app_module.sys, 'executable', '/tmp/Fleasion')
+    monkeypatch.setattr(app_module.os, 'getpid', lambda: 3131)
+    monkeypatch.setenv('PYINSTALLER_RESET_ENVIRONMENT', 'stale-parent-value')
+
+    assert app_module.restart_fleasion_normally(verify_startup=True)
+    assert launches[0][0] == [
+        '/tmp/Fleasion',
+        '--restart-handoff-token',
+        token,
+        '--restart-handoff-parent-pid',
+        '3131',
+    ]
+    assert launches[0][1]['env']['PYINSTALLER_RESET_ENVIRONMENT'] == '1'
+    assert app_module.os.environ['PYINSTALLER_RESET_ENVIRONMENT'] == 'stale-parent-value'
+    assert handoffs == [(token, 6262)]
+
+
+def test_verified_restart_keeps_current_process_when_child_dies_before_prepared(
+    monkeypatch, tmp_path
+):
+    token = 'e' * 32
+
+    class _Process:
+        pid = 7272
+
+        def poll(self):
+            return 1
+
+    monkeypatch.setattr(app_module, 'CONFIG_DIR', tmp_path)
+    monkeypatch.setattr(app_module.secrets, 'token_hex', lambda _bytes: token)
+    monkeypatch.setattr(app_module.subprocess, 'Popen', lambda *_args, **_kwargs: _Process())
+    monkeypatch.setattr(app_module.sys, 'frozen', True, raising=False)
+    monkeypatch.setattr(app_module.sys, 'platform', 'linux')
+    monkeypatch.setattr(app_module.sys, 'argv', ['Fleasion'])
+    monkeypatch.setattr(app_module.sys, 'executable', '/tmp/Fleasion')
+
+    assert not app_module.restart_fleasion_normally(verify_startup=True)
+
+
+def test_windows_verified_hosts_restart_invokes_uac_directly(monkeypatch, tmp_path):
+    token = 'f' * 32
+    relaunches = []
+    monkeypatch.setattr(app_module, 'CONFIG_DIR', tmp_path)
+    monkeypatch.setattr(app_module.secrets, 'token_hex', lambda _bytes: token)
+    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(app_module.sys, 'argv', ['Fleasion'])
+    monkeypatch.setattr(app_module, '_is_admin', lambda: False)
+    monkeypatch.setattr(app_module, '_visible_parent_widget', lambda: None)
+    monkeypatch.setattr(app_module, '_window_handle', lambda _widget: 123)
+    monkeypatch.setattr(app_module.os, 'getpid', lambda: 8181)
+    monkeypatch.setattr(
+        app_module,
+        '_relaunch_as_admin',
+        lambda **kwargs: relaunches.append(kwargs) or True,
+    )
+    monkeypatch.setattr(
+        app_module.subprocess,
+        'Popen',
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError('Windows hosts handoff must not spawn a non-elevated bootstrap')
+        ),
+    )
+
+    assert app_module.restart_fleasion_normally(verify_startup=True, require_admin=True)
+    assert relaunches == [
+        {
+            'extra_args': '',
+            'parent_hwnd': 123,
+            'restart_handoff_token': token,
+            'restart_handoff_parent_pid': 8181,
+        }
+    ]
+
+
+def test_windows_verified_hosts_restart_waits_for_final_elevated_child(
+    monkeypatch, tmp_path
+):
+    token = '2' * 32
+    parent_pid = 8282
+    launcher_pid = 9291
+    application_pid = 9292
+    events = []
+    state = {'attached': True, 'launcher_alive': True, 'application_alive': True}
+    child_release = threading.Event()
+
+    monkeypatch.setattr(app_module, 'CONFIG_DIR', tmp_path)
+    monkeypatch.setattr(app_module.secrets, 'token_hex', lambda _bytes: token)
+    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(app_module.sys, 'argv', ['Fleasion'])
+    monkeypatch.setattr(app_module.os, 'getpid', lambda: parent_pid)
+    monkeypatch.setattr(app_module, '_is_admin', lambda: False)
+    monkeypatch.setattr(app_module, '_visible_parent_widget', lambda: None)
+    monkeypatch.setattr(app_module, '_window_handle', lambda _widget: None)
+    monkeypatch.setattr(
+        app_module,
+        '_pid_is_alive',
+        lambda pid: pid == application_pid and state['application_alive'],
+    )
+
+    def suspend():
+        events.append('parent-release-single-instance')
+        state['attached'] = False
+        return True
+
+    monkeypatch.setattr(app_module, '_suspend_single_instance_for_handoff', suspend)
+    monkeypatch.setattr(
+        app_module,
+        '_single_instance_shared_memory',
+        SimpleNamespace(isAttached=lambda: state['attached']),
+    )
+    monkeypatch.setattr(
+        app_module,
+        '_resume_single_instance_after_handoff_failure',
+        lambda: events.append('unexpected-parent-resume') or True,
+    )
+
+    def simulated_uac_relaunch(**kwargs):
+        assert kwargs['restart_handoff_token'] == token
+        assert kwargs['restart_handoff_parent_pid'] == parent_pid
+
+        def elevated_child():
+            events.append('elevated-prepared')
+            assert app_module._write_restart_handoff_marker(token, 'prepared', application_pid)
+            assert app_module._wait_for_restart_release(token, parent_pid)
+            events.append('elevated-released')
+            events.append('elevated-ready')
+            assert app_module._write_restart_handoff_marker(token, 'ready', application_pid)
+            child_release.wait(1.0)
+
+        child = threading.Thread(target=elevated_child)
+        child.start()
+        try:
+            return app_module._run_restart_handoff_parent(
+                token,
+                launcher_pid,
+                is_launcher_alive=lambda: state['launcher_alive'],
+                terminate_launcher=lambda: state.__setitem__('launcher_alive', False),
+            )
+        finally:
+            child_release.set()
+            child.join(timeout=1.0)
+
+    monkeypatch.setattr(app_module, '_relaunch_as_admin', simulated_uac_relaunch)
+
+    assert app_module.restart_fleasion_normally(verify_startup=True, require_admin=True)
+    assert events == [
+        'elevated-prepared',
+        'parent-release-single-instance',
+        'elevated-released',
+        'elevated-ready',
+    ]
+    assert not any(tmp_path.glob(f'.restart-*-{token}'))
+
+
+def test_windows_uac_failure_keeps_parent_ownership_for_rollback(monkeypatch, tmp_path):
+    token = '1' * 32
+    suspended = []
+    monkeypatch.setattr(app_module, 'CONFIG_DIR', tmp_path)
+    monkeypatch.setattr(app_module.secrets, 'token_hex', lambda _bytes: token)
+    monkeypatch.setattr(app_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(app_module.sys, 'argv', ['Fleasion'])
+    monkeypatch.setattr(app_module, '_is_admin', lambda: False)
+    monkeypatch.setattr(app_module, '_visible_parent_widget', lambda: None)
+    monkeypatch.setattr(app_module, '_window_handle', lambda _widget: None)
+    monkeypatch.setattr(app_module, '_relaunch_as_admin', lambda **_kwargs: False)
+    monkeypatch.setattr(
+        app_module,
+        '_suspend_single_instance_for_handoff',
+        lambda: suspended.append(True) or True,
+    )
+
+    assert not app_module.restart_fleasion_normally(verify_startup=True, require_admin=True)
+    assert suspended == []
+
+
+def test_restart_handoff_credentials_are_stripped_before_nested_relaunch():
+    assert app_module._strip_restart_handoff_args(
+        [
+            '--foo',
+            '--restart-handoff-token',
+            'a' * 32,
+            '--restart-handoff-parent-pid=42',
+            '--bar',
+        ]
+    ) == ['--foo', '--bar']
+
+
+def test_env_to_hosts_live_switch_avoids_process_restart(monkeypatch):
+    from fleasion.gui import settings_tab
+
+    events = []
+    proxy_master = SimpleNamespace(
+        can_live_switch_to_hosts=lambda: True,
+        restart_for_mode_switch=lambda: events.append('restart_proxy'),
+    )
+    tray = SimpleNamespace(
+        proxy_master=proxy_master,
+        restart_fleasion=lambda: (_ for _ in ()).throw(
+            AssertionError('live hosts switch must not relaunch Fleasion')
+        ),
+        notify_proxy_mode_changed=lambda: events.append('notify'),
+    )
+    config = SimpleNamespace(
+        proxy_mode='env',
+        proxy_features_enabled=True,
+        run_on_boot=False,
+    )
+    tab = SimpleNamespace(
+        _config=config,
+        _tray=tray,
+        _proxy_mode_combo=SimpleNamespace(currentData=lambda: 'hosts'),
+    )
+
+    settings_tab.SettingsTab._on_proxy_mode_changed(tab)
+
+    assert config.proxy_mode == 'hosts'
+    assert events == ['restart_proxy', 'notify']
+
+
+def test_env_to_hosts_with_proxy_disabled_only_persists_mode():
+    from fleasion.gui import settings_tab
+
+    events = []
+    proxy_master = SimpleNamespace(
+        can_live_switch_to_hosts=lambda: False,
+        restart_for_mode_switch=lambda: events.append('restart_proxy'),
+    )
+    tray = SimpleNamespace(
+        proxy_master=proxy_master,
+        restart_fleasion=lambda: events.append('restart_app') or True,
+        notify_proxy_mode_changed=lambda: events.append('notify'),
+    )
+    config = SimpleNamespace(
+        proxy_mode='env',
+        proxy_features_enabled=False,
+        run_on_boot=False,
+    )
+    tab = SimpleNamespace(
+        _config=config,
+        _tray=tray,
+        _proxy_mode_combo=SimpleNamespace(currentData=lambda: 'hosts'),
+    )
+
+    settings_tab.SettingsTab._on_proxy_mode_changed(tab)
+
+    assert config.proxy_mode == 'hosts'
+    assert events == ['notify']
+
+
+def test_env_to_hosts_failed_replacement_rolls_back_mode_and_autostart(monkeypatch):
+    from fleasion.gui import settings_tab
+
+    sync_modes = []
+    warnings = []
+    selected_indexes = []
+    proxy_master = SimpleNamespace(can_live_switch_to_hosts=lambda: False)
+    tray = SimpleNamespace(
+        proxy_master=proxy_master,
+        restart_fleasion=lambda: False,
+        notify_proxy_mode_changed=lambda: (_ for _ in ()).throw(
+            AssertionError('failed switch must not be announced as active')
+        ),
+    )
+    config = SimpleNamespace(
+        proxy_mode='env',
+        proxy_features_enabled=True,
+        run_on_boot=True,
+    )
+    combo = SimpleNamespace(
+        currentData=lambda: 'hosts',
+        findData=lambda mode: 0 if mode == 'env' else -1,
+        blockSignals=lambda _blocked: None,
+        setCurrentIndex=lambda index: selected_indexes.append(index),
+    )
+    tab = SimpleNamespace(_config=config, _tray=tray, _proxy_mode_combo=combo)
+
+    monkeypatch.setattr(
+        settings_tab,
+        'sync_autostart',
+        lambda _enabled, _config_dir, *, proxy_mode: sync_modes.append(proxy_mode) or True,
+    )
+    monkeypatch.setattr(
+        settings_tab.QMessageBox,
+        'warning',
+        lambda *_args: warnings.append(_args[1]),
+    )
+
+    settings_tab.SettingsTab._on_proxy_mode_changed(tab)
+
+    assert config.proxy_mode == 'env'
+    assert sync_modes == ['hosts', 'env']
+    assert selected_indexes == [0]
+    assert warnings == ['Proxy Mode Change Failed']
+
+
+def test_env_to_hosts_uncertain_replacement_does_not_reclaim_or_rewrite_state(monkeypatch):
+    from fleasion.gui import settings_tab
+
+    sync_modes = []
+    criticals = []
+    proxy_master = SimpleNamespace(can_live_switch_to_hosts=lambda: False)
+    tray = SimpleNamespace(
+        proxy_master=proxy_master,
+        restart_fleasion=lambda: None,
+        notify_proxy_mode_changed=lambda: (_ for _ in ()).throw(
+            AssertionError('uncertain switch must not be announced as active')
+        ),
+    )
+    config = SimpleNamespace(
+        proxy_mode='env',
+        proxy_features_enabled=True,
+        run_on_boot=True,
+    )
+    combo = SimpleNamespace(currentData=lambda: 'hosts')
+    tab = SimpleNamespace(_config=config, _tray=tray, _proxy_mode_combo=combo)
+
+    monkeypatch.setattr(
+        settings_tab,
+        'sync_autostart',
+        lambda _enabled, _config_dir, *, proxy_mode: sync_modes.append(proxy_mode) or True,
+    )
+    monkeypatch.setattr(
+        settings_tab.QMessageBox,
+        'critical',
+        lambda *_args: criticals.append(_args[1]),
+    )
+
+    settings_tab.SettingsTab._on_proxy_mode_changed(tab)
+
+    assert config.proxy_mode == 'hosts'
+    assert sync_modes == ['hosts']
+    assert criticals == ['Proxy Mode Change Incomplete']
 
 
 def test_windows_hosts_to_env_live_switch_rearms_gdk_after_proxy_restart(monkeypatch):

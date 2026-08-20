@@ -76,6 +76,17 @@ def test_proxy_loop_diagnostics_capture_proactor_accept_fault(monkeypatch):
     assert any('winerror=10014' in message for _, message in logs)
 
 
+def test_hosts_proxy_readiness_requires_final_hosts_event():
+    proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
+    proxy._hosts_proxy_ready = threading.Event()
+    proxy._thread = SimpleNamespace(is_alive=lambda: False)
+
+    assert not proxy.wait_for_hosts_proxy_ready(timeout=0.1)
+
+    proxy._hosts_proxy_ready.set()
+    assert proxy.wait_for_hosts_proxy_ready(timeout=0.1)
+
+
 def test_proxy_worker_retries_once_with_selector_loop(monkeypatch):
     calls = []
     logs = []

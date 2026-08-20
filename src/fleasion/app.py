@@ -5,6 +5,7 @@ import html
 import json
 import os
 import platform
+import secrets
 import shlex
 import signal
 import subprocess
@@ -62,10 +63,22 @@ _WINDOWS_REPAIR_RESULT_TIMEOUT_SECONDS = 120.0
 _WINDOWS_FIREWALL_REPAIR_RESULT_TIMEOUT_SECONDS = 120.0
 _WINDOWS_HOSTS_CLEANUP_TIMEOUT_SECONDS = 15 * 60
 _WINDOWS_WAIT_TIMEOUT = 0x102
+_RESTART_HANDOFF_TIMEOUT_SECONDS = 45.0
+_RESTART_ABORT_TIMEOUT_SECONDS = 10.0
+_RESTART_HANDOFF_PHASES = frozenset({'prepared', 'release', 'ready', 'abort'})
 _HOSTS_CLEANUP_NOT_ADMIN_EXIT = 10
 _HOSTS_CLEANUP_WRITE_FAILED_EXIT = 11
 _HOSTS_CLEANUP_UNEXPECTED_EXIT = 12
 _MACOS_PLAIN_LAUNCH_CLASSIFICATION_SECONDS = 2.0
+
+_single_instance_shared_memory: QSharedMemory | None = None
+_single_instance_control_server: QLocalServer | None = None
+_single_instance_app: QApplication | None = None
+_single_instance_tray: SystemTray | None = None
+
+
+class RestartHandoffUncertain(RuntimeError):
+    """The old process cannot safely reclaim state from a failed replacement."""
 
 
 def _linux_client_launch_path() -> Path:
@@ -1010,6 +1023,8 @@ def _relaunch_as_admin(
     wait_for_completion: bool = False,
     wait_timeout_ms: int = 120_000,
     completion: dict[str, int | bool] | None = None,
+    restart_handoff_token: str | None = None,
+    restart_handoff_parent_pid: int | None = None,
 ) -> bool:
     """Silently attempt to relaunch elevated via the platform prompt.
 
@@ -1018,10 +1033,21 @@ def _relaunch_as_admin(
     when ``wait_for_completion`` is set, if the elevated child completed with
     exit code zero. ``completion`` receives the native wait and exit-code
     details for synchronous callers that need a more specific failure reason.
-    Returns False if the user declined or the relaunch failed.
+    Returns False if the user declined or the relaunch failed. A restart
+    handoff token enables the verified parent/child protocol used by mode
+    switches; it cannot be combined with ``wait_for_completion``.
     """
+    if restart_handoff_token and (
+        sys.platform != 'win32'
+        or wait_for_completion
+        or not restart_handoff_parent_pid
+        or restart_handoff_parent_pid <= 0
+    ):
+        log_buffer.log('Restart', 'Invalid administrator restart handoff request')
+        return False
+
     if sys.platform == 'darwin':
-        existing_args = sys.argv[1:]
+        existing_args = _strip_restart_handoff_args(list(sys.argv[1:]))
         if not any(arg.startswith('--fleasion-user-localappdata=') for arg in existing_args):
             existing_args.append(f'--fleasion-user-localappdata={CONFIG_DIR.parent}')
         if extra_args.strip():
@@ -1080,7 +1106,17 @@ def _relaunch_as_admin(
 
     import ctypes
 
-    existing_args = sys.argv[1:]
+    existing_args = _strip_restart_handoff_args(list(sys.argv[1:]))
+    if restart_handoff_token:
+        existing_args = [arg for arg in existing_args if arg != '--kill-others']
+        existing_args.extend(
+            [
+                '--restart-handoff-token',
+                restart_handoff_token,
+                '--restart-handoff-parent-pid',
+                str(restart_handoff_parent_pid),
+            ]
+        )
     if not any(arg.startswith('--fleasion-user-localappdata=') for arg in existing_args):
         local_appdata = os.environ.get('LOCALAPPDATA') or str(CONFIG_DIR.parent)
         existing_args.append(f'--fleasion-user-localappdata={local_appdata}')
@@ -1091,12 +1127,11 @@ def _relaunch_as_admin(
         ('--repair-autostart', '--repair-roblox-permissions')
     ) and not (requesting_identity_captured):
         return False
-    # ShellExecuteEx returns as soon as the elevated child is created, while
-    # this normal-user Qt process can still own the single-instance slot.  Let
-    # the elevated copy request a clean exit from that parent before it tries
-    # to claim the slot; otherwise it falls into the duplicate-instance dialog
-    # and no dashboard is shown.
-    if '--kill-others' not in existing_args:
+    # Normal elevation asks the old process to exit before claiming the slot.
+    # Verified restart handoffs are different: the parent keeps its working
+    # proxy alive and explicitly transfers the single-instance slot only after
+    # this final elevated child reaches the prepared gate.
+    if not restart_handoff_token and '--kill-others' not in existing_args:
         existing_args.append('--kill-others')
 
     frozen = bool(getattr(sys, 'frozen', False))
@@ -1192,13 +1227,6 @@ def _relaunch_as_admin(
             )
         return False
 
-    if not wait_for_completion:
-        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
-        kernel32.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
-        kernel32.CloseHandle.restype = ctypes.wintypes.BOOL
-        kernel32.CloseHandle(sei.hProcess)
-        return True
-
     kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
     kernel32.WaitForSingleObject.argtypes = [ctypes.wintypes.HANDLE, ctypes.wintypes.DWORD]
     kernel32.WaitForSingleObject.restype = ctypes.wintypes.DWORD
@@ -1207,8 +1235,43 @@ def _relaunch_as_admin(
         ctypes.POINTER(ctypes.wintypes.DWORD),
     ]
     kernel32.GetExitCodeProcess.restype = ctypes.wintypes.BOOL
+    kernel32.GetProcessId.argtypes = [ctypes.wintypes.HANDLE]
+    kernel32.GetProcessId.restype = ctypes.wintypes.DWORD
+    kernel32.TerminateProcess.argtypes = [ctypes.wintypes.HANDLE, ctypes.wintypes.UINT]
+    kernel32.TerminateProcess.restype = ctypes.wintypes.BOOL
     kernel32.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
     kernel32.CloseHandle.restype = ctypes.wintypes.BOOL
+
+    if restart_handoff_token:
+        child_pid = int(kernel32.GetProcessId(sei.hProcess))
+        if child_pid <= 0:
+            log_buffer.log('Restart', 'Could not identify elevated replacement process')
+            kernel32.CloseHandle(sei.hProcess)
+            return False
+
+        def _elevated_child_alive() -> bool:
+            return kernel32.WaitForSingleObject(sei.hProcess, 0) == _WINDOWS_WAIT_TIMEOUT
+
+        def _terminate_elevated_child() -> None:
+            if not _elevated_child_alive():
+                return
+            if kernel32.TerminateProcess(sei.hProcess, 1):
+                kernel32.WaitForSingleObject(sei.hProcess, 2_000)
+
+        try:
+            return _run_restart_handoff_parent(
+                restart_handoff_token,
+                child_pid,
+                is_launcher_alive=_elevated_child_alive,
+                terminate_launcher=_terminate_elevated_child,
+            )
+        finally:
+            kernel32.CloseHandle(sei.hProcess)
+
+    if not wait_for_completion:
+        kernel32.CloseHandle(sei.hProcess)
+        return True
+
     wait_result = kernel32.WaitForSingleObject(sei.hProcess, wait_timeout_ms)
     exit_code = ctypes.wintypes.DWORD()
     exit_code_read = False
@@ -1396,33 +1459,500 @@ def _repair_windows_firewall_once() -> int:
     return 0
 
 
-def restart_fleasion_normally(*, preserve_env_proxy_player: bool = False) -> bool:
-    """Relaunch Fleasion as a normal (non-elevated) process and return
-    whether the new process was spawned - used when a setting change (e.g.
-    switching the proxy mode back to Hosts File) needs a full restart to
-    apply cleanly. Unlike ``_relaunch_as_admin``, this never triggers an
-    OS elevation prompt, and is implemented for all three platforms (the
-    admin version is a no-op stub on Linux). The caller is responsible for
-    then exiting this process - it isn't done here, same as
-    ``_relaunch_as_admin``.
+def _restart_handoff_path(token: str, phase: str = 'ready') -> Path | None:
+    """Resolve a restart protocol marker without accepting arbitrary paths."""
+    token = str(token or '')
+    phase = str(phase or '')
+    if phase not in _RESTART_HANDOFF_PHASES:
+        return None
+    if len(token) != 32 or any(character not in '0123456789abcdef' for character in token):
+        return None
+    return CONFIG_DIR / f'.restart-{phase}-{token}'
 
-    Reuses the frozen-vs-dev relaunch-command logic from
-    ``_relaunch_as_admin`` (locating ``uv``/``launcher.py`` as needed) minus
-    the ``runas``/``osascript administrator`` elevation wrapping, and passes
-    ``--kill-others`` so the new process' own single-instance startup check
-    asks this one to exit if there's ever a timing race between the two.
+
+def _cleanup_restart_handoff(token: str, *, preserve_abort: bool = False) -> None:
+    for phase in _RESTART_HANDOFF_PHASES:
+        if preserve_abort and phase == 'abort':
+            continue
+        marker = _restart_handoff_path(token, phase)
+        if marker is None:
+            continue
+        try:
+            marker.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _write_restart_handoff_marker(token: str, phase: str, value: int) -> bool:
+    marker = _restart_handoff_path(token, phase)
+    if marker is None or value <= 0:
+        log_buffer.log('Restart', 'Rejected invalid restart handoff marker')
+        return False
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+            handle.write(str(value))
+            handle.flush()
+            os.fsync(handle.fileno())
+    except OSError as exc:
+        log_buffer.log('Restart', f'Could not publish restart {phase} marker: {exc}')
+        return False
+    return True
+
+
+def _publish_restart_handoff(token: str) -> bool:
+    """Publish final readiness from the replacement process."""
+    return _write_restart_handoff_marker(token, 'ready', os.getpid())
+
+
+def _pid_is_alive(pid: int) -> bool:
+    """Return whether an application PID is alive without requiring termination rights."""
+    if pid <= 0:
+        return False
+    if sys.platform != 'win32':
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+
+    import ctypes
+    import ctypes.wintypes
+
+    process_query_limited_information = 0x1000
+    still_active = 259
+    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel32.OpenProcess.argtypes = [
+        ctypes.wintypes.DWORD,
+        ctypes.wintypes.BOOL,
+        ctypes.wintypes.DWORD,
+    ]
+    kernel32.OpenProcess.restype = ctypes.wintypes.HANDLE
+    kernel32.GetExitCodeProcess.argtypes = [
+        ctypes.wintypes.HANDLE,
+        ctypes.POINTER(ctypes.wintypes.DWORD),
+    ]
+    kernel32.GetExitCodeProcess.restype = ctypes.wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
+    kernel32.CloseHandle.restype = ctypes.wintypes.BOOL
+
+    handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+    if not handle:
+        return False
+    try:
+        exit_code = ctypes.wintypes.DWORD()
+        return bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))) and (
+            exit_code.value == still_active
+        )
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _read_restart_marker_value(token: str, phase: str) -> int | None:
+    marker = _restart_handoff_path(token, phase)
+    if marker is None or not marker.is_file():
+        return None
+    try:
+        raw_value = marker.read_text(encoding='utf-8').strip()
+        value = int(raw_value)
+    except (OSError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _wait_for_restart_marker(
+    token: str,
+    phase: str,
+    *,
+    is_launcher_alive,
+    expected_value: int | None = None,
+    timeout: float = _RESTART_HANDOFF_TIMEOUT_SECONDS,
+) -> int | None:
+    """Wait for a token-authenticated protocol marker and return its app PID/value.
+
+    The process created by Popen/ShellExecute is only a launcher-liveness signal.
+    PyInstaller one-file builds use a bootloader parent whose PID differs from
+    the Python application child, so launcher PID is deliberately not protocol
+    identity. The random token identifies this handoff; ``prepared`` reports
+    the actual application PID, and later phases can require that same value.
     """
-    existing_args = [arg for arg in sys.argv[1:] if arg != '--preserve-env-proxy-player']
-    if '--kill-others' not in existing_args:
+    marker = _restart_handoff_path(token, phase)
+    if marker is None or (expected_value is not None and expected_value <= 0):
+        return None
+    deadline = time.monotonic() + max(0.0, timeout)
+    while time.monotonic() < deadline:
+        if not is_launcher_alive():
+            log_buffer.log('Restart', f'Replacement launcher exited before {phase} handoff')
+            return None
+        marker_value = _read_restart_marker_value(token, phase)
+        if marker_value is not None and (
+            expected_value is None or marker_value == expected_value
+        ):
+            # Re-check the outer launcher after reading to reject a marker that
+            # raced with immediate launcher/application teardown.
+            if not is_launcher_alive():
+                log_buffer.log(
+                    'Restart',
+                    f'Replacement launcher exited immediately after {phase} handoff',
+                )
+                return None
+            return marker_value
+        time.sleep(0.05)
+    log_buffer.log('Restart', f'Replacement Fleasion timed out before {phase} handoff')
+    return None
+
+
+def _restart_abort_requested(token: str, parent_pid: int) -> bool:
+    return _read_restart_marker_value(token, 'abort') == parent_pid
+
+
+def _request_restart_abort(token: str, parent_pid: int) -> bool:
+    """Ask the application child to abandon the handoff and exit cleanly."""
+    marker = _restart_handoff_path(token, 'abort')
+    if marker is None or parent_pid <= 0:
+        return False
+    existing = _read_restart_marker_value(token, 'abort')
+    if existing is not None:
+        return existing == parent_pid
+    return _write_restart_handoff_marker(token, 'abort', parent_pid)
+
+
+def _wait_for_restart_release(token: str, parent_pid: int) -> bool:
+    """Child-side gate: do not touch single-instance ownership until released."""
+    marker = _restart_handoff_path(token, 'release')
+    if marker is None or parent_pid <= 0:
+        return False
+    deadline = time.monotonic() + _RESTART_HANDOFF_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        if _restart_abort_requested(token, parent_pid):
+            log_buffer.log('Restart', 'Parent aborted restart before ownership transfer')
+            abort_marker = _restart_handoff_path(token, 'abort')
+            if abort_marker is not None:
+                try:
+                    abort_marker.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            return False
+        if marker.is_file():
+            try:
+                released_by = marker.read_text(encoding='utf-8').strip()
+            except OSError:
+                released_by = ''
+            if released_by == str(parent_pid):
+                try:
+                    marker.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                return True
+        time.sleep(0.05)
+    log_buffer.log('Restart', 'Parent never released single-instance ownership')
+    return False
+
+
+def _join_restart_handoff(token: str, parent_pid: int) -> bool:
+    """Child-side first phase of the verified restart protocol."""
+    if not _write_restart_handoff_marker(token, 'prepared', os.getpid()):
+        return False
+    return _wait_for_restart_release(token, parent_pid)
+
+
+def _suspend_single_instance_for_handoff() -> bool:
+    """Temporarily transfer the single-instance slot while keeping the proxy alive."""
+    global _single_instance_control_server
+
+    shared_memory = _single_instance_shared_memory
+    if shared_memory is None or not shared_memory.isAttached():
+        log_buffer.log('Restart', 'Cannot transfer restart ownership: single-instance lock is absent')
+        return False
+
+    server = _single_instance_control_server
+    if server is not None:
+        server.close()
+        QLocalServer.removeServer(_SINGLE_INSTANCE_CONTROL_SERVER)
+        _single_instance_control_server = None
+
+    if shared_memory.detach():
+        return True
+
+    log_buffer.log('Restart', f'Could not release single-instance lock: {shared_memory.errorString()}')
+    if not _resume_single_instance_after_handoff_failure():
+        raise RestartHandoffUncertain(
+            'Original process could not restore single-instance ownership after release failure'
+        )
+    return False
+
+
+def _resume_single_instance_after_handoff_failure() -> bool:
+    """Reclaim both single-instance ownership surfaces after a failed restart."""
+    global _single_instance_control_server, _single_instance_shared_memory
+
+    shared_memory = _single_instance_shared_memory
+    if shared_memory is None or not shared_memory.isAttached():
+        replacement_lock = QSharedMemory(_SINGLE_INSTANCE_KEY)
+        if not replacement_lock.create(1):
+            log_buffer.log(
+                'Restart',
+                'Could not reclaim single-instance lock after failed restart: '
+                f'{replacement_lock.errorString()}',
+            )
+            return False
+        _single_instance_shared_memory = replacement_lock
+
+    if _single_instance_app is None or _single_instance_tray is None:
+        log_buffer.log(
+            'Restart',
+            'Could not restore single-instance control endpoint: application state is unavailable',
+        )
+        return False
+
+    control_server = _start_single_instance_control_server(
+        _single_instance_app,
+        _single_instance_tray,
+    )
+    if control_server is None:
+        log_buffer.log(
+            'Restart',
+            'Could not restore single-instance control endpoint after failed restart',
+        )
+        return False
+    _single_instance_control_server = control_server
+    return True
+
+
+def _abort_restart_child_and_wait(
+    token: str,
+    parent_pid: int,
+    application_pid: int | None,
+    *,
+    is_launcher_alive,
+    terminate_launcher,
+    timeout: float = _RESTART_ABORT_TIMEOUT_SECONDS,
+) -> bool:
+    """Abort a failed replacement and prove the Python application is gone.
+
+    The outer launcher may be a PyInstaller one-file bootloader, so launcher
+    termination alone is never treated as proof that the application child
+    exited. Once ``prepared`` reports an application PID, rollback is allowed
+    only after that PID is no longer alive.
+    """
+    _request_restart_abort(token, parent_pid)
+    deadline = time.monotonic() + max(0.0, timeout)
+    outer_terminated = False
+    while time.monotonic() < deadline:
+        if application_pid is not None:
+            if not _pid_is_alive(application_pid):
+                return True
+        elif not is_launcher_alive():
+            return True
+
+        # Give the child a short opportunity to observe the abort marker and
+        # unwind itself before terminating the outer launcher as a fallback.
+        if not outer_terminated and time.monotonic() + 2.0 >= deadline:
+            terminate_launcher()
+            outer_terminated = True
+        time.sleep(0.05)
+
+    if application_pid is not None and not _pid_is_alive(application_pid):
+        return True
+    if application_pid is None and not is_launcher_alive():
+        return True
+
+    log_buffer.log(
+        'Restart',
+        'Replacement application termination could not be confirmed; '
+        'single-instance ownership will not be reclaimed',
+    )
+    return False
+
+
+def _run_restart_handoff_parent(
+    token: str,
+    launcher_pid: int,
+    *,
+    is_launcher_alive,
+    terminate_launcher,
+) -> bool:
+    """Parent-side prepared -> release -> ready restart state machine.
+
+    ``launcher_pid`` is diagnostic only. PyInstaller one-file creates a
+    bootloader parent plus a Python application child, so protocol identity is
+    the random token and ``prepared`` supplies the actual application PID.
+    """
+    del launcher_pid
+    parent_pid = os.getpid()
+    ownership_released = False
+    handoff_succeeded = False
+    application_pid: int | None = None
+    try:
+        prepared_pid = _wait_for_restart_marker(
+            token,
+            'prepared',
+            is_launcher_alive=is_launcher_alive,
+        )
+        if prepared_pid is None or not _pid_is_alive(prepared_pid):
+            return False
+        application_pid = prepared_pid
+
+        if not _suspend_single_instance_for_handoff():
+            return False
+        ownership_released = True
+
+        if not _pid_is_alive(application_pid):
+            return False
+
+        if not _write_restart_handoff_marker(token, 'release', parent_pid):
+            return False
+
+        ready_pid = _wait_for_restart_marker(
+            token,
+            'ready',
+            is_launcher_alive=lambda: _pid_is_alive(application_pid),
+            expected_value=application_pid,
+        )
+        if ready_pid != application_pid:
+            return False
+
+        handoff_succeeded = True
+        return True
+    finally:
+        if not handoff_succeeded:
+            terminated = _abort_restart_child_and_wait(
+                token,
+                parent_pid,
+                application_pid,
+                is_launcher_alive=is_launcher_alive,
+                terminate_launcher=terminate_launcher,
+            )
+            if ownership_released:
+                if terminated:
+                    if not _resume_single_instance_after_handoff_failure():
+                        log_buffer.log(
+                            'Restart',
+                            'Replacement exited, but the original process could not restore '
+                            'single-instance ownership completely',
+                        )
+                        _cleanup_restart_handoff(token)
+                        raise RestartHandoffUncertain(
+                            'Original process could not restore single-instance ownership'
+                        )
+                else:
+                    log_buffer.log(
+                        'Restart',
+                        'Rollback is intentionally incomplete because the replacement '
+                        'application may still own single-instance/proxy resources',
+                    )
+                    _cleanup_restart_handoff(token, preserve_abort=True)
+                    raise RestartHandoffUncertain(
+                        'Replacement application may still own restart resources'
+                    )
+        _cleanup_restart_handoff(token)
+
+
+def _terminate_popen_child(process) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        process.terminate()
+        process.wait(timeout=2.0)
+    except subprocess.TimeoutExpired:
+        try:
+            process.kill()
+            process.wait(timeout=2.0)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    except OSError:
+        pass
+
+
+def _strip_restart_handoff_args(args: list[str]) -> list[str]:
+    """Drop stale protocol credentials before constructing a new relaunch."""
+    cleaned: list[str] = []
+    skip_next = False
+    for arg in args:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg in {'--restart-handoff-token', '--restart-handoff-parent-pid'}:
+            skip_next = True
+            continue
+        if arg.startswith(('--restart-handoff-token=', '--restart-handoff-parent-pid=')):
+            continue
+        cleaned.append(arg)
+    return cleaned
+
+
+def restart_fleasion_normally(
+    *,
+    preserve_env_proxy_player: bool = False,
+    verify_startup: bool = False,
+    require_admin: bool = False,
+) -> bool:
+    """Relaunch Fleasion and optionally verify the final replacement.
+
+    Verified restarts use a three-phase handoff. The child first proves it
+    survived imports/elevation (``prepared``), then waits while the parent
+    releases only the single-instance slot (the working proxy stays alive).
+    The parent exits only after the child has claimed that slot and published
+    ``ready`` after Hosts-mode proxy startup succeeds.
+    """
+    existing_args = _strip_restart_handoff_args(list(sys.argv[1:]))
+    existing_args = [arg for arg in existing_args if arg != '--preserve-env-proxy-player']
+
+    handoff_token = secrets.token_hex(16) if verify_startup else ''
+    handoff_parent_pid = os.getpid() if handoff_token else 0
+    if handoff_token:
+        _cleanup_restart_handoff(handoff_token)
+        existing_args = [arg for arg in existing_args if arg != '--kill-others']
+        existing_args.extend(
+            [
+                '--restart-handoff-token',
+                handoff_token,
+                '--restart-handoff-parent-pid',
+                str(handoff_parent_pid),
+            ]
+        )
+    elif '--kill-others' not in existing_args:
         existing_args.append('--kill-others')
+
     if preserve_env_proxy_player:
         existing_args.append('--preserve-env-proxy-player')
+
+    if require_admin:
+        if sys.platform != 'win32':
+            log_buffer.log('Restart', 'Administrator restart was requested on a non-Windows platform')
+            return False
+        if _is_admin():
+            require_admin = False
+        else:
+            if not handoff_token:
+                log_buffer.log('Restart', 'Refusing unverified administrator restart')
+                return False
+            return _relaunch_as_admin(
+                extra_args=(
+                    '--preserve-env-proxy-player' if preserve_env_proxy_player else ''
+                ),
+                parent_hwnd=_window_handle(_visible_parent_widget()),
+                restart_handoff_token=handoff_token,
+                restart_handoff_parent_pid=handoff_parent_pid,
+            )
 
     creationflags = 0
     popen_kwargs = {}
 
     if getattr(sys, 'frozen', False):
         launch = [sys.executable, *existing_args]
+        # PyInstaller one-file children must start a fresh extraction/runtime
+        # environment. Reusing the current bootloader environment can make an
+        # independent relaunch import from the old temporary directory and die
+        # with missing stdlib/native modules after the parent exits.
+        child_env = os.environ.copy()
+        child_env['PYINSTALLER_RESET_ENVIRONMENT'] = '1'
+        popen_kwargs['env'] = child_env
         if sys.platform != 'win32':
             popen_kwargs['start_new_session'] = True
     elif sys.platform == 'win32':
@@ -1434,8 +1964,6 @@ def restart_fleasion_normally(*, preserve_env_proxy_player: bool = False) -> boo
             launch = [uv_exe, '--project', cwd, 'run', 'fleasion', *existing_args]
         else:
             launch = [sys.executable, sys.argv[0], *existing_args]
-        # A dev/uv relaunch is a console app under the hood - avoid flashing
-        # a visible console window for what should look like a GUI restart.
         creationflags = subprocess.CREATE_NO_WINDOW
     else:
         project_root = Path(__file__).resolve().parents[2]
@@ -1450,11 +1978,20 @@ def restart_fleasion_normally(*, preserve_env_proxy_player: bool = False) -> boo
         popen_kwargs['creationflags'] = creationflags
 
     try:
-        subprocess.Popen(launch, **popen_kwargs)
+        process = subprocess.Popen(launch, **popen_kwargs)
     except Exception as exc:
         log_buffer.log('Restart', f'Failed to relaunch Fleasion: {exc}')
         return False
-    log_buffer.log('Restart', 'Relaunching Fleasion normally to apply a setting change')
+
+    if handoff_token and not _run_restart_handoff_parent(
+        handoff_token,
+        process.pid,
+        is_launcher_alive=lambda: process.poll() is None,
+        terminate_launcher=lambda: _terminate_popen_child(process),
+    ):
+        return False
+
+    log_buffer.log('Restart', 'Relaunching Fleasion to apply a setting change')
     return True
 
 
@@ -3486,6 +4023,9 @@ def _check_linux_gui_dependencies() -> bool:
 
 def main():
     """Main application entry point."""
+    global _single_instance_app, _single_instance_control_server
+    global _single_instance_shared_memory, _single_instance_tray
+
     import argparse as _ap
 
     _parser = _ap.ArgumentParser(add_help=False)
@@ -3504,6 +4044,8 @@ def main():
         action='store_true',
         help=_ap.SUPPRESS,
     )
+    _parser.add_argument('--restart-handoff-token', help=_ap.SUPPRESS)
+    _parser.add_argument('--restart-handoff-parent-pid', type=int, help=_ap.SUPPRESS)
     _parser.add_argument('--proxy-debug', '-proxy-debug', action='store_true', help=_ap.SUPPRESS)
     _parser.add_argument(
         '--proxy-debug-mode',
@@ -3593,6 +4135,7 @@ def main():
 
     # Create Qt application
     app = QApplication(sys.argv)
+    _single_instance_app = app
     roblox_url_event_filter = _RobloxUrlEventFilter(app)
     app.installEventFilter(roblox_url_event_filter)
     # Qt normally follows each desktop's dialog conventions (GNOME/KDE/Windows),
@@ -3622,6 +4165,28 @@ def main():
             'Fleasion installs a small privileged proxy helper when needed; the dashboard and menu-bar app must not run as root.',
         )
         sys.exit(1)
+
+    # Verified replacements use a three-phase protocol. The final child first
+    # proves it survived imports/platform initialization (and, on Windows, UAC)
+    # but waits here while the old process still owns both its working Env Proxy
+    # and the single-instance slot. Only the parent can release that slot.
+    _restart_handoff_requested = bool(
+        _args.restart_handoff_token or _args.restart_handoff_parent_pid
+    )
+    if _restart_handoff_requested:
+        if (
+            not _args.restart_handoff_token
+            or not _args.restart_handoff_parent_pid
+            or _args.restart_handoff_parent_pid <= 0
+            or _args.kill_others
+            or (sys.platform == 'win32' and not _is_admin())
+            or not _join_restart_handoff(
+                _args.restart_handoff_token,
+                _args.restart_handoff_parent_pid,
+            )
+        ):
+            log_buffer.log('Restart', 'Verified replacement could not enter the handoff protocol')
+            sys.exit(1)
 
     # Gracefully release the existing instance before claiming shared memory.
     # The preserve command reaches the old lifecycle controller before its
@@ -3660,6 +4225,9 @@ def main():
             _stale.detach()
         shared_memory = QSharedMemory(_SINGLE_INSTANCE_KEY)
         _shared_memory_created = shared_memory.create(1)
+
+    if _shared_memory_created:
+        _single_instance_shared_memory = shared_memory
 
     if not _shared_memory_created:
         if shared_memory.error() == QSharedMemory.SharedMemoryError.AlreadyExists:
@@ -4062,8 +4630,10 @@ def main():
     # Create system tray
     tray = SystemTray(app, config_manager, proxy_master, mod_manager, roblox_monitor)
     tray_ref['tray'] = tray
+    _single_instance_tray = tray
     app.aboutToQuit.connect(tray.cleanup_tray_icon)
     single_instance_control_server = _start_single_instance_control_server(app, tray)
+    _single_instance_control_server = single_instance_control_server
 
     if _env_proxy_migration_pending:
         _show_env_proxy_migration(config_manager, roblox_monitor)
@@ -4197,6 +4767,48 @@ def main():
 
     if sys.platform == 'darwin' and config_manager.proxy_features_enabled and not start_proxy:
         _install_macos_helper_and_start_proxy()
+
+    if _restart_handoff_requested:
+        restart_cancelled = lambda: _restart_abort_requested(
+            _args.restart_handoff_token,
+            _args.restart_handoff_parent_pid,
+        )
+        replacement_ready = single_instance_control_server is not None
+        if not replacement_ready:
+            log_buffer.log(
+                'Restart',
+                'Replacement could not claim the single-instance control endpoint',
+            )
+        if replacement_ready and config_manager.proxy_features_enabled:
+            if config_manager.proxy_mode == 'env':
+                replacement_ready = proxy_master.wait_for_env_proxy_ready(
+                    timeout=30.0,
+                    cancelled=restart_cancelled,
+                )
+            else:
+                replacement_ready = proxy_master.wait_for_hosts_proxy_ready(
+                    timeout=30.0,
+                    cancelled=restart_cancelled,
+                )
+        if replacement_ready and restart_cancelled():
+            replacement_ready = False
+        if not replacement_ready:
+            log_buffer.log(
+                'Restart',
+                'Replacement did not establish the configured proxy before final handoff',
+            )
+            try:
+                proxy_master.stop()
+            except Exception as exc:
+                log_buffer.log('Restart', f'Replacement proxy cleanup failed: {exc}')
+            if single_instance_control_server is not None:
+                single_instance_control_server.close()
+                QLocalServer.removeServer(_SINGLE_INSTANCE_CONTROL_SERVER)
+            if shared_memory.isAttached():
+                shared_memory.detach()
+            sys.exit(1)
+        if not _publish_restart_handoff(_args.restart_handoff_token):
+            sys.exit(1)
 
     # Warn if no Roblox installations can be found (same scan used for cert injection)
     from .proxy.master import _find_roblox_dirs as _scan_roblox_dirs

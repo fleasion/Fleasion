@@ -26,6 +26,13 @@ def test_packaging_collects_numpy_extensions_without_upx() -> None:
     assert "'numpy.libs/*.dll'" in spec_source
 
 
+def test_packaging_collects_lz4_native_extensions() -> None:
+    spec_path = Path(__file__).resolve().parents[1] / 'Fleasion.spec'
+    spec_source = spec_path.read_text(encoding='utf-8')
+
+    assert "_collect_package('lz4')" in spec_source
+
+
 def _set_reproducible_environment(monkeypatch: MonkeyPatch) -> None:
     for name, value in build.REPRODUCIBLE_ENV.items():
         monkeypatch.setenv(name, value)

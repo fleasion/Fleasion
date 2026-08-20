@@ -293,6 +293,14 @@ hiddenimports: list[str] = []
 # Windows.  The excludes above remove NumPy's test/build-only modules again.
 _collect_package('numpy')
 
+# lz4.__init__ imports the platform-specific lz4._version extension during
+# package initialization. Some Windows PyInstaller analyses have omitted that
+# extension even when lz4.block itself was discovered, causing the replacement
+# process used by Env Proxy -> Hosts File mode switches to die before main().
+# Collect the package as a unit so _version and block/frame native modules are
+# guaranteed to travel with the frozen executable.
+_collect_package('lz4')
+
 # Keep Qt collection narrow. collect_all('PyQt6') pulls in QML/QtQuick,
 # Designer, SQL drivers, multimedia, translations, and other modules that the
 # app does not use, which more than doubles the one-file executable size

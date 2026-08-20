@@ -1123,12 +1123,14 @@ class SystemTray:
 
         webbrowser.open(f'https://{APP_KOFI}')
 
-    def restart_fleasion(self):
-        """Relaunch Fleasion (no admin prompt) and exit this process - used
-        when a setting change needs a full restart to apply (e.g. switching
-        the proxy mode back to Hosts File).
+    def restart_fleasion(self) -> bool | None:
+        """Verified relaunch used when a setting change needs a new process.
+
+        The current proxy remains alive until the final child owns the
+        single-instance state and has established the configured proxy. This
+        keeps import, elevation, and Hosts-mode startup failures transactional.
         """
-        from .app import restart_fleasion_normally
+        from .app import RestartHandoffUncertain, _is_admin, restart_fleasion_normally
 
         lifecycle = getattr(self.roblox_monitor, 'env_lifecycle', None)
         preserve_player = bool(
@@ -1137,15 +1139,28 @@ class SystemTray:
             and lifecycle.owns_player
             and self.roblox_monitor.is_player_running()
         )
-        if not restart_fleasion_normally(
-            preserve_env_proxy_player=preserve_player
-        ):
-            log_buffer.log('Restart', 'Could not relaunch Fleasion automatically')
-            return
+        requires_admin = bool(
+            sys.platform == 'win32'
+            and self.config_manager.proxy_mode != 'env'
+            and not _is_admin()
+        )
+        try:
+            restarted = restart_fleasion_normally(
+                preserve_env_proxy_player=preserve_player,
+                verify_startup=True,
+                require_admin=requires_admin,
+            )
+        except RestartHandoffUncertain as exc:
+            log_buffer.log('Restart', f'Replacement termination is uncertain: {exc}')
+            return None
+        if not restarted:
+            log_buffer.log('Restart', 'Could not verify replacement Fleasion startup')
+            return False
         self._exit_app(
             preserve_roblox=preserve_player,
             force_close_roblox=not preserve_player,
         )
+        return True
 
     def _exit_app(
         self,

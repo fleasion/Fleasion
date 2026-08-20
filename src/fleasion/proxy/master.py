@@ -3785,6 +3785,7 @@ class ProxyMaster:
         self._active_proxy_port: Optional[int] = None
         self._lock = threading.Lock()
         self._env_proxy_ready = threading.Event()
+        self._hosts_proxy_ready = threading.Event()
         self._windows_proactor_accept_fault = False
         self._windows_selector_fallback_attempted = False
         self._hosts_installed: bool = False
@@ -3832,6 +3833,18 @@ class ProxyMaster:
 
     def _use_env_proxy_mode(self) -> bool:
         return str(getattr(self.config_manager, 'proxy_mode', 'hosts') or 'hosts') == 'env'
+
+    def can_live_switch_to_hosts(self) -> bool:
+        """Return whether this process has a safe hosts-mode privilege path."""
+        if IS_WINDOWS:
+            return _is_admin()
+        if IS_MACOS:
+            from ..utils.macos_proxy_helper import helper_is_ready
+
+            return helper_is_ready()
+        # Linux hosts mutation and privileged port ownership are delegated to
+        # the root helper, so the normal-user GUI never needs to restart.
+        return IS_LINUX
 
     def roblox_env_proxy_url(self) -> str:
         port = self._active_proxy_port or MACOS_PROXY_BACKEND_PORT
@@ -3921,9 +3934,31 @@ class ProxyMaster:
         if IS_LINUX:
             self._clear_linux_env_proxy_override()
 
-    def wait_for_env_proxy_ready(self, timeout: float = 15.0) -> bool:
-        """Wait for bind and TLS self-test, not merely proxy thread startup."""
-        return self._env_proxy_ready.wait(max(0.0, timeout))
+    def wait_for_env_proxy_ready(self, timeout: float = 15.0, *, cancelled=None) -> bool:
+        """Wait for bind/TLS readiness while allowing restart handoff cancellation."""
+        deadline = time.monotonic() + max(0.0, timeout)
+        while time.monotonic() < deadline:
+            if cancelled is not None and cancelled():
+                return False
+            if self._env_proxy_ready.wait(min(0.1, max(0.0, deadline - time.monotonic()))):
+                return True
+            thread = self._thread
+            if thread is not None and not thread.is_alive():
+                return False
+        return self._env_proxy_ready.is_set()
+
+    def wait_for_hosts_proxy_ready(self, timeout: float = 30.0, *, cancelled=None) -> bool:
+        """Wait until port 443, TLS, hosts entries, and watchdog are all active."""
+        deadline = time.monotonic() + max(0.0, timeout)
+        while time.monotonic() < deadline:
+            if cancelled is not None and cancelled():
+                return False
+            if self._hosts_proxy_ready.wait(min(0.1, max(0.0, deadline - time.monotonic()))):
+                return True
+            thread = self._thread
+            if thread is not None and not thread.is_alive():
+                return False
+        return self._hosts_proxy_ready.is_set()
 
     def _roblox_ca_target(self, exe_path: Path) -> tuple[Path, str] | None:
         ca_cert_path = _current_proxy_ca_dir() / 'ca.crt'
@@ -4891,6 +4926,7 @@ class ProxyMaster:
             if self._running:
                 return
             self._env_proxy_ready.clear()
+            self._hosts_proxy_ready.clear()
             self._active_proxy_port = None
 
             self._thread = threading.Thread(
@@ -4926,6 +4962,9 @@ class ProxyMaster:
         ready_event = getattr(self, '_env_proxy_ready', None)
         if ready_event is not None:
             ready_event.clear()
+        hosts_ready_event = getattr(self, '_hosts_proxy_ready', None)
+        if hosts_ready_event is not None:
+            hosts_ready_event.clear()
         texture_stripper = getattr(self, '_texture_stripper', None)
         if texture_stripper is not None:
             texture_stripper.reset_routes('proxy stop')
@@ -5648,6 +5687,9 @@ class ProxyMaster:
         _upsert_watchdog_task()  # Initial task creation
         self._start_watchdog()  # Keep task pushed 5 s ahead
         self._start_linux_sober_custom_fflag_timer()
+        hosts_ready_event = getattr(self, '_hosts_proxy_ready', None)
+        if hosts_ready_event is not None:
+            hosts_ready_event.set()
 
         log_buffer.log('Info', '=' * 50)
         log_buffer.log('Info', 'Fleasion Proxy Active')
@@ -5681,6 +5723,9 @@ class ProxyMaster:
         except asyncio.CancelledError, Exception:
             pass  # Normal shutdown path
         finally:
+            hosts_ready_event = getattr(self, '_hosts_proxy_ready', None)
+            if hosts_ready_event is not None:
+                hosts_ready_event.clear()
             self._stop_linux_sober_custom_fflag_timer()
             # Ensure hosts file is cleaned up even if stop() wasn't called
             if self._hosts_installed:
