@@ -161,9 +161,12 @@ def _find_roblox_dirs() -> list[Path]:
         seen: set[str] = set()
 
         def _add(path: Path) -> None:
-            if is_roblox_studio_resource_dir(path):
+            if '\x00' in str(path) or is_roblox_studio_resource_dir(path):
                 return
-            key = str(path.resolve()).lower()
+            try:
+                key = str(path.resolve()).lower()
+            except OSError, ValueError:
+                key = str(path).lower()
             if key in seen:
                 return
             seen.add(key)
@@ -189,7 +192,7 @@ def _find_roblox_dirs() -> list[Path]:
     seen: set[str] = set()
 
     def _add(path: Path) -> bool:
-        if is_roblox_studio_resource_dir(path):
+        if '\x00' in str(path) or is_roblox_studio_resource_dir(path):
             return False
         key = str(path)
         if key not in seen:
@@ -219,9 +222,16 @@ def _find_roblox_dirs() -> list[Path]:
         results: list[Path] = []
 
         def _has_player(path: Path) -> bool:
-            return os.path.isfile(os.path.join(path, ROBLOX_PROCESS))
+            try:
+                return os.path.isfile(os.path.join(path, ROBLOX_PROCESS))
+            except OSError, ValueError:
+                return False
 
-        if root.is_dir() and _has_player(root):
+        try:
+            root_is_dir = root.is_dir()
+        except OSError, ValueError:
+            return results
+        if root_is_dir and _has_player(root):
             results.append(root)
 
         def _recurse(p: Path, depth: int) -> None:
@@ -234,10 +244,10 @@ def _find_roblox_dirs() -> list[Path]:
                         results.append(entry_path)
                     if depth < max_depth:
                         _recurse(entry_path, depth + 1)
-            except OSError:
+            except OSError, ValueError:
                 pass
 
-        if root.is_dir():
+        if root_is_dir:
             _recurse(root, 1)
         return results
 
@@ -251,6 +261,8 @@ def _find_roblox_dirs() -> list[Path]:
                     i += 1
                 except OSError:
                     break
+                if '\x00' in name:
+                    continue
                 try:
                     with winreg.OpenKey(hkey, name) as sub:
                         try:
@@ -265,7 +277,7 @@ def _find_roblox_dirs() -> list[Path]:
                                 else:
                                     for d in _scan_for_exe(p, 1):
                                         _add(d)
-                        except OSError:
+                        except OSError, ValueError:
                             pass
                         # One nested level
                         j = 0
@@ -275,6 +287,8 @@ def _find_roblox_dirs() -> list[Path]:
                                 j += 1
                             except OSError:
                                 break
+                            if '\x00' in sub_name:
+                                continue
                             try:
                                 with winreg.OpenKey(sub, sub_name) as sub2:
                                     val2, rtype2 = winreg.QueryValueEx(sub2, 'PlayerPath')
@@ -290,9 +304,9 @@ def _find_roblox_dirs() -> list[Path]:
                                                 _add(d)
                             except OSError, ValueError:
                                 pass
-                except OSError:
+                except OSError, ValueError:
                     pass
-    except OSError:
+    except OSError, ValueError:
         pass
 
     # 2. MS Store: C:\XboxGames\Roblox
@@ -311,7 +325,7 @@ def _find_roblox_dirs() -> list[Path]:
             if exe_path is not None:
                 for d in _scan_for_exe(exe_path.parent, 2):
                     _add(d)
-    except OSError:
+    except OSError, ValueError:
         pass
 
     # 4. Program Files (x86) Roblox installs

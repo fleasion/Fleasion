@@ -1,4 +1,5 @@
 import json
+import os
 import stat
 import sys
 import types
@@ -641,3 +642,56 @@ def test_prefixed_ktx_backed_targets_convert_image_replacements_to_ktx2(monkeypa
     )
 
     assert read_rgba8_ktx2(converted) == (bytes((9, 8, 7, 6)), 1, 1)
+
+
+def test_windows_find_roblox_dirs_ignores_invalid_registry_key_and_keeps_scanning(monkeypatch):
+    class _Key:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    fake_winreg = types.SimpleNamespace(
+        HKEY_CURRENT_USER=object(),
+        REG_SZ=1,
+    )
+    software_key = _Key()
+    valid_key = _Key()
+    valid_dir = Path('C:/ValidRoblox')
+    valid_exe = os.path.join(str(valid_dir), modifications_manager.ROBLOX_PROCESS)
+
+    def open_key(root, name):
+        if root is fake_winreg.HKEY_CURRENT_USER and name == r'Software':
+            return software_key
+        if root is software_key and name == 'ValidVendor':
+            return valid_key
+        if root is software_key and name == 'corrupt\x00key':
+            raise ValueError('embedded null character')
+        raise OSError
+
+    def enum_key(key, index):
+        if key is software_key:
+            if index == 0:
+                return 'corrupt\x00key'
+            if index == 1:
+                return 'ValidVendor'
+        raise OSError
+
+    def query_value_ex(key, name):
+        if key is valid_key and name == 'PlayerPath':
+            return str(valid_dir / modifications_manager.ROBLOX_PROCESS), fake_winreg.REG_SZ
+        raise OSError
+
+    fake_winreg.OpenKey = open_key
+    fake_winreg.EnumKey = enum_key
+    fake_winreg.QueryValueEx = query_value_ex
+
+    monkeypatch.setitem(sys.modules, 'winreg', fake_winreg)
+    monkeypatch.setattr(modifications_manager.sys, 'platform', 'win32')
+    monkeypatch.setattr(modifications_manager.os.path, 'isfile', lambda value: value == valid_exe)
+    monkeypatch.setattr(modifications_manager, 'load_saved_roblox_dirs', lambda: [])
+    monkeypatch.setattr(modifications_manager, 'save_saved_roblox_dirs', lambda _dirs: None)
+    monkeypatch.setattr(modifications_manager, 'get_roblox_player_exe_path', lambda: None)
+
+    assert modifications_manager._find_roblox_dirs() == [valid_dir]

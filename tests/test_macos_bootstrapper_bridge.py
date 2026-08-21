@@ -129,3 +129,30 @@ def test_resource_guard_reseeds_custom_flags_after_reapply(tmp_path):
 
     assert seed_calls == [True]
     bridge.stop()
+
+
+def test_watches_appleblox_override_data_dir(tmp_path, monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    resources = tmp_path / 'Roblox.app' / 'Contents' / 'Resources'
+    macos = resources.parent / 'MacOS'
+    managed_file = resources / 'content' / 'textures' / 'cursor.png'
+    managed_file.parent.mkdir(parents=True)
+    managed_file.write_bytes(b'fleasion')
+    macos.mkdir(parents=True)
+
+    appleblox_root = tmp_path / 'AppleBlox Override'
+    (appleblox_root / 'cache' / 'mods').mkdir(parents=True)
+    monkeypatch.setattr(
+        'fleasion.modifications.macos_bootstrapper_bridge.appleblox_data_dir',
+        lambda: appleblox_root,
+    )
+
+    bridge = MacBootstrapperBridge(_ManagerStub(resources, managed_file), app)
+    bridge._settings_timer.stop()
+    bridge._topology_timer.stop()
+
+    watched = bridge._directories_to_watch()
+    assert str(appleblox_root) in watched
+    assert str(appleblox_root / 'cache') in watched
+    assert str(appleblox_root / 'cache' / 'mods') in watched
+    bridge.stop()

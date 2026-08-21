@@ -10,9 +10,9 @@ from PyQt6.QtCore import QFileSystemWatcher, QObject, QTimer
 
 from ..utils import log_buffer
 from ..utils.platform_macos import (
-    APPLEBLOX_DATA_DIR,
     FROSTSTRAP_MOD_BACKUP_DIR,
     FROSTSTRAP_VERSIONS_DIR,
+    appleblox_data_dir,
     find_bootstrapper_restore_resource_dirs,
     is_roblox_running,
 )
@@ -121,10 +121,11 @@ class MacBootstrapperBridge(QObject):
 
         # Watching the nearest existing ancestors makes newly created/deleted
         # version and restore directories visible without persisting them.
+        appleblox_root = appleblox_data_dir()
         for path in (
-            APPLEBLOX_DATA_DIR,
-            APPLEBLOX_DATA_DIR / 'cache',
-            APPLEBLOX_DATA_DIR / 'cache' / 'mods',
+            appleblox_root,
+            appleblox_root / 'cache',
+            appleblox_root / 'cache' / 'mods',
             FROSTSTRAP_VERSIONS_DIR,
             FROSTSTRAP_MOD_BACKUP_DIR,
         ):

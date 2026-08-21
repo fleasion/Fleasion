@@ -1,3 +1,4 @@
+import json
 import sys
 import threading
 from pathlib import Path
@@ -81,6 +82,67 @@ def test_discovers_only_valid_appleblox_mod_restore_snapshot(tmp_path, monkeypat
 
     (backup / "content").mkdir()
     assert platform_macos.find_appleblox_mod_backup_resource_dirs() == [backup]
+
+
+def test_appleblox_mod_restore_snapshot_respects_data_dir_env(tmp_path, monkeypatch):
+    data_dir = tmp_path / "AppleBlox Test Data"
+    backup = data_dir / "cache" / "mods" / "Resources"
+    (backup / "content").mkdir(parents=True)
+    monkeypatch.setenv("APPLEBLOX_DATA_DIR", str(data_dir))
+
+    assert platform_macos.appleblox_data_dir() == data_dir
+    assert platform_macos.find_appleblox_mod_backup_resource_dirs() == [backup]
+
+
+def test_appleblox_config_path_is_not_redirected_by_data_dir_env(tmp_path, monkeypatch):
+    normal_config = tmp_path / "Application Support" / "AppleBlox" / "config" / "roblox.json"
+    custom_app = tmp_path / "Custom Roblox.app"
+    _make_player_app(custom_app)
+    normal_config.parent.mkdir(parents=True)
+    normal_config.write_text(
+        '{"installation": {"custom_path": "' + str(custom_app) + '"}}',
+        encoding="utf-8",
+    )
+    override = tmp_path / "Override"
+    override_config = override / "config" / "roblox.json"
+    override_config.parent.mkdir(parents=True)
+    override_config.write_text('{"installation": {"custom_path": null}}', encoding="utf-8")
+
+    monkeypatch.setenv("APPLEBLOX_DATA_DIR", str(override))
+    monkeypatch.setattr(platform_macos, "APPLEBLOX_ROBLOX_CONFIG", normal_config)
+
+    assert platform_macos._appleblox_custom_app_path() == custom_app
+
+
+def test_appleblox_custom_app_path_ignores_non_object_config_shapes(tmp_path, monkeypatch):
+    config = tmp_path / "roblox.json"
+    monkeypatch.setattr(platform_macos, "APPLEBLOX_ROBLOX_CONFIG", config)
+
+    for payload in ([], {"installation": []}, {"installation": "invalid"}):
+        config.write_text(json.dumps(payload), encoding="utf-8")
+        assert platform_macos._appleblox_custom_app_path() is None
+
+
+def test_appleblox_custom_app_path_ignores_unexpandable_user_path(tmp_path, monkeypatch):
+    config = tmp_path / "roblox.json"
+    config.write_text(
+        json.dumps({"installation": {"custom_path": "~missing-user/Roblox.app"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(platform_macos, "APPLEBLOX_ROBLOX_CONFIG", config)
+    monkeypatch.setattr(
+        Path,
+        "expanduser",
+        lambda _path: (_ for _ in ()).throw(RuntimeError("unknown user")),
+    )
+
+    assert platform_macos._appleblox_custom_app_path() is None
+
+
+def test_appleblox_data_dir_ignores_relative_override(monkeypatch):
+    monkeypatch.setenv("APPLEBLOX_DATA_DIR", "relative/appleblox")
+
+    assert platform_macos.appleblox_data_dir() == platform_macos.APPLEBLOX_DATA_DIR
 
 
 def test_discovers_only_valid_froststrap_mod_restore_snapshots(tmp_path, monkeypatch):
@@ -267,16 +329,24 @@ def test_relaunch_roblox_with_env_proxy_uses_detected_bundle_and_open_env(
         lambda args, **kwargs: calls.append(("run", args, kwargs)) or Result(),
     )
 
-    assert platform_macos.relaunch_roblox_with_proxy_env(proxy_url)
+    assert platform_macos.relaunch_roblox_with_proxy_env(
+        proxy_url,
+        prepare_launch=lambda path: calls.append(("prepare", path)) or True,
+    )
 
-    assert calls[:3] == [("wait", proxy_url), "terminate", "wait_for_exit"]
-    args = calls[3][1]
+    assert calls[:4] == [
+        ("wait", proxy_url),
+        "terminate",
+        "wait_for_exit",
+        ("prepare", exe),
+    ]
+    args = calls[4][1]
     assert args[0] == "open"
     assert f"HTTPS_PROXY={proxy_url}" in args
     assert f"HTTP_PROXY={proxy_url}" in args
     assert "FLEASION_PROXY_RELAUNCHED=1" in args
     assert args[-2:] == ["-a", str(app)]
-    assert calls[4] == ("wait_for_start", 15.0)
+    assert calls[5] == ("wait_for_start", 15.0)
 
 
 def test_relaunch_roblox_with_env_proxy_preserves_launch_target(tmp_path, monkeypatch):
@@ -471,3 +541,15 @@ def test_relaunch_roblox_with_env_proxy_does_not_kill_when_proxy_is_not_ready(
         "http://127.0.0.1:58443"
     )
     assert calls == []
+
+
+def test_appleblox_custom_path_ignores_embedded_null(tmp_path, monkeypatch):
+    config = tmp_path / 'AppleBlox' / 'config' / 'roblox.json'
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        '{"installation": {"custom_path": "/tmp/Roblox\\u0000.app"}}',
+        encoding='utf-8',
+    )
+    monkeypatch.setattr(platform_macos, 'APPLEBLOX_ROBLOX_CONFIG', config)
+
+    assert platform_macos._appleblox_custom_app_path() is None

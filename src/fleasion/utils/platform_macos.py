@@ -51,6 +51,8 @@ FROSTSTRAP_MOD_BACKUP_DIR = (
 )
 ROBLOX_PLAYER_LOG_DIR = USER_HOME / 'Library' / 'Logs' / 'Roblox'
 APPLEBLOX_DATA_DIR = USER_HOME / 'Library' / 'Application Support' / 'AppleBlox'
+# AppleBlox's settings layer always stores roblox.json under the normal macOS
+# application-data path, even when getDataDir() is overridden for cache/mod data.
 APPLEBLOX_ROBLOX_CONFIG = APPLEBLOX_DATA_DIR / 'config' / 'roblox.json'
 APPLEBLOX_MOD_BACKUP_RESOURCES = APPLEBLOX_DATA_DIR / 'cache' / 'mods' / 'Resources'
 
@@ -157,16 +159,41 @@ def set_default_url_handler(scheme: str, bundle_id: str) -> bool:
         _cf_release(core_foundation, bundle_ref)
 
 
+def appleblox_data_dir() -> Path:
+    """Return AppleBlox's cache/mod data root when Fleasion can infer it safely.
+
+    AppleBlox accepts ``APPLEBLOX_DATA_DIR`` as an override for getDataDir().
+    Only absolute overrides are usable here: a relative path would be resolved
+    against AppleBlox's working directory, which Fleasion cannot assume matches
+    its own. CLI-only ``--data-dir`` overrides are intentionally not guessed
+    from ``ps`` command text because paths containing spaces are ambiguous there.
+    """
+    raw_override = os.environ.get('APPLEBLOX_DATA_DIR', '').strip()
+    if raw_override and '\x00' not in raw_override:
+        try:
+            override = Path(raw_override)
+        except (TypeError, ValueError):
+            override = None
+        if override is not None and override.is_absolute():
+            return override
+    return APPLEBLOX_DATA_DIR
+
+
 def _appleblox_custom_app_path() -> Path | None:
     """Return AppleBlox's configured Roblox bundle, when present and valid."""
     try:
         payload = json.loads(APPLEBLOX_ROBLOX_CONFIG.read_text(encoding='utf-8'))
-        raw_path = payload.get('installation', {}).get('custom_path')
-        if not isinstance(raw_path, str) or not raw_path.strip():
+        if not isinstance(payload, dict):
+            return None
+        installation = payload.get('installation')
+        if not isinstance(installation, dict):
+            return None
+        raw_path = installation.get('custom_path')
+        if not isinstance(raw_path, str) or not raw_path.strip() or '\x00' in raw_path:
             return None
         app_path = Path(raw_path).expanduser()
         return app_path if app_path.suffix == '.app' else None
-    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+    except (OSError, RuntimeError, ValueError, TypeError, json.JSONDecodeError):
         return None
 
 
@@ -979,7 +1006,12 @@ def delete_cache() -> list[str]:
 
 def find_appleblox_mod_backup_resource_dirs() -> list[Path]:
     """Return AppleBlox's live Resources snapshot, if its mod cycle created one."""
-    backup = APPLEBLOX_MOD_BACKUP_RESOURCES
+    data_dir = appleblox_data_dir()
+    backup = (
+        APPLEBLOX_MOD_BACKUP_RESOURCES
+        if data_dir == APPLEBLOX_DATA_DIR
+        else data_dir / 'cache' / 'mods' / 'Resources'
+    )
     if not backup.is_dir():
         return []
     # AppleBlox copies the complete Resources tree and later replaces the live
@@ -1165,6 +1197,7 @@ def relaunch_roblox_with_proxy_env(
     cancel_event: threading.Event | None = None,
     source_exe_path: Path | None = None,
     player_already_stopped: bool = False,
+    prepare_launch: Callable[[Path], bool] | None = None,
 ) -> bool:
     """Relaunch the running macOS Roblox Player through Fleasion's env proxy.
 
@@ -1216,6 +1249,20 @@ def relaunch_roblox_with_proxy_env(
                 return False
         if cancel_event is not None and cancel_event.is_set():
             return False
+        if prepare_launch is not None:
+            try:
+                if not prepare_launch(exe_path):
+                    log_buffer.log(
+                        'Launcher',
+                        'Roblox Env Proxy relaunch skipped: launch preparation failed',
+                    )
+                    return False
+            except Exception as exc:
+                log_buffer.log(
+                    'Launcher',
+                    f'Roblox Env Proxy launch preparation failed: {type(exc).__name__}: {exc}',
+                )
+                return False
 
         proxy_env = {
             'ALL_PROXY': proxy_url,

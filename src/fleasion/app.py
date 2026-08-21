@@ -4550,7 +4550,10 @@ def main():
 
         def _prepare_env_proxy_launch(path: Path) -> bool:
             result = proxy_master.ensure_env_proxy_roblox_ca(path, settle=False)
-            return bool(result.get('success'))
+            if not result.get('success'):
+                return False
+            proxy_master.rearm_custom_fflag_delivery_for_player_launch()
+            return True
 
         def _relaunch_env_player(
             proxy_url: str,
@@ -4572,6 +4575,10 @@ def main():
     elif sys.platform == 'darwin':
         from .utils.platform_macos import relaunch_roblox_with_proxy_env
 
+        def _prepare_env_proxy_launch(_path: Path) -> bool:
+            proxy_master.rearm_custom_fflag_delivery_for_player_launch()
+            return True
+
         def _relaunch_env_player(
             proxy_url: str,
             target: str | None,
@@ -4587,6 +4594,7 @@ def main():
                 cancel_event=cancel_event,
                 source_exe_path=source_exe_path,
                 player_already_stopped=player_already_stopped,
+                prepare_launch=_prepare_env_proxy_launch,
             )
 
         _terminate_env_player = terminate_roblox

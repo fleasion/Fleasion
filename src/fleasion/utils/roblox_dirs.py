@@ -14,7 +14,12 @@ ROBLOX_DIRS_FILE = CONFIG_DIR / 'roblox_dirs.json'
 
 def _normalise_roblox_dir(value: str | Path) -> Path | None:
     """Return a valid Roblox install/resource directory, or None."""
-    path = Path(value)
+    try:
+        path = Path(value)
+    except TypeError, ValueError:
+        return None
+    if '\x00' in str(path):
+        return None
     if sys.platform == 'darwin':
         if path.name == ROBLOX_PROCESS:
             resources = path.parent.parent / 'Resources'
@@ -62,9 +67,11 @@ def _normalise_roblox_dir(value: str | Path) -> Path | None:
 
 def is_roblox_studio_resource_dir(path: Path) -> bool:
     """Return True when *path* points at a Roblox Studio resource root."""
+    if '\x00' in str(path):
+        return False
     try:
         resolved = path.resolve()
-    except OSError:
+    except OSError, ValueError:
         resolved = path
 
     if sys.platform == 'darwin':

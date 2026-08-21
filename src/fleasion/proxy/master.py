@@ -2388,11 +2388,16 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list:
         seen: set[str] = set()
 
         def _add_posix(path: Path) -> bool:
+            if '\x00' in str(path):
+                return False
             if IS_MACOS and 'RobloxStudio.app' in path.parts:
                 return False
             if is_roblox_studio_resource_dir(path):
                 return False
-            key = str(path.resolve()).lower()
+            try:
+                key = str(path.resolve()).lower()
+            except (OSError, ValueError):
+                key = str(path).lower()
             if key in seen:
                 return False
             seen.add(key)
@@ -2412,6 +2417,8 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list:
     seen: set = set()
 
     def _add(path: Path) -> bool:
+        if '\x00' in str(path):
+            return False
         if not include_studio and is_roblox_studio_resource_dir(path):
             return False
         key = str(path)
@@ -2426,11 +2433,18 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list:
         results: list = []
 
         def _has_roblox_exe(path: Path) -> bool:
-            return os.path.isfile(os.path.join(path, ROBLOX_PROCESS)) or os.path.isfile(
-                os.path.join(path, ROBLOX_STUDIO_PROCESS)
-            )
+            try:
+                return os.path.isfile(os.path.join(path, ROBLOX_PROCESS)) or os.path.isfile(
+                    os.path.join(path, ROBLOX_STUDIO_PROCESS)
+                )
+            except (OSError, ValueError):
+                return False
 
-        if root.is_dir() and _has_roblox_exe(root):
+        try:
+            root_is_dir = root.is_dir()
+        except (OSError, ValueError):
+            return results
+        if root_is_dir and _has_roblox_exe(root):
             results.append(root)
 
         def _recurse(path: Path, depth: int) -> None:
@@ -2443,10 +2457,10 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list:
                         results.append(entry_path)
                     if depth < max_depth:
                         _recurse(entry_path, depth + 1)
-            except OSError:
+            except (OSError, ValueError):
                 pass
 
-        if root.is_dir():
+        if root_is_dir:
             _recurse(root, 1)
         return results
 
@@ -2491,6 +2505,8 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list:
                     i += 1
                 except OSError:
                     break
+                if '\x00' in name:
+                    continue
                 try:
                     with winreg.OpenKey(hkey, name) as sk:
                         _check_player_path_key(sk)
@@ -2501,14 +2517,16 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list:
                                 j += 1
                             except OSError:
                                 break
+                            if '\x00' in sub:
+                                continue
                             try:
                                 with winreg.OpenKey(sk, sub) as ssk:
                                     _check_player_path_key(ssk)
                             except OSError, ValueError:
                                 pass
-                except OSError:
+                except (OSError, ValueError):
                     pass
-    except OSError:
+    except (OSError, ValueError):
         pass
     log_buffer.log(
         'Certificate',
@@ -2548,7 +2566,7 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list:
                             _add(d)
             except OSError, ValueError:
                 pass
-    except OSError:
+    except (OSError, ValueError):
         pass
     log_buffer.log(
         'Certificate',
@@ -2599,7 +2617,7 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list:
                             _add(d)
             except OSError, ValueError:
                 pass
-    except OSError:
+    except (OSError, ValueError):
         pass
     log_buffer.log(
         'Certificate',
@@ -4541,6 +4559,12 @@ class ProxyMaster:
                 'CustomFFlags',
                 'Armed a fresh ClientSettings response for Roblox Player launch',
             )
+
+    def rearm_custom_fflag_delivery_for_player_launch(self) -> None:
+        """Re-arm network delivery after the outgoing Player is fully stopped."""
+        custom_modifier = getattr(self, 'custom_fflag_modifier', None)
+        if custom_modifier is not None and custom_modifier.is_enabled():
+            custom_modifier.prepare_for_player_launch()
 
     def prime_custom_fflag_cache(self, *, allow_running: bool = False) -> bool:
         """Preload startup-only custom FastFlags for the next Player launch."""

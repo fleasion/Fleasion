@@ -678,6 +678,8 @@ class _ResponseTrackingWriter:
         self._status_captured = False
         self._hold = False
         self._held_buffer: Optional[bytearray] = None
+        self._delivery_ack: Optional[Callable[[], None]] = None
+        self._delivery_ack_expected: Optional[bytes] = None
 
     def begin(self, entry: Optional[dict], hold: bool = False) -> None:
         self._entry = entry
@@ -687,6 +689,21 @@ class _ResponseTrackingWriter:
             entry['response_raw'] = bytearray()
         self._hold = hold
         self._held_buffer = bytearray() if hold else None
+        self._delivery_ack = None
+        self._delivery_ack_expected = None
+
+    def defer_delivery_acknowledgement(self, callback: Callable[[], None]) -> bool:
+        """Defer one acknowledgement until an unedited held response is drained.
+
+        Returns False when the current response is not being held.  If the user
+        drops or edits a held response, the acknowledgement is discarded so
+        callers can keep any delivery-dependent retry state armed.
+        """
+        if not self._hold or self._held_buffer is None:
+            return False
+        self._delivery_ack = callback
+        self._delivery_ack_expected = bytes(self._held_buffer)
+        return True
 
     def write(self, data: bytes) -> None:
         entry = self._entry
@@ -725,10 +742,25 @@ class _ResponseTrackingWriter:
             return
         entry = self._entry
         held = bytes(self._held_buffer)
+        delivery_ack = self._delivery_ack
+        delivery_ack_expected = self._delivery_ack_expected
         self._hold = False
         self._held_buffer = None
+        self._delivery_ack = None
+        self._delivery_ack_expected = None
+
+        def _ack_if_unchanged(final_bytes: bytes) -> None:
+            if delivery_ack is None or final_bytes != delivery_ack_expected:
+                return
+            try:
+                delivery_ack()
+            except Exception as exc:
+                logger.debug('Deferred response delivery acknowledgement failed: %s', exc)
+
         if entry is None:
             self._writer.write(held)
+            await self._writer.drain()
+            _ack_if_unchanged(held)
             return
         pending = self._proxy._create_pending(entry, 'response', held)
         loop = asyncio.get_event_loop()
@@ -750,6 +782,7 @@ class _ResponseTrackingWriter:
             entry['status'] = status
         self._writer.write(final_bytes)
         await self._writer.drain()
+        _ack_if_unchanged(final_bytes)
 
     def __getattr__(self, name):
         return getattr(self._writer, name)
@@ -2477,28 +2510,25 @@ class FleasionProxy:
                     else req_headers
                 )
 
-                if (
+                custom_fflag_request = (
                     host in CLIENT_SETTINGS_HOSTS
                     and self.custom_fflag_modifier is not None
-                    and self.custom_fflag_modifier.is_enabled()
                     and self.custom_fflag_modifier.handles_path(path)
                     and not bypass_custom_fflags
+                )
+                custom_fflag_request_generation = (
+                    self.custom_fflag_modifier.delivery_generation()
+                    if custom_fflag_request
+                    else None
+                )
+                custom_fflag_request_enabled = (
+                    custom_fflag_request and self.custom_fflag_modifier.is_enabled()
+                )
+                if (
+                    custom_fflag_request_enabled
+                    and self.custom_fflag_modifier.requires_fresh_response()
                 ):
-                    encoding = req_headers.get(b'accept-encoding', b'').decode(
-                        'ascii', errors='replace'
-                    )
-                    log_buffer.log(
-                        'CustomFFlags',
-                        f'Processing ClientSettings response for {path[:160]} (accept={encoding or "identity"})',
-                    )
-                    if self.custom_fflag_modifier.requires_fresh_response():
-                        upstream_req_headers = _without_conditional_client_settings_headers(
-                            req_headers
-                        )
-                        log_buffer.log(
-                            'CustomFFlags',
-                            'Requesting one fresh ClientSettings response for updated custom FastFlags',
-                        )
+                    upstream_req_headers = _without_conditional_client_settings_headers(req_headers)
 
                 if host == ASSET_DELIVERY_HOST or host in CDN_HOSTS:
                     self._note_asset_traffic()
@@ -2717,6 +2747,24 @@ class FleasionProxy:
                 resp_body_raw = resp_body.payload
 
                 status_code = _parse_status_code(resp_first)
+                custom_fflag_response_enabled = (
+                    custom_fflag_request and self.custom_fflag_modifier.is_enabled()
+                )
+                if custom_fflag_response_enabled and status_code >= 400:
+                    self.custom_fflag_modifier.log_response_failure(
+                        'upstream-http',
+                        f'ClientSettings upstream returned HTTP {status_code}; response left unchanged',
+                    )
+                elif (
+                    custom_fflag_response_enabled
+                    and 200 <= status_code < 300
+                    and not resp_body_raw
+                ):
+                    self.custom_fflag_modifier.log_response_failure(
+                        'empty-success',
+                        f'ClientSettings upstream returned HTTP {status_code} with an empty body; '
+                        'response left unchanged',
+                    )
                 if host == GAMEJOIN_HOST and 200 <= status_code < 400:
                     self._note_gamejoin_traffic()
                 if status_code in (400, 429) and host in {
@@ -2754,6 +2802,7 @@ class FleasionProxy:
                 # All other responses are forwarded raw (preserving content-encoding).
                 response_modified = False
                 modified_content_encoding: bytes | None = None
+                custom_fflag_delivered_signature: tuple[tuple[str, str], ...] | None = None
 
                 if is_batch:
                     # Batch response: forward raw to Roblox, decompress only for addon hooks
@@ -2928,11 +2977,7 @@ class FleasionProxy:
                         )
 
                 elif (
-                    host in CLIENT_SETTINGS_HOSTS
-                    and self.custom_fflag_modifier is not None
-                    and self.custom_fflag_modifier.is_enabled()
-                    and self.custom_fflag_modifier.handles_path(path)
-                    and not bypass_custom_fflags
+                    custom_fflag_response_enabled
                     and 200 <= status_code < 300
                     and resp_body_raw
                 ):
@@ -2950,37 +2995,45 @@ class FleasionProxy:
                             else None
                         )
                         if resp_body_plain is None:
-                            log_buffer.log(
-                                'CustomFFlags',
+                            self.custom_fflag_modifier.log_response_failure(
+                                'dcz-decode',
                                 'Could not decode dictionary-compressed ClientSettings; preserving original response',
                             )
                         else:
-                            modified_settings = self.custom_fflag_modifier.modify_response(
+                            (
+                                modified_settings,
+                                delivered_signature,
+                            ) = self.custom_fflag_modifier.modify_response_with_delivery(
                                 path, resp_body_plain
                             )
-                            if modified_settings != resp_body_plain:
-                                recompressed = _compress_dcz(modified_settings, dictionary)
-                                if recompressed is None:
-                                    log_buffer.log(
-                                        'CustomFFlags',
-                                        'Could not re-encode dictionary-compressed ClientSettings; preserving original response',
-                                    )
+                            if delivered_signature is not None:
+                                if modified_settings != resp_body_plain:
+                                    recompressed = _compress_dcz(modified_settings, dictionary)
+                                    if recompressed is None:
+                                        self.custom_fflag_modifier.log_response_failure(
+                                            'dcz-encode',
+                                            'Could not re-encode dictionary-compressed ClientSettings; preserving original response',
+                                        )
+                                    else:
+                                        resp_body_raw = recompressed
+                                        modified_content_encoding = b'dcz'
+                                        response_modified = True
+                                        custom_fflag_delivered_signature = delivered_signature
                                 else:
-                                    resp_body_raw = recompressed
-                                    modified_content_encoding = b'dcz'
-                                    response_modified = True
-                                    log_buffer.log(
-                                        'CustomFFlags',
-                                        'Re-encoded custom FastFlags with the Roblox dcz dictionary',
-                                    )
+                                    custom_fflag_delivered_signature = delivered_signature
                     else:
                         resp_body_plain = _decompress_body(resp_body_raw, resp_headers)
-                        modified_settings = self.custom_fflag_modifier.modify_response(
+                        (
+                            modified_settings,
+                            delivered_signature,
+                        ) = self.custom_fflag_modifier.modify_response_with_delivery(
                             path, resp_body_plain
                         )
-                        if modified_settings != resp_body_plain:
-                            resp_body_raw = modified_settings
-                            response_modified = True
+                        if delivered_signature is not None:
+                            custom_fflag_delivered_signature = delivered_signature
+                            if modified_settings != resp_body_plain:
+                                resp_body_raw = modified_settings
+                                response_modified = True
 
                 if (
                     host == GAMEJOIN_HOST
@@ -3044,29 +3097,61 @@ class FleasionProxy:
                         resp_body_raw = _resp_replaced if _resp_body_changed else _resp_plain
                         response_modified = True
                         modified_content_encoding = None
+                        if (
+                            custom_fflag_delivered_signature is not None
+                            and not self.custom_fflag_modifier.body_carries_signature(
+                                resp_body_raw, custom_fflag_delivered_signature
+                            )
+                        ):
+                            custom_fflag_delivered_signature = None
 
                 # ── Forward response to Roblox ────────────────────────────────
                 if response_modified:
-                    writer.write(
-                        _build_modified_response(
-                            resp_first,
-                            resp_headers,
-                            resp_body_raw,
-                            content_encoding=modified_content_encoding,
-                        )
+                    outgoing_response = _build_modified_response(
+                        resp_first,
+                        resp_headers,
+                        resp_body_raw,
+                        content_encoding=modified_content_encoding,
                     )
+                elif self._preserve_unmodified_wire_for_host(host):
+                    outgoing_response = resp_raw.raw_header_block + resp_body.wire
                 else:
-                    if self._preserve_unmodified_wire_for_host(host):
-                        writer.write(resp_raw.raw_header_block + resp_body.wire)
-                    else:
-                        writer.write(
-                            _reassemble_raw_response(resp_first, resp_headers, resp_body_raw)
+                    outgoing_response = _reassemble_raw_response(
+                        resp_first, resp_headers, resp_body_raw
+                    )
+                writer.write(outgoing_response)
+
+                delivery_ack_deferred = False
+                if custom_fflag_delivered_signature is not None:
+                    delivered_signature = custom_fflag_delivered_signature
+                    delivery_generation = custom_fflag_request_generation
+
+                    def _ack_custom_fflag_delivery(
+                        signature=delivered_signature,
+                        generation=delivery_generation,
+                    ) -> None:
+                        self.custom_fflag_modifier.note_response_success(
+                            signature,
+                            generation=generation,
                         )
+
+                    delivery_ack_deferred = writer.defer_delivery_acknowledgement(
+                        _ack_custom_fflag_delivery
+                    )
 
                 try:
                     await writer.drain()
                 except ConnectionResetError, BrokenPipeError, OSError:
                     break
+
+                if (
+                    custom_fflag_delivered_signature is not None
+                    and not delivery_ack_deferred
+                ):
+                    self.custom_fflag_modifier.note_response_success(
+                        custom_fflag_delivered_signature,
+                        generation=custom_fflag_request_generation,
+                    )
 
                 if not _keep_alive(req_first, req_headers) or not _keep_alive(
                     resp_first, resp_headers

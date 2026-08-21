@@ -6,6 +6,8 @@ import json
 import os
 import stat
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +22,8 @@ DYNAMIC_VARIABLE_RELOAD_INTERVAL_FLAG = 'DFIntSecondsBetweenDynamicVariableReloa
 DYNAMIC_VARIABLE_RELOAD_INTERVAL_SECONDS = '1'
 WINDOWS_FLAG_CACHE_PATH = LOCAL_APPDATA / 'Temp' / 'Roblox' / 'cache' / 'flag_cache.dat'
 MACOS_CLIENT_SETTINGS_REL = Path('ClientSettings') / 'ClientAppSettings.json'
+CLIENT_SETTINGS_FAILURE_LOG_INTERVAL_SECONDS = 30.0
+CLIENT_SETTINGS_STALE_SUCCESS_SECONDS = 15.0
 
 
 def normalize_flag_value(value: Any) -> str:
@@ -69,11 +73,83 @@ class CustomFFlagModifier:
         self._macos_seeded_flag_names: set[str] = set()
         self._windows_seeded_flag_names: set[str] = set()
         self._last_fresh_response_flags: tuple[tuple[str, str], ...] | None = None
+        self._delivery_generation = 0
+        self._delivery_state_lock = threading.Lock()
         self._settings_path = settings_path or (CONFIG_FILE if reload_settings_from_disk else None)
         self._settings_signature: tuple[int, int] | None = None
         self._disk_enabled: bool | None = None
         self._disk_flags: dict | None = None
         self._disk_disabled: list | None = None
+        self._last_response_success_at: float | None = None
+        self._first_response_failure_at: float | None = None
+        self._last_failure_log_at: dict[str, float] = {}
+
+    @staticmethod
+    def _flag_signature(flags: dict[str, str]) -> tuple[tuple[str, str], ...]:
+        """Return a stable signature for one delivered override set."""
+        return tuple(sorted(flags.items()))
+
+    def delivery_generation(self) -> int:
+        """Return the current Player delivery generation.
+
+        Requests capture this value before contacting Roblox.  A relaunch bumps
+        the generation so an older Player's late ClientSettings response cannot
+        satisfy the fresh-response requirement for the new Player.
+        """
+        with self._delivery_state_lock:
+            return self._delivery_generation
+
+    def note_response_success(
+        self,
+        delivered_signature: tuple[tuple[str, str], ...] | None = None,
+        *,
+        generation: int | None = None,
+    ) -> bool:
+        """Record a ClientSettings response that carried Fleasion's overrides.
+
+        Fresh-response state is committed only after the client-facing writer
+        successfully drains.  This keeps a changed flag set armed when the
+        upstream request fails, response decoding fails, or the client
+        disconnects before delivery.  Responses from an older Player delivery
+        generation are ignored after a relaunch has armed the next Player.
+        """
+        if delivered_signature is None:
+            delivered_signature = self._flag_signature(self.runtime_flags())
+        with self._delivery_state_lock:
+            if generation is not None and generation != self._delivery_generation:
+                return False
+            success_at = time.monotonic()
+            self._last_fresh_response_flags = delivered_signature
+            self._last_response_success_at = success_at
+            self._first_response_failure_at = None
+            self._last_failure_log_at.clear()
+        return True
+
+    def log_response_failure(self, key: str, message: str) -> None:
+        """Rate-limit repeated ClientSettings failures while keeping stalls visible."""
+        now = time.monotonic()
+        with self._delivery_state_lock:
+            if self._first_response_failure_at is None:
+                self._first_response_failure_at = now
+
+            last_log = self._last_failure_log_at.get(key)
+            if (
+                last_log is not None
+                and now - last_log < CLIENT_SETTINGS_FAILURE_LOG_INTERVAL_SECONDS
+            ):
+                return
+            self._last_failure_log_at[key] = now
+
+            reference = self._last_response_success_at
+            if reference is None:
+                reference = self._first_response_failure_at
+            stale_for = max(0.0, now - reference)
+            if stale_for >= CLIENT_SETTINGS_STALE_SUCCESS_SECONDS:
+                message = (
+                    f'{message}; no successfully delivered ClientSettings response '
+                    f'for {stale_for:.0f}s'
+                )
+        log_buffer.log('CustomFFlags', message)
 
     def _refresh_settings_from_disk(self) -> None:
         """Refresh only the custom-flag fields when the saved settings change."""
@@ -148,18 +224,17 @@ class CustomFFlagModifier:
         return flags
 
     def requires_fresh_response(self) -> bool:
-        """Return whether changed overrides need one non-conditional response.
+        """Return whether changed overrides still need successful delivery.
 
         Roblox normally answers the one-second reloader request with HTTP 304.
         That is ideal when flags have not changed, but it cannot deliver a
-        newly added, changed, or removed override.  The proxy uses this marker
-        to make exactly one normal 200 response available after each change.
+        newly added, changed, or removed override.  Keep stripping conditional
+        headers until a response carrying the active override set is actually
+        delivered to Roblox; ``note_response_success`` commits that delivery.
         """
-        active_flags = tuple(sorted(self.runtime_flags().items()))
-        if active_flags == self._last_fresh_response_flags:
-            return False
-        self._last_fresh_response_flags = active_flags
-        return True
+        active_flags = self._flag_signature(self.runtime_flags())
+        with self._delivery_state_lock:
+            return active_flags != self._last_fresh_response_flags
 
     def prepare_for_player_launch(self) -> None:
         """Force a fresh ClientSettings response for the next Player instance.
@@ -169,9 +244,13 @@ class CustomFFlagModifier:
         flag set that this modifier has already seen, which would otherwise
         allow a cached 304 response through until Roblox performs its next
         normal refresh.  Reset the per-process delivery marker so the first
-        ClientSettings request of every relaunch gets one fresh response.
+        ClientSettings request of every relaunch gets one fresh response.  The
+        generation bump also prevents a late response from the outgoing Player
+        from satisfying the new Player's delivery requirement.
         """
-        self._last_fresh_response_flags = None
+        with self._delivery_state_lock:
+            self._delivery_generation += 1
+            self._last_fresh_response_flags = None
 
     def prime_windows_flag_cache(self) -> bool:
         """Synchronize active overrides into Roblox's uncompressed Windows flag cache.
@@ -378,35 +457,77 @@ class CustomFFlagModifier:
             return self.prime_macos_client_settings()
         return self.prime_windows_flag_cache()
 
-    def modify_response(self, path: str, body: bytes) -> bytes:
-        """Return a ClientSettings JSON response with configured overrides merged in."""
+    @staticmethod
+    def body_carries_signature(
+        body: bytes,
+        delivered_signature: tuple[tuple[str, str], ...],
+    ) -> bool:
+        """Return whether a final plain ClientSettings body still carries a signature."""
+        try:
+            payload = json.loads(body)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return False
+        if not isinstance(payload, dict):
+            return False
+        application_settings = payload.get('applicationSettings')
+        if not isinstance(application_settings, dict):
+            return False
+        return all(
+            application_settings.get(name) == value
+            for name, value in delivered_signature
+        )
+
+    def modify_response_with_delivery(
+        self,
+        path: str,
+        body: bytes,
+    ) -> tuple[bytes, tuple[tuple[str, str], ...] | None]:
+        """Merge overrides and return the exact flag-set signature now carried.
+
+        The signature is non-None whenever the resulting ClientSettings body
+        already contained or was successfully updated with every active
+        override.  Callers use it only after the response is delivered to
+        Roblox, so freshness is never acknowledged merely because processing
+        began.
+        """
         if not self.is_enabled() or not self.handles_path(path):
-            return body
+            return body, None
 
         flags = self.runtime_flags()
+        delivered_signature = self._flag_signature(flags)
 
         try:
             payload = json.loads(body)
         except json.JSONDecodeError, UnicodeDecodeError:
-            log_buffer.log(
-                'CustomFFlags',
+            self.log_response_failure(
+                'decode',
                 f'Could not decode ClientSettings response for {path[:160]}; response left unchanged',
             )
-            return body
+            return body, None
 
         if not isinstance(payload, dict):
-            return body
+            self.log_response_failure(
+                'invalid-root',
+                f'ClientSettings response for {path[:160]} was not a JSON object; response left unchanged',
+            )
+            return body, None
 
         application_settings = payload.get('applicationSettings')
         if not isinstance(application_settings, dict):
-            return body
+            self.log_response_failure(
+                'missing-application-settings',
+                f'ClientSettings response for {path[:160]} had no applicationSettings object; response left unchanged',
+            )
+            return body, None
+
+        if all(application_settings.get(name) == value for name, value in flags.items()):
+            return body, delivered_signature
 
         application_settings.update(flags)
         modified = json.dumps(payload, separators=(',', ':'), ensure_ascii=False).encode('utf-8')
-        fps_marker = flags.get('DFIntTaskSchedulerTargetFps')
-        marker_text = f' (target FPS={fps_marker})' if fps_marker is not None else ''
-        log_buffer.log(
-            'CustomFFlags',
-            f'Injected {len(flags)} custom FastFlag(s){marker_text} into Roblox ClientSettings response',
-        )
+        return modified, delivered_signature
+
+    def modify_response(self, path: str, body: bytes) -> bytes:
+        """Return a ClientSettings JSON response with configured overrides merged in."""
+        modified, _delivered_signature = self.modify_response_with_delivery(path, body)
         return modified
