@@ -442,6 +442,41 @@ def test_force_close_kills_immediately_before_waiting_for_process_exit(monkeypat
     ]
 
 
+def test_terminate_roblox_uses_window_close_only_after_taskkill_fails(monkeypatch):
+    module = _load_platform_windows(monkeypatch)
+    logs = []
+    commands = []
+    process_snapshots = iter(([100], [100], []))
+    exit_results = iter((False, True))
+
+    monkeypatch.setattr(module, "_find_pids", lambda _name: next(process_snapshots))
+    monkeypatch.setattr(module, "_pid_is_running", lambda _pid, _name: True)
+    monkeypatch.setattr(module, "_is_process_elevated", lambda: True)
+    monkeypatch.setattr(module, "_describe_pids", lambda pids: ",".join(map(str, pids)))
+    monkeypatch.setattr(module, "_request_process_window_close", lambda _pid: True)
+    monkeypatch.setattr(
+        module,
+        "_wait_for_pid_exit",
+        lambda *_args, **_kwargs: next(exit_results),
+    )
+    monkeypatch.setattr(
+        module,
+        "run_cmd",
+        lambda args: commands.append(tuple(args)) or (1, "ERROR: Access is denied."),
+    )
+    monkeypatch.setattr(
+        module.log_buffer,
+        "log",
+        lambda category, message: logs.append((category, message)),
+    )
+
+    assert module.terminate_roblox()
+    assert commands == [("taskkill", "/F", "/PID", "100")]
+    assert any("returned 1" in message and "Access is denied" in message for _, message in logs)
+    assert any("WM_CLOSE fallback" in message for _, message in logs)
+    assert any("exited after WM_CLOSE fallback" in message for _, message in logs)
+
+
 def test_terminate_roblox_logs_taskkill_result_for_every_process(monkeypatch):
     module = _load_platform_windows(monkeypatch)
     commands = []
@@ -452,6 +487,13 @@ def test_terminate_roblox_logs_taskkill_result_for_every_process(monkeypatch):
     monkeypatch.setattr(module, "_pid_is_running", lambda _pid, _name: True)
     monkeypatch.setattr(module, "_is_process_elevated", lambda: False)
     monkeypatch.setattr(module, "_describe_pids", lambda pids: ",".join(map(str, pids)))
+    monkeypatch.setattr(
+        module,
+        "_request_process_window_close",
+        lambda _pid: (_ for _ in ()).throw(
+            AssertionError("WM_CLOSE fallback must not run after successful taskkill")
+        ),
+    )
     monkeypatch.setattr(module, "_wait_for_pid_exit", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(
         module,
@@ -481,6 +523,8 @@ def test_terminate_roblox_reports_taskkill_timeout(monkeypatch):
     monkeypatch.setattr(module, "_pid_is_running", lambda _pid, _name: True)
     monkeypatch.setattr(module, "_is_process_elevated", lambda: True)
     monkeypatch.setattr(module, "_describe_pids", lambda pids: ",".join(map(str, pids)))
+    monkeypatch.setattr(module, "_wait_for_pid_exit", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(module, "_request_process_window_close", lambda _pid: False)
     monkeypatch.setattr(
         module.log_buffer,
         "log",
@@ -499,13 +543,14 @@ def test_terminate_roblox_reports_taskkill_timeout(monkeypatch):
 def test_terminate_roblox_logs_taskkill_failure_output(monkeypatch):
     module = _load_platform_windows(monkeypatch)
     logs = []
-    process_snapshots = iter(([100], []))
+    process_snapshots = iter(([100], [100], [100]))
 
     monkeypatch.setattr(module, "_find_pids", lambda _name: next(process_snapshots))
     monkeypatch.setattr(module, "_pid_is_running", lambda _pid, _name: True)
     monkeypatch.setattr(module, "_is_process_elevated", lambda: False)
     monkeypatch.setattr(module, "_describe_pids", lambda pids: ",".join(map(str, pids)))
-    monkeypatch.setattr(module, "_wait_for_pid_exit", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(module, "_request_process_window_close", lambda _pid: False)
+    monkeypatch.setattr(module, "_wait_for_pid_exit", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(module, "run_cmd", lambda _args: (5, "ERROR: Access is denied."))
     monkeypatch.setattr(
         module.log_buffer,

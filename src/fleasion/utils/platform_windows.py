@@ -1252,7 +1252,7 @@ def get_roblox_studio_exe_path() -> Optional[Path]:
 
 
 def terminate_roblox() -> bool:
-    """Terminate Roblox if it's running. Returns True if it was running."""
+    """Terminate Roblox if it is running. Return True when that termination completes."""
     pids = _find_pids(ROBLOX_PROCESS)
     if not pids:
         return False
@@ -1263,11 +1263,12 @@ def terminate_roblox() -> bool:
         f'Roblox PID(s)={_describe_pids(pids)}',
     )
 
-    all_commands_succeeded = True
     for pid in pids:
         if not _pid_is_running(pid, ROBLOX_PROCESS):
             log_buffer.log('Launcher', f'Roblox PID {pid} exited before taskkill ran')
             continue
+
+        taskkill_failed = False
         try:
             returncode, output = run_cmd(['taskkill', '/F', '/PID', str(pid)])
         except subprocess.TimeoutExpired:
@@ -1275,31 +1276,45 @@ def terminate_roblox() -> bool:
                 'Launcher',
                 f'taskkill /F /PID {pid} timed out after 10 seconds',
             )
-            all_commands_succeeded = False
-            continue
+            taskkill_failed = True
         except OSError as exc:
             log_buffer.log(
                 'Launcher',
                 f'taskkill /F /PID {pid} could not start: {type(exc).__name__}: {exc}',
             )
-            all_commands_succeeded = False
+            taskkill_failed = True
+        else:
+            log_buffer.log(
+                'Launcher',
+                f'taskkill /F /PID {pid} returned {returncode}: '
+                f'{_summarize_command_output(output)}',
+            )
+            taskkill_failed = returncode != 0
+
+        if _wait_for_pid_exit(pid, ROBLOX_PROCESS, timeout=5.0):
+            if taskkill_failed:
+                log_buffer.log(
+                    'Launcher',
+                    f'Roblox PID {pid} exited despite taskkill not reporting success',
+                )
             continue
 
         log_buffer.log(
             'Launcher',
-            f'taskkill /F /PID {pid} returned {returncode}: '
-            f'{_summarize_command_output(output)}',
+            f'Roblox PID {pid} remained after taskkill /F; '
+            f'current details={_describe_pids(_find_pids(ROBLOX_PROCESS))}',
         )
-        if returncode != 0:
-            all_commands_succeeded = False
 
-        if not _wait_for_pid_exit(pid, ROBLOX_PROCESS, timeout=5.0):
+        # Keep forced termination as the normal behavior.  Only after taskkill
+        # fails to make the exact PID exit, ask the Player window to close as a
+        # last-resort escape hatch for restrictive process ACL/security setups.
+        if _request_process_window_close(pid):
             log_buffer.log(
                 'Launcher',
-                f'Roblox PID {pid} remained after taskkill /F; '
-                f'current details={_describe_pids(_find_pids(ROBLOX_PROCESS))}',
+                f'Roblox PID {pid} received WM_CLOSE fallback after taskkill failed to terminate it',
             )
-            all_commands_succeeded = False
+            if _wait_for_pid_exit(pid, ROBLOX_PROCESS, timeout=5.0):
+                log_buffer.log('Launcher', f'Roblox PID {pid} exited after WM_CLOSE fallback')
 
     remaining_pids = _find_pids(ROBLOX_PROCESS)
     if remaining_pids:
@@ -1309,7 +1324,7 @@ def terminate_roblox() -> bool:
             f'{_describe_pids(remaining_pids)}',
         )
         return False
-    return all_commands_succeeded
+    return True
 
 
 def close_roblox_for_env_lifecycle() -> bool:
