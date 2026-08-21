@@ -131,3 +131,40 @@ def test_rigged_glb_exports_as_a_separate_converted_file(tmp_path, monkeypatch):
     assert exported is not None
     assert exported.suffix == '.glb'
     assert exported.read_bytes() == b'glTF rig data'
+
+
+def test_texturepack_slot_paths_live_in_persistent_cache(tmp_path, monkeypatch):
+    monkeypatch.setattr(cache_manager_module, 'CONFIG_DIR', tmp_path)
+    manager = cache_manager_module.CacheManager(config_manager=_Config())
+
+    slot_path = manager.get_texturepack_slot_path('9920600052', 1)
+
+    assert slot_path == tmp_path / 'FleasionNT' / 'Cache' / 'TexturePack' / 'slots' / '9920600052_slot1.ktx2'
+    assert slot_path.parent.is_dir()
+
+
+def test_deleting_texturepack_removes_persistent_raw_and_slot_archives(tmp_path, monkeypatch):
+    monkeypatch.setattr(cache_manager_module, 'CONFIG_DIR', tmp_path)
+    manager = cache_manager_module.CacheManager(config_manager=_Config())
+    asset_id = '9920600052'
+
+    assert manager.store_asset(asset_id, 63, b'<TexturePack/>')
+    assert manager.store_raw_asset(asset_id, 63, b'raw-sidecar')
+    canonical = manager.get_texturepack_slot_path(asset_id, 0)
+    canonical.write_bytes(b'canonical')
+    archived = manager.get_texturepack_slot_pack_path(
+        asset_id,
+        0,
+        3,
+        0,
+        1024,
+        1024,
+        1,
+        'a' * 64,
+    )
+    archived.write_bytes(b'archive')
+
+    assert manager.delete_asset(asset_id, 63)
+    assert not manager.get_raw_asset_path(asset_id, 63).exists()
+    assert not canonical.exists()
+    assert not archived.exists()

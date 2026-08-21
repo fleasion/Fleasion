@@ -1,0 +1,89 @@
+name: Bug report
+description: Report a reproducible Fleasion problem. Logs are required.
+title: '[Bug]: '
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please reproduce the issue once before filing this report so the attached log contains the failure.
+
+  - type: input
+    id: fleasion-version
+    attributes:
+      label: Fleasion version
+      description: Use the version shown in Fleasion/About or the release filename.
+      placeholder: e.g. 2.4.1b1
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform / Roblox client
+      options:
+        - Windows - Roblox desktop
+        - Windows - Microsoft Store Roblox
+        - macOS
+        - Linux - Sober
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: os-version
+    attributes:
+      label: OS version
+      description: Include the OS release and architecture where relevant.
+      placeholder: e.g. Fedora 42 x86_64, Windows 11 24H2, macOS 15.6
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the actual behavior and what you expected instead.
+      placeholder: Tell us what broke and what should have happened.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Give the shortest reliable steps that reproduce the issue, including a place ID or game name when relevant.
+      placeholder: |
+        1. Open ...
+        2. Enable ...
+        3. Join place ...
+        4. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Fleasion logs (required)
+      description: |
+        Reproduce the issue, then open Fleasion → Logs → Open Log Folder. Drag `fleasion.log` into this field so GitHub inserts an attachment link. If `fleasion.log.1` contains the reproduction, attach that too. Do not include passwords, cookies, `.ROBLOSECURITY`, or other secrets.
+      placeholder: Drag fleasion.log here. GitHub will insert an attachment link.
+    validations:
+      required: true
+
+  - type: textarea
+    id: extras
+    attributes:
+      label: Screenshots / additional context
+      description: Add screenshots, videos, configuration details, or other useful context if applicable.
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Required confirmations
+      options:
+        - label: I reproduced this on a currently supported Fleasion version.
+          required: true
+        - label: I attached `fleasion.log` from the reproduction above.
+          required: true
+        - label: I checked the log/attachments for passwords, cookies, `.ROBLOSECURITY`, and other secrets.
+          required: true

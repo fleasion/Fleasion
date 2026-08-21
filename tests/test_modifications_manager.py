@@ -12,7 +12,7 @@ from PIL import Image
 
 from fleasion.modifications import fflag_manager, platform_targets
 from fleasion.modifications import manager as modifications_manager
-from fleasion.cache.tools.rgba_ktx2 import read_rgba8_ktx2
+from fleasion.cache.tools.rgba_ktx2 import read_rgba8_ktx2, read_rgba8_ktx2_levels
 from fleasion.modifications.fflag_manager import FastFlagManager
 from fleasion.modifications.manager import ModificationManager, normalise_target_path
 from fleasion.modifications.stash_paths import resource_stash_dir
@@ -610,7 +610,7 @@ def test_ktx_backed_targets_convert_image_replacements_to_ktx2(monkeypatch, tmp_
         lambda _target: b"\xabKTX 11\xbb\r\n\x1a\n" + b"original",
     )
 
-    image = Image.new("RGBA", (1, 1), (1, 2, 3, 4))
+    image = Image.new("RGBA", (4, 4), (1, 2, 3, 4))
     buf = BytesIO()
     image.save(buf, format="PNG")
 
@@ -620,7 +620,12 @@ def test_ktx_backed_targets_convert_image_replacements_to_ktx2(monkeypatch, tmp_
         buf.getvalue(),
     )
 
-    assert read_rgba8_ktx2(converted) == (bytes((1, 2, 3, 4)), 1, 1)
+    parsed = read_rgba8_ktx2_levels(converted)
+    assert parsed is not None
+    levels, width, height = parsed
+    assert (width, height) == (4, 4)
+    assert len(levels) == 3
+    assert levels[0] == bytes((1, 2, 3, 4)) * 16
 
 
 def test_prefixed_ktx_backed_targets_convert_image_replacements_to_ktx2(monkeypatch, tmp_path):

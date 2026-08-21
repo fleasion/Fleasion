@@ -65,7 +65,11 @@ def test_exact_id_replacement_takes_priority_over_type_removal():
 def test_cdn_replacement_takes_priority_over_type_removal(monkeypatch):
     stripper = TextureStripper(_Config())
     routed = []
-    monkeypatch.setattr(stripper, '_route_cdn', lambda *args: routed.append(args))
+    monkeypatch.setattr(
+        stripper,
+        '_route_cdn',
+        lambda *args, **kwargs: routed.append((args, kwargs)),
+    )
     body = json.dumps([
         {"assetId": 1234, "assetType": "TexturePack", "assetTypeId": 63, "requestId": "a"},
     ]).encode()
@@ -78,7 +82,8 @@ def test_cdn_replacement_takes_priority_over_type_removal(monkeypatch):
     )
 
     assert json.loads(modified)[0]["assetId"] == 1234
-    assert routed and routed[0][2] == "https://example.com/custom.png"
+    assert routed and routed[0][0][2] == "https://example.com/custom.png"
+    assert routed[0][1]["map_index"] is None
 
 
 def test_local_replacement_takes_priority_over_type_removal(monkeypatch, tmp_path):
@@ -328,3 +333,135 @@ def test_replacement_precheck_stops_and_backs_off_after_network_failure(
     assert len(scraper.calls) == 2
     assert stripper._precheck_network_failure_count == 2
     assert set(stripper._precheck_retry_after.values()) == {461.0}
+
+
+def test_convert_texpack_local_uses_slot_specific_mipmap_modes(monkeypatch, tmp_path):
+    from fleasion.cache.tools.image_to_ktx2 import converter as image_converter
+
+    source = tmp_path / 'replacement.png'
+    source.write_bytes(b'not-decoded-by-this-test')
+    seen_modes = []
+
+    def fake_convert(path, *, mipmap_mode):
+        seen_modes.append(mipmap_mode)
+        return path
+
+    monkeypatch.setattr(image_converter, 'get_or_create_ktx2_from_image', fake_convert)
+    monkeypatch.setattr(
+        TextureStripper,
+        '_normalize_rgba8_ktx2',
+        staticmethod(lambda path, *, mipmap_mode: path),
+    )
+
+    for map_index, expected_mode in ((0, 'color'), (1, 'normal'), (2, 'linear')):
+        assert TextureStripper._convert_texpack_local(str(source), map_index=map_index) == str(
+            source
+        )
+        assert seen_modes[-1] == expected_mode
+
+
+def test_rgba8_normalization_preserves_authored_mip_chain(monkeypatch, tmp_path):
+    from fleasion.cache.tools.rgba_ktx2 import (
+        read_rgba8_ktx2_levels,
+        write_rgba8_ktx2_levels,
+    )
+    from fleasion.proxy.addons import texture_stripper as texture_stripper_module
+
+    monkeypatch.setattr(texture_stripper_module, 'APP_CACHE_DIR', tmp_path / 'cache')
+    source = tmp_path / 'authored.ktx2'
+    base = bytes(range(16))
+    tail = bytes((9, 8, 7, 6))
+    write_rgba8_ktx2_levels([base, tail], 2, 2, source)
+
+    normalized = TextureStripper._normalize_rgba8_ktx2(source, mipmap_mode='color')
+
+    assert normalized == source
+    assert read_rgba8_ktx2_levels(normalized.read_bytes()) == ([base, tail], 2, 2)
+
+
+def test_rgba8_normalization_generates_missing_mips(monkeypatch, tmp_path):
+    from fleasion.cache.tools.rgba_ktx2 import (
+        read_rgba8_ktx2_levels,
+        write_rgba8_ktx2_levels,
+    )
+    from fleasion.proxy.addons import texture_stripper as texture_stripper_module
+
+    monkeypatch.setattr(texture_stripper_module, 'APP_CACHE_DIR', tmp_path / 'cache')
+    source = tmp_path / 'single-level.ktx2'
+    base = bytes(range(16))
+    write_rgba8_ktx2_levels([base], 2, 2, source)
+
+    normalized = TextureStripper._normalize_rgba8_ktx2(source, mipmap_mode='linear')
+    parsed = read_rgba8_ktx2_levels(normalized.read_bytes())
+
+    assert parsed is not None
+    levels, width, height = parsed
+    assert (width, height) == (2, 2)
+    assert levels[0] == base
+    assert len(levels) == 2
+
+
+def test_orm_composite_resolves_normal_asset_id_for_variance_mips(monkeypatch, tmp_path):
+    from fleasion.cache.tools import orm_compositor
+    from fleasion.proxy.addons import texture_stripper as texture_stripper_module
+
+    cache_root = tmp_path / 'cache'
+    monkeypatch.setattr(texture_stripper_module, 'APP_CACHE_DIR', cache_root)
+
+    slot_dir = tmp_path / 'slots'
+    slot_dir.mkdir()
+    orm_baseline = slot_dir / '1234_slot2.ktx2'
+    normal_baseline = slot_dir / '1234_slot1.ktx2'
+    orm_baseline.write_bytes(b'orm-baseline')
+    normal_baseline.write_bytes(b'normal-baseline')
+
+    class _CacheManager:
+        @staticmethod
+        def get_texturepack_slot_path(parent_id, slot):
+            assert parent_id == 1234
+            return slot_dir / f'{parent_id}_slot{slot}.ktx2'
+
+    class _Scraper:
+        cache_manager = _CacheManager()
+
+        @staticmethod
+        def _get_roblosecurity():
+            return 'cookie'
+
+        @staticmethod
+        def _fetch_asset_with_place_id_retry(asset_id, extra_headers=None):
+            assert asset_id == '98765'
+            assert extra_headers == {'Cookie': '.ROBLOSECURITY=cookie;'}
+            return b'normal-asset-bytes', 200
+
+    seen = {}
+
+    def fake_composite(baseline, channels, cache_dir, *, normal_source, normal_baseline):
+        seen.update(
+            baseline=baseline,
+            channels=channels,
+            cache_dir=cache_dir,
+            normal_source=normal_source,
+            normal_baseline=normal_baseline,
+        )
+        return str(tmp_path / 'composite.ktx2')
+
+    monkeypatch.setattr(orm_compositor, 'composite_orm', fake_composite)
+
+    roughness = tmp_path / 'roughness.png'
+    roughness.write_bytes(b'roughness')
+    stripper = TextureStripper(_Config())
+    stripper.set_cache_scraper(_Scraper())
+
+    result = stripper._build_orm_composite(
+        1234,
+        {'roughness': str(roughness)},
+        normal_source=98765,
+    )
+
+    downloaded = cache_root / 'predownloaded' / '98765.dat'
+    assert result == str(tmp_path / 'composite.ktx2')
+    assert downloaded.read_bytes() == b'normal-asset-bytes'
+    assert seen['baseline'] == orm_baseline
+    assert seen['normal_source'] == downloaded
+    assert seen['normal_baseline'] == normal_baseline

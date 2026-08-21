@@ -2499,12 +2499,15 @@ class CacheViewerTab(QWidget):
                 size = asset.get('raw_size', asset.get('size', 0))
                 if asset['type'] == 63:
                     try:
-                        from ..utils.paths import APP_CACHE_DIR
-
-                        _slot_dir = APP_CACHE_DIR / 'texpack_slots'
-                        _tp_slot_size = sum(
-                            f.stat().st_size for f in _slot_dir.glob(f'{asset_id}_slot*.ktx2')
-                        )
+                        _pack_files = self.cache_manager.get_texturepack_slot_pack_paths(asset_id)
+                        if _pack_files:
+                            _tp_slot_size = sum(f.stat().st_size for f in _pack_files)
+                        else:
+                            _tp_slot_size = sum(
+                                self.cache_manager.get_texturepack_slot_path(asset_id, slot).stat().st_size
+                                for slot in (0, 1, 2)
+                                if self.cache_manager.get_texturepack_slot_path(asset_id, slot).exists()
+                            )
                         if _tp_slot_size > 0:
                             size = _tp_slot_size
                     except Exception:
@@ -5302,24 +5305,21 @@ class CacheViewerTab(QWidget):
             self._export_texpack_slot_ktx2(slot_key.split(':')[0] if ':' in slot_key else '')
 
     def _export_texpack_slot_ktx2(self, asset_id: str) -> None:
-        """Export high-quality per-slot KTX2 files for a TexturePack.
-
-        Exports whichever quality level has been captured so far from
-        APP_CACHE_DIR/texpack_slots/<asset_id>_slot{N}.ktx2.
-        """
+        """Export canonical per-slot KTX2s plus every captured Roblox mip pack."""
         if not asset_id:
             return
         from PyQt6.QtWidgets import QFileDialog
 
-        from ..utils import APP_CACHE_DIR
-
-        slot_dir = APP_CACHE_DIR / 'texpack_slots'
+        slot_dir = self.cache_manager.get_texturepack_slot_dir()
         _SLOT_NAMES = {0: 'Color', 1: 'Normal', 2: 'ORM'}
         found = []
         for slot, name in _SLOT_NAMES.items():
             src = slot_dir / f'{asset_id}_slot{slot}.ktx2'
             if src.exists():
                 found.append((src, f'{asset_id}_slot{slot}_{name}.ktx2'))
+            for pack_src in self.cache_manager.get_texturepack_slot_pack_paths(asset_id, slot):
+                pack_suffix = pack_src.name.split(f'{asset_id}_slot{slot}_', 1)[-1]
+                found.append((pack_src, f'{asset_id}_slot{slot}_{name}_{pack_suffix}'))
 
         if not found:
             from PyQt6.QtWidgets import QMessageBox
@@ -5335,7 +5335,7 @@ class CacheViewerTab(QWidget):
         dest_dir_str = QFileDialog.getExistingDirectory(
             self,
             f'Export Slot KTX2 for {asset_id}',
-            str(APP_CACHE_DIR),
+            str(self.cache_manager.export_dir),
         )
         if not dest_dir_str:
             return

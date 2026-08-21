@@ -1,10 +1,10 @@
 """KTX/KTX2 -> PNG conversion pipeline.
 
 KTX1:  ETC1 / ETC2 / EAC decoded by a pure-Python numpy decoder.
-KTX2:  Uncompressed RGBA8 textures are decoded locally. BasisU and UASTC
-       super-compressed formats are transcoded to raw RGBA32 via native libktx,
-       when available, then written to PNG via Pillow.
-       Non-basis formats (raw BC7 etc.) return None so the caller can fall
+KTX2:  Uncompressed RGBA8 plus raw/Zstd-supercompressed ETC2 textures are
+       decoded locally. BasisU and UASTC super-compressed formats are transcoded
+       to raw RGBA32 via native libktx, when available, then written to PNG via
+       Pillow. Other non-basis GPU formats return None so the caller can fall
        back to the Roblox API.
 
 Both paths return PNG bytes on success, or None on failure / unsupported format.
@@ -27,6 +27,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import zstandard
 from PIL import Image
 
 from ..rgba_ktx2 import read_rgba8_ktx2
@@ -559,8 +560,173 @@ def _decode_etc_rgba(image_data: bytes, width: int, height: int) -> np.ndarray:
 
 
 # -------------------------------------------------------------------------------
-# KTX2 -- local RGBA8 path plus optional native libktx path
+# KTX2 -- local RGBA8 / ETC2 paths plus optional native libktx path
 # -------------------------------------------------------------------------------
+# Vulkan ETC2 formats used by Roblox's Android/Sober TexturePack stream.
+_VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK = 147
+_VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK = 148
+_VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK = 149
+_VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK = 150
+_VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK = 151
+_VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK = 152
+_KTX2_SUPERCOMPRESSION_NONE = 0
+_KTX2_SUPERCOMPRESSION_ZSTD = 2
+_KTX2_HEADER_SIZE = 80
+_KTX2_LEVEL_INDEX_ENTRY_SIZE = 24
+
+
+def _ktx2_kv_text(data: bytes, key: str) -> str | None:
+    """Return one UTF-8 KTX2 key/value entry, if present and well-formed."""
+
+    if len(data) < _KTX2_HEADER_SIZE:
+        return None
+    try:
+        _dfd_offset, _dfd_length, kvd_offset, kvd_length, _sgd_offset, _sgd_length = (
+            struct.unpack_from('<IIIIQQ', data, 48)
+        )
+    except struct.error:
+        return None
+    if kvd_length == 0:
+        return None
+    kvd_end = kvd_offset + kvd_length
+    if kvd_offset < _KTX2_HEADER_SIZE or kvd_end > len(data):
+        return None
+
+    cursor = kvd_offset
+    key_bytes = key.encode('utf-8')
+    while cursor + 4 <= kvd_end:
+        try:
+            entry_length = struct.unpack_from('<I', data, cursor)[0]
+        except struct.error:
+            return None
+        cursor += 4
+        if entry_length <= 0 or cursor + entry_length > kvd_end:
+            return None
+        entry = data[cursor : cursor + entry_length]
+        cursor += entry_length
+        cursor += (-cursor) % 4
+        separator = entry.find(b'\x00')
+        if separator <= 0:
+            continue
+        if entry[:separator] == key_bytes:
+            return entry[separator + 1 :].rstrip(b'\x00').decode('utf-8', errors='replace')
+    return None
+
+
+def _gamma2_ycocg_to_rgba(rgba: np.ndarray) -> np.ndarray:
+    """Undo Roblox's Gamma2YCoCg byte layout: R=Co+128, G=Y, B=Cg+128."""
+
+    encoded = rgba.astype(np.int16, copy=False)
+    co = encoded[:, :, 0] - 128
+    y = encoded[:, :, 1]
+    cg = encoded[:, :, 2] - 128
+
+    output = rgba.copy()
+    output[:, :, 0] = np.clip(y + co - cg, 0, 255).astype(np.uint8)
+    output[:, :, 1] = np.clip(y + cg, 0, 255).astype(np.uint8)
+    output[:, :, 2] = np.clip(y - co - cg, 0, 255).astype(np.uint8)
+    return output
+
+
+def _decode_ktx2_etc(data: bytes) -> np.ndarray | None:
+    """Decode level 0 of a 2D ETC2 KTX2 texture to RGBA8.
+
+    Roblox's streamed TexturePack payloads use ordinary ETC2 GPU blocks with
+    optional KTX2 Zstandard supercompression.  They are not Basis/UASTC data,
+    so libktx's transcoder intentionally does not handle them.  Reuse the
+    project's existing ETC2 decoder instead of sending these files back through
+    Roblox's conversion API.
+    """
+
+    if len(data) < _KTX2_HEADER_SIZE + _KTX2_LEVEL_INDEX_ENTRY_SIZE:
+        return None
+
+    try:
+        (
+            vk_format,
+            type_size,
+            width,
+            height,
+            depth,
+            layer_count,
+            face_count,
+            level_count,
+            supercompression,
+        ) = struct.unpack_from('<9I', data, 12)
+        level_offset, byte_length, uncompressed_length = struct.unpack_from(
+            '<QQQ', data, _KTX2_HEADER_SIZE
+        )
+    except struct.error:
+        return None
+
+    rgb_formats = {
+        _VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK,
+        _VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK,
+    }
+    punchthrough_formats = {
+        _VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK,
+        _VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK,
+    }
+    rgba_formats = {
+        _VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK,
+        _VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK,
+    }
+    if vk_format not in rgb_formats | punchthrough_formats | rgba_formats:
+        return None
+    if (
+        type_size != 1
+        or width <= 0
+        or height <= 0
+        or depth != 0
+        or layer_count != 0
+        or face_count != 1
+        or level_count <= 0
+        or supercompression not in (
+            _KTX2_SUPERCOMPRESSION_NONE,
+            _KTX2_SUPERCOMPRESSION_ZSTD,
+        )
+        or level_offset < _KTX2_HEADER_SIZE + _KTX2_LEVEL_INDEX_ENTRY_SIZE * level_count
+        or level_offset + byte_length > len(data)
+    ):
+        return None
+
+    block_bytes = 16 if vk_format in rgba_formats else 8
+    padded_width = _ceil_mul(width, 4)
+    padded_height = _ceil_mul(height, 4)
+    expected_uncompressed = (padded_width // 4) * (padded_height // 4) * block_bytes
+    if uncompressed_length != expected_uncompressed:
+        return None
+
+    image_data = data[level_offset : level_offset + byte_length]
+    if supercompression == _KTX2_SUPERCOMPRESSION_ZSTD:
+        try:
+            image_data = zstandard.ZstdDecompressor().decompress(
+                image_data,
+                max_output_size=uncompressed_length,
+            )
+        except zstandard.ZstdError:
+            return None
+    elif byte_length != uncompressed_length:
+        return None
+
+    if len(image_data) != expected_uncompressed:
+        return None
+
+    if vk_format in rgba_formats:
+        rgba = _decode_etc_rgba(image_data, padded_width, padded_height)
+    else:
+        rgba = _decode_etc_rgb(
+            image_data,
+            padded_width,
+            padded_height,
+            punchthrough=vk_format in punchthrough_formats,
+        )
+    rgba = rgba[:height, :width].copy()
+    if _ktx2_kv_text(data, 'colorSpace') == 'Gamma2YCoCg':
+        rgba = _gamma2_ycocg_to_rgba(rgba)
+    return rgba
+
+
 # libktx constants (from Ktx.Enums.cs / libktx transcode_flags.h)
 _KTX_CREATE_LOAD_IMAGE_DATA = 0x01  # KtxTextureCreateFlagBits.LoadImageDataBit
 _KTX_TTF_RGBA32 = 13  # TranscodeFormat.Rgba32
@@ -676,6 +842,13 @@ def _convert_ktx2(data: bytes) -> bytes | None:
     if rgba8 is not None:
         rgba, width, height = rgba8
         img = Image.frombytes('RGBA', (width, height), rgba)
+        buf = io.BytesIO()
+        img.save(buf, format='PNG')
+        return buf.getvalue()
+
+    etc_rgba = _decode_ktx2_etc(data)
+    if etc_rgba is not None:
+        img = Image.fromarray(etc_rgba, 'RGBA')
         buf = io.BytesIO()
         img.save(buf, format='PNG')
         return buf.getvalue()

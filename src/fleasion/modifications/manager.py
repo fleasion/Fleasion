@@ -1194,14 +1194,30 @@ class ModificationManager(QObject):
 
             from PIL import Image
 
-            from ..cache.tools.rgba_ktx2 import write_rgba8_ktx2
+            from ..cache.tools.rgba_ktx2 import (
+                RGBA8_KTX2_CACHE_VERSION,
+                mipmap_mode_for_texture_name,
+                write_rgba8_ktx2,
+            )
 
             image = Image.open(io.BytesIO(data)).convert('RGBA')
             width, height = image.size
-            digest = hashlib.sha256(data + target_path.encode('utf-8')).hexdigest()[:16]
+            mipmap_mode = mipmap_mode_for_texture_name(target_path)
+            digest = hashlib.sha256(
+                data
+                + target_path.encode('utf-8')
+                + RGBA8_KTX2_CACHE_VERSION
+                + mipmap_mode.encode('ascii')
+            ).hexdigest()[:16]
             out_path = MOD_CACHE_DIR / f'ktx2_{digest}.ktx2'
             if not out_path.exists():
-                write_rgba8_ktx2(image.tobytes(), width, height, out_path)
+                write_rgba8_ktx2(
+                    image.tobytes(),
+                    width,
+                    height,
+                    out_path,
+                    mipmap_mode=mipmap_mode,
+                )
             return out_path.read_bytes()
         except Exception as exc:
             log_buffer.log('Modifications', f'KTX2 conversion skipped for {target_path}: {exc}')

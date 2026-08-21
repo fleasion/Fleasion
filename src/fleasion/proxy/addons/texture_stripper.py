@@ -1405,8 +1405,20 @@ class TextureStripper:
         }
         # _orm_overrides: pack_id_or_'TexturePack' -> {channel_name: local_path}
         _orm_overrides: dict[int | str, dict[str, str | None]] = {}
-        # Scan both cdn_replacements and local_replacements for GI≥2 keys.
-        # local_replacements is processed last so it wins on key collisions.
+        # Normal is a full physical slot (GI1), but ORM roughness mip generation
+        # needs its vectors as an input when the same TexturePack overrides it.
+        _normal_overrides: dict[int | str, str | int | None] = {}
+        # Seed GI1 from ID replacements, then let CDN/local replacements win on
+        # the same key just like the normal routing specificity rules do.
+        for _nk, _nv in replacements.items():
+            if not isinstance(_nk, str) or ':' not in _nk:
+                continue
+            _npk, _ngi = _nk.split(':', 1)
+            if _ngi != '1' or self._normalize_asset_id(_nv) in (0, 1):
+                continue
+            _normal_overrides[int(_npk) if _npk.isdigit() else _npk] = _nv
+        # Scan both cdn_replacements and local_replacements. Local replacements
+        # are processed last so they win on key collisions.
         _vs2_sources: dict = {**cdn_replacements, **local_replacements}
         for _ck, _cv in _vs2_sources.items():
             if not isinstance(_ck, str) or ':' not in _ck:
@@ -1415,14 +1427,17 @@ class TextureStripper:
             if not _gi_str.isdigit():
                 continue
             _gi = int(_gi_str)
+            _pk_key: int | str = int(_pk) if _pk.isdigit() else _pk
+            if _gi == 1:
+                _normal_overrides[_pk_key] = _cv
+                continue
             if _gi < 2:
-                continue  # GI0/GI1 are full-slot; handled by normal local_key routing
+                continue  # GI0 is the Color full-slot route.
             _ch = _GLOBAL_INDEX_CHANNEL.get(_gi)
             if not _ch:
                 continue
-            _pk_key: int | str = int(_pk) if _pk.isdigit() else _pk
-            # KTX2/KTX paths (e.g. blank placeholder) are not valid PNG sources;
-            # treat as None = zero out this channel with _CHANNEL_ZERO defaults.
+            # KTX2/KTX paths (e.g. blank placeholder) are not valid scalar PNG
+            # sources; treat them as None = zero out the requested ORM channel.
             _cv_resolved: str | None = (
                 None if (_cv is not None and _cv.lower().endswith(('.ktx2', '.ktx'))) else _cv
             )
@@ -1553,7 +1568,14 @@ class TextureStripper:
                     if aid in _orm_overrides:
                         _orm_chs.update(_orm_overrides[aid])
                     if _orm_chs:
-                        _comp = self._build_orm_composite(aid, _orm_chs)
+                        _normal_source = _normal_overrides.get('TexturePack')
+                        if aid in _normal_overrides:
+                            _normal_source = _normal_overrides[aid]
+                        _comp = self._build_orm_composite(
+                            aid,
+                            _orm_chs,
+                            normal_source=_normal_source,
+                        )
                         if _comp:
                             self._route_local(
                                 f'{batch_id}_{req_id}',
@@ -1642,6 +1664,7 @@ class TextureStripper:
                         cdn_replacements[cdn_key],
                         is_solidmodel,
                         is_texpack_cdn,
+                        map_index=map_index,
                     )
 
         if modified:
@@ -1694,7 +1717,9 @@ class TextureStripper:
                 req_ids_by_index = []
 
         self._sync_replacements_generation()
-        _, _, cdn_replacements, local_replacements = self.config_manager.get_all_replacements()
+        replacements, _, cdn_replacements, local_replacements = (
+            self.config_manager.get_all_replacements()
+        )
         _GLOBAL_INDEX_CHANNEL = {
             2: 'metalness',
             3: 'roughness',
@@ -1702,16 +1727,28 @@ class TextureStripper:
             5: 'height',
         }
         _orm_overrides: dict[int | str, dict[str, str | None]] = {}
+        _normal_overrides: dict[int | str, str | int | None] = {}
+        for _nk, _nv in replacements.items():
+            if not isinstance(_nk, str) or ':' not in _nk:
+                continue
+            _npk, _ngi = _nk.split(':', 1)
+            if _ngi != '1' or self._normalize_asset_id(_nv) in (0, 1):
+                continue
+            _normal_overrides[int(_npk) if _npk.isdigit() else _npk] = _nv
         for _ck, _cv in {**cdn_replacements, **local_replacements}.items():
             if not isinstance(_ck, str) or ':' not in _ck:
                 continue
             _pk, _gi_str = _ck.split(':', 1)
             if not _gi_str.isdigit():
                 continue
-            _ch = _GLOBAL_INDEX_CHANNEL.get(int(_gi_str))
+            _gi = int(_gi_str)
+            _pk_key: int | str = int(_pk) if _pk.isdigit() else _pk
+            if _gi == 1:
+                _normal_overrides[_pk_key] = _cv
+                continue
+            _ch = _GLOBAL_INDEX_CHANNEL.get(_gi)
             if not _ch:
                 continue
-            _pk_key: int | str = int(_pk) if _pk.isdigit() else _pk
             _cv_resolved: str | None = (
                 None if (_cv is not None and str(_cv).lower().endswith(('.ktx2', '.ktx'))) else _cv
             )
@@ -1765,7 +1802,14 @@ class TextureStripper:
                             if aid in _orm_overrides:
                                 _orm_chs.update(_orm_overrides[aid])
                             if _orm_chs:
-                                _comp = self._build_orm_composite(aid, _orm_chs)
+                                _normal_source = _normal_overrides.get('TexturePack')
+                                if aid in _normal_overrides:
+                                    _normal_source = _normal_overrides[aid]
+                                _comp = self._build_orm_composite(
+                                    aid,
+                                    _orm_chs,
+                                    normal_source=_normal_source,
+                                )
                                 if _comp:
                                     self._local_redirects[base_loc] = _comp
                                     log_buffer.log(
@@ -1784,7 +1828,10 @@ class TextureStripper:
                         local_key = next((k for k in all_keys if k in local_replacements), None)
                         cdn_key = next((k for k in all_keys if k in cdn_replacements), None)
                         if local_key is not None:
-                            local_path = self._convert_texpack_local(local_replacements[local_key])
+                            local_path = self._convert_texpack_local(
+                                local_replacements[local_key],
+                                map_index=map_index,
+                            )
                             self._local_redirects[base_loc] = local_path
                             log_buffer.log(
                                 'Local',
@@ -1934,11 +1981,15 @@ class TextureStripper:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _convert_texpack_local(local_path: str) -> str:
+    def _convert_texpack_local(local_path: str, map_index: int | None = None) -> str:
         path = Path(local_path)
         ext = path.suffix.lower()
+        mipmap_mode = {0: 'color', 1: 'normal', 2: 'linear'}.get(map_index, 'color')
         if ext == '.ktx2':
-            normalized = TextureStripper._normalize_rgba8_ktx2(path)
+            normalized = TextureStripper._normalize_rgba8_ktx2(
+                path,
+                mipmap_mode=mipmap_mode,
+            )
             if normalized != path:
                 log_buffer.log(
                     'TexPackTrace',
@@ -1959,9 +2010,15 @@ class TextureStripper:
                 'TexPackTrace',
                 f'Converting local TexturePack map to KTX2: input={path.name}',
             )
-            converted_path = get_or_create_ktx2_from_image(path)
+            converted_path = get_or_create_ktx2_from_image(
+                path,
+                mipmap_mode=mipmap_mode,
+            )
             if converted_path:
-                converted_path = TextureStripper._normalize_rgba8_ktx2(converted_path)
+                converted_path = TextureStripper._normalize_rgba8_ktx2(
+                    converted_path,
+                    mipmap_mode=mipmap_mode,
+                )
                 log_buffer.log(
                     'TexPackTrace',
                     f'Converted local TexturePack map: input={path.name} output={converted_path.name}',
@@ -1976,20 +2033,38 @@ class TextureStripper:
         return local_path
 
     @staticmethod
-    def _normalize_rgba8_ktx2(path: Path) -> Path:
-        """Rewrite simple RGBA8 KTX2 files through Fleasion's libktx-compatible writer."""
+    def _normalize_rgba8_ktx2(path: Path, *, mipmap_mode='color') -> Path:
+        """Normalize RGBA8 KTX2 while preserving authored mip chains."""
         try:
-            from ...cache.tools.rgba_ktx2 import read_rgba8_ktx2, write_rgba8_ktx2
+            from ...cache.tools.rgba_ktx2 import (
+                RGBA8_KTX2_CACHE_VERSION,
+                read_rgba8_ktx2_levels,
+                write_rgba8_ktx2,
+            )
 
             data = path.read_bytes()
-            parsed = read_rgba8_ktx2(data)
+            parsed = read_rgba8_ktx2_levels(data)
             if parsed is None:
                 return path
-            rgba, width, height = parsed
-            digest = hashlib.md5(data).hexdigest()[:16]
+            levels, width, height = parsed
+            # Multi-level RGBA8 input was already passed through untouched by
+            # the old single-level-only normalizer. Preserve authored mip data
+            # and metadata rather than rewriting a valid texture unnecessarily.
+            if len(levels) > 1:
+                return path
+
+            digest = hashlib.md5(
+                data + RGBA8_KTX2_CACHE_VERSION + mipmap_mode.encode('ascii')
+            ).hexdigest()[:16]
             out_path = APP_CACHE_DIR / f'{path.stem}_rgba8_{digest}.ktx2'
             if not out_path.exists():
-                write_rgba8_ktx2(rgba, width, height, out_path)
+                write_rgba8_ktx2(
+                    levels[0],
+                    width,
+                    height,
+                    out_path,
+                    mipmap_mode=mipmap_mode,
+                )
             return out_path
         except Exception as exc:
             log_buffer.log(
@@ -2005,6 +2080,7 @@ class TextureStripper:
         cdn_url: str,
         is_solidmodel: bool,
         is_texpack: bool = False,
+        map_index: int | None = None,
     ) -> None:
         parsed = urlparse(str(cdn_url))
         ext = Path(parsed.path).suffix.lower()
@@ -2067,7 +2143,14 @@ class TextureStripper:
                     'TexPackTrace',
                     f'Downloaded CDN TexturePack map for local conversion aid={aid} file={local_cache.name}',
                 )
-                self._route_local(req_id, aid, str(local_cache), is_solidmodel, is_texpack=True)
+                self._route_local(
+                    req_id,
+                    aid,
+                    str(local_cache),
+                    is_solidmodel,
+                    is_texpack=True,
+                    map_index=map_index,
+                )
                 return
             log_buffer.log(
                 'TexPackTrace',
@@ -2090,6 +2173,7 @@ class TextureStripper:
         path = Path(local_path)
         ext = path.suffix.lower()
         original_path = path
+        mipmap_mode = {0: 'color', 1: 'normal', 2: 'linear'}.get(map_index, 'color')
         if is_texpack:
             log_buffer.log(
                 'TexPackTrace',
@@ -2104,9 +2188,15 @@ class TextureStripper:
                     get_or_create_ktx2_from_image,
                 )
 
-                converted_path = get_or_create_ktx2_from_image(path)
+                converted_path = get_or_create_ktx2_from_image(
+                    path,
+                    mipmap_mode=mipmap_mode,
+                )
                 if converted_path:
-                    converted_path = self._normalize_rgba8_ktx2(converted_path)
+                    converted_path = self._normalize_rgba8_ktx2(
+                        converted_path,
+                        mipmap_mode=mipmap_mode,
+                    )
                     local_path = str(converted_path)
                     path = converted_path
                     ext = path.suffix.lower()
@@ -2122,7 +2212,10 @@ class TextureStripper:
                     f'Local TexturePack conversion failed for {path.name}: {e}',
                 )
         elif is_texpack and ext == '.ktx2':
-            normalized = self._normalize_rgba8_ktx2(path)
+            normalized = self._normalize_rgba8_ktx2(
+                path,
+                mipmap_mode=mipmap_mode,
+            )
             if normalized != path:
                 local_path = str(normalized)
                 path = normalized
@@ -2190,13 +2283,16 @@ class TextureStripper:
         self,
         parent_id,
         channel_pngs: dict[str, str | None],
+        *,
+        normal_source: str | int | None = None,
     ) -> Optional[str]:
         """Build (or retrieve from cache) a composite ORM KTX2 from per-channel PNGs.
 
         *parent_id* is the TexturePack asset ID.  *channel_pngs* maps channel
         name (``metalness``, ``roughness``, ``emissive``, ``height``) to local
-        PNG file paths.  The baseline ORM KTX2 from texpack_slots/ is used if
-        available so unspecified channels retain their CDN values.
+        PNG file paths.  The baseline ORM KTX2 from the persistent per-slot
+        TexturePack cache is used if available so unspecified channels retain
+        their CDN values.
         """
         try:
             from ...cache.tools.orm_compositor import composite_orm
@@ -2223,16 +2319,75 @@ class TextureStripper:
                     resolved[_ch] = str(_cdn_cache)
                 else:
                     resolved[_ch] = _val
-            baseline = APP_CACHE_DIR / 'texpack_slots' / f'{parent_id}_slot2.ktx2'
+            resolved_normal = normal_source
+            if resolved_normal is not None and (
+                isinstance(resolved_normal, int)
+                or (isinstance(resolved_normal, str) and resolved_normal.isdigit())
+            ):
+                normal_id = int(resolved_normal)
+                resolved_normal = self._predownloaded.get(normal_id)
+                if resolved_normal is None:
+                    normal_download = APP_CACHE_DIR / 'predownloaded' / f'{normal_id}.dat'
+                    normal_download.parent.mkdir(parents=True, exist_ok=True)
+                    if not normal_download.exists():
+                        scraper = self._cache_scraper
+                        if scraper is not None:
+                            extra_headers = {}
+                            cookie = scraper._get_roblosecurity()
+                            if cookie:
+                                extra_headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
+                            normal_data, _status = scraper._fetch_asset_with_place_id_retry(
+                                str(normal_id),
+                                extra_headers=extra_headers or None,
+                            )
+                            if normal_data:
+                                normal_download.write_bytes(normal_data)
+                    resolved_normal = str(normal_download) if normal_download.exists() else None
+                    if resolved_normal is None:
+                        log_buffer.log(
+                            'ORM',
+                            f'Normal asset {normal_id} could not be downloaded — using captured Normal baseline',
+                        )
+
+            if resolved_normal is not None and str(resolved_normal).startswith(
+                ('http://', 'https://')
+            ):
+                _url_hash = hashlib.md5(str(resolved_normal).encode()).hexdigest()[:16]
+                _ext = Path(urlparse(str(resolved_normal)).path).suffix.lower() or '.png'
+                _normal_cache = APP_CACHE_DIR / 'orm_normal_cache' / f'{_url_hash}{_ext}'
+                _normal_cache.parent.mkdir(parents=True, exist_ok=True)
+                if not _normal_cache.exists() and not _download_remote_file(
+                    str(resolved_normal), _normal_cache, 'TexturePack Normal map'
+                ):
+                    log_buffer.log(
+                        'ORM',
+                        'Normal CDN download failed — using captured Normal baseline',
+                    )
+                    resolved_normal = None
+                elif _normal_cache.exists():
+                    resolved_normal = str(_normal_cache)
+
+            cache_manager = getattr(getattr(self, '_cache_scraper', None), 'cache_manager', None)
+            if cache_manager is not None:
+                baseline = cache_manager.get_texturepack_slot_path(parent_id, 2)
+                normal_baseline = cache_manager.get_texturepack_slot_path(parent_id, 1)
+            else:
+                # Compatibility fallback for isolated tests/legacy callers that
+                # construct TextureStripper without wiring the CacheScraper.
+                baseline = APP_CACHE_DIR / 'texpack_slots' / f'{parent_id}_slot2.ktx2'
+                normal_baseline = APP_CACHE_DIR / 'texpack_slots' / f'{parent_id}_slot1.ktx2'
             log_buffer.log(
                 'TexPackTrace',
                 f'ORM composite input pack={parent_id} baseline={baseline.name if baseline.exists() else "missing"} '
+                f'normal={_file_value(resolved_normal) if resolved_normal else (normal_baseline.name if normal_baseline.exists() else "missing")} '
                 f'channels={", ".join(f"{ch}={_file_value(val)}" for ch, val in sorted(resolved.items()))}',
             )
             result = composite_orm(
                 baseline=(baseline if baseline.exists() else None),
                 channels={k: (Path(v) if v is not None else None) for k, v in resolved.items()},
                 cache_dir=APP_CACHE_DIR,
+                normal_source=(Path(resolved_normal) if resolved_normal is not None else None),
+                normal_baseline=(normal_baseline if normal_baseline.exists() else None),
             )
             log_buffer.log(
                 'TexPackTrace',

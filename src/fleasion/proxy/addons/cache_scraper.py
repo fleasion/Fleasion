@@ -7,6 +7,7 @@ everything runs in the same process.
 
 import base64
 import gzip
+import hashlib
 import logging
 import os
 import re
@@ -289,6 +290,46 @@ def _decode_selected_representation_slot_quality(item: dict) -> tuple[int, int] 
     return _decode_fidelity_slot_quality(representation.get('fidelity'))
 
 
+def _ktx2_pack_index(data: bytes) -> int | None:
+    """Read Roblox's ``packIndex`` KVD entry from a KTX2 payload when present."""
+    import struct
+
+    if len(data) < 80 or data[:12] != b'\xabKTX 20\xbb\r\n\x1a\n':
+        return None
+    try:
+        _dfd_offset, _dfd_length, kvd_offset, kvd_length, _sgd_offset, _sgd_length = (
+            struct.unpack_from('<IIIIQQ', data, 48)
+        )
+    except struct.error:
+        return None
+    if kvd_offset < 80 or kvd_length <= 0 or kvd_offset + kvd_length > len(data):
+        return None
+
+    pos = kvd_offset
+    end = kvd_offset + kvd_length
+    while pos + 4 <= end:
+        try:
+            entry_len = struct.unpack_from('<I', data, pos)[0]
+        except struct.error:
+            return None
+        pos += 4
+        if entry_len <= 0 or pos + entry_len > end:
+            return None
+        entry = data[pos : pos + entry_len]
+        pos += entry_len
+        pos += (-pos) % 4
+        if b'\x00' not in entry:
+            continue
+        key, value = entry.split(b'\x00', 1)
+        if key != b'packIndex':
+            continue
+        try:
+            return int(value.rstrip(b'\x00').decode('ascii'))
+        except UnicodeDecodeError, ValueError:
+            return None
+    return None
+
+
 class CacheScraper:
     """Caches Roblox assets as they are intercepted by the proxy."""
 
@@ -308,13 +349,11 @@ class CacheScraper:
         # texture slot without the user needing to know the parent pack ID.
         self._texpack_subasset_lookup: dict[int, tuple[int, int]] = {}
 
-        # Per-slot high-quality KTX2 store for research/ORM analysis.
-        # Maps CDN base_url -> (parent_id, slot, quality) so process_cdn_response
-        # knows which slot a KTX2 response belongs to.
-        self._url_to_texpack_slot: dict[str, tuple[int, int, int]] = {}
-        # Tracks the highest quality level (0-3) already stored per (parent_id, slot).
-        # A new CDN response is written to disk only if it has higher quality.
-        self._texpack_slot_quality: dict[tuple[int, int], int] = {}
+        # Per-slot raw KTX2 store for research/export.  One CDN URL may be
+        # referenced by more than one TexturePack/slot, so keep every logical
+        # association instead of letting the last batch entry overwrite earlier
+        # ones before the CDN response arrives.
+        self._url_to_texpack_slot: dict[str, set[tuple[int, int, int]]] = {}
         # Virtual-slot (XML position index) → ORM channel name for packs where
         # the XML has been fetched.  Virtual slot 0 = first XML sub-asset, etc.
         # Only populated for virtual slots ≥ 2 (ORM sub-channels); slots 0 and 1
@@ -371,7 +410,6 @@ class CacheScraper:
             self._url_to_asset.clear()
             self._texpack_subasset_lookup.clear()
             self._url_to_texpack_slot.clear()
-            self._texpack_slot_quality.clear()
             self._texpack_vslot_channel.clear()
             self._texpack_layout_fetched.clear()
 
@@ -447,9 +485,7 @@ class CacheScraper:
                     if slot_quality is not None:
                         _slot, _qual = slot_quality
                         new_meta = (int(asset_id), int(_slot), int(_qual))
-                        old_meta = self._url_to_texpack_slot.get(base_url)
-                        if old_meta != new_meta:
-                            self._url_to_texpack_slot[base_url] = new_meta
+                        self._url_to_texpack_slot.setdefault(base_url, set()).add(new_meta)
                 # Skip if this exact CDN URL is already registered.
                 # Previously this was keyed by asset_id alone, which meant only
                 # the FIRST batch entry for a given assetId was tracked — silently
@@ -513,7 +549,7 @@ class CacheScraper:
         # response — this was the original TexturePack sub-asset blind spot.
         # Should no longer fire after the dedup fix; kept as a canary.
         with self._lock:
-            _known = base_url in self._url_to_asset
+            _known = base_url in self._url_to_asset or base_url in self._url_to_texpack_slot
         if not _known:
             _cdn_id = base_url.rsplit('/', 1)[-1]
             log_buffer.log(
@@ -523,12 +559,13 @@ class CacheScraper:
 
         with self._lock:
             generation = self._work_generation
-            # Grab tp_slot_meta BEFORE the asset_ids check so that higher-quality
-            # CDN responses still get stored even after clear_tracking() clears
-            # _url_to_asset (tp_slot_meta dict is NOT cleared by clear_tracking).
-            tp_slot_meta_early = self._url_to_texpack_slot.get(base_url)
+            # Grab every TexturePack association BEFORE the asset_ids check so
+            # higher-quality CDN responses still get stored after clear_tracking()
+            # clears _url_to_asset.  One CDN URL may legitimately be reused by
+            # multiple parent packs or slots.
+            tp_slot_metas_early = tuple(self._url_to_texpack_slot.get(base_url, ()))
             asset_ids = self._url_to_asset.get(base_url)
-            if not asset_ids and not tp_slot_meta_early:
+            if not asset_ids and not tp_slot_metas_early:
                 return
             # Collect all asset IDs that still need caching for this CDN URL
             pending: list[tuple[int, int]] = []  # (asset_id, asset_type)
@@ -538,7 +575,7 @@ class CacheScraper:
                     if info and 'cached' not in info:
                         info['cached'] = True
                         pending.append((aid, info.get('assetTypeId', 0)))
-        if not pending and not tp_slot_meta_early:
+        if not pending and not tp_slot_metas_early:
             return
 
         if not self._generation_is_current(generation):
@@ -575,20 +612,21 @@ class CacheScraper:
             except Exception:
                 inner = body
 
-        # For TexturePack slots: if this CDN URL is a known slot response,
-        # stash the raw KTX2 bytes quality-aware so higher-res versions replace
-        # lower-res ones.  This runs regardless of normal asset caching.
+        # For TexturePack slots: archive the exact raw response under every
+        # logical parent/slot association for this CDN URL.  The persistent
+        # archive keeps all Roblox mip packs; a separate canonical slot file is
+        # maintained only for callers that need the largest captured level 0.
         _KTX_MAGIC = (b'\xabKTX 20\xbb', b'\xabKTX 11\xbb')
-        if tp_slot_meta_early and inner[:8] in _KTX_MAGIC:
-            _tp_id, _tp_slot, _tp_qual = tp_slot_meta_early
-            self._submit_background(
-                self._store_texpack_slot_ktx2_async,
-                _tp_id,
-                _tp_slot,
-                _tp_qual,
-                inner,
-                generation=generation,
-            )
+        if tp_slot_metas_early and inner[:8] in _KTX_MAGIC:
+            for _tp_id, _tp_slot, _tp_qual in tp_slot_metas_early:
+                self._submit_background(
+                    self._store_texpack_slot_ktx2_async,
+                    _tp_id,
+                    _tp_slot,
+                    _tp_qual,
+                    inner,
+                    generation=generation,
+                )
 
         # Store / convert for every original asset ID that shares this CDN URL
         for asset_id, asset_type in pending:
@@ -1219,77 +1257,122 @@ class CacheScraper:
         ktx2_bytes: bytes,
         generation: int | None = None,
     ) -> None:
-        """Quality-aware per-slot KTX2 storage for TexturePacks.
+        """Persist an exact Roblox TexturePack KTX2 response and a canonical base.
 
-        Stores raw CDN KTX2 bytes under APP_CACHE_DIR/texpack_slots/ keyed by
-        (parent_id, slot).  Uses pixel dimensions from the KTX2 header to gate
-        overwrites — larger dimensions always win, regardless of in-memory state.
-        This is session-restart-safe: no in-memory quality counter is needed.
+        Every distinct raw response is archived permanently under the Fleasion
+        database cache.  Roblox may split one logical mip chain across several
+        KTX2 ``packIndex`` payloads, so none of those payloads are replaceable by
+        another merely because it has a lower resolution.  Separately, the
+        canonical ``slot<N>.ktx2`` file tracks only the largest captured payload
+        for legacy preview/compositor callers.
 
-        Roblox fidelity slot meanings (empirically verified):
+        Roblox fidelity slots are physical packed textures:
           0 = Color / Albedo
-          1 = Normal (DXT5nm swizzled: R=255, G=Y, B=0, A=X)
-          2 = ORM  (R=Metalness, G=Roughness, B=Emissive, A=Height — BC3 only)
-
-        Fleasion global indices (for user-facing replacement config):
-          0 = Color, 1 = Normal, 2 = Metalness, 3 = Roughness,
-          4 = Emissive, 5 = Height
+          1 = Normal
+          2 = ORM (R=Metalness, G=Roughness, B=Emissive, A=Height)
         """
         try:
             import struct as _struct
 
-            from ...utils.paths import APP_CACHE_DIR
+            if len(ktx2_bytes) < 80 or ktx2_bytes[:12] != b'\xabKTX 20\xbb\r\n\x1a\n':
+                log_buffer.log(
+                    'TexPackSlot',
+                    f'Ignoring non-KTX2 slot payload for {parent_id} slot{slot}',
+                )
+                return
 
-            slot_dir = APP_CACHE_DIR / 'texpack_slots'
-            slot_dir.mkdir(parents=True, exist_ok=True)
-            slot_path = slot_dir / f'{parent_id}_slot{slot}.ktx2'
+            new_w, new_h = _struct.unpack_from('<II', ktx2_bytes, 20)
+            level_count = _struct.unpack_from('<I', ktx2_bytes, 40)[0]
+            if new_w <= 0 or new_h <= 0:
+                log_buffer.log(
+                    'TexPackSlot',
+                    f'Ignoring invalid KTX2 dimensions for {parent_id} slot{slot}: {new_w}x{new_h}',
+                )
+                return
 
-            # Gate by dimensions first.  Larger textures always win; smaller
-            # textures never replace existing exports.  Equal-width textures can
-            # still be a corrected slot classification from a previous run, so
-            # do not skip them solely because the width matches.
-            new_w = _struct.unpack_from('<I', ktx2_bytes, 20)[0] if len(ktx2_bytes) >= 24 else 0
-            key = (parent_id, slot)
-            if slot_path.exists():
-                try:
-                    existing = slot_path.read_bytes()
-                    existing_w = (
-                        _struct.unpack_from('<I', existing, 20)[0] if len(existing) >= 24 else 0
-                    )
-                    existing_quality = self._texpack_slot_quality.get(key)
-                    if new_w < existing_w:
-                        return
-                    if new_w == existing_w:
-                        if existing == ktx2_bytes:
-                            return
-                        if existing_quality is not None and quality < existing_quality:
-                            return
-                        log_buffer.log(
-                            'TexPackSlot',
-                            f'Replacing {parent_id} slot{slot}: same {new_w}px, q={quality}, bytes changed',
-                        )
-                    else:
-                        log_buffer.log(
-                            'TexPackSlot',
-                            f'Upgrading {parent_id} slot{slot}: {existing_w}px -> {new_w}px',
-                        )
-                except Exception:
-                    pass  # can't read existing — overwrite it
+            pack_index = _ktx2_pack_index(ktx2_bytes)
+            digest = hashlib.sha256(ktx2_bytes).hexdigest()
+            pack_path = self.cache_manager.get_texturepack_slot_pack_path(
+                parent_id,
+                slot,
+                pack_index,
+                quality,
+                new_w,
+                new_h,
+                level_count,
+                digest,
+            )
+            slot_path = self.cache_manager.get_texturepack_slot_path(parent_id, slot)
 
+            # Archive and canonical selection share one lock.  Without this,
+            # simultaneous 1024/512 responses could both observe "no canonical"
+            # and let the smaller response win the final write by racing later.
+            archived_pack = False
+            canonical_action: tuple[str, int, int] | None = None
+            new_rank = (new_w * new_h, max(new_w, new_h), new_w, new_h)
             with self._lock:
                 if generation is not None and generation != self._work_generation:
                     return
-                slot_path.write_bytes(ktx2_bytes)
-                # Update in-memory quality tracker for within-session fast-path.
-                self._texpack_slot_quality[key] = quality
 
-            _SLOT_NAMES = {0: 'Color', 1: 'Normal', 2: 'ORM'}
-            slot_name = _SLOT_NAMES.get(slot, f'slot{slot}')
-            log_buffer.log(
-                'TexPackSlot',
-                f'Cached {slot_name} q={quality} {new_w}px for pack {parent_id} '
-                f'({len(ktx2_bytes)} bytes) -> {slot_path.name}',
-            )
+                if not pack_path.exists():
+                    pack_path.write_bytes(ktx2_bytes)
+                    archived_pack = True
+
+                existing = None
+                existing_rank = (-1, -1, -1, -1)
+                if slot_path.exists():
+                    try:
+                        existing = slot_path.read_bytes()
+                        if len(existing) >= 28 and existing[:12] == b'\xabKTX 20\xbb\r\n\x1a\n':
+                            existing_w, existing_h = _struct.unpack_from('<II', existing, 20)
+                            existing_rank = (
+                                existing_w * existing_h,
+                                max(existing_w, existing_h),
+                                existing_w,
+                                existing_h,
+                            )
+                    except OSError:
+                        existing = None
+
+                if existing is None or existing_rank <= new_rank:
+                    if existing != ktx2_bytes:
+                        if existing is None:
+                            canonical_action = ('created', 0, 0)
+                        elif existing_rank < new_rank:
+                            canonical_action = ('upgraded', existing_rank[2], existing_rank[3])
+                        else:
+                            canonical_action = ('replaced', existing_rank[2], existing_rank[3])
+                        slot_path.write_bytes(ktx2_bytes)
+
+            if archived_pack:
+                pack_label = f'pack{pack_index}' if pack_index is not None else 'packunknown'
+                log_buffer.log(
+                    'TexPackSlot',
+                    f'Archived {parent_id} slot{slot} {pack_label} q={quality} '
+                    f'{new_w}x{new_h} mips={level_count} sha256={digest[:12]}',
+                )
+
+            if canonical_action is not None:
+                action, old_w, old_h = canonical_action
+                if action == 'upgraded':
+                    log_buffer.log(
+                        'TexPackSlot',
+                        f'Upgrading canonical {parent_id} slot{slot}: '
+                        f'{old_w}x{old_h} -> {new_w}x{new_h}',
+                    )
+                elif action == 'replaced':
+                    log_buffer.log(
+                        'TexPackSlot',
+                        f'Replacing equal-resolution canonical {parent_id} slot{slot}: '
+                        f'{new_w}x{new_h}, bytes changed',
+                    )
+
+                slot_name = _TEXPACK_SLOT_NAMES.get(slot, f'slot{slot}')
+                log_buffer.log(
+                    'TexPackSlot',
+                    f'Canonical {slot_name} {new_w}x{new_h} for pack {parent_id} '
+                    f'({len(ktx2_bytes)} bytes) -> {slot_path.name}',
+                )
         except Exception as exc:
             log_buffer.log('TexPackSlot', f'Failed to store slot {slot} for {parent_id}: {exc}')
 

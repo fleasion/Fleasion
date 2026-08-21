@@ -211,6 +211,75 @@ class CacheManager:
         type_dir.mkdir(exist_ok=True)
         return type_dir / f'{asset_id}.raw'
 
+    def get_texturepack_slot_dir(self) -> Path:
+        """Return the persistent cache directory for captured TexturePack slots."""
+        slot_dir = self.cache_dir / 'TexturePack' / 'slots'
+        slot_dir.mkdir(parents=True, exist_ok=True)
+        return slot_dir
+
+    def get_texturepack_slot_path(self, asset_id: str | int, slot: int) -> Path:
+        """Return the canonical highest-resolution path for one TexturePack slot."""
+        if slot not in (0, 1, 2):
+            raise ValueError(f'invalid TexturePack slot: {slot}')
+        return self.get_texturepack_slot_dir() / f'{asset_id}_slot{slot}.ktx2'
+
+    def get_texturepack_slot_pack_path(
+        self,
+        asset_id: str | int,
+        slot: int,
+        pack_index: int | None,
+        quality: int,
+        width: int,
+        height: int,
+        level_count: int,
+        digest: str,
+    ) -> Path:
+        """Return the persistent path for one exact raw Roblox mip-pack response.
+
+        The payload digest is part of the filename on purpose: two captures with
+        the same packIndex/dimensions must never overwrite each other.  That makes
+        the cache suitable for byte-for-byte codec/mipmap research as well as the
+        normal cache viewer/export flow.
+        """
+        if slot not in (0, 1, 2):
+            raise ValueError(f'invalid TexturePack slot: {slot}')
+        safe_digest = ''.join(ch for ch in str(digest).lower() if ch in '0123456789abcdef')
+        if not safe_digest:
+            raise ValueError('TexturePack mip-pack digest must not be empty')
+        pack_label = f'pack{pack_index}' if pack_index is not None else 'packunknown'
+        return self.get_texturepack_slot_dir() / (
+            f'{asset_id}_slot{slot}_{pack_label}_q{max(0, int(quality))}_'
+            f'{max(0, int(width))}x{max(0, int(height))}_mips{max(0, int(level_count))}_'
+            f'{safe_digest}.ktx2'
+        )
+
+    def get_texturepack_slot_pack_paths(
+        self,
+        asset_id: str | int,
+        slot: int | None = None,
+    ) -> list[Path]:
+        """List archived raw Roblox mip-pack responses for an asset/slot."""
+        if slot is not None and slot not in (0, 1, 2):
+            raise ValueError(f'invalid TexturePack slot: {slot}')
+        slot_pattern = str(slot) if slot is not None else '?'
+        return sorted(self.get_texturepack_slot_dir().glob(f'{asset_id}_slot{slot_pattern}_*.ktx2'))
+
+    def delete_texturepack_slot_files(self, asset_id: str | int) -> int:
+        """Delete persistent canonical/archive KTX2 files for one TexturePack."""
+        paths = set(self.get_texturepack_slot_pack_paths(asset_id))
+        for slot in (0, 1, 2):
+            paths.add(self.get_texturepack_slot_path(asset_id, slot))
+
+        deleted = 0
+        for path in paths:
+            try:
+                if path.exists():
+                    path.unlink()
+                    deleted += 1
+            except OSError as exc:
+                log_buffer.log('Scraper', f'Failed to delete TexturePack slot file {path}: {exc}')
+        return deleted
+
     def store_raw_asset(self, asset_id: str, asset_type: int, data: bytes) -> bool:
         """
         Store the raw pre-conversion asset bytes as a sidecar file and record
@@ -1170,6 +1239,11 @@ class CacheManager:
             asset_path = self.get_asset_path(asset_id, asset_type)
             if asset_path.exists():
                 asset_path.unlink()
+            raw_path = self.get_raw_asset_path(asset_id, asset_type)
+            if raw_path.exists():
+                raw_path.unlink()
+            if asset_type == 63:
+                self.delete_texturepack_slot_files(asset_id)
 
             with self._lock:
                 asset_key = f'{asset_type}_{asset_id}'
@@ -1200,12 +1274,17 @@ class CacheManager:
         failed_count = 0
 
         try:
-            # Delete all asset files first
+            # Delete all asset files and their raw/TexturePack sidecars first.
             for asset_id, asset_type in assets:
                 try:
                     asset_path = self.get_asset_path(asset_id, asset_type)
                     if asset_path.exists():
                         asset_path.unlink()
+                    raw_path = self.get_raw_asset_path(asset_id, asset_type)
+                    if raw_path.exists():
+                        raw_path.unlink()
+                    if asset_type == 63:
+                        self.delete_texturepack_slot_files(asset_id)
                     deleted_count += 1
                 except Exception as e:
                     log_buffer.log('Scraper', f'Failed to delete asset file {asset_id}: {e}')

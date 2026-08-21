@@ -6,10 +6,18 @@ from PIL import Image
 
 from ....utils import log_buffer
 from ....utils.paths import APP_CACHE_DIR
-from ..rgba_ktx2 import write_rgba8_ktx2
+from ..rgba_ktx2 import (
+    RGBA8_KTX2_CACHE_VERSION,
+    MipmapMode,
+    write_rgba8_ktx2,
+)
 
 
-def get_or_create_ktx2_from_image(image_path: Path) -> Path:
+def get_or_create_ktx2_from_image(
+    image_path: Path,
+    *,
+    mipmap_mode: MipmapMode = 'color',
+) -> Path:
     """
     Given a local path to an image (.png, .jpg, etc.), converts it to an uncompressed
     KTX2 texture (VK_FORMAT_R8G8B8A8_UNORM) keeping the original quality. Will cache
@@ -29,7 +37,9 @@ def get_or_create_ktx2_from_image(image_path: Path) -> Path:
         return image_path
 
     original_size = len(original_bytes)
-    h = hashlib.md5(original_bytes).hexdigest()[:16]
+    h = hashlib.md5(
+        original_bytes + RGBA8_KTX2_CACHE_VERSION + mipmap_mode.encode('ascii')
+    ).hexdigest()[:16]
 
     ktx2_path = APP_CACHE_DIR / f'{image_path.stem}_{h}.ktx2'
     if ktx2_path.exists():
@@ -65,7 +75,13 @@ def get_or_create_ktx2_from_image(image_path: Path) -> Path:
             )
             return image_path
 
-        write_rgba8_ktx2(rgba_bytes, width, height, ktx2_path)
+        write_rgba8_ktx2(
+            rgba_bytes,
+            width,
+            height,
+            ktx2_path,
+            mipmap_mode=mipmap_mode,
+        )
 
         # Log completion and file sizes
         try:
