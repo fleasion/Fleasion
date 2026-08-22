@@ -11,7 +11,7 @@
             "id": 301549746,
             "github": "https://raw.githubusercontent.com/FleaNafo/Cb-Ro.json/refs/heads/main/CBRO.json",
             "replacement": null
-        },          
+        },
         "Phantom Forces": {
             "Owner": "creamcheeese279",
             "id": 292439477,
@@ -87,13 +87,19 @@
         "Operation One": {
             "Owner": "lia",
             "id": 72920620366355,
-            "github": "https://raw.githubusercontent.com/pipluplia/Operation-One/refs/heads/main/OperationOne.json",
+            "github": "https://raw.githubusercontent.com/pipluplia/Fleasion-PreJSONs/refs/heads/main/OperationOne.json",
             "Replacement": null
         },
         "Sniper Duels": {
             "Owner": "7lin",
             "id": 109397169461300,
             "github": "https://raw.githubusercontent.com/7-linn/scrapes/refs/heads/main/sniperduels.json",
+            "Replacement": null
+        },
+        "Redliner": {
+            "Owner": "lia",
+            "id": 94987506187454,
+            "github": "https://raw.githubusercontent.com/pipluplia/Fleasion-PreJSONs/refs/heads/main/Redliner.json",
             "Replacement": null
         }
     }
