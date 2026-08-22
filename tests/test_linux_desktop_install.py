@@ -80,6 +80,16 @@ def test_install_desktop_entries_restores_sober_when_fleasion_is_uri_handler(tmp
         lambda installed_app=None: (['/usr/bin/python3', 'launcher.py'], None),
     )
     monkeypatch.setattr(platform_linux, 'get_icon_path', lambda: None)
+    installation = platform_linux.LinuxClientInstallation(
+        client=platform_linux.SOBER_CLIENT,
+        paths=platform_linux.SOBER_CLIENT.paths(home=tmp_path, environ={}),
+        executable=Path('/usr/bin/flatpak'),
+    )
+    monkeypatch.setattr(
+        platform_linux,
+        'get_selected_linux_client_installation',
+        lambda: installation,
+    )
     monkeypatch.setattr(
         platform_linux.shutil,
         'which',

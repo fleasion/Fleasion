@@ -44,6 +44,7 @@ from ..utils.paths import CONFIG_DIR
 from ..utils.plural import format_count
 from ..utils.roblox_auth import (
     ROBLOX_COOKIES_PATH,
+    LinuxAuthWriteError,
     discover_browser_roblosecurity,
     set_roblosecurity,
 )
@@ -1907,27 +1908,31 @@ class RandoStuffTab(QWidget):
             QMessageBox.warning(self, 'Error', 'Could not decrypt the stored cookie.')
             return
         username = acc.get('username', '(unknown)')
-        if IS_MACOS or IS_LINUX:
+        if IS_MACOS:
             self._last_switched_account = acc
             self._set_selected_account(username)
-            platform_name = 'macOS' if IS_MACOS else _linux_client_display_name()
             log_buffer.log(
                 'accounts',
-                f'Selected account for Fleasion launches on {platform_name}: {username} '
-                '(RobloxCookies.dat switching is Windows-only)',
+                f'Selected account for Fleasion launches on macOS: {username}',
             )
             QMessageBox.information(
                 self,
                 'Account Selected',
-                f'This account will be used for Fleasion launches. {platform_name} does not use '
-                'the Windows RobloxCookies.dat file for local cookie switching.',
+                'This account will be used for Fleasion launches on macOS.',
             )
             return
         try:
             self._write_cookie_to_dat(cookie)
             self._last_switched_account = acc
             self._set_selected_account(username)
-            log_buffer.log('accounts', f'Switched Roblox cookie to account: {username}')
+            platform_name = _linux_client_display_name() if IS_LINUX else 'Roblox'
+            log_buffer.log(
+                'accounts',
+                f'Switched {platform_name} cookie to account: {username}',
+            )
+        except LinuxAuthWriteError as exc:
+            log_buffer.log('accounts', f'Linux account switch was not performed: {exc.code}')
+            QMessageBox.warning(self, 'Account Switch Unavailable', str(exc))
         except Exception as exc:
             QMessageBox.warning(self, 'Error', f'Failed to write cookie: {exc}')
 
@@ -1969,7 +1974,8 @@ class RandoStuffTab(QWidget):
             platform_name = 'macOS' if IS_MACOS else _linux_client_display_name()
             log_buffer.log(
                 'accounts',
-                f'Skipping RobloxCookies.dat write on {platform_name}; using auth-ticket launch',
+                f'Launching selected account on {platform_name} with an auth ticket; '
+                'the local signed-in account is unchanged during launch',
             )
 
         exe = _find_roblox_exe()
@@ -2150,18 +2156,25 @@ class RandoStuffTab(QWidget):
             log_buffer.log('accounts', f'Launch failed for account: {username}')
 
     def _write_cookie_to_dat(self, cookie: str):
-        """Replace the .ROBLOSECURITY value in RobloxCookies.dat and re-encrypt."""
-        if not IS_WINDOWS:
-            raise RuntimeError('RobloxCookies.dat switching is only supported on Windows')
-        if not ROBLOX_COOKIES_PATH.exists():
+        """Replace .ROBLOSECURITY in the platform client's local account store."""
+        if IS_MACOS or not (IS_WINDOWS or IS_LINUX):
+            raise RuntimeError('Local cookie switching is not supported on this platform')
+        if IS_WINDOWS and not ROBLOX_COOKIES_PATH.exists():
             log_buffer.log('accounts', 'RobloxCookies.dat not found - launch Roblox once first')
-            return
+            raise RuntimeError('RobloxCookies.dat was not found. Launch Roblox once first.')
         if not set_roblosecurity(cookie):
+            if IS_LINUX:
+                platform_name = _linux_client_display_name()
+                log_buffer.log('accounts', f'Failed to update {platform_name} local cookie store')
+                raise LinuxAuthWriteError(
+                    'cookie_store_write_failed',
+                    f'Could not update the {platform_name} local cookie store.',
+                )
             log_buffer.log(
                 'accounts',
                 f'Failed to update RobloxCookies.dat at {ROBLOX_COOKIES_PATH}',
             )
-            return
+            raise RuntimeError('Could not update RobloxCookies.dat.')
         self._account_switched = True
 
     def is_multi_instance_enabled(self) -> bool:

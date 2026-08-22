@@ -82,7 +82,31 @@ def test_detect_installed_clients_uses_flatpak_info(tmp_path):
     ]
 
 
-def test_detect_installed_clients_falls_back_to_flatpak_filesystem(tmp_path):
+def test_detect_installed_clients_strips_pyinstaller_library_path(tmp_path, monkeypatch):
+    bundle_root = tmp_path / '_MEI12345'
+    host_libs = tmp_path / 'host-libs'
+    calls = []
+    monkeypatch.setattr(
+        'fleasion.utils.linux_clients.sys._MEIPASS', str(bundle_root), raising=False
+    )
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs['env']))
+        return subprocess.CompletedProcess(command, 0, '', '')
+
+    installed = detect_installed_clients(
+        home=tmp_path,
+        environ={'LD_LIBRARY_PATH': f'{bundle_root}:{host_libs}'},
+        which=lambda name: '/usr/bin/flatpak' if name == 'flatpak' else None,
+        run=run,
+    )
+
+    assert [item.key for item in installed] == ['sober']
+    assert calls[0][1]['HOME'] == str(tmp_path)
+    assert calls[0][1]['LD_LIBRARY_PATH'] == str(host_libs)
+
+
+def test_detect_installed_clients_ignores_stale_flatpak_data_without_install(tmp_path):
     root = tmp_path / '.var' / 'app' / SOBER_CLIENT.app_id
     root.mkdir(parents=True)
 
@@ -92,9 +116,7 @@ def test_detect_installed_clients_falls_back_to_flatpak_filesystem(tmp_path):
         which=lambda _name: None,
     )
 
-    assert len(installed) == 1
-    assert installed[0].client is SOBER_CLIENT
-    assert installed[0].executable is None
+    assert installed == ()
 
 
 def test_detect_installed_clients_returns_empty_without_metadata(tmp_path):

@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import Optional
 
 from .linux_clients import (
-    LINUX_CLIENTS,
     LINUX_CLIENTS_BY_KEY,
     SOBER_CLIENT,
     LinuxClientInstallation,
@@ -197,46 +196,11 @@ def linux_client_installations() -> tuple[LinuxClientInstallation, ...]:
     return detect_installed_clients(home=USER_HOME)
 
 
-def _fallback_sober_installation() -> LinuxClientInstallation:
-    """Preserve historical Sober behavior when installation probing is unavailable."""
-    flatpak = shutil.which('flatpak')
-    return LinuxClientInstallation(
-        client=SOBER_CLIENT,
-        paths=SOBER_CLIENT.paths(home=USER_HOME),
-        executable=Path(flatpak) if flatpak else None,
-    )
-
-
 def get_selected_linux_client_installation() -> LinuxClientInstallation | None:
-    """Resolve the configured/desktop-selected Linux Roblox installation."""
+    """Resolve the configured/desktop-selected installed Linux Roblox client."""
     preference = _configured_linux_client_preference()
-    # A single initialized Flatpak layout is an unambiguous, side-effect-free
-    # answer when no MIME query tool is available.  Besides keeping launch
-    # resilient in restricted desktop sessions, this avoids making a Roblox
-    # URI launch depend on a successful ``flatpak info`` subprocess.
-    if preference == 'auto' and shutil.which('xdg-mime') is None:
-        rooted: list[LinuxClientInstallation] = []
-        flatpak = shutil.which('flatpak')
-        for client in LINUX_CLIENTS:
-            paths = client.paths(home=USER_HOME)
-            if paths.flatpak_root.is_dir():
-                rooted.append(
-                    LinuxClientInstallation(
-                        client=client,
-                        paths=paths,
-                        executable=Path(flatpak) if flatpak else None,
-                    )
-                )
-        if len(rooted) == 1:
-            return rooted[0]
-
     installed = linux_client_installations()
-    selected = select_linux_client(preference, installed=installed, home=USER_HOME)
-    if selected is not None:
-        return selected
-    if not installed and (preference == 'auto' or preference == SOBER_CLIENT.key):
-        return _fallback_sober_installation()
-    return None
+    return select_linux_client(preference, installed=installed, home=USER_HOME)
 
 
 def selected_linux_client_key() -> str:

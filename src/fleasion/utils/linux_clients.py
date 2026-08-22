@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -208,10 +209,47 @@ def get_linux_client(key: str) -> LinuxClientDescriptor:
         raise ValueError(f'unknown Linux client {key!r}; expected one of: {choices}') from exc
 
 
+def _flatpak_probe_env(
+    environ: Mapping[str, str],
+    *,
+    home: Path,
+) -> dict[str, str]:
+    """Return a host-tool environment without PyInstaller's private libraries."""
+    env = dict(environ)
+    env['HOME'] = str(home)
+    original_library_path = env.pop('LD_LIBRARY_PATH_ORIG', None)
+    if original_library_path is not None:
+        if original_library_path:
+            env['LD_LIBRARY_PATH'] = original_library_path
+        else:
+            env.pop('LD_LIBRARY_PATH', None)
+        return env
+
+    bundle_root = getattr(sys, '_MEIPASS', None)
+    library_path = env.get('LD_LIBRARY_PATH')
+    if bundle_root and library_path:
+        try:
+            bundle_path = Path(bundle_root).resolve()
+            entries = [
+                entry
+                for entry in library_path.split(os.pathsep)
+                if entry and Path(entry).resolve() != bundle_path
+            ]
+        except OSError:
+            entries = []
+        if entries:
+            env['LD_LIBRARY_PATH'] = os.pathsep.join(entries)
+        else:
+            env.pop('LD_LIBRARY_PATH', None)
+    return env
+
+
 def _flatpak_info_succeeds(
     executable: str | Path | None,
     app_id: str,
     run: Callable[..., subprocess.CompletedProcess] | None,
+    *,
+    env: Mapping[str, str],
 ) -> bool:
     if executable is None:
         return False
@@ -219,6 +257,7 @@ def _flatpak_info_succeeds(
     try:
         result = runner(
             [str(executable), 'info', app_id],
+            env=dict(env),
             capture_output=True,
             text=True,
             timeout=5,
@@ -242,7 +281,11 @@ def detect_installed_clients(
     detected: list[LinuxClientInstallation] = []
     for client in LINUX_CLIENTS:
         paths = client.paths(home=home, environ=environment)
-        if not (paths.flatpak_root.is_dir() or _flatpak_info_succeeds(flatpak, client.app_id, run)):
+        # Flatpak keeps ~/.var/app/<id> data after an uninstall unless the user
+        # explicitly removes application data.  Treat only `flatpak info` as
+        # authoritative installation evidence so stale data is never modified.
+        probe_env = _flatpak_probe_env(environment, home=paths.home)
+        if not _flatpak_info_succeeds(flatpak, client.app_id, run, env=probe_env):
             continue
         detected.append(
             LinuxClientInstallation(

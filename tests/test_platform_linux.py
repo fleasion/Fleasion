@@ -10,11 +10,15 @@ from fleasion.utils.linux_clients import SOBER_CLIENT, LinuxClientInstallation
 from fleasion.utils.roblox_dirs import _normalise_roblox_dir
 
 
-def _flatpak_installation(client, home: Path) -> LinuxClientInstallation:
+def _flatpak_installation(
+    client,
+    home: Path,
+    executable: str | Path = '/usr/bin/flatpak',
+) -> LinuxClientInstallation:
     return LinuxClientInstallation(
         client=client,
         paths=client.paths(home=home, environ={}),
-        executable=Path('/usr/bin/flatpak'),
+        executable=Path(executable),
     )
 
 
@@ -41,6 +45,16 @@ def test_unavailable_explicit_client_keeps_configured_descriptor_metadata(monkey
     assert platform_linux.selected_linux_client_key() == 'future'
     assert platform_linux.selected_linux_client_display_name() == 'Future Client'
     assert platform_linux.selected_linux_client_app_id() == 'org.example.Future'
+
+
+def test_selected_linux_client_does_not_fallback_to_stale_sober_data(tmp_path, monkeypatch):
+    stale_root = tmp_path / '.var' / 'app' / SOBER_CLIENT.app_id
+    stale_root.mkdir(parents=True)
+    monkeypatch.setattr(platform_linux, 'USER_HOME', tmp_path)
+    monkeypatch.setattr(platform_linux, '_linux_client_preference', 'auto')
+    monkeypatch.setattr(platform_linux, 'linux_client_installations', lambda: ())
+
+    assert platform_linux.get_selected_linux_client_installation() is None
 
 
 def test_arch_gui_dependency_check_reports_missing_qt6_base(tmp_path, monkeypatch):
@@ -322,7 +336,13 @@ def test_launch_as_standard_user_returns_false_when_no_desktop_opener(monkeypatc
 
 def test_launch_as_standard_user_runs_sober_flatpak_for_roblox_uri(monkeypatch):
     calls = []
+    installation = _flatpak_installation(SOBER_CLIENT, Path('/tmp'), executable='flatpak')
 
+    monkeypatch.setattr(
+        platform_linux,
+        'get_selected_linux_client_installation',
+        lambda: installation,
+    )
     monkeypatch.setattr(platform_linux.os, 'geteuid', lambda: 1000)
     monkeypatch.setattr(platform_linux, 'is_roblox_running', lambda: False)
     monkeypatch.setattr(platform_linux, 'wait_for_roblox_window', lambda timeout=15.0: True)
@@ -352,7 +372,13 @@ def test_launch_as_standard_user_strips_pyinstaller_env_for_sober_uri(monkeypatc
     calls = []
     bundle_root = tmp_path / '_MEI12345'
     host_libs = tmp_path / 'host-libs'
+    installation = _flatpak_installation(SOBER_CLIENT, tmp_path, executable='flatpak')
 
+    monkeypatch.setattr(
+        platform_linux,
+        'get_selected_linux_client_installation',
+        lambda: installation,
+    )
     monkeypatch.setattr(platform_linux.os, 'geteuid', lambda: 1000)
     monkeypatch.setattr(platform_linux, 'is_roblox_running', lambda: False)
     monkeypatch.setattr(platform_linux, 'wait_for_roblox_window', lambda timeout=15.0: True)
@@ -381,7 +407,13 @@ def test_launch_as_standard_user_strips_pyinstaller_env_for_sober_uri(monkeypatc
 
 def test_launch_as_standard_user_does_not_restart_running_sober_for_uri(monkeypatch):
     calls = []
+    installation = _flatpak_installation(SOBER_CLIENT, Path('/tmp'), executable='flatpak')
 
+    monkeypatch.setattr(
+        platform_linux,
+        'get_selected_linux_client_installation',
+        lambda: installation,
+    )
     monkeypatch.setattr(platform_linux.os, 'geteuid', lambda: 1000)
     monkeypatch.setattr(
         platform_linux.shutil,
