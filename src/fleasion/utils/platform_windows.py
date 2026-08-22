@@ -215,6 +215,7 @@ def _package_environment_block(environment: dict[str, str]) -> ctypes.Array:
 # CreateToolhelp32Snapshot goes directly to the kernel and does not touch WMI.
 
 _TH32CS_SNAPPROCESS = 0x00000002
+_PROCESS_TERMINATE = 0x0001
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _INVALID_HANDLE_VALUE = ctypes.wintypes.HANDLE(-1).value
 
@@ -289,6 +290,33 @@ def _summarize_command_output(output: str, limit: int = 500) -> str:
     if len(summary) > limit:
         return f'{summary[: limit - 3]}...'
     return summary
+
+
+def _terminate_process_direct(pid: int) -> tuple[bool, str]:
+    """Force-terminate *pid* using only the PROCESS_TERMINATE access right."""
+    kernel32 = ctypes.windll.kernel32
+    kernel32.OpenProcess.argtypes = [
+        ctypes.wintypes.DWORD,
+        ctypes.wintypes.BOOL,
+        ctypes.wintypes.DWORD,
+    ]
+    kernel32.OpenProcess.restype = ctypes.wintypes.HANDLE
+    kernel32.TerminateProcess.argtypes = [ctypes.wintypes.HANDLE, ctypes.wintypes.UINT]
+    kernel32.TerminateProcess.restype = ctypes.wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
+    kernel32.CloseHandle.restype = ctypes.wintypes.BOOL
+
+    handle = kernel32.OpenProcess(_PROCESS_TERMINATE, False, pid)
+    if not handle:
+        error = int(kernel32.GetLastError())
+        return False, f'OpenProcess(PROCESS_TERMINATE) failed with WinError {error}'
+    try:
+        if not kernel32.TerminateProcess(handle, 1):
+            error = int(kernel32.GetLastError())
+            return False, f'TerminateProcess failed with WinError {error}'
+        return True, 'TerminateProcess issued successfully'
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 def _query_exe_path(pid: int) -> Optional[Path]:
@@ -1305,16 +1333,38 @@ def terminate_roblox() -> bool:
             f'current details={_describe_pids(_find_pids(ROBLOX_PROCESS))}',
         )
 
-        # Keep forced termination as the normal behavior.  Only after taskkill
-        # fails to make the exact PID exit, ask the Player window to close as a
-        # last-resort escape hatch for restrictive process ACL/security setups.
+        # Independently retry the exact PID through Win32 while requesting only
+        # PROCESS_TERMINATE, the sole documented right required by
+        # TerminateProcess.  This may succeed when taskkill's own access checks
+        # fail, and remains a forced-kill path rather than a graceful behavior
+        # change.
+        direct_ok, direct_detail = _terminate_process_direct(pid)
+        log_buffer.log(
+            'Launcher',
+            f'Roblox PID {pid} direct PROCESS_TERMINATE fallback: {direct_detail}',
+        )
+        if direct_ok and _wait_for_pid_exit(pid, ROBLOX_PROCESS, timeout=5.0):
+            log_buffer.log(
+                'Launcher',
+                f'Roblox PID {pid} exited after direct PROCESS_TERMINATE fallback',
+            )
+            continue
+
+        # If even termination-only access is denied, retain the previous
+        # top-level-window close as a final non-handle fallback.  Headless or
+        # already-half-terminated Players legitimately have no window here.
         if _request_process_window_close(pid):
             log_buffer.log(
                 'Launcher',
-                f'Roblox PID {pid} received WM_CLOSE fallback after taskkill failed to terminate it',
+                f'Roblox PID {pid} received WM_CLOSE fallback after forced termination failed',
             )
             if _wait_for_pid_exit(pid, ROBLOX_PROCESS, timeout=5.0):
                 log_buffer.log('Launcher', f'Roblox PID {pid} exited after WM_CLOSE fallback')
+        else:
+            log_buffer.log(
+                'Launcher',
+                f'Roblox PID {pid} has no top-level window available for WM_CLOSE fallback',
+            )
 
     remaining_pids = _find_pids(ROBLOX_PROCESS)
     if remaining_pids:

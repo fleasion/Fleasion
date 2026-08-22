@@ -64,6 +64,47 @@ def _touch(path: Path, mtime: float) -> Path:
     return path
 
 
+def test_direct_terminate_requests_only_process_terminate_right(monkeypatch):
+    module = _load_platform_windows(monkeypatch)
+    open_calls = []
+    terminate_calls = []
+    close_calls = []
+
+    class _Function:
+        def __init__(self, callback):
+            self.callback = callback
+            self.argtypes = None
+            self.restype = None
+
+        def __call__(self, *args):
+            return self.callback(*args)
+
+    kernel32 = SimpleNamespace(
+        OpenProcess=_Function(
+            lambda access, inherit, pid: open_calls.append((access, inherit, pid)) or 123
+        ),
+        TerminateProcess=_Function(
+            lambda handle, exit_code: terminate_calls.append((handle, exit_code)) or 1
+        ),
+        CloseHandle=_Function(lambda handle: close_calls.append(handle) or 1),
+        GetLastError=_Function(lambda: 0),
+    )
+    monkeypatch.setattr(
+        module.ctypes,
+        "windll",
+        SimpleNamespace(kernel32=kernel32),
+        raising=False,
+    )
+
+    assert module._terminate_process_direct(4242) == (
+        True,
+        "TerminateProcess issued successfully",
+    )
+    assert open_calls == [(module._PROCESS_TERMINATE, False, 4242)]
+    assert terminate_calls == [(123, 1)]
+    assert close_calls == [123]
+
+
 def test_run_cmd_decodes_localized_console_output_with_windows_oem_page(monkeypatch):
     module = _load_platform_windows(monkeypatch)
     calls = []
@@ -442,10 +483,11 @@ def test_force_close_kills_immediately_before_waiting_for_process_exit(monkeypat
     ]
 
 
-def test_terminate_roblox_uses_window_close_only_after_taskkill_fails(monkeypatch):
+def test_terminate_roblox_uses_minimal_rights_force_kill_after_taskkill_fails(monkeypatch):
     module = _load_platform_windows(monkeypatch)
     logs = []
     commands = []
+    direct_calls = []
     process_snapshots = iter(([100], [100], []))
     exit_results = iter((False, True))
 
@@ -453,7 +495,18 @@ def test_terminate_roblox_uses_window_close_only_after_taskkill_fails(monkeypatc
     monkeypatch.setattr(module, "_pid_is_running", lambda _pid, _name: True)
     monkeypatch.setattr(module, "_is_process_elevated", lambda: True)
     monkeypatch.setattr(module, "_describe_pids", lambda pids: ",".join(map(str, pids)))
-    monkeypatch.setattr(module, "_request_process_window_close", lambda _pid: True)
+    monkeypatch.setattr(
+        module,
+        "_terminate_process_direct",
+        lambda pid: direct_calls.append(pid) or (True, "TerminateProcess issued successfully"),
+    )
+    monkeypatch.setattr(
+        module,
+        "_request_process_window_close",
+        lambda _pid: (_ for _ in ()).throw(
+            AssertionError("WM_CLOSE must not run when direct force termination succeeds")
+        ),
+    )
     monkeypatch.setattr(
         module,
         "_wait_for_pid_exit",
@@ -472,7 +525,42 @@ def test_terminate_roblox_uses_window_close_only_after_taskkill_fails(monkeypatc
 
     assert module.terminate_roblox()
     assert commands == [("taskkill", "/F", "/PID", "100")]
+    assert direct_calls == [100]
     assert any("returned 1" in message and "Access is denied" in message for _, message in logs)
+    assert any("direct PROCESS_TERMINATE fallback" in message for _, message in logs)
+    assert any("exited after direct PROCESS_TERMINATE fallback" in message for _, message in logs)
+
+
+def test_terminate_roblox_uses_window_close_after_direct_force_kill_fails(monkeypatch):
+    module = _load_platform_windows(monkeypatch)
+    logs = []
+    process_snapshots = iter(([100], [100], []))
+    exit_results = iter((False, True))
+
+    monkeypatch.setattr(module, "_find_pids", lambda _name: next(process_snapshots))
+    monkeypatch.setattr(module, "_pid_is_running", lambda _pid, _name: True)
+    monkeypatch.setattr(module, "_is_process_elevated", lambda: False)
+    monkeypatch.setattr(module, "_describe_pids", lambda pids: ",".join(map(str, pids)))
+    monkeypatch.setattr(
+        module,
+        "_terminate_process_direct",
+        lambda _pid: (False, "OpenProcess(PROCESS_TERMINATE) failed with WinError 5"),
+    )
+    monkeypatch.setattr(module, "_request_process_window_close", lambda _pid: True)
+    monkeypatch.setattr(
+        module,
+        "_wait_for_pid_exit",
+        lambda *_args, **_kwargs: next(exit_results),
+    )
+    monkeypatch.setattr(module, "run_cmd", lambda _args: (1, "ERROR: Access is denied."))
+    monkeypatch.setattr(
+        module.log_buffer,
+        "log",
+        lambda category, message: logs.append((category, message)),
+    )
+
+    assert module.terminate_roblox()
+    assert any("WinError 5" in message for _, message in logs)
     assert any("WM_CLOSE fallback" in message for _, message in logs)
     assert any("exited after WM_CLOSE fallback" in message for _, message in logs)
 
@@ -487,6 +575,13 @@ def test_terminate_roblox_logs_taskkill_result_for_every_process(monkeypatch):
     monkeypatch.setattr(module, "_pid_is_running", lambda _pid, _name: True)
     monkeypatch.setattr(module, "_is_process_elevated", lambda: False)
     monkeypatch.setattr(module, "_describe_pids", lambda pids: ",".join(map(str, pids)))
+    monkeypatch.setattr(
+        module,
+        "_terminate_process_direct",
+        lambda _pid: (_ for _ in ()).throw(
+            AssertionError("direct fallback must not run after successful taskkill")
+        ),
+    )
     monkeypatch.setattr(
         module,
         "_request_process_window_close",
@@ -524,6 +619,11 @@ def test_terminate_roblox_reports_taskkill_timeout(monkeypatch):
     monkeypatch.setattr(module, "_is_process_elevated", lambda: True)
     monkeypatch.setattr(module, "_describe_pids", lambda pids: ",".join(map(str, pids)))
     monkeypatch.setattr(module, "_wait_for_pid_exit", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        module,
+        "_terminate_process_direct",
+        lambda _pid: (False, "OpenProcess(PROCESS_TERMINATE) failed with WinError 5"),
+    )
     monkeypatch.setattr(module, "_request_process_window_close", lambda _pid: False)
     monkeypatch.setattr(
         module.log_buffer,
@@ -549,6 +649,11 @@ def test_terminate_roblox_logs_taskkill_failure_output(monkeypatch):
     monkeypatch.setattr(module, "_pid_is_running", lambda _pid, _name: True)
     monkeypatch.setattr(module, "_is_process_elevated", lambda: False)
     monkeypatch.setattr(module, "_describe_pids", lambda pids: ",".join(map(str, pids)))
+    monkeypatch.setattr(
+        module,
+        "_terminate_process_direct",
+        lambda _pid: (False, "OpenProcess(PROCESS_TERMINATE) failed with WinError 5"),
+    )
     monkeypatch.setattr(module, "_request_process_window_close", lambda _pid: False)
     monkeypatch.setattr(module, "_wait_for_pid_exit", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(module, "run_cmd", lambda _args: (5, "ERROR: Access is denied."))
