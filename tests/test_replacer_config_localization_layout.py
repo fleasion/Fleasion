@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
 
+import pytest
+
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from PyQt6.QtWidgets import QApplication, QLabel, QLineEdit, QPushButton
@@ -20,7 +22,8 @@ def _qapp():
     return _APP
 
 
-def test_spanish_replacer_controls_do_not_clip_translated_text(tmp_path, monkeypatch):
+@pytest.mark.parametrize('language', ['es', 'pt'])
+def test_translated_replacer_controls_do_not_clip_text(tmp_path, monkeypatch, language):
     app = _qapp()
     config_dir = Path(tmp_path) / 'FleasionNT'
     configs_dir = config_dir / 'configs'
@@ -29,7 +32,7 @@ def test_spanish_replacer_controls_do_not_clip_translated_text(tmp_path, monkeyp
     monkeypatch.setattr(manager_module, 'CONFIGS_FOLDER', configs_dir)
 
     previous_language = get_language()
-    set_language('es')
+    set_language(language)
     window = None
     try:
         window = ReplacerConfigWindow(ConfigManager())

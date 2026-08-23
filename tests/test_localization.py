@@ -1,19 +1,29 @@
 import ast
 import json
 import re
+import string
+import unicodedata
 from pathlib import Path
 
 from fleasion import localization
 from fleasion.config import manager as manager_module
 from fleasion.translations.es import SPANISH
+from fleasion.translations.pt import PORTUGUESE
 
 
-def test_english_is_default_and_spanish_is_available():
-    assert localization.available_languages() == (('en', 'English'), ('es', 'Español'))
+def test_english_is_default_and_supported_languages_are_available():
+    assert localization.available_languages() == (
+        ('en', 'English'),
+        ('es', 'Español'),
+        ('pt', 'Português (Brasil)'),
+    )
     assert localization.normalize_language(None) == 'en'
     assert localization.normalize_language('en-US') == 'en'
     assert localization.normalize_language('es-MX') == 'es'
     assert localization.normalize_language('es_ES') == 'es'
+    assert localization.normalize_language('pt') == 'pt'
+    assert localization.normalize_language('pt-BR') == 'pt'
+    assert localization.normalize_language('pt_PT') == 'en'
     assert localization.normalize_language('not-a-language') == 'en'
 
 
@@ -39,6 +49,24 @@ def test_spanish_translation_lookup_formats_and_counts():
         localization.set_language('en')
 
 
+def test_portuguese_translation_lookup_formats_and_counts():
+    localization.set_language('pt-BR')
+    try:
+        assert localization.get_language() == 'pt'
+        assert localization.tr('language.picker.title') == PORTUGUESE['language.picker.title']
+        assert localization.tr('onboarding.welcome.ok_countdown', seconds=4) == PORTUGUESE[
+            'onboarding.welcome.ok_countdown'
+        ].format(seconds=4)
+        assert localization.tr_count(1, 'count.asset.one', 'count.asset.other') == PORTUGUESE[
+            'count.asset.one'
+        ].format(count=1)
+        assert localization.tr_count(3, 'count.asset.one', 'count.asset.other') == PORTUGUESE[
+            'count.asset.other'
+        ].format(count=3)
+    finally:
+        localization.set_language('en')
+
+
 def test_profile_error_actions_are_localized():
     localization.set_language('es')
     try:
@@ -51,20 +79,151 @@ def test_profile_error_actions_are_localized():
         localization.set_language('en')
 
 
-def test_spanish_catalog_matches_english_keys_markup_and_placeholders():
-    assert list(SPANISH) == list(localization.ENGLISH)
-    assert len(SPANISH) == len(localization.ENGLISH)
-
+def test_translation_catalogs_match_english_keys_markup_and_placeholders():
     placeholder_re = re.compile(r'\{[^{}]+\}')
     tag_re = re.compile(r'<[^>]+>')
-    for identifier, english in localization.ENGLISH.items():
-        spanish = SPANISH[identifier]
-        assert isinstance(spanish, str) and spanish, identifier
-        assert sorted(placeholder_re.findall(spanish)) == sorted(placeholder_re.findall(english)), (
+
+    for catalog in (SPANISH, PORTUGUESE):
+        assert list(catalog) == list(localization.ENGLISH)
+        assert len(catalog) == len(localization.ENGLISH)
+
+        for identifier, english in localization.ENGLISH.items():
+            translated = catalog[identifier]
+            assert isinstance(translated, str) and translated, identifier
+            assert sorted(placeholder_re.findall(translated)) == sorted(
+                placeholder_re.findall(english)
+            ), identifier
+            assert tag_re.findall(translated) == tag_re.findall(english), identifier
+            assert 'ZXQ' not in translated, identifier
+
+
+def test_spanish_terminology_is_consistent():
+    shared_terms = {
+        'Scraped Games': 'Juegos recopilados',
+        'Preview': 'Vista previa',
+        'Request': 'Solicitud',
+        'Run on Boot': 'Ejecutar al iniciar el sistema',
+        'Run Anyway (Bad)': 'Ejecutar de todos modos (no recomendado)',
+        'Replace With Set': 'Reemplazo definido',
+    }
+    for english, expected in shared_terms.items():
+        identifiers = [
             identifier
+            for identifier, source_text in localization.ENGLISH.items()
+            if source_text == english
+        ]
+        assert identifiers, english
+        assert {SPANISH[identifier] for identifier in identifiers} == {expected}, english
+
+    welcome_keys = (
+        'app.welcome_to_fleasion_fleasion_uses_roblox_env',
+        'onboarding.welcome.body',
+        'ui.app.welcome_to_fleasion_fleasion_uses_roblox_env',
+    )
+    assert len({SPANISH[identifier] for identifier in welcome_keys}) == 1
+    welcome = SPANISH['onboarding.welcome.body']
+    for visible_label in (
+        '"Juegos recopilados..."',
+        '"Agregar nuevo"',
+        '"Activado"',
+        '"Default"',
+        '"Borrar caché"',
+    ):
+        assert visible_label in welcome
+    assert '"Predeterminado"' not in welcome
+    assert 'pestaña Reemplazo' in welcome
+    assert 'pestaña Extractor' in welcome
+    assert 'ID de reemplazo' in welcome
+
+    assert SPANISH['app.click_here_to_open_directory'] == 'Abrir directorio'
+    assert SPANISH['ui.app.click_here_to_open_directory'] == 'Abrir directorio'
+    for identifier in (
+        'app.most_likely_causes_br_a_antivirus_security',
+        'ui.app.most_likely_causes_br_a_antivirus_security',
+    ):
+        assert 'Haz clic en "Abrir directorio".' in SPANISH[identifier]
+
+    catalog_text = '\n'.join(SPANISH.values()).casefold()
+    for stale_term in (
+        'scraping',
+        'scraper de caché',
+        'raspador de caché',
+        'raspado de activos',
+        'juegos raspados',
+        'juegos scraped',
+        'fleasions',
+        'administrador temporal/hijo raíz',
+        'harchivo hosts ruta',
+        'reemplazar con conjunto',
+        'reemplazar con establecer',
+        'fleasion está del lado del cliente',
+    ):
+        assert stale_term not in catalog_text
+
+
+def test_spanish_font_samples_are_full_alphabet_pangrams():
+    alphabet = set(string.ascii_lowercase)
+    for identifier in (
+        'font_viewer.sample.pack_my_box',
+        'font_viewer.sample.quick_brown_fox',
+        'font_viewer.sample.quick_zebras',
+    ):
+        normalized = ''.join(
+            character
+            for character in unicodedata.normalize('NFD', SPANISH[identifier].casefold())
+            if unicodedata.category(character) != 'Mn'
         )
-        assert tag_re.findall(spanish) == tag_re.findall(english), identifier
-        assert 'ZXQ' not in spanish, identifier
+        assert alphabet <= set(normalized), identifier
+
+
+def test_portuguese_brazilian_terminology_is_consistent():
+    shared_terms = {
+        'Scraped Games': 'Jogos extraídos',
+        'Preview': 'Prévia',
+        'Request': 'Requisição',
+        'Run on Boot': 'Executar na inicialização',
+        'Import Custom FastFlags': 'Importar FastFlags personalizadas',
+        'Run Anyway (Bad)': 'Executar mesmo assim (não recomendado)',
+        'Replace With Set': 'Substituição definida',
+    }
+    for english, expected in shared_terms.items():
+        identifiers = [
+            identifier
+            for identifier, source_text in localization.ENGLISH.items()
+            if source_text == english
+        ]
+        assert identifiers, english
+        assert {PORTUGUESE[identifier] for identifier in identifiers} == {expected}, english
+
+    welcome = PORTUGUESE['onboarding.welcome.body']
+    for visible_label in (
+        '"Jogos extraídos..."',
+        '"Adicionar novo"',
+        '"Ativado"',
+        '"Default"',
+        '"Limpar cache"',
+    ):
+        assert visible_label in welcome
+    assert '"Padrão"' not in welcome
+
+    catalog_text = '\n'.join(PORTUGUESE.values()).casefold()
+    assert 'scraping' not in catalog_text
+    assert 'scraper de cache' not in catalog_text
+
+
+def test_portuguese_font_samples_are_full_alphabet_pangrams():
+    alphabet = set(string.ascii_lowercase)
+    for identifier in (
+        'font_viewer.sample.pack_my_box',
+        'font_viewer.sample.quick_brown_fox',
+        'font_viewer.sample.quick_zebras',
+    ):
+        normalized = ''.join(
+            character
+            for character in unicodedata.normalize('NFD', PORTUGUESE[identifier].casefold())
+            if unicodedata.category(character) != 'Mn'
+        )
+        assert alphabet <= set(normalized), identifier
 
 
 def test_translation_values_include_future_registered_languages(monkeypatch):
@@ -76,6 +235,7 @@ def test_translation_values_include_future_registered_languages(monkeypatch):
 
     assert 'Remove' in values
     assert 'Eliminar' in values
+    assert PORTUGUESE['replacer.action.remove'] in values
     assert 'Supprimer' in values
 
 

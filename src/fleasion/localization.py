@@ -7,17 +7,23 @@ from typing import Any
 
 from .translations.en import ENGLISH
 from .translations.es import SPANISH
+from .translations.pt import PORTUGUESE
 
 DEFAULT_LANGUAGE = 'en'
 
 LANGUAGES: dict[str, str] = {
     'en': 'English',
     'es': 'Español',
+    'pt': 'Português (Brasil)',
 }
 
 _TRANSLATIONS: dict[str, Mapping[str, str]] = {
     DEFAULT_LANGUAGE: ENGLISH,
     'es': SPANISH,
+    'pt': PORTUGUESE,
+}
+_LANGUAGE_ALIASES = {
+    'pt-br': 'pt',
 }
 _current_language = DEFAULT_LANGUAGE
 
@@ -27,7 +33,11 @@ def normalize_language(language: Any) -> str:
     value = str(language or '').strip().replace('_', '-').casefold()
     if value in _TRANSLATIONS:
         return value
+    if value in _LANGUAGE_ALIASES:
+        return _LANGUAGE_ALIASES[value]
     base = value.split('-', 1)[0]
+    if base == 'pt':
+        return DEFAULT_LANGUAGE
     return base if base in _TRANSLATIONS else DEFAULT_LANGUAGE
 
 

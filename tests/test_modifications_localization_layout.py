@@ -1,5 +1,7 @@
 import os
 
+import pytest
+
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from PyQt6.QtCore import QObject, pyqtSignal
@@ -8,6 +10,7 @@ from PyQt6.QtWidgets import QApplication, QLabel, QLineEdit, QPushButton
 from fleasion import localization
 from fleasion.gui.modifications_tab import ModificationsTab, ModRowWidget
 from fleasion.localization import get_language, set_language, tr
+from fleasion.translations.pt import PORTUGUESE
 
 
 _APP = None
@@ -67,9 +70,20 @@ def test_remove_source_accepts_every_registered_language_token(monkeypatch):
             'content/textures/example.tex',
         )
         expected = ('bundled', 'bundled:empty.tex')
-        for token in ('remove', 'REMOVE', 'eliminar', 'ELIMINAR', 'supprimer', 'SUPPRIMER'):
+        portuguese_remove = PORTUGUESE['replacer.action.remove']
+        for token in (
+            'remove',
+            'REMOVE',
+            'eliminar',
+            'ELIMINAR',
+            portuguese_remove,
+            portuguese_remove.upper(),
+            'supprimer',
+            'SUPPRIMER',
+        ):
             assert row._detect_source_from_text(token) == expected
         assert row._detect_source_from_text('"eliminar"') == expected
+        assert row._detect_source_from_text(f'"{portuguese_remove}"') == expected
         assert '"eliminar"' in row._source_edit.placeholderText()
     finally:
         if row is not None:
@@ -79,10 +93,11 @@ def test_remove_source_accepts_every_registered_language_token(monkeypatch):
         app.processEvents()
 
 
-def test_spanish_modifications_tab_does_not_clip_visible_controls():
+@pytest.mark.parametrize('language', ['es', 'pt'])
+def test_translated_modifications_tab_does_not_clip_visible_controls(language):
     app = _qapp()
     previous_language = get_language()
-    set_language('es')
+    set_language(language)
     tab = None
     try:
         tab = ModificationsTab(_FakeModificationManager())
@@ -123,10 +138,11 @@ def test_spanish_modifications_tab_does_not_clip_visible_controls():
         app.processEvents()
 
 
-def test_spanish_buttons_fit_content_without_consuming_surplus_width():
+@pytest.mark.parametrize('language', ['es', 'pt'])
+def test_translated_buttons_fit_content_without_consuming_surplus_width(language):
     app = _qapp()
     previous_language = get_language()
-    set_language('es')
+    set_language(language)
     tab = None
     try:
         tab = ModificationsTab(_FakeModificationManager())
@@ -155,10 +171,11 @@ def test_spanish_buttons_fit_content_without_consuming_surplus_width():
         app.processEvents()
 
 
-def test_spanish_modification_statuses_resize_when_text_changes():
+@pytest.mark.parametrize('language', ['es', 'pt'])
+def test_translated_modification_statuses_resize_when_text_changes(language):
     app = _qapp()
     previous_language = get_language()
-    set_language('es')
+    set_language(language)
     tab = None
     try:
         tab = ModificationsTab(_FakeModificationManager())
