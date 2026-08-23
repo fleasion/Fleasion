@@ -1,7 +1,7 @@
 """Modifications tab — combined Fishstrap Mods + FastFlags panel."""
 
 from __future__ import annotations
-from ..localization import tr, tr_count
+from ..localization import tr, tr_count, translation_values
 
 import json
 import os
@@ -371,6 +371,17 @@ def _file_filter_text(identifier: str) -> str:
     return filters[identifier]
 
 
+def _ensure_text_width(widget: QWidget, minimum_width: int = 0) -> None:
+    """Fit translated text without allowing layouts to inflate the control."""
+    widget.setFixedWidth(max(minimum_width, widget.sizeHint().width()))
+
+
+def _ensure_placeholder_width(line_edit: QLineEdit, minimum_width: int = 0) -> None:
+    """Give translated line-edit placeholders enough room to be displayed."""
+    placeholder_width = line_edit.fontMetrics().horizontalAdvance(line_edit.placeholderText()) + 12
+    line_edit.setMinimumWidth(max(minimum_width, placeholder_width))
+
+
 # Status badge styling
 _STATUS_STYLES = {
     'not_set': 'color: #888; font-style: italic;',
@@ -405,8 +416,34 @@ class _RichTextButton(QPushButton):
         self._y_offset = y_offset
         self._suffix_x_offset = suffix_x_offset
         self._suffix_pixel_size = suffix_pixel_size
-        # Non-empty text so Qt includes normal button padding in sizeHint.
-        super().setText(tr('ui.gui.modifications_tab.text'))
+        # Give Qt the real base-font text so its native sizeHint includes only
+        # the style's actual button padding/minimum width, not a dummy glyph.
+        super().setText(self._label + (f' {self._suffix}' if self._suffix else ''))
+
+    def sizeHint(self):
+        from PyQt6.QtGui import QFont, QFontMetrics
+
+        hint = super().sizeHint()
+        if not self._suffix:
+            return hint
+
+        base_font = self.font()
+        base_metrics = QFontMetrics(base_font)
+        base_suffix_width = base_metrics.horizontalAdvance(self._suffix)
+
+        suffix_font = QFont(base_font)
+        if self._suffix_pixel_size:
+            suffix_font.setPixelSize(self._suffix_pixel_size)
+        elif self._suffix_size_offset:
+            point_size = suffix_font.pointSize()
+            if point_size < 0:
+                point_size = 9
+            suffix_font.setPointSize(point_size + self._suffix_size_offset)
+
+        painted_suffix_width = QFontMetrics(suffix_font).horizontalAdvance(self._suffix)
+        extra_width = max(0, painted_suffix_width - base_suffix_width + self._suffix_x_offset)
+        hint.setWidth(hint.width() + extra_width)
+        return hint
 
     def paintEvent(self, a0):
         from PyQt6.QtGui import QFont, QFontMetrics, QPainter, QPalette
@@ -661,14 +698,22 @@ class DropdownComboBox(QComboBox):
         # Draw the selected-item label
         painter.drawControl(QStyle.ControlElement.CE_ComboBoxLabel, opt)
 
-        # Overdraw the default OS arrow indicator with ▼
+        # Replace the native arrow without painting a separate button-colored block.
+        # Redraw an adjacent slice of the edit field over the arrow interior so the
+        # background remains exactly continuous for the active Qt style/theme.
         arrow_rect = style.subControlRect(
             QStyle.ComplexControl.CC_ComboBox,
             opt,
             QStyle.SubControl.SC_ComboBoxArrow,
             self,
         )
-        painter.fillRect(arrow_rect.adjusted(1, 1, -1, -1), self.palette().button())
+        painter.save()
+        painter.setClipRect(arrow_rect.adjusted(0, 1, -1, -1))
+        background_opt = QStyleOptionComboBox(opt)
+        background_opt.rect = opt.rect.translated(arrow_rect.width(), 0)
+        painter.drawComplexControl(QStyle.ComplexControl.CC_ComboBox, background_opt)
+        painter.restore()
+
         painter.setPen(self.palette().buttonText().color())
         f = painter.font()
         f.setPointSize(8)
@@ -793,13 +838,13 @@ class ModRowWidget(QWidget):
 
         # Display name
         self._name_label = QLabel(self._display_name)
-        self._name_label.setFixedWidth(160)
+        _ensure_text_width(self._name_label, 160)
         layout.addWidget(self._name_label)
 
-        # Status badge — trimmed width keeps 'Applied' close to the textbox
+        # Status badge — keep the compact English baseline but allow longer translations.
         self._status_label = QLabel(tr('ui.gui.modifications_tab.not_set'))
-        self._status_label.setFixedWidth(72)
         self._status_label.setStyleSheet(_STATUS_STYLES['not_set'])
+        _ensure_text_width(self._status_label, 72)
         layout.addWidget(self._status_label)
 
         # Source text field (expands to fill remaining row space)
@@ -808,9 +853,11 @@ class ModRowWidget(QWidget):
             tr(
                 'ui.gui.modifications_tab.id_url_path_value_or_remove',
                 value0=local_file_path_example(),
+                value1=tr('replacer.action.remove').casefold(),
             )
         )
         self._source_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        _ensure_placeholder_width(self._source_edit)
         layout.addWidget(self._source_edit)
 
         # Debounce timer: apply 1 s after the user stops typing
@@ -837,7 +884,7 @@ class ModRowWidget(QWidget):
 
         # Browse button — to the right of reset (collapses next to textbox when reset hidden)
         self._browse_btn = QPushButton(tr('ui.gui.modifications_tab.browse'))
-        self._browse_btn.setFixedWidth(65)
+        _ensure_text_width(self._browse_btn, 65)
         self._browse_btn.clicked.connect(self._on_browse)
         layout.addWidget(self._browse_btn)
 
@@ -851,7 +898,7 @@ class ModRowWidget(QWidget):
             suffix_x_offset=3,
             suffix_pixel_size=preview_arrow_size,
         )
-        self._preview_btn.setFixedWidth(82)
+        _ensure_text_width(self._preview_btn, 82)
         self._preview_btn.clicked.connect(self._on_preview)
         layout.addWidget(self._preview_btn)
 
@@ -924,6 +971,7 @@ class ModRowWidget(QWidget):
         }
         self._status_label.setText(labels.get(display_status, display_status))
         self._status_label.setStyleSheet(_STATUS_STYLES.get(display_status, ''))
+        _ensure_text_width(self._status_label, 72)
 
         if status == 'error':
             self._show_source_error(error_msg or tr('modifications.error.failed_to_apply'))
@@ -1014,9 +1062,9 @@ class ModRowWidget(QWidget):
                 src_type = entry.get('source_type')
                 src_val = entry.get('source_value') or ''
                 if src_type == 'bundled':
-                    # Reverse-map any remove-class bundled value back to 'remove'.
+                    # Reverse-map any remove-class bundled value back to the active language.
                     if src_val == self._resolve_bundled_empty() or src_val == 'bundled:zero':
-                        return 'remove'
+                        return tr('replacer.action.remove').casefold()
                     return src_val
                 if src_type in ('local_file', 'asset_id', 'cdn_url'):
                     return src_val
@@ -1062,8 +1110,12 @@ class ModRowWidget(QWidget):
     def _detect_source_from_text(self, text: str) -> tuple[str, str]:
         """Detect source type and value from a textbox string."""
         text = text.strip().strip('"\'')
-        # 'remove' (with or without surrounding quotes) replaces with the empty asset
-        if text.lower() == 'remove':
+        # Any registered translation of the remove action is accepted, so newly
+        # added languages work automatically without changing this validator.
+        remove_tokens = {
+            value.strip().casefold() for value in translation_values('replacer.action.remove')
+        }
+        if text.casefold() in remove_tokens:
             return 'bundled', self._resolve_bundled_empty()
         if text.isdigit():
             return 'asset_id', text
@@ -1612,14 +1664,16 @@ class FastFlagProfilesDialog(QDialog):
 
     def _show_error(self, action: str, exc: Exception):
         QMessageBox.warning(
-            self, tr('ui.gui.modifications_tab.could_not_value_profile', value0=action), str(exc)
+            self,
+            tr('ui.gui.modifications_tab.could_not_value_profile', value0=action),
+            str(exc),
         )
 
     def _save_profile(self):
         try:
             name = self._profiles.save(self._name.text(), self._flags)
         except (OSError, ValueError) as exc:
-            self._show_error('Save', exc)
+            self._show_error(tr('ui.gui.modifications_tab.profile_action_save'), exc)
             return
         self._refresh_profiles(name)
 
@@ -1630,7 +1684,7 @@ class FastFlagProfilesDialog(QDialog):
         try:
             flags = self._profiles.load(name)
         except (OSError, ValueError) as exc:
-            self._show_error('Load', exc)
+            self._show_error(tr('ui.gui.modifications_tab.profile_action_load'), exc)
             return
         self.loaded_flags = flags if self._replace_flags.isChecked() else {**self._flags, **flags}
         self.accept()
@@ -1642,7 +1696,7 @@ class FastFlagProfilesDialog(QDialog):
         try:
             self._profiles.save(name, self._flags)
         except (OSError, ValueError) as exc:
-            self._show_error('Update', exc)
+            self._show_error(tr('ui.gui.modifications_tab.profile_action_update'), exc)
 
     def _copy_profile(self):
         name = self._selected_name()
@@ -1651,7 +1705,7 @@ class FastFlagProfilesDialog(QDialog):
         try:
             QApplication.clipboard().setText(json.dumps(self._profiles.load(name), indent=2))
         except (OSError, ValueError) as exc:
-            self._show_error('Copy', exc)
+            self._show_error(tr('ui.gui.modifications_tab.profile_action_copy'), exc)
 
     def _rename_profile(self):
         old_name = self._selected_name()
@@ -1668,7 +1722,7 @@ class FastFlagProfilesDialog(QDialog):
         try:
             name = self._profiles.rename(old_name, new_name)
         except (OSError, ValueError) as exc:
-            self._show_error('Rename', exc)
+            self._show_error(tr('ui.gui.modifications_tab.profile_action_rename'), exc)
             return
         self._refresh_profiles(name)
 
@@ -1688,7 +1742,7 @@ class FastFlagProfilesDialog(QDialog):
         try:
             self._profiles.delete(name)
         except (OSError, ValueError) as exc:
-            self._show_error('Delete', exc)
+            self._show_error(tr('ui.gui.modifications_tab.profile_action_delete'), exc)
             return
         self._refresh_profiles()
 
@@ -3636,7 +3690,7 @@ class ModificationsTab(QWidget):
 
         # "Apply to All Sky Faces" button
         apply_all_btn = QPushButton(tr('ui.gui.modifications_tab.apply_to_all_sky_faces'))
-        apply_all_btn.setFixedWidth(180)
+        _ensure_text_width(apply_all_btn, 180)
         apply_all_btn.clicked.connect(self._on_apply_all_sky)
         sky_section.add_widget(apply_all_btn)
 
@@ -3701,7 +3755,7 @@ class ModificationsTab(QWidget):
 
         # Add Head Variant button
         add_head_btn = QPushButton(tr('ui.gui.modifications_tab.add_head_variant'))
-        add_head_btn.setFixedWidth(150)
+        _ensure_text_width(add_head_btn, 150)
         add_head_btn.clicked.connect(self._on_add_head_variant)
         self._head_variant_layout = self._mesh_section.content_layout
         self._mesh_section.add_widget(add_head_btn)
@@ -3768,7 +3822,7 @@ class ModificationsTab(QWidget):
         )
 
         add_custom_btn = QPushButton(tr('ui.gui.modifications_tab.add_modification'))
-        add_custom_btn.setFixedWidth(160)
+        _ensure_text_width(add_custom_btn, 160)
         add_custom_btn.clicked.connect(self._on_add_custom)
         self._custom_section.add_widget(add_custom_btn)
 
@@ -4080,6 +4134,7 @@ class _CustomModDialog(QDialog):
             tr(
                 'ui.gui.modifications_tab.id_url_path_value_or_remove',
                 value0=local_file_path_example(),
+                value1=tr('replacer.action.remove').casefold(),
             )
         )
         row3.addWidget(self._source_edit)

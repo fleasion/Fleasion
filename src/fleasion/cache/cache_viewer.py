@@ -974,6 +974,9 @@ class AssetLoaderThread(QThread):
         self.finished_loading.emit(loaded_count, failed_count)
 
 
+# Column 0 is the fixed-width toggle/counter column; data columns begin at 1.
+COL_TOGGLE_WIDTH = 14
+
 _SCRAPER_COLUMN_META = [
     # (key, default_visible, default_width)
     ('hash_name', True, 200),

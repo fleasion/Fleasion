@@ -6,15 +6,18 @@ from collections.abc import Mapping
 from typing import Any
 
 from .translations.en import ENGLISH
+from .translations.es import SPANISH
 
 DEFAULT_LANGUAGE = 'en'
 
 LANGUAGES: dict[str, str] = {
     'en': 'English',
+    'es': 'Español',
 }
 
 _TRANSLATIONS: dict[str, Mapping[str, str]] = {
     DEFAULT_LANGUAGE: ENGLISH,
+    'es': SPANISH,
 }
 _current_language = DEFAULT_LANGUAGE
 
@@ -58,6 +61,17 @@ def tr(identifier: str, /, **values: Any) -> str:
             return english.format(**values)
         except KeyError, IndexError, ValueError:
             return english
+
+
+def translation_values(identifier: str) -> tuple[str, ...]:
+    """Return every registered language's value for an identifier, without duplicates."""
+    english = ENGLISH.get(identifier, identifier)
+    values: list[str] = []
+    for table in _TRANSLATIONS.values():
+        value = table.get(identifier, english)
+        if value not in values:
+            values.append(value)
+    return tuple(values)
 
 
 def tr_count(

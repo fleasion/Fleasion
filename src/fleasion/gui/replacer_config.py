@@ -98,6 +98,11 @@ _CONFIG_MENU_BUTTON_POPUP_EXTRA_WIDTH_PX = 24
 _ID_SPLIT_RE = re.compile(r'[,\s;]+')
 
 
+def _ensure_text_width(widget: QWidget, minimum_width: int = 0) -> None:
+    """Keep translated widget text from being clipped by legacy fixed widths."""
+    widget.setMinimumWidth(max(minimum_width, widget.sizeHint().width()))
+
+
 def _replacement_path_tooltip(*, empty_removes: bool = True) -> str:
     lines = [
         tr('replacer.path_tooltip.config_files'),
@@ -885,7 +890,7 @@ class ReplacerConfigWindow(QDialog):
         # Row 1: Configuration controls
         row1 = QHBoxLayout()
         editing_label = QLabel(tr('ui.gui.replacer_config.editing'))
-        editing_label.setFixedWidth(50)
+        _ensure_text_width(editing_label, 50)
         row1.addWidget(editing_label)
 
         # Use button with menu (same style as enabled configs)
@@ -904,7 +909,7 @@ class ReplacerConfigWindow(QDialog):
         row1.addSpacing(12)
 
         enabled_label = QLabel(tr('ui.gui.replacer_config.enabled'))
-        enabled_label.setFixedWidth(54)
+        _ensure_text_width(enabled_label, 54)
         row1.addWidget(enabled_label)
 
         self.enabled_menu_btn = QPushButton(tr('ui.gui.replacer_config.select'))
@@ -993,12 +998,20 @@ class ReplacerConfigWindow(QDialog):
         edit_layout = QVBoxLayout()
         edit_layout.setSpacing(4)
 
+        field_labels = [
+            QLabel(tr('ui.gui.replacer_config.profile_name_2')),
+            QLabel(tr('ui.gui.replacer_config.asset_ids_2')),
+            QLabel(tr('ui.gui.replacer_config.replace_with')),
+        ]
+        field_label_width = max(85, *(label.sizeHint().width() for label in field_labels))
+        for field_label in field_labels:
+            field_label.setFixedWidth(field_label_width)
+        name_label, asset_ids_label, replacement_label = field_labels
+
         # Profile name
         name_layout = QHBoxLayout()
         name_layout.setSpacing(5)
-        label0 = QLabel(tr('ui.gui.replacer_config.profile_name_2'))
-        label0.setFixedWidth(85)
-        name_layout.addWidget(label0)
+        name_layout.addWidget(name_label)
         self.name_entry = QLineEdit()
         self.name_entry.setPlaceholderText(tr('ui.gui.replacer_config.optional_profile_name'))
         name_layout.addWidget(self.name_entry)
@@ -1007,9 +1020,7 @@ class ReplacerConfigWindow(QDialog):
         # Asset IDs
         ids_layout = QHBoxLayout()
         ids_layout.setSpacing(5)
-        label = QLabel(tr('ui.gui.replacer_config.asset_ids_2'))
-        label.setFixedWidth(85)
-        ids_layout.addWidget(label)
+        ids_layout.addWidget(asset_ids_label)
         self.replace_entry = QLineEdit()
         self.replace_entry.setPlaceholderText(
             tr('ui.gui.replacer_config.ids_or_assettypes_separated_by_commas_spaces')
@@ -1018,7 +1029,7 @@ class ReplacerConfigWindow(QDialog):
 
         # Add Asset Types filter button
         self.asset_types_btn = QPushButton(tr('ui.gui.replacer_config.asset_types'))
-        self.asset_types_btn.setFixedWidth(80)
+        _ensure_text_width(self.asset_types_btn, 80)
         self.asset_types_btn.clicked.connect(self._show_asset_types_popup)
         from ..cache.asset_type_filter import CategoryFilterPopup
 
@@ -1032,20 +1043,18 @@ class ReplacerConfigWindow(QDialog):
         # Replacement field (auto-detects mode)
         replace_layout = QHBoxLayout()
         replace_layout.setSpacing(5)
-        label2 = QLabel(tr('ui.gui.replacer_config.replace_with'))
-        label2.setFixedWidth(85)
-        replace_layout.addWidget(label2)
+        replace_layout.addWidget(replacement_label)
         self.replacement_entry = FileDropLineEdit()
         self.replacement_entry.setPlaceholderText(
             tr('ui.gui.replacer_config.id_url_file_path_or_exampleobj_example')
         )
         self.replacement_entry.setToolTip(_replacement_path_tooltip())
         self.replacement_entry.fileDropped.connect(self._store_dropped_replacement_path)
-        label2.setToolTip(_replacement_path_tooltip())
+        replacement_label.setToolTip(_replacement_path_tooltip())
         replace_layout.addWidget(self.replacement_entry)
         browse_btn = QPushButton(tr('ui.gui.replacer_config.browse'))
         browse_btn.clicked.connect(self._browse_local_file)
-        browse_btn.setFixedWidth(80)
+        _ensure_text_width(browse_btn, 80)
         replace_layout.addWidget(browse_btn)
         edit_layout.addLayout(replace_layout)
 
@@ -1057,12 +1066,12 @@ class ReplacerConfigWindow(QDialog):
             (tr('replacer.rules.update_selected'), self._update_selected),
         ]:
             btn = QPushButton(text)
-            btn.setMinimumWidth(130)
+            _ensure_text_width(btn, 130)
             btn.clicked.connect(callback)
             btn_layout.addWidget(btn)
         btn_layout.addStretch()
         import_btn = QPushButton(tr('ui.gui.replacer_config.scraped_games'))
-        import_btn.setMinimumWidth(130)
+        _ensure_text_width(import_btn, 130)
         import_btn.clicked.connect(self._open_prejsons_browser)
         btn_layout.addWidget(import_btn)
         edit_layout.addLayout(btn_layout)
@@ -2271,7 +2280,7 @@ class ReplacerConfigWindow(QDialog):
         btn_layout = QHBoxLayout()
 
         browse_btn = QPushButton(tr('ui.gui.replacer_config.browse'))
-        browse_btn.setFixedWidth(80)
+        _ensure_text_width(browse_btn, 80)
         browse_btn.setAutoDefault(False)
 
         def _on_browse():
@@ -2298,13 +2307,13 @@ class ReplacerConfigWindow(QDialog):
         btn_layout.addStretch()
 
         ok_btn = QPushButton(tr('ui.gui.replacer_config.ok'))
-        ok_btn.setFixedWidth(80)
+        _ensure_text_width(ok_btn, 80)
         ok_btn.setDefault(True)
         ok_btn.clicked.connect(dialog.accept)
         btn_layout.addWidget(ok_btn)
 
         cancel_btn = QPushButton(tr('ui.gui.replacer_config.cancel'))
-        cancel_btn.setFixedWidth(80)
+        _ensure_text_width(cancel_btn, 80)
         cancel_btn.clicked.connect(dialog.reject)
         btn_layout.addWidget(cancel_btn)
 

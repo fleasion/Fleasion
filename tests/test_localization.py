@@ -1,15 +1,19 @@
 import ast
 import json
+import re
 from pathlib import Path
 
 from fleasion import localization
 from fleasion.config import manager as manager_module
+from fleasion.translations.es import SPANISH
 
 
-def test_english_is_default_and_only_language_for_now():
-    assert localization.available_languages() == (('en', 'English'),)
+def test_english_is_default_and_spanish_is_available():
+    assert localization.available_languages() == (('en', 'English'), ('es', 'Español'))
     assert localization.normalize_language(None) == 'en'
     assert localization.normalize_language('en-US') == 'en'
+    assert localization.normalize_language('es-MX') == 'es'
+    assert localization.normalize_language('es_ES') == 'es'
     assert localization.normalize_language('not-a-language') == 'en'
 
 
@@ -21,6 +25,58 @@ def test_translation_lookup_formats_and_falls_back_to_english():
     assert localization.tr('missing.identifier') == 'missing.identifier'
     assert localization.tr_count(1, 'count.asset.one', 'count.asset.other') == '1 asset'
     assert localization.tr_count(3, 'count.asset.one', 'count.asset.other') == '3 assets'
+
+
+def test_spanish_translation_lookup_formats_and_counts():
+    localization.set_language('es-MX')
+    try:
+        assert localization.get_language() == 'es'
+        assert localization.tr('language.picker.title') == 'Elegir idioma'
+        assert localization.tr('onboarding.welcome.ok_countdown', seconds=4) == 'Aceptar (4s)'
+        assert localization.tr_count(1, 'count.asset.one', 'count.asset.other') == '1 activo'
+        assert localization.tr_count(3, 'count.asset.one', 'count.asset.other') == '3 activos'
+    finally:
+        localization.set_language('en')
+
+
+def test_profile_error_actions_are_localized():
+    localization.set_language('es')
+    try:
+        action = localization.tr('ui.gui.modifications_tab.profile_action_save')
+        assert (
+            localization.tr('ui.gui.modifications_tab.could_not_value_profile', value0=action)
+            == 'No se pudo guardar el perfil'
+        )
+    finally:
+        localization.set_language('en')
+
+
+def test_spanish_catalog_matches_english_keys_markup_and_placeholders():
+    assert list(SPANISH) == list(localization.ENGLISH)
+    assert len(SPANISH) == len(localization.ENGLISH)
+
+    placeholder_re = re.compile(r'\{[^{}]+\}')
+    tag_re = re.compile(r'<[^>]+>')
+    for identifier, english in localization.ENGLISH.items():
+        spanish = SPANISH[identifier]
+        assert isinstance(spanish, str) and spanish, identifier
+        assert sorted(placeholder_re.findall(spanish)) == sorted(placeholder_re.findall(english)), (
+            identifier
+        )
+        assert tag_re.findall(spanish) == tag_re.findall(english), identifier
+        assert 'ZXQ' not in spanish, identifier
+
+
+def test_translation_values_include_future_registered_languages(monkeypatch):
+    pseudo = dict(localization.ENGLISH)
+    pseudo['replacer.action.remove'] = 'Supprimer'
+    monkeypatch.setitem(localization._TRANSLATIONS, 'fr-test', pseudo)
+
+    values = localization.translation_values('replacer.action.remove')
+
+    assert 'Remove' in values
+    assert 'Eliminar' in values
+    assert 'Supprimer' in values
 
 
 def test_count_translation_uses_selected_language_without_english_noun_leak(monkeypatch):

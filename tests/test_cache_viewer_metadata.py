@@ -1,4 +1,8 @@
-from fleasion.cache.cache_viewer import _asset_metadata_needs_resolution
+from fleasion.cache.cache_viewer import COL_TOGGLE_WIDTH, _asset_metadata_needs_resolution
+
+
+def test_cache_viewer_toggle_column_width_constant_is_defined():
+    assert COL_TOGGLE_WIDTH == 14
 
 
 def test_numeric_creator_remains_pending_after_asset_metadata_resolves():

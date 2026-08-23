@@ -98,7 +98,7 @@ class AboutWindow(QDialog):
 
         # Close button
         close_btn = QPushButton(tr('ui.gui.about.close'))
-        close_btn.setFixedWidth(100)
+        close_btn.setMinimumWidth(max(100, close_btn.sizeHint().width()))
         close_btn.clicked.connect(self.accept)
         layout.addWidget(close_btn, alignment=Qt.AlignmentFlag.AlignCenter)
 

@@ -925,7 +925,7 @@ class PreJsonsDialog(QDialog):
         )
         assets_row.addWidget(assets_edit)
         assets_browse = QPushButton(tr('ui.gui.prejsons_dialog.browse'))
-        assets_browse.setFixedWidth(80)
+        assets_browse.setMinimumWidth(max(80, assets_browse.sizeHint().width()))
         assets_row.addWidget(assets_browse)
         layout.addLayout(assets_row)
         assets_browse.clicked.connect(
@@ -948,7 +948,7 @@ class PreJsonsDialog(QDialog):
         )
         rep_row.addWidget(rep_edit)
         rep_browse = QPushButton(tr('ui.gui.prejsons_dialog.browse'))
-        rep_browse.setFixedWidth(80)
+        rep_browse.setMinimumWidth(max(80, rep_browse.sizeHint().width()))
         rep_row.addWidget(rep_browse)
         layout.addLayout(rep_row)
         rep_browse.clicked.connect(

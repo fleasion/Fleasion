@@ -60,14 +60,16 @@ class LogsWindow(QDialog):
         bottom.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
         copy_btn = QPushButton(tr('ui.gui.logs.copy_all'))
-        copy_btn.setFixedSize(80, 22)
+        copy_btn.setMinimumWidth(max(80, copy_btn.sizeHint().width()))
+        copy_btn.setFixedHeight(22)
         copy_btn.clicked.connect(self._copy_all)
         bottom.addWidget(copy_btn)
 
         bottom.addSpacing(6)
 
         open_folder_btn = QPushButton(tr('ui.gui.logs.open_log_folder'))
-        open_folder_btn.setFixedSize(110, 22)
+        open_folder_btn.setMinimumWidth(max(110, open_folder_btn.sizeHint().width()))
+        open_folder_btn.setFixedHeight(22)
         open_folder_btn.clicked.connect(lambda: open_folder(LOGS_DIR))
         bottom.addWidget(open_folder_btn)
 
@@ -75,7 +77,8 @@ class LogsWindow(QDialog):
             bottom.addSpacing(6)
 
             open_helper_logs_btn = QPushButton(tr('ui.gui.logs.open_helper_logs'))
-            open_helper_logs_btn.setFixedSize(118, 22)
+            open_helper_logs_btn.setMinimumWidth(max(118, open_helper_logs_btn.sizeHint().width()))
+            open_helper_logs_btn.setFixedHeight(22)
             open_helper_logs_btn.setToolTip(
                 tr('ui.gui.logs.open_the_root_owned_macos_proxy_helper')
             )
