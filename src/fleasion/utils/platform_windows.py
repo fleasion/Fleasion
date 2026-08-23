@@ -481,33 +481,50 @@ def _force_close_process_immediately(
     if cancel_event is not None and cancel_event.is_set():
         return False
 
+    log_buffer.log('Launcher', f'{label} forcing exact Player exit immediately')
     try:
-        log_buffer.log('Launcher', f'{label} forcing exact Player exit immediately')
         returncode, output = run_cmd(['taskkill', '/F', '/PID', str(pid)])
         log_buffer.log(
             'Launcher',
             f'{label} taskkill /F /PID {pid} returned {returncode}: '
             f'{_summarize_command_output(output)}',
         )
-        if returncode != 0:
-            log_buffer.log(
-                'Launcher',
-                f'{label} taskkill /PID {pid} failed with exit code {returncode}',
-            )
-            return False
-        return _wait_for_pid_exit(pid, exe_name, timeout, cancel_event)
+        if returncode == 0:
+            return _wait_for_pid_exit(pid, exe_name, timeout, cancel_event)
+        log_buffer.log(
+            'Launcher',
+            f'{label} taskkill /PID {pid} failed with exit code {returncode}',
+        )
     except subprocess.TimeoutExpired:
         log_buffer.log(
             'Launcher',
             f'{label} taskkill /F /PID {pid} timed out after 10 seconds',
         )
-        return False
     except Exception as exc:
         log_buffer.log(
             'Launcher',
-            f'{label} forced Player exit failed: {type(exc).__name__}',
+            f'{label} taskkill /F /PID {pid} failed: {type(exc).__name__}',
+        )
+
+    if cancel_event is not None and cancel_event.is_set():
+        return False
+
+    try:
+        direct_ok, direct_detail = _terminate_process_direct(pid)
+    except Exception as exc:
+        log_buffer.log(
+            'Launcher',
+            f'{label} direct PROCESS_TERMINATE fallback failed: {type(exc).__name__}',
         )
         return False
+
+    log_buffer.log(
+        'Launcher',
+        f'{label} direct PROCESS_TERMINATE fallback for PID {pid}: {direct_detail}',
+    )
+    if not direct_ok:
+        return False
+    return _wait_for_pid_exit(pid, exe_name, timeout, cancel_event)
 
 
 def wait_for_roblox_window(

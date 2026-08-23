@@ -483,6 +483,48 @@ def test_force_close_kills_immediately_before_waiting_for_process_exit(monkeypat
     ]
 
 
+def test_force_close_uses_direct_terminate_when_taskkill_is_broken(monkeypatch):
+    module = _load_platform_windows(monkeypatch)
+    events = []
+    logs = []
+
+    monkeypatch.setattr(
+        module,
+        "run_cmd",
+        lambda args: events.append(tuple(args))
+        or (1, "ERROR: The specified service does not exist as an installed service."),
+    )
+    monkeypatch.setattr(
+        module,
+        "_terminate_process_direct",
+        lambda pid: events.append(("direct", pid))
+        or (True, "TerminateProcess issued successfully"),
+    )
+    monkeypatch.setattr(
+        module,
+        "_wait_for_pid_exit",
+        lambda *_args, **_kwargs: events.append("pid_exit") or True,
+    )
+    monkeypatch.setattr(
+        module.log_buffer,
+        "log",
+        lambda category, message: logs.append((category, message)),
+    )
+
+    assert module._force_close_process_immediately(
+        100,
+        "RobloxPlayerBeta.exe",
+        label="Roblox",
+    )
+    assert events == [
+        ("taskkill", "/F", "/PID", "100"),
+        ("direct", 100),
+        "pid_exit",
+    ]
+    assert any("service does not exist" in message for _, message in logs)
+    assert any("direct PROCESS_TERMINATE fallback" in message for _, message in logs)
+
+
 def test_terminate_roblox_uses_minimal_rights_force_kill_after_taskkill_fails(monkeypatch):
     module = _load_platform_windows(monkeypatch)
     logs = []
