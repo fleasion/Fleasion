@@ -2415,13 +2415,15 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list:
 
     found: list = []
     seen: set = set()
+    discovery_sources: dict[str, set[str]] = {}
 
-    def _add(path: Path) -> bool:
+    def _add(path: Path, source: str = 'unknown') -> bool:
         if '\x00' in str(path):
             return False
         if not include_studio and is_roblox_studio_resource_dir(path):
             return False
         key = str(path)
+        discovery_sources.setdefault(key, set()).add(source)
         if key not in seen:
             found.append(path)
             seen.add(key)
@@ -2488,13 +2490,14 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list:
             # Path may occasionally point at the exe itself rather than the dir
             if p.name.lower() == process_name.lower():
                 p = p.parent
+            source = f'Registry {value_name}'
             if os.path.isfile(os.path.join(str(p), process_name)):
                 reg_found += 1
-                _add(p)
+                _add(p, source)
             else:
                 for d in _scan_for_exe(p, 1):
                     reg_found += 1
-                    _add(d)
+                    _add(d, source)
 
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r'Software') as hkey:
@@ -2539,7 +2542,7 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list:
     xbox_found = 0
     for d in _scan_for_exe(Path(r'C:\XboxGames\Roblox'), 2):
         xbox_found += 1
-        _add(d)
+        _add(d, 'XboxGames\\Roblox')
     log_buffer.log(
         'Certificate',
         f'  XboxGames\\Roblox: {int((time.perf_counter() - t) * 1000)} ms ({xbox_found} found)',
@@ -2563,7 +2566,7 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list:
                         exe_dir = exe_path.parent
                         for d in _scan_for_exe(exe_dir, 2):
                             active_found += 1
-                            _add(d)
+                            _add(d, 'Active Roblox protocol')
             except OSError, ValueError:
                 pass
     except (OSError, ValueError):
@@ -2578,7 +2581,7 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list:
     program_files_found = 0
     for d in _scan_for_exe(Path(r'C:\Program Files (x86)\Roblox\Versions'), 2):
         program_files_found += 1
-        _add(d)
+        _add(d, 'Program Files Roblox\\Versions')
     log_buffer.log(
         'Certificate',
         f'  Program Files (x86) Roblox\\Versions: {int((time.perf_counter() - t) * 1000)} ms ({program_files_found} found)',
@@ -2590,7 +2593,7 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list:
     roblox_found = 0
     for d in _scan_for_exe(LOCAL_APPDATA / 'Roblox' / 'Versions', 1):
         roblox_found += 1
-        _add(d)
+        _add(d, 'AppData Roblox\\Versions')
     log_buffer.log(
         'Certificate',
         f'  AppData Roblox\\Versions: {int((time.perf_counter() - t) * 1000)} ms ({roblox_found} found)',
@@ -2614,7 +2617,7 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list:
                         exe_dir = exe_path.parent
                         for d in _scan_for_exe(exe_dir, 2):
                             studio_found += 1
-                            _add(d)
+                            _add(d, 'Active Studio protocol')
             except OSError, ValueError:
                 pass
     except (OSError, ValueError):
@@ -2630,7 +2633,7 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list:
     for running_exe in (get_roblox_player_exe_path(), get_roblox_studio_exe_path()):
         if running_exe is None:
             continue
-        if _add(running_exe.parent):
+        if _add(running_exe.parent, 'Running Roblox process'):
             running_found += 1
     log_buffer.log(
         'Certificate',
@@ -2638,7 +2641,11 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list:
     )
 
     for cached_dir in load_saved_roblox_dirs():
-        _add(cached_dir)
+        _add(cached_dir, 'Saved Roblox directory')
+
+    for candidate in found:
+        sources = ', '.join(sorted(discovery_sources.get(str(candidate), {'unknown'})))
+        log_buffer.log('Certificate', f'  Candidate Roblox install: {candidate} (sources={sources})')
 
     return found
 
@@ -2653,6 +2660,11 @@ _CACERT_LAUNCH_SETTLE_SECONDS = 2.5
 _CACERT_LAUNCH_POLL_SECONDS = 10.0
 _CACERT_LAUNCH_POLL_INTERVAL_SECONDS = 0.5
 _CACERT_RESTART_DEDUP_SECONDS = 8.0
+
+
+def _env_proxy_global_ca_patch_failure_is_fatal() -> bool:
+    """Only Windows defers the hard CA gate to the resolved launch target."""
+    return not IS_WINDOWS
 
 
 def _normalize_newlines(text: str) -> str:
@@ -2740,6 +2752,7 @@ def _describe_cacert_state(ca_file: Path, ca_pem: str) -> dict:
         'fleasion_certs': 0,
         'current_fleasion_certs': 0,
         'healthy': False,
+        'health_reason': 'missing_bundle',
         'error': '',
     }
 
@@ -2748,12 +2761,14 @@ def _describe_cacert_state(ca_file: Path, ca_pem: str) -> dict:
     except FileNotFoundError:
         return state
     except OSError as exc:
+        state['health_reason'] = 'stat_error'
         state['error'] = str(exc)
         return state
 
     try:
         raw = ca_file.read_bytes()
     except OSError as exc:
+        state['health_reason'] = 'read_error'
         state['error'] = str(exc)
         return state
 
@@ -2767,6 +2782,18 @@ def _describe_cacert_state(ca_file: Path, ca_pem: str) -> dict:
         and fleasion_count == 1
         and current_count == 1
     )
+    if stat.st_size < _CACERT_MIN_HEALTHY_SIZE_BYTES:
+        health_reason = 'bundle_too_small'
+    elif total_count < _CACERT_MIN_HEALTHY_CERTS:
+        health_reason = 'too_few_certificates'
+    elif fleasion_count == 0:
+        health_reason = 'fleasion_ca_missing'
+    elif fleasion_count != 1:
+        health_reason = 'fleasion_ca_duplicate_or_stale'
+    elif current_count != 1:
+        health_reason = 'fleasion_ca_not_current'
+    else:
+        health_reason = 'healthy'
 
     state.update(
         {
@@ -2778,6 +2805,7 @@ def _describe_cacert_state(ca_file: Path, ca_pem: str) -> dict:
             'fleasion_certs': fleasion_count,
             'current_fleasion_certs': current_count,
             'healthy': healthy,
+            'health_reason': health_reason,
         }
     )
     return state
@@ -2794,7 +2822,8 @@ def _format_cacert_state(state: dict) -> str:
         f'sha256={short_sha}, total certs={state.get("total_certs")}, '
         f'Fleasion certs={state.get("fleasion_certs")}, '
         f'current Fleasion certs={state.get("current_fleasion_certs")}, '
-        f'healthy={"yes" if state.get("healthy") else "no"}{error_text}'
+        f'healthy={"yes" if state.get("healthy") else "no"}, '
+        f'reason={state.get("health_reason") or "unknown"}{error_text}'
     )
 
 
@@ -2829,12 +2858,18 @@ def _log_cacert_health(ca_file: Path, ca_pem: str) -> None:
     _log_cacert_state(ca_file, ca_pem, f'cacert.pem health for {ca_file.parent.parent.name}')
 
 
-def _linux_cacert_needs_seed(state: dict) -> bool:
+def _cacert_needs_seed(state: dict) -> bool:
+    """Return True when the base trust bundle is missing or clearly truncated."""
     return (
         not bool(state.get('exists'))
         or int(state.get('size') or 0) < _CACERT_MIN_HEALTHY_SIZE_BYTES
         or int(state.get('total_certs') or 0) < _CACERT_MIN_HEALTHY_CERTS
     )
+
+
+def _linux_cacert_needs_seed(state: dict) -> bool:
+    """Backward-compatible alias for Linux-specific callers/tests."""
+    return _cacert_needs_seed(state)
 
 
 def _clear_cacert_write_barriers(path: Path) -> None:
@@ -2901,29 +2936,40 @@ def _restore_cacert_read_only(ca_file: Path) -> None:
         pass
 
 
-def _healthy_linux_cacert_source(ca_file: Path, ca_pem: str, dirs: list[Path]) -> Path | None:
+def _healthy_cacert_source(ca_file: Path, ca_pem: str, dirs: list[Path]) -> Path | None:
+    """Find another install with an intact base trust bundle suitable for seeding."""
     for candidate_dir in dirs:
         candidate = candidate_dir / 'ssl' / 'cacert.pem'
         if candidate == ca_file:
             continue
         state = _describe_cacert_state(candidate, ca_pem)
-        if bool(state.get('healthy')):
+        if (
+            bool(state.get('exists'))
+            and not state.get('error')
+            and int(state.get('size') or 0) >= _CACERT_MIN_HEALTHY_SIZE_BYTES
+            and int(state.get('total_certs') or 0) >= _CACERT_MIN_HEALTHY_CERTS
+        ):
             return candidate
     return None
 
 
-def _seed_linux_cacert_if_needed(
+def _healthy_linux_cacert_source(ca_file: Path, ca_pem: str, dirs: list[Path]) -> Path | None:
+    """Backward-compatible alias for Linux-specific callers/tests."""
+    return _healthy_cacert_source(ca_file, ca_pem, dirs)
+
+
+def _seed_cacert_if_needed(
     ca_file: Path, state: dict, install_name: str, ca_pem: str, dirs: list[Path]
 ) -> bool:
-    """Replace a missing/truncated Roblox CA bundle with a healthy local or Mozilla bundle."""
-    if not IS_LINUX:
+    """Replace a missing/truncated Windows/Linux Roblox bundle before CA upsert."""
+    if not (IS_WINDOWS or IS_LINUX):
         return False
     if bool(state.get('error')):
         return False
-    if not _linux_cacert_needs_seed(state):
+    if not _cacert_needs_seed(state):
         return False
 
-    source = _healthy_linux_cacert_source(ca_file, ca_pem, dirs)
+    source = _healthy_cacert_source(ca_file, ca_pem, dirs)
     if source is not None:
         restore_read_only = _cacert_is_read_only(ca_file)
         try:
@@ -2961,6 +3007,15 @@ def _seed_linux_cacert_if_needed(
     finally:
         if restore_read_only:
             _restore_cacert_read_only(ca_file)
+
+
+def _seed_linux_cacert_if_needed(
+    ca_file: Path, state: dict, install_name: str, ca_pem: str, dirs: list[Path]
+) -> bool:
+    """Backward-compatible Linux wrapper for the shared Windows/Linux seeder."""
+    if not IS_LINUX:
+        return False
+    return _seed_cacert_if_needed(ca_file, state, install_name, ca_pem, dirs)
 
 
 def _upsert_fleasion_ca_in_cacert(ca_file: Path, ca_pem: str) -> tuple[bool, int, int]:
@@ -3209,7 +3264,7 @@ def _install_ca_into_roblox(ca_pem: str, *, include_studio: bool = True) -> tupl
         try:
             _prepare_cacert_target_for_write(ca_file)
             pre_state = _log_cacert_state(ca_file, ca_pem, f'cacert.pem health for {d.name}')
-            seeded = _seed_linux_cacert_if_needed(ca_file, pre_state, d.name, ca_pem, dirs)
+            seeded = _seed_cacert_if_needed(ca_file, pre_state, d.name, ca_pem, dirs)
             changed, fleasion_count, current_count = _upsert_fleasion_ca_in_cacert(ca_file, ca_pem)
             changed = changed or seeded
             post_state = _log_cacert_state(
@@ -3245,7 +3300,10 @@ def _install_ca_into_roblox(ca_pem: str, *, include_studio: bool = True) -> tupl
                     {
                         'resource_dir': str(d),
                         'ca_file': str(ca_file),
-                        'error': 'cacert.pem was not launch-healthy after direct patch',
+                        'error': (
+                            'cacert.pem was not launch-healthy after direct patch '
+                            f'(reason={post_state.get("health_reason") or "unknown"})'
+                        ),
                     }
                 )
                 if IS_MACOS and not _is_admin():
@@ -3666,13 +3724,20 @@ def check_and_patch_running_roblox_ca(exe_path: 'Path') -> bool:
             f'cacert.pem before running-instance patch for {roblox_dir.name}',
         )
         pre_state_readable = bool(pre_state.get('exists')) and not bool(pre_state.get('error'))
+        seeded = False
+        if (IS_WINDOWS or IS_LINUX) and _cacert_needs_seed(pre_state) and not pre_state.get('error'):
+            seed_dirs = _find_roblox_dirs(include_studio=False)
+            if roblox_dir not in seed_dirs:
+                seed_dirs.insert(0, roblox_dir)
+            seeded = _seed_cacert_if_needed(ca_file, pre_state, roblox_dir.name, ca_pem, seed_dirs)
         direct_error: Exception | None = None
         try:
             _prepare_cacert_target_for_write(ca_file)
             changed, fleasion_count, current_count = _upsert_fleasion_ca_in_cacert(ca_file, ca_pem)
+            changed = changed or seeded
         except (PermissionError, OSError, UnicodeDecodeError) as exc:
             direct_error = exc
-            changed = False
+            changed = seeded
             fleasion_count = int(pre_state.get('fleasion_certs') or 0)
             current_count = int(pre_state.get('current_fleasion_certs') or 0)
 
@@ -5161,13 +5226,22 @@ class ProxyMaster:
             self._running = False
             return
         if env_proxy_mode and not ca_patch_ok:
-            log_buffer.log(
-                'Certificate',
-                'Roblox CA patch verification failed; Env Proxy startup aborted before relaunch',
-            )
-            self._emit_proxy_start_error('roblox_ca_patch_failed', ca_patch_details)
-            self._running = False
-            return
+            if not _env_proxy_global_ca_patch_failure_is_fatal():
+                failed = ca_patch_details.get('failed') or []
+                log_buffer.log(
+                    'Certificate',
+                    'One or more discovered Roblox CA bundles were not launch-healthy during '
+                    f'Env Proxy startup ({len(failed)} failed); continuing because the actual '
+                    'Player executable will be repaired and verified before relaunch',
+                )
+            else:
+                log_buffer.log(
+                    'Certificate',
+                    'Roblox CA patch verification failed; Env Proxy startup aborted before relaunch',
+                )
+                self._emit_proxy_start_error('roblox_ca_patch_failed', ca_patch_details)
+                self._running = False
+                return
         if IS_MACOS:
             trust_ok, trust_details = _install_ca_into_macos_login_keychain(ca_cert_path, ca_pem)
             if not trust_ok:

@@ -2464,7 +2464,7 @@ def _show_roblox_ca_patch_failed_dialog(details: dict) -> None:
     )
     QMessageBox.critical(
         _visible_parent_widget(),
-        tr('app.fleasion_roblox_files_are_protected'),
+        tr('app.fleasion_proxy_startup_failed'),
         tr('app.fleasion_could_not_prepare_roblox_player_for', value0=diagnostics),
     )
 

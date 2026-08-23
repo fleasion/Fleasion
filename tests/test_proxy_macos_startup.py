@@ -512,6 +512,89 @@ def test_linux_roblox_ca_patch_reseeds_truncated_bundle_even_when_current_ca_exi
     assert any("Seeded Roblox cacert.pem from healthy local bundle" in message for _category, message in logs)
 
 
+def test_windows_env_global_ca_failure_defers_to_resolved_launch_target(monkeypatch):
+    monkeypatch.setattr(proxy_master, "IS_WINDOWS", True)
+    assert proxy_master._env_proxy_global_ca_patch_failure_is_fatal() is False
+
+    monkeypatch.setattr(proxy_master, "IS_WINDOWS", False)
+    assert proxy_master._env_proxy_global_ca_patch_failure_is_fatal() is True
+
+
+def test_windows_roblox_ca_patch_reseeds_fleasion_only_bundle(tmp_path, monkeypatch):
+    logs = []
+    roblox_dir = tmp_path / "Voidstrap" / "RblxVersions" / "version-bad"
+    healthy_dir = tmp_path / "Velostrap" / "Versions" / "version-good"
+    ca_file = roblox_dir / "ssl" / "cacert.pem"
+    healthy_ca_file = healthy_dir / "ssl" / "cacert.pem"
+    ca_file.parent.mkdir(parents=True)
+    healthy_ca_file.parent.mkdir(parents=True)
+
+    ca_pem = _make_self_signed_ca_pem()
+    base_root = _make_self_signed_ca_pem(common_name="Roblox Root A", organization="Roblox")
+    base_root_2 = _make_self_signed_ca_pem(common_name="Roblox Root B", organization="Roblox")
+    ca_file.write_text(ca_pem, encoding="utf-8")
+    healthy_ca_file.write_text(base_root + base_root_2 + ("# padding\n" * 600), encoding="utf-8")
+
+    pre_state = proxy_master._describe_cacert_state(ca_file, ca_pem)
+    assert pre_state["healthy"] is False
+    assert pre_state["health_reason"] == "bundle_too_small"
+    assert pre_state["total_certs"] == 1
+    assert pre_state["current_fleasion_certs"] == 1
+
+    monkeypatch.setattr(proxy_master, "IS_MACOS", False)
+    monkeypatch.setattr(proxy_master, "IS_LINUX", False)
+    monkeypatch.setattr(proxy_master, "IS_WINDOWS", True)
+    monkeypatch.setattr(proxy_master, "_find_roblox_dirs", lambda **_kwargs: [roblox_dir, healthy_dir])
+    monkeypatch.setattr(certifi, "where", lambda: (_ for _ in ()).throw(AssertionError("should prefer local healthy bundle")))
+    monkeypatch.setattr(proxy_master, "log_buffer", SimpleNamespace(log=lambda category, message: logs.append((category, message))))
+
+    ok, details = proxy_master._install_ca_into_roblox(ca_pem, include_studio=False)
+
+    state = proxy_master._describe_cacert_state(ca_file, ca_pem)
+    assert ok is True
+    assert state["healthy"] is True
+    assert state["health_reason"] == "healthy"
+    assert state["total_certs"] >= 2
+    assert state["current_fleasion_certs"] == 1
+    assert details["failed"] == []
+    assert any("Seeded Roblox cacert.pem from healthy local bundle" in message for _category, message in logs)
+
+
+def test_windows_resolved_launch_target_reseeds_even_if_not_discovered_at_startup(tmp_path, monkeypatch):
+    proxy_ca_dir = tmp_path / "proxy-ca"
+    proxy_ca_dir.mkdir()
+    (proxy_ca_dir / "ca.crt").write_text("placeholder", encoding="utf-8")
+
+    target_dir = tmp_path / "Fishstrap" / "Versions" / "version-active"
+    healthy_dir = tmp_path / "Velostrap" / "Versions" / "version-good"
+    target_ca = target_dir / "ssl" / "cacert.pem"
+    healthy_ca = healthy_dir / "ssl" / "cacert.pem"
+    target_ca.parent.mkdir(parents=True)
+    healthy_ca.parent.mkdir(parents=True)
+
+    ca_pem = _make_self_signed_ca_pem()
+    base_root = _make_self_signed_ca_pem(common_name="Roblox Root A", organization="Roblox")
+    base_root_2 = _make_self_signed_ca_pem(common_name="Roblox Root B", organization="Roblox")
+    target_ca.write_text(ca_pem, encoding="utf-8")
+    healthy_ca.write_text(base_root + base_root_2 + ("# padding\n" * 600), encoding="utf-8")
+
+    monkeypatch.setattr(proxy_master, "IS_MACOS", False)
+    monkeypatch.setattr(proxy_master, "IS_LINUX", False)
+    monkeypatch.setattr(proxy_master, "IS_WINDOWS", True)
+    monkeypatch.setattr(proxy_master, "_current_proxy_ca_dir", lambda: proxy_ca_dir)
+    monkeypatch.setattr(proxy_master, "get_ca_pem", lambda _path: ca_pem)
+    monkeypatch.setattr(proxy_master, "_find_roblox_dirs", lambda **_kwargs: [healthy_dir])
+    monkeypatch.setattr(certifi, "where", lambda: (_ for _ in ()).throw(AssertionError("should prefer local healthy bundle")))
+    monkeypatch.setattr(proxy_master, "log_buffer", SimpleNamespace(log=lambda *_args: None))
+
+    changed = proxy_master.check_and_patch_running_roblox_ca(target_dir / "RobloxPlayerBeta.exe")
+
+    state = proxy_master._describe_cacert_state(target_ca, ca_pem)
+    assert changed is True
+    assert state["healthy"] is True
+    assert state["current_fleasion_certs"] == 1
+
+
 def test_direct_cacert_upsert_clears_read_only_before_write(tmp_path):
     ca_file = tmp_path / "Roblox" / "ssl" / "cacert.pem"
     ca_file.parent.mkdir(parents=True)
@@ -567,7 +650,8 @@ def test_linux_cacert_seed_clears_read_only_before_copy(tmp_path, monkeypatch):
     ca_file.chmod(0o444)
 
     monkeypatch.setattr(proxy_master, "IS_LINUX", True)
-    monkeypatch.setattr(proxy_master, "_healthy_linux_cacert_source", lambda *_args: source)
+    monkeypatch.setattr(proxy_master, "IS_WINDOWS", False)
+    monkeypatch.setattr(proxy_master, "_healthy_cacert_source", lambda *_args: source)
     monkeypatch.setattr(proxy_master, "log_buffer", SimpleNamespace(log=lambda category, message: logs.append((category, message))))
 
     seeded = proxy_master._seed_linux_cacert_if_needed(
