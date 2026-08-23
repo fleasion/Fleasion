@@ -17,6 +17,7 @@ import sys
 import threading
 from pathlib import Path
 
+from ..localization import tr
 from .paths import USER_HOME
 
 logger = logging.getLogger(__name__)
@@ -76,7 +77,7 @@ def _windows_run_entry_matches(launch_info: dict) -> bool:
         ) as key:
             value, value_type = winreg.QueryValueEx(key, _WINDOWS_RUN_VALUE)
         return value_type == winreg.REG_SZ and value == _windows_run_command(launch_info)
-    except (ImportError, OSError):
+    except ImportError, OSError:
         return False
 
 
@@ -206,11 +207,8 @@ def _ps_single_quote(value: str) -> str:
 def windows_autostart_privilege_hint(proxy_mode: str | None) -> str:
     """Describe proxy-mode elevation without conflating it with autostart."""
     if proxy_mode == 'hosts':
-        return (
-            'Hosts File mode requires administrator permission for proxy startup. '
-            'The Run on Boot entry itself remains per-user.'
-        )
-    return 'Env Proxy mode uses normal per-user autostart and does not require Administrator.'
+        return tr('autostart.windows.hosts_privilege_hint')
+    return tr('autostart.windows.env_privilege_hint')
 
 
 def _desktop_exec_quote(value: str) -> str:
@@ -353,9 +351,7 @@ def _windows_launch_action(launch_info: dict) -> tuple[str, str]:
     # console window that uv.exe would otherwise show at logon.
     uv_path = launch_info['path']
     proj_path = launch_info['project']
-    uv_args = subprocess.list2cmdline(
-        ['--project', proj_path, 'run', 'fleasion', '--no-dashboard']
-    )
+    uv_args = subprocess.list2cmdline(['--project', proj_path, 'run', 'fleasion', '--no-dashboard'])
     log_path = launch_info.get('log')
     ps_script = (
         'try{'

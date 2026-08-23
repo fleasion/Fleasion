@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from ..localization import tr
 from .linux_clients import (
     LINUX_CLIENTS_BY_KEY,
     SOBER_CLIENT,
@@ -217,7 +218,11 @@ def selected_linux_client_display_name() -> str:
     configured = _configured_linux_client_descriptor()
     if selected is not None:
         return selected.display_name
-    return configured.display_name if configured is not None else 'Linux Roblox client'
+    return (
+        configured.display_name
+        if configured is not None
+        else tr('platform_linux.roblox_client_fallback')
+    )
 
 
 def selected_linux_client_app_id() -> str:

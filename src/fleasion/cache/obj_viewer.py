@@ -1,5 +1,7 @@
 """Simple 3D OBJ viewer widget using PyQt6 OpenGL with display list caching."""
 
+from ..localization import tr
+
 import math
 import time
 
@@ -826,23 +828,23 @@ class ObjViewerPanel(QWidget):
         controls_layout = QHBoxLayout()
 
         # Original default buttons
-        reset_btn = QPushButton('Reset View')
+        reset_btn = QPushButton(tr('ui.cache.obj_viewer.reset_view'))
         reset_btn.clicked.connect(self.viewer.reset_view)
         controls_layout.addWidget(reset_btn)
 
-        self.options_btn = QPushButton('Options')
+        self.options_btn = QPushButton(tr('ui.cache.obj_viewer.options'))
         self.options_menu = QMenu(self)
 
-        self.action_auto_rotate = self.options_menu.addAction('Auto Rotate')
+        self.action_auto_rotate = self.options_menu.addAction(tr('ui.cache.obj_viewer.auto_rotate'))
         self.action_auto_rotate.setCheckable(True)
         self.action_auto_rotate.toggled.connect(self.viewer.set_auto_rotate)
 
-        self.action_wireframe = self.options_menu.addAction('Wireframe')
+        self.action_wireframe = self.options_menu.addAction(tr('ui.cache.obj_viewer.wireframe'))
         self.action_wireframe.setCheckable(True)
         self.action_wireframe.setChecked(self.viewer.show_wireframe)
         self.action_wireframe.toggled.connect(self._toggle_wireframe_and_save)
 
-        self.action_grid = self.options_menu.addAction('Grid')
+        self.action_grid = self.options_menu.addAction(tr('ui.cache.obj_viewer.grid'))
         self.action_grid.setCheckable(True)
         self.action_grid.setChecked(self.viewer.show_grid)
         self.action_grid.toggled.connect(self._toggle_grid_and_save)
@@ -857,9 +859,9 @@ class ObjViewerPanel(QWidget):
         controls_layout.addWidget(self.stats_label)
 
         # Clean native Help Button AFTER the stats
-        self.help_btn = QPushButton('?')
+        self.help_btn = QPushButton(tr('ui.cache.obj_viewer.text'))
         self.help_btn.setMaximumWidth(30)  # Keep it perfectly square/small but native height
-        self.help_btn.setToolTip('View Camera Controls')
+        self.help_btn.setToolTip(tr('ui.cache.obj_viewer.view_camera_controls'))
         self.help_btn.clicked.connect(self.show_help)
         controls_layout.addWidget(self.help_btn)
 
@@ -869,23 +871,8 @@ class ObjViewerPanel(QWidget):
     def show_help(self):
         """Show a cleanly formatted message box with controls."""
         msg = QMessageBox(self)
-        msg.setWindowTitle('Camera Controls')
-        msg.setText(
-            '<h3>Orbit Mode (Default)</h3>'
-            '<ul>'
-            '<li><b>Click + Drag:</b> Rotate model</li>'
-            '<li><b>Scroll Wheel:</b> Zoom in/out</li>'
-            '</ul>'
-            '<h3>FPS Mode</h3>'
-            '<p><i>Pressing WASD at any time smoothly transitions you into FPS Mode.</i></p>'
-            '<ul>'
-            '<li><b>W/A/S/D:</b> Move forward/left/back/right</li>'
-            '<li><b>Space / Shift:</b> Move Up / Down</li>'
-            '<li><b>Click + Drag:</b> Look around freely</li>'
-            '<li><b>Scroll Wheel:</b> Move in/out</li>'
-            '<li><b>Hold Q / E:</b> Move slower / faster</li>'
-            '</ul>'
-        )
+        msg.setWindowTitle(tr('ui.cache.obj_viewer.camera_controls'))
+        msg.setText(tr('ui.cache.obj_viewer.h3_orbit_mode_default_h3_ul_li'))
         msg.exec()
 
     def _toggle_wireframe_and_save(self, enabled: bool):
@@ -906,7 +893,9 @@ class ObjViewerPanel(QWidget):
 
         v_count = len(self.viewer.vertices)
         f_count = len(self.viewer.faces)
-        self.stats_label.setText(f'{v_count:,} verts, {f_count:,} faces')
+        self.stats_label.setText(
+            tr('ui.cache.obj_viewer.value_verts_value_faces', value0=v_count, value1=f_count)
+        )
 
     def showEvent(self, event):
         super().showEvent(event)

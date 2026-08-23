@@ -1,6 +1,7 @@
 """RBXM/RBXMX structure preview widget."""
 
 from __future__ import annotations
+from ..localization import tr, verbatim
 
 import base64
 import gzip
@@ -80,7 +81,7 @@ class ClassNameDialog(QDialog):
 
     def __init__(self, current: str = 'Folder', parent=None):
         super().__init__(parent)
-        self.setWindowTitle('Choose ClassName')
+        self.setWindowTitle(tr('ui.cache.rbxm_preview.choose_classname'))
         self.resize(360, 460)
         self._selected = current if current in ROBLOX_CLASS_NAME_SET else 'Folder'
 
@@ -89,7 +90,7 @@ class ClassNameDialog(QDialog):
         layout.setSpacing(6)
 
         self.search = QLineEdit()
-        self.search.setPlaceholderText('Search ClassName...')
+        self.search.setPlaceholderText(tr('ui.cache.rbxm_preview.search_classname'))
         self.search.textChanged.connect(self._populate)
         layout.addWidget(self.search)
 
@@ -168,34 +169,36 @@ class RbxmPreviewWidget(QWidget):
 
         toolbar = QHBoxLayout()
         toolbar.setSpacing(4)
-        toolbar.addWidget(QLabel('Search:'))
+        toolbar.addWidget(QLabel(tr('ui.cache.rbxm_preview.search')))
 
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText('Search instances and properties...')
+        self.search_input.setPlaceholderText(
+            tr('ui.cache.rbxm_preview.search_instances_and_properties')
+        )
         self.search_input.textChanged.connect(self._on_search_changed)
         toolbar.addWidget(self.search_input)
 
-        self.prev_btn = QPushButton('^')
+        self.prev_btn = QPushButton(tr('ui.cache.rbxm_preview.text'))
         self.prev_btn.setFixedWidth(30)
-        self.prev_btn.setToolTip('Previous match')
+        self.prev_btn.setToolTip(tr('ui.cache.rbxm_preview.previous_match'))
         self.prev_btn.clicked.connect(self._prev_match)
         toolbar.addWidget(self.prev_btn)
 
-        self.next_btn = QPushButton('v')
+        self.next_btn = QPushButton(tr('ui.cache.rbxm_preview.v'))
         self.next_btn.setFixedWidth(30)
-        self.next_btn.setToolTip('Next match')
+        self.next_btn.setToolTip(tr('ui.cache.rbxm_preview.next_match'))
         self.next_btn.clicked.connect(self._next_match)
         toolbar.addWidget(self.next_btn)
 
-        expand_btn = QPushButton('Expand All')
+        expand_btn = QPushButton(tr('ui.cache.rbxm_preview.expand_all'))
         expand_btn.clicked.connect(self.tree_expand_all)
         toolbar.addWidget(expand_btn)
 
-        collapse_btn = QPushButton('Collapse All')
+        collapse_btn = QPushButton(tr('ui.cache.rbxm_preview.collapse_all'))
         collapse_btn.clicked.connect(self.tree_collapse_all)
         toolbar.addWidget(collapse_btn)
 
-        self.copy_btn = QPushButton('Copy Value')
+        self.copy_btn = QPushButton(tr('ui.cache.rbxm_preview.copy_value'))
         self.copy_btn.clicked.connect(self._copy_selected_value)
         toolbar.addWidget(self.copy_btn)
 
@@ -229,11 +232,9 @@ class RbxmPreviewWidget(QWidget):
         left_layout.addWidget(self.tree, stretch=1)
 
         left_bottom = QHBoxLayout()
-        self.add_child_btn = QPushButton('+')
+        self.add_child_btn = QPushButton(tr('ui.cache.rbxm_preview.text_2'))
         self.add_child_btn.setFixedWidth(34)
-        self.add_child_btn.setToolTip(
-            'Add child to selected item, or add a root if nothing is selected'
-        )
+        self.add_child_btn.setToolTip(tr('ui.cache.rbxm_preview.add_child_to_selected_item_or_add'))
         self.add_child_btn.clicked.connect(self._add_child_from_button)
         left_bottom.addWidget(self.add_child_btn)
         left_bottom.addStretch()
@@ -246,7 +247,13 @@ class RbxmPreviewWidget(QWidget):
         right_layout.setSpacing(4)
         self.properties_table = QTableWidget()
         self.properties_table.setColumnCount(3)
-        self.properties_table.setHorizontalHeaderLabels(['Property', 'Value', 'Type'])
+        self.properties_table.setHorizontalHeaderLabels(
+            [
+                tr('ui.cache.rbxm_preview.property'),
+                tr('ui.cache.rbxm_preview.value'),
+                tr('ui.cache.rbxm_preview.type'),
+            ]
+        )
         self.properties_table.setEditTriggers(
             QTableWidget.EditTrigger.DoubleClicked | QTableWidget.EditTrigger.EditKeyPressed
         )
@@ -274,9 +281,9 @@ class RbxmPreviewWidget(QWidget):
 
         right_bottom = QHBoxLayout()
 
-        self.add_property_btn = QPushButton('+')
+        self.add_property_btn = QPushButton(tr('ui.cache.rbxm_preview.text_2'))
         self.add_property_btn.setFixedWidth(34)
-        self.add_property_btn.setToolTip('Add property to selected item')
+        self.add_property_btn.setToolTip(tr('ui.cache.rbxm_preview.add_property_to_selected_item'))
         self.add_property_btn.clicked.connect(self._add_property)
         right_bottom.addWidget(self.add_property_btn)
         self.summary_label = QLabel('')
@@ -474,7 +481,13 @@ class RbxmPreviewWidget(QWidget):
         shared_count = len(self.document.shared_strings)
         suffix = f' | {asset_label}' if asset_label else ''
         self.summary_label.setText(
-            f'{root_count} roots, {instance_count} instances, {shared_count} shared strings{suffix}'
+            tr(
+                'ui.cache.rbxm_preview.value_roots_value_instances_value_shared_strings',
+                value0=root_count,
+                value1=instance_count,
+                value2=shared_count,
+                value3=suffix,
+            )
         )
 
         if self.tree.topLevelItemCount():
@@ -542,7 +555,9 @@ class RbxmPreviewWidget(QWidget):
                 type_item.setFlags(type_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             if row == 0:
                 value_item.setFlags(value_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                value_item.setToolTip('Double-click to choose a Roblox ClassName')
+                value_item.setToolTip(
+                    tr('ui.cache.rbxm_preview.double_click_to_choose_a_roblox_classname')
+                )
             if row == 1:
                 value_item.setFlags(value_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             elif row >= 2 and not self._value_is_editable(prop.value, prop.type_name):
@@ -578,12 +593,15 @@ class RbxmPreviewWidget(QWidget):
         kind = item.data(_ROW_KIND_ROLE)
 
         if kind == 'class_name' and col == 1:
-            class_name = item.text().strip() or 'Folder'
+            class_name = item.text().strip() or verbatim('Folder')
             if class_name not in ROBLOX_CLASS_NAME_SET:
                 QMessageBox.warning(
                     self,
-                    'Invalid ClassName',
-                    f'{class_name} is not a known Roblox ClassName.',
+                    tr('ui.cache.rbxm_preview.invalid_classname'),
+                    tr(
+                        'ui.cache.rbxm_preview.value_is_not_a_known_roblox_classname',
+                        value0=class_name,
+                    ),
                 )
                 self._refresh_selected_properties_later()
                 return
@@ -647,10 +665,10 @@ class RbxmPreviewWidget(QWidget):
         current = self.tree.itemAt(position)
         if current is not None:
             self.tree.setCurrentItem(current)
-        add_child_action = menu.addAction('Add Child')
-        rename_action = menu.addAction('Rename')
-        class_action = menu.addAction('Change ClassName')
-        delete_action = menu.addAction('Delete')
+        add_child_action = menu.addAction(tr('ui.cache.rbxm_preview.add_child'))
+        rename_action = menu.addAction(tr('ui.cache.rbxm_preview.rename'))
+        class_action = menu.addAction(tr('ui.cache.rbxm_preview.change_classname'))
+        delete_action = menu.addAction(tr('ui.cache.rbxm_preview.delete'))
         if current is None:
             rename_action.setEnabled(False)
             class_action.setEnabled(False)
@@ -667,9 +685,9 @@ class RbxmPreviewWidget(QWidget):
 
     def _show_property_context_menu(self, position) -> None:
         menu = QMenu(self)
-        add_action = menu.addAction('Add Property')
-        copy_action = menu.addAction('Copy Value')
-        delete_action = menu.addAction('Delete')
+        add_action = menu.addAction(tr('ui.cache.rbxm_preview.add_property'))
+        copy_action = menu.addAction(tr('ui.cache.rbxm_preview.copy_value'))
+        delete_action = menu.addAction(tr('ui.cache.rbxm_preview.delete'))
 
         row = self.properties_table.rowAt(position.y())
         if row >= 0:
@@ -738,8 +756,8 @@ class RbxmPreviewWidget(QWidget):
         if (
             QMessageBox.question(
                 self,
-                'Delete Instance',
-                f'Delete {inst.label()} and its children?',
+                tr('ui.cache.rbxm_preview.delete_instance'),
+                tr('ui.cache.rbxm_preview.delete_value_and_its_children', value0=inst.label()),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.Yes,
             )
@@ -770,16 +788,29 @@ class RbxmPreviewWidget(QWidget):
         inst = self._current_instance()
         if inst is None:
             return
-        name, ok = QInputDialog.getText(self, 'Add Property', 'Property name:', text='NewProperty')
+        name, ok = QInputDialog.getText(
+            self,
+            tr('ui.cache.rbxm_preview.add_property'),
+            tr('ui.cache.rbxm_preview.property_name'),
+            text=tr('rbxm_preview.property.default_name'),
+        )
         if not ok:
             return
         name = name.strip()
         if not name:
             return
-        type_name, ok = QInputDialog.getText(self, 'Add Property', 'Property type:', text='STRING')
+        default_type_label = tr('rbxm_preview.property.default_type_string')
+        type_name, ok = QInputDialog.getText(
+            self,
+            tr('ui.cache.rbxm_preview.add_property'),
+            tr('ui.cache.rbxm_preview.property_type'),
+            text=default_type_label,
+        )
         if not ok:
             return
-        type_name = type_name.strip() or 'STRING'
+        type_name = type_name.strip() or default_type_label
+        if type_name == default_type_label:
+            type_name = 'STRING'
         inst.properties.append(
             PreviewProperty(name, type_name, self._default_preview_value(type_name))
         )
@@ -867,13 +898,18 @@ class RbxmPreviewWidget(QWidget):
             return
         suffix = f' | {self._asset_label}' if self._asset_label else ''
         self.summary_label.setText(
-            f'{len(self.document.roots)} roots, {len(self.document.instances)} instances, '
-            f'{len(self.document.shared_strings)} shared strings{suffix}'
+            tr(
+                'ui.cache.rbxm_preview.value_roots_value_instances_value_shared_strings',
+                value0=len(self.document.roots),
+                value1=len(self.document.instances),
+                value2=len(self.document.shared_strings),
+                value3=suffix,
+            )
         )
 
     def _set_dirty(self, dirty: bool) -> None:
         self._dirty = dirty
-        self.modified_label.setText('Modified' if dirty else '')
+        self.modified_label.setText(tr('ui.cache.rbxm_preview.modified') if dirty else '')
 
     def is_modified(self) -> bool:
         return self._dirty
@@ -1588,13 +1624,23 @@ class RbxmPreviewWidget(QWidget):
     def _update_match_label(self):
         if self.search_input.text().strip():
             if self._matches:
-                self.summary_label.setText(f'Match {self._match_index + 1}/{len(self._matches)}')
+                self.summary_label.setText(
+                    tr(
+                        'ui.cache.rbxm_preview.match_value_value',
+                        value0=self._match_index + 1,
+                        value1=len(self._matches),
+                    )
+                )
             else:
-                self.summary_label.setText('No matches')
+                self.summary_label.setText(tr('ui.cache.rbxm_preview.no_matches'))
         elif self.document is not None:
             self.summary_label.setText(
-                f'{len(self.document.roots)} roots, {len(self.document.instances)} instances, '
-                f'{len(self.document.shared_strings)} shared strings'
+                tr(
+                    'ui.cache.rbxm_preview.value_roots_value_instances_value_shared_strings_2',
+                    value0=len(self.document.roots),
+                    value1=len(self.document.instances),
+                    value2=len(self.document.shared_strings),
+                )
             )
 
     def _copy_selected_value(self):

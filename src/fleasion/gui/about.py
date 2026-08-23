@@ -1,5 +1,7 @@
 """About window."""
 
+from ..localization import tr
+
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QDialog, QFrame, QLabel, QPushButton, QVBoxLayout
 
@@ -19,7 +21,7 @@ class AboutWindow(QDialog):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('About')
+        self.setWindowTitle(tr('ui.gui.about.about'))
         self.setFixedSize(360, 240)
         self.setWindowFlags(
             Qt.WindowType.Window
@@ -47,7 +49,7 @@ class AboutWindow(QDialog):
         layout.addWidget(name_label)
 
         # Version
-        version_label = QLabel(f'Version {APP_VERSION}')
+        version_label = QLabel(tr('ui.gui.about.version_value', value0=APP_VERSION))
         version_label.setStyleSheet('color: palette(placeholder-text); font-size: 9pt;')
         version_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(version_label)
@@ -63,19 +65,19 @@ class AboutWindow(QDialog):
         layout.addSpacing(10)
 
         # Credits
-        by_label = QLabel(f'<b>By:</b> {APP_AUTHOR}')
+        by_label = QLabel(tr('ui.gui.about.b_by_b_value', value0=APP_AUTHOR))
         by_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(by_label)
 
-        logic_label = QLabel(f'<b>Logic:</b> {APP_LOGIC}')
+        logic_label = QLabel(tr('ui.gui.about.b_logic_b_value', value0=APP_LOGIC))
         logic_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(logic_label)
 
-        concept_label = QLabel(f'<b>Concept:</b> {APP_CONCEPT}')
+        concept_label = QLabel(tr('ui.gui.about.b_concept_b_value', value0=APP_CONCEPT))
         concept_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(concept_label)
 
-        handles_label = QLabel('(Discord handles)')
+        handles_label = QLabel(tr('ui.gui.about.discord_handles'))
         handles_label.setStyleSheet('color: palette(placeholder-text); font-size: 8pt;')
         handles_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(handles_label)
@@ -83,7 +85,9 @@ class AboutWindow(QDialog):
         layout.addSpacing(10)
 
         # Repo link
-        repo_label = QLabel(f'<b>Distributed at:</b> <a href="{APP_REPO}">{APP_REPO}</a>')
+        repo_label = QLabel(
+            tr('ui.gui.about.b_distributed_at_b_a_href_value', value0=APP_REPO, value1=APP_REPO)
+        )
         repo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         repo_label.setOpenExternalLinks(True)
         repo_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
@@ -93,7 +97,7 @@ class AboutWindow(QDialog):
         layout.addSpacing(10)
 
         # Close button
-        close_btn = QPushButton('Close')
+        close_btn = QPushButton(tr('ui.gui.about.close'))
         close_btn.setFixedWidth(100)
         close_btn.clicked.connect(self.accept)
         layout.addWidget(close_btn, alignment=Qt.AlignmentFlag.AlignCenter)

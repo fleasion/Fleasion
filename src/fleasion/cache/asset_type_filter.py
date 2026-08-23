@@ -1,5 +1,7 @@
 """Asset-type filter popup shared by UI surfaces that should avoid OpenGL imports."""
 
+from ..localization import tr
+
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFontMetrics
 from PyQt6.QtWidgets import (
@@ -15,7 +17,134 @@ from PyQt6.QtWidgets import (
     QWidgetAction,
 )
 
-from .cache_manager import CacheManager
+
+_CATEGORY_TYPES = {
+    'models_3d': [4, 10, 39, 40, 32, 17, 79, 75],
+    'images_textures': [1, 13, 63, 21, 22, 18],
+    'audio_video': [3, 62, 33],
+    'animations': [
+        24,
+        'R6Animation',
+        'R15Animation',
+        'NonPlayerAnimation',
+        48,
+        49,
+        50,
+        51,
+        52,
+        53,
+        54,
+        55,
+        56,
+        61,
+        78,
+    ],
+    'avatar_parts': [16, 25, 26, 27, 28, 29, 30, 31],
+    'clothing': [2, 11, 12, 8, 19],
+    'accessories': [41, 42, 43, 44, 45, 46, 47, 57, 58, 64, 65, 66, 67, 68, 69, 70, 71, 72, 76, 77],
+    'scripts_data': [5, 6, 7, 37, 38, 80, 59, 74, 73, 35, 34, 9, 'Json'],
+}
+
+
+def _category_label(category: str) -> str:
+    return {
+        'models_3d': tr('asset_filter.category.models_3d'),
+        'images_textures': tr('asset_filter.category.images_textures'),
+        'audio_video': tr('asset_filter.category.audio_video'),
+        'animations': tr('asset_filter.category.animations'),
+        'avatar_parts': tr('asset_filter.category.avatar_parts'),
+        'clothing': tr('asset_filter.category.clothing'),
+        'accessories': tr('asset_filter.category.accessories'),
+        'scripts_data': tr('asset_filter.category.scripts_data'),
+    }[category]
+
+
+def asset_type_display_name(type_id) -> str:
+    if type_id == 'R6Animation':
+        return tr('asset_filter.type.r6_animation')
+    if type_id == 'R15Animation':
+        return tr('asset_filter.type.r15_animation')
+    if type_id == 'NonPlayerAnimation':
+        return tr('asset_filter.type.non_player_animation')
+    if type_id == 'Json':
+        return tr('asset_filter.type.json')
+    labels = {
+        1: tr('asset_filter.type.1'),
+        2: tr('asset_filter.type.2'),
+        3: tr('asset_filter.type.3'),
+        4: tr('asset_filter.type.4'),
+        5: tr('asset_filter.type.5'),
+        6: tr('asset_filter.type.6'),
+        7: tr('asset_filter.type.7'),
+        8: tr('asset_filter.type.8'),
+        9: tr('asset_filter.type.9'),
+        10: tr('asset_filter.type.10'),
+        11: tr('asset_filter.type.11'),
+        12: tr('asset_filter.type.12'),
+        13: tr('asset_filter.type.13'),
+        16: tr('asset_filter.type.16'),
+        17: tr('asset_filter.type.17'),
+        18: tr('asset_filter.type.18'),
+        19: tr('asset_filter.type.19'),
+        21: tr('asset_filter.type.21'),
+        22: tr('asset_filter.type.22'),
+        24: tr('asset_filter.type.24'),
+        25: tr('asset_filter.type.25'),
+        26: tr('asset_filter.type.26'),
+        27: tr('asset_filter.type.27'),
+        28: tr('asset_filter.type.28'),
+        29: tr('asset_filter.type.29'),
+        30: tr('asset_filter.type.30'),
+        31: tr('asset_filter.type.31'),
+        32: tr('asset_filter.type.32'),
+        33: tr('asset_filter.type.33'),
+        34: tr('asset_filter.type.34'),
+        35: tr('asset_filter.type.35'),
+        37: tr('asset_filter.type.37'),
+        38: tr('asset_filter.type.38'),
+        39: tr('asset_filter.type.39'),
+        40: tr('asset_filter.type.40'),
+        41: tr('asset_filter.type.41'),
+        42: tr('asset_filter.type.42'),
+        43: tr('asset_filter.type.43'),
+        44: tr('asset_filter.type.44'),
+        45: tr('asset_filter.type.45'),
+        46: tr('asset_filter.type.46'),
+        47: tr('asset_filter.type.47'),
+        48: tr('asset_filter.type.48'),
+        49: tr('asset_filter.type.49'),
+        50: tr('asset_filter.type.50'),
+        51: tr('asset_filter.type.51'),
+        52: tr('asset_filter.type.52'),
+        53: tr('asset_filter.type.53'),
+        54: tr('asset_filter.type.54'),
+        55: tr('asset_filter.type.55'),
+        56: tr('asset_filter.type.56'),
+        57: tr('asset_filter.type.57'),
+        58: tr('asset_filter.type.58'),
+        59: tr('asset_filter.type.59'),
+        61: tr('asset_filter.type.61'),
+        62: tr('asset_filter.type.62'),
+        63: tr('asset_filter.type.63'),
+        64: tr('asset_filter.type.64'),
+        65: tr('asset_filter.type.65'),
+        66: tr('asset_filter.type.66'),
+        67: tr('asset_filter.type.67'),
+        68: tr('asset_filter.type.68'),
+        69: tr('asset_filter.type.69'),
+        70: tr('asset_filter.type.70'),
+        71: tr('asset_filter.type.71'),
+        72: tr('asset_filter.type.72'),
+        73: tr('asset_filter.type.73'),
+        74: tr('asset_filter.type.74'),
+        75: tr('asset_filter.type.75'),
+        76: tr('asset_filter.type.76'),
+        77: tr('asset_filter.type.77'),
+        78: tr('asset_filter.type.78'),
+        79: tr('asset_filter.type.79'),
+        80: tr('asset_filter.type.80'),
+    }
+    return labels.get(type_id, str(type_id))
 
 
 class CategoryFilterPopup(QMenu):
@@ -42,53 +171,7 @@ class CategoryFilterPopup(QMenu):
         grid.setHorizontalSpacing(4)
         grid.setVerticalSpacing(4)
 
-        self.categories = {
-            '3D Models': [4, 10, 39, 40, 32, 17, 79, 75],
-            'Images/Textures': [1, 13, 63, 21, 22, 18],
-            'Audio/Video': [3, 62, 33],
-            'Animations': [
-                24,
-                ('R6Animation', 'R6 Animation'),
-                ('R15Animation', 'R15 Animation'),
-                ('NonPlayerAnimation', 'Non-player Animation'),
-                48,
-                49,
-                50,
-                51,
-                52,
-                53,
-                54,
-                55,
-                56,
-                61,
-                78,
-            ],
-            'Avatar Parts': [16, 25, 26, 27, 28, 29, 30, 31],
-            'Clothing': [2, 11, 12, 8, 19],
-            'Accessories': [
-                41,
-                42,
-                43,
-                44,
-                45,
-                46,
-                47,
-                57,
-                58,
-                64,
-                65,
-                66,
-                67,
-                68,
-                69,
-                70,
-                71,
-                72,
-                76,
-                77,
-            ],
-            'Scripts/Data': [5, 6, 7, 37, 38, 80, 59, 74, 73, 35, 34, 9, 'Json'],
-        }
+        self.categories = {key: list(type_ids) for key, type_ids in _CATEGORY_TYPES.items()}
 
         self.checkboxes = {}
         self.category_checkboxes = {}
@@ -111,7 +194,7 @@ class CategoryFilterPopup(QMenu):
             vbox.setContentsMargins(6, 6, 6, 6)
             vbox.setSpacing(3)
 
-            cat_cb = QCheckBox(cat_name)
+            cat_cb = QCheckBox(_category_label(cat_name))
             cat_cb.setStyleSheet('font-weight: bold; color: #55aaff;')
             cat_cb.setTristate(True)
             self.category_checkboxes[cat_name] = cat_cb
@@ -127,15 +210,7 @@ class CategoryFilterPopup(QMenu):
 
             cat_types = []
             for tid in type_ids:
-                if isinstance(tid, tuple):
-                    tid, name = tid
-                elif isinstance(tid, str):
-                    name = tid
-                elif tid in CacheManager.ASSET_TYPES:
-                    name = CacheManager.ASSET_TYPES[tid]
-                else:
-                    continue
-
+                name = asset_type_display_name(tid)
                 elided = fm.elidedText(name, Qt.TextElideMode.ElideRight, 130)
                 cb = QCheckBox(elided)
                 if elided != name:
@@ -165,7 +240,7 @@ class CategoryFilterPopup(QMenu):
         layout.addLayout(grid)
 
         btn_layout = QHBoxLayout()
-        clear_btn = QPushButton('Clear Filters')
+        clear_btn = QPushButton(tr('ui.cache.asset_type_filter.clear_filters'))
         clear_btn.setStyleSheet(
             'padding: 5px 15px; border: 1px solid palette(mid); border-radius: 3px;'
         )

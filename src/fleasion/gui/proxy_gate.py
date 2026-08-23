@@ -1,5 +1,7 @@
 """Reusable UI gate for sections that require Fleasion's proxy."""
 
+from ..localization import tr
+
 from PyQt6.QtCore import QEvent, Qt
 from PyQt6.QtWidgets import (
     QFrame,
@@ -10,8 +12,6 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-PROXY_DISABLED_MESSAGE = 'This section is closed because the proxy is disabled in Settings.'
-
 
 class ProxyGate(QWidget):
     """Wrap a widget with a disabled overlay controlled by the proxy toggle."""
@@ -19,7 +19,7 @@ class ProxyGate(QWidget):
     def __init__(
         self,
         content: QWidget,
-        message: str = PROXY_DISABLED_MESSAGE,
+        message: str | None = None,
         compact: bool = False,
         parent=None,
     ):
@@ -42,13 +42,13 @@ class ProxyGate(QWidget):
         overlay_layout = QVBoxLayout(self._overlay)
         overlay_layout.setContentsMargins(16, 12, 16, 12)
 
-        label = QLabel(message)
+        label = QLabel(message or tr('proxy_gate.disabled_message'))
         label.setObjectName('_FleasionProxyDisabledOverlayLabel')
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         label.setWordWrap(True)
         label.setMinimumHeight(40 if compact else 80)
 
-        button = QPushButton('Dismiss')
+        button = QPushButton(tr('ui.gui.proxy_gate.dismiss'))
         button.setObjectName('_FleasionProxyDisabledOverlayDismissButton')
         button.clicked.connect(self.dismiss_for_session)
         button.setCursor(Qt.CursorShape.PointingHandCursor)

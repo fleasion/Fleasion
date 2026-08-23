@@ -1,5 +1,7 @@
 """Audio player widget using sounddevice for Python 3.14 compatibility."""
 
+from ..localization import tr
+
 import ctypes.util
 import sys
 import threading
@@ -239,7 +241,7 @@ class AudioPlayerWidget(QWidget):
         volume_layout = QHBoxLayout()
         volume_layout.setSpacing(8)
         volume_layout.addStretch()
-        volume_layout.addWidget(QLabel('Volume:'))
+        volume_layout.addWidget(QLabel(tr('ui.cache.audio_player.volume')))
 
         self.volume_slider = QSlider(Qt.Orientation.Horizontal)
         self.volume_slider.setRange(0, 100)
@@ -270,19 +272,21 @@ class AudioPlayerWidget(QWidget):
         button_time_layout.setSpacing(8)
         button_time_layout.addStretch()
 
-        self.play_pause_btn = QPushButton('▶')
+        self.play_pause_btn = QPushButton(tr('ui.cache.audio_player.text'))
         self.play_pause_btn.clicked.connect(self._toggle_play_pause)
         self.play_pause_btn.setFixedSize(32, 32)
-        self.play_pause_btn.setToolTip('Play/Pause')
+        self.play_pause_btn.setToolTip(tr('ui.cache.audio_player.play_pause'))
         button_time_layout.addWidget(self.play_pause_btn)
 
-        self.replay_btn = QPushButton('↻')
+        self.replay_btn = QPushButton(tr('ui.cache.audio_player.text_2'))
         self.replay_btn.clicked.connect(self._replay)
         self.replay_btn.setFixedSize(32, 32)
-        self.replay_btn.setToolTip('Replay')
+        self.replay_btn.setToolTip(tr('ui.cache.audio_player.replay'))
         button_time_layout.addWidget(self.replay_btn)
 
-        self.time_label = QLabel(f'00:00.000 / {self._format_time(self.duration)}')
+        self.time_label = QLabel(
+            tr('ui.cache.audio_player.00_00_000_value', value0=self._format_time(self.duration))
+        )
         self.time_label.setStyleSheet('color: #888; font-size: 11px;')
         button_time_layout.addWidget(self.time_label)
 
@@ -313,7 +317,7 @@ class AudioPlayerWidget(QWidget):
 
         self.is_playing = True
         self.should_stop = False
-        self.play_pause_btn.setText('⏸')
+        self.play_pause_btn.setText(tr('ui.cache.audio_player.text_3'))
 
         # Start playback thread
         stop_event = threading.Event()
@@ -329,7 +333,7 @@ class AudioPlayerWidget(QWidget):
         """Pause playback."""
         self.is_playing = False
         self.should_stop = True
-        self.play_pause_btn.setText('▶')
+        self.play_pause_btn.setText(tr('ui.cache.audio_player.text'))
         if self.stop_event:
             self.stop_event.set()
 
@@ -481,7 +485,11 @@ class AudioPlayerWidget(QWidget):
 
             self.progress_slider.setValue(int(current_time * 1000))
             self.time_label.setText(
-                f'{self._format_time(current_time)} / {self._format_time(self.duration)}'
+                tr(
+                    'ui.cache.audio_player.value_value',
+                    value0=self._format_time(current_time),
+                    value1=self._format_time(self.duration),
+                )
             )
 
         # Keep button in sync with playback state (handles thread-safe UI updates)

@@ -34,7 +34,7 @@ def _normalise_linux_client(value: str | None) -> str:
         from ..utils.linux_clients import LINUX_CLIENTS_BY_KEY
 
         supported = LINUX_CLIENTS_BY_KEY
-    except (ImportError, AttributeError):
+    except ImportError, AttributeError:
         # Keep isolated config loading and recovery usable even when platform
         # modules are unavailable. Sober is the compatibility implementation.
         supported = {'sober': None}
@@ -88,7 +88,7 @@ def local_replacement_path_for_storage(value: str | Path) -> str:
     path = Path(value)
     try:
         relative = path.resolve().relative_to(CONFIGS_FOLDER.resolve())
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return str(path)
 
     folder_depth = len(relative.parts) - 1
@@ -245,15 +245,17 @@ def _is_probably_binary(raw: bytes) -> bool:
 
     replacement_count = sample.decode('utf-8', errors='replace').count('\ufffd')
     control_count = sum(
-        value < 0x20 and value not in (0x09, 0x0A, 0x0C, 0x0D) or value == 0x7F
-        for value in sample
+        value < 0x20 and value not in (0x09, 0x0A, 0x0C, 0x0D) or value == 0x7F for value in sample
     )
     return control_count / len(sample) > 0.1 or replacement_count / len(sample) > 0.3
+
+
 DEFAULT_SETTINGS = {
     'strip_textures': False,
     'enabled_configs': [],
     'last_config': 'Default',
     'theme': 'System',  # System, Light, Dark
+    'language': 'en',
     'audio_volume': 70,  # 0-100
     'always_on_top': False,
     'open_dashboard_on_launch': True,
@@ -379,11 +381,7 @@ def _normalize_custom_fflag_keybinds(value: Any) -> dict[str, dict[str, int | bo
         platform = raw_binding.get('platform')
         kind = raw_binding.get('kind', 'key')
         extended = raw_binding.get('extended', False)
-        if (
-            not isinstance(modifiers, int)
-            or isinstance(modifiers, bool)
-            or modifiers & ~0x0F
-        ):
+        if not isinstance(modifiers, int) or isinstance(modifiers, bool) or modifiers & ~0x0F:
             continue
         if kind == 'mouse_wheel':
             direction = raw_binding.get('direction')
@@ -401,7 +399,8 @@ def _normalize_custom_fflag_keybinds(value: Any) -> dict[str, dict[str, int | bo
                 or isinstance(scan_code, bool)
                 or not 0 < scan_code <= 0x2FF
                 or kind not in ('key', 'mouse_button')
-                or kind == 'mouse_button' and scan_code not in (0x110, 0x111, 0x112, 0x113, 0x114)
+                or kind == 'mouse_button'
+                and scan_code not in (0x110, 0x111, 0x112, 0x113, 0x114)
             ):
                 continue
             normalized[name] = {
@@ -416,7 +415,8 @@ def _normalize_custom_fflag_keybinds(value: Any) -> dict[str, dict[str, int | bo
                 or isinstance(scan_code, bool)
                 or not 0 < scan_code <= 0xFF
                 or kind not in ('key', 'mouse_button')
-                or kind == 'mouse_button' and scan_code not in (1, 2, 4, 5, 6)
+                or kind == 'mouse_button'
+                and scan_code not in (1, 2, 4, 5, 6)
             ):
                 continue
             # Untagged bindings are the Windows format used before platform
@@ -631,7 +631,7 @@ class ConfigManager:
 
         try:
             loaded, _recovered = self._decode_json_bytes(raw)
-        except (UnicodeDecodeError, json.JSONDecodeError):
+        except UnicodeDecodeError, json.JSONDecodeError:
             if _is_probably_binary(raw):
                 return ConfigFileInspection('binary')
             return ConfigFileInspection('invalid')
@@ -742,6 +742,21 @@ class ConfigManager:
     def theme(self, value: str):
         """Set theme setting."""
         self.settings['theme'] = value
+        self._save_settings()
+
+    @property
+    def language(self) -> str:
+        """Return a supported language code, falling back to English."""
+        from ..localization import normalize_language
+
+        return normalize_language(self.settings.get('language', 'en'))
+
+    @language.setter
+    def language(self, value: str):
+        """Persist a supported language code, using English for invalid values."""
+        from ..localization import normalize_language
+
+        self.settings['language'] = normalize_language(value)
         self._save_settings()
 
     @property

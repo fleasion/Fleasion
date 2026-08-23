@@ -1,5 +1,7 @@
 """PreJsons browser dialog - shows game configs as interactive cards with thumbnails."""
 
+from ..localization import tr
+
 import io
 import json
 import threading
@@ -435,7 +437,7 @@ class GameCard(QFrame):
                 self.thumb_label.setPixmap(_pix)
                 self.thumb_label.setStyleSheet('background: transparent;')
 
-        self.name_label = QLabel('Unknown')
+        self.name_label = QLabel(tr('ui.gui.prejsons_dialog.unknown'))
         self.name_label.setWordWrap(True)
         self.name_label.setMaximumHeight(38)
         f = QFont()
@@ -460,12 +462,12 @@ class GameCard(QFrame):
         btn_row = QHBoxLayout()
         btn_row.setSpacing(4)
 
-        self.assets_btn = QPushButton('Assets')
+        self.assets_btn = QPushButton(tr('ui.gui.prejsons_dialog.assets'))
         self.assets_btn.setVisible(False)
         self.assets_btn.setFixedHeight(22)
         btn_row.addWidget(self.assets_btn)
 
-        self.replacements_btn = QPushButton('Replacements')
+        self.replacements_btn = QPushButton(tr('ui.gui.prejsons_dialog.replacements'))
         self.replacements_btn.setVisible(False)
         self.replacements_btn.setFixedHeight(22)
         btn_row.addWidget(self.replacements_btn)
@@ -477,11 +479,15 @@ class GameCard(QFrame):
         self._game_name = name
         self.name_label.setText(name)
         if created:
-            self.created_label.setText('Created: ' + created[:10])
+            self.created_label.setText(
+                tr('ui.gui.prejsons_dialog.created_value', value0=created[:10])
+            )
         if updated:
-            self.updated_label.setText('Updated: ' + updated[:10])
+            self.updated_label.setText(
+                tr('ui.gui.prejsons_dialog.updated_value', value0=updated[:10])
+            )
         if credit:
-            self.credit_label.setText('Credit: ' + credit)
+            self.credit_label.setText(tr('ui.gui.prejsons_dialog.credit_value', value0=credit))
 
     def set_thumbnail(self, pix: QPixmap):
         if not pix or pix.isNull():
@@ -503,7 +509,7 @@ class GameCard(QFrame):
 
     def _show_context_menu(self, pos):
         menu = QMenu(self)
-        delete_action = menu.addAction('Delete')
+        delete_action = menu.addAction(tr('ui.gui.prejsons_dialog.delete'))
         action = menu.exec(self.mapToGlobal(pos))
         if action == delete_action and self._on_delete:
             self._on_delete(self)
@@ -547,12 +553,12 @@ class AddCard(QFrame):
         layout = QVBoxLayout()
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        plus = QLabel('+')
+        plus = QLabel(tr('ui.gui.prejsons_dialog.text'))
         plus.setAlignment(Qt.AlignmentFlag.AlignCenter)
         plus.setStyleSheet('font-size: 36pt; color: palette(placeholder-text);')
         layout.addWidget(plus)
 
-        sub = QLabel('Add custom dump')
+        sub = QLabel(tr('ui.gui.prejsons_dialog.add_custom_dump'))
         sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
         sub.setStyleSheet('color: palette(placeholder-text); font-size: 9pt;')
         layout.addWidget(sub)
@@ -581,7 +587,7 @@ class PreJsonsDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle('Scraped Games')
+        self.setWindowTitle(tr('ui.gui.prejsons_dialog.scraped_games'))
         self.resize(760, 580)
         self.setMinimumSize(640, 480)
         self.setWindowFlags(
@@ -621,17 +627,17 @@ class PreJsonsDialog(QDialog):
         root.setSpacing(6)
 
         bar = QHBoxLayout()
-        bar.addWidget(QLabel('Search:'))
+        bar.addWidget(QLabel(tr('ui.gui.prejsons_dialog.search')))
         self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText('Filter by game name…')
+        self.search_edit.setPlaceholderText(tr('ui.gui.prejsons_dialog.filter_by_game_name'))
         self.search_edit.textChanged.connect(lambda: self._search_timer.start(80))
         bar.addWidget(self.search_edit)
-        self.refresh_btn = QPushButton('Refresh')
+        self.refresh_btn = QPushButton(tr('ui.gui.prejsons_dialog.refresh'))
         self.refresh_btn.clicked.connect(self._do_refresh)
         bar.addWidget(self.refresh_btn)
         root.addLayout(bar)
 
-        self.status_label = QLabel('Loading…')
+        self.status_label = QLabel(tr('ui.gui.prejsons_dialog.loading'))
         self.status_label.setStyleSheet(
             'color: palette(placeholder-text); font-size: 8pt; padding-left: 2px;'
         )
@@ -664,7 +670,7 @@ class PreJsonsDialog(QDialog):
         self._thumbs_pending = 0
         self._thumbs_finished = 0
         self.refresh_btn.setEnabled(False)
-        self.status_label.setText('Fetching game list…')
+        self.status_label.setText(tr('ui.gui.prejsons_dialog.fetching_game_list'))
         worker = _ClogWorker()
         worker.done.connect(self._on_clog_done)
         worker.failed.connect(self._on_clog_failed)
@@ -673,13 +679,20 @@ class PreJsonsDialog(QDialog):
 
     def _on_clog_done(self, games: list):
         count = len(games)
-        self.status_label.setText(f'{count} game{"s" if count != 1 else ""} — fetching thumbnails…')
+        self.status_label.setText(
+            tr(
+                'prejsons.games_fetching_thumbnails.one'
+                if count == 1
+                else 'prejsons.games_fetching_thumbnails.other',
+                count=count,
+            )
+        )
         self.refresh_btn.setEnabled(True)
         self._populate(games)
         self._update_thumbnail_status()
 
     def _on_clog_failed(self, err: str):
-        self.status_label.setText(f'Failed to load: {err}')
+        self.status_label.setText(tr('ui.gui.prejsons_dialog.failed_to_load_value', value0=err))
         self.refresh_btn.setEnabled(True)
         # Still show custom dumps and the add card even if CLOG fails
         self._load_custom_cards()
@@ -763,13 +776,32 @@ class PreJsonsDialog(QDialog):
     def _update_thumbnail_status(self):
         total_games = len(self._cards)
         if self._thumbs_pending <= 0:
-            self.status_label.setText(f'{total_games} game{"s" if total_games != 1 else ""}')
+            self.status_label.setText(
+                tr(
+                    'prejsons.games_count.one'
+                    if total_games == 1
+                    else 'prejsons.games_count.other',
+                    count=total_games,
+                )
+            )
             return
         if self._thumbs_finished >= self._thumbs_pending:
-            self.status_label.setText(f'{total_games} game{"s" if total_games != 1 else ""}')
+            self.status_label.setText(
+                tr(
+                    'prejsons.games_count.one'
+                    if total_games == 1
+                    else 'prejsons.games_count.other',
+                    count=total_games,
+                )
+            )
             return
         self.status_label.setText(
-            f'{total_games} game{"s" if total_games != 1 else ""} — fetching thumbnails…'
+            tr(
+                'prejsons.games_fetching_thumbnails.one'
+                if total_games == 1
+                else 'prejsons.games_fetching_thumbnails.other',
+                count=total_games,
+            )
         )
 
     # Grid layout helpers
@@ -842,7 +874,7 @@ class PreJsonsDialog(QDialog):
 
     def _open_add_dump_dialog(self):
         dlg = QDialog(self)
-        dlg.setWindowTitle('Import custom game dump')
+        dlg.setWindowTitle(tr('ui.gui.prejsons_dialog.import_custom_game_dump'))
         dlg.setMinimumWidth(520)
 
         layout = QVBoxLayout(dlg)
@@ -850,7 +882,7 @@ class PreJsonsDialog(QDialog):
         layout.setContentsMargins(12, 12, 12, 12)
 
         # Example format
-        layout.addWidget(QLabel('Expected JSON format:'))
+        layout.addWidget(QLabel(tr('ui.gui.prejsons_dialog.expected_json_format')))
         example = QTextEdit()
         example.setReadOnly(True)
         example.setMaximumHeight(110)
@@ -871,44 +903,51 @@ class PreJsonsDialog(QDialog):
         sep1.setFrameShape(QFrame.Shape.HLine)
         sep1.setFrameShadow(QFrame.Shadow.Sunken)
         layout.addWidget(sep1)
-        layout.addWidget(QLabel('Fill in manually:'))
+        layout.addWidget(QLabel(tr('ui.gui.prejsons_dialog.fill_in_manually')))
 
-        layout.addWidget(QLabel('Name:'))
+        layout.addWidget(QLabel(tr('ui.gui.prejsons_dialog.name')))
         name_edit = QLineEdit()
-        name_edit.setPlaceholderText('My Game')
+        name_edit.setPlaceholderText(tr('ui.gui.prejsons_dialog.my_game'))
         layout.addWidget(name_edit)
 
         layout.addWidget(
-            QLabel('Place ID (optional — fetches real name + thumbnail automatically):')
+            QLabel(tr('ui.gui.prejsons_dialog.place_id_optional_fetches_real_name_thumbnail'))
         )
         placeid_edit = QLineEdit()
-        placeid_edit.setPlaceholderText('12345')
+        placeid_edit.setPlaceholderText(tr('ui.gui.prejsons_dialog.12345'))
         layout.addWidget(placeid_edit)
 
-        layout.addWidget(QLabel('Assets URL (github):'))
+        layout.addWidget(QLabel(tr('ui.gui.prejsons_dialog.assets_url_github')))
         assets_row = QHBoxLayout()
         assets_edit = FileDropLineEdit()
-        assets_edit.setPlaceholderText('https://raw.githubusercontent.com/.../assets.json')
+        assets_edit.setPlaceholderText(
+            tr('ui.gui.prejsons_dialog.https_raw_githubusercontent_com_assets_json')
+        )
         assets_row.addWidget(assets_edit)
-        assets_browse = QPushButton('Browse…')
+        assets_browse = QPushButton(tr('ui.gui.prejsons_dialog.browse'))
         assets_browse.setFixedWidth(80)
         assets_row.addWidget(assets_browse)
         layout.addLayout(assets_row)
         assets_browse.clicked.connect(
             lambda: (
                 path := QFileDialog.getOpenFileName(
-                    dlg, 'Select Assets JSON', '', 'JSON Files (*.json);;All Files (*)'
+                    dlg,
+                    tr('ui.gui.prejsons_dialog.select_assets_json'),
+                    '',
+                    tr('ui.gui.prejsons_dialog.json_files_json_all_files'),
                 )[0],
                 assets_edit.setText(path) if path else None,
             )
         )
 
-        layout.addWidget(QLabel('Replacements URL (replacement):'))
+        layout.addWidget(QLabel(tr('ui.gui.prejsons_dialog.replacements_url_replacement')))
         rep_row = QHBoxLayout()
         rep_edit = FileDropLineEdit()
-        rep_edit.setPlaceholderText('https://raw.githubusercontent.com/.../replacements.json')
+        rep_edit.setPlaceholderText(
+            tr('ui.gui.prejsons_dialog.https_raw_githubusercontent_com_replacements_json')
+        )
         rep_row.addWidget(rep_edit)
-        rep_browse = QPushButton('Browse…')
+        rep_browse = QPushButton(tr('ui.gui.prejsons_dialog.browse'))
         rep_browse.setFixedWidth(80)
         rep_row.addWidget(rep_browse)
         layout.addLayout(rep_row)
@@ -916,17 +955,17 @@ class PreJsonsDialog(QDialog):
             lambda: (
                 path := QFileDialog.getOpenFileName(
                     dlg,
-                    'Select Replacements JSON',
+                    tr('ui.gui.prejsons_dialog.select_replacements_json'),
                     '',
-                    'JSON Files (*.json);;All Files (*)',
+                    tr('ui.gui.prejsons_dialog.json_files_json_all_files'),
                 )[0],
                 rep_edit.setText(path) if path else None,
             )
         )
 
-        layout.addWidget(QLabel('Credit (optional):'))
+        layout.addWidget(QLabel(tr('ui.gui.prejsons_dialog.credit_optional')))
         credit_edit = QLineEdit()
-        credit_edit.setPlaceholderText('Your name')
+        credit_edit.setPlaceholderText(tr('ui.gui.prejsons_dialog.your_name'))
         layout.addWidget(credit_edit)
 
         # OR import from URL / file
@@ -934,18 +973,23 @@ class PreJsonsDialog(QDialog):
         sep2.setFrameShape(QFrame.Shape.HLine)
         sep2.setFrameShadow(QFrame.Shadow.Sunken)
         layout.addWidget(sep2)
-        layout.addWidget(QLabel('OR import from URL / file:'))
+        layout.addWidget(QLabel(tr('ui.gui.prejsons_dialog.or_import_from_url_file')))
 
         url_edit = FileDropLineEdit()
-        url_edit.setPlaceholderText('https://raw.githubusercontent.com/.../dump.json')
+        url_edit.setPlaceholderText(
+            tr('ui.gui.prejsons_dialog.https_raw_githubusercontent_com_dump_json')
+        )
         layout.addWidget(url_edit)
 
-        file_btn = QPushButton('Import from file…')
+        file_btn = QPushButton(tr('ui.gui.prejsons_dialog.import_from_file'))
         layout.addWidget(file_btn)
 
         def pick_file():
             path, _ = QFileDialog.getOpenFileName(
-                dlg, 'Select JSON dump', '', 'JSON Files (*.json);;All Files (*)'
+                dlg,
+                tr('ui.gui.prejsons_dialog.select_json_dump'),
+                '',
+                tr('ui.gui.prejsons_dialog.json_files_json_all_files'),
             )
             if path:
                 url_edit.setText(path)
@@ -954,8 +998,8 @@ class PreJsonsDialog(QDialog):
 
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        ok_btn = QPushButton('Import')
-        cancel_btn = QPushButton('Cancel')
+        ok_btn = QPushButton(tr('ui.gui.prejsons_dialog.import'))
+        cancel_btn = QPushButton(tr('ui.gui.prejsons_dialog.cancel'))
         btn_row.addWidget(ok_btn)
         btn_row.addWidget(cancel_btn)
         layout.addLayout(btn_row)
@@ -986,8 +1030,8 @@ class PreJsonsDialog(QDialog):
                 if not url_text:
                     QMessageBox.warning(
                         dlg,
-                        'Import failed',
-                        'Fill in the Name field, or provide a URL / file path.',
+                        tr('ui.gui.prejsons_dialog.import_failed'),
+                        tr('ui.gui.prejsons_dialog.fill_in_the_name_field_or_provide'),
                     )
                     return
 
@@ -997,20 +1041,28 @@ class PreJsonsDialog(QDialog):
                             Path(url_text).read_text(encoding='utf-8', errors='ignore')
                         )
                     except Exception as e:
-                        QMessageBox.warning(dlg, 'Import failed', f'Could not read file:\n{e}')
+                        QMessageBox.warning(
+                            dlg,
+                            tr('ui.gui.prejsons_dialog.import_failed'),
+                            tr('ui.gui.prejsons_dialog.could_not_read_file_value', value0=e),
+                        )
                         return
                 elif url_text.startswith(('http://', 'https://')):
                     try:
                         raw = _http_get(url_text, timeout=15)
                         data = json.loads(raw.decode('utf-8'))
                     except Exception as e:
-                        QMessageBox.warning(dlg, 'Import failed', f'Could not fetch JSON:\n{e}')
+                        QMessageBox.warning(
+                            dlg,
+                            tr('ui.gui.prejsons_dialog.import_failed'),
+                            tr('ui.gui.prejsons_dialog.could_not_fetch_json_value', value0=e),
+                        )
                         return
                 else:
                     QMessageBox.warning(
                         dlg,
-                        'Import failed',
-                        'Enter a URL or path to a local JSON file.',
+                        tr('ui.gui.prejsons_dialog.import_failed'),
+                        tr('ui.gui.prejsons_dialog.enter_a_url_or_path_to_a'),
                     )
                     return
 
@@ -1028,8 +1080,8 @@ class PreJsonsDialog(QDialog):
             if not games:
                 QMessageBox.warning(
                     dlg,
-                    'Import failed',
-                    'No valid game entries found.\nCheck the format.',
+                    tr('ui.gui.prejsons_dialog.import_failed'),
+                    tr('ui.gui.prejsons_dialog.no_valid_game_entries_found_check_the'),
                 )
                 return
 
@@ -1038,7 +1090,11 @@ class PreJsonsDialog(QDialog):
             try:
                 dump_path.write_text(json.dumps(data, indent=2), encoding='utf-8')
             except Exception as e:
-                QMessageBox.warning(dlg, 'Import failed', f'Could not save:\n{e}')
+                QMessageBox.warning(
+                    dlg,
+                    tr('ui.gui.prejsons_dialog.import_failed'),
+                    tr('ui.gui.prejsons_dialog.could_not_save_value', value0=e),
+                )
                 return
 
             # Save originals/replacements for each game entry so they appear
@@ -1126,13 +1182,21 @@ class PreJsonsDialog(QDialog):
                 data = json.loads(p.read_text(encoding='utf-8', errors='ignore'))
                 self._open_viewer(data, p.name)
             except Exception as e:
-                QMessageBox.warning(self, 'Error', f'Failed to read file:\n{e}')
+                QMessageBox.warning(
+                    self,
+                    tr('ui.gui.prejsons_dialog.error'),
+                    tr('ui.gui.prejsons_dialog.failed_to_read_file_value', value0=e),
+                )
             return
 
         fetch_w = _JsonFetchWorker(url)
         fetch_w.done.connect(self._open_viewer)
         fetch_w.failed.connect(
-            lambda err: QMessageBox.warning(self, 'Error', f'Failed to load JSON:\n{err}')
+            lambda err: QMessageBox.warning(
+                self,
+                tr('ui.gui.prejsons_dialog.error'),
+                tr('ui.gui.prejsons_dialog.failed_to_load_json_value', value0=err),
+            )
         )
         self._workers.append(fetch_w)
         fetch_w.start()

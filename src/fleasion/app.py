@@ -19,6 +19,7 @@ from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QDialog,
     QGridLayout,
     QHBoxLayout,
@@ -30,6 +31,7 @@ from PyQt6.QtWidgets import (
 
 from . import __version__
 from .config import ConfigFolderWatcher, ConfigManager
+from .localization import available_languages, set_language, tr, verbatim
 from .modifications import ModificationManager
 from .prejsons import download_prejsons
 from .proxy import ProxyMaster, check_and_patch_running_roblox_ca
@@ -160,40 +162,33 @@ def _show_env_proxy_migration(config_manager: ConfigManager, roblox_monitor) -> 
         roblox_monitor._player_was_running = True
 
     msg = QMessageBox(_visible_parent_widget())
-    msg.setWindowTitle('New Default: Roblox Env Proxy')
+    msg.setWindowTitle(tr('app.new_default_roblox_env_proxy'))
     msg.setIcon(QMessageBox.Icon.Information)
-    msg.setText('Fleasion has switched your saved proxy mode to Roblox Env Proxy.')
-    details = (
-        'Env Proxy is the new recommended mode and does not require administrator '
-        'permission for normal use. Fleasion applies it only to Roblox Player '
-        '(including Sober); Roblox Studio is left untouched.\n\n'
-        'You can switch back at any time under Settings > Proxy > Proxy Mode. '
-        'Hosts File mode may require administrator permission.'
-    )
+    msg.setText(tr('app.fleasion_has_switched_your_saved_proxy_mode'))
+    details = tr('app.env_proxy_migration.details')
     restart_button = None
     if player_running and config_manager.proxy_features_enabled:
         if sys.platform.startswith('linux'):
-            details += (
-                f'\n\nFleasion will apply the proxy to future '
-                f'{_linux_client_display_name()} launches.'
+            details += tr(
+                'app.env_proxy_migration.linux_future', client_name=_linux_client_display_name()
             )
-            restart_button = msg.addButton('Apply for Future Launches', QMessageBox.ButtonRole.AcceptRole)
-            later_button = msg.addButton('Apply Later', QMessageBox.ButtonRole.RejectRole)
+            restart_button = msg.addButton(
+                tr('app.apply_for_future_launches'), QMessageBox.ButtonRole.AcceptRole
+            )
+            later_button = msg.addButton(tr('app.apply_later'), QMessageBox.ButtonRole.RejectRole)
         else:
-            details += (
-                '\n\nRoblox Player is already running. It must be relaunched before '
-                'the new proxy mode applies to that session.'
+            details += tr('app.env_proxy_migration.player_running')
+            restart_button = msg.addButton(
+                tr('app.restart_roblox_now'), QMessageBox.ButtonRole.AcceptRole
             )
-            restart_button = msg.addButton('Restart Roblox Now', QMessageBox.ButtonRole.AcceptRole)
-            later_button = msg.addButton('Restart Roblox Later', QMessageBox.ButtonRole.RejectRole)
+            later_button = msg.addButton(
+                tr('app.restart_roblox_later'), QMessageBox.ButtonRole.RejectRole
+            )
         msg.setDefaultButton(restart_button)
         msg.setEscapeButton(later_button)
     else:
         if player_running:
-            details += (
-                '\n\nProxy features are currently disabled, so Fleasion will not '
-                'relaunch Roblox Player.'
-            )
+            details += tr('app.env_proxy_migration.features_disabled')
         msg.setStandardButtons(QMessageBox.StandardButton.Ok)
     msg.setInformativeText(details)
     if icon_path := get_icon_path():
@@ -298,7 +293,7 @@ def _cleanup_hosts_once() -> int:
         else:
             cleaned = _remove_hosts_entries(set(INTERCEPT_HOSTS), error_details=error_details)
         if not cleaned:
-            detail = error_details.get('error') or 'unknown hosts write failure'
+            detail = error_details.get('error') or tr('app.hosts.unknown_write_failure')
             log_buffer.log(
                 'Hosts', f'Elevated hosts cleanup child could not update the hosts file: {detail}'
             )
@@ -362,7 +357,9 @@ def _show_oversized_hosts_file_dialog(details: dict, on_repaired=None) -> bool:
 
     hosts_path = str(details.get('hosts_path') or r'C:\Windows\System32\drivers\etc\hosts')
     hosts_directory = str(
-        details.get('hosts_directory') or os.path.dirname(hosts_path) or r'C:\Windows\System32\drivers\etc'
+        details.get('hosts_directory')
+        or os.path.dirname(hosts_path)
+        or r'C:\Windows\System32\drivers\etc'
     )
     size = int(details.get('hosts_size_bytes') or 0)
     limit = int(details.get('hosts_size_limit_bytes') or 512 * 1024)
@@ -372,25 +369,19 @@ def _show_oversized_hosts_file_dialog(details: dict, on_repaired=None) -> bool:
 
     while True:
         msg = QMessageBox(parent)
-        msg.setWindowTitle('Fleasion - Hosts File Is Abnormally Large')
+        msg.setWindowTitle(tr('app.fleasion_hosts_file_is_abnormally_large'))
         msg.setIcon(QMessageBox.Icon.Warning)
-        msg.setText(
-            f'Your system hosts file is abnormally large ({size_mib:.1f} MiB).'
-        )
+        msg.setText(tr('app.your_system_hosts_file_is_abnormally_large', value0=size_mib))
         msg.setInformativeText(
-            f'Fleasion will not load hosts files larger than {limit_kib:.0f} KiB because a '
-            'damaged file can consume all available memory and CPU. This can happen when '
-            'another program repeatedly appends blank lines.\n\n'
-            'Attempt Safe Repair creates a timestamped backup, removes blank lines and '
-            'Fleasion-owned entries, and preserves every other non-empty line byte-for-byte. '
-            'This is required even in Env Proxy mode so stale Fleasion redirects cannot remain '
-            'active for other programs.'
+            tr('app.fleasion_will_not_load_hosts_files_larger', value0=limit_kib)
         )
         repair_button = msg.addButton(
-            'Attempt Safe Repair (Recommended)', QMessageBox.ButtonRole.AcceptRole
+            tr('app.attempt_safe_repair_recommended'), QMessageBox.ButtonRole.AcceptRole
         )
-        open_dir_button = msg.addButton('Open Hosts Directory', QMessageBox.ButtonRole.ActionRole)
-        cancel_button = msg.addButton('Cancel', QMessageBox.ButtonRole.RejectRole)
+        open_dir_button = msg.addButton(
+            tr('app.open_hosts_directory'), QMessageBox.ButtonRole.ActionRole
+        )
+        cancel_button = msg.addButton(tr('app.cancel'), QMessageBox.ButtonRole.RejectRole)
         msg.setDefaultButton(repair_button)
         msg.exec()
 
@@ -407,12 +398,8 @@ def _show_oversized_hosts_file_dialog(details: dict, on_repaired=None) -> bool:
         repair_button.setEnabled(False)
         open_dir_button.setEnabled(False)
         cancel_button.setEnabled(False)
-        msg.setText('Waiting for administrator permission...')
-        msg.setInformativeText(
-            'Approve the operating-system permission prompt. Fleasion will make a backup before '
-            'installing the repaired hosts file. A multi-gigabyte hosts file may take several '
-            'minutes to process; keep this window open while cleanup runs.'
-        )
+        msg.setText(tr('app.waiting_for_administrator_permission'))
+        msg.setInformativeText(tr('app.approve_the_operating_system_permission_prompt_fleasion'))
         msg.show()
         msg.raise_()
         msg.activateWindow()
@@ -426,7 +413,11 @@ def _show_oversized_hosts_file_dialog(details: dict, on_repaired=None) -> bool:
             from .proxy.master import has_stale_hosts_entries, hosts_file_size
 
             repaired_size = hosts_file_size()
-            if repaired_size is not None and repaired_size <= limit and not has_stale_hosts_entries():
+            if (
+                repaired_size is not None
+                and repaired_size <= limit
+                and not has_stale_hosts_entries()
+            ):
                 log_buffer.log('Hosts', 'Verified oversized hosts file was repaired successfully')
                 if on_repaired is not None:
                     on_repaired()
@@ -436,10 +427,7 @@ def _show_oversized_hosts_file_dialog(details: dict, on_repaired=None) -> bool:
         failure_details.update(
             {
                 'error_code': 'hosts_file_repair_failed',
-                'error': (
-                    'Fleasion could not reduce the hosts file to a safe size. Rename or delete '
-                    'the hosts file manually, then restart Fleasion.'
-                ),
+                'error': tr('app.hosts.oversized.repair_failed_manual'),
             }
         )
         log_buffer.log('Hosts', 'Safe repair did not produce a usable hosts file')
@@ -460,16 +448,20 @@ def _show_hosts_capacity_dialog(details: dict) -> None:
     limit = int(details.get('hosts_size_limit_bytes') or 512 * 1024)
     candidate_size = int(details.get('hosts_size_bytes') or 0)
     msg = QMessageBox(_visible_parent_widget())
-    msg.setWindowTitle('Fleasion - Hosts File Near Safety Limit')
+    msg.setWindowTitle(tr('app.fleasion_hosts_file_near_safety_limit'))
     msg.setIcon(QMessageBox.Icon.Warning)
-    msg.setText('Fleasion did not modify your hosts file.')
+    msg.setText(tr('app.fleasion_did_not_modify_your_hosts_file'))
     msg.setInformativeText(
-        f'Adding Fleasion entries would make it {candidate_size / (1024 * 1024):.1f} MiB, '
-        f'which exceeds Fleasion’s {limit / 1024:.0f} KiB safety limit. No mappings were '
-        'added. Remove obsolete hosts-file lines or rename the file, then restart Fleasion.'
-        f'\n\nHosts file path:\n{hosts_path}'
+        tr(
+            'app.adding_fleasion_entries_would_make_it_value',
+            value0=candidate_size / (1024 * 1024),
+            value1=limit / 1024,
+            value2=hosts_path,
+        )
     )
-    open_dir_button = msg.addButton('Open Hosts Directory', QMessageBox.ButtonRole.ActionRole)
+    open_dir_button = msg.addButton(
+        tr('app.open_hosts_directory'), QMessageBox.ButtonRole.ActionRole
+    )
     msg.addButton(QMessageBox.StandardButton.Ok)
     msg.exec()
     if msg.clickedButton() == open_dir_button:
@@ -502,20 +494,16 @@ def _show_env_proxy_stale_hosts_dialog() -> bool:
 
     parent = _visible_parent_widget()
     msg = QMessageBox(parent)
-    msg.setWindowTitle('Fleasion - Stale Hosts File Entries')
+    msg.setWindowTitle(tr('app.fleasion_stale_hosts_file_entries'))
     msg.setIcon(QMessageBox.Icon.Warning)
-    msg.setText('Fleasion found stale Env Proxy entries in your system hosts file.')
-    msg.setInformativeText(
-        'The hosts file is protected by the operating system, so Fleasion cannot safely '
-        'repair it as your normal user.\n\n'
-        'Fix Hosts File runs a temporary administrator/root child that removes only '
-        'Fleasion-owned entries, flushes DNS, and exits. It does not keep Fleasion running '
-        'as administrator.\n\n'
-        'If you continue without fixing it, those stale entries may keep redirecting Roblox '
-        'hosts for other applications.'
+    msg.setText(tr('app.fleasion_found_stale_env_proxy_entries_in'))
+    msg.setInformativeText(tr('app.the_hosts_file_is_protected_by_the'))
+    fix_button = msg.addButton(
+        tr('app.fix_hosts_file_recommended'), QMessageBox.ButtonRole.AcceptRole
     )
-    fix_button = msg.addButton('Fix Hosts File (Recommended)', QMessageBox.ButtonRole.AcceptRole)
-    continue_button = msg.addButton('Continue Without Fixing', QMessageBox.ButtonRole.RejectRole)
+    continue_button = msg.addButton(
+        tr('app.continue_without_fixing'), QMessageBox.ButtonRole.RejectRole
+    )
     msg.setDefaultButton(fix_button)
     msg.exec()
 
@@ -526,17 +514,11 @@ def _show_env_proxy_stale_hosts_dialog() -> bool:
     fix_button.setEnabled(False)
     continue_button.setEnabled(False)
     if sys.platform == 'win32':
-        msg.setText('Waiting for Windows administrator permission...')
-        msg.setInformativeText(
-            'Approve the UAC prompt to remove the stale Fleasion hosts entries.\n\n'
-            'If the prompt is flashing on the taskbar, click it and choose Yes or No.'
-        )
+        msg.setText(tr('app.waiting_for_windows_administrator_permission'))
+        msg.setInformativeText(tr('app.approve_the_uac_prompt_to_remove_the'))
     else:
-        msg.setText('Waiting for administrator/root permission...')
-        msg.setInformativeText(
-            'Approve the operating-system permission prompt to remove the stale Fleasion '
-            'hosts entries.'
-        )
+        msg.setText(tr('app.waiting_for_administrator_root_permission'))
+        msg.setInformativeText(tr('app.approve_the_operating_system_permission_prompt_to'))
     msg.show()
     msg.raise_()
     msg.activateWindow()
@@ -550,15 +532,15 @@ def _show_env_proxy_stale_hosts_dialog() -> bool:
         if not has_stale_hosts_entries(set(INTERCEPT_HOSTS)):
             log_buffer.log('Hosts', 'Verified stale Env Proxy hosts entries were removed')
             return True
-        detail = 'The administrator child completed, but stale Fleasion entries are still present.'
+        detail = tr('app.hosts.stale.cleanup_still_present')
     else:
-        detail = 'Fleasion could not obtain administrator permission or the cleanup child failed.'
+        detail = tr('app.hosts.stale.cleanup_failed')
 
     log_buffer.log('Hosts', f'Privileged Env Proxy stale hosts cleanup failed: {detail}')
     QMessageBox.warning(
         parent,
-        'Fleasion - Hosts File Still Needs Repair',
-        f'{detail}\n\nEnv Proxy may start, but the stale entries can still affect other applications.',
+        tr('app.fleasion_hosts_file_still_needs_repair'),
+        tr('app.value_env_proxy_may_start_but_the', value0=detail),
     )
     return True
 
@@ -593,30 +575,26 @@ def _show_run_on_boot_failure(
     parent, proxy_mode: str | None = None, *, enabled: bool = True
 ) -> bool:
     msg = QMessageBox(parent)
-    msg.setWindowTitle('Run on Boot Needs Repair' if enabled else 'Run on Boot Could Not Be Disabled')
+    msg.setWindowTitle(
+        tr('app.run_on_boot_needs_repair')
+        if enabled
+        else tr('app.run_on_boot_could_not_be_disabled')
+    )
     msg.setIcon(QMessageBox.Icon.Warning)
     if sys.platform == 'win32':
         from .utils.autostart import windows_autostart_privilege_hint
 
         if enabled:
             msg.setText(
-                'Fleasion could not update its Run on Boot task.\n\n'
-                'Repair it now with one administrator approval? The repair updates the task '
-                'for your current Windows account and confirms whether it worked.\n\n'
-                f'{windows_autostart_privilege_hint(proxy_mode)}'
+                tr(
+                    'app.fleasion_could_not_update_its_run_on',
+                    value0=windows_autostart_privilege_hint(proxy_mode),
+                )
             )
         else:
-            msg.setText(
-                'Fleasion could not remove its legacy Run on Boot task.\n\n'
-                'Remove it now with one administrator approval? This removes startup for '
-                'your current Windows account and confirms whether it worked.'
-            )
+            msg.setText(tr('app.fleasion_could_not_remove_its_legacy_run'))
     else:
-        msg.setText(
-            'Failed to register autostart.\n'
-            'Check the application log for details.\n\n'
-            'Turn off Run on Boot to stop this error from appearing.'
-        )
+        msg.setText(tr('app.failed_to_register_autostart_check_the_application'))
     if icon_path := get_icon_path():
         from PyQt6.QtGui import QIcon
 
@@ -624,9 +602,11 @@ def _show_run_on_boot_failure(
 
     repair_button = None
     if sys.platform == 'win32':
-        repair_label = 'Repair Now (Recommended)' if enabled else 'Remove Task Now (Recommended)'
+        repair_label = tr('app.autostart.repair_now') if enabled else tr('app.autostart.remove_now')
         repair_button = msg.addButton(repair_label, QMessageBox.ButtonRole.AcceptRole)
-        ignore_button = msg.addButton('Keep Run on Boot Enabled', QMessageBox.ButtonRole.RejectRole)
+        ignore_button = msg.addButton(
+            tr('app.keep_run_on_boot_enabled'), QMessageBox.ButtonRole.RejectRole
+        )
         msg.setDefaultButton(ignore_button)
     else:
         msg.setStandardButtons(QMessageBox.StandardButton.Ok)
@@ -645,21 +625,14 @@ def _show_run_on_boot_failure(
                 if enabled
                 else 'Elevated legacy autostart-task removal completed',
             )
-            msg.setWindowTitle('Run on Boot Fixed' if enabled else 'Run on Boot Disabled')
+            msg.setWindowTitle(
+                tr('app.run_on_boot_fixed') if enabled else tr('app.run_on_boot_disabled')
+            )
             msg.setIcon(QMessageBox.Icon.Information)
             if enabled:
-                msg.setText(
-                    'It worked — Fleasion repaired the Run on Boot task for your current '
-                    'Windows account.\n\n'
-                    'You do not need to run the repair again. Fleasion will start automatically '
-                    'the next time you sign in.'
-                )
+                msg.setText(tr('app.it_worked_fleasion_repaired_the_run_on'))
             else:
-                msg.setText(
-                    'It worked — Fleasion removed the legacy Run on Boot task for your '
-                    'current Windows account.\n\n'
-                    'Fleasion will no longer start automatically when you sign in.'
-                )
+                msg.setText(tr('app.it_worked_fleasion_removed_the_legacy_run'))
             msg.setStandardButtons(QMessageBox.StandardButton.Ok)
             msg.exec()
             return True
@@ -671,14 +644,12 @@ def _show_run_on_boot_failure(
                 else 'Elevated legacy autostart-task removal did not complete successfully',
             )
             msg.setWindowTitle(
-                'Run on Boot Repair Incomplete' if enabled else 'Run on Boot Disable Incomplete'
+                tr('app.run_on_boot_repair_incomplete')
+                if enabled
+                else tr('app.run_on_boot_disable_incomplete')
             )
             msg.setIcon(QMessageBox.Icon.Warning)
-            msg.setText(
-                'Fleasion could not confirm that the Run on Boot task was repaired.\n\n'
-                'The administrator prompt may have been canceled, or Windows rejected the '
-                'task update. No further repair was started automatically.'
-            )
+            msg.setText(tr('app.fleasion_could_not_confirm_that_the_run'))
             msg.setStandardButtons(QMessageBox.StandardButton.Ok)
             msg.exec()
     return False
@@ -702,18 +673,16 @@ def _show_roblox_permission_failure(
         return
 
     msg = QMessageBox(parent)
-    msg.setWindowTitle('Roblox Installation Permission Required')
+    msg.setWindowTitle(tr('app.roblox_installation_permission_required'))
     msg.setIcon(QMessageBox.Icon.Warning)
-    listed_paths = '\n'.join(f'- {path}' for path in paths)
-    failure_text = failure_text or (
-        'Fleasion could not write configured modifications or FastFlags to these Roblox '
-        'Player installations'
-    )
+    listed_paths = '\n'.join(tr('app.common.bullet_path', path=path) for path in paths)
+    failure_text = failure_text or tr('app.roblox_permissions.default_failure')
     msg.setText(
-        f'{failure_text}:\n\n{listed_paths}\n\n'
-        'Would you like to permanently grant your current Windows account Modify access '
-        'to only these installation folders? Existing permissions are preserved. '
-        'This requires a one-time administrator prompt.'
+        tr(
+            'app.value_value_would_you_like_to_permanently',
+            value0=failure_text,
+            value1=listed_paths,
+        )
     )
     if icon_path := get_icon_path():
         from PyQt6.QtGui import QIcon
@@ -721,9 +690,9 @@ def _show_roblox_permission_failure(
         msg.setWindowIcon(QIcon(str(icon_path)))
 
     grant_button = msg.addButton(
-        'Grant access for this Windows user', QMessageBox.ButtonRole.AcceptRole
+        tr('app.grant_access_for_this_windows_user'), QMessageBox.ButtonRole.AcceptRole
     )
-    ignore_button = msg.addButton('Ignore', QMessageBox.ButtonRole.RejectRole)
+    ignore_button = msg.addButton(tr('app.ignore'), QMessageBox.ButtonRole.RejectRole)
     msg.setDefaultButton(ignore_button)
     msg.exec()
 
@@ -806,9 +775,8 @@ def _poll_roblox_permission_repair(mod_manager, deadline: float, *, on_repaired=
         )
         QMessageBox.warning(
             _visible_parent_widget(),
-            'Roblox Permission Repair Timed Out',
-            'Fleasion did not receive a result from the administrator process. '
-            'No additional permission repair will be attempted automatically.',
+            tr('app.roblox_permission_repair_timed_out'),
+            tr('app.fleasion_did_not_receive_a_result_from'),
         )
         return
 
@@ -825,15 +793,16 @@ def _poll_roblox_permission_repair(mod_manager, deadline: float, *, on_repaired=
             on_repaired()
         return
 
-    detail = result.get('error') or result.get('failed') or 'icacls could not update the ACL'
+    detail = (
+        result.get('error')
+        or result.get('failed')
+        or tr('app.roblox_permissions.acl_update_failed')
+    )
     log_buffer.log('RobloxPermissions', f'ACL repair failed: {detail}')
     msg = QMessageBox(_visible_parent_widget())
-    msg.setWindowTitle('Roblox Permission Repair Failed')
+    msg.setWindowTitle(tr('app.roblox_permission_repair_failed'))
     msg.setIcon(QMessageBox.Icon.Warning)
-    msg.setText(
-        'Fleasion could not update the permissions for one or more Roblox installations.\n\n'
-        f'{detail}'
-    )
+    msg.setText(tr('app.fleasion_could_not_update_the_permissions_for', value0=detail))
     msg.setStandardButtons(QMessageBox.StandardButton.Ok)
     msg.exec()
 
@@ -856,9 +825,8 @@ def _poll_windows_firewall_repair(deadline: float) -> None:
         log_buffer.log('WindowsFirewall', 'Timed out waiting for the elevated firewall repair')
         QMessageBox.warning(
             _visible_parent_widget(),
-            'Fleasion Firewall Repair Timed Out',
-            'Fleasion did not receive a result from the administrator process.\n\n'
-            'You can retry the repair or open Windows Firewall settings manually.',
+            tr('app.fleasion_firewall_repair_timed_out'),
+            tr('app.fleasion_did_not_receive_a_result_from_2'),
         )
         return
 
@@ -871,36 +839,78 @@ def _poll_windows_firewall_repair(deadline: float) -> None:
         )
         QMessageBox.information(
             _visible_parent_widget(),
-            'Fleasion Firewall Updated',
-            'Windows Firewall now allows Fleasion on Private and Public networks.\n\n'
-            'Try the Roblox action again.',
+            tr('app.fleasion_firewall_updated'),
+            tr('app.windows_firewall_now_allows_fleasion_on_private'),
         )
         return
 
-    detail = result.get('error') or result.get('failed') or 'netsh could not update the rules'
+    detail = result.get('error') or result.get('failed') or tr('app.firewall.rules_update_failed')
     log_buffer.log('WindowsFirewall', f'Firewall repair failed: {detail}')
     QMessageBox.warning(
         _visible_parent_widget(),
-        'Fleasion Firewall Repair Failed',
-        'Fleasion could not update Windows Firewall.\n\n'
-        f'{detail}\n\nYou can open Windows Firewall settings manually to review the block.',
+        tr('app.fleasion_firewall_repair_failed'),
+        tr('app.fleasion_could_not_update_windows_firewall_value', value0=detail),
     )
 
 
 def _show_desktop_integration_failure(parent) -> None:
     msg = QMessageBox(parent)
-    msg.setWindowTitle('Desktop Integration Failed')
+    msg.setWindowTitle(tr('app.desktop_integration_failed'))
     msg.setIcon(QMessageBox.Icon.Warning)
-    msg.setText(
-        'Failed to create desktop/start menu integration.\n'
-        'Check the application log for details.\n\n'
-        'Turn off desktop integration creation to stop this error from appearing.'
-    )
+    msg.setText(tr('app.failed_to_create_desktop_start_menu_integration'))
     if icon_path := get_icon_path():
         from PyQt6.QtGui import QIcon
 
         msg.setWindowIcon(QIcon(str(icon_path)))
     msg.exec()
+
+
+def _prompt_first_time_language(config_manager: ConfigManager) -> None:
+    """Make language the first choice shown to a new user."""
+    _top = QApplication.topLevelWidgets()
+    _parent = next((w for w in _top if w.isVisible()), None)
+    _on_top = any(
+        w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in _top
+    )
+
+    dialog = QDialog(_parent)
+    dialog.setModal(True)
+    dialog.setWindowTitle(tr('language.picker.title'))
+    if _on_top:
+        dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
+    if icon_path := get_icon_path():
+        from PyQt6.QtGui import QIcon
+
+        dialog.setWindowIcon(QIcon(str(icon_path)))
+
+    layout = QVBoxLayout(dialog)
+    prompt = QLabel(tr('language.picker.prompt'), dialog)
+    prompt.setWordWrap(True)
+    layout.addWidget(prompt)
+
+    row = QHBoxLayout()
+    row.addWidget(QLabel(tr('language.picker.label'), dialog))
+    combo = QComboBox(dialog)
+    for code, display_name in available_languages():
+        combo.addItem(display_name, code)
+    current_index = combo.findData(config_manager.language)
+    combo.setCurrentIndex(max(0, current_index))
+    row.addWidget(combo, 1)
+    layout.addLayout(row)
+
+    button_row = QHBoxLayout()
+    continue_button = QPushButton(tr('language.picker.continue'), dialog)
+    continue_button.setDefault(True)
+    continue_button.setAutoDefault(True)
+    button_row.addStretch(1)
+    button_row.addWidget(continue_button)
+    layout.addLayout(button_row)
+    continue_button.clicked.connect(dialog.accept)
+
+    dialog.exec()
+    selected = str(combo.currentData() or 'en')
+    config_manager.language = selected
+    set_language(config_manager.language)
 
 
 def _prompt_first_time_startup_options(config_manager: ConfigManager, tray=None) -> None:
@@ -913,7 +923,7 @@ def _prompt_first_time_startup_options(config_manager: ConfigManager, tray=None)
 
     dialog = QDialog(_parent)
     dialog.setModal(True)
-    dialog.setWindowTitle('Startup Integration')
+    dialog.setWindowTitle(tr('app.startup_integration'))
     if _on_top:
         dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
     if icon_path := get_icon_path():
@@ -924,22 +934,15 @@ def _prompt_first_time_startup_options(config_manager: ConfigManager, tray=None)
     layout = QVBoxLayout(dialog)
     label = QLabel(dialog)
     label.setWordWrap(True)
-    message = (
-        'Choose how Fleasion should integrate with your system.\n\n'
-        'Run on Boot launches Fleasion when you sign in. Desktop/start menu integration adds '
-        'Fleasion to your operating system launcher and is refreshed on each launch.'
-    )
+    message = tr('app.startup_integration.body')
     if sys.platform == 'win32':
-        message += (
-            '\n\nRun on Boot uses a normal per-user task. Hosts File mode may still '
-            'request administrator permission after Fleasion starts.'
-        )
+        message += tr('app.startup_integration.windows_note')
     label.setText(message)
     layout.addWidget(label)
 
     checkbox_row = QHBoxLayout()
-    run_on_boot_chk = QCheckBox('Run on Boot', dialog)
-    desktop_integration_chk = QCheckBox('Desktop/Start Menu Integration', dialog)
+    run_on_boot_chk = QCheckBox(tr('app.run_on_boot'), dialog)
+    desktop_integration_chk = QCheckBox(tr('app.desktop_start_menu_integration'), dialog)
     run_on_boot_chk.setChecked(config_manager.run_on_boot)
     desktop_integration_chk.setChecked(config_manager.desktop_integration)
     checkbox_row.addWidget(run_on_boot_chk)
@@ -948,7 +951,7 @@ def _prompt_first_time_startup_options(config_manager: ConfigManager, tray=None)
     layout.addLayout(checkbox_row)
 
     button_row = QHBoxLayout()
-    ok_button = QPushButton('OK', dialog)
+    ok_button = QPushButton(tr('app.ok'), dialog)
     ok_button.setDefault(True)
     ok_button.setAutoDefault(True)
     button_row.addStretch(1)
@@ -1303,9 +1306,7 @@ def _relaunch_as_admin(
     return completed
 
 
-def _repair_autostart_once(
-    requesting_user_sid: str | None = None, *, enabled: bool = True
-) -> int:
+def _repair_autostart_once(requesting_user_sid: str | None = None, *, enabled: bool = True) -> int:
     """Repair or remove Windows autostart from a one-shot elevated process."""
     if sys.platform != 'win32' or not _is_admin():
         log_buffer.log(
@@ -1314,6 +1315,7 @@ def _repair_autostart_once(
         return 1
 
     from .utils.autostart import sync_autostart
+
     windows_user_id = None
     if enabled:
         from .utils.windows_permissions import windows_user_id_from_sid
@@ -1560,7 +1562,7 @@ def _read_restart_marker_value(token: str, phase: str) -> int | None:
     try:
         raw_value = marker.read_text(encoding='utf-8').strip()
         value = int(raw_value)
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return None
     return value if value > 0 else None
 
@@ -1590,9 +1592,7 @@ def _wait_for_restart_marker(
             log_buffer.log('Restart', f'Replacement launcher exited before {phase} handoff')
             return None
         marker_value = _read_restart_marker_value(token, phase)
-        if marker_value is not None and (
-            expected_value is None or marker_value == expected_value
-        ):
+        if marker_value is not None and (expected_value is None or marker_value == expected_value):
             # Re-check the outer launcher after reading to reject a marker that
             # raced with immediate launcher/application teardown.
             if not is_launcher_alive():
@@ -1667,7 +1667,9 @@ def _suspend_single_instance_for_handoff() -> bool:
 
     shared_memory = _single_instance_shared_memory
     if shared_memory is None or not shared_memory.isAttached():
-        log_buffer.log('Restart', 'Cannot transfer restart ownership: single-instance lock is absent')
+        log_buffer.log(
+            'Restart', 'Cannot transfer restart ownership: single-instance lock is absent'
+        )
         return False
 
     server = _single_instance_control_server
@@ -1679,7 +1681,9 @@ def _suspend_single_instance_for_handoff() -> bool:
     if shared_memory.detach():
         return True
 
-    log_buffer.log('Restart', f'Could not release single-instance lock: {shared_memory.errorString()}')
+    log_buffer.log(
+        'Restart', f'Could not release single-instance lock: {shared_memory.errorString()}'
+    )
     if not _resume_single_instance_after_handoff_failure():
         raise RestartHandoffUncertain(
             'Original process could not restore single-instance ownership after release failure'
@@ -1863,7 +1867,7 @@ def _terminate_popen_child(process) -> None:
         try:
             process.kill()
             process.wait(timeout=2.0)
-        except (OSError, subprocess.TimeoutExpired):
+        except OSError, subprocess.TimeoutExpired:
             pass
     except OSError:
         pass
@@ -1924,7 +1928,9 @@ def restart_fleasion_normally(
 
     if require_admin:
         if sys.platform != 'win32':
-            log_buffer.log('Restart', 'Administrator restart was requested on a non-Windows platform')
+            log_buffer.log(
+                'Restart', 'Administrator restart was requested on a non-Windows platform'
+            )
             return False
         if _is_admin():
             require_admin = False
@@ -1933,9 +1939,7 @@ def restart_fleasion_normally(
                 log_buffer.log('Restart', 'Refusing unverified administrator restart')
                 return False
             return _relaunch_as_admin(
-                extra_args=(
-                    '--preserve-env-proxy-player' if preserve_env_proxy_player else ''
-                ),
+                extra_args=('--preserve-env-proxy-player' if preserve_env_proxy_player else ''),
                 parent_hwnd=_window_handle(_visible_parent_widget()),
                 restart_handoff_token=handoff_token,
                 restart_handoff_parent_pid=handoff_parent_pid,
@@ -2043,28 +2047,17 @@ def _show_admin_required_dialog(parent=None):
     msg = QMessageBox(_parent)
     if _on_top:
         msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
-    msg.setWindowTitle('Administrator Mode Required')
+    msg.setWindowTitle(tr('app.administrator_mode_required'))
     msg.setIcon(QMessageBox.Icon.Warning)
     if sys.platform == 'darwin':
-        msg.setText('Fleasion needs its macOS proxy helper before interception can start.')
-        msg.setInformativeText(
-            'Run Fleasion as your normal macOS user, then approve the proxy-helper install prompt. '
-            'The helper owns port 443, updates /etc/hosts, and patches Roblox SSL trust while the app stays unprivileged.'
-        )
+        msg.setText(tr('app.fleasion_needs_its_macos_proxy_helper_before'))
+        msg.setInformativeText(tr('app.run_fleasion_as_your_normal_macos_user'))
     elif sys.platform.startswith('linux'):
-        msg.setText('Fleasion needs administrator permission for Linux interception.')
-        msg.setInformativeText(
-            'Linux support targets the Sober Flatpak client.\n\n'
-            'Asset interception, scraping, replacement, hosts-file changes, and the local HTTPS proxy need root access '
-            'because Fleasion writes /etc/hosts and listens on local port 443.'
-        )
+        msg.setText(tr('app.fleasion_needs_administrator_permission_for_linux_interception'))
+        msg.setInformativeText(tr('app.linux_support_targets_the_sober_flatpak_client'))
     else:
-        msg.setText("Fleasion won't work unless you're in admin mode.")
-        msg.setInformativeText(
-            'Windows did not start Fleasion with administrator rights.\n\n'
-            'Asset interception, scraping, replacement, hosts-file changes, and the local HTTPS proxy may not work.\n\n'
-            'Close Fleasion and run it as Administrator.'
-        )
+        msg.setText(tr('app.fleasion_won_t_work_unless_you_re'))
+        msg.setInformativeText(tr('app.windows_did_not_start_fleasion_with_administrator'))
     msg.setStandardButtons(QMessageBox.StandardButton.Ok)
     if icon_path := get_icon_path():
         from PyQt6.QtGui import QIcon
@@ -2088,25 +2081,28 @@ def _show_proxy_bind_error_dialog(details: dict):
     msg = QMessageBox(_parent)
     if _on_top:
         msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
-    msg.setWindowTitle('Proxy Port Conflict')
+    msg.setWindowTitle(tr('app.proxy_port_conflict'))
     msg.setIcon(QMessageBox.Icon.Warning)
-    msg.setText(f'Fleasion could not start its local proxy on port {port}.')
+    msg.setText(tr('app.fleasion_could_not_start_its_local_proxy', value0=port))
 
     if bind_reason == 'access_denied_or_reserved':
-        owners_html = (
-            f'Windows denied access to port {port}; it may be reserved or excluded even though '
-            'no listening process appears in netstat.<br><br>'
-        )
+        owners_html = tr('app.proxy_bind.access_denied', port=port)
     elif owners:
         owner_lines = '<br>'.join(
-            f'- {html.escape(str(owner.get("process_name") or "Unknown"))} '
-            f'(PID {int(owner.get("pid") or 0)}) on '
-            f'{html.escape(str(owner.get("local_address") or "0.0.0.0"))}:{port}'
+            tr(
+                'app.proxy_bind.owner_entry',
+                process_name=html.escape(
+                    str(owner.get('process_name') or tr('app.common.unknown'))
+                ),
+                pid=int(owner.get('pid') or 0),
+                local_address=html.escape(str(owner.get('local_address') or '0.0.0.0')),
+                port=port,
+            )
             for owner in owners
         )
-        owners_html = f'Port {port} is already in use by:<br>{owner_lines}<br><br>'
+        owners_html = tr('app.proxy_bind.owners', port=port, owner_lines=owner_lines)
     else:
-        owners_html = f'Port {port} is already in use by another process.<br><br>'
+        owners_html = tr('app.proxy_bind.other_owner', port=port)
 
     discord_url = APP_DISCORD
     if not discord_url.startswith(('http://', 'https://')):
@@ -2114,9 +2110,12 @@ def _show_proxy_bind_error_dialog(details: dict):
 
     msg.setTextFormat(Qt.TextFormat.RichText)
     msg.setInformativeText(
-        owners_html
-        + 'Close the conflicting process, then relaunch Fleasion.<br><br>'
-        + f'Need help? <a href="{html.escape(discord_url)}">{html.escape(APP_DISCORD)}</a>'
+        tr(
+            'app.value_close_the_conflicting_process_then_relaunch',
+            value0=owners_html,
+            value1=html.escape(discord_url),
+            value2=html.escape(APP_DISCORD),
+        )
     )
     msg.setStandardButtons(QMessageBox.StandardButton.Ok)
     if icon_path := get_icon_path():
@@ -2168,33 +2167,27 @@ def _show_hosts_write_exhausted_dialog(details: dict):
         msg = QMessageBox(_parent)
         if _on_top:
             msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
-        msg.setWindowTitle('Hosts File Write Failed')
+        msg.setWindowTitle(tr('app.hosts_file_write_failed'))
         msg.setIcon(QMessageBox.Icon.Warning)
-        msg.setText(
-            'Fleasion could not modify the system hosts file after every write attempt was exhausted.'
-        )
+        msg.setText(tr('app.fleasion_could_not_modify_the_system_hosts'))
 
         diagnostics_html = ''
         if raw_error:
-            diagnostics_html = 'Technical details:<br>' + html.escape(raw_error) + '<br><br>'
+            diagnostics_html = tr('app.hosts.write_failed.technical', error=html.escape(raw_error))
 
         msg.setTextFormat(Qt.TextFormat.RichText)
         msg.setInformativeText(
-            'Most likely causes:<br>'
-            'A) Antivirus/security software is protecting the hosts file '
-            '(for example Webroot or Kaspersky).<br>'
-            'B) A restrictive system permission setting is blocking writes.<br><br>'
-            + f'Hosts file path:<br>{html.escape(hosts_path)}<br><br>'
-            + 'Quick fix:<br>'
-            + '1) Click "Click Here to Open Directory".<br>'
-            + '2) Rename the file named "hosts" (no extension) to anything, or delete it.<br>'
-            + '3) Restart Fleasion.<br><br>'
-            + diagnostics_html
-            + f'Need help? <a href="{html.escape(discord_url)}">{html.escape(APP_DISCORD)}</a>'
+            tr(
+                'app.most_likely_causes_br_a_antivirus_security',
+                value0=html.escape(hosts_path),
+                value1=diagnostics_html,
+                value2=html.escape(discord_url),
+                value3=html.escape(APP_DISCORD),
+            )
         )
 
         open_dir_button = msg.addButton(
-            'Click Here to Open Directory', QMessageBox.ButtonRole.ActionRole
+            tr('app.click_here_to_open_directory'), QMessageBox.ButtonRole.ActionRole
         )
         msg.addButton(QMessageBox.StandardButton.Ok)
 
@@ -2258,24 +2251,28 @@ def _show_linux_hosts_read_only_dialog(details: dict):
     msg = QMessageBox(_parent)
     if _on_top:
         msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
-    msg.setWindowTitle('Read-Only Hosts File')
+    msg.setWindowTitle(tr('app.read_only_hosts_file'))
     msg.setIcon(QMessageBox.Icon.Warning)
-    msg.setText('Fleasion cannot edit the Linux hosts file on this read-only system.')
+    msg.setText(tr('app.fleasion_cannot_edit_the_linux_hosts_file'))
     msg.setTextFormat(Qt.TextFormat.RichText)
     msg.setInformativeText(
-        f'The proxy helper got a read-only filesystem error while writing <code>{html.escape(hosts_path)}</code>. '
-        'On Nix/NixOS, add these hosts declaratively and rebuild your system:<br><br>'
-        '<b>In configuration.nix add:</b><br>'
-        f'<pre>{html.escape(nix_snippet)}</pre>'
-        'Then restart Fleasion after the rebuilt hosts file is active.'
-        + (f'<br><br>Technical details:<br>{html.escape(raw_error)}' if raw_error else '')
+        tr(
+            'app.the_proxy_helper_got_a_read_only',
+            value0=html.escape(hosts_path),
+            value1=html.escape(nix_snippet),
+            value2=(
+                tr('app.linux_hosts_readonly.technical', error=html.escape(raw_error))
+                if raw_error
+                else ''
+            ),
+        )
     )
-    copy_button = msg.addButton('Copy Nix Snippet', QMessageBox.ButtonRole.ActionRole)
+    copy_button = msg.addButton(tr('app.copy_nix_snippet'), QMessageBox.ButtonRole.ActionRole)
     msg.addButton(QMessageBox.StandardButton.Ok)
 
     def _copy_nix_snippet():
         QApplication.clipboard().setText(nix_snippet)
-        copy_button.setText('Copied')
+        copy_button.setText(tr('app.copied'))
         log_buffer.log('Hosts', 'Copied Nix extraHosts snippet to clipboard')
 
     copy_button.clicked.connect(_copy_nix_snippet)
@@ -2308,44 +2305,54 @@ def _show_macos_ca_patch_failed_dialog(details: dict):
     if isinstance(failed, list):
         for item in failed[:6]:
             if isinstance(item, dict):
-                path = item.get('ca_file') or item.get('resource_dir') or '(unknown path)'
-                error = item.get('error') or item.get('status') or 'unknown error'
-                failed_lines.append(f'- {html.escape(str(path))}: {html.escape(str(error))}')
+                path = (
+                    item.get('ca_file') or item.get('resource_dir') or tr('app.common.unknown_path')
+                )
+                error = item.get('error') or item.get('status') or tr('app.common.unknown_error')
+                failed_lines.append(
+                    tr(
+                        'app.common.bullet_path_error',
+                        path=html.escape(str(path)),
+                        error=html.escape(str(error)),
+                    )
+                )
 
     unhealthy_lines = []
     if isinstance(verified, list):
         for item in verified[:6]:
             if isinstance(item, dict) and not item.get('healthy'):
-                path = item.get('path') or '(unknown path)'
-                error = item.get('error') or 'verification failed'
-                unhealthy_lines.append(f'- {html.escape(str(path))}: {html.escape(str(error))}')
+                path = item.get('path') or tr('app.common.unknown_path')
+                error = item.get('error') or tr('app.common.verification_failed')
+                unhealthy_lines.append(
+                    tr(
+                        'app.common.bullet_path_error',
+                        path=html.escape(str(path)),
+                        error=html.escape(str(error)),
+                    )
+                )
 
     diagnostics_html = ''
     if failed_lines or unhealthy_lines:
-        diagnostics_html = '<br><br>Diagnostics:<br>' + '<br>'.join(failed_lines + unhealthy_lines)
+        diagnostics_html = tr(
+            'app.macos_ca_patch.diagnostics', lines='<br>'.join(failed_lines + unhealthy_lines)
+        )
 
     msg = QMessageBox(_parent)
     if _on_top:
         msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
-    msg.setWindowTitle('macOS Roblox CA Patch Failed')
+    msg.setWindowTitle(tr('app.macos_roblox_ca_patch_failed'))
     msg.setIcon(QMessageBox.Icon.Warning)
-    msg.setText(
-        'Fleasion could not verify Roblox SSL trust patching, so the proxy was not started.'
-    )
+    msg.setText(tr('app.fleasion_could_not_verify_roblox_ssl_trust'))
     msg.setTextFormat(Qt.TextFormat.RichText)
     msg.setInformativeText(
-        'Roblox would reject Fleasion proxy certificates until its bundled '
-        '<code>ssl/cacert.pem</code> contains the Fleasion CA exactly once.<br><br>'
-        "A protected Roblox installation may need Fleasion's small privileged helper. "
-        'If this keeps happening, repair or reinstall Roblox, then start Fleasion again.'
-        + diagnostics_html
+        tr('app.roblox_would_reject_fleasion_proxy_certificates_until', value0=diagnostics_html)
     )
     install_button = None
     if details.get('helper_required'):
         install_button = msg.addButton(
-            'Install Helper and Retry', QMessageBox.ButtonRole.AcceptRole
+            tr('app.install_helper_and_retry'), QMessageBox.ButtonRole.AcceptRole
         )
-        msg.addButton('Not Now', QMessageBox.ButtonRole.RejectRole)
+        msg.addButton(tr('app.not_now'), QMessageBox.ButtonRole.RejectRole)
         msg.setDefaultButton(install_button)
     else:
         msg.setStandardButtons(QMessageBox.StandardButton.Ok)
@@ -2370,23 +2377,19 @@ def _show_macos_ca_patch_failed_dialog(details: dict):
 
 def _show_macos_ca_trust_failed_dialog(details: dict):
     """Explain why launcher traffic cannot be intercepted safely."""
-    raw_error = html.escape(str(details.get('error') or 'unknown helper error'))
+    raw_error = html.escape(
+        str(details.get('error') or tr('app.macos_ca_trust.unknown_helper_error'))
+    )
     _top = QApplication.topLevelWidgets()
     _parent = next((w for w in _top if w.isVisible()), None)
 
     msg = QMessageBox(_parent)
-    msg.setWindowTitle('macOS Launcher CA Trust Failed')
+    msg.setWindowTitle(tr('app.macos_launcher_ca_trust_failed'))
     msg.setIcon(QMessageBox.Icon.Warning)
-    msg.setText(
-        'Fleasion could not establish macOS trust for launcher network traffic, '
-        'so the proxy was not started.'
-    )
+    msg.setText(tr('app.fleasion_could_not_establish_macos_trust_for'))
     msg.setTextFormat(Qt.TextFormat.RichText)
     msg.setInformativeText(
-        'Froststrap and AppleBlox can contact intercepted Roblox endpoints before '
-        'Roblox starts. Their HTTP clients require the same Fleasion CA to be trusted '
-        'by macOS.<br><br>Unlock the login keychain if prompted, then restart Fleasion.'
-        f'<br><br>Technical details:<br>{raw_error}'
+        tr('app.froststrap_and_appleblox_can_contact_intercepted_roblox', value0=raw_error)
     )
     msg.setStandardButtons(QMessageBox.StandardButton.Ok)
     if icon_path := get_icon_path():
@@ -2402,18 +2405,16 @@ def _show_roblox_ca_patch_failed_dialog(details: dict) -> None:
     for item in failed[:8] if isinstance(failed, list) else []:
         if not isinstance(item, dict):
             continue
-        path = item.get('ca_file') or item.get('resource_dir') or '(unknown path)'
-        error = item.get('error') or item.get('status') or 'verification failed'
-        lines.append(f'{path}: {error}')
+        path = item.get('ca_file') or item.get('resource_dir') or tr('app.common.unknown_path')
+        error = item.get('error') or item.get('status') or tr('app.common.verification_failed')
+        lines.append(tr('app.common.path_error', path=path, error=error))
     diagnostics = '\n'.join(lines) or str(
-        details.get('error') or 'No writable Roblox installation was found.'
+        details.get('error') or tr('app.roblox_ca_protected.no_writable')
     )
     QMessageBox.critical(
         _visible_parent_widget(),
-        'Fleasion - Roblox Files Are Protected',
-        'Fleasion could not prepare Roblox Player for Env Proxy, so Roblox was not relaunched.\n\n'
-        'Move or reinstall Roblox in a directory your user account can modify, then restart Fleasion.\n\n'
-        f'Details:\n{diagnostics}',
+        tr('app.fleasion_roblox_files_are_protected'),
+        tr('app.fleasion_could_not_prepare_roblox_player_for', value0=diagnostics),
     )
 
 
@@ -2458,17 +2459,19 @@ def _show_macos_relay_failed_dialog(details: dict) -> str:
     backend_probe = details.get('backend_probe') or {}
     reachable = bool(backend_probe.get('reachable'))
     if reachable:
-        probe_html = (
-            'The helper can currently reach Fleasion’s backend, but TLS forwarding through '
-            '<code>127.0.0.1:443</code> still failed.'
-        )
+        probe_html = tr('app.macos_relay.reachable')
     else:
-        error_type = html.escape(str(backend_probe.get('error_type') or 'connection error'))
-        error_text = html.escape(str(backend_probe.get('error') or 'No details were reported.'))
-        probe_html = (
-            'The helper could not reach Fleasion’s backend on '
-            f'<code>127.0.0.1:{int(details.get("backend_port") or 58443)}</code>.<br>'
-            f'Technical details: {error_type}: {error_text}'
+        error_type = html.escape(
+            str(backend_probe.get('error_type') or tr('app.macos_relay.connection_error'))
+        )
+        error_text = html.escape(
+            str(backend_probe.get('error') or tr('app.common.no_details_reported'))
+        )
+        probe_html = tr(
+            'app.macos_relay.unreachable',
+            backend_port=int(details.get('backend_port') or 58443),
+            error_type=error_type,
+            error_text=error_text,
         )
 
     attempts = int(details.get('attempts') or 1)
@@ -2476,20 +2479,18 @@ def _show_macos_relay_failed_dialog(details: dict) -> str:
         msg = QMessageBox(_parent)
         if _on_top:
             msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
-        msg.setWindowTitle('macOS Proxy Relay Failed')
+        msg.setWindowTitle(tr('app.macos_proxy_relay_failed'))
         msg.setIcon(QMessageBox.Icon.Warning)
-        msg.setText('Fleasion could not start its privileged local HTTPS relay.')
+        msg.setText(tr('app.fleasion_could_not_start_its_privileged_local'))
         msg.setTextFormat(Qt.TextFormat.RichText)
         msg.setInformativeText(
-            f'The relay was tested {attempts} times and the proxy was stopped before any '
-            'Roblox hosts were redirected, so Roblox networking was left unchanged.<br><br>'
-            f'{probe_html}<br><br>'
-            'A stale helper or macOS firewall/network filter can cause this. Retry once, '
-            'or reinstall the helper to restart and replace its LaunchDaemon.'
+            tr('app.the_relay_was_tested_value_times_and', value0=attempts, value1=probe_html)
         )
-        retry_button = msg.addButton('Retry', QMessageBox.ButtonRole.AcceptRole)
-        reinstall_button = msg.addButton('Reinstall Helper', QMessageBox.ButtonRole.ActionRole)
-        logs_button = msg.addButton('Open Helper Logs', QMessageBox.ButtonRole.ActionRole)
+        retry_button = msg.addButton(tr('app.retry'), QMessageBox.ButtonRole.AcceptRole)
+        reinstall_button = msg.addButton(
+            tr('app.reinstall_helper'), QMessageBox.ButtonRole.ActionRole
+        )
+        logs_button = msg.addButton(tr('app.open_helper_logs'), QMessageBox.ButtonRole.ActionRole)
         close_button = msg.addButton(QMessageBox.StandardButton.Close)
         msg.setDefaultButton(reinstall_button)
         if icon_path := get_icon_path():
@@ -2549,7 +2550,7 @@ def _choose_macos_auth_source_on_launch(config_manager, tray=None, *, force: boo
     dialog = _MacOSAuthSourceDialog(_parent)
     if _on_top:
         dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
-    dialog.setWindowTitle('Roblox Login Source')
+    dialog.setWindowTitle(tr('app.roblox_login_source'))
     dialog.setMinimumWidth(620)
 
     selected: dict[str, str] = {}
@@ -2558,23 +2559,16 @@ def _choose_macos_auth_source_on_launch(config_manager, tray=None, *, force: boo
     layout.setContentsMargins(18, 18, 18, 18)
     layout.setSpacing(14)
 
-    title = QLabel('Which browser is signed in to roblox.com?')
+    title = QLabel(tr('app.which_browser_is_signed_in_to_roblox'))
     title.setStyleSheet('font-size: 18px; font-weight: 700;')
     layout.addWidget(title)
 
-    warning = QLabel(
-        'Most Fleasion account-aware features will not work until a valid Roblox token is available: '
-        'private asset downloads, account launches, authenticated asset details, subplace metadata, '
-        'and private-server flows may fail or wait.'
-    )
+    warning = QLabel(tr('app.most_fleasion_account_aware_features_will_not'))
     warning.setWordWrap(True)
     warning.setStyleSheet('font-weight: 600; color: #e0a53a;')
     layout.addWidget(warning)
 
-    body = QLabel(
-        'Choose the browser where roblox.com is already signed in. macOS may ask for browser-data access; '
-        'choose Always Allow to avoid approving it every launch. Fleasion will test the browser before saving it.'
-    )
+    body = QLabel(tr('app.choose_the_browser_where_roblox_com_is'))
     body.setWordWrap(True)
     layout.addWidget(body)
 
@@ -2583,7 +2577,7 @@ def _choose_macos_auth_source_on_launch(config_manager, tray=None, *, force: boo
     layout.addWidget(status)
 
     def _set_busy(browser: str):
-        status.setText(f'Checking {browser} for a valid Roblox login...')
+        status.setText(tr('app.checking_value_for_a_valid_roblox_login', value0=browser))
         for btn in buttons:
             btn.setEnabled(False)
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
@@ -2606,20 +2600,13 @@ def _choose_macos_auth_source_on_launch(config_manager, tray=None, *, force: boo
         _quit_after_modal_closes(dialog, tray, selected)
 
     def _show_safari_unsupported() -> None:
-        message = (
-            'Safari is not supported for Roblox login discovery on macOS because Safari stores cookies behind a '
-            'different privacy model than the other supported browsers.\n\n'
-            'Use one of the other browsers in the list instead: Chrome, Firefox, Brave, Edge, Chromium, Opera, or '
-            'Vivaldi. Log in to roblox.com in that browser, come back to Fleasion, and select that browser.\n\n'
-            'You do not have to use that browser for anything else. It only needs to stay logged in to roblox.com so '
-            'Fleasion can read a valid Roblox token.'
-        )
+        message = tr('app.auth_source.safari_message')
         msg = QMessageBox(dialog)
-        msg.setWindowTitle('Safari Is Not Supported')
+        msg.setWindowTitle(tr('app.safari_is_not_supported'))
         msg.setIcon(QMessageBox.Icon.Warning)
-        msg.setText('Safari cannot be used for Fleasion login discovery.')
+        msg.setText(tr('app.safari_cannot_be_used_for_fleasion_login'))
         msg.setInformativeText(message)
-        exit_button = msg.addButton('Exit Fleasion', QMessageBox.ButtonRole.DestructiveRole)
+        exit_button = msg.addButton(tr('app.exit_fleasion'), QMessageBox.ButtonRole.DestructiveRole)
         msg.addButton(QMessageBox.StandardButton.Ok)
         if icon_path := get_icon_path():
             from PyQt6.QtGui import QIcon
@@ -2633,14 +2620,14 @@ def _choose_macos_auth_source_on_launch(config_manager, tray=None, *, force: boo
     grid.setHorizontalSpacing(8)
     grid.setVerticalSpacing(8)
     browsers = (
-        'Chrome',
-        'Safari',
-        'Firefox',
-        'Brave',
-        'Edge',
-        'Chromium',
-        'Opera',
-        'Vivaldi',
+        ('Chrome', tr('app.auth_source.browser.chrome')),
+        ('Safari', tr('app.auth_source.browser.safari')),
+        ('Firefox', tr('app.auth_source.browser.firefox')),
+        ('Brave', tr('app.auth_source.browser.brave')),
+        ('Edge', tr('app.auth_source.browser.edge')),
+        ('Chromium', tr('app.auth_source.browser.chromium')),
+        ('Opera', tr('app.auth_source.browser.opera')),
+        ('Vivaldi', tr('app.auth_source.browser.vivaldi')),
     )
 
     def _choose(browser: str) -> None:
@@ -2658,25 +2645,26 @@ def _choose_macos_auth_source_on_launch(config_manager, tray=None, *, force: boo
                 'Auth',
                 f'Unexpected error while checking {browser}: {type(exc).__name__}: {exc}',
             )
-            _set_ready(f'{browser} could not be checked: {type(exc).__name__}: {exc}')
+            _set_ready(
+                tr(
+                    'app.auth_source.check_failed',
+                    browser=browser,
+                    error_type=type(exc).__name__,
+                    error=exc,
+                )
+            )
             return
         if cookie:
             _save_and_accept(source or browser)
             return
         if browser == 'Safari':
-            _set_ready(
-                'Safari is not supported for Fleasion login discovery on macOS. Log in to roblox.com in another browser '
-                'from the list, then select that browser instead.'
-            )
+            _set_ready(tr('app.auth_source.safari_ready'))
             _show_safari_unsupported()
             return
-        _set_ready(
-            f'No valid Roblox login token was found in {browser}. Choose another browser, import a token manually, '
-            'or continue without a token.'
-        )
+        _set_ready(tr('app.auth_source.no_token', browser=browser))
 
-    for index, browser in enumerate(browsers):
-        button = QPushButton(browser)
+    for index, (browser, browser_label) in enumerate(browsers):
+        button = QPushButton(browser_label)
         button.setMinimumHeight(34)
         button.clicked.connect(lambda _checked=False, value=browser: _choose(value))
         grid.addWidget(button, index // 4, index % 4)
@@ -2685,11 +2673,11 @@ def _choose_macos_auth_source_on_launch(config_manager, tray=None, *, force: boo
 
     footer = QHBoxLayout()
     footer.addStretch()
-    exit_btn = QPushButton('Exit Fleasion')
+    exit_btn = QPushButton(tr('app.exit_fleasion'))
     footer.addWidget(exit_btn)
-    manual_btn = QPushButton('Import Token Manually')
+    manual_btn = QPushButton(tr('app.import_token_manually'))
     footer.addWidget(manual_btn)
-    skip_btn = QPushButton('Continue Without Token')
+    skip_btn = QPushButton(tr('app.continue_without_token'))
     footer.addWidget(skip_btn)
     layout.addLayout(footer)
     buttons.extend((manual_btn, skip_btn))
@@ -2701,8 +2689,8 @@ def _choose_macos_auth_source_on_launch(config_manager, tray=None, *, force: boo
             validate_roblosecurity_for_import,
         )
 
-        dlg = AddAccountDialog(dialog, title='Import Roblox Token')
-        dlg.set_ok_label('Import')
+        dlg = AddAccountDialog(dialog, title=tr('app.auth_source.import_title'))
+        dlg.set_ok_label(tr('app.auth_source.import_button'))
         if icon_path := get_icon_path():
             from PyQt6.QtGui import QIcon
 
@@ -2713,15 +2701,15 @@ def _choose_macos_auth_source_on_launch(config_manager, tray=None, *, force: boo
         if not valid:
             QMessageBox.warning(
                 dialog,
-                'Invalid Roblox Token',
-                f'Fleasion could not confirm this Roblox token is valid.\n\n{detail}',
+                tr('app.invalid_roblox_token'),
+                tr('app.fleasion_could_not_confirm_this_roblox_token', value0=detail),
             )
             return
         if not store_manual_roblosecurity(dlg.result_cookie):
             QMessageBox.warning(
                 dialog,
-                'Token Import Failed',
-                'Fleasion could not store the Roblox token encrypted.',
+                tr('app.token_import_failed'),
+                tr('app.fleasion_could_not_store_the_roblox_token'),
             )
             return
         _save_and_accept('manual')
@@ -2780,109 +2768,101 @@ def _show_auth_cookie_unavailable_dialog(details: dict, tray=None):
 
     existing_html = ''
     if existing:
-        existing_html = (
-            'RobloxCookies.dat files were found here, but none could be used:<br>'
-            + '<br>'.join(html.escape(str(path)) for path in existing[:8])
-            + '<br><br>'
+        existing_html = tr(
+            'app.auth_warning.existing_files',
+            paths='<br>'.join(html.escape(str(path)) for path in existing[:8]),
         )
 
     skipped_token = bool(details.get('user_skipped_token'))
     if sys.platform == 'darwin':
-        diagnostics_html = (
-            'Diagnostics:<br>'
-            f'macOS home: {html.escape(str(details.get("home") or "Unknown"))}<br>'
-            f'Fleasion config root: {html.escape(str(details.get("local_appdata") or "Unknown"))}<br>'
-            f'Default cookie path: {html.escape(str(details.get("default_cookie_path") or "Unknown"))}<br>'
-            f'Candidate paths checked: {len(attempted)}<br><br>'
+        diagnostics_html = tr(
+            'app.auth_warning.macos_diagnostics',
+            home=html.escape(str(details.get('home') or tr('app.common.unknown'))),
+            local_appdata=html.escape(
+                str(details.get('local_appdata') or tr('app.common.unknown'))
+            ),
+            default_cookie_path=html.escape(
+                str(details.get('default_cookie_path') or tr('app.common.unknown'))
+            ),
+            attempted_count=len(attempted),
         )
-        most_likely_html = (
-            (
-                'You chose to continue without a Roblox login token.<br><br>'
+        most_likely_html = tr(
+            'app.auth_warning.macos_guidance',
+            lead=(
+                tr('app.auth_warning.macos_skipped')
                 if skipped_token
-                else 'Fleasion checked RobloxCookies.dat plus the selected login source, but found zero usable Roblox login tokens.<br><br>'
-            )
-            + 'This token is required for authenticated asset downloads, account launches, '
-            'private-server joins, and other account-aware features.<br><br>'
-            'Sign in to roblox.com in Chrome, Firefox, Brave, Edge, Chromium, Opera, '
-            'or Vivaldi, then choose that browser in Settings > Roblox Login. Safari is not supported for '
-            'Fleasion login discovery on macOS.<br><br>'
-            'You do not have to use that browser for anything else; it only needs to stay logged in to roblox.com.<br><br>'
-            'You can also store a token manually from Settings > Roblox Login > Import Token, '
-            'or retry from Dashboard > Miscellaneous > Account Manager > Import Browser Login.<br><br>'
+                else tr('app.auth_warning.macos_none')
+            ),
         )
     elif sys.platform.startswith('linux'):
-        diagnostics_html = (
-            'Diagnostics:<br>'
-            f'Linux home: {html.escape(str(details.get("home") or "Unknown"))}<br>'
-            f'Fleasion config root: {html.escape(str(details.get("local_appdata") or "Unknown"))}<br>'
-            f'Default Sober cookie path: {html.escape(str(details.get("default_cookie_path") or "Unknown"))}<br>'
-            f'Candidate paths checked: {len(attempted)}<br><br>'
+        diagnostics_html = tr(
+            'app.auth_warning.linux_diagnostics',
+            home=html.escape(str(details.get('home') or tr('app.common.unknown'))),
+            local_appdata=html.escape(
+                str(details.get('local_appdata') or tr('app.common.unknown'))
+            ),
+            default_cookie_path=html.escape(
+                str(details.get('default_cookie_path') or tr('app.common.unknown'))
+            ),
+            attempted_count=len(attempted),
         )
-        most_likely_html = (
-            (
-                'You chose to continue without a Roblox login token.<br><br>'
+        most_likely_html = tr(
+            'app.auth_warning.linux_guidance',
+            lead=(
+                tr('app.auth_warning.linux_skipped')
                 if skipped_token
-                else 'Fleasion checked Sober cookies plus supported browser login stores, but found zero usable Roblox login tokens.<br><br>'
-            )
-            + 'This token is required for authenticated asset downloads, account launches, '
-            'private-server joins, and other account-aware features.<br><br>'
-            'Sign in through Sober or log in to roblox.com in Firefox or a Chrome-family browser, '
-            'then try again. You can retry from Dashboard > Miscellaneous > Account Manager > '
-            'Import Browser Login.<br><br>'
+                else tr('app.auth_warning.linux_none')
+            ),
         )
     else:
-        diagnostics_html = (
-            'Diagnostics:<br>'
-            f'Windows username: {html.escape(str(details.get("username") or "Unknown"))}<br>'
-            f'USERPROFILE: {html.escape(str(details.get("userprofile") or "Unknown"))}<br>'
-            f'Fleasion LocalAppData: {html.escape(str(details.get("local_appdata") or "Unknown"))}<br>'
-            f'Default cookie path: {html.escape(str(details.get("default_cookie_path") or "Unknown"))}<br>'
-            f'Candidate paths checked: {len(attempted)}<br><br>'
+        diagnostics_html = tr(
+            'app.auth_warning.windows_diagnostics',
+            username=html.escape(str(details.get('username') or tr('app.common.unknown'))),
+            userprofile=html.escape(str(details.get('userprofile') or tr('app.common.unknown'))),
+            local_appdata=html.escape(
+                str(details.get('local_appdata') or tr('app.common.unknown'))
+            ),
+            default_cookie_path=html.escape(
+                str(details.get('default_cookie_path') or tr('app.common.unknown'))
+            ),
+            attempted_count=len(attempted),
         )
-        most_likely_html = (
-            'Most likely cause:<br>'
-            'Fleasion is running under a different Windows user account than Roblox, '
-            'or it inherited the wrong LocalAppData path during elevation/startup.<br><br>'
-            'Quick fix:<br>'
-            '1) Fully exit Fleasion from the system tray.<br>'
-            '2) Start Fleasion from the same Windows account that runs Roblox.<br>'
-            '3) If Windows shows a UAC prompt, do not approve it with a different admin account.<br>'
-            '4) Launch Roblox once, then restart Fleasion.<br><br>'
-        )
+        most_likely_html = tr('app.auth_warning.windows_guidance')
 
     msg = _ForcedAcknowledgeMessageBox(_parent)
     if _on_top:
         msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
-    msg.setWindowTitle('Roblox Token Not Readable')
+    msg.setWindowTitle(tr('app.roblox_token_not_readable'))
     msg.setIcon(QMessageBox.Icon.Warning)
     msg.setText(
-        'Fleasion is continuing without a Roblox login token.'
+        tr('app.fleasion_is_continuing_without_a_roblox_login')
         if skipped_token
-        else 'Fleasion could not read a usable Roblox login token.'
+        else tr('app.fleasion_could_not_read_a_usable_roblox')
     )
     msg.setTextFormat(Qt.TextFormat.RichText)
     msg.setInformativeText(
-        (
-            '<b>MOST FUNCTIONS OF FLEASION WILL NOT FUNCTION until a valid Roblox login token is available.</b><br><br>'
-            'Authenticated Roblox asset downloads may fail until a token is imported.<br><br>'
+        tr(
+            'app.auth_warning.info_skipped'
             if skipped_token
-            else '<b>MOST FUNCTIONS OF FLEASION WILL NOT FUNCTION until a valid Roblox login token is available.</b><br><br>'
-            'Authenticated Roblox asset downloads may fail until this is fixed.<br><br>'
+            else 'app.auth_warning.info_unreadable',
+            most_likely_html=most_likely_html,
+            existing_html=existing_html,
+            diagnostics_html=diagnostics_html,
+            discord_url=html.escape(discord_url),
+            discord_label=html.escape(APP_DISCORD),
         )
-        + most_likely_html
-        + existing_html
-        + diagnostics_html
-        + f'Need help? <a href="{html.escape(discord_url)}">{html.escape(APP_DISCORD)}</a>'
     )
     if sys.platform == 'darwin' or sys.platform.startswith('linux'):
         import webbrowser
 
-        open_login_button = msg.addButton('Open Roblox Login', QMessageBox.ButtonRole.ActionRole)
-        exit_button = msg.addButton('Exit Fleasion', QMessageBox.ButtonRole.DestructiveRole)
+        open_login_button = msg.addButton(
+            tr('app.open_roblox_login'), QMessageBox.ButtonRole.ActionRole
+        )
+        exit_button = msg.addButton(tr('app.exit_fleasion'), QMessageBox.ButtonRole.DestructiveRole)
         msg.addButton(QMessageBox.StandardButton.Ok)
     else:
         open_login_button = None
-        exit_button = msg.addButton('Exit Fleasion', QMessageBox.ButtonRole.DestructiveRole)
+        exit_button = msg.addButton(tr('app.exit_fleasion'), QMessageBox.ButtonRole.DestructiveRole)
         msg.addButton(QMessageBox.StandardButton.Ok)
 
     if icon_path := get_icon_path():
@@ -2904,7 +2884,7 @@ def _show_auth_cookie_unavailable_dialog(details: dict, tray=None):
     ok_button = msg.button(QMessageBox.StandardButton.Ok)
     remaining_seconds = 5
     if ok_button is not None:
-        ok_button.setText(f'OK ({remaining_seconds}s)')
+        ok_button.setText(tr('app.ok_value_s', value0=remaining_seconds))
 
     countdown_timer = QTimer(msg)
     countdown_timer.setInterval(1000)
@@ -2918,9 +2898,9 @@ def _show_auth_cookie_unavailable_dialog(details: dict, tray=None):
             for button in countdown_buttons:
                 button.setEnabled(True)
             if ok_button is not None:
-                ok_button.setText('OK')
+                ok_button.setText(tr('app.ok'))
         elif ok_button is not None:
-            ok_button.setText(f'OK ({remaining_seconds}s)')
+            ok_button.setText(tr('app.ok_value_s', value0=remaining_seconds))
 
     countdown_timer.timeout.connect(_update_auth_warning_countdown)
     countdown_timer.start()
@@ -2947,7 +2927,7 @@ def _show_windows_upstream_firewall_dialog(details: dict) -> None:
 
     from .utils.windows_firewall import get_fleasion_firewall_rule_status
 
-    host = str(details.get('host') or 'a Roblox content server')
+    host = str(details.get('host') or tr('app.firewall.default_content_server'))
     parent = _visible_parent_widget()
     try:
         firewall_status = get_fleasion_firewall_rule_status()
@@ -2958,38 +2938,29 @@ def _show_windows_upstream_firewall_dialog(details: dict) -> None:
     rules_already_present = bool(firewall_status.get('ok'))
     msg = QMessageBox(parent)
     msg.setWindowTitle(
-        'Fleasion - Connection Still Blocked'
+        tr('app.fleasion_connection_still_blocked')
         if rules_already_present
-        else 'Fleasion - Connection Blocked'
+        else tr('app.fleasion_connection_blocked')
     )
     msg.setIcon(QMessageBox.Icon.Warning)
     if rules_already_present:
-        msg.setText(f'Fleasion still cannot connect securely to {host}.')
-        msg.setInformativeText(
-            "Fleasion's Windows Firewall rules are already installed for both Private and "
-            'Public networks, so adding them again will not fix this connection.\n\n'
-            'Another network control may be blocking Fleasion, such as antivirus, a VPN, '
-            'DNS filtering, or an organization policy. Please contact the Fleasion Discord '
-            'for help and include the Fleasion log if possible.'
-        )
+        msg.setText(tr('app.fleasion_still_cannot_connect_securely_to_value', value0=host))
+        msg.setInformativeText(tr('app.fleasion_s_windows_firewall_rules_are_already'))
         repair_button = None
-        help_button = msg.addButton('Get Help on Discord', QMessageBox.ButtonRole.ActionRole)
-    else:
-        msg.setText(f'Fleasion could not connect securely to {host}. Windows may be blocking it.')
-        msg.setInformativeText(
-            'Fleasion needs to reach Roblox over HTTPS, but the connection was refused or '
-            'interrupted before the request completed. This can happen when Windows Firewall, '
-            'antivirus, a VPN, or an organization policy blocks Fleasion.\n\n'
-            'Allow Fleasion through Windows Firewall adds only Fleasion program rules for '
-            'inbound and outbound traffic on Private and Public networks. It requires one '
-            "standard administrator approval and does not change other applications' rules."
+        help_button = msg.addButton(
+            tr('app.get_help_on_discord'), QMessageBox.ButtonRole.ActionRole
         )
+    else:
+        msg.setText(tr('app.fleasion_could_not_connect_securely_to_value', value0=host))
+        msg.setInformativeText(tr('app.fleasion_needs_to_reach_roblox_over_https'))
         repair_button = msg.addButton(
-            'Allow Fleasion Through Firewall', QMessageBox.ButtonRole.AcceptRole
+            tr('app.allow_fleasion_through_firewall'), QMessageBox.ButtonRole.AcceptRole
         )
         help_button = None
-    settings_button = msg.addButton('Open Firewall Settings', QMessageBox.ButtonRole.ActionRole)
-    msg.addButton('Not Now', QMessageBox.ButtonRole.RejectRole)
+    settings_button = msg.addButton(
+        tr('app.open_firewall_settings'), QMessageBox.ButtonRole.ActionRole
+    )
+    msg.addButton(tr('app.not_now'), QMessageBox.ButtonRole.RejectRole)
     msg.setDefaultButton(help_button or settings_button)
     msg.exec()
 
@@ -3029,9 +3000,8 @@ def _show_windows_upstream_firewall_dialog(details: dict) -> None:
             clear_pending_repair(CONFIG_DIR)
             QMessageBox.warning(
                 parent,
-                'Fleasion Firewall Repair Not Started',
-                'Fleasion could not obtain administrator permission, so Windows Firewall '
-                'was not changed. You can retry this action or open Firewall Settings manually.',
+                tr('app.fleasion_firewall_repair_not_started'),
+                tr('app.fleasion_could_not_obtain_administrator_permission_so'),
             )
         return
 
@@ -3048,7 +3018,9 @@ def _show_windows_upstream_firewall_dialog(details: dict) -> None:
             )
         except OSError as exc:
             QMessageBox.warning(
-                msg.parentWidget(), 'Fleasion', f'Could not open Firewall settings: {exc}'
+                msg.parentWidget(),
+                tr('app.fleasion'),
+                tr('app.could_not_open_firewall_settings_value', value0=exc),
             )
         return
 
@@ -3056,13 +3028,11 @@ def _show_windows_upstream_firewall_dialog(details: dict) -> None:
 def _show_tls_self_test_failed_dialog(details: dict) -> None:
     """Show a user-facing error when the proxy cannot pass startup TLS checks."""
     hosts = details.get('hosts') or []
-    host_text = ', '.join(str(host) for host in hosts) or 'the configured Roblox routes'
+    host_text = ', '.join(str(host) for host in hosts) or tr('app.tls_self_test.default_routes')
     QMessageBox.critical(
         _visible_parent_widget(),
-        'Fleasion - Proxy Startup Failed',
-        'Fleasion could not start its local proxy because its TLS self-test failed.\n\n'
-        f'Routes tested: {host_text}\n\n'
-        'Check the Fleasion log for the certificate or network error, then restart Fleasion.',
+        tr('app.fleasion_proxy_startup_failed'),
+        tr('app.fleasion_could_not_start_its_local_proxy_2', value0=host_text),
     )
 
 
@@ -3100,8 +3070,8 @@ class _ProxyErrorInvoker(QObject):
                     log_buffer.log('ProxyHelper', f'macOS proxy helper install failed: {detail}')
                     QMessageBox.warning(
                         _visible_parent_widget(),
-                        'Fleasion - Proxy Helper Installation Failed',
-                        f'Fleasion could not install or start the macOS proxy helper.\n\n{detail}',
+                        tr('app.fleasion_proxy_helper_installation_failed'),
+                        tr('app.fleasion_could_not_install_or_start_the', value0=detail),
                     )
         elif code == 'macos_ca_trust_failed':
             _show_macos_ca_trust_failed_dialog(details)
@@ -3112,10 +3082,7 @@ class _ProxyErrorInvoker(QObject):
                     _visible_parent_widget(),
                     denied_dirs,
                     on_repaired=self.retry_proxy.emit,
-                    failure_text=(
-                        'Fleasion could not update cacert.pem for Env Proxy in these Roblox '
-                        'Player installations'
-                    ),
+                    failure_text=tr('app.roblox_permissions.env_proxy_failure'),
                 )
             else:
                 _show_roblox_ca_patch_failed_dialog(details)
@@ -3140,8 +3107,8 @@ class _ProxyErrorInvoker(QObject):
                     )
                     QMessageBox.warning(
                         _visible_parent_widget(),
-                        'Fleasion - Proxy Helper Reinstall Failed',
-                        f'Fleasion could not reinstall or restart the macOS proxy helper.\n\n{detail}',
+                        tr('app.fleasion_proxy_helper_reinstall_failed'),
+                        tr('app.fleasion_could_not_reinstall_or_restart_the', value0=detail),
                     )
         elif code == 'upstream_connect_failed':
             _show_windows_upstream_firewall_dialog(details)
@@ -3177,10 +3144,8 @@ def _disable_proxy_features_after_start_failure(
         )
         QMessageBox.warning(
             _visible_parent_widget(),
-            'Fleasion - Linux Proxy Helper Unavailable',
-            'Fleasion could not start the Linux proxy helper.\n\n'
-            f'{reason}\n\n'
-            'Proxy features remain enabled in Settings, so Fleasion will try again the next time you launch it.',
+            tr('app.fleasion_linux_proxy_helper_unavailable'),
+            tr('app.fleasion_could_not_start_the_linux_proxy', value0=reason),
         )
         if tray is not None and hasattr(tray, 'update_status'):
             tray.update_status()
@@ -3607,22 +3572,18 @@ class RobloxExitMonitor(QObject):
         dialog = QDialog(_parent)
         if _on_top:
             dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
-        dialog.setWindowTitle('Roblox Studio Detected')
+        dialog.setWindowTitle(tr('app.roblox_studio_detected'))
 
         layout = QVBoxLayout(dialog)
         layout.setSpacing(12)
 
-        label = QLabel(
-            'Roblox Studio is currently open.\n\n'
-            'Asset modification and scraping may not work correctly while '
-            'Roblox Studio is running.'
-        )
+        label = QLabel(tr('app.roblox_studio_is_currently_open_asset_modification'))
         label.setWordWrap(True)
         layout.addWidget(label)
 
         btn_layout = QHBoxLayout()
-        suppress_btn = QPushButton("Don't Show for Session")
-        ok_btn = QPushButton('OK')
+        suppress_btn = QPushButton(tr('app.don_t_show_for_session'))
+        ok_btn = QPushButton(tr('app.ok'))
         ok_btn.setDefault(True)
         ok_btn.setFixedWidth(80)
 
@@ -4000,7 +3961,7 @@ def _check_linux_gui_dependencies() -> bool:
         return True
 
     package_list = ' '.join(missing)
-    install_command = f'sudo pacman -S --needed {package_list}'
+    install_command = verbatim(f'sudo pacman -S --needed {package_list}')
     log_buffer.log(
         'Linux GUI',
         'A required Arch Linux GUI package is missing.\n'
@@ -4010,12 +3971,12 @@ def _check_linux_gui_dependencies() -> bool:
     )
     QMessageBox.critical(
         None,
-        f'{APP_NAME} - System Package Required',
-        'Fleasion needs a system package before its tray icon can work reliably.\n\n'
-        f'Required package:\n  • {package_list}\n\n'
-        f'Install it with:\n  {install_command}\n\n'
-        'Restart Fleasion after installation. Without this package, PyQt6 may create a '
-        'tray object but your desktop may never show its icon.',
+        tr('app.value_system_package_required', value0=APP_NAME),
+        tr(
+            'app.fleasion_needs_a_system_package_before_its',
+            value0=package_list,
+            value1=install_command,
+        ),
         QMessageBox.StandardButton.Ok,
     )
     return False
@@ -4120,8 +4081,8 @@ def main():
         app = QApplication(sys.argv)
         QMessageBox.critical(
             None,
-            'Unsupported Operating System',
-            'Fleasion supports Windows, macOS, and Linux.\n\nThis application will now exit.',
+            tr('app.unsupported_operating_system'),
+            tr('app.fleasion_supports_windows_macos_and_linux_this'),
             QMessageBox.StandardButton.Ok,
         )
         sys.exit(1)
@@ -4160,9 +4121,8 @@ def main():
     if sys.platform == 'darwin' and _is_admin():
         QMessageBox.critical(
             None,
-            'Do Not Run with sudo',
-            'Run Fleasion as your normal macOS user.\n\n'
-            'Fleasion installs a small privileged proxy helper when needed; the dashboard and menu-bar app must not run as root.',
+            tr('app.do_not_run_with_sudo'),
+            tr('app.run_fleasion_as_your_normal_macos_user_2'),
         )
         sys.exit(1)
 
@@ -4240,10 +4200,8 @@ def main():
             # silently does nothing.  Branch on whether WE are admin rather than
             # trying to inspect the other process's token cross-privilege.
             msg_box = QMessageBox()
-            msg_box.setWindowTitle('Already Running')
-            msg_box.setText(
-                'Another instance of Fleasion is already running (Check your system tray).'
-            )
+            msg_box.setWindowTitle(tr('app.already_running'))
+            msg_box.setText(tr('app.another_instance_of_fleasion_is_already_running'))
             msg_box.setIcon(QMessageBox.Icon.Warning)
 
             # Set icon if available
@@ -4252,12 +4210,12 @@ def main():
 
                 msg_box.setWindowIcon(QIcon(str(icon_path)))
 
-            msg_box.setInformativeText('Do you want to run another instance anyway?')
+            msg_box.setInformativeText(tr('app.do_you_want_to_run_another_instance'))
 
             if _is_admin() or sys.platform == 'darwin' or sys.platform.startswith('linux'):
                 # Already elevated — can kill any process directly.
                 kill_others_button = msg_box.addButton(
-                    'Kill Others', QMessageBox.ButtonRole.AcceptRole
+                    tr('app.kill_others'), QMessageBox.ButtonRole.AcceptRole
                 )
                 _kill_requires_elevation = False
             else:
@@ -4265,15 +4223,15 @@ def main():
                 # A single "Elevate & Kill Others" relaunches as admin with
                 # --kill-others so the elevated copy handles it automatically.
                 kill_others_button = msg_box.addButton(
-                    'Elevate && Kill Others (Recommended)',
+                    tr('app.elevate_kill_others_recommended'),
                     QMessageBox.ButtonRole.AcceptRole,
                 )
                 _kill_requires_elevation = True
 
             run_anyway_button = msg_box.addButton(
-                'Run Anyway (Bad)', QMessageBox.ButtonRole.AcceptRole
+                tr('app.run_anyway_bad'), QMessageBox.ButtonRole.AcceptRole
             )
-            cancel_button = msg_box.addButton('Cancel', QMessageBox.ButtonRole.RejectRole)
+            cancel_button = msg_box.addButton(tr('app.cancel'), QMessageBox.ButtonRole.RejectRole)
             msg_box.setDefaultButton(cancel_button)
 
             msg_box.exec()
@@ -4303,6 +4261,9 @@ def main():
     # Initialize config manager before the elevation gate so the non-elevated
     # process can still build the prompt UI and show a fallback dialog.
     config_manager = ConfigManager()
+    set_language(config_manager.language)
+    if not _suppress_dashboard and not config_manager.first_time_setup_complete:
+        _prompt_first_time_language(config_manager)
     if sys.platform.startswith('linux'):
         from .utils.platform_linux import set_linux_client_preference
 
@@ -4393,7 +4354,7 @@ def main():
             return
         if code == 'linux_helper_unavailable':
             proxy_error_invoker.disable_proxy_features.emit(
-                'Linux Polkit approval was denied or the proxy helper could not start'
+                tr('app.linux_proxy_helper.start_denied')
             )
             return
         if code == 'tls_self_test_failed':
@@ -4600,6 +4561,7 @@ def main():
         _terminate_env_player = terminate_roblox
 
     else:
+
         def _relaunch_env_player(
             _proxy_url: str,
             _target: str | None,
@@ -4685,19 +4647,13 @@ def main():
 
         gate = QDialog(None)
         gate.setModal(True)
-        gate.setWindowTitle('Administrator Permission Required')
+        gate.setWindowTitle(tr('app.administrator_permission_required'))
         gate.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
         gate_layout = QVBoxLayout(gate)
         if sys.platform == 'darwin':
-            gate_text = (
-                'Fleasion is waiting for macOS administrator permission.\n\n'
-                'Approve the helper install prompt so the normal-user app can use proxy features.'
-            )
+            gate_text = tr('app.admin_gate.macos')
         else:
-            gate_text = (
-                'Fleasion is waiting for Windows administrator permission.\n\n'
-                'If the UAC prompt is flashing on the taskbar, click it and choose Yes or No.'
-            )
+            gate_text = tr('app.admin_gate.windows')
         gate_label = QLabel(gate_text)
         gate_label.setWordWrap(True)
         gate_layout.addWidget(gate_label)
@@ -4743,17 +4699,14 @@ def main():
             return
 
         prompt = QMessageBox(_visible_parent_widget())
-        prompt.setWindowTitle('Install Proxy Helper')
+        prompt.setWindowTitle(tr('app.install_proxy_helper'))
         prompt.setIcon(QMessageBox.Icon.Information)
-        prompt.setText('Install the Fleasion macOS proxy helper?')
-        prompt.setInformativeText(
-            'macOS requires a small root service to own local port 443, update /etc/hosts, '
-            "and patch Roblox's SSL trust bundle.\n\n"
-            'This requires one administrator approval now. Fleasion itself will keep running as your normal user, '
-            'and future launches and Run on Boot will not ask for an administrator password.'
+        prompt.setText(tr('app.install_the_fleasion_macos_proxy_helper'))
+        prompt.setInformativeText(tr('app.macos_requires_a_small_root_service_to'))
+        install_button = prompt.addButton(
+            tr('app.install_helper'), QMessageBox.ButtonRole.AcceptRole
         )
-        install_button = prompt.addButton('Install Helper', QMessageBox.ButtonRole.AcceptRole)
-        cancel_button = prompt.addButton('Not Now', QMessageBox.ButtonRole.RejectRole)
+        cancel_button = prompt.addButton(tr('app.not_now'), QMessageBox.ButtonRole.RejectRole)
         prompt.setDefaultButton(install_button)
         prompt.exec()
         if prompt.clickedButton() == cancel_button:
@@ -4769,8 +4722,8 @@ def main():
         log_buffer.log('ProxyHelper', f'macOS proxy helper installation failed: {detail}')
         QMessageBox.warning(
             _visible_parent_widget(),
-            'Fleasion - Proxy Helper Installation Failed',
-            f'Fleasion could not install or start the macOS proxy helper.\n\n{detail}',
+            tr('app.fleasion_proxy_helper_installation_failed'),
+            tr('app.fleasion_could_not_install_or_start_the', value0=detail),
         )
 
     if sys.platform == 'darwin' and config_manager.proxy_features_enabled and not start_proxy:
@@ -4831,15 +4784,11 @@ def main():
         _no_roblox_msg = QMessageBox(_parent)
         if _on_top:
             _no_roblox_msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
-        _no_roblox_msg.setWindowTitle('Roblox Not Found')
+        _no_roblox_msg.setWindowTitle(tr('app.roblox_not_found'))
         _no_roblox_msg.setIcon(QMessageBox.Icon.Warning)
-        _no_roblox_msg.setText('Roblox does not appear to be installed.')
+        _no_roblox_msg.setText(tr('app.roblox_does_not_appear_to_be_installed'))
         _no_roblox_msg.setInformativeText(
-            'Fleasion could not find any Roblox installations on this computer.\n\n'
-            'If this is incorrect, click OK and launch Roblox, Fleasion will attempt to detect it.\n\n'
-            'Please close Fleasion, install Roblox, and then relaunch Fleasion.\n\n'
-            "Without Roblox installed, the majority of Fleasion's features cannot be used.\n\n"
-            'Note: To fully close Fleasion, right click Fleasion in the system tray and click Exit.'
+            tr('app.fleasion_could_not_find_any_roblox_installations')
         )
         _no_roblox_msg.setStandardButtons(QMessageBox.StandardButton.Ok)
         if icon_path := get_icon_path():
@@ -4875,33 +4824,8 @@ def main():
         welcome_box = _FirstTimeSetupMessageBox(_parent)
         if _on_top:
             welcome_box.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
-        welcome_box.setWindowTitle('Welcome')
-        welcome_box.setText(
-            'Welcome to Fleasion!\n\n'
-            'Fleasion uses Roblox Env Proxy mode by default. Normal use does not require '
-            'administrator permission, and Roblox Studio is left untouched. You can switch '
-            'to Hosts File mode at any time under Settings > Proxy > Proxy Mode; that mode '
-            'may require administrator permission.\n\n'
-            'Quick setup guide:\n\n'
-            '1. Use the Replacer tab to manage asset replacements. At the bottom, add IDs you want '
-            'to replace, then choose a replacement ID, URL, or local file.\n\n'
-            '2. To find asset IDs, click "Scraped games..." in the Replacer tab. Click an asset ID '
-            'to add it to Asset IDs, or click Replacement ID to use that asset as the replacement.\n\n'
-            '3. Click "Add new", then enable your config at the top next to "Enabled". For most '
-            'users this means turning on "Default".\n\n'
-            '4. Click "Clear Cache" before joining a game so Roblox downloads the '
-            'assets through Fleasion instead of using cached originals.\n\n'
-            '5. For assets that are not in Scraped games, open the Scraper tab, enable the cache '
-            'scraper, clear cache, and join the Roblox game. Every loaded asset will appear there. '
-            'Right-click assets to download them, Replace them, or Replace With them.\n\n'
-            'Other tabs are optional tools and settings and are self explanatory.\n\n'
-            'Fleasion is client-sided: only you see your changes. Roblox currently cannot/ '
-            "doesn't ban or warn you for local asset replacement, and game developers cannot meaningfully "
-            'detect it. Game moderators can still ban users for any reason, so use your own '
-            'judgment, we take no responsiblity. Roblox has no known detections for fleasion and there '
-            'has been no reported cases of warnings or bans for using it, but Roblox has stated it is '
-            'not permitted.'
-        )
+        welcome_box.setWindowTitle(tr('onboarding.welcome.title'))
+        welcome_box.setText(tr('onboarding.welcome.body'))
         welcome_box.setIcon(QMessageBox.Icon.Information)
         welcome_box.setStandardButtons(QMessageBox.StandardButton.Ok)
         ok_button = welcome_box.button(QMessageBox.StandardButton.Ok)
@@ -4909,7 +4833,7 @@ def main():
         remaining_seconds = wait_seconds
         if ok_button is not None:
             ok_button.setEnabled(False)
-            ok_button.setText(f'OK ({remaining_seconds}s)')
+            ok_button.setText(tr('onboarding.welcome.ok_countdown', seconds=remaining_seconds))
 
             countdown_timer = QTimer(welcome_box)
             countdown_timer.setInterval(1000)
@@ -4920,10 +4844,12 @@ def main():
                 if remaining_seconds <= 0:
                     countdown_timer.stop()
                     welcome_box.allow_accept()
-                    ok_button.setText('OK')
+                    ok_button.setText(tr('onboarding.welcome.ok'))
                     ok_button.setEnabled(True)
                 else:
-                    ok_button.setText(f'OK ({remaining_seconds}s)')
+                    ok_button.setText(
+                        tr('onboarding.welcome.ok_countdown', seconds=remaining_seconds)
+                    )
 
             countdown_timer.timeout.connect(_update_welcome_countdown)
             countdown_timer.start()

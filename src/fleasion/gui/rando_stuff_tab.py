@@ -1,5 +1,7 @@
 """Rando Stuff tab - miscellaneous Roblox utilities (multi-instance, asset download, rejoin)."""
 
+from ..localization import tr, tr_count
+
 import ctypes
 import ctypes.wintypes as wintypes
 import json
@@ -350,13 +352,13 @@ def _find_roblox_exe() -> str | None:
 def _linux_client_display_name() -> str:
     """Return the active registered Linux client name without hard-coding it."""
     if not IS_LINUX:
-        return 'Linux Roblox client'
+        return tr('rando.linux_roblox_client')
     try:
         from ..utils.platform_linux import selected_linux_client_display_name
 
         return selected_linux_client_display_name()
     except Exception:
-        return 'Linux Roblox client'
+        return tr('rando.linux_roblox_client')
 
 
 def _build_roblox_player_uri(
@@ -478,9 +480,9 @@ class AddAccountDialog(QDialog):
     _validated = pyqtSignal(str, str)  # username, cookie
     _failed = pyqtSignal(str)  # error message
 
-    def __init__(self, parent=None, title='Add Account'):
+    def __init__(self, parent=None, title: str | None = None):
         super().__init__(parent)
-        self.setWindowTitle(title)
+        self.setWindowTitle(title or tr('rando.account.add_title'))
         self.setMinimumWidth(500)
         self.result_username: str | None = None
         self.result_cookie: str | None = None
@@ -490,11 +492,11 @@ class AddAccountDialog(QDialog):
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel('Paste your .ROBLOSECURITY cookie:'))
+        layout.addWidget(QLabel(tr('ui.gui.rando_stuff_tab.paste_your_roblosecurity_cookie')))
 
         self._input = QPlainTextEdit()
         self._input.setPlaceholderText(
-            '_|WARNING:-DO-NOT-SHARE-THIS.--Sharing-this-will-allow-someone-to-log-in-as-you-and-to-steal-your-ROBUX-and-items.|_...'
+            tr('ui.gui.rando_stuff_tab.warning_do_not_share_this_sharing_this')
         )
         self._input.setFixedHeight(70)
         layout.addWidget(self._input)
@@ -504,9 +506,9 @@ class AddAccountDialog(QDialog):
         layout.addWidget(self._status)
 
         btn_row = QHBoxLayout()
-        self._ok_btn = QPushButton('Add')
+        self._ok_btn = QPushButton(tr('ui.gui.rando_stuff_tab.add'))
         self._ok_btn.clicked.connect(self._on_ok)
-        cancel_btn = QPushButton('Cancel')
+        cancel_btn = QPushButton(tr('ui.gui.rando_stuff_tab.cancel'))
         cancel_btn.clicked.connect(self.reject)
         btn_row.addWidget(self._ok_btn)
         btn_row.addWidget(cancel_btn)
@@ -518,10 +520,10 @@ class AddAccountDialog(QDialog):
     def _on_ok(self):
         cookie = self._input.toPlainText().strip()
         if not cookie:
-            self._status.setText('Please paste a cookie.')
+            self._status.setText(tr('ui.gui.rando_stuff_tab.please_paste_a_cookie'))
             return
         self._ok_btn.setEnabled(False)
-        self._status.setText('Validating…')
+        self._status.setText(tr('ui.gui.rando_stuff_tab.validating'))
         threading.Thread(target=self._validate, args=(cookie,), daemon=True).start()
 
     def _validate(self, cookie: str):
@@ -541,9 +543,11 @@ class AddAccountDialog(QDialog):
                 username = resp.json().get('name', 'Unknown')
                 self._validated.emit(username, cookie)
             else:
-                self._failed.emit(f'Invalid cookie (HTTP {resp.status_code}).')
+                self._failed.emit(
+                    tr('rando.account.invalid_cookie_http', status_code=resp.status_code)
+                )
         except Exception as exc:
-            self._failed.emit(f'Error: {exc}')
+            self._failed.emit(tr('rando.account.error', error=exc))
 
     def _on_validated(self, username: str, cookie: str):
         self.result_username = username
@@ -899,43 +903,47 @@ class RandoStuffTab(QWidget):
         root.setContentsMargins(10, 10, 10, 10)
         root.setSpacing(10)
 
-        rejoin_group = QGroupBox('Reserved Server Rejoin')
+        rejoin_group = QGroupBox(tr('ui.gui.rando_stuff_tab.reserved_server_rejoin'))
         rjl = QVBoxLayout(rejoin_group)
 
         btn_row = QHBoxLayout()
-        self._btn = QPushButton('Rejoin Reserved Server')
+        self._btn = QPushButton(tr('ui.gui.rando_stuff_tab.rejoin_reserved_server'))
         btn_row.addWidget(self._btn)
-        help_btn = QPushButton('?')
+        help_btn = QPushButton(tr('ui.gui.rando_stuff_tab.text'))
         _btn_h = self._btn.sizeHint().height()
         help_btn.setFixedSize(_btn_h, _btn_h)
-        help_btn.setToolTip('What is a reserved server?')
+        help_btn.setToolTip(tr('ui.gui.rando_stuff_tab.what_is_a_reserved_server'))
         help_btn.clicked.connect(self._show_reserved_server_help)
         btn_row.addWidget(help_btn)
         btn_row.addStretch()
         rjl.addLayout(btn_row)
 
         place_row = QHBoxLayout()
-        place_lbl = QLabel('placeID:')
+        place_lbl = QLabel(tr('ui.gui.rando_stuff_tab.placeid'))
         place_row.addWidget(place_lbl)
         # shift the reserved server placeID input box slightly to the right (only the input)
         self._place_id_input = QLineEdit()
-        self._place_id_input.setPlaceholderText('Reserved server placeID')
+        self._place_id_input.setPlaceholderText(
+            tr('ui.gui.rando_stuff_tab.reserved_server_placeid')
+        )
         self._place_id_input.textChanged.connect(self._on_reserved_fields_changed)
         place_row.addSpacing(23)
         place_row.addWidget(self._place_id_input, 1)
         rjl.addLayout(place_row)
 
         access_row = QHBoxLayout()
-        access_lbl = QLabel('accessCode:')
+        access_lbl = QLabel(tr('ui.gui.rando_stuff_tab.accesscode'))
         access_lbl.setMinimumWidth(place_lbl.sizeHint().width())
         access_row.addWidget(access_lbl)
         self._access_code_input = QLineEdit()
-        self._access_code_input.setPlaceholderText('Reserved server accessCode')
+        self._access_code_input.setPlaceholderText(
+            tr('ui.gui.rando_stuff_tab.reserved_server_accesscode')
+        )
         self._access_code_input.textChanged.connect(self._on_reserved_fields_changed)
         access_row.addWidget(self._access_code_input, 1)
         rjl.addLayout(access_row)
 
-        self._lbl_timer = QLabel('Timer: —')
+        self._lbl_timer = QLabel(tr('ui.gui.rando_stuff_tab.timer'))
         rjl.addWidget(self._lbl_timer)
 
         self._rejoin_timer = QTimer(self)
@@ -946,19 +954,19 @@ class RandoStuffTab(QWidget):
         self._rejoin_proxy_gate = ProxyGate(rejoin_group, compact=True)
         root.addWidget(self._rejoin_proxy_gate)
 
-        mi_group = QGroupBox('Multi-Instance')
+        mi_group = QGroupBox(tr('ui.gui.rando_stuff_tab.multi_instance'))
         mil = QVBoxLayout(mi_group)
-        self._multi_chk = QCheckBox('Enable Multi-Instance launching')
+        self._multi_chk = QCheckBox(tr('ui.gui.rando_stuff_tab.enable_multi_instance_launching'))
         if not IS_WINDOWS:
             self._multi_chk.setChecked(False)
             self._multi_chk.setEnabled(False)
             self._multi_chk.setToolTip(
-                'Multi-instance launching depends on a Windows Roblox singleton event.'
+                tr('ui.gui.rando_stuff_tab.multi_instance_launching_depends_on_a_windows')
             )
         mil.addWidget(self._multi_chk)
         root.addWidget(mi_group)
 
-        am_group = QGroupBox('Account Manager')
+        am_group = QGroupBox(tr('ui.gui.rando_stuff_tab.account_manager'))
         aml = QVBoxLayout(am_group)
 
         self._account_list = QListWidget()
@@ -966,35 +974,37 @@ class RandoStuffTab(QWidget):
         self._account_list.customContextMenuRequested.connect(self._on_account_ctx_menu)
         aml.addWidget(self._account_list)
 
-        self._selected_label = QLabel('Selected: (none)')
+        self._selected_label = QLabel(tr('ui.gui.rando_stuff_tab.selected_none'))
         self._selected_label.setStyleSheet('color: palette(placeholder-text); font-size: 9pt;')
         aml.addWidget(self._selected_label)
 
         self._private_server_input = QLineEdit()
         self._private_server_input.setPlaceholderText(
-            'Game link, e.g. https://www.roblox.com/games/123/Name or ...?privateServerLinkCode=AbCd...'
+            tr('ui.gui.rando_stuff_tab.game_link_e_g_https_www_roblox')
         )
         self._private_server_input.textChanged.connect(self._on_game_link_changed)
         aml.addWidget(self._private_server_input)
 
         self._subplace_id_input = QLineEdit()
-        self._subplace_id_input.setPlaceholderText('Subplace ID: (Optional)')
+        self._subplace_id_input.setPlaceholderText(
+            tr('ui.gui.rando_stuff_tab.subplace_id_optional')
+        )
         self._subplace_id_input.textChanged.connect(self._on_subplace_id_changed)
         aml.addWidget(self._subplace_id_input)
 
         self._job_id_input = QLineEdit()
-        self._job_id_input.setPlaceholderText('JobId: (Optional)')
+        self._job_id_input.setPlaceholderText(tr('ui.gui.rando_stuff_tab.jobid_optional'))
         aml.addWidget(self._job_id_input)
 
         am_btns = QHBoxLayout()
-        self._add_acct_btn = QPushButton('Add Account')
+        self._add_acct_btn = QPushButton(tr('ui.gui.rando_stuff_tab.add_account'))
         self._add_acct_btn.clicked.connect(self._on_add_account)
-        self._import_browser_btn = QPushButton('Import Browser Login')
+        self._import_browser_btn = QPushButton(tr('ui.gui.rando_stuff_tab.import_browser_login'))
         self._import_browser_btn.clicked.connect(self._on_import_browser_account)
         self._import_browser_btn.setVisible(IS_MACOS or IS_LINUX)
-        self._launch_acct_btn = QPushButton('Launch')
+        self._launch_acct_btn = QPushButton(tr('ui.gui.rando_stuff_tab.launch'))
         self._launch_acct_btn.clicked.connect(self._on_launch_account)
-        self._switch_acct_btn = QPushButton('Switch to selected')
+        self._switch_acct_btn = QPushButton(tr('ui.gui.rando_stuff_tab.switch_to_selected'))
         self._switch_acct_btn.clicked.connect(self._on_switch_account)
         am_btns.addWidget(self._add_acct_btn)
         am_btns.addWidget(self._import_browser_btn)
@@ -1007,29 +1017,37 @@ class RandoStuffTab(QWidget):
 
         self._populate_account_list()
 
-        username_group = QGroupBox('Username Spoofer (CLIENT SIDED, ONLY YOU SEE IT)')
+        username_group = QGroupBox(
+            tr('ui.gui.rando_stuff_tab.username_spoofer_client_sided_only_you_see')
+        )
         username_layout = QVBoxLayout(username_group)
 
-        self._username_save_chk = QCheckBox('Save Username Spoofer Settings')
+        self._username_save_chk = QCheckBox(
+            tr('ui.gui.rando_stuff_tab.save_username_spoofer_settings')
+        )
         self._username_save_chk.setChecked(
             bool(self._username_spoofer_state.get('save_settings', False))
         )
         username_layout.addWidget(self._username_save_chk)
 
         others_row = QHBoxLayout()
-        others_label = QLabel('Everyone Else:')
+        others_label = QLabel(tr('ui.gui.rando_stuff_tab.everyone_else'))
         others_label.setMinimumWidth(105)
         self._username_others_input = QLineEdit()
-        self._username_others_input.setPlaceholderText('Spoofed username')
+        self._username_others_input.setPlaceholderText(
+            tr('ui.gui.rando_stuff_tab.spoofed_username')
+        )
         self._username_others_input.setText(
             str(self._username_spoofer_state.get('others_name', ''))
         )
-        self._username_others_apply_chk = QCheckBox('Apply Ingame')
+        self._username_others_apply_chk = QCheckBox(tr('ui.gui.rando_stuff_tab.apply_ingame'))
         self._username_others_apply_chk.setChecked(
             bool(self._username_spoofer_state.get('others_apply_ingame', False))
         )
-        self._username_others_verified_chk = QCheckBox('Verified')
-        self._username_others_verified_chk.setToolTip('Force other profiles to show as verified')
+        self._username_others_verified_chk = QCheckBox(tr('ui.gui.rando_stuff_tab.verified'))
+        self._username_others_verified_chk.setToolTip(
+            tr('ui.gui.rando_stuff_tab.force_other_profiles_to_show_as_verified')
+        )
         self._username_others_verified_chk.setChecked(
             bool(self._username_spoofer_state.get('others_verified', False))
         )
@@ -1040,23 +1058,27 @@ class RandoStuffTab(QWidget):
         username_layout.addLayout(others_row)
 
         self_row = QHBoxLayout()
-        self_label = QLabel('Your Username:')
+        self_label = QLabel(tr('ui.gui.rando_stuff_tab.your_username'))
         self_label.setMinimumWidth(105)
         self._username_self_input = QLineEdit()
-        self._username_self_input.setPlaceholderText('Spoofed username')
+        self._username_self_input.setPlaceholderText(tr('ui.gui.rando_stuff_tab.spoofed_username'))
         self._username_self_input.setText(str(self._username_spoofer_state.get('self_name', '')))
-        self._username_self_apply_chk = QCheckBox('Apply Ingame')
+        self._username_self_apply_chk = QCheckBox(tr('ui.gui.rando_stuff_tab.apply_ingame'))
         self._username_self_apply_chk.setChecked(
             bool(self._username_spoofer_state.get('self_apply_ingame', False))
         )
-        self._username_self_verified_chk = QCheckBox('Verified')
-        self._username_self_verified_chk.setToolTip('Force your own profile to show as verified')
+        self._username_self_verified_chk = QCheckBox(tr('ui.gui.rando_stuff_tab.verified'))
+        self._username_self_verified_chk.setToolTip(
+            tr('ui.gui.rando_stuff_tab.force_your_own_profile_to_show_as')
+        )
         self._username_self_verified_chk.setChecked(
             bool(self._username_spoofer_state.get('self_verified', False))
         )
-        self._username_self_game_creator_chk = QCheckBox('Make Yourself Game Creator')
+        self._username_self_game_creator_chk = QCheckBox(
+            tr('ui.gui.rando_stuff_tab.make_yourself_game_creator')
+        )
         self._username_self_game_creator_chk.setToolTip(
-            'Force gamejoin creator metadata to use your current Roblox user ID'
+            tr('ui.gui.rando_stuff_tab.force_gamejoin_creator_metadata_to_use_your')
         )
         self._username_self_game_creator_chk.setChecked(
             bool(self._username_spoofer_state.get('self_game_creator', False))
@@ -1071,26 +1093,26 @@ class RandoStuffTab(QWidget):
         self._username_spoofer_proxy_gate = ProxyGate(username_group, compact=True)
         root.addWidget(self._username_spoofer_proxy_gate)
 
-        ac_group = QGroupBox('R6 ↔ R15 Animation Converter')
+        ac_group = QGroupBox(tr('ui.gui.rando_stuff_tab.r6_r15_animation_converter'))
         acl = QVBoxLayout(ac_group)
 
         import_row = QHBoxLayout()
-        self._ac_import_btn = QPushButton('Import .rbxmx / .rbxm…')
+        self._ac_import_btn = QPushButton(tr('ui.gui.rando_stuff_tab.import_rbxmx_rbxm'))
         self._ac_import_btn.clicked.connect(self._ac_import)
-        self._ac_file_lbl = QLabel('No file loaded')
+        self._ac_file_lbl = QLabel(tr('ui.gui.rando_stuff_tab.no_file_loaded'))
         self._ac_file_lbl.setWordWrap(True)
         import_row.addWidget(self._ac_import_btn)
         import_row.addWidget(self._ac_file_lbl, 1)
         acl.addLayout(import_row)
 
-        self._ac_rig_lbl = QLabel('Detected rig: —')
+        self._ac_rig_lbl = QLabel(tr('ui.gui.rando_stuff_tab.detected_rig'))
         acl.addWidget(self._ac_rig_lbl)
 
         conv_row = QHBoxLayout()
-        self._ac_to_r15_btn = QPushButton('Convert R6 → R15')
+        self._ac_to_r15_btn = QPushButton(tr('ui.gui.rando_stuff_tab.convert_r6_r15'))
         self._ac_to_r15_btn.setEnabled(False)
         self._ac_to_r15_btn.clicked.connect(lambda: self._ac_convert('R15'))
-        self._ac_to_r6_btn = QPushButton('Convert R15 → R6')
+        self._ac_to_r6_btn = QPushButton(tr('ui.gui.rando_stuff_tab.convert_r15_r6'))
         self._ac_to_r6_btn.setEnabled(False)
         self._ac_to_r6_btn.clicked.connect(lambda: self._ac_convert('R6'))
         conv_row.addWidget(self._ac_to_r15_btn)
@@ -1103,20 +1125,22 @@ class RandoStuffTab(QWidget):
 
         root.addWidget(ac_group)
 
-        subplace_blacklist_group = QGroupBox('Subplace Blacklist')
+        subplace_blacklist_group = QGroupBox(tr('ui.gui.rando_stuff_tab.subplace_blacklist'))
         subplace_blacklist_layout = QVBoxLayout(subplace_blacklist_group)
         subplace_blacklist_row = QHBoxLayout()
-        self._subplace_blacklist_btn = QPushButton('Blacklist Subplaces...')
+        self._subplace_blacklist_btn = QPushButton(tr('ui.gui.rando_stuff_tab.blacklist_subplaces'))
         self._subplace_blacklist_btn.clicked.connect(self._show_subplace_blacklist_dialog)
         subplace_blacklist_row.addWidget(self._subplace_blacklist_btn)
-        self._subplace_unblock_btn = QPushButton('Unblock For 5s')
+        self._subplace_unblock_btn = QPushButton(tr('ui.gui.rando_stuff_tab.unblock_for_5s'))
         self._subplace_unblock_btn.clicked.connect(self._on_subplace_unblock_for_5s)
         subplace_blacklist_row.addWidget(self._subplace_unblock_btn)
         subplace_blacklist_row.addStretch()
         subplace_blacklist_layout.addLayout(subplace_blacklist_row)
 
-        self._subplace_block_radio = QRadioButton('Block Subplace')
-        self._subplace_stall_radio = QRadioButton('Infinitely Stall Subplace')
+        self._subplace_block_radio = QRadioButton(tr('ui.gui.rando_stuff_tab.block_subplace'))
+        self._subplace_stall_radio = QRadioButton(
+            tr('ui.gui.rando_stuff_tab.infinitely_stall_subplace')
+        )
         if self._subplace_block_mode == 'stall':
             self._subplace_stall_radio.setChecked(True)
         else:
@@ -1139,7 +1163,7 @@ class RandoStuffTab(QWidget):
         footer_layout = QHBoxLayout(footer_widget)
         footer_layout.setContentsMargins(8, 4, 8, 4)
         footer_layout.addStretch()
-        clear_cache_btn = QPushButton('Clear Cache')
+        clear_cache_btn = QPushButton(tr('ui.gui.rando_stuff_tab.clear_cache'))
         clear_cache_btn.clicked.connect(self._clear_roblox_cache)
         footer_layout.addWidget(clear_cache_btn)
 
@@ -1238,7 +1262,7 @@ class RandoStuffTab(QWidget):
             self._place_id_input.setText(str(place_id))
             self._access_code_input.setText(str(access_code))
             self._rejoin_timer_secs = 300
-            self._lbl_timer.setText('Timer: 5:00')
+            self._lbl_timer.setText(tr('ui.gui.rando_stuff_tab.timer_5_00'))
             self._rejoin_timer.start()
 
         self._on_main(_do)
@@ -1247,27 +1271,17 @@ class RandoStuffTab(QWidget):
         self._rejoin_timer_secs -= 1
         if self._rejoin_timer_secs <= 0:
             self._rejoin_timer.stop()
-            self._lbl_timer.setText('Timer: Expired!')
+            self._lbl_timer.setText(tr('ui.gui.rando_stuff_tab.timer_expired'))
         else:
             m, s = divmod(self._rejoin_timer_secs, 60)
-            self._lbl_timer.setText(f'Timer: {m}:{s:02d}')
+            self._lbl_timer.setText(
+                tr('ui.gui.rando_stuff_tab.timer_value_value', value0=m, value1=s)
+            )
 
     def _show_reserved_server_help(self):
         msg = QMessageBox(self)
-        msg.setWindowTitle('Reserved Server Info')
-        msg.setText(
-            '<b>What the hell is a reserved server???</b><br><br>'
-            'A reserved server is basically a private server but that can be made at any time by the server, '
-            'they are typically used in subplaces to prevent other people from joining you or from other people '
-            'ending up in your servers. Take Doors for example, when you join a game in Doors you get sent a '
-            'reserved server.<br><br>'
-            '<b>How does this work?</b><br><br>'
-            'It works by scanning APIs coming in and out of your client, it specifically looks for '
-            'gamejoin.roblox.com APIs. It then keeps track of the accessCode and placeId of said server '
-            'and when you click the button it deeplinks and intercepts the gamejoin.roblox.com API from '
-            'the deeplink to join the reserved server.<br><br>'
-            '<b>Note:</b> The access code is only valid for 5 minutes after being teleported to the reserved server by the server.'
-        )
+        msg.setWindowTitle(tr('ui.gui.rando_stuff_tab.reserved_server_info'))
+        msg.setText(tr('ui.gui.rando_stuff_tab.b_what_the_hell_is_a_reserved'))
         msg.setIcon(QMessageBox.Icon.NoIcon)
         msg.exec()
 
@@ -1275,7 +1289,7 @@ class RandoStuffTab(QWidget):
         from ..utils import get_icon_path
 
         dialog = QDialog(self)
-        dialog.setWindowTitle('Blacklist Subplace...')
+        dialog.setWindowTitle(tr('ui.gui.rando_stuff_tab.blacklist_subplace'))
         dialog.resize(400, 350)
         if icon_path := get_icon_path():
             from PyQt6.QtGui import QIcon
@@ -1284,18 +1298,18 @@ class RandoStuffTab(QWidget):
 
         layout = QVBoxLayout()
 
-        title = QLabel('Blacklisted Subplace IDs')
+        title = QLabel(tr('ui.gui.rando_stuff_tab.blacklisted_subplace_ids'))
         title.setStyleSheet('font-weight: bold;')
         layout.addWidget(title)
 
-        hint = QLabel('Enter subplace IDs separated by commas, spaces, newlines, or semicolons.')
+        hint = QLabel(tr('ui.gui.rando_stuff_tab.enter_subplace_ids_separated_by_commas_spaces'))
         hint.setStyleSheet('color: gray; font-size: 9pt;')
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
         text_edit = QTextEdit()
         text_edit.setAcceptRichText(False)
-        text_edit.setPlaceholderText('e.g. 1818, 1234567890, 9876543210')
+        text_edit.setPlaceholderText(tr('ui.gui.rando_stuff_tab.e_g_1818_1234567890_9876543210'))
 
         if self._subplace_blacklisted_ids:
             text_edit.setPlainText(
@@ -1306,13 +1320,13 @@ class RandoStuffTab(QWidget):
         search_layout = QHBoxLayout()
         search_layout.setContentsMargins(0, 0, 0, 0)
         search_edit = QLineEdit()
-        search_edit.setPlaceholderText('Search IDs')
+        search_edit.setPlaceholderText(tr('ui.gui.rando_stuff_tab.search_ids'))
         search_layout.addWidget(search_edit)
         search_layout.addStretch()
         status_label = QLabel('')
         status_label.setStyleSheet('color: #888; font-size: 9pt;')
         search_layout.addWidget(status_label)
-        apply_btn = QPushButton('Apply blacklist')
+        apply_btn = QPushButton(tr('ui.gui.rando_stuff_tab.apply_blacklist'))
         search_layout.addWidget(apply_btn)
         layout.addLayout(search_layout)
 
@@ -1338,7 +1352,7 @@ class RandoStuffTab(QWidget):
                 text_edit.ensureCursorVisible()
                 status_label.setText('')
             else:
-                status_label.setText(f'ID {query} not found.')
+                status_label.setText(tr('ui.gui.rando_stuff_tab.id_value_not_found', value0=query))
                 status_label.setStyleSheet('color: #cc5555; font-size: 9pt;')
 
         search_edit.returnPressed.connect(_search_id)
@@ -1350,7 +1364,12 @@ class RandoStuffTab(QWidget):
             if self._config is not None:
                 self._config.subplace_blacklist = ids
             count = len(self._subplace_blacklisted_ids)
-            status_label.setText(f'Blacklist applied: {format_count(count, "ID")}.')
+            status_label.setText(
+                tr(
+                    'ui.gui.rando_stuff_tab.blacklist_applied_value',
+                    value0=tr_count(count, 'count.id.one', 'count.id.other'),
+                )
+            )
             status_label.setStyleSheet('color: #55cc55; font-size: 9pt;')
             if self._subplace_blacklisted_ids:
                 ordered = ', '.join(
@@ -1621,9 +1640,9 @@ class RandoStuffTab(QWidget):
     def _set_selected_account(self, username: str):
         username = (username or '').strip()
         if not username:
-            self._selected_label.setText('Selected: (none)')
+            self._selected_label.setText(tr('ui.gui.rando_stuff_tab.selected_none'))
             return
-        self._selected_label.setText(f'Selected: {username}')
+        self._selected_label.setText(tr('ui.gui.rando_stuff_tab.selected_value', value0=username))
         self.selected_account_changed.emit(username)
 
     def _resolve_current_user(self):
@@ -1687,14 +1706,14 @@ class RandoStuffTab(QWidget):
                 def _mark(i=idx):
                     item = self._account_list.item(i)
                     if item:
-                        item.setText('Expired! Right click to update.')
+                        item.setText(tr('ui.gui.rando_stuff_tab.expired_right_click_to_update'))
 
                 self._on_main(_mark)
 
     def _populate_account_list(self):
         self._account_list.clear()
         for acc in self._accounts:
-            item = QListWidgetItem(acc.get('username', '(unknown)'))
+            item = QListWidgetItem(acc.get('username') or tr('rando.account.unknown_parenthesized'))
             self._account_list.addItem(item)
 
     def _on_add_account(self):
@@ -1713,7 +1732,7 @@ class RandoStuffTab(QWidget):
 
     def _on_import_browser_account(self):
         self._import_browser_btn.setEnabled(False)
-        self._import_browser_btn.setText('Importing...')
+        self._import_browser_btn.setText(tr('ui.gui.rando_stuff_tab.importing'))
 
         def _import():
             cookie, source = discover_browser_roblosecurity(
@@ -1740,13 +1759,12 @@ class RandoStuffTab(QWidget):
 
     def _finish_browser_import(self, username: str | None, cookie: str | None, source: str | None):
         self._import_browser_btn.setEnabled(True)
-        self._import_browser_btn.setText('Import Browser Login')
+        self._import_browser_btn.setText(tr('ui.gui.rando_stuff_tab.import_browser_login'))
         if not username or not cookie:
             QMessageBox.warning(
                 self,
-                'Browser Login Not Found',
-                'No usable Roblox login was found in Firefox or a Chrome-family browser.\n\n'
-                'Log in to roblox.com in a browser, then try again.',
+                tr('ui.gui.rando_stuff_tab.browser_login_not_found'),
+                tr('ui.gui.rando_stuff_tab.no_usable_roblox_login_was_found_in'),
             )
             return
 
@@ -1770,7 +1788,9 @@ class RandoStuffTab(QWidget):
         self._account_list.setCurrentRow(selected_index)
         log_buffer.log('accounts', f'Imported Roblox browser login for {username} from {source}')
         QMessageBox.information(
-            self, 'Browser Login Imported', f'Imported {username} from {source}.'
+            self,
+            tr('ui.gui.rando_stuff_tab.browser_login_imported'),
+            tr('ui.gui.rando_stuff_tab.imported_value_from_value', value0=username, value1=source),
         )
 
     def _on_account_ctx_menu(self, pos):
@@ -1779,8 +1799,8 @@ class RandoStuffTab(QWidget):
             return
         idx = self._account_list.row(item)
         menu = QMenu(self)
-        change_action = menu.addAction('Change Cookie')
-        remove_action = menu.addAction('Remove')
+        change_action = menu.addAction(tr('ui.gui.rando_stuff_tab.change_cookie'))
+        remove_action = menu.addAction(tr('ui.gui.rando_stuff_tab.remove'))
         action = menu.exec(self._account_list.viewport().mapToGlobal(pos))
         if action == change_action:
             self._change_cookie(idx)
@@ -1788,8 +1808,8 @@ class RandoStuffTab(QWidget):
             self._remove_account(idx)
 
     def _change_cookie(self, idx: int):
-        dlg = AddAccountDialog(self, title='Change Cookie')
-        dlg.set_ok_label('Update')
+        dlg = AddAccountDialog(self, title=tr('rando.account.change_cookie_title'))
+        dlg.set_ok_label(tr('rando.account.update'))
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         username = dlg.result_username
@@ -1802,11 +1822,11 @@ class RandoStuffTab(QWidget):
         self._account_list.setCurrentRow(idx)
 
     def _remove_account(self, idx: int):
-        username = self._accounts[idx].get('username', '(unknown)')
+        username = self._accounts[idx].get('username') or tr('rando.account.unknown_parenthesized')
         reply = QMessageBox.question(
             self,
-            'Remove Account',
-            f"Remove '{username}' from the list?",
+            tr('ui.gui.rando_stuff_tab.remove_account'),
+            tr('ui.gui.rando_stuff_tab.remove_value_from_the_list', value0=username),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.Yes,
         )
@@ -1823,16 +1843,20 @@ class RandoStuffTab(QWidget):
             log_buffer.log('accounts', 'Launch aborted: no switched account selected')
             QMessageBox.information(
                 self,
-                'No Account Switched',
-                "Use 'Switch to selected' first to pick an account.",
+                tr('ui.gui.rando_stuff_tab.no_account_switched'),
+                tr('ui.gui.rando_stuff_tab.use_switch_to_selected_first_to_pick'),
             )
             return
         cookie = _decrypt_cookie(acc.get('cookie', ''))
         if not cookie:
             log_buffer.log('accounts', 'Launch aborted: failed to decrypt cookie')
-            QMessageBox.warning(self, 'Error', 'Could not decrypt the stored cookie.')
+            QMessageBox.warning(
+                self,
+                tr('ui.gui.rando_stuff_tab.error'),
+                tr('ui.gui.rando_stuff_tab.could_not_decrypt_the_stored_cookie'),
+            )
             return
-        username = acc.get('username', '(unknown)')
+        username = acc.get('username') or tr('rando.account.unknown_parenthesized')
         link = self._private_server_input.text().strip()
         subplace_raw = self._subplace_id_input.text().strip()
         subplace_id = _parse_optional_place_id(subplace_raw)
@@ -1840,8 +1864,8 @@ class RandoStuffTab(QWidget):
             log_buffer.log('accounts', f'Launch aborted: invalid subplace ID: {subplace_raw}')
             QMessageBox.warning(
                 self,
-                'Invalid Subplace ID',
-                'Enter a numeric subplace ID or Roblox game URL.',
+                tr('ui.gui.rando_stuff_tab.invalid_subplace_id'),
+                tr('ui.gui.rando_stuff_tab.enter_a_numeric_subplace_id_or_roblox'),
             )
             return
         job_id = _extract_job_id(self._job_id_input.text())
@@ -1853,14 +1877,14 @@ class RandoStuffTab(QWidget):
 
         if _is_share_link(link):
             self._launch_acct_btn.setEnabled(False)
-            self._launch_acct_btn.setText('Resolving…')
+            self._launch_acct_btn.setText(tr('ui.gui.rando_stuff_tab.resolving'))
 
             def _resolve_thread():
                 place_id, link_code = _resolve_share_link(link, cookie)
 
                 def _done():
                     self._launch_acct_btn.setEnabled(True)
-                    self._launch_acct_btn.setText('Launch')
+                    self._launch_acct_btn.setText(tr('ui.gui.rando_stuff_tab.launch'))
                     if place_id and link_code:
                         resolved = f'https://www.roblox.com/games/{place_id}/game?privateServerLinkCode={link_code}'
                         self._private_server_input.setText(resolved)
@@ -1878,12 +1902,11 @@ class RandoStuffTab(QWidget):
                     else:
                         QMessageBox.warning(
                             self,
-                            'Unsupported Link Format',
-                            'This looks like a Roblox share link:\n'
-                            f'  {link}\n\n'
-                            'Paste it into your browser first — it will redirect to the full '
-                            'private server link (with privateServerLinkCode=…). '
-                            'Copy that URL and paste it here instead.',
+                            tr('ui.gui.rando_stuff_tab.unsupported_link_format'),
+                            tr(
+                                'ui.gui.rando_stuff_tab.this_looks_like_a_roblox_share_link',
+                                value0=link,
+                            ),
                         )
 
                 self._on_main(_done)
@@ -1900,14 +1923,22 @@ class RandoStuffTab(QWidget):
     def _on_switch_account(self):
         idx = self._account_list.currentRow()
         if idx < 0:
-            QMessageBox.information(self, 'No Selection', 'Select an account first.')
+            QMessageBox.information(
+                self,
+                tr('ui.gui.rando_stuff_tab.no_selection'),
+                tr('ui.gui.rando_stuff_tab.select_an_account_first'),
+            )
             return
         acc = self._accounts[idx]
         cookie = _decrypt_cookie(acc.get('cookie', ''))
         if not cookie:
-            QMessageBox.warning(self, 'Error', 'Could not decrypt the stored cookie.')
+            QMessageBox.warning(
+                self,
+                tr('ui.gui.rando_stuff_tab.error'),
+                tr('ui.gui.rando_stuff_tab.could_not_decrypt_the_stored_cookie'),
+            )
             return
-        username = acc.get('username', '(unknown)')
+        username = acc.get('username') or tr('rando.account.unknown_parenthesized')
         if IS_MACOS:
             self._last_switched_account = acc
             self._set_selected_account(username)
@@ -1917,8 +1948,8 @@ class RandoStuffTab(QWidget):
             )
             QMessageBox.information(
                 self,
-                'Account Selected',
-                'This account will be used for Fleasion launches on macOS.',
+                tr('ui.gui.rando_stuff_tab.account_selected'),
+                tr('ui.gui.rando_stuff_tab.this_account_will_be_used_for_fleasion'),
             )
             return
         try:
@@ -1932,18 +1963,26 @@ class RandoStuffTab(QWidget):
             )
         except LinuxAuthWriteError as exc:
             log_buffer.log('accounts', f'Linux account switch was not performed: {exc.code}')
-            QMessageBox.warning(self, 'Account Switch Unavailable', str(exc))
+            QMessageBox.warning(
+                self, tr('ui.gui.rando_stuff_tab.account_switch_unavailable'), str(exc)
+            )
         except Exception as exc:
-            QMessageBox.warning(self, 'Error', f'Failed to write cookie: {exc}')
+            QMessageBox.warning(
+                self,
+                tr('ui.gui.rando_stuff_tab.error'),
+                tr('ui.gui.rando_stuff_tab.failed_to_write_cookie_value', value0=exc),
+            )
 
     def _show_selected_account_launch_failed(self, username: str, reason: str):
         def _warn():
             QMessageBox.warning(
                 self,
-                'Selected Account Launch Failed',
-                f'Fleasion could not launch Roblox as {username}.\n\n'
-                f'{reason}\n\n'
-                'Opening Roblox normally may use the account already signed in to Roblox instead.',
+                tr('ui.gui.rando_stuff_tab.selected_account_launch_failed'),
+                tr(
+                    'ui.gui.rando_stuff_tab.fleasion_could_not_launch_roblox_as_value',
+                    value0=username,
+                    value1=reason,
+                ),
             )
 
         self._on_main(_warn)
@@ -1985,8 +2024,8 @@ class RandoStuffTab(QWidget):
                 0,
                 lambda: QMessageBox.warning(
                     self,
-                    'Roblox Not Found',
-                    'Could not locate Roblox Player. Is Roblox installed?',
+                    tr('ui.gui.rando_stuff_tab.roblox_not_found'),
+                    tr('ui.gui.rando_stuff_tab.could_not_locate_roblox_player_is_roblox'),
                 ),
             )
             return
@@ -2042,7 +2081,7 @@ class RandoStuffTab(QWidget):
                 if IS_MACOS:
                     self._show_selected_account_launch_failed(
                         username,
-                        'Roblox did not issue an authentication ticket for the private-server launch.',
+                        tr('rando.account.launch_failed.private_server_ticket'),
                     )
                     launch_ok = False
                     log_buffer.log('accounts', f'Launch failed for account: {username}')
@@ -2090,7 +2129,7 @@ class RandoStuffTab(QWidget):
                 if IS_MACOS:
                     self._show_selected_account_launch_failed(
                         username,
-                        'Roblox did not issue an authentication ticket for the selected-account place launch.',
+                        tr('rando.account.launch_failed.place_ticket'),
                     )
                     launch_ok = False
                     log_buffer.log('accounts', f'Launch failed for account: {username}')
@@ -2130,13 +2169,13 @@ class RandoStuffTab(QWidget):
                     if IS_MACOS:
                         self._show_selected_account_launch_failed(
                             username,
-                            'Roblox accepted the account ticket request, but macOS did not open the Roblox app URI.',
+                            tr('rando.account.launch_failed.macos_app_uri'),
                         )
             else:
                 if IS_MACOS:
                     self._show_selected_account_launch_failed(
                         username,
-                        'Roblox did not issue an authentication ticket for the app launch.',
+                        tr('rando.account.launch_failed.app_ticket'),
                     )
                 else:
                     log_buffer.log(
@@ -2201,9 +2240,9 @@ class RandoStuffTab(QWidget):
     def _ac_import(self):
         path, _ = QFileDialog.getOpenFileName(
             self,
-            'Open Animation File',
+            tr('ui.gui.rando_stuff_tab.open_animation_file'),
             '',
-            'Roblox Animation (*.rbxmx *.rbxm);;All files (*.*)',
+            tr('ui.gui.rando_stuff_tab.roblox_animation_rbxmx_rbxm_all_files'),
         )
         if not path:
             return
@@ -2211,7 +2250,7 @@ class RandoStuffTab(QWidget):
         try:
             data = p.read_bytes()
         except Exception as e:
-            self._ac_status_lbl.setText(f'Read error: {e}')
+            self._ac_status_lbl.setText(tr('ui.gui.rando_stuff_tab.read_error_value', value0=e))
             return
 
         # Detect rig from original bytes (binary parser handles .bin/.rbxm natively)
@@ -2220,7 +2259,7 @@ class RandoStuffTab(QWidget):
 
             rig = detect_rig(data)
         except Exception:
-            rig = 'unknown'
+            rig = tr('rando.rig.unknown')
 
         # Auto-convert binary .rbxm -> .rbxmx so _ac_convert has XML to work with
         if p.suffix.lower() == '.rbxm':
@@ -2228,9 +2267,11 @@ class RandoStuffTab(QWidget):
                 from ..utils.anim_converter import rbxm_to_rbxmx
 
                 data = rbxm_to_rbxmx(data)
-                self._ac_status_lbl.setText('Auto-converted .rbxm → .rbxmx')
+                self._ac_status_lbl.setText(tr('ui.gui.rando_stuff_tab.auto_converted_rbxm_rbxmx'))
             except Exception as e:
-                self._ac_status_lbl.setText(f'.rbxm conversion failed: {e}')
+                self._ac_status_lbl.setText(
+                    tr('ui.gui.rando_stuff_tab.rbxm_conversion_failed_value', value0=e)
+                )
                 return
         else:
             self._ac_status_lbl.setText('')
@@ -2238,14 +2279,14 @@ class RandoStuffTab(QWidget):
         self._ac_xml_bytes = data
         self._ac_source_path = p
 
-        self._ac_rig_lbl.setText(f'Detected rig: {rig}')
+        self._ac_rig_lbl.setText(tr('ui.gui.rando_stuff_tab.detected_rig_value', value0=rig))
         self._ac_file_lbl.setText(p.name)
         self._ac_to_r6_btn.setEnabled(rig == 'R15')
         self._ac_to_r15_btn.setEnabled(rig == 'R6')
 
     def _ac_convert(self, target: str):
         if not hasattr(self, '_ac_xml_bytes'):
-            self._ac_status_lbl.setText('No file loaded.')
+            self._ac_status_lbl.setText(tr('ui.gui.rando_stuff_tab.no_file_loaded_2'))
             return
 
         try:
@@ -2271,11 +2312,11 @@ class RandoStuffTab(QWidget):
 
             ks = root.find("Item[@class='KeyframeSequence']")
             if ks is None:
-                self._ac_status_lbl.setText('No KeyframeSequence found.')
+                self._ac_status_lbl.setText(tr('ui.gui.rando_stuff_tab.no_keyframesequence_found'))
                 return
             keyframes = ks.findall("Item[@class='Keyframe']")
             if not keyframes:
-                self._ac_status_lbl.setText('No Keyframes found.')
+                self._ac_status_lbl.setText(tr('ui.gui.rando_stuff_tab.no_keyframes_found'))
                 return
 
             if target == 'R6':
@@ -2290,18 +2331,20 @@ class RandoStuffTab(QWidget):
             default_dir = str(self._ac_source_path.parent)
             out_str, _ = QFileDialog.getSaveFileName(
                 self,
-                'Save Converted Animation',
+                tr('ui.gui.rando_stuff_tab.save_converted_animation'),
                 f'{default_dir}/{default_name}',
-                'Roblox Animation (*.rbxmx);;All files (*.*)',
+                tr('ui.gui.rando_stuff_tab.roblox_animation_rbxmx_all_files'),
             )
             if not out_str:
-                self._ac_status_lbl.setText('Cancelled.')
+                self._ac_status_lbl.setText(tr('ui.gui.rando_stuff_tab.cancelled'))
                 return
             out_path = Path(out_str)
             etree.write(str(out_path), encoding='utf-8', xml_declaration=True)
-            self._ac_status_lbl.setText(f'Saved: {out_path.name}')
+            self._ac_status_lbl.setText(
+                tr('ui.gui.rando_stuff_tab.saved_value', value0=out_path.name)
+            )
         except Exception as e:
-            self._ac_status_lbl.setText(f'Error: {e}')
+            self._ac_status_lbl.setText(tr('ui.gui.rando_stuff_tab.error_value', value0=e))
 
     # Proxy interceptor hooks
 

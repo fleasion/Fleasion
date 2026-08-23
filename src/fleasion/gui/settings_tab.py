@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ..gui.theme import ThemeManager
+from ..localization import available_languages, get_language, tr
 from ..utils import CONFIG_DIR, run_in_thread
 from ..utils.autostart import sync_autostart, windows_autostart_privilege_hint
 from ..utils.desktop_integration import sync_desktop_integration
@@ -33,18 +34,20 @@ from ..utils.roblox_auth import (
 )
 from .modifications_tab import CollapsibleSection, DropdownComboBox, NoWheelSpinBox
 
-_MACOS_AUTH_SOURCES = (
-    ('Choose on launch', ''),
-    ('Manual Token', 'manual'),
-    ('Chrome', 'Chrome'),
-    ('Safari', 'Safari'),
-    ('Firefox', 'Firefox'),
-    ('Brave', 'Brave'),
-    ('Edge', 'Edge'),
-    ('Chromium', 'Chromium'),
-    ('Opera', 'Opera'),
-    ('Vivaldi', 'Vivaldi'),
-)
+
+def _macos_auth_sources() -> tuple[tuple[str, str], ...]:
+    return (
+        (tr('settings.auth_source.choose_on_launch'), ''),
+        (tr('settings.auth_source.manual_token'), 'manual'),
+        (tr('settings.auth_source.chrome'), 'Chrome'),
+        (tr('settings.auth_source.safari'), 'Safari'),
+        (tr('settings.auth_source.firefox'), 'Firefox'),
+        (tr('settings.auth_source.brave'), 'Brave'),
+        (tr('settings.auth_source.edge'), 'Edge'),
+        (tr('settings.auth_source.chromium'), 'Chromium'),
+        (tr('settings.auth_source.opera'), 'Opera'),
+        (tr('settings.auth_source.vivaldi'), 'Vivaldi'),
+    )
 
 
 class EnvProxyWarningDialog(QMessageBox):
@@ -52,16 +55,9 @@ class EnvProxyWarningDialog(QMessageBox):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle('Roblox Env Proxy')
+        self.setWindowTitle(tr('ui.gui.settings_tab.roblox_env_proxy'))
         self.setIcon(QMessageBox.Icon.Information)
-        self.setText(
-            'Fleasion will relaunch Roblox Player with a local proxy environment.\n\n'
-            'Roblox Studio is left untouched. Microsoft Store/Xbox (GDK) Roblox uses '
-            'package-aware activation so its Player child receives Fleasion\'s scoped '
-            'environment. If Windows rejects that activation, the client is left untouched; '
-            'Hosts File mode remains the fallback for GDK traffic. Switching back to Hosts '
-            'File mode may require administrator permission.'
-        )
+        self.setText(tr('ui.gui.settings_tab.fleasion_will_relaunch_roblox_player_with_a'))
         self.setStandardButtons(QMessageBox.StandardButton.Ok)
 
 
@@ -99,6 +95,7 @@ class SettingsTab(QWidget):
         self._container_layout.setSpacing(10)
         self._container_layout.setContentsMargins(10, 10, 10, 10)
 
+        self._container_layout.addWidget(self._build_language_section())
         self._container_layout.addWidget(self._build_appearance_section())
         if sys.platform.startswith('linux'):
             self._container_layout.addWidget(self._build_linux_client_section())
@@ -122,7 +119,7 @@ class SettingsTab(QWidget):
         self._status_label.setStyleSheet('color: #888;')
         footer_layout.addWidget(self._status_label)
         footer_layout.addStretch()
-        clear_cache_btn = QPushButton('Clear Cache')
+        clear_cache_btn = QPushButton(tr('ui.gui.settings_tab.clear_cache'))
         clear_cache_btn.clicked.connect(self._clear_roblox_cache)
         footer_layout.addWidget(clear_cache_btn)
 
@@ -137,10 +134,35 @@ class SettingsTab(QWidget):
         if a0 is not None and a0.type() == QEvent.Type.PaletteChange:
             self._update_container_bg()
 
+    # Language
+
+    def _build_language_section(self) -> CollapsibleSection:
+        section = CollapsibleSection(tr('settings.language.section'), expanded=True)
+
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(QLabel(tr('settings.language.label')))
+        self._language_combo = DropdownComboBox()
+        for code, display_name in available_languages():
+            self._language_combo.addItem(display_name, code)
+        index = self._language_combo.findData(self._config.language)
+        self._language_combo.setCurrentIndex(max(0, index))
+        self._language_combo.activated.connect(self._on_language_changed)
+        row.addWidget(self._language_combo)
+        row.addStretch()
+        row_widget = QWidget()
+        row_widget.setLayout(row)
+        section.add_widget(row_widget)
+
+        note = QLabel(tr('settings.language.fallback_note'))
+        note.setWordWrap(True)
+        section.add_widget(note)
+        return section
+
     # Appearance
 
     def _build_appearance_section(self) -> CollapsibleSection:
-        section = CollapsibleSection('Appearance', expanded=True)
+        section = CollapsibleSection(tr('settings.appearance.section'), expanded=True)
 
         self._theme_buttons: dict[str, QCheckBox] = {}
         btn_group = QButtonGroup(self)
@@ -148,8 +170,12 @@ class SettingsTab(QWidget):
         theme_row = QHBoxLayout()
         theme_row.setContentsMargins(0, 0, 0, 0)
         current_theme = self._config.theme
-        for name in ('System', 'Light', 'Dark'):
-            chk = QCheckBox(name)
+        for name, label in (
+            ('System', tr('settings.appearance.theme.system')),
+            ('Light', tr('settings.appearance.theme.light')),
+            ('Dark', tr('settings.appearance.theme.dark')),
+        ):
+            chk = QCheckBox(label)
             chk.setChecked(name == current_theme)
             chk.toggled.connect(lambda checked, t=name: self._on_theme_toggled(checked, t))
             btn_group.addButton(chk)
@@ -166,24 +192,25 @@ class SettingsTab(QWidget):
     def _build_linux_client_section(self) -> CollapsibleSection:
         from ..utils.linux_clients import LINUX_CLIENTS
 
-        section = CollapsibleSection('Linux Roblox Client', expanded=True)
+        section = CollapsibleSection(tr('settings.linux_client.section'), expanded=True)
 
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
-        row.addWidget(QLabel('Client'))
+        row.addWidget(QLabel(tr('ui.gui.settings_tab.client')))
         self._linux_client_combo = DropdownComboBox()
-        self._linux_client_combo.addItem('Auto (desktop handler)', 'auto')
+        self._linux_client_combo.addItem(tr('ui.gui.settings_tab.auto_desktop_handler'), 'auto')
         for client in LINUX_CLIENTS:
             self._linux_client_combo.addItem(client.display_name, client.key)
-        index = self._linux_client_combo.findData(
-            getattr(self._config, 'linux_client', 'auto')
-        )
+        index = self._linux_client_combo.findData(getattr(self._config, 'linux_client', 'auto'))
         self._linux_client_combo.setCurrentIndex(max(0, index))
         self._linux_client_combo.activated.connect(self._on_linux_client_changed)
         if len(LINUX_CLIENTS) <= 1:
             self._linux_client_combo.setEnabled(False)
             self._linux_client_combo.setToolTip(
-                f'{LINUX_CLIENTS[0].display_name} is currently the only supported Linux client.'
+                tr(
+                    'ui.gui.settings_tab.value_is_currently_the_only_supported_linux',
+                    value0=LINUX_CLIENTS[0].display_name,
+                )
             )
         row.addWidget(self._linux_client_combo)
         row.addStretch()
@@ -208,29 +235,33 @@ class SettingsTab(QWidget):
 
             installed = ', '.join(item.display_name for item in linux_client_installations())
             selected = selected_linux_client_display_name()
-            detail = installed or 'none detected'
+            detail = installed or tr('settings.linux_client.none_detected')
             self._linux_client_status.setText(
-                f'Active: {selected}. Installed: {detail}. '
-                'Fleasion routes Linux launches and client-specific operations through '
-                'the active registered client.'
+                tr(
+                    'ui.gui.settings_tab.active_value_installed_value_fleasion_routes_linux',
+                    value0=selected,
+                    value1=detail,
+                )
             )
         except Exception:
-            self._linux_client_status.setText('Unable to detect Linux Roblox clients.')
+            self._linux_client_status.setText(
+                tr('ui.gui.settings_tab.unable_to_detect_linux_roblox_clients')
+            )
 
     def _build_macos_auth_section(self) -> CollapsibleSection:
-        section = CollapsibleSection('Roblox Login', expanded=True)
+        section = CollapsibleSection(tr('settings.roblox_login.section'), expanded=True)
 
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
-        row.addWidget(QLabel('Roblox is signed in through'))
+        row.addWidget(QLabel(tr('ui.gui.settings_tab.roblox_is_signed_in_through')))
         self._macos_auth_source_combo = QComboBox()
-        for label, value in _MACOS_AUTH_SOURCES:
+        for label, value in _macos_auth_sources():
             self._macos_auth_source_combo.addItem(label, value)
         idx = self._macos_auth_source_combo.findData(self._config.macos_auth_source)
         self._macos_auth_source_combo.setCurrentIndex(max(0, idx))
         self._macos_auth_source_combo.activated.connect(self._on_macos_auth_source_changed)
         row.addWidget(self._macos_auth_source_combo)
-        self._manual_token_btn = QPushButton('Import Token')
+        self._manual_token_btn = QPushButton(tr('ui.gui.settings_tab.import_token'))
         self._manual_token_btn.clicked.connect(self._on_import_manual_token)
         row.addWidget(self._manual_token_btn)
         row.addStretch()
@@ -243,27 +274,31 @@ class SettingsTab(QWidget):
     # Proxy
 
     def _build_proxy_section(self) -> CollapsibleSection:
-        section = CollapsibleSection('Proxy', expanded=True)
+        section = CollapsibleSection(tr('settings.proxy.section'), expanded=True)
 
-        self._proxy_features_chk = QCheckBox('⚠ Enable Proxy Features')
+        self._proxy_features_chk = QCheckBox(tr('ui.gui.settings_tab.enable_proxy_features'))
         self._proxy_features_chk.setChecked(self._config.proxy_features_enabled)
         self._proxy_features_chk.toggled.connect(self._on_proxy_features_toggled)
         section.add_widget(self._proxy_features_chk)
 
         # Warning shown under the proxy features checkbox
-        self._proxy_warning_label = QLabel('DO NOT TOUCH UNLESS YOU KNOW WHAT YOU ARE DOING')
+        self._proxy_warning_label = QLabel(
+            tr('ui.gui.settings_tab.do_not_touch_unless_you_know_what')
+        )
         self._proxy_warning_label.setStyleSheet('color: #e07a00; font-weight: bold;')
         section.add_widget(self._proxy_warning_label)
 
         mode_row = QHBoxLayout()
         mode_row.setContentsMargins(0, 0, 0, 0)
-        mode_row.addWidget(QLabel('Upstream Transport'))
+        mode_row.addWidget(QLabel(tr('ui.gui.settings_tab.upstream_transport')))
         self._upstream_mode_combo = DropdownComboBox()
-        self._upstream_mode_combo.addItem('Auto', 'auto')
-        self._upstream_mode_combo.addItem('Direct IP', 'direct_ip')
-        self._upstream_mode_combo.addItem('System Proxy', 'system_proxy')
-        self._upstream_mode_combo.addItem('Manual HTTP CONNECT', 'http_connect')
-        self._upstream_mode_combo.addItem('Manual SOCKS5', 'socks5')
+        self._upstream_mode_combo.addItem(tr('ui.gui.settings_tab.auto'), 'auto')
+        self._upstream_mode_combo.addItem(tr('ui.gui.settings_tab.direct_ip'), 'direct_ip')
+        self._upstream_mode_combo.addItem(tr('ui.gui.settings_tab.system_proxy'), 'system_proxy')
+        self._upstream_mode_combo.addItem(
+            tr('ui.gui.settings_tab.manual_http_connect'), 'http_connect'
+        )
+        self._upstream_mode_combo.addItem(tr('ui.gui.settings_tab.manual_socks5'), 'socks5')
         current_mode = self._config.upstream_transport_mode
         idx = self._upstream_mode_combo.findData(current_mode)
         self._upstream_mode_combo.setCurrentIndex(max(0, idx))
@@ -276,10 +311,10 @@ class SettingsTab(QWidget):
 
         proxy_mode_row = QHBoxLayout()
         proxy_mode_row.setContentsMargins(0, 0, 0, 0)
-        proxy_mode_row.addWidget(QLabel('Proxy Mode'))
+        proxy_mode_row.addWidget(QLabel(tr('ui.gui.settings_tab.proxy_mode')))
         self._proxy_mode_combo = DropdownComboBox()
-        self._proxy_mode_combo.addItem('Hosts File', 'hosts')
-        self._proxy_mode_combo.addItem('Roblox Env Proxy', 'env')
+        self._proxy_mode_combo.addItem(tr('ui.gui.settings_tab.hosts_file'), 'hosts')
+        self._proxy_mode_combo.addItem(tr('ui.gui.settings_tab.roblox_env_proxy'), 'env')
         current_proxy_mode = self._config.proxy_mode
         proxy_mode_idx = self._proxy_mode_combo.findData(current_proxy_mode)
         self._proxy_mode_combo.setCurrentIndex(max(0, proxy_mode_idx))
@@ -291,7 +326,7 @@ class SettingsTab(QWidget):
         section.add_widget(proxy_mode_widget)
 
         self._wire_preserving_chk = QCheckBox(
-            'Enable Wire-Preserving Passthrough (Advanced compatibility mode)'
+            tr('ui.gui.settings_tab.enable_wire_preserving_passthrough_advanced_compatibility_mode')
         )
         self._wire_preserving_chk.setChecked(self._config.wire_preserving_passthrough)
         self._wire_preserving_chk.toggled.connect(self._on_wire_preserving_toggled)
@@ -303,11 +338,11 @@ class SettingsTab(QWidget):
             row.addWidget(QLabel(label))
             host = QLineEdit()
             host.setText(host_value)
-            host.setPlaceholderText('Host')
+            host.setPlaceholderText(tr('ui.gui.settings_tab.host'))
             port = QSpinBox()
             port.setRange(0, 65535)
             port.setValue(port_value)
-            port.setPrefix('Port ')
+            port.setPrefix(tr('ui.gui.settings_tab.port'))
             row.addWidget(host, 1)
             row.addWidget(port)
             widget = QWidget()
@@ -333,20 +368,20 @@ class SettingsTab(QWidget):
 
         auth_row = QHBoxLayout()
         auth_row.setContentsMargins(0, 0, 0, 0)
-        auth_row.addWidget(QLabel('Proxy Auth'))
+        auth_row.addWidget(QLabel(tr('ui.gui.settings_tab.proxy_auth')))
         self._http_proxy_user = QLineEdit()
         self._http_proxy_user.setText(self._config.upstream_http_connect_username)
-        self._http_proxy_user.setPlaceholderText('HTTP user')
+        self._http_proxy_user.setPlaceholderText(tr('ui.gui.settings_tab.http_user'))
         self._http_proxy_pass = QLineEdit()
         self._http_proxy_pass.setText(self._config.upstream_http_connect_password)
-        self._http_proxy_pass.setPlaceholderText('HTTP password')
+        self._http_proxy_pass.setPlaceholderText(tr('ui.gui.settings_tab.http_password'))
         self._http_proxy_pass.setEchoMode(QLineEdit.EchoMode.Password)
         self._socks5_user = QLineEdit()
         self._socks5_user.setText(self._config.upstream_socks5_username)
-        self._socks5_user.setPlaceholderText('SOCKS user')
+        self._socks5_user.setPlaceholderText(tr('ui.gui.settings_tab.socks_user'))
         self._socks5_pass = QLineEdit()
         self._socks5_pass.setText(self._config.upstream_socks5_password)
-        self._socks5_pass.setPlaceholderText('SOCKS password')
+        self._socks5_pass.setPlaceholderText(tr('ui.gui.settings_tab.socks_password'))
         self._socks5_pass.setEchoMode(QLineEdit.EchoMode.Password)
         for widget in (
             self._http_proxy_user,
@@ -365,15 +400,15 @@ class SettingsTab(QWidget):
 
         limits_row = QHBoxLayout()
         limits_row.setContentsMargins(0, 0, 0, 0)
-        limits_row.addWidget(QLabel('VPN Connection Limits'))
+        limits_row.addWidget(QLabel(tr('ui.gui.settings_tab.vpn_connection_limits')))
         self._asset_limit_spin = NoWheelSpinBox()
         self._asset_limit_spin.setRange(1, 128)
         self._asset_limit_spin.setValue(self._config.vpn_compat_max_assetdelivery_connections)
-        self._asset_limit_spin.setPrefix('Asset ')
+        self._asset_limit_spin.setPrefix(tr('ui.gui.settings_tab.asset'))
         self._cdn_limit_spin = NoWheelSpinBox()
         self._cdn_limit_spin.setRange(1, 256)
         self._cdn_limit_spin.setValue(self._config.vpn_compat_max_cdn_connections)
-        self._cdn_limit_spin.setPrefix('CDN ')
+        self._cdn_limit_spin.setPrefix(tr('ui.gui.settings_tab.cdn'))
         self._asset_limit_spin.valueChanged.connect(self._on_connection_limits_changed)
         self._cdn_limit_spin.valueChanged.connect(self._on_connection_limits_changed)
         limits_row.addWidget(self._asset_limit_spin)
@@ -388,62 +423,66 @@ class SettingsTab(QWidget):
     # Startup
 
     def _build_convenience_section(self) -> CollapsibleSection:
-        section = CollapsibleSection('Convenience', expanded=True)
+        section = CollapsibleSection(tr('settings.convenience.section'), expanded=True)
 
-        self._open_dashboard_chk = QCheckBox('Open Dashboard on Start')
+        self._open_dashboard_chk = QCheckBox(tr('ui.gui.settings_tab.open_dashboard_on_start'))
         self._open_dashboard_chk.setChecked(self._config.open_dashboard_on_launch)
         self._open_dashboard_chk.toggled.connect(self._on_open_dashboard_toggled)
         section.add_widget(self._open_dashboard_chk)
 
-        self._auto_clear_cache_chk = QCheckBox('Auto-Clear Cache on Exit')
+        self._auto_clear_cache_chk = QCheckBox(tr('ui.gui.settings_tab.auto_clear_cache_on_exit'))
         self._auto_clear_cache_chk.setChecked(self._config.auto_delete_cache_on_exit)
         self._auto_clear_cache_chk.toggled.connect(self._on_auto_clear_cache_toggled)
         section.add_widget(self._auto_clear_cache_chk)
 
-        self._clear_cache_launch_chk = QCheckBox('Clear Cache on Launch')
+        self._clear_cache_launch_chk = QCheckBox(tr('ui.gui.settings_tab.clear_cache_on_launch'))
         self._clear_cache_launch_chk.setChecked(self._config.clear_cache_on_launch)
         self._clear_cache_launch_chk.toggled.connect(self._on_clear_cache_launch_toggled)
         section.add_widget(self._clear_cache_launch_chk)
 
-        self._lock_roblox_files_chk = QCheckBox('Lock Roblox Files to Read-Only')
+        self._lock_roblox_files_chk = QCheckBox(
+            tr('ui.gui.settings_tab.lock_roblox_files_to_read_only')
+        )
         self._lock_roblox_files_chk.setChecked(self._config.lock_roblox_files_read_only)
         self._lock_roblox_files_chk.setToolTip(
-            'Stops Roblox from overwriting active Fleasion modification files in rare cases. '
-            'This can interfere with Roblox updates, so it is off by default.'
+            tr('ui.gui.settings_tab.stops_roblox_from_overwriting_active_fleasion_modification')
         )
         self._lock_roblox_files_chk.toggled.connect(self._on_lock_roblox_files_toggled)
         section.add_widget(self._lock_roblox_files_chk)
 
-        self._close_env_roblox_chk = QCheckBox('Close Env-Proxied Roblox Player on Exit')
+        self._close_env_roblox_chk = QCheckBox(
+            tr('ui.gui.settings_tab.close_env_proxied_roblox_player_on_exit')
+        )
         self._close_env_roblox_chk.setChecked(self._config.close_env_proxy_roblox_on_exit)
         self._close_env_roblox_chk.setToolTip(
-            'Roblox Player and supported Linux clients depend on Fleasion while Env Proxy is active. '
-            'Turn this off only if you intentionally want Player left open without Fleasion.'
+            tr('ui.gui.settings_tab.roblox_player_and_supported_linux_clients_depend')
         )
         self._close_env_roblox_chk.toggled.connect(self._on_close_env_roblox_toggled)
         section.add_widget(self._close_env_roblox_chk)
 
-        self._run_on_boot_chk = QCheckBox('Run on Boot')
+        self._run_on_boot_chk = QCheckBox(tr('ui.gui.settings_tab.run_on_boot'))
         self._run_on_boot_chk.setChecked(self._config.run_on_boot)
         self._run_on_boot_chk.toggled.connect(self._on_run_on_boot_toggled)
         section.add_widget(self._run_on_boot_chk)
 
-        self._desktop_integration_chk = QCheckBox('Create desktop/start menu integration on boot')
+        self._desktop_integration_chk = QCheckBox(
+            tr('ui.gui.settings_tab.create_desktop_start_menu_integration_on_boot')
+        )
         self._desktop_integration_chk.setChecked(self._config.desktop_integration)
         self._desktop_integration_chk.toggled.connect(self._on_desktop_integration_toggled)
         section.add_widget(self._desktop_integration_chk)
 
-        self._close_scraped_games_chk = QCheckBox('Close Roblox on Open')
+        self._close_scraped_games_chk = QCheckBox(tr('ui.gui.settings_tab.close_roblox_on_open'))
         self._close_scraped_games_chk.setChecked(self._config.close_scraped_games_on_open)
         self._close_scraped_games_chk.toggled.connect(self._on_close_scraped_games_toggled)
         section.add_widget(self._close_scraped_games_chk)
 
-        self._close_to_tray_chk = QCheckBox('Close to Tray')
+        self._close_to_tray_chk = QCheckBox(tr('ui.gui.settings_tab.close_to_tray'))
         self._close_to_tray_chk.setChecked(self._config.close_to_tray)
         self._close_to_tray_chk.toggled.connect(self._on_close_to_tray_toggled)
         section.add_widget(self._close_to_tray_chk)
 
-        self._always_on_top_chk = QCheckBox('Always on Top')
+        self._always_on_top_chk = QCheckBox(tr('ui.gui.settings_tab.always_on_top'))
         self._always_on_top_chk.setChecked(self._config.always_on_top)
         self._always_on_top_chk.toggled.connect(self._on_always_on_top_toggled)
         section.add_widget(self._always_on_top_chk)
@@ -451,19 +490,19 @@ class SettingsTab(QWidget):
         return section
 
     def _build_scraper_section(self) -> CollapsibleSection:
-        section = CollapsibleSection('Scraper', expanded=True)
+        section = CollapsibleSection(tr('settings.scraper.section'), expanded=True)
 
-        self._cache_scraper_chk = QCheckBox('Enable Cache Scraper')
+        self._cache_scraper_chk = QCheckBox(tr('ui.gui.settings_tab.enable_cache_scraper'))
         self._cache_scraper_chk.setChecked(self._is_cache_scraper_enabled())
         self._cache_scraper_chk.toggled.connect(self._on_cache_scraper_toggled)
         section.add_widget(self._cache_scraper_chk)
 
-        self._show_names_chk = QCheckBox('Show Names')
+        self._show_names_chk = QCheckBox(tr('ui.gui.settings_tab.show_names'))
         self._show_names_chk.setChecked(self._config.show_names)
         self._show_names_chk.toggled.connect(self._on_show_names_toggled)
         section.add_widget(self._show_names_chk)
 
-        self._show_creator_id_chk = QCheckBox('Show User ID')
+        self._show_creator_id_chk = QCheckBox(tr('ui.gui.settings_tab.show_user_id'))
         self._show_creator_id_chk.setChecked(self._config.show_creator_id)
         self._show_creator_id_chk.toggled.connect(self._on_show_creator_id_toggled)
         section.add_widget(self._show_creator_id_chk)
@@ -473,13 +512,17 @@ class SettingsTab(QWidget):
     # Export naming
 
     def _build_export_section(self) -> CollapsibleSection:
-        section = CollapsibleSection('Export Naming', expanded=True)
+        section = CollapsibleSection(tr('settings.export_naming.section'), expanded=True)
 
         self._export_chks: dict[str, QCheckBox] = {}
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
-        for option in ('name', 'id', 'hash'):
-            chk = QCheckBox(option.capitalize())
+        for option, label in (
+            ('name', tr('settings.export_naming.name')),
+            ('id', tr('settings.export_naming.id')),
+            ('hash', tr('settings.export_naming.hash')),
+        ):
+            chk = QCheckBox(label)
             chk.setChecked(self._config.is_export_naming_enabled(option))
             chk.toggled.connect(
                 lambda checked, opt=option: self._on_export_naming_toggled(checked, opt)
@@ -494,21 +537,27 @@ class SettingsTab(QWidget):
         return section
 
     def _build_scraped_games_section(self) -> CollapsibleSection:
-        section = CollapsibleSection('Scraped Games', expanded=True)
+        section = CollapsibleSection(tr('settings.scraped_games.section'), expanded=True)
 
-        self._show_replacer_notifications_chk = QCheckBox('Show Replacer Notifications')
+        self._show_replacer_notifications_chk = QCheckBox(
+            tr('ui.gui.settings_tab.show_replacer_notifications')
+        )
         self._show_replacer_notifications_chk.setChecked(self._config.show_replacer_notifications)
         self._show_replacer_notifications_chk.toggled.connect(
             self._on_show_replacer_notifications_toggled
         )
         section.add_widget(self._show_replacer_notifications_chk)
 
-        self._close_viewer_on_replace_chk = QCheckBox('Close Viewer on Replace')
+        self._close_viewer_on_replace_chk = QCheckBox(
+            tr('ui.gui.settings_tab.close_viewer_on_replace')
+        )
         self._close_viewer_on_replace_chk.setChecked(self._config.close_viewer_on_replace)
         self._close_viewer_on_replace_chk.toggled.connect(self._on_close_viewer_on_replace_toggled)
         section.add_widget(self._close_viewer_on_replace_chk)
 
-        self._close_scraped_games_menu_on_open_chk = QCheckBox('Close Scraped Games Menu on Open')
+        self._close_scraped_games_menu_on_open_chk = QCheckBox(
+            tr('ui.gui.settings_tab.close_scraped_games_menu_on_open')
+        )
         self._close_scraped_games_menu_on_open_chk.setChecked(
             self._config.close_scraped_games_menu_on_open
         )
@@ -575,9 +624,7 @@ class SettingsTab(QWidget):
         self._proxy_mode_combo.blockSignals(False)
 
         if sys.platform.startswith('linux'):
-            idx = self._linux_client_combo.findData(
-                getattr(self._config, 'linux_client', 'auto')
-            )
+            idx = self._linux_client_combo.findData(getattr(self._config, 'linux_client', 'auto'))
             self._linux_client_combo.blockSignals(True)
             self._linux_client_combo.setCurrentIndex(max(0, idx))
             self._linux_client_combo.blockSignals(False)
@@ -620,6 +667,11 @@ class SettingsTab(QWidget):
             self._macos_auth_source_combo.setCurrentIndex(max(0, idx))
             self._macos_auth_source_combo.blockSignals(False)
 
+        idx = self._language_combo.findData(self._config.language)
+        self._language_combo.blockSignals(True)
+        self._language_combo.setCurrentIndex(max(0, idx))
+        self._language_combo.blockSignals(False)
+
     # Handlers
 
     def _clear_roblox_cache(self):
@@ -627,6 +679,16 @@ class SettingsTab(QWidget):
 
         window = DeleteCacheWindow()
         window.show()
+
+    def _on_language_changed(self, *_args):
+        language = str(self._language_combo.currentData() or 'en')
+        self._config.language = language
+        if self._config.language != get_language():
+            QMessageBox.information(
+                self,
+                tr('settings.language.restart_required_title'),
+                tr('settings.language.restart_required_body'),
+            )
 
     def _on_theme_toggled(self, checked: bool, theme: str):
         if not checked:
@@ -646,10 +708,8 @@ class SettingsTab(QWidget):
         if not checked:
             result = QMessageBox.warning(
                 self,
-                'Disable Proxy Features?',
-                'Turning off proxy features will stop the Replacer, Scraper, '
-                'Subplace Joiner, Reserved Server Rejoin, and Subplace Blacklist '
-                'because they rely on the local proxy. Continue?',
+                tr('ui.gui.settings_tab.disable_proxy_features'),
+                tr('ui.gui.settings_tab.turning_off_proxy_features_will_stop_the'),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
                 QMessageBox.StandardButton.Cancel,
             )
@@ -721,10 +781,11 @@ class SettingsTab(QWidget):
             if not boot_ok:
                 QMessageBox.warning(
                     self,
-                    'Run on Boot Update Failed',
-                    'Proxy mode changed, but the Run on Boot task could not be refreshed.\n\n'
-                    f'{windows_autostart_privilege_hint(new_mode)}\n\n'
-                    'Check the application log and repair the task before relying on this mode at sign-in.',
+                    tr('ui.gui.settings_tab.run_on_boot_update_failed'),
+                    tr(
+                        'ui.gui.settings_tab.proxy_mode_changed_but_the_run_on',
+                        value0=windows_autostart_privilege_hint(new_mode),
+                    ),
                 )
         if new_mode == 'env' and previous_mode != 'env':
             EnvProxyWarningDialog(self).exec()
@@ -791,12 +852,8 @@ class SettingsTab(QWidget):
                     # selection persisted and require a clean manual restart.
                     QMessageBox.critical(
                         self,
-                        'Proxy Mode Change Incomplete',
-                        'Fleasion could not confirm that the replacement process stopped. '
-                        'The current Env Proxy process was left running, but ownership was not '
-                        'reclaimed and the Hosts File selection was not rolled back.\n\n'
-                        'Close all Fleasion windows/processes and start Fleasion again before '
-                        'changing proxy mode.',
+                        tr('ui.gui.settings_tab.proxy_mode_change_incomplete'),
+                        tr('ui.gui.settings_tab.fleasion_could_not_confirm_that_the_replacement'),
                     )
                     return
 
@@ -829,9 +886,8 @@ class SettingsTab(QWidget):
                             pass
                 QMessageBox.warning(
                     self,
-                    'Proxy Mode Change Failed',
-                    'Fleasion could not verify that the Hosts File replacement started correctly. '
-                    'Env Proxy mode has been restored and the current proxy was left running.',
+                    tr('ui.gui.settings_tab.proxy_mode_change_failed'),
+                    tr('ui.gui.settings_tab.fleasion_could_not_verify_that_the_hosts'),
                 )
                 return
         if self._tray and hasattr(self._tray, 'notify_proxy_mode_changed'):
@@ -908,9 +964,7 @@ class SettingsTab(QWidget):
                 # Imported on demand to avoid an app <-> GUI import cycle during startup.
                 from ..app import _show_run_on_boot_failure
 
-                if _show_run_on_boot_failure(
-                    self, self._config.proxy_mode, enabled=checked
-                ):
+                if _show_run_on_boot_failure(self, self._config.proxy_mode, enabled=checked):
                     self._config.run_on_boot = checked
                     if self._tray and hasattr(self._tray, 'run_on_boot_action'):
                         self._tray.run_on_boot_action.setChecked(checked)
@@ -920,10 +974,8 @@ class SettingsTab(QWidget):
             self._run_on_boot_chk.blockSignals(False)
             QMessageBox.warning(
                 self,
-                'Run on Boot Failed',
-                'Failed to register the autostart task.\n'
-                'Check the application log for details.\n\n'
-                'Turn off Run on Boot to stop this error from appearing.',
+                tr('ui.gui.settings_tab.run_on_boot_failed'),
+                tr('ui.gui.settings_tab.failed_to_register_the_autostart_task_check'),
             )
 
     def _on_lock_roblox_files_toggled(self, checked: bool):
@@ -949,10 +1001,8 @@ class SettingsTab(QWidget):
                 ):
                     QMessageBox.warning(
                         self,
-                        'Run on Boot Failed',
-                        'Failed to refresh the autostart task after changing desktop integration.\n'
-                        'Check the application log for details.\n\n'
-                        'Turn off Run on Boot to stop this error from appearing.',
+                        tr('ui.gui.settings_tab.run_on_boot_failed'),
+                        tr('ui.gui.settings_tab.failed_to_refresh_the_autostart_task_after'),
                     )
         else:
             self._desktop_integration_chk.blockSignals(True)
@@ -960,10 +1010,8 @@ class SettingsTab(QWidget):
             self._desktop_integration_chk.blockSignals(False)
             QMessageBox.warning(
                 self,
-                'Desktop Integration Failed',
-                'Failed to create desktop/start menu integration.\n'
-                'Check the application log for details.\n\n'
-                'Turn off desktop integration creation to stop this error.',
+                tr('ui.gui.settings_tab.desktop_integration_failed'),
+                tr('ui.gui.settings_tab.failed_to_create_desktop_start_menu_integration'),
             )
 
     def _on_always_on_top_toggled(self, checked: bool):
@@ -1007,8 +1055,8 @@ class SettingsTab(QWidget):
             return
         from .rando_stuff_tab import AddAccountDialog
 
-        dlg = AddAccountDialog(self, title='Import Roblox Token')
-        dlg.set_ok_label('Import')
+        dlg = AddAccountDialog(self, title=tr('settings.roblox_login.import_token_title'))
+        dlg.set_ok_label(tr('settings.roblox_login.import'))
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         if not dlg.result_cookie:
@@ -1017,15 +1065,18 @@ class SettingsTab(QWidget):
         if not valid:
             QMessageBox.warning(
                 self,
-                'Invalid Roblox Token',
-                f'Fleasion could not confirm this Roblox token is valid.\n\n{detail}',
+                tr('ui.gui.settings_tab.invalid_roblox_token'),
+                tr(
+                    'ui.gui.settings_tab.fleasion_could_not_confirm_this_roblox_token',
+                    value0=detail,
+                ),
             )
             return
         if not store_manual_roblosecurity(dlg.result_cookie):
             QMessageBox.warning(
                 self,
-                'Token Import Failed',
-                'Fleasion could not store the Roblox token encrypted.',
+                tr('ui.gui.settings_tab.token_import_failed'),
+                tr('ui.gui.settings_tab.fleasion_could_not_store_the_roblox_token'),
             )
             return
         self._config.macos_auth_source = 'manual'
@@ -1034,8 +1085,12 @@ class SettingsTab(QWidget):
         self._macos_auth_source_combo.blockSignals(True)
         self._macos_auth_source_combo.setCurrentIndex(max(0, idx))
         self._macos_auth_source_combo.blockSignals(False)
-        username = dlg.result_username or 'Roblox account'
-        QMessageBox.information(self, 'Token Imported', f'{username} was stored encrypted.')
+        username = dlg.result_username or tr('settings.roblox_login.roblox_account_fallback')
+        QMessageBox.information(
+            self,
+            tr('ui.gui.settings_tab.token_imported'),
+            tr('ui.gui.settings_tab.value_was_stored_encrypted', value0=username),
+        )
 
     def _on_close_scraped_games_toggled(self, checked: bool):
         self._config.close_scraped_games_on_open = checked

@@ -1,6 +1,7 @@
 """Modifications tab — combined Fishstrap Mods + FastFlags panel."""
 
 from __future__ import annotations
+from ..localization import tr, tr_count
 
 import json
 import os
@@ -67,7 +68,7 @@ from ..modifications.platform_targets import (
     target_path_for_current_platform,
 )
 from ..modifications.stash_paths import resource_stash_dir
-from ..utils import APP_CACHE_DIR, format_count, log_buffer, open_folder
+from ..utils import APP_CACHE_DIR, log_buffer, open_folder
 from ..utils.http import http_get
 from ..utils.threading import run_in_thread
 from .file_drop import FileDropLineEdit, local_file_path_example
@@ -79,134 +80,140 @@ from .theme import ThemeManager
 
 AVATAR_MESHES = [
     (
-        'Left Arm',
+        'modifications.builtin.avatar.left_arm',
         target_path_for_current_platform(r'content\avatar\meshes\leftarm.mesh'),
     ),
     (
-        'Left Leg',
+        'modifications.builtin.avatar.left_leg',
         target_path_for_current_platform(r'content\avatar\meshes\leftleg.mesh'),
     ),
     (
-        'Right Arm',
+        'modifications.builtin.avatar.right_arm',
         target_path_for_current_platform(r'content\avatar\meshes\rightarm.mesh'),
     ),
     (
-        'Right Leg',
+        'modifications.builtin.avatar.right_leg',
         target_path_for_current_platform(r'content\avatar\meshes\rightleg.mesh'),
     ),
-    ('Torso', target_path_for_current_platform(r'content\avatar\meshes\torso.mesh')),
-    ('Head', target_path_for_current_platform(r'content\avatar\heads\head.mesh')),
+    (
+        'modifications.builtin.avatar.torso',
+        target_path_for_current_platform(r'content\avatar\meshes\torso.mesh'),
+    ),
+    (
+        'modifications.builtin.avatar.head',
+        target_path_for_current_platform(r'content\avatar\heads\head.mesh'),
+    ),
 ]
 
 HEAD_VARIANTS = [f'head{chr(c)}.mesh' for c in range(ord('A'), ord('P') + 1)]
 
 SKYBOX_FACES = [
     (
-        'Sky \u2014 Back',
+        'modifications.builtin.sky.back',
         target_path_for_current_platform(r'PlatformContent\pc\textures\sky\sky512_bk.tex'),
     ),
     (
-        'Sky \u2014 Down',
+        'modifications.builtin.sky.down',
         target_path_for_current_platform(r'PlatformContent\pc\textures\sky\sky512_dn.tex'),
     ),
     (
-        'Sky \u2014 Front',
+        'modifications.builtin.sky.front',
         target_path_for_current_platform(r'PlatformContent\pc\textures\sky\sky512_ft.tex'),
     ),
     (
-        'Sky \u2014 Left',
+        'modifications.builtin.sky.left',
         target_path_for_current_platform(r'PlatformContent\pc\textures\sky\sky512_lf.tex'),
     ),
     (
-        'Sky \u2014 Right',
+        'modifications.builtin.sky.right',
         target_path_for_current_platform(r'PlatformContent\pc\textures\sky\sky512_rt.tex'),
     ),
     (
-        'Sky \u2014 Up',
+        'modifications.builtin.sky.up',
         target_path_for_current_platform(r'PlatformContent\pc\textures\sky\sky512_up.tex'),
     ),
 ]
 
 INDOOR_FACES = [
     (
-        'Indoor \u2014 Back',
+        'modifications.builtin.indoor.back',
         target_path_for_current_platform(r'PlatformContent\pc\textures\sky\indoor512_bk.tex'),
     ),
     (
-        'Indoor \u2014 Down',
+        'modifications.builtin.indoor.down',
         target_path_for_current_platform(r'PlatformContent\pc\textures\sky\indoor512_dn.tex'),
     ),
     (
-        'Indoor \u2014 Front',
+        'modifications.builtin.indoor.front',
         target_path_for_current_platform(r'PlatformContent\pc\textures\sky\indoor512_ft.tex'),
     ),
     (
-        'Indoor \u2014 Left',
+        'modifications.builtin.indoor.left',
         target_path_for_current_platform(r'PlatformContent\pc\textures\sky\indoor512_lf.tex'),
     ),
     (
-        'Indoor \u2014 Right',
+        'modifications.builtin.indoor.right',
         target_path_for_current_platform(r'PlatformContent\pc\textures\sky\indoor512_rt.tex'),
     ),
     (
-        'Indoor \u2014 Up',
+        'modifications.builtin.indoor.up',
         target_path_for_current_platform(r'PlatformContent\pc\textures\sky\indoor512_up.tex'),
     ),
 ]
 
 SOUNDS = [
     (
-        'Footsteps (Plastic)',
+        'modifications.builtin.sound.footsteps_plastic',
         target_path_for_current_platform(r'content\sounds\action_footsteps_plastic.mp3'),
         'bundled:empty.mp3',
     ),
     (
-        'Falling',
+        'modifications.builtin.sound.falling',
         target_path_for_current_platform(r'content\sounds\action_falling.ogg'),
         'bundled:empty.ogg',
     ),
     (
-        'Get Up',
+        'modifications.builtin.sound.get_up',
         target_path_for_current_platform(r'content\sounds\action_get_up.mp3'),
         'bundled:empty.mp3',
     ),
     (
-        'Jump',
+        'modifications.builtin.sound.jump',
         target_path_for_current_platform(r'content\sounds\action_jump.mp3'),
         'bundled:empty.mp3',
     ),
     (
-        'Jump Land',
+        'modifications.builtin.sound.jump_land',
         target_path_for_current_platform(r'content\sounds\action_jump_land.mp3'),
         'bundled:empty.mp3',
     ),
     (
-        'Swim',
+        'modifications.builtin.sound.swim',
         target_path_for_current_platform(r'content\sounds\action_swim.mp3'),
         'bundled:empty.mp3',
     ),
     (
-        'Explosion',
+        'modifications.builtin.sound.explosion',
         target_path_for_current_platform(r'content\sounds\impact_explosion_03.mp3'),
         'bundled:empty.mp3',
     ),
     (
-        'Water Impact',
+        'modifications.builtin.sound.water_impact',
         target_path_for_current_platform(r'content\sounds\impact_water.mp3'),
         'bundled:empty.mp3',
     ),
     (
-        'Oof',
+        'modifications.builtin.sound.oof',
         target_path_for_current_platform(r'content\sounds\oof.ogg'),
         'bundled:empty.ogg',
     ),
     (
-        'Ouch',
+        'modifications.builtin.sound.ouch',
         target_path_for_current_platform(r'content\sounds\ouch.ogg'),
         'bundled:empty.ogg',
     ),
     (
-        'Volume Slider',
+        'modifications.builtin.sound.volume_slider',
         target_path_for_current_platform(r'content\sounds\volume_slider.ogg'),
         'bundled:empty.ogg',
     ),
@@ -220,62 +227,149 @@ if sys.platform.startswith('linux'):
     ]
 
 # File-type filter strings for QFileDialog
-MESH_FILTER = 'Mesh Files (*.mesh *.obj);;All Files (*)'
-IMAGE_FILTER = 'Image Files (*.png *.jpg *.jpeg *.tex);;All Files (*)'
+MESH_FILTER = 'modifications.filter.mesh_files'
+IMAGE_FILTER = 'modifications.filter.image_files'
 # DDS textures — Roblox accepts a .png renamed to .dds as a drop-in replacement
-DDS_FILTER = 'Image Files (*.dds *.png);;All Files (*)'
+DDS_FILTER = 'modifications.filter.dds_image_files'
 # JPG textures (moon/sun) — Roblox also accepts a .png renamed to .jpg
-JPG_FILTER = 'Image Files (*.jpg *.jpeg *.png);;All Files (*)'
-SOUND_FILTER = 'Audio Files (*.mp3 *.ogg *.wav);;All Files (*)'
-FONT_FILTER = 'Font Files (*.ttf *.otf *.ttc);;All Files (*)'
+JPG_FILTER = 'modifications.filter.jpg_image_files'
+SOUND_FILTER = 'modifications.filter.audio_files'
+FONT_FILTER = 'modifications.filter.font_files'
 
 TEXTURES = [
-    # (display_name, target_path, file_filter)
+    # (display_name_id, target_path, file_filter_id)
     (
-        'High Quality Studs — Diffuse',
+        'modifications.builtin.texture.hq_studs_diffuse',
         target_path_for_current_platform(r'PlatformContent\pc\textures\plastic\diffuse.dds'),
         DDS_FILTER,
     ),
     (
-        'High Quality Studs — Normal',
+        'modifications.builtin.texture.hq_studs_normal',
         target_path_for_current_platform(r'PlatformContent\pc\textures\plastic\normal.dds'),
         DDS_FILTER,
     ),
     (
-        'High Quality Studs — Detail',
+        'modifications.builtin.texture.hq_studs_detail',
         target_path_for_current_platform(r'PlatformContent\pc\textures\plastic\normaldetail.dds'),
         DDS_FILTER,
     ),
     (
-        'Low Quality Studs',
+        'modifications.builtin.texture.low_quality_studs',
         target_path_for_current_platform(r'PlatformContent\pc\textures\studs.dds'),
         DDS_FILTER,
     ),
     (
-        'Shiftlock Cursor',
+        'modifications.builtin.texture.shiftlock_cursor',
         target_path_for_current_platform(r'content\textures\MouseLockedCursor.png'),
         IMAGE_FILTER,
     ),
     (
-        'Cursor — Pointing',
+        'modifications.builtin.texture.cursor_pointing',
         target_path_for_current_platform(r'content\textures\Cursors\KeyboardMouse\ArrowCursor.png'),
         IMAGE_FILTER,
     ),
     (
-        'Cursor — Arrow',
+        'modifications.builtin.texture.cursor_arrow',
         target_path_for_current_platform(
             r'content\textures\Cursors\KeyboardMouse\ArrowFarCursor.png'
         ),
         IMAGE_FILTER,
     ),
     (
-        'Cursor — IBeam',
+        'modifications.builtin.texture.cursor_ibeam',
         target_path_for_current_platform(r'content\textures\Cursors\KeyboardMouse\IBeamCursor.png'),
         IMAGE_FILTER,
     ),
-    ('Moon', target_path_for_current_platform(r'content\sky\moon.jpg'), JPG_FILTER),
-    ('Sun', target_path_for_current_platform(r'content\sky\sun.jpg'), JPG_FILTER),
+    (
+        'modifications.builtin.texture.moon',
+        target_path_for_current_platform(r'content\sky\moon.jpg'),
+        JPG_FILTER,
+    ),
+    (
+        'modifications.builtin.texture.sun',
+        target_path_for_current_platform(r'content\sky\sun.jpg'),
+        JPG_FILTER,
+    ),
 ]
+
+
+def _builtin_label(identifier: str) -> str:
+    labels = {
+        'modifications.builtin.avatar.left_arm': tr('modifications.builtin.avatar.left_arm'),
+        'modifications.builtin.avatar.left_leg': tr('modifications.builtin.avatar.left_leg'),
+        'modifications.builtin.avatar.right_arm': tr('modifications.builtin.avatar.right_arm'),
+        'modifications.builtin.avatar.right_leg': tr('modifications.builtin.avatar.right_leg'),
+        'modifications.builtin.avatar.torso': tr('modifications.builtin.avatar.torso'),
+        'modifications.builtin.avatar.head': tr('modifications.builtin.avatar.head'),
+        'modifications.builtin.sky.back': tr('modifications.builtin.sky.back'),
+        'modifications.builtin.sky.down': tr('modifications.builtin.sky.down'),
+        'modifications.builtin.sky.front': tr('modifications.builtin.sky.front'),
+        'modifications.builtin.sky.left': tr('modifications.builtin.sky.left'),
+        'modifications.builtin.sky.right': tr('modifications.builtin.sky.right'),
+        'modifications.builtin.sky.up': tr('modifications.builtin.sky.up'),
+        'modifications.builtin.indoor.back': tr('modifications.builtin.indoor.back'),
+        'modifications.builtin.indoor.down': tr('modifications.builtin.indoor.down'),
+        'modifications.builtin.indoor.front': tr('modifications.builtin.indoor.front'),
+        'modifications.builtin.indoor.left': tr('modifications.builtin.indoor.left'),
+        'modifications.builtin.indoor.right': tr('modifications.builtin.indoor.right'),
+        'modifications.builtin.indoor.up': tr('modifications.builtin.indoor.up'),
+        'modifications.builtin.sound.footsteps_plastic': tr(
+            'modifications.builtin.sound.footsteps_plastic'
+        ),
+        'modifications.builtin.sound.falling': tr('modifications.builtin.sound.falling'),
+        'modifications.builtin.sound.get_up': tr('modifications.builtin.sound.get_up'),
+        'modifications.builtin.sound.jump': tr('modifications.builtin.sound.jump'),
+        'modifications.builtin.sound.jump_land': tr('modifications.builtin.sound.jump_land'),
+        'modifications.builtin.sound.swim': tr('modifications.builtin.sound.swim'),
+        'modifications.builtin.sound.explosion': tr('modifications.builtin.sound.explosion'),
+        'modifications.builtin.sound.water_impact': tr('modifications.builtin.sound.water_impact'),
+        'modifications.builtin.sound.oof': tr('modifications.builtin.sound.oof'),
+        'modifications.builtin.sound.ouch': tr('modifications.builtin.sound.ouch'),
+        'modifications.builtin.sound.volume_slider': tr(
+            'modifications.builtin.sound.volume_slider'
+        ),
+        'modifications.builtin.texture.hq_studs_diffuse': tr(
+            'modifications.builtin.texture.hq_studs_diffuse'
+        ),
+        'modifications.builtin.texture.hq_studs_normal': tr(
+            'modifications.builtin.texture.hq_studs_normal'
+        ),
+        'modifications.builtin.texture.hq_studs_detail': tr(
+            'modifications.builtin.texture.hq_studs_detail'
+        ),
+        'modifications.builtin.texture.low_quality_studs': tr(
+            'modifications.builtin.texture.low_quality_studs'
+        ),
+        'modifications.builtin.texture.shiftlock_cursor': tr(
+            'modifications.builtin.texture.shiftlock_cursor'
+        ),
+        'modifications.builtin.texture.cursor_pointing': tr(
+            'modifications.builtin.texture.cursor_pointing'
+        ),
+        'modifications.builtin.texture.cursor_arrow': tr(
+            'modifications.builtin.texture.cursor_arrow'
+        ),
+        'modifications.builtin.texture.cursor_ibeam': tr(
+            'modifications.builtin.texture.cursor_ibeam'
+        ),
+        'modifications.builtin.texture.moon': tr('modifications.builtin.texture.moon'),
+        'modifications.builtin.texture.sun': tr('modifications.builtin.texture.sun'),
+    }
+    return labels[identifier]
+
+
+def _file_filter_text(identifier: str) -> str:
+    filters = {
+        'modifications.filter.all_files': tr('modifications.filter.all_files'),
+        'modifications.filter.mesh_files': tr('modifications.filter.mesh_files'),
+        'modifications.filter.image_files': tr('modifications.filter.image_files'),
+        'modifications.filter.dds_image_files': tr('modifications.filter.dds_image_files'),
+        'modifications.filter.jpg_image_files': tr('modifications.filter.jpg_image_files'),
+        'modifications.filter.audio_files': tr('modifications.filter.audio_files'),
+        'modifications.filter.font_files': tr('modifications.filter.font_files'),
+    }
+    return filters[identifier]
+
 
 # Status badge styling
 _STATUS_STYLES = {
@@ -312,7 +406,7 @@ class _RichTextButton(QPushButton):
         self._suffix_x_offset = suffix_x_offset
         self._suffix_pixel_size = suffix_pixel_size
         # Non-empty text so Qt includes normal button padding in sizeHint.
-        super().setText('\u200b')
+        super().setText(tr('ui.gui.modifications_tab.text'))
 
     def paintEvent(self, a0):
         from PyQt6.QtGui import QFont, QFontMetrics, QPainter, QPalette
@@ -424,7 +518,7 @@ class CollapsibleSection(QWidget):
         self._arrow.clicked.connect(self.toggle)
         header_layout.addWidget(self._arrow)
 
-        self._title_label = QLabel(f'<b>{title}</b>')
+        self._title_label = QLabel(tr('ui.gui.modifications_tab.b_value_b', value0=title))
         self._title_label.setCursor(Qt.CursorShape.PointingHandCursor)
         self._title_label.mousePressEvent = lambda _: self.toggle()
         header_layout.addWidget(self._title_label)
@@ -613,7 +707,8 @@ class FastFlagValueDelegate(QStyledItemDelegate):
         name = str(index.sibling(index.row(), 0).data() or '')
         if name.startswith(self._BOOLEAN_FLAG_PREFIXES):
             editor = CompactBooleanComboBox(parent)
-            editor.addItems(['True', 'False'])
+            editor.addItem(tr('ui.gui.modifications_tab.true'), 'True')
+            editor.addItem(tr('ui.gui.modifications_tab.false'), 'False')
             editor.activated.connect(partial(self._commit_and_close_boolean_editor, editor))
             return editor
         return super().createEditor(parent, option, index)
@@ -625,9 +720,11 @@ class FastFlagValueDelegate(QStyledItemDelegate):
 
     def setEditorData(self, editor, index):
         if isinstance(editor, QComboBox):
-            editor.setCurrentText(
-                'True' if str(index.data() or '').strip().lower() == 'true' else 'False'
-            )
+            stored = index.data(Qt.ItemDataRole.UserRole)
+            if stored is None:
+                stored = index.data(Qt.ItemDataRole.DisplayRole)
+            value = 'True' if str(stored or '').strip().lower() == 'true' else 'False'
+            editor.setCurrentIndex(max(0, editor.findData(value)))
             # A table double-click creates the combo editor but does not pass
             # the click on to the combo itself.  Defer opening the popup until
             # the editor has been installed and shown by the view, otherwise
@@ -638,7 +735,14 @@ class FastFlagValueDelegate(QStyledItemDelegate):
 
     def setModelData(self, editor, model, index):
         if isinstance(editor, QComboBox):
-            model.setData(index, editor.currentText())
+            value = str(editor.currentData())
+            display = (
+                tr('ui.gui.modifications_tab.true')
+                if value == 'True'
+                else tr('ui.gui.modifications_tab.false')
+            )
+            model.setData(index, display, Qt.ItemDataRole.DisplayRole)
+            model.setData(index, value, Qt.ItemDataRole.UserRole)
             return
         super().setModelData(editor, model, index)
 
@@ -658,7 +762,7 @@ class ModRowWidget(QWidget):
         manager: ModificationManager,
         display_name: str,
         target_path: str,
-        file_filter: str = 'All Files (*)',
+        file_filter: str = 'modifications.filter.all_files',
         deletable: bool = False,
         mute_bundled: str | None = None,
         is_font: bool = False,
@@ -693,7 +797,7 @@ class ModRowWidget(QWidget):
         layout.addWidget(self._name_label)
 
         # Status badge — trimmed width keeps 'Applied' close to the textbox
-        self._status_label = QLabel('Not Set')
+        self._status_label = QLabel(tr('ui.gui.modifications_tab.not_set'))
         self._status_label.setFixedWidth(72)
         self._status_label.setStyleSheet(_STATUS_STYLES['not_set'])
         layout.addWidget(self._status_label)
@@ -701,7 +805,10 @@ class ModRowWidget(QWidget):
         # Source text field (expands to fill remaining row space)
         self._source_edit = FileDropLineEdit()
         self._source_edit.setPlaceholderText(
-            f'ID, URL, path ({local_file_path_example()}), or "remove"'
+            tr(
+                'ui.gui.modifications_tab.id_url_path_value_or_remove',
+                value0=local_file_path_example(),
+            )
         )
         self._source_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         layout.addWidget(self._source_edit)
@@ -722,14 +829,14 @@ class ModRowWidget(QWidget):
 
         # Reset button
         self._reset_btn = _RichTextButton('\u21ba', y_offset=-1)
-        self._reset_btn.setToolTip('Reset to original')
+        self._reset_btn.setToolTip(tr('ui.gui.modifications_tab.reset_to_original'))
         self._reset_btn.setFixedWidth(28)
         self._reset_btn.setVisible(False)
         self._reset_btn.clicked.connect(self._on_reset)
         layout.addWidget(self._reset_btn)
 
         # Browse button — to the right of reset (collapses next to textbox when reset hidden)
-        self._browse_btn = QPushButton('Browse...')
+        self._browse_btn = QPushButton(tr('ui.gui.modifications_tab.browse'))
         self._browse_btn.setFixedWidth(65)
         self._browse_btn.clicked.connect(self._on_browse)
         layout.addWidget(self._browse_btn)
@@ -739,7 +846,7 @@ class ModRowWidget(QWidget):
             CollapsibleSection._WINDOWS_COLLAPSED_ARROW_SIZE if os.name == 'nt' else None
         )
         self._preview_btn = _RichTextButton(
-            'Preview',
+            tr('modifications.preview'),
             '\u25b6',
             suffix_x_offset=3,
             suffix_pixel_size=preview_arrow_size,
@@ -752,7 +859,7 @@ class ModRowWidget(QWidget):
         if self._deletable:
             self._del_btn = _RichTextButton('\u2715', y_offset=-1)
             self._del_btn.setFixedWidth(28)
-            self._del_btn.setToolTip('Remove modification')
+            self._del_btn.setToolTip(tr('ui.gui.modifications_tab.remove_modification'))
             self._del_btn.clicked.connect(self._on_delete)
             layout.addWidget(self._del_btn)
 
@@ -794,10 +901,7 @@ class ModRowWidget(QWidget):
         if stash.is_file():
             self._update_status('orphaned_stash')
             self._status_label.setToolTip(
-                'A stash of the original file was found on disk but Fleasion has '
-                'no active record for this modification. This can happen if you '
-                'manually replaced the file, or if Fleasion closed unexpectedly. '
-                'Click \u21ba to restore the original file.'
+                tr('ui.gui.modifications_tab.a_stash_of_the_original_file_was')
             )
 
     def _on_status_changed(self, entry_id: str, status: str, error_msg: str):
@@ -813,16 +917,16 @@ class ModRowWidget(QWidget):
         display_status = 'not_set' if status == 'error' else status
 
         labels = {
-            'not_set': 'Not Set',
-            'pending': 'Applying...',
-            'applied': 'Applied',
-            'orphaned_stash': 'Ext. Modified',
+            'not_set': tr('modifications.status.not_set'),
+            'pending': tr('modifications.status.applying'),
+            'applied': tr('modifications.status.applied'),
+            'orphaned_stash': tr('modifications.status.external_modified'),
         }
         self._status_label.setText(labels.get(display_status, display_status))
         self._status_label.setStyleSheet(_STATUS_STYLES.get(display_status, ''))
 
         if status == 'error':
-            self._show_source_error(error_msg or 'Failed to apply')
+            self._show_source_error(error_msg or tr('modifications.error.failed_to_apply'))
         elif status in ('applied', 'not_set'):
             self._clear_source_error()
 
@@ -990,7 +1094,7 @@ class ModRowWidget(QWidget):
         if src_type == 'local_file' and not Path(src_value).is_file():
             # Show red border but still apply — the manager will fail and
             # the status indicator will show 'error', matching asset-ID behaviour.
-            self._show_source_error(f'File not found: {src_value}')
+            self._show_source_error(tr('modifications.error.file_not_found', path=src_value))
         else:
             self._clear_source_error()
 
@@ -1015,9 +1119,9 @@ class ModRowWidget(QWidget):
                 initial_dir = str(p)
         path, _ = QFileDialog.getOpenFileName(
             self,
-            'Select replacement file',
+            tr('ui.gui.modifications_tab.select_replacement_file'),
             initial_dir,
-            self._file_filter,
+            _file_filter_text(self._file_filter),
         )
         if path:
             self._set_source_text_silent(path)
@@ -1052,7 +1156,7 @@ class ModPreviewDialog(QDialog):
         self._mod_converted_bytes: bytes | None = None
         self._mod_converted_ext: str = ''
         self._orig_unavailable: bool = False
-        self.setWindowTitle(f'Preview \u2014 {display_name}')
+        self.setWindowTitle(tr('ui.gui.modifications_tab.preview_value', value0=display_name))
         self.resize(500, 400)
 
         layout = QVBoxLayout()
@@ -1060,22 +1164,22 @@ class ModPreviewDialog(QDialog):
 
         # Modification tab — build first so _mod_converted_bytes is populated
         mod_widget = self._build_preview_widget('mod')
-        tabs.addTab(mod_widget, 'Modification')
+        tabs.addTab(mod_widget, tr('ui.gui.modifications_tab.modification'))
 
         # Original tab
         orig_widget = self._build_preview_widget('original')
-        tabs.addTab(orig_widget, 'Original')
+        tabs.addTab(orig_widget, tr('ui.gui.modifications_tab.original'))
 
         layout.addWidget(tabs)
 
         # Buttons row
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        export_conv_btn = QPushButton('Export Converted\u2026')
+        export_conv_btn = QPushButton(tr('ui.gui.modifications_tab.export_converted'))
         export_conv_btn.setEnabled(self._mod_converted_bytes is not None)
         export_conv_btn.clicked.connect(self._on_export_converted)
         btn_row.addWidget(export_conv_btn)
-        export_btn = QPushButton('Export Original\u2026')
+        export_btn = QPushButton(tr('ui.gui.modifications_tab.export_original'))
         export_btn.setEnabled(not self._orig_unavailable)
         export_btn.clicked.connect(self._on_export)
         btn_row.addWidget(export_btn)
@@ -1094,13 +1198,13 @@ class ModPreviewDialog(QDialog):
             lower_check = self._target_path.lower()
             if mode == 'original' and lower_check.endswith(('.ttf', '.otf', '.ttc')):
                 lbl = QLabel(
-                    'Preview of Roblox Original fonts are not supported because it includes multiple Font files'
+                    tr('ui.gui.modifications_tab.preview_of_roblox_original_fonts_are_not')
                 )
                 lbl.setWordWrap(True)
                 layout.addWidget(lbl)
                 self._orig_unavailable = True
             else:
-                layout.addWidget(QLabel('No data available'))
+                layout.addWidget(QLabel(tr('ui.gui.modifications_tab.no_data_available')))
             container.setLayout(layout)
             return container
 
@@ -1120,7 +1224,9 @@ class ModPreviewDialog(QDialog):
                         self._mod_converted_bytes = converted
                         self._mod_converted_ext = '.png'
                 else:
-                    layout.addWidget(QLabel('Could not decode KTX texture file'))
+                    layout.addWidget(
+                        QLabel(tr('ui.gui.modifications_tab.could_not_decode_ktx_texture_file'))
+                    )
                     container.setLayout(layout)
                     return container
             elif lower.endswith(('.tex', '.dds')):
@@ -1141,7 +1247,9 @@ class ModPreviewDialog(QDialog):
                             self._mod_converted_bytes = converted
                             self._mod_converted_ext = '.png'
                     else:
-                        layout.addWidget(QLabel('Could not decode .tex/.dds file'))
+                        layout.addWidget(
+                            QLabel(tr('ui.gui.modifications_tab.could_not_decode_tex_dds_file'))
+                        )
                         container.setLayout(layout)
                         return container
 
@@ -1158,7 +1266,7 @@ class ModPreviewDialog(QDialog):
                 )
                 label.setPixmap(scaled)
             else:
-                label.setText('Could not render image')
+                label.setText(tr('ui.gui.modifications_tab.could_not_render_image'))
             layout.addWidget(label)
 
         # Mesh
@@ -1177,9 +1285,13 @@ class ModPreviewDialog(QDialog):
                     viewer.load_obj(obj_text)
                     layout.addWidget(viewer)
                 else:
-                    layout.addWidget(QLabel('Could not convert mesh for preview'))
+                    layout.addWidget(
+                        QLabel(tr('ui.gui.modifications_tab.could_not_convert_mesh_for_preview'))
+                    )
             except Exception as exc:
-                layout.addWidget(QLabel(f'Mesh preview error: {exc}'))
+                layout.addWidget(
+                    QLabel(tr('ui.gui.modifications_tab.mesh_preview_error_value', value0=exc))
+                )
 
         # Audio
         elif lower.endswith(('.mp3', '.ogg', '.wav')):
@@ -1196,7 +1308,9 @@ class ModPreviewDialog(QDialog):
                 player = AudioPlayerWidget(tmp.name)
                 layout.addWidget(player)
             except Exception as exc:
-                layout.addWidget(QLabel(f'Audio preview error: {exc}'))
+                layout.addWidget(
+                    QLabel(tr('ui.gui.modifications_tab.audio_preview_error_value', value0=exc))
+                )
 
         # Fonts
         elif lower.endswith(('.ttf', '.otf', '.ttc')):
@@ -1226,10 +1340,14 @@ class ModPreviewDialog(QDialog):
                     font_viewer = FontViewerWidget(data)
                     layout.addWidget(font_viewer)
             except Exception as exc:
-                layout.addWidget(QLabel(f'Font/JSON preview error: {exc}'))
+                layout.addWidget(
+                    QLabel(tr('ui.gui.modifications_tab.font_json_preview_error_value', value0=exc))
+                )
 
         else:
-            layout.addWidget(QLabel(f'No preview available for this file type'))
+            layout.addWidget(
+                QLabel(tr('ui.gui.modifications_tab.no_preview_available_for_this_file_type'))
+            )
 
         container.setLayout(layout)
         return container
@@ -1271,7 +1389,7 @@ class ModPreviewDialog(QDialog):
     def _on_export(self):
         path, _ = QFileDialog.getSaveFileName(
             self,
-            'Export Original File',
+            tr('ui.gui.modifications_tab.export_original_file'),
             Path(self._target_path).name,
         )
         if path:
@@ -1280,8 +1398,8 @@ class ModPreviewDialog(QDialog):
                 export_path = Path(path)
                 export_path.write_bytes(data)
                 self._show_export_complete_message(
-                    'Export Complete',
-                    f'File exported to:\n{export_path}',
+                    tr('modifications.export.complete_title'),
+                    tr('modifications.export.file_exported_to', path=export_path),
                     [export_path],
                 )
 
@@ -1292,15 +1410,15 @@ class ModPreviewDialog(QDialog):
         default_name = stem + self._mod_converted_ext
         path, _ = QFileDialog.getSaveFileName(
             self,
-            'Export Converted File',
+            tr('ui.gui.modifications_tab.export_converted_file'),
             default_name,
         )
         if path:
             export_path = Path(path)
             export_path.write_bytes(self._mod_converted_bytes)
             self._show_export_complete_message(
-                'Export Complete',
-                f'File exported to:\n{export_path}',
+                tr('modifications.export.complete_title'),
+                tr('modifications.export.file_exported_to', path=export_path),
                 [export_path],
             )
 
@@ -1309,7 +1427,9 @@ class ModPreviewDialog(QDialog):
         msg.setIcon(QMessageBox.Icon.Information)
         msg.setWindowTitle(title)
         msg.setText(message)
-        open_button = msg.addButton('Open in Explorer', QMessageBox.ButtonRole.ActionRole)
+        open_button = msg.addButton(
+            tr('ui.gui.modifications_tab.open_in_explorer'), QMessageBox.ButtonRole.ActionRole
+        )
         msg.addButton(QMessageBox.StandardButton.Ok)
         msg.exec()
 
@@ -1345,23 +1465,17 @@ class CustomFFlagWarningDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle('Are you sure?')
+        self.setWindowTitle(tr('ui.gui.modifications_tab.are_you_sure'))
         self.setModal(True)
         self.setMinimumWidth(520)
         self._seconds_remaining = self.CONFIRM_DELAY_SECONDS
 
         layout = QVBoxLayout(self)
-        title = QLabel('<b>Custom FastFlags can get your Roblox account banned.</b>')
+        title = QLabel(tr('ui.gui.modifications_tab.b_custom_fastflags_can_get_your_roblox'))
         title.setStyleSheet('color: #d9534f; font-size: 15px;')
         layout.addWidget(title)
 
-        message = QLabel(
-            'Roblox only permits a small allowlist of local FastFlags. This feature bypasses '
-            "that restriction by modifying Roblox's remote ClientSettings response. Fleasion "
-            'cannot determine whether a flag is safe, and the Fleasion contributors accept no '
-            'liability for account moderation, data loss, crashes, or other consequences.\n\n'
-            'Only continue if you understand the risk and accept full responsibility.'
-        )
+        message = QLabel(tr('ui.gui.modifications_tab.roblox_only_permits_a_small_allowlist_of'))
         message.setWordWrap(True)
         layout.addWidget(message)
 
@@ -1380,9 +1494,16 @@ class CustomFFlagWarningDialog(QDialog):
 
     def _update_confirm_text(self):
         if self._seconds_remaining > 0:
-            self._confirm_button.setText(f'I accept the risk ({self._seconds_remaining}s)')
+            self._confirm_button.setText(
+                tr(
+                    'ui.gui.modifications_tab.i_accept_the_risk_value_s',
+                    value0=self._seconds_remaining,
+                )
+            )
         else:
-            self._confirm_button.setText('I accept the risk — enable custom FastFlags')
+            self._confirm_button.setText(
+                tr('ui.gui.modifications_tab.i_accept_the_risk_enable_custom_fastflags')
+            )
 
     def _tick(self):
         self._seconds_remaining = max(0, self._seconds_remaining - 1)
@@ -1397,7 +1518,7 @@ class FastFlagProfilesDialog(QDialog):
 
     def __init__(self, flags: dict[str, str], parent=None):
         super().__init__(parent)
-        self.setWindowTitle('Custom FastFlag Profiles')
+        self.setWindowTitle(tr('ui.gui.modifications_tab.custom_fastflag_profiles'))
         self.setMinimumWidth(560)
         self._flags = dict(flags)
         self._profiles = FastFlagProfileManager()
@@ -1408,18 +1529,15 @@ class FastFlagProfilesDialog(QDialog):
     def _setup_ui(self):
         layout = QVBoxLayout(self)
         layout.setSpacing(8)
-        description = QLabel(
-            'Save the current custom FastFlags as a reusable JSON profile. Loading can replace '
-            'the editor or merge the profile into it.'
-        )
+        description = QLabel(tr('ui.gui.modifications_tab.save_the_current_custom_fastflags_as_a'))
         description.setWordWrap(True)
         layout.addWidget(description)
 
         save_row = QHBoxLayout()
         self._name = QLineEdit()
-        self._name.setPlaceholderText('Profile name')
+        self._name.setPlaceholderText(tr('ui.gui.modifications_tab.profile_name'))
         save_row.addWidget(self._name)
-        save_button = QPushButton('Save Current')
+        save_button = QPushButton(tr('ui.gui.modifications_tab.save_current'))
         save_button.clicked.connect(self._save_profile)
         save_row.addWidget(save_button)
         layout.addLayout(save_row)
@@ -1429,25 +1547,29 @@ class FastFlagProfilesDialog(QDialog):
         self._profile_list.itemDoubleClicked.connect(lambda _item: self._load_profile())
         layout.addWidget(self._profile_list)
 
-        self._replace_flags = QCheckBox('Replace current flags when loading')
+        self._replace_flags = QCheckBox(
+            tr('ui.gui.modifications_tab.replace_current_flags_when_loading')
+        )
         self._replace_flags.setChecked(True)
-        self._replace_flags.setToolTip('Turn this off to merge the profile into the current flags.')
+        self._replace_flags.setToolTip(
+            tr('ui.gui.modifications_tab.turn_this_off_to_merge_the_profile')
+        )
         layout.addWidget(self._replace_flags)
 
         actions = QHBoxLayout()
-        self._load_button = QPushButton('Load')
+        self._load_button = QPushButton(tr('ui.gui.modifications_tab.load'))
         self._load_button.clicked.connect(self._load_profile)
         actions.addWidget(self._load_button)
-        self._update_button = QPushButton('Update from Current')
+        self._update_button = QPushButton(tr('ui.gui.modifications_tab.update_from_current'))
         self._update_button.clicked.connect(self._update_profile)
         actions.addWidget(self._update_button)
-        self._copy_button = QPushButton('Copy JSON')
+        self._copy_button = QPushButton(tr('ui.gui.modifications_tab.copy_json'))
         self._copy_button.clicked.connect(self._copy_profile)
         actions.addWidget(self._copy_button)
-        self._rename_button = QPushButton('Rename…')
+        self._rename_button = QPushButton(tr('ui.gui.modifications_tab.rename'))
         self._rename_button.clicked.connect(self._rename_profile)
         actions.addWidget(self._rename_button)
-        self._delete_button = QPushButton('Delete')
+        self._delete_button = QPushButton(tr('ui.gui.modifications_tab.delete'))
         self._delete_button.clicked.connect(self._delete_profile)
         actions.addWidget(self._delete_button)
         layout.addLayout(actions)
@@ -1489,7 +1611,9 @@ class FastFlagProfilesDialog(QDialog):
         self._set_actions_enabled(self._selected_name() is not None)
 
     def _show_error(self, action: str, exc: Exception):
-        QMessageBox.warning(self, f'Could Not {action} Profile', str(exc))
+        QMessageBox.warning(
+            self, tr('ui.gui.modifications_tab.could_not_value_profile', value0=action), str(exc)
+        )
 
     def _save_profile(self):
         try:
@@ -1534,7 +1658,10 @@ class FastFlagProfilesDialog(QDialog):
         if not old_name:
             return
         new_name, ok = QInputDialog.getText(
-            self, 'Rename FastFlag Profile', 'New name:', text=old_name
+            self,
+            tr('ui.gui.modifications_tab.rename_fastflag_profile'),
+            tr('ui.gui.modifications_tab.new_name'),
+            text=old_name,
         )
         if not ok:
             return
@@ -1550,7 +1677,11 @@ class FastFlagProfilesDialog(QDialog):
         if not name:
             return
         if (
-            QMessageBox.question(self, 'Delete FastFlag Profile', f'Delete “{name}”?')
+            QMessageBox.question(
+                self,
+                tr('ui.gui.modifications_tab.delete_fastflag_profile'),
+                tr('ui.gui.modifications_tab.delete_value', value0=name),
+            )
             != QMessageBox.StandardButton.Yes
         ):
             return
@@ -1590,7 +1721,6 @@ class FFlagBrowserDialog(QDialog):
         '03a46e5f35e7aa5d85310189b477caee20b20761/FVariables.txt'
     )
     _BYPASS_CUSTOM_FFLAGS_HEADER = {'X-Fleasion-Bypass-Custom-FFlags': '1'}
-    _UNPUBLISHED_VALUE = 'No value'
     _CACHE_PATH = APP_CACHE_DIR / 'fflag_browser.json'
     _CACHE_TTL_SECONDS = 60 * 60
     _CACHE_VERSION = 1
@@ -1612,7 +1742,7 @@ class FFlagBrowserDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle('Browse Roblox FastFlags')
+        self.setWindowTitle(tr('ui.gui.modifications_tab.browse_roblox_fastflags'))
         self.setMinimumSize(820, 580)
         # ``None`` means the variable is known to exist in the client, but
         # Roblox has not published a current value through ClientSettings.
@@ -1629,15 +1759,18 @@ class FFlagBrowserDialog(QDialog):
         layout.setSpacing(8)
 
         description = QLabel(
-            'Browse FastFlags found across Roblox ClientSettings releases and public client '
-            'tracker lists. Entries without a current PC value are added blank.'
+            tr(
+                'ui.gui.modifications_tab.browse_fastflags_found_across_roblox_clientsettings_releases'
+            )
         )
         description.setWordWrap(True)
         layout.addWidget(description)
 
         controls = QHBoxLayout()
         self._search = QLineEdit()
-        self._search.setPlaceholderText('Search FastFlag names or current values…')
+        self._search.setPlaceholderText(
+            tr('ui.gui.modifications_tab.search_fastflag_names_or_current_values')
+        )
         self._search.textChanged.connect(self._filter_rows)
         controls.addWidget(self._search, 1)
 
@@ -1646,17 +1779,22 @@ class FFlagBrowserDialog(QDialog):
         self._family_filter.currentIndexChanged.connect(self._filter_rows)
         controls.addWidget(self._family_filter)
 
-        self._refresh_button = QPushButton('Refresh')
+        self._refresh_button = QPushButton(tr('ui.gui.modifications_tab.refresh'))
         self._refresh_button.clicked.connect(lambda: self._refresh(force=True))
         controls.addWidget(self._refresh_button)
         layout.addLayout(controls)
 
-        self._count = QLabel('Retrieving FastFlags…')
+        self._count = QLabel(tr('ui.gui.modifications_tab.retrieving_fastflags'))
         self._count.setStyleSheet('color: #999;')
         layout.addWidget(self._count)
 
         self._table = QTableWidget(0, 2)
-        self._table.setHorizontalHeaderLabels(['Name', 'Current Roblox Value'])
+        self._table.setHorizontalHeaderLabels(
+            [
+                tr('ui.gui.modifications_tab.name'),
+                tr('ui.gui.modifications_tab.current_roblox_value'),
+            ]
+        )
         header = self._table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
@@ -1667,7 +1805,9 @@ class FFlagBrowserDialog(QDialog):
         layout.addWidget(self._table, 1)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
-        self._add_button = buttons.addButton('Add Selected', QDialogButtonBox.ButtonRole.AcceptRole)
+        self._add_button = buttons.addButton(
+            tr('ui.gui.modifications_tab.add_selected'), QDialogButtonBox.ButtonRole.AcceptRole
+        )
         self._add_button.setEnabled(False)
         self._add_button.clicked.connect(self._add_selected)
         buttons.rejected.connect(self.reject)
@@ -1679,6 +1819,11 @@ class FFlagBrowserDialog(QDialog):
             if name.startswith(family):
                 return family
         return 'Other'
+
+    @staticmethod
+    def _display_value(value: str | None) -> str:
+        """Keep the canonical unpublished sentinel as None and translate only presentation."""
+        return value if value is not None else tr('modifications.fastflags.no_value')
 
     @staticmethod
     def _extract_flags(payload: object) -> dict[str, str]:
@@ -1796,7 +1941,7 @@ class FFlagBrowserDialog(QDialog):
 
         self._cache_loaded = False
         self._refresh_button.setEnabled(False)
-        self._count.setText('Retrieving FastFlags…')
+        self._count.setText(tr('ui.gui.modifications_tab.retrieving_fastflags'))
         self._count.setStyleSheet('color: #999;')
         threading.Thread(target=self._fetch_flags, daemon=True).start()
 
@@ -1850,7 +1995,7 @@ class FFlagBrowserDialog(QDialog):
             self._write_cache(flags)
             self.flags_loaded.emit(flags)
         except (OSError, ValueError, json.JSONDecodeError) as exc:
-            self.load_failed.emit(f'Could not retrieve Roblox FastFlags: {exc}')
+            self.load_failed.emit(tr('modifications.fastflags.load_failed', error=exc))
 
     def _apply_flags(self, flags: dict[str, str | None]):
         self._flags = dict(sorted(flags.items(), key=lambda item: item[0].casefold()))
@@ -1862,9 +2007,16 @@ class FFlagBrowserDialog(QDialog):
 
         self._family_filter.blockSignals(True)
         self._family_filter.clear()
-        self._family_filter.addItem('All FastFlags', '')
+        self._family_filter.addItem(tr('ui.gui.modifications_tab.all_fastflags'), '')
         for family in sorted(family_counts):
-            self._family_filter.addItem(f'{family} ({family_counts[family]:,})', family)
+            self._family_filter.addItem(
+                tr(
+                    'ui.gui.modifications_tab.value_value',
+                    value0=family,
+                    value1=family_counts[family],
+                ),
+                family,
+            )
         previous_index = self._family_filter.findData(current_family)
         self._family_filter.setCurrentIndex(max(0, previous_index))
         self._family_filter.blockSignals(False)
@@ -1884,7 +2036,7 @@ class FFlagBrowserDialog(QDialog):
         self._table.setUpdatesEnabled(False)
         try:
             for row, (name, value) in enumerate(self._flags.items()):
-                display_value = value if value is not None else self._UNPUBLISHED_VALUE
+                display_value = self._display_value(value)
                 matches = (not family or self._family_for(name) == family) and (
                     not query or query in name.casefold() or query in display_value.casefold()
                 )
@@ -1896,14 +2048,22 @@ class FFlagBrowserDialog(QDialog):
         if self._flags:
             no_pc_value_count = sum(value is None for value in self._flags.values())
             source_detail = (
-                f' • {no_pc_value_count:,} without a current PC value'
+                tr(
+                    'modifications.fastflags.no_current_pc_values',
+                    count=no_pc_value_count,
+                )
                 if no_pc_value_count
-                else ' retrieved from Roblox'
+                else tr('modifications.fastflags.retrieved_from_roblox')
             )
-            cache_detail = ' • cached' if self._cache_loaded else ''
+            cache_detail = tr('modifications.fastflags.cached_suffix') if self._cache_loaded else ''
             self._count.setText(
-                f'Showing {visible_count:,} FastFlags • {len(self._flags):,}'
-                f'{source_detail}{cache_detail}'
+                tr(
+                    'ui.gui.modifications_tab.showing_value_fastflags_value_value_value',
+                    value0=visible_count,
+                    value1=len(self._flags),
+                    value2=source_detail,
+                    value3=cache_detail,
+                )
             )
             self._count.setStyleSheet('color: #999;')
         self._update_selection_button()
@@ -1919,9 +2079,7 @@ class FFlagBrowserDialog(QDialog):
                 name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 name_item.setToolTip(name)
                 self._table.setItem(row, 0, name_item)
-                value_item = QTableWidgetItem(
-                    value if value is not None else self._UNPUBLISHED_VALUE
-                )
+                value_item = QTableWidgetItem(self._display_value(value))
                 value_item.setFlags(value_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self._table.setItem(row, 1, value_item)
         finally:
@@ -1938,7 +2096,9 @@ class FFlagBrowserDialog(QDialog):
     def _update_selection_button(self):
         selected_count = len(self._selected_names())
         self._add_button.setText(
-            f'Add Selected ({selected_count})' if selected_count else 'Add Selected'
+            tr('modifications.add_selected_count', count=selected_count)
+            if selected_count
+            else tr('ui.gui.modifications_tab.add_selected')
         )
         self._add_button.setEnabled(selected_count > 0)
 
@@ -1971,23 +2131,22 @@ class WindowsHotkeyCaptureDialog(QDialog):
         self._pending_modifier: dict[str, int | bool] | None = None
         self._pending_modifier_key: int | None = None
         self._suppress_mouse_capture = False
-        self.setWindowTitle('Set FastFlag Keybind')
+        self.setWindowTitle(tr('ui.gui.modifications_tab.set_fastflag_keybind'))
         self.setMinimumWidth(460)
         layout = QVBoxLayout(self)
         label = QLabel(
-            f'Press the global keybind for <b>{flag_name}</b>.<br>'
-            'Single keys, modifier keys, and key combinations are supported. '
-            'Pressing Escape binds Escape; use Cancel to leave without changing it.'
+            tr('ui.gui.modifications_tab.press_the_global_keybind_for_b_value', value0=flag_name)
         )
         label.setWordWrap(True)
         layout.addWidget(label)
-        self._preview = QLabel('Waiting for a key combination…')
+        self._preview = QLabel(tr('ui.gui.modifications_tab.waiting_for_a_key_combination'))
         self._preview.setStyleSheet('color: #999; padding: 10px 0;')
         layout.addWidget(self._preview)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
         clear_button = buttons.addButton(
-            'Clear Keybind', QDialogButtonBox.ButtonRole.DestructiveRole
+            tr('ui.gui.modifications_tab.clear_keybind'),
+            QDialogButtonBox.ButtonRole.DestructiveRole,
         )
         clear_button.clicked.connect(self._clear)
         buttons.rejected.connect(self.reject)
@@ -2059,14 +2218,18 @@ class WindowsHotkeyCaptureDialog(QDialog):
         labels = [
             label
             for flag, label in (
-                (MOD_WIN, 'Win'),
-                (MOD_CTRL, 'Ctrl'),
-                (MOD_ALT, 'Alt'),
-                (MOD_SHIFT, 'Shift'),
+                (MOD_WIN, tr('modifications.hotkey.modifier.win')),
+                (MOD_CTRL, tr('modifications.hotkey.modifier.ctrl')),
+                (MOD_ALT, tr('modifications.hotkey.modifier.alt')),
+                (MOD_SHIFT, tr('modifications.hotkey.modifier.shift')),
             )
             if modifiers & flag
         ]
-        return '+'.join([*labels, '…']) if labels else 'Waiting for a key combination…'
+        return (
+            '+'.join([*labels, '…'])
+            if labels
+            else tr('modifications.hotkey.waiting_for_combination')
+        )
 
     def keyPressEvent(self, event):
         key = int(event.key())
@@ -2075,7 +2238,7 @@ class WindowsHotkeyCaptureDialog(QDialog):
         modifiers = self._modifier_mask(event.modifiers())
         binding = self._event_binding(event, modifiers)
         if binding is None:
-            self._preview.setText('That key could not be read as a Windows scan code.')
+            self._preview.setText(tr('ui.gui.modifications_tab.that_key_could_not_be_read_as'))
             return
         if key in self._MODIFIER_KEYS:
             from .windows_hotkeys import modifier_mask_for_virtual_key
@@ -2152,22 +2315,21 @@ class LinuxHotkeyCaptureDialog(QDialog):
         self._service = hotkey_service
         self._pending_modifier: int | None = None
         self._suppress_mouse_capture = False
-        self.setWindowTitle('Set FastFlag Keybind')
+        self.setWindowTitle(tr('ui.gui.modifications_tab.set_fastflag_keybind'))
         self.setMinimumWidth(460)
         layout = QVBoxLayout(self)
         label = QLabel(
-            f'Press the global keybind for <b>{flag_name}</b>.<br>'
-            'Single keys, modifier keys, and key combinations are supported. '
-            'The key will still reach Roblox and your desktop.'
+            tr('ui.gui.modifications_tab.press_the_global_keybind_for_b_value_2', value0=flag_name)
         )
         label.setWordWrap(True)
         layout.addWidget(label)
-        self._preview = QLabel('Waiting for a key combination…')
+        self._preview = QLabel(tr('ui.gui.modifications_tab.waiting_for_a_key_combination'))
         self._preview.setStyleSheet('color: #999; padding: 10px 0;')
         layout.addWidget(self._preview)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
         clear_button = buttons.addButton(
-            'Clear Keybind', QDialogButtonBox.ButtonRole.DestructiveRole
+            tr('ui.gui.modifications_tab.clear_keybind'),
+            QDialogButtonBox.ButtonRole.DestructiveRole,
         )
         clear_button.clicked.connect(self._clear)
         buttons.rejected.connect(self.reject)
@@ -2206,7 +2368,7 @@ class LinuxHotkeyCaptureDialog(QDialog):
         if own_modifier:
             self._pending_modifier = code
             self._preview.setText(
-                'Modifier captured. Release it to bind it alone, or press another key for a combination.'
+                tr('ui.gui.modifications_tab.modifier_captured_release_it_to_bind_it')
             )
             return
         self.binding = binding
@@ -2301,12 +2463,11 @@ class CustomFFlagEditor(QWidget):
         layout.setContentsMargins(0, 10, 0, 0)
         layout.setSpacing(7)
 
-        heading = QLabel('<b>Custom FastFlags (LIVE EDITING)</b>')
+        heading = QLabel(tr('ui.gui.modifications_tab.b_custom_fastflags_live_editing_b'))
         layout.addWidget(heading)
 
         warning = QLabel(
-            '⚠ Non-Roblox-allowed FastFlags are bannable. Use this feature entirely at your '
-            'own risk. Fleasion and its contributors accept no liability.'
+            tr('ui.gui.modifications_tab.non_roblox_allowed_fastflags_are_bannable_use')
         )
         warning.setWordWrap(True)
         warning.setStyleSheet(
@@ -2317,10 +2478,7 @@ class CustomFFlagEditor(QWidget):
 
         if sys.platform.startswith('linux'):
             sober_delay_warning = QLabel(
-                '⚠ Linux / Sober limitation: Due to Sober security, custom FastFlags are first '
-                'applied about 2 minutes after Sober starts. Live Dynamic FastFlag editing becomes active '
-                '2 minutes after that (4 minutes total). This delay happens every '
-                'time Sober is opened, including after a quick close/reopen.'
+                tr('ui.gui.modifications_tab.linux_sober_limitation_due_to_sober_security')
             )
             sober_delay_warning.setWordWrap(True)
             sober_delay_warning.setStyleSheet(
@@ -2329,7 +2487,7 @@ class CustomFFlagEditor(QWidget):
             )
             layout.addWidget(sober_delay_warning)
 
-        self._enable_toggle = QCheckBox('Enable custom FastFlags')
+        self._enable_toggle = QCheckBox(tr('ui.gui.modifications_tab.enable_custom_fastflags'))
         self._enable_toggle.setChecked(
             bool(self._config and getattr(self._config, 'custom_fflags_enabled', False))
         )
@@ -2343,26 +2501,33 @@ class CustomFFlagEditor(QWidget):
 
         if self._hotkeys_supported:
             hotkey_help = QLabel(
-                'Double-click a Keybind cell to assign a global key. Single keys, modifier-only '
-                'keys, and combinations all work while Roblox is focused.'
+                tr('ui.gui.modifications_tab.double_click_a_keybind_cell_to_assign')
                 if self._windows_keybinds
-                else 'Double-click a Keybind cell to assign a global Linux key. The first attempt '
-                'may ask for permission to read /dev/input/event*.'
+                else tr('ui.gui.modifications_tab.double_click_a_keybind_cell_to_assign_2')
             )
             hotkey_help.setWordWrap(True)
             hotkey_help.setStyleSheet('color: #999;')
             layout.addWidget(hotkey_help)
 
         self._search = QLineEdit()
-        self._search.setPlaceholderText('Search custom FastFlags…')
+        self._search.setPlaceholderText(tr('ui.gui.modifications_tab.search_custom_fastflags'))
         self._search.textChanged.connect(self._filter_rows)
         layout.addWidget(self._search)
 
         column_count = 4 if self._hotkeys_supported else 2
         self._table = QTableWidget(0, column_count)
-        self._table.setHorizontalHeaderLabels(
-            ['Name', 'Value', 'Status', 'Keybind'] if self._hotkeys_supported else ['Name', 'Value']
-        )
+        base_headers = [
+            tr('modifications.table.name'),
+            tr('modifications.table.value'),
+        ]
+        if self._hotkeys_supported:
+            base_headers.extend(
+                [
+                    tr('modifications.table.status'),
+                    tr('modifications.table.keybind'),
+                ]
+            )
+        self._table.setHorizontalHeaderLabels(base_headers)
         header = self._table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
@@ -2388,41 +2553,45 @@ class CustomFFlagEditor(QWidget):
         layout.addWidget(self._table)
 
         buttons = QHBoxLayout()
-        browse_button = QPushButton('Browse FastFlags…')
-        browse_button.setToolTip('Browse and add FastFlags currently published by Roblox.')
+        browse_button = QPushButton(tr('ui.gui.modifications_tab.browse_fastflags'))
+        browse_button.setToolTip(
+            tr('ui.gui.modifications_tab.browse_and_add_fastflags_currently_published_by')
+        )
         browse_button.clicked.connect(self._browse_fflags)
         buttons.addWidget(browse_button)
 
-        add_button = QPushButton('Add New…')
+        add_button = QPushButton(tr('ui.gui.modifications_tab.add_new'))
         add_button.clicked.connect(self._add_flag)
         buttons.addWidget(add_button)
 
-        import_button = QPushButton('Import JSON…')
+        import_button = QPushButton(tr('ui.gui.modifications_tab.import_json'))
         import_menu = QMenu(import_button)
-        import_menu.addAction('From Text…', self._import_json)
-        import_menu.addAction('From File…', self._import_file)
+        import_menu.addAction(tr('ui.gui.modifications_tab.from_text'), self._import_json)
+        import_menu.addAction(tr('ui.gui.modifications_tab.from_file'), self._import_file)
         import_button.setMenu(import_menu)
         buttons.addWidget(import_button)
 
-        export_button = QPushButton('Export JSON…')
+        export_button = QPushButton(tr('ui.gui.modifications_tab.export_json'))
         export_menu = QMenu(export_button)
-        export_menu.addAction('Copy to Clipboard', self._copy_json)
-        export_menu.addAction('Export as File…', self._export_json)
+        export_menu.addAction(tr('ui.gui.modifications_tab.copy_to_clipboard'), self._copy_json)
+        export_menu.addAction(tr('ui.gui.modifications_tab.export_as_file'), self._export_json)
         export_button.setMenu(export_menu)
         buttons.addWidget(export_button)
 
-        profiles_button = QPushButton('Profiles…')
+        profiles_button = QPushButton(tr('ui.gui.modifications_tab.profiles'))
         profiles_button.clicked.connect(self._show_profiles)
         buttons.addWidget(profiles_button)
 
-        delete_button = QPushButton('Delete Selected')
+        delete_button = QPushButton(tr('ui.gui.modifications_tab.delete_selected'))
         delete_button.clicked.connect(self._delete_selected)
         buttons.addWidget(delete_button)
         buttons.addStretch()
         layout.addLayout(buttons)
 
         if self._config is None or self._proxy_master is None:
-            self._status.setText('The Fleasion proxy must be available to enable custom FastFlags.')
+            self._status.setText(
+                tr('ui.gui.modifications_tab.the_fleasion_proxy_must_be_available_to')
+            )
         else:
             self._update_status()
 
@@ -2447,7 +2616,7 @@ class CustomFFlagEditor(QWidget):
                 self._table.setItem(row, 0, name_item)
                 self._set_value_editor(row, name, str(value))
                 if self._hotkeys_supported:
-                    status_item = QTableWidgetItem('Enabled')
+                    status_item = QTableWidgetItem(tr('ui.gui.modifications_tab.enabled'))
                     status_item.setFlags(
                         (status_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                         & ~Qt.ItemFlag.ItemIsEditable
@@ -2460,7 +2629,9 @@ class CustomFFlagEditor(QWidget):
                     self._table.setItem(row, 2, status_item)
                     keybind_item = QTableWidgetItem(self._keybind_text(self._keybinds().get(name)))
                     keybind_item.setFlags(keybind_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                    keybind_item.setToolTip('Double-click to assign or clear this global keybind.')
+                    keybind_item.setToolTip(
+                        tr('ui.gui.modifications_tab.double_click_to_assign_or_clear_this')
+                    )
                     self._table.setItem(row, 3, keybind_item)
         finally:
             self._table.blockSignals(False)
@@ -2482,7 +2653,10 @@ class CustomFFlagEditor(QWidget):
 
     def _value_from_row(self, row: int) -> str:
         value_item = self._table.item(row, 1)
-        return value_item.text() if value_item else ''
+        if value_item is None:
+            return ''
+        stored = value_item.data(Qt.ItemDataRole.UserRole)
+        return str(stored) if stored is not None else value_item.text()
 
     def _set_value_editor(self, row: int, name: str, value: str):
         """Store a lightweight value item; the boolean selector is created only when editing."""
@@ -2497,10 +2671,19 @@ class CustomFFlagEditor(QWidget):
                 if self._is_boolean_flag(name)
                 else str(value)
             )
+            display_value = (
+                tr('ui.gui.modifications_tab.true')
+                if normalized_value == 'True' and self._is_boolean_flag(name)
+                else tr('ui.gui.modifications_tab.false')
+                if normalized_value == 'False' and self._is_boolean_flag(name)
+                else normalized_value
+            )
             if value_item is None:
-                self._table.setItem(row, 1, QTableWidgetItem(normalized_value))
+                value_item = QTableWidgetItem(display_value)
+                self._table.setItem(row, 1, value_item)
             else:
-                value_item.setText(normalized_value)
+                value_item.setText(display_value)
+            value_item.setData(Qt.ItemDataRole.UserRole, normalized_value)
         finally:
             self._loading = was_loading
 
@@ -2570,30 +2753,35 @@ class CustomFFlagEditor(QWidget):
         if self._config is not None and first_attempt:
             self._config.linux_fflag_keybind_setup_prompted = True
 
-        detail = getattr(self._hotkey_service, 'last_error', 'Unknown input-device error.')
+        detail = getattr(
+            self._hotkey_service,
+            'last_error',
+            tr('modifications.hotkey.unknown_input_device_error'),
+        )
         if not first_attempt:
             self._status.setText(
-                'Linux global keybinds need access to /dev/input/event*. '
-                'Restart Fleasion after granting access, then try the Keybind cell again.'
+                tr('ui.gui.modifications_tab.linux_global_keybinds_need_access_to_dev')
             )
             self._status.setStyleSheet('color: #ffcc66;')
             log_buffer.log('CustomFFlags', f'Linux keybind capture unavailable: {detail}')
             return False
 
         prompt = QMessageBox(self)
-        prompt.setWindowTitle('Enable Linux FastFlag Keybinds')
+        prompt.setWindowTitle(tr('ui.gui.modifications_tab.enable_linux_fastflag_keybinds'))
         prompt.setIcon(QMessageBox.Icon.Information)
-        prompt.setText('Linux global keybinds need permission to read keyboard input.')
+        prompt.setText(tr('ui.gui.modifications_tab.linux_global_keybinds_need_permission_to_read'))
         prompt.setInformativeText(
-            'Fleasion uses passive /dev/input/event* reads, so configured keys still reach Roblox. '
-            'Set Up Permissions adds your desktop user to the dedicated fleasion-input group, '
-            'installs a narrow udev rule for input event devices, and applies a temporary ACL.\n\n'
-            'This requires one Polkit administrator approval. You may need to log out and back in '
-            'before the group membership takes effect.\n\n'
-            f'Diagnostics: {detail}'
+            tr(
+                'ui.gui.modifications_tab.fleasion_uses_passive_dev_input_event_reads',
+                value0=detail,
+            )
         )
-        setup_button = prompt.addButton('Set Up Permissions', QMessageBox.ButtonRole.AcceptRole)
-        not_now_button = prompt.addButton('Not Now', QMessageBox.ButtonRole.RejectRole)
+        setup_button = prompt.addButton(
+            tr('ui.gui.modifications_tab.set_up_permissions'), QMessageBox.ButtonRole.AcceptRole
+        )
+        not_now_button = prompt.addButton(
+            tr('ui.gui.modifications_tab.not_now'), QMessageBox.ButtonRole.RejectRole
+        )
         prompt.setDefaultButton(setup_button)
         prompt.exec()
         if prompt.clickedButton() != setup_button:
@@ -2605,15 +2793,17 @@ class CustomFFlagEditor(QWidget):
         except OSError as exc:
             QMessageBox.warning(
                 self,
-                'Linux Keybind Setup Failed',
-                f'Fleasion could not start the Polkit permission setup.\n\n{exc}',
+                tr('ui.gui.modifications_tab.linux_keybind_setup_failed'),
+                tr(
+                    'ui.gui.modifications_tab.fleasion_could_not_start_the_polkit_permission',
+                    value0=exc,
+                ),
             )
             return False
         QMessageBox.information(
             self,
-            'Linux Keybind Setup Started',
-            'Complete the administrator prompt, then log out and back in if necessary. '
-            'Return to this Keybind cell afterward to assign the key.',
+            tr('ui.gui.modifications_tab.linux_keybind_setup_started'),
+            tr('ui.gui.modifications_tab.complete_the_administrator_prompt_then_log_out'),
         )
         return False
 
@@ -2695,13 +2885,19 @@ class CustomFFlagEditor(QWidget):
         enabled = bool(self._config and getattr(self._config, 'custom_fflags_enabled', False))
         if enabled:
             self._status.setText(
-                f'Active — {active_count} of {count} saved custom FastFlag(s) will override '
-                'Roblox ClientSettings.'
+                tr(
+                    'ui.gui.modifications_tab.active_value_of_value_saved_custom_fastflag',
+                    value0=active_count,
+                    value1=count,
+                )
             )
             self._status.setStyleSheet('color: #67c587;')
         else:
             self._status.setText(
-                f'Inactive — {count} custom FastFlag(s) saved. Re-enable to restore all overrides.'
+                tr(
+                    'ui.gui.modifications_tab.inactive_value_custom_fastflag_s_saved_re',
+                    value0=count,
+                )
             )
             self._status.setStyleSheet('color: #999;')
 
@@ -2734,7 +2930,7 @@ class CustomFFlagEditor(QWidget):
 
     def _add_flag(self):
         dialog = QDialog(self)
-        dialog.setWindowTitle('Add Custom FastFlag')
+        dialog.setWindowTitle(tr('ui.gui.modifications_tab.add_custom_fastflag'))
         dialog.setMinimumWidth(620)
         form = QFormLayout(dialog)
         name_edit = QLineEdit()
@@ -2742,12 +2938,13 @@ class CustomFFlagEditor(QWidget):
         value_edit = QLineEdit()
         value_edit.setMinimumWidth(500)
         value_combo = CompactBooleanComboBox()
-        value_combo.addItems(['True', 'False'])
+        value_combo.addItem(tr('ui.gui.modifications_tab.true'), 'True')
+        value_combo.addItem(tr('ui.gui.modifications_tab.false'), 'False')
         value_stack = QStackedWidget()
         value_stack.addWidget(value_edit)
         value_stack.addWidget(value_combo)
-        form.addRow('Name', name_edit)
-        form.addRow('Value', value_stack)
+        form.addRow(tr('modifications.fastflag.name'), name_edit)
+        form.addRow(tr('modifications.fastflag.value'), value_stack)
 
         def update_add_value_editor(name: str):
             value_stack.setCurrentWidget(
@@ -2766,11 +2963,15 @@ class CustomFFlagEditor(QWidget):
             return
         name = name_edit.text().strip()
         if not name:
-            QMessageBox.warning(self, 'Invalid FastFlag', 'FastFlag name cannot be empty.')
+            QMessageBox.warning(
+                self,
+                tr('ui.gui.modifications_tab.invalid_fastflag'),
+                tr('ui.gui.modifications_tab.fastflag_name_cannot_be_empty'),
+            )
             return
         flags = self._flags_from_table()
         flags[name] = (
-            value_combo.currentText() if self._is_boolean_flag(name) else value_edit.text()
+            str(value_combo.currentData()) if self._is_boolean_flag(name) else value_edit.text()
         )
         self._set_flags(flags)
 
@@ -2794,10 +2995,10 @@ class CustomFFlagEditor(QWidget):
         from ..proxy.addons.custom_fflags import normalize_custom_fflags
 
         if not isinstance(payload, dict):
-            raise ValueError('The JSON root must be an object of FastFlag name/value pairs.')
+            raise ValueError(tr('modifications.fastflag.import_root_must_be_object'))
         normalized = normalize_custom_fflags(payload)
         if len(normalized) != len(payload):
-            raise ValueError('Every FastFlag value must be a string, number, or boolean.')
+            raise ValueError(tr('modifications.fastflag.import_values_invalid'))
         merged = self._flags_from_table()
         merged.update(normalized)
         self._set_flags(merged)
@@ -2805,8 +3006,8 @@ class CustomFFlagEditor(QWidget):
     def _import_json(self):
         text, ok = QInputDialog.getMultiLineText(
             self,
-            'Import Custom FastFlags',
-            'Paste a JSON object:',
+            tr('modifications.fastflag.import_title'),
+            tr('modifications.fastflag.import_prompt'),
             '{\n  "DFIntTaskSchedulerTargetFps": "20"\n}',
         )
         if not ok:
@@ -2814,29 +3015,41 @@ class CustomFFlagEditor(QWidget):
         try:
             self._import_mapping(json.loads(text))
         except (json.JSONDecodeError, ValueError) as exc:
-            QMessageBox.warning(self, 'Invalid FastFlag JSON', str(exc))
+            QMessageBox.warning(
+                self, tr('ui.gui.modifications_tab.invalid_fastflag_json'), str(exc)
+            )
 
     def _import_file(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, 'Import Custom FastFlags', '', 'JSON Files (*.json);;All Files (*)'
+            self,
+            tr('ui.gui.modifications_tab.import_custom_fastflags'),
+            '',
+            tr('ui.gui.modifications_tab.json_files_json_all_files'),
         )
         if not path:
             return
         try:
             self._import_mapping(json.loads(Path(path).read_text(encoding='utf-8')))
         except (OSError, json.JSONDecodeError, ValueError) as exc:
-            QMessageBox.warning(self, 'Could Not Import FastFlags', str(exc))
+            QMessageBox.warning(
+                self, tr('ui.gui.modifications_tab.could_not_import_fastflags'), str(exc)
+            )
 
     def _export_json(self):
         path, _ = QFileDialog.getSaveFileName(
-            self, 'Export Custom FastFlags', 'ClientAppSettings.json', 'JSON Files (*.json)'
+            self,
+            tr('ui.gui.modifications_tab.export_custom_fastflags'),
+            'ClientAppSettings.json',
+            tr('ui.gui.modifications_tab.json_files_json'),
         )
         if not path:
             return
         try:
             Path(path).write_text(self._json_text(), encoding='utf-8')
         except OSError as exc:
-            QMessageBox.warning(self, 'Could Not Export FastFlags', str(exc))
+            QMessageBox.warning(
+                self, tr('ui.gui.modifications_tab.could_not_export_fastflags'), str(exc)
+            )
 
     def _json_text(self) -> str:
         return json.dumps(self._flags_from_table(), indent=2, ensure_ascii=False)
@@ -2972,16 +3185,18 @@ class FFlagSection(QWidget):
 
         # Warning
         warn = QLabel(
-            '\u26a0 Fast Flags are written to ClientSettings/ClientAppSettings.json '
-            'in every detected Roblox directory.'
+            tr(
+                'ui.gui.modifications_tab.fast_flags_are_written_to_clientsettings_clientappsettings'
+            )
         )
         warn.setWordWrap(True)
         warn.setStyleSheet('color: #c90; padding: 4px;')
         layout.addWidget(warn)
 
         warn2 = QLabel(
-            'Fleasion synchronizes detected bootstrapper launch settings. If both '
-            'apps set the same flag, Fleasion takes precedence while it is running.'
+            tr(
+                'ui.gui.modifications_tab.fleasion_synchronizes_detected_bootstrapper_launch_settings_if'
+            )
         )
         warn2.setWordWrap(True)
         warn2.setStyleSheet('color: #c90; padding: 4px;')
@@ -2992,49 +3207,57 @@ class FFlagSection(QWidget):
         row = 0
 
         # Rendering Mode
-        grid.addWidget(QLabel('Rendering Mode'), row, 0)
+        grid.addWidget(QLabel(tr('ui.gui.modifications_tab.rendering_mode')), row, 0)
         self._rendering_mode = DropdownComboBox()
-        self._rendering_mode.addItems(['Default', 'D3D11', 'Vulkan', 'OpenGL'])
+        self._rendering_mode.addItem(tr('ui.gui.modifications_tab.default'), 'Default')
+        self._rendering_mode.addItem(tr('ui.gui.modifications_tab.d3d11'), 'D3D11')
+        self._rendering_mode.addItem(tr('ui.gui.modifications_tab.vulkan'), 'Vulkan')
+        self._rendering_mode.addItem(tr('ui.gui.modifications_tab.opengl'), 'OpenGL')
         self._rendering_mode.currentTextChanged.connect(self._schedule_write)
         grid.addWidget(self._rendering_mode, row, 1)
         row += 1
 
         # MSAA
-        grid.addWidget(QLabel('MSAA Level'), row, 0)
+        grid.addWidget(QLabel(tr('ui.gui.modifications_tab.msaa_level')), row, 0)
         self._msaa = DropdownComboBox()
-        self._msaa.addItems(['Default', '1x (Lowest)', '2x', '4x (Highest)'])
+        self._msaa.addItem(tr('ui.gui.modifications_tab.default'), 'Default')
+        self._msaa.addItem(tr('ui.gui.modifications_tab.1x_lowest'), '1')
+        self._msaa.addItem(tr('ui.gui.modifications_tab.2x'), '2')
+        self._msaa.addItem(tr('ui.gui.modifications_tab.4x_highest'), '4')
         self._msaa.currentTextChanged.connect(self._schedule_write)
         grid.addWidget(self._msaa, row, 1)
         row += 1
 
         # Fix Display Scaling
-        self._dpi_scale = QCheckBox('Fix Display Scaling')
+        self._dpi_scale = QCheckBox(tr('ui.gui.modifications_tab.fix_display_scaling'))
         self._dpi_scale.toggled.connect(self._schedule_write)
         grid.addWidget(self._dpi_scale, row, 0, 1, 2)
         row += 1
 
         # Alt+Enter Fullscreen
-        self._alt_enter = QCheckBox('Alt+Enter Fullscreen')
+        self._alt_enter = QCheckBox(tr('ui.gui.modifications_tab.alt_enter_fullscreen'))
         self._alt_enter.toggled.connect(self._schedule_write)
         grid.addWidget(self._alt_enter, row, 0, 1, 2)
         row += 1
 
         # Texture Quality
-        grid.addWidget(QLabel('Texture Quality'), row, 0)
+        grid.addWidget(QLabel(tr('ui.gui.modifications_tab.texture_quality')), row, 0)
         self._texture_quality = DropdownComboBox()
-        self._texture_quality.addItems(
-            ['Default', 'Level 0 (Lowest)', 'Level 1', 'Level 2', 'Level 3 (Highest)']
-        )
+        self._texture_quality.addItem(tr('ui.gui.modifications_tab.default'), 'Default')
+        self._texture_quality.addItem(tr('ui.gui.modifications_tab.level_0_lowest'), '0')
+        self._texture_quality.addItem(tr('ui.gui.modifications_tab.level_1'), '1')
+        self._texture_quality.addItem(tr('ui.gui.modifications_tab.level_2'), '2')
+        self._texture_quality.addItem(tr('ui.gui.modifications_tab.level_3_highest'), '3')
         self._texture_quality.currentTextChanged.connect(self._schedule_write)
         grid.addWidget(self._texture_quality, row, 1)
         row += 1
 
         # Mesh LOD
-        self._mesh_lod_enabled = QCheckBox('Mesh LOD Override')
+        self._mesh_lod_enabled = QCheckBox(tr('ui.gui.modifications_tab.mesh_lod_override'))
         self._mesh_lod_enabled.toggled.connect(self._on_mesh_lod_toggle)
         grid.addWidget(self._mesh_lod_enabled, row, 0)
         lod_row = QHBoxLayout()
-        lod_row.addWidget(QLabel('Default'))
+        lod_row.addWidget(QLabel(tr('ui.gui.modifications_tab.default')))
         self._mesh_lod_slider = NoWheelSlider(Qt.Orientation.Horizontal)
         self._mesh_lod_slider.setRange(
             0, 4
@@ -3044,9 +3267,13 @@ class FFlagSection(QWidget):
         self._mesh_lod_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self._mesh_lod_slider.setTickInterval(1)
         self._mesh_lod_slider.valueChanged.connect(self._schedule_write)
-        self._mesh_lod_value = QLabel('Level 3')
+        self._mesh_lod_value = QLabel(tr('ui.gui.modifications_tab.level_3'))
         self._mesh_lod_slider.valueChanged.connect(
-            lambda v: self._mesh_lod_value.setText('Default' if v == 0 else f'Level {v - 1}')
+            lambda v: self._mesh_lod_value.setText(
+                tr('ui.gui.modifications_tab.default')
+                if v == 0
+                else tr('modifications.level', level=v - 1)
+            )
         )
         lod_row.addWidget(self._mesh_lod_slider)
         lod_row.addWidget(self._mesh_lod_value)
@@ -3056,11 +3283,11 @@ class FFlagSection(QWidget):
         row += 1
 
         # FRM Quality Override
-        self._frm_enabled = QCheckBox('FRM Quality Override')
+        self._frm_enabled = QCheckBox(tr('ui.gui.modifications_tab.frm_quality_override'))
         self._frm_enabled.toggled.connect(self._on_frm_toggle)
         grid.addWidget(self._frm_enabled, row, 0)
         frm_row = QHBoxLayout()
-        frm_row.addWidget(QLabel('Default'))
+        frm_row.addWidget(QLabel(tr('ui.gui.modifications_tab.default')))
         self._frm_slider = NoWheelSlider(Qt.Orientation.Horizontal)
         self._frm_slider.setRange(0, 21)  # 0=Default(no flag), 1-21=Quality levels
         self._frm_slider.setValue(21)
@@ -3069,9 +3296,13 @@ class FFlagSection(QWidget):
         self._frm_slider.setTickInterval(1)
         self._frm_slider.valueChanged.connect(self._schedule_write)
         frm_row.addWidget(self._frm_slider)
-        self._frm_value = QLabel('Quality 21')
+        self._frm_value = QLabel(tr('ui.gui.modifications_tab.quality_21'))
         self._frm_slider.valueChanged.connect(
-            lambda v: self._frm_value.setText('Default' if v == 0 else f'Quality {v}')
+            lambda v: self._frm_value.setText(
+                tr('ui.gui.modifications_tab.default')
+                if v == 0
+                else tr('modifications.quality', quality=v)
+            )
         )
         frm_row.addWidget(self._frm_value)
         frm_container = QWidget()
@@ -3080,39 +3311,41 @@ class FFlagSection(QWidget):
         row += 1
 
         # Grey Sky
-        self._grey_sky = QCheckBox('Grey Sky (Debug)')
+        self._grey_sky = QCheckBox(tr('ui.gui.modifications_tab.grey_sky_debug'))
         self._grey_sky.toggled.connect(self._schedule_write)
         grid.addWidget(self._grey_sky, row, 0, 1, 2)
         row += 1
 
         # Pause Voxelizer
-        self._pause_vox = QCheckBox('Pause Voxelizer')
+        self._pause_vox = QCheckBox(tr('ui.gui.modifications_tab.pause_voxelizer'))
         self._pause_vox.toggled.connect(self._schedule_write)
         grid.addWidget(self._pause_vox, row, 0, 1, 2)
         row += 1
 
         # Grass spinners
         for label_text, attr_name in [
-            ('Grass Distance Max', '_grass_max'),
-            ('Grass Distance Min', '_grass_min'),
-            ('Grass Motion Factor', '_grass_motion'),
+            (tr('modifications.grass_distance_max'), '_grass_max'),
+            (tr('modifications.grass_distance_min'), '_grass_min'),
+            (tr('modifications.grass_motion_factor'), '_grass_motion'),
         ]:
             grid.addWidget(QLabel(label_text), row, 0)
             spin = NoWheelSpinBox()
             spin.setRange(0, 100000)
-            spin.setSpecialValueText('Default')
+            spin.setSpecialValueText(tr('ui.gui.modifications_tab.default'))
             spin.valueChanged.connect(self._schedule_write)
             setattr(self, attr_name, spin)
             grid.addWidget(spin, row, 1)
             row += 1
 
         # Roblox Framerate Cap (Global Settings) - NOT disabled when FFlagsare off
-        framerate_label = QLabel('Framerate Cap (FPS) (GlobalBasicSettings, NOT an fflag)')
+        framerate_label = QLabel(
+            tr('ui.gui.modifications_tab.framerate_cap_fps_globalbasicsettings_not_an_fflag')
+        )
         self._framerate_cap_label = framerate_label  # Store for enable/disable
         grid.addWidget(framerate_label, row, 0)
         self._framerate_cap = NoWheelSpinBox()
         self._framerate_cap.setRange(0, 999999999)
-        self._framerate_cap.setSpecialValueText('Default')
+        self._framerate_cap.setSpecialValueText(tr('ui.gui.modifications_tab.default'))
         self._framerate_cap.valueChanged.connect(self._on_framerate_changed)
         grid.addWidget(self._framerate_cap, row, 1)
         row += 1
@@ -3123,7 +3356,9 @@ class FFlagSection(QWidget):
 
         # Keep the allowlisted preset reset with the preset controls, above the
         # separate custom FastFlags editor.
-        self._reset_btn = QPushButton('\u21ba Reset All Allowlisted FastFlags')
+        self._reset_btn = QPushButton(
+            tr('ui.gui.modifications_tab.reset_all_allowlisted_fastflags')
+        )
         self._reset_btn.clicked.connect(self._on_reset_all)
         btn_row = QHBoxLayout()
         btn_row.addStretch()
@@ -3184,27 +3419,12 @@ class FFlagSection(QWidget):
         self._debounce_timer.start()
 
     def _gather_settings(self) -> dict:
-        # Convert display values to stored numeric values
-        msaa_text = self._msaa.currentText()
-        if msaa_text == 'Default':
-            msaa_save = 'Default'
-        else:
-            # "1x (Lowest)" -> "1", "4x (Highest)" -> "4", "2x" -> "2"
-            msaa_save = msaa_text.replace('x', '').split(' ')[0]
-
-        tex_text = self._texture_quality.currentText()
-        if tex_text == 'Default':
-            tex_save = 'Default'
-        else:
-            # "Level 0 (Lowest)" -> "0", "Level 3 (Highest)" -> "3", "Level 1" -> "1"
-            tex_save = tex_text.replace('Level ', '').split(' ')[0]
-
         return {
-            'rendering_mode': self._rendering_mode.currentText(),
-            'msaa': msaa_save,
+            'rendering_mode': str(self._rendering_mode.currentData() or 'Default'),
+            'msaa': str(self._msaa.currentData() or 'Default'),
             'disable_dpi_scale': self._dpi_scale.isChecked(),
             'alt_enter_fullscreen': self._alt_enter.isChecked(),
-            'texture_quality': tex_save,
+            'texture_quality': str(self._texture_quality.currentData() or 'Default'),
             'mesh_lod_enabled': self._mesh_lod_enabled.isChecked(),
             'mesh_lod': self._mesh_lod_slider.value(),
             'frm_quality_enabled': self._frm_enabled.isChecked(),
@@ -3256,40 +3476,18 @@ class FFlagSection(QWidget):
         for w in widgets:
             w.blockSignals(True)
 
-        idx = self._rendering_mode.findText(s.get('rendering_mode', 'Default'))
+        idx = self._rendering_mode.findData(str(s.get('rendering_mode') or 'Default'))
         if idx >= 0:
             self._rendering_mode.setCurrentIndex(idx)
 
-        # MSAA: stored as "1", "2", "4", display as "1x (Lowest)", "2x", "4x (Highest)"
-        msaa_val = s.get('msaa', 'Default')
-        if msaa_val != 'Default' and msaa_val is not None:
-            if msaa_val == '1':
-                msaa_display = '1x (Lowest)'
-            elif msaa_val == '4':
-                msaa_display = '4x (Highest)'
-            else:
-                msaa_display = f'{msaa_val}x'
-        else:
-            msaa_display = 'Default'
-        idx = self._msaa.findText(msaa_display)
+        idx = self._msaa.findData(str(s.get('msaa') or 'Default'))
         if idx >= 0:
             self._msaa.setCurrentIndex(idx)
 
         self._dpi_scale.setChecked(s.get('disable_dpi_scale', False))
         self._alt_enter.setChecked(s.get('alt_enter_fullscreen', False))
 
-        # Texture Quality: stored as "0", "1", "2", "3", display as "Level 0 (Lowest)", "Level 1", etc.
-        tex_val = s.get('texture_quality', 'Default')
-        if tex_val != 'Default' and tex_val is not None:
-            if tex_val == '0':
-                tex_display = 'Level 0 (Lowest)'
-            elif tex_val == '3':
-                tex_display = 'Level 3 (Highest)'
-            else:
-                tex_display = f'Level {tex_val}'
-        else:
-            tex_display = 'Default'
-        idx = self._texture_quality.findText(tex_display)
+        idx = self._texture_quality.findData(str(s.get('texture_quality') or 'Default'))
         if idx >= 0:
             self._texture_quality.setCurrentIndex(idx)
 
@@ -3298,14 +3496,20 @@ class FFlagSection(QWidget):
         self._mesh_lod_slider.setValue(mesh_lod_val)
         self._mesh_lod_slider.setEnabled(s.get('mesh_lod_enabled', False))
         self._mesh_lod_value.setText(
-            'Default' if mesh_lod_val == 0 else f'Level {mesh_lod_val - 1}'
+            tr('ui.gui.modifications_tab.default')
+            if mesh_lod_val == 0
+            else tr('modifications.level', level=mesh_lod_val - 1)
         )
 
         self._frm_enabled.setChecked(s.get('frm_quality_enabled', False))
         frm_val = s.get('frm_quality', 21)
         self._frm_slider.setValue(frm_val)
         self._frm_slider.setEnabled(s.get('frm_quality_enabled', False))
-        self._frm_value.setText('Default' if frm_val == 0 else f'Quality {frm_val}')
+        self._frm_value.setText(
+            tr('ui.gui.modifications_tab.default')
+            if frm_val == 0
+            else tr('modifications.quality', quality=frm_val)
+        )
 
         self._grey_sky.setChecked(s.get('grey_sky', False))
         self._pause_vox.setChecked(s.get('pause_voxelizer', False))
@@ -3328,10 +3532,10 @@ class FFlagSection(QWidget):
         self._texture_quality.setCurrentIndex(0)
         self._mesh_lod_enabled.setChecked(False)
         self._mesh_lod_slider.setValue(4)  # Default to Level 3 (rightmost)
-        self._mesh_lod_value.setText('Level 3')
+        self._mesh_lod_value.setText(tr('ui.gui.modifications_tab.level_3'))
         self._frm_enabled.setChecked(False)
         self._frm_slider.setValue(21)  # Default to Quality 21 (rightmost)
-        self._frm_value.setText('Quality 21')
+        self._frm_value.setText(tr('ui.gui.modifications_tab.quality_21'))
         self._grey_sky.setChecked(False)
         self._pause_vox.setChecked(False)
         self._grass_max.setValue(0)
@@ -3402,12 +3606,14 @@ class ModificationsTab(QWidget):
         self._container_layout.setContentsMargins(10, 10, 10, 10)
 
         # ── Fast Flags ───────────────────────────────────────────
-        self._fflag_toggle = QCheckBox('Enable allowlisted FastFlag presets')
+        self._fflag_toggle = QCheckBox(
+            tr('ui.gui.modifications_tab.enable_allowlisted_fastflag_presets')
+        )
         self._fflag_toggle.setChecked(self._manager.fast_flags_enabled)
         self._fflag_toggle.toggled.connect(self._on_fflag_toggle)
 
         fflag_section = CollapsibleSection(
-            'Fast Flags \u26a0',
+            tr('modifications.section.fast_flags'),
             expanded=False,
             header_widgets=[self._fflag_toggle],
         )
@@ -3424,59 +3630,77 @@ class ModificationsTab(QWidget):
         self._container_layout.addWidget(fflag_section)
 
         # ── Default Skyboxes ─────────────────────────────────────
-        sky_section = CollapsibleSection('Default Roblox Skyboxes', expanded=True)
+        sky_section = CollapsibleSection(
+            tr('modifications.section.default_skyboxes'), expanded=True
+        )
 
         # "Apply to All Sky Faces" button
-        apply_all_btn = QPushButton('Apply to All Sky Faces\u2026')
+        apply_all_btn = QPushButton(tr('ui.gui.modifications_tab.apply_to_all_sky_faces'))
         apply_all_btn.setFixedWidth(180)
         apply_all_btn.clicked.connect(self._on_apply_all_sky)
         sky_section.add_widget(apply_all_btn)
 
         for name, path in SKYBOX_FACES:
-            row = ModRowWidget(self._manager, name, path, file_filter=IMAGE_FILTER)
+            row = ModRowWidget(
+                self._manager,
+                _builtin_label(name),
+                path,
+                file_filter=_file_filter_text(IMAGE_FILTER),
+            )
             sky_section.add_widget(row)
             self._row_widgets[path] = row
 
         # Indoor sub-label
-        indoor_label = QLabel('<i>Indoor Skybox</i>')
+        indoor_label = QLabel(tr('ui.gui.modifications_tab.i_indoor_skybox_i'))
         indoor_label.setContentsMargins(0, 8, 0, 0)
         sky_section.add_widget(indoor_label)
 
         for name, path in INDOOR_FACES:
-            row = ModRowWidget(self._manager, name, path, file_filter=IMAGE_FILTER)
+            row = ModRowWidget(
+                self._manager,
+                _builtin_label(name),
+                path,
+                file_filter=_file_filter_text(IMAGE_FILTER),
+            )
             sky_section.add_widget(row)
             self._row_widgets[path] = row
 
         self._container_layout.addWidget(sky_section)
 
         # ── Textures ─────────────────────────────────────────────
-        tex_section = CollapsibleSection('Textures', expanded=True)
+        tex_section = CollapsibleSection(tr('modifications.section.textures'), expanded=True)
         for name, path, filt in TEXTURES:
-            row = ModRowWidget(self._manager, name, path, file_filter=filt)
+            row = ModRowWidget(
+                self._manager, _builtin_label(name), path, file_filter=_file_filter_text(filt)
+            )
             tex_section.add_widget(row)
             self._row_widgets[path] = row
         self._container_layout.addWidget(tex_section)
 
         # ── R6 Default Avatar Meshes ─────────────────────────────
-        self._mesh_section = CollapsibleSection('R6 Default Avatar Meshes', expanded=True)
+        self._mesh_section = CollapsibleSection(
+            tr('modifications.section.r6_avatar_meshes'), expanded=True
+        )
         if sys.platform.startswith('linux'):
             sober_mesh_warning = QLabel(
-                '<b>Linux / Sober limitation:</b> R6 default avatar mesh replacements '
-                "do not work in Sober. Sober developers have stated that Sober's "
-                'asset_overlay does not respect R6 mesh replacements because of '
-                'concerns around inappropriate meshes and cheats.'
+                tr('ui.gui.modifications_tab.b_linux_sober_limitation_b_r6_default')
             )
             sober_mesh_warning.setWordWrap(True)
             sober_mesh_warning.setContentsMargins(8, 4, 8, 8)
             sober_mesh_warning.setStyleSheet('color: #ffcc66;')
             self._mesh_section.add_widget(sober_mesh_warning)
         for name, path in AVATAR_MESHES:
-            row = ModRowWidget(self._manager, name, path, file_filter=MESH_FILTER)
+            row = ModRowWidget(
+                self._manager,
+                _builtin_label(name),
+                path,
+                file_filter=_file_filter_text(MESH_FILTER),
+            )
             self._mesh_section.add_widget(row)
             self._row_widgets[path] = row
 
         # Add Head Variant button
-        add_head_btn = QPushButton('+ Add Head Variant')
+        add_head_btn = QPushButton(tr('ui.gui.modifications_tab.add_head_variant'))
         add_head_btn.setFixedWidth(150)
         add_head_btn.clicked.connect(self._on_add_head_variant)
         self._head_variant_layout = self._mesh_section.content_layout
@@ -3485,13 +3709,13 @@ class ModificationsTab(QWidget):
         self._container_layout.addWidget(self._mesh_section)
 
         # ── Sounds ───────────────────────────────────────────────
-        sounds_section = CollapsibleSection('Sounds', expanded=True)
+        sounds_section = CollapsibleSection(tr('modifications.section.sounds'), expanded=True)
         for name, path, bundled in SOUNDS:
             row = ModRowWidget(
                 self._manager,
-                name,
+                _builtin_label(name),
                 path,
-                file_filter=SOUND_FILTER,
+                file_filter=_file_filter_text(SOUND_FILTER),
                 mute_bundled=bundled,
             )
             sounds_section.add_widget(row)
@@ -3500,12 +3724,12 @@ class ModificationsTab(QWidget):
         self._container_layout.addWidget(sounds_section)
 
         # ── Custom Font ──────────────────────────────────────────
-        font_section = CollapsibleSection('Custom Font', expanded=True)
+        font_section = CollapsibleSection(tr('modifications.section.custom_font'), expanded=True)
         font_row = ModRowWidget(
             self._manager,
-            'Custom Font',
+            tr('modifications.custom_font'),
             target_path_for_current_platform(r'content\fonts\CustomFont.ttf'),
-            file_filter=FONT_FILTER,
+            file_filter=_file_filter_text(FONT_FILTER),
             is_font=True,
         )
         font_section.add_widget(font_row)
@@ -3523,9 +3747,13 @@ class ModificationsTab(QWidget):
                 continue
             fname = Path(target.replace('\\', '/')).name
             if fname in _head_variant_set:
-                name = fname.replace('.mesh', '').title()
+                name = tr('modifications.head_variant', variant=fname[4:-5].upper())
                 row = ModRowWidget(
-                    self._manager, name, target, file_filter=MESH_FILTER, deletable=True
+                    self._manager,
+                    name,
+                    target,
+                    file_filter=_file_filter_text(MESH_FILTER),
+                    deletable=True,
                 )
                 row.delete_requested.connect(partial(self._on_row_deleted, row))
                 self._head_variant_layout.insertWidget(
@@ -3535,9 +3763,11 @@ class ModificationsTab(QWidget):
                 self._row_widgets[target] = row
 
         # ── Custom Modifications ─────────────────────────────────
-        self._custom_section = CollapsibleSection('Custom Modifications', expanded=True)
+        self._custom_section = CollapsibleSection(
+            tr('modifications.section.custom_modifications'), expanded=True
+        )
 
-        add_custom_btn = QPushButton('+ Add Modification')
+        add_custom_btn = QPushButton(tr('ui.gui.modifications_tab.add_modification'))
         add_custom_btn.setFixedWidth(160)
         add_custom_btn.clicked.connect(self._on_add_custom)
         self._custom_section.add_widget(add_custom_btn)
@@ -3576,7 +3806,7 @@ class ModificationsTab(QWidget):
         self._status_label.setStyleSheet('color: #888;')
         footer_layout.addWidget(self._status_label)
         footer_layout.addStretch()
-        clear_cache_btn = QPushButton('Clear Cache')
+        clear_cache_btn = QPushButton(tr('ui.gui.modifications_tab.clear_cache'))
         clear_cache_btn.clicked.connect(self._clear_roblox_cache)
         footer_layout.addWidget(clear_cache_btn)
         outer.addWidget(footer_widget)
@@ -3624,14 +3854,26 @@ class ModificationsTab(QWidget):
     def _update_status_bar(self):
         applied = sum(1 for e in self._manager.entries if e.get('status') == 'applied')
         roblox_count = len(self._manager.roblox_dirs)
-        noun = 'modification' if applied == 1 else 'modifications'
+        noun = tr_count(
+            applied,
+            'count.modification.one',
+            'count.modification.other',
+        )
         status_label = getattr(self, '_status_label', None)
         if status_label is None:
             return
         try:
             status_label.setText(
-                f'{applied} {noun} applied \u2022 '
-                f'{format_count(roblox_count, "Roblox dir")} detected'
+                tr(
+                    'ui.gui.modifications_tab.value_value_applied_value_detected',
+                    value0=applied,
+                    value1=noun,
+                    value2=tr_count(
+                        roblox_count,
+                        'count.roblox_dir.one',
+                        'count.roblox_dir.other',
+                    ),
+                )
             )
         except RuntimeError:
             return
@@ -3649,13 +3891,17 @@ class ModificationsTab(QWidget):
             if target_path_for_current_platform(rf'content\avatar\heads\{v}') not in existing
         ]
         if not available:
-            QMessageBox.information(self, 'Head Variants', 'All head variants already added.')
+            QMessageBox.information(
+                self,
+                tr('ui.gui.modifications_tab.head_variants'),
+                tr('ui.gui.modifications_tab.all_head_variants_already_added'),
+            )
             return
 
         item, ok = QInputDialog.getItem(
             self,
-            'Add Head Variant',
-            'Select variant:',
+            tr('ui.gui.modifications_tab.add_head_variant_2'),
+            tr('ui.gui.modifications_tab.select_variant'),
             available,
             0,
             False,
@@ -3663,7 +3909,13 @@ class ModificationsTab(QWidget):
         if ok and item:
             target = target_path_for_current_platform(rf'content\avatar\heads\{item}')
             name = item.replace('.mesh', '').title()
-            row = ModRowWidget(self._manager, name, target, file_filter=MESH_FILTER, deletable=True)
+            row = ModRowWidget(
+                self._manager,
+                name,
+                target,
+                file_filter=_file_filter_text(MESH_FILTER),
+                deletable=True,
+            )
             row.delete_requested.connect(partial(self._on_row_deleted, row))
             # Insert before the "Add" button (last widget)
             self._head_variant_layout.insertWidget(
@@ -3679,7 +3931,7 @@ class ModificationsTab(QWidget):
     def _on_apply_all_sky(self):
         path, _ = QFileDialog.getOpenFileName(
             self,
-            'Select file for all sky faces',
+            tr('ui.gui.modifications_tab.select_file_for_all_sky_faces'),
             '',
             IMAGE_FILTER,
         )
@@ -3687,8 +3939,8 @@ class ModificationsTab(QWidget):
             # Try asset ID instead
             text, ok = QInputDialog.getText(
                 self,
-                'Asset ID for All Sky Faces',
-                'Enter an Asset ID (or cancel):',
+                tr('ui.gui.modifications_tab.asset_id_for_all_sky_faces'),
+                tr('ui.gui.modifications_tab.enter_an_asset_id_or_cancel'),
             )
             if ok and text.strip() and text.strip().isdigit():
                 for _, target in SKYBOX_FACES:
@@ -3795,40 +4047,43 @@ class _CustomModDialog(QDialog):
         self.target_path = ''
         self.raw_source = ''
 
-        self.setWindowTitle('Add Custom Modification')
+        self.setWindowTitle(tr('ui.gui.modifications_tab.add_custom_modification'))
         self.resize(500, 200)
 
         layout = QVBoxLayout()
 
         # Display name
         row1 = QHBoxLayout()
-        row1.addWidget(QLabel('Display name:'))
+        row1.addWidget(QLabel(tr('ui.gui.modifications_tab.display_name')))
         self._name_edit = QLineEdit()
-        self._name_edit.setPlaceholderText('e.g. Custom Skybox')
+        self._name_edit.setPlaceholderText(tr('ui.gui.modifications_tab.e_g_custom_skybox'))
         row1.addWidget(self._name_edit)
         layout.addLayout(row1)
 
         # Target path
         row2 = QHBoxLayout()
-        row2.addWidget(QLabel('Target path:'))
+        row2.addWidget(QLabel(tr('ui.gui.modifications_tab.target_path')))
         self._target_edit = FileDropLineEdit()
-        self._target_edit.setPlaceholderText(r'content\sounds\oof.ogg')
+        self._target_edit.setPlaceholderText(tr('ui.gui.modifications_tab.content_sounds_oof_ogg'))
         self._target_edit.fileDropped.connect(self._on_target_file_dropped)
         row2.addWidget(self._target_edit)
-        self._browse_roblox_btn = QPushButton('Browse Roblox Dir\u2026')
+        self._browse_roblox_btn = QPushButton(tr('ui.gui.modifications_tab.browse_roblox_dir'))
         self._browse_roblox_btn.clicked.connect(self._browse_roblox)
         row2.addWidget(self._browse_roblox_btn)
         layout.addLayout(row2)
 
         # Source
         row3 = QHBoxLayout()
-        row3.addWidget(QLabel('Source:'))
+        row3.addWidget(QLabel(tr('ui.gui.modifications_tab.source')))
         self._source_edit = FileDropLineEdit()
         self._source_edit.setPlaceholderText(
-            f'ID, URL, path ({local_file_path_example()}), or "remove"'
+            tr(
+                'ui.gui.modifications_tab.id_url_path_value_or_remove',
+                value0=local_file_path_example(),
+            )
         )
         row3.addWidget(self._source_edit)
-        browse_btn = QPushButton('Browse\u2026')
+        browse_btn = QPushButton(tr('ui.gui.modifications_tab.browse_2'))
         browse_btn.setAutoDefault(False)
         browse_btn.clicked.connect(self._browse_source)
         row3.addWidget(browse_btn)
@@ -3837,10 +4092,10 @@ class _CustomModDialog(QDialog):
         # Buttons
         btn_row = QHBoxLayout()
         btn_row.addStretch()
-        cancel_btn = QPushButton('Cancel')
+        cancel_btn = QPushButton(tr('ui.gui.modifications_tab.cancel'))
         cancel_btn.clicked.connect(self.reject)
         btn_row.addWidget(cancel_btn)
-        ok_btn = QPushButton('Add')
+        ok_btn = QPushButton(tr('ui.gui.modifications_tab.add'))
         ok_btn.setDefault(True)
         ok_btn.clicked.connect(self._on_accept)
         btn_row.addWidget(ok_btn)
@@ -3851,9 +4106,8 @@ class _CustomModDialog(QDialog):
     def _warn_target_outside_roblox_dirs(self):
         QMessageBox.warning(
             self,
-            'Invalid Target',
-            'Target files must be inside a detected Roblox resource directory. '
-            'Use the Source field for external replacement files.',
+            tr('ui.gui.modifications_tab.invalid_target'),
+            tr('ui.gui.modifications_tab.target_files_must_be_inside_a_detected'),
         )
 
     def _on_target_file_dropped(self, path: str):
@@ -3871,7 +4125,7 @@ class _CustomModDialog(QDialog):
             start = str(self._manager.roblox_dirs[0])
         path, _ = QFileDialog.getOpenFileName(
             self,
-            'Select target file in Roblox directory',
+            tr('ui.gui.modifications_tab.select_target_file_in_roblox_directory'),
             start,
         )
         if path:
@@ -3898,7 +4152,9 @@ class _CustomModDialog(QDialog):
             except Exception:
                 initial_dir = ''
 
-        path, _ = QFileDialog.getOpenFileName(self, 'Select source file', initial_dir)
+        path, _ = QFileDialog.getOpenFileName(
+            self, tr('ui.gui.modifications_tab.select_source_file'), initial_dir
+        )
         if path:
             self._source_edit.setText(path)
 
@@ -3906,15 +4162,23 @@ class _CustomModDialog(QDialog):
         name = self._name_edit.text().strip()
         target = self._target_edit.text().strip()
         if not name:
-            QMessageBox.warning(self, 'Missing', 'Please enter a display name.')
+            QMessageBox.warning(
+                self,
+                tr('ui.gui.modifications_tab.missing'),
+                tr('ui.gui.modifications_tab.please_enter_a_display_name'),
+            )
             return
         if not target:
-            QMessageBox.warning(self, 'Missing', 'Please enter a target path.')
+            QMessageBox.warning(
+                self,
+                tr('ui.gui.modifications_tab.missing'),
+                tr('ui.gui.modifications_tab.please_enter_a_target_path'),
+            )
             return
         try:
             target = normalise_target_path(target).as_posix()
         except ValueError as exc:
-            QMessageBox.warning(self, 'Invalid Target', str(exc))
+            QMessageBox.warning(self, tr('ui.gui.modifications_tab.invalid_target'), str(exc))
             return
         self.display_name = name
         self.target_path = target

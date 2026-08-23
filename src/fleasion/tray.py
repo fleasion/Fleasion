@@ -1,5 +1,7 @@
 """System tray implementation."""
 
+from .localization import tr, tr_count
+
 import ctypes
 import os
 import sys
@@ -143,10 +145,10 @@ class _XfceTrayNotification(QWidget):
         message_label.setMinimumWidth(320)
         message_label.setMaximumWidth(420)
 
-        close_button = QPushButton('×')
+        close_button = QPushButton(tr('ui.tray.text'))
         close_button.setObjectName('FleasionXfceTrayNotificationClose')
         close_button.setFixedSize(24, 24)
-        close_button.setToolTip('Close notification')
+        close_button.setToolTip(tr('ui.tray.close_notification'))
         close_button.clicked.connect(self.close)
 
         text_layout = QVBoxLayout()
@@ -285,56 +287,60 @@ class SystemTray:
 
     def _update_tooltip(self):
         """Update the tooltip text based on proxy status."""
-        status = 'Running' if self.proxy_master.is_running else 'Stopped'
-        self.tray.setToolTip(f'{APP_NAME} - {status}')
+        status = (
+            tr('tray.status.running') if self.proxy_master.is_running else tr('tray.status.stopped')
+        )
+        self.tray.setToolTip(tr('ui.tray.value_value', value0=APP_NAME, value1=status))
 
     def _create_menu(self):
         """Create the tray menu."""
         # Title (disabled)
-        title_action = QAction(f'{APP_NAME} v{APP_VERSION}', self.menu)
+        title_action = QAction(
+            tr('ui.tray.value_v_value', value0=APP_NAME, value1=APP_VERSION), self.menu
+        )
         title_action.setEnabled(False)
         self.menu.addAction(title_action)
 
         self.menu.addSeparator()
 
         # Main action - Dashboard
-        self.dashboard_action = QAction('Dashboard', self.menu)
+        self.dashboard_action = QAction(tr('ui.tray.dashboard'), self.menu)
         self.dashboard_action.triggered.connect(self._toggle_dashboard)
         self.menu.addAction(self.dashboard_action)
 
         # Configs submenu
-        self.configs_menu = QMenu('Configs', self.menu)
+        self.configs_menu = QMenu(tr('ui.tray.configs'), self.menu)
         self.configs_menu.aboutToShow.connect(self._populate_configs_menu)
         self.menu.addMenu(self.configs_menu)
 
         self.menu.addSeparator()
 
         # Windows
-        cache_action = QAction('Clear Cache', self.menu)
+        cache_action = QAction(tr('ui.tray.clear_cache'), self.menu)
         cache_action.triggered.connect(self._show_delete_cache)
         self.menu.addAction(cache_action)
 
-        logs_action = QAction('Logs', self.menu)
+        logs_action = QAction(tr('ui.tray.logs'), self.menu)
         logs_action.triggered.connect(self._show_logs)
         self.menu.addAction(logs_action)
 
-        open_logs_action = QAction('Open Log Folder', self.menu)
+        open_logs_action = QAction(tr('ui.tray.open_log_folder'), self.menu)
         open_logs_action.triggered.connect(lambda: open_folder(LOGS_DIR))
         self.menu.addAction(open_logs_action)
 
-        about_action = QAction('About', self.menu)
+        about_action = QAction(tr('ui.tray.about'), self.menu)
         about_action.triggered.connect(self._show_about)
         self.menu.addAction(about_action)
 
         self.menu.addSeparator()
 
         # Discord copy
-        discord_action = QAction('Discord', self.menu)
+        discord_action = QAction(tr('ui.tray.discord'), self.menu)
         discord_action.triggered.connect(self._copy_discord)
         self.menu.addAction(discord_action)
 
         # Donate
-        donate_action = QAction('Donate', self.menu)
+        donate_action = QAction(tr('ui.tray.donate'), self.menu)
         donate_action.triggered.connect(self._open_kofi)
         self.menu.addAction(donate_action)
 
@@ -346,7 +352,7 @@ class SystemTray:
         self.menu.addSeparator()
 
         # Exit
-        self.exit_action = QAction('Exit', self.menu)
+        self.exit_action = QAction(tr('ui.tray.exit'), self.menu)
         self.exit_action.setEnabled(True)
         self.exit_action.triggered.connect(self._exit_app)
         self.menu.addAction(self.exit_action)
@@ -373,9 +379,9 @@ class SystemTray:
 
     def _create_settings_menu(self):
         """Create the Settings submenu."""
-        settings_menu = QMenu('Settings', self.menu)
+        settings_menu = QMenu(tr('ui.tray.settings'), self.menu)
 
-        self.cache_scraper_action = QAction('Enable Cache Scraper', settings_menu)
+        self.cache_scraper_action = QAction(tr('ui.tray.enable_cache_scraper'), settings_menu)
         self.cache_scraper_action.setCheckable(True)
         self.cache_scraper_action.setChecked(self._is_cache_scraper_enabled())
         self.cache_scraper_action.triggered.connect(self._toggle_cache_scraper)
@@ -383,12 +389,16 @@ class SystemTray:
         settings_menu.addSeparator()
 
         # Theme submenu
-        theme_menu = QMenu('Theme', settings_menu)
+        theme_menu = QMenu(tr('ui.tray.theme'), settings_menu)
 
         # Theme actions (radio buttons)
         self.theme_actions = {}
-        for theme_name in ['System', 'Light', 'Dark']:
-            action = QAction(theme_name, theme_menu)
+        for theme_name, label in [
+            ('System', tr('tray.theme.system')),
+            ('Light', tr('tray.theme.light')),
+            ('Dark', tr('tray.theme.dark')),
+        ]:
+            action = QAction(label, theme_menu)
             action.setCheckable(True)
             action.triggered.connect(lambda checked, t=theme_name: self._set_theme(t))
             theme_menu.addAction(action)
@@ -402,12 +412,16 @@ class SystemTray:
         settings_menu.addMenu(theme_menu)
 
         # Export naming submenu
-        export_menu = QMenu('Export Naming', settings_menu)
+        export_menu = QMenu(tr('ui.tray.export_naming'), settings_menu)
 
         # Export naming actions (checkboxes)
         self.export_naming_actions = {}
-        for option in ['name', 'id', 'hash']:
-            action = QAction(option.capitalize(), export_menu)
+        for option, label in [
+            ('name', tr('tray.export_naming.name')),
+            ('id', tr('tray.export_naming.id')),
+            ('hash', tr('tray.export_naming.hash')),
+        ]:
+            action = QAction(label, export_menu)
             action.setCheckable(True)
             action.setChecked(self.config_manager.is_export_naming_enabled(option))
             action.triggered.connect(lambda checked, opt=option: self._toggle_export_naming(opt))
@@ -417,31 +431,35 @@ class SystemTray:
         settings_menu.addMenu(export_menu)
 
         # Convenience submenu
-        convenience_menu = QMenu('Convenience', settings_menu)
+        convenience_menu = QMenu(tr('ui.tray.convenience'), settings_menu)
 
         # Always on Top toggle
-        self.always_on_top_action = QAction('Always on Top', convenience_menu)
+        self.always_on_top_action = QAction(tr('ui.tray.always_on_top'), convenience_menu)
         self.always_on_top_action.setCheckable(True)
         self.always_on_top_action.setChecked(self.config_manager.always_on_top)
         self.always_on_top_action.triggered.connect(self._toggle_always_on_top)
         convenience_menu.addAction(self.always_on_top_action)
 
         # Open dashboard on launch
-        self.open_dashboard_action = QAction('Open Dashboard on Start', convenience_menu)
+        self.open_dashboard_action = QAction(
+            tr('ui.tray.open_dashboard_on_start'), convenience_menu
+        )
         self.open_dashboard_action.setCheckable(True)
         self.open_dashboard_action.setChecked(self.config_manager.open_dashboard_on_launch)
         self.open_dashboard_action.triggered.connect(self._toggle_open_dashboard_on_launch)
         convenience_menu.addAction(self.open_dashboard_action)
 
         # Auto delete cache on Roblox exit
-        self.auto_delete_cache_action = QAction('Auto-Clear Cache on Exit', convenience_menu)
+        self.auto_delete_cache_action = QAction(
+            tr('ui.tray.auto_clear_cache_on_exit'), convenience_menu
+        )
         self.auto_delete_cache_action.setCheckable(True)
         self.auto_delete_cache_action.setChecked(self.config_manager.auto_delete_cache_on_exit)
         self.auto_delete_cache_action.triggered.connect(self._toggle_auto_delete_cache)
         convenience_menu.addAction(self.auto_delete_cache_action)
 
         # Clear cache on launch
-        self.clear_cache_action = QAction('Clear Cache on Launch', convenience_menu)
+        self.clear_cache_action = QAction(tr('ui.tray.clear_cache_on_launch'), convenience_menu)
         self.clear_cache_action.setCheckable(True)
         self.clear_cache_action.setChecked(self.config_manager.clear_cache_on_launch)
         self.clear_cache_action.triggered.connect(self._toggle_clear_cache_on_launch)
@@ -449,7 +467,7 @@ class SystemTray:
 
         # Run on Boot
         self.run_on_boot_action = QAction(
-            'Run on Boot',
+            tr('ui.tray.run_on_boot'),
             convenience_menu,
         )
         self.run_on_boot_action.setCheckable(True)
@@ -458,7 +476,7 @@ class SystemTray:
         convenience_menu.addAction(self.run_on_boot_action)
 
         self.desktop_integration_action = QAction(
-            'Create desktop/start menu integration on boot', convenience_menu
+            tr('ui.tray.create_desktop_start_menu_integration_on_boot'), convenience_menu
         )
         self.desktop_integration_action.setCheckable(True)
         self.desktop_integration_action.setChecked(self.config_manager.desktop_integration)
@@ -466,14 +484,16 @@ class SystemTray:
         convenience_menu.addAction(self.desktop_integration_action)
 
         # Close Roblox on Open
-        self.close_scraped_games_action = QAction('Close Roblox on Open', convenience_menu)
+        self.close_scraped_games_action = QAction(
+            tr('ui.tray.close_roblox_on_open'), convenience_menu
+        )
         self.close_scraped_games_action.setCheckable(True)
         self.close_scraped_games_action.setChecked(self.config_manager.close_scraped_games_on_open)
         self.close_scraped_games_action.triggered.connect(self._toggle_close_scraped_games)
         convenience_menu.addAction(self.close_scraped_games_action)
 
         # Close to Tray
-        self.close_to_tray_action = QAction('Close to Tray', convenience_menu)
+        self.close_to_tray_action = QAction(tr('ui.tray.close_to_tray'), convenience_menu)
         self.close_to_tray_action.setCheckable(True)
         self.close_to_tray_action.setChecked(self.config_manager.close_to_tray)
         self.close_to_tray_action.triggered.connect(self._toggle_close_to_tray)
@@ -482,17 +502,17 @@ class SystemTray:
         settings_menu.addMenu(convenience_menu)
 
         # Scraper submenu
-        scraper_menu = QMenu('Scraper', settings_menu)
+        scraper_menu = QMenu(tr('ui.tray.scraper'), settings_menu)
 
         # Show Names
-        self.show_names_action = QAction('Show Names', scraper_menu)
+        self.show_names_action = QAction(tr('ui.tray.show_names'), scraper_menu)
         self.show_names_action.setCheckable(True)
         self.show_names_action.setChecked(self.config_manager.show_names)
         self.show_names_action.triggered.connect(self._toggle_show_names)
         scraper_menu.addAction(self.show_names_action)
 
         # Show User ID
-        self.show_creator_id_action = QAction('Show User ID', scraper_menu)
+        self.show_creator_id_action = QAction(tr('ui.tray.show_user_id'), scraper_menu)
         self.show_creator_id_action.setCheckable(True)
         self.show_creator_id_action.setChecked(self.config_manager.show_creator_id)
         self.show_creator_id_action.triggered.connect(self._toggle_show_creator_id)
@@ -500,9 +520,9 @@ class SystemTray:
 
         settings_menu.addMenu(scraper_menu)
 
-        scraped_games_menu = QMenu('Scraped Games', settings_menu)
+        scraped_games_menu = QMenu(tr('ui.tray.scraped_games'), settings_menu)
         self.show_replacer_notifications_action = QAction(
-            'Show Replacer Notifications', scraped_games_menu
+            tr('ui.tray.show_replacer_notifications'), scraped_games_menu
         )
         self.show_replacer_notifications_action.setCheckable(True)
         self.show_replacer_notifications_action.setChecked(
@@ -512,13 +532,15 @@ class SystemTray:
             self._toggle_show_replacer_notifications
         )
         scraped_games_menu.addAction(self.show_replacer_notifications_action)
-        self.close_viewer_on_replace_action = QAction('Close Viewer on Replace', scraped_games_menu)
+        self.close_viewer_on_replace_action = QAction(
+            tr('ui.tray.close_viewer_on_replace'), scraped_games_menu
+        )
         self.close_viewer_on_replace_action.setCheckable(True)
         self.close_viewer_on_replace_action.setChecked(self.config_manager.close_viewer_on_replace)
         self.close_viewer_on_replace_action.triggered.connect(self._toggle_close_viewer_on_replace)
         scraped_games_menu.addAction(self.close_viewer_on_replace_action)
         self.close_scraped_games_menu_on_open_action = QAction(
-            'Close Scraped Games Menu on Open', scraped_games_menu
+            tr('ui.tray.close_scraped_games_menu_on_open'), scraped_games_menu
         )
         self.close_scraped_games_menu_on_open_action.setCheckable(True)
         self.close_scraped_games_menu_on_open_action.setChecked(
@@ -709,9 +731,7 @@ class SystemTray:
                 # Imported on demand to avoid an app <-> tray import cycle during startup.
                 from .app import _show_run_on_boot_failure
 
-                if _show_run_on_boot_failure(
-                    None, self.config_manager.proxy_mode, enabled=checked
-                ):
+                if _show_run_on_boot_failure(None, self.config_manager.proxy_mode, enabled=checked):
                     self.config_manager.run_on_boot = checked
                     self._refresh_settings_tab()
                     return
@@ -727,17 +747,11 @@ class SystemTray:
                 for w in _top
             )
             _warn = QMessageBox(_parent)
-            _warn.setWindowTitle('Run on Boot Failed')
+            _warn.setWindowTitle(tr('ui.tray.run_on_boot_failed'))
             _warn.setIcon(QMessageBox.Icon.Warning)
-            message = (
-                'Failed to register autostart.\n'
-                'Check the application log for details (autostart errors are logged at ERROR level).\n\n'
-                'Turn off Run on Boot to stop this error from appearing.'
-            )
+            message = tr('tray.autostart.registration_failed')
             if sys.platform == 'win32':
-                message += '\n\n' + windows_autostart_privilege_hint(
-                    self.config_manager.proxy_mode
-                )
+                message += '\n\n' + windows_autostart_privilege_hint(self.config_manager.proxy_mode)
             _warn.setText(message)
             if _on_top:
                 _warn.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
@@ -765,13 +779,9 @@ class SystemTray:
                     _top = QApplication.topLevelWidgets()
                     _parent = next((w for w in _top if w.isVisible()), None)
                     _warn = QMessageBox(_parent)
-                    _warn.setWindowTitle('Run on Boot Failed')
+                    _warn.setWindowTitle(tr('ui.tray.run_on_boot_failed'))
                     _warn.setIcon(QMessageBox.Icon.Warning)
-                    _warn.setText(
-                        'Failed to refresh autostart after changing desktop integration.\n'
-                        'Check the application log for details.\n\n'
-                        'Turn off Run on Boot to stop this error from appearing.'
-                    )
+                    _warn.setText(tr('ui.tray.failed_to_refresh_autostart_after_changing_desktop'))
                     _warn.exec()
             self._refresh_settings_tab()
         else:
@@ -785,13 +795,9 @@ class SystemTray:
                 for w in _top
             )
             _warn = QMessageBox(_parent)
-            _warn.setWindowTitle('Desktop Integration Failed')
+            _warn.setWindowTitle(tr('ui.tray.desktop_integration_failed'))
             _warn.setIcon(QMessageBox.Icon.Warning)
-            _warn.setText(
-                'Failed to create desktop/start menu integration.\n'
-                'Check the application log for details.\n\n'
-                'Turn off desktop integration creation to stop this error.'
-            )
+            _warn.setText(tr('ui.tray.failed_to_create_desktop_start_menu_integration'))
             if _on_top:
                 _warn.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
             _warn.exec()
@@ -960,7 +966,7 @@ class SystemTray:
 
         self._dashboard_close_notice_shown = True
         title = APP_NAME
-        message = 'Fleasion is still running in the system tray. Right click and select the exit option to quit.'
+        message = tr('tray.dashboard_closed_notice')
         icon_path = get_icon_path()
 
         if sys.platform.startswith('linux') and _is_xfce_desktop():
@@ -1096,7 +1102,7 @@ class SystemTray:
         from PyQt6.QtCore import Qt
         from PyQt6.QtWidgets import QApplication, QMessageBox
 
-        QApplication.clipboard().setText(f'https://{APP_DISCORD}')
+        QApplication.clipboard().setText(tr('ui.tray.https_value', value0=APP_DISCORD))
 
         _top = QApplication.topLevelWidgets()
         _parent = next((w for w in _top if w.isVisible()), None)
@@ -1107,9 +1113,9 @@ class SystemTray:
         msg_box = QMessageBox(_parent)
         if _on_top:
             msg_box.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
-        msg_box.setWindowTitle('Discord Invite Copied')
-        msg_box.setText('Discord invite copied!')
-        msg_box.setInformativeText(f'https://{APP_DISCORD}')
+        msg_box.setWindowTitle(tr('ui.tray.discord_invite_copied'))
+        msg_box.setText(tr('ui.tray.discord_invite_copied_2'))
+        msg_box.setInformativeText(tr('ui.tray.https_value', value0=APP_DISCORD))
         msg_box.setIcon(QMessageBox.Icon.Information)
         if icon_path := get_icon_path():
             from PyQt6.QtGui import QIcon
@@ -1140,9 +1146,7 @@ class SystemTray:
             and self.roblox_monitor.is_player_running()
         )
         requires_admin = bool(
-            sys.platform == 'win32'
-            and self.config_manager.proxy_mode != 'env'
-            and not _is_admin()
+            sys.platform == 'win32' and self.config_manager.proxy_mode != 'env' and not _is_admin()
         )
         try:
             restarted = restart_fleasion_normally(

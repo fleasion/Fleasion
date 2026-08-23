@@ -4,6 +4,8 @@ This implementation properly handles motor joint hierarchies and quaternion
 interpolation, matching the Reference pyvista/vtk implementation.
 """
 
+from ..localization import tr
+
 import math
 import os
 import re
@@ -1699,7 +1701,7 @@ class AnimationViewerPanel(QWidget):
         # Controls
         controls_layout = QHBoxLayout()
 
-        self.play_pause_btn = QPushButton('Play')
+        self.play_pause_btn = QPushButton(tr('ui.cache.animation_viewer.play'))
         self.play_pause_btn.clicked.connect(self._toggle_play_pause)
         self.play_pause_btn.setFixedWidth(80)
         self.play_pause_btn.setEnabled(False)
@@ -1714,19 +1716,21 @@ class AnimationViewerPanel(QWidget):
         self.time_slider.setEnabled(False)
         controls_layout.addWidget(self.time_slider)
 
-        self.time_label = QLabel('0.00s / 0.00s')
+        self.time_label = QLabel(tr('ui.cache.animation_viewer.0_00s_0_00s'))
         controls_layout.addWidget(self.time_label)
 
         controls_layout.addStretch()
 
-        self.options_btn = QPushButton('Options')
+        self.options_btn = QPushButton(tr('ui.cache.animation_viewer.options'))
         self.options_menu = QMenu(self)
 
-        self.action_auto_rotate = self.options_menu.addAction('Auto Rotate')
+        self.action_auto_rotate = self.options_menu.addAction(
+            tr('ui.cache.animation_viewer.auto_rotate')
+        )
         self.action_auto_rotate.setCheckable(True)
         self.action_auto_rotate.toggled.connect(self.gl_widget.set_auto_rotate)
 
-        self.action_grid = self.options_menu.addAction('Grid')
+        self.action_grid = self.options_menu.addAction(tr('ui.cache.animation_viewer.grid'))
         self.action_grid.setCheckable(True)
         self.action_grid.setChecked(self.gl_widget.show_grid)
         self.action_grid.toggled.connect(self._toggle_grid_and_save)
@@ -1739,7 +1743,7 @@ class AnimationViewerPanel(QWidget):
         ts_layout.setContentsMargins(10, 2, 10, 2)
         ts_layout.setSpacing(0)  # Tighten gap
 
-        self.ts_label = QLabel('Timescale: 1.0x')
+        self.ts_label = QLabel(tr('ui.cache.animation_viewer.timescale_1_0x'))
         self.ts_label.setStyleSheet('color: palette(window-text); font-weight: normal;')
         ts_layout.addWidget(self.ts_label)
 
@@ -1757,9 +1761,9 @@ class AnimationViewerPanel(QWidget):
         self.options_btn.setMenu(self.options_menu)
         controls_layout.addWidget(self.options_btn)
 
-        self.help_btn = QPushButton('?')
+        self.help_btn = QPushButton(tr('ui.cache.animation_viewer.text'))
         self.help_btn.setMaximumWidth(30)
-        self.help_btn.setToolTip('View Camera Controls')
+        self.help_btn.setToolTip(tr('ui.cache.animation_viewer.view_camera_controls'))
         self.help_btn.clicked.connect(self.show_help)
         controls_layout.addWidget(self.help_btn)
 
@@ -1781,22 +1785,8 @@ class AnimationViewerPanel(QWidget):
 
     def show_help(self):
         msg = QMessageBox(self)
-        msg.setWindowTitle('Camera Controls')
-        msg.setText(
-            '<h3>Orbit Mode (Default)</h3>'
-            '<ul>'
-            '<li><b>Click + Drag:</b> Rotate model</li>'
-            '<li><b>Scroll Wheel:</b> Zoom in/out</li>'
-            '</ul>'
-            '<h3>FPS Mode</h3>'
-            '<p><i>Pressing WASD at any time smoothly transitions you into FPS Mode.</i></p>'
-            '<ul>'
-            '<li><b>W/A/S/D:</b> Move forward/left/back/right</li>'
-            '<li><b>Space / Shift:</b> Move Up / Down</li>'
-            '<li><b>Click + Drag:</b> Look around freely</li>'
-            '<li><b>Scroll Wheel:</b> Move in/out</li>'
-            '</ul>'
-        )
+        msg.setWindowTitle(tr('ui.cache.animation_viewer.camera_controls'))
+        msg.setText(tr('ui.cache.animation_viewer.h3_orbit_mode_default_h3_ul_li'))
         msg.exec()
 
     def load_animation(self, anim_data: bytes) -> bool:
@@ -1823,12 +1813,12 @@ class AnimationViewerPanel(QWidget):
         """Toggle playback."""
         if self.is_playing:
             self.is_playing = False
-            self.play_pause_btn.setText('Play')
+            self.play_pause_btn.setText(tr('ui.cache.animation_viewer.play'))
             self.timer.stop()
             self.last_tick_time = None
         else:
             self.is_playing = True
-            self.play_pause_btn.setText('Pause')
+            self.play_pause_btn.setText(tr('ui.cache.animation_viewer.pause'))
             self.last_tick_time = None
             # Start playback timer at monitor refresh rate for smooth sync
             try:
@@ -1888,12 +1878,16 @@ class AnimationViewerPanel(QWidget):
         """Update time display."""
         current = self.gl_widget.current_time
         duration = self.gl_widget.duration
-        self.time_label.setText(f'{current:.2f}s / {duration:.2f}s')
+        self.time_label.setText(
+            tr('ui.cache.animation_viewer.value_s_value_s', value0=current, value1=duration)
+        )
 
     def _on_timescale_changed(self, value: int):
         self.timescale = value / 10.0
         if hasattr(self, 'ts_label'):
-            self.ts_label.setText(f'Timescale: {self.timescale:.1f}x')
+            self.ts_label.setText(
+                tr('ui.cache.animation_viewer.timescale_value_x', value0=self.timescale)
+            )
 
     def clear(self):
         """Clear animation data."""
@@ -1901,7 +1895,7 @@ class AnimationViewerPanel(QWidget):
         self.is_loaded = False
         self.timer.stop()
         self.last_tick_time = None
-        self.play_pause_btn.setText('Play')
+        self.play_pause_btn.setText(tr('ui.cache.animation_viewer.play'))
         self.play_pause_btn.setEnabled(False)
         self.time_slider.setEnabled(False)
         self.time_slider.setValue(0)
@@ -1918,4 +1912,4 @@ class AnimationViewerPanel(QWidget):
         """Stop playback."""
         self.is_playing = False
         self.timer.stop()
-        self.play_pause_btn.setText('Play')
+        self.play_pause_btn.setText(tr('ui.cache.animation_viewer.play'))

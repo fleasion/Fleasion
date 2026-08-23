@@ -1,5 +1,7 @@
 """Delete cache window."""
 
+from ..localization import tr
+
 import threading
 import time
 
@@ -19,7 +21,7 @@ class DeleteCacheWindow(QDialog):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('Clear Cache')
+        self.setWindowTitle(tr('ui.gui.delete_cache.clear_cache'))
         self.setFixedSize(400, 200)
 
         # Set window flags to allow minimize
@@ -46,7 +48,7 @@ class DeleteCacheWindow(QDialog):
         layout.setContentsMargins(20, 20, 20, 20)
 
         # Title
-        title_label = QLabel('Deleting Cache...')
+        title_label = QLabel(tr('ui.gui.delete_cache.deleting_cache'))
         title_label.setStyleSheet('font-size: 11pt; font-weight: bold;')
         layout.addWidget(title_label)
 

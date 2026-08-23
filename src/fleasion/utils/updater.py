@@ -1,6 +1,7 @@
 """Qt integration for the GitHub update resolver."""
 
 from __future__ import annotations
+from ..localization import tr
 
 import threading
 import webbrowser
@@ -59,7 +60,7 @@ def _show_update_dialog(tag: str, html_url: str) -> None:
     dialog = QDialog(parent)
     if stays_on_top:
         dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
-    dialog.setWindowTitle('Update Available')
+    dialog.setWindowTitle(tr('ui.utils.updater.update_available'))
 
     try:
         from .paths import get_icon_path
@@ -71,16 +72,18 @@ def _show_update_dialog(tag: str, html_url: str) -> None:
 
     main_layout = QVBoxLayout(dialog)
     label = QLabel(
-        f'A newer version of Fleasion is available!\n\n'
-        f'Latest:   {latest_display}\n'
-        f'Current:  {current}'
+        tr(
+            'ui.utils.updater.a_newer_version_of_fleasion_is_available',
+            value0=latest_display,
+            value1=current,
+        )
     )
     label.setWordWrap(True)
     main_layout.addWidget(label)
 
     button_layout = QHBoxLayout()
-    cancel_button = QPushButton('Cancel')
-    open_button = QPushButton('Open')
+    cancel_button = QPushButton(tr('ui.utils.updater.cancel'))
+    open_button = QPushButton(tr('ui.utils.updater.open'))
 
     button_layout.addStretch(1)
     button_layout.addWidget(cancel_button)

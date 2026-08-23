@@ -1,5 +1,7 @@
 """Subplace Joiner tab - browse and join subplaces of any Roblox experience."""
 
+from ..localization import tr, tr_count
+
 import json
 import os
 import random
@@ -38,7 +40,6 @@ from PyQt6.QtWidgets import (
 
 from ..utils.logging import log_buffer
 from ..utils.paths import CONFIG_DIR
-from ..utils.plural import format_count
 from ..utils.roblox_auth import (
     get_roblosecurity as _get_roblosecurity,
     wait_for_roblosecurity as _wait_for_roblosecurity,
@@ -89,29 +90,43 @@ _servers_rl_lock = threading.Lock()
 
 def _humanize_time(iso_str: str) -> str:
     if not iso_str:
-        return 'Unknown'
+        return tr('subplace.time.unknown')
     try:
         dt = _dateutil_parser.isoparse(iso_str)
         now = datetime.now(timezone.utc)
         diff = now - dt
         seconds = diff.total_seconds()
-        minutes = seconds / 60
-        hours = minutes / 60
-        days = hours / 24
-        months = days / 30
-        years = days / 365
+        minutes = int(seconds / 60)
+        hours = int(minutes / 60)
+        days = int(hours / 24)
+        months = int(days / 30)
+        years = int(days / 365)
         if seconds < 60:
-            return 'just now'
-        elif minutes < 60:
-            return f'{int(minutes)} minute{"s" if minutes >= 2 else ""} ago'
-        elif hours < 24:
-            return f'{int(hours)} hour{"s" if hours >= 2 else ""} ago'
-        elif days < 30:
-            return f'{int(days)} day{"s" if days >= 2 else ""} ago'
-        elif months < 12:
-            return f'{int(months)} month{"s" if months >= 2 else ""} ago'
-        else:
-            return f'{int(years)} year{"s" if years >= 2 else ""} ago'
+            return tr('subplace.time.just_now')
+        if minutes < 60:
+            return tr(
+                'subplace.time.minute_ago' if minutes == 1 else 'subplace.time.minutes_ago',
+                count=minutes,
+            )
+        if hours < 24:
+            return tr(
+                'subplace.time.hour_ago' if hours == 1 else 'subplace.time.hours_ago',
+                count=hours,
+            )
+        if days < 30:
+            return tr(
+                'subplace.time.day_ago' if days == 1 else 'subplace.time.days_ago',
+                count=days,
+            )
+        if months < 12:
+            return tr(
+                'subplace.time.month_ago' if months == 1 else 'subplace.time.months_ago',
+                count=months,
+            )
+        return tr(
+            'subplace.time.year_ago' if years == 1 else 'subplace.time.years_ago',
+            count=years,
+        )
     except Exception:
         return iso_str
 
@@ -155,7 +170,7 @@ class _JobIdEdit(QLineEdit):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setPlaceholderText('JobId: (Optional)')
+        self.setPlaceholderText(tr('ui.gui.subplace_joiner_tab.jobid_optional'))
         self.setFixedHeight(20)
         self.setStyleSheet('font-size: 9pt;')
 
@@ -170,11 +185,11 @@ class _CopyPlaceIdLabel(QLabel):
     """Small clickable label that copies its card's placeId."""
 
     def __init__(self, parent=None):
-        super().__init__('(Copy ID)', parent)
+        super().__init__(tr('subplace.copy_id'), parent)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedHeight(12)
         self.setStyleSheet('color: palette(placeholder-text); font-size: 7pt;')
-        self.setToolTip('Copy subplace ID')
+        self.setToolTip(tr('ui.gui.subplace_joiner_tab.copy_subplace_id'))
 
     def mousePressEvent(self, event):
         card = self.parent()
@@ -218,7 +233,7 @@ class SubplaceGameCard(QFrame):
         layout.setContentsMargins(7, 7, 7, 7)
         layout.setSpacing(4)
 
-        self.thumb_label = QLabel('Loading…')
+        self.thumb_label = QLabel(tr('ui.gui.subplace_joiner_tab.loading'))
         self.thumb_label.setFixedHeight(_THUMB_H)
         self.thumb_label.setMinimumWidth(_THUMB_W)
         self.thumb_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -229,7 +244,7 @@ class SubplaceGameCard(QFrame):
         )
         layout.addWidget(self.thumb_label)
 
-        self.name_label = QLabel('Unknown')
+        self.name_label = QLabel(tr('ui.gui.subplace_joiner_tab.unknown'))
         self.name_label.setWordWrap(True)
         self.name_label.setMaximumHeight(42)
         f = QFont()
@@ -256,15 +271,15 @@ class SubplaceGameCard(QFrame):
         btn_row = QHBoxLayout()
         btn_row.setSpacing(4)
 
-        self.join_btn = QPushButton('Join')
+        self.join_btn = QPushButton(tr('ui.gui.subplace_joiner_tab.join'))
         self.join_btn.setFixedHeight(22)
         btn_row.addWidget(self.join_btn)
 
-        self.open_btn = QPushButton('Browser')
+        self.open_btn = QPushButton(tr('ui.gui.subplace_joiner_tab.browser'))
         self.open_btn.setFixedHeight(22)
         btn_row.addWidget(self.open_btn)
 
-        self.fetch_jobs_btn = QPushButton('JobIds')
+        self.fetch_jobs_btn = QPushButton(tr('ui.gui.subplace_joiner_tab.jobids'))
         self.fetch_jobs_btn.setFixedHeight(22)
         btn_row.addWidget(self.fetch_jobs_btn)
 
@@ -274,9 +289,13 @@ class SubplaceGameCard(QFrame):
     def set_data(self, name: str, created: str = '', updated: str = ''):
         self.name_label.setText(name)
         if created:
-            self.created_label.setText('Created: ' + created)
+            self.created_label.setText(
+                tr('ui.gui.subplace_joiner_tab.created_value', value0=created)
+            )
         if updated:
-            self.updated_label.setText('Updated: ' + updated)
+            self.updated_label.setText(
+                tr('ui.gui.subplace_joiner_tab.updated_value', value0=updated)
+            )
 
     def set_thumbnail(self, pix: QPixmap):
         if not pix or pix.isNull():
@@ -318,12 +337,15 @@ class JobIdDialog(QDialog):
     _status_update = pyqtSignal(str)
 
     _PAGE_LIMIT = 25
-    _SORT_OPTIONS = [
-        ('Players ↑ (fewest first)', 'playing_asc'),
-        ('Players ↓ (most first)', 'playing_desc'),
-        ('Ping ↑ (lowest first)', 'ping_asc'),
-        ('Ping ↓ (highest first)', 'ping_desc'),
-    ]
+
+    @staticmethod
+    def _sort_options() -> tuple[tuple[str, str], ...]:
+        return (
+            (tr('subplace.jobs.sort.players_fewest'), 'playing_asc'),
+            (tr('subplace.jobs.sort.players_most'), 'playing_desc'),
+            (tr('subplace.jobs.sort.ping_lowest'), 'ping_asc'),
+            (tr('subplace.jobs.sort.ping_highest'), 'ping_desc'),
+        )
 
     def __init__(
         self,
@@ -344,22 +366,22 @@ class JobIdDialog(QDialog):
         self._results_ready.connect(self._apply_results)
         self._error_ready.connect(self._apply_error)
 
-        self.setWindowTitle(f'JobIds — Place {place_id}')
+        self.setWindowTitle(tr('ui.gui.subplace_joiner_tab.jobids_place_value', value0=place_id))
         self.resize(520, 440)
 
         layout = QVBoxLayout(self)
 
         top = QHBoxLayout()
-        top.addWidget(QLabel('Sort by:'))
+        top.addWidget(QLabel(tr('ui.gui.subplace_joiner_tab.sort_by')))
         self._sort_combo = QComboBox()
-        for label, _ in self._SORT_OPTIONS:
-            self._sort_combo.addItem(label)
+        for label, value in self._sort_options():
+            self._sort_combo.addItem(label, value)
         self._sort_combo.currentIndexChanged.connect(self._on_sort_changed)
         top.addWidget(self._sort_combo)
         top.addStretch(1)
         layout.addLayout(top)
 
-        self._status_label = QLabel('Fetching servers...')
+        self._status_label = QLabel(tr('ui.gui.subplace_joiner_tab.fetching_servers'))
         layout.addWidget(self._status_label)
 
         self._status_update.connect(self._status_label.setText)
@@ -369,11 +391,11 @@ class JobIdDialog(QDialog):
         layout.addWidget(self._list, 1)
 
         bottom = QHBoxLayout()
-        self._load_more_btn = QPushButton('Load more')
+        self._load_more_btn = QPushButton(tr('ui.gui.subplace_joiner_tab.load_more'))
         self._load_more_btn.clicked.connect(self._fetch_page)
         bottom.addWidget(self._load_more_btn)
         bottom.addStretch(1)
-        close_btn = QPushButton('Close')
+        close_btn = QPushButton(tr('ui.gui.subplace_joiner_tab.close'))
         close_btn.clicked.connect(self.close)
         bottom.addWidget(close_btn)
         layout.addLayout(bottom)
@@ -383,7 +405,7 @@ class JobIdDialog(QDialog):
         self._fetch_page()
 
     def _current_sort(self):
-        return self._SORT_OPTIONS[self._sort_combo.currentIndex()][1]
+        return str(self._sort_combo.currentData() or 'playing_asc')
 
     def _on_sort_changed(self):
         sort = self._current_sort()
@@ -395,8 +417,16 @@ class JobIdDialog(QDialog):
                 playing = s.get('playing', '?')
                 max_players = s.get('maxPlayers', '?')
                 ping = s.get('ping')
-                ping_str = f'  {ping}ms' if ping is not None else ''
-                item = QListWidgetItem(f'{job_id}  ({playing}/{max_players} players){ping_str}')
+                ping_str = tr('subplace.jobs.ping_suffix', ping=ping) if ping is not None else ''
+                item = QListWidgetItem(
+                    tr(
+                        'ui.gui.subplace_joiner_tab.value_value_value_players_value',
+                        value0=job_id,
+                        value1=playing,
+                        value2=max_players,
+                        value3=ping_str,
+                    )
+                )
                 item.setData(Qt.ItemDataRole.UserRole, job_id)
                 self._list.addItem(item)
             return
@@ -408,7 +438,7 @@ class JobIdDialog(QDialog):
         if self._loading:
             return
         self._loading = True
-        self._status_label.setText('Fetching servers...')
+        self._status_label.setText(tr('ui.gui.subplace_joiner_tab.fetching_servers'))
         threading.Thread(target=self._worker, daemon=True).start()
 
     def _worker(self):
@@ -437,11 +467,13 @@ class JobIdDialog(QDialog):
                         with _servers_rl_lock:
                             if _servers_rl_until != wait_until or _servers_rl_until <= time.time():
                                 break  # cleared by a successful request elsewhere
-                        self._status_update.emit(f'Rate limited — retrying in {sec}s…')
+                        self._status_update.emit(
+                            tr('subplace.jobs.rate_limited_retry', seconds=sec)
+                        )
                         time.sleep(1)
                         if time.time() >= wait_until:
                             break
-                    self._status_update.emit('Retrying…')
+                    self._status_update.emit(tr('subplace.jobs.retrying'))
 
                 resp = requests.get(url, timeout=15, proxies={}, verify=False)
                 if resp.status_code == 429:
@@ -456,14 +488,16 @@ class JobIdDialog(QDialog):
                                     or _servers_rl_until <= time.time()
                                 ):
                                     break
-                            self._status_update.emit(f'Rate limited — retrying in {sec}s…')
+                            self._status_update.emit(
+                                tr('subplace.jobs.rate_limited_retry', seconds=sec)
+                            )
                             time.sleep(1)
                             if time.time() >= wait_until:
                                 break
-                        self._status_update.emit('Retrying…')
+                        self._status_update.emit(tr('subplace.jobs.retrying'))
                         continue
                     else:
-                        self._error_ready.emit('429 Too Many Requests: Slow down!')
+                        self._error_ready.emit(tr('subplace.jobs.too_many_requests'))
                         return
                 resp.raise_for_status()
                 # Successful response — clear the global rate-limit state
@@ -503,21 +537,40 @@ class JobIdDialog(QDialog):
             playing = s.get('playing', '?')
             max_players = s.get('maxPlayers', '?')
             ping = s.get('ping')
-            ping_str = f'  {ping}ms' if ping is not None else ''
-            item = QListWidgetItem(f'{job_id}  ({playing}/{max_players} players){ping_str}')
+            ping_str = tr('subplace.jobs.ping_suffix', ping=ping) if ping is not None else ''
+            item = QListWidgetItem(
+                tr(
+                    'ui.gui.subplace_joiner_tab.value_value_value_players_value',
+                    value0=job_id,
+                    value1=playing,
+                    value2=max_players,
+                    value3=ping_str,
+                )
+            )
             item.setData(Qt.ItemDataRole.UserRole, job_id)
             self._list.addItem(item)
 
         total = self._list.count()
         if next_cursor:
-            self._status_label.setText(f'{total} servers loaded — more available')
+            self._status_label.setText(
+                tr('ui.gui.subplace_joiner_tab.value_servers_loaded_more_available', value0=total)
+            )
         else:
-            self._status_label.setText(f'{format_count(total, "server")} found')
+            self._status_label.setText(
+                tr(
+                    'ui.gui.subplace_joiner_tab.value_found',
+                    value0=tr_count(total, 'count.server.one', 'count.server.other'),
+                )
+            )
 
     def _apply_error(self, err):
         self._loading = False
         is_ratelimit = '429' in str(err)
-        err_msg = 'Ratelimited: Slow down!' if is_ratelimit else f'Error: {str(err)[:80]}…'
+        err_msg = (
+            tr('subplace.jobs.ratelimited')
+            if is_ratelimit
+            else tr('subplace.jobs.error', error=str(err)[:80])
+        )
         if self._all_servers:
             self._list.clear()
             for s in self._sorted_servers(self._all_servers):
@@ -525,8 +578,16 @@ class JobIdDialog(QDialog):
                 playing = s.get('playing', '?')
                 max_players = s.get('maxPlayers', '?')
                 ping = s.get('ping')
-                ping_str = f'  {ping}ms' if ping is not None else ''
-                item = QListWidgetItem(f'{job_id}  ({playing}/{max_players} players){ping_str}')
+                ping_str = tr('subplace.jobs.ping_suffix', ping=ping) if ping is not None else ''
+                item = QListWidgetItem(
+                    tr(
+                        'ui.gui.subplace_joiner_tab.value_value_value_players_value',
+                        value0=job_id,
+                        value1=playing,
+                        value2=max_players,
+                        value3=ping_str,
+                    )
+                )
                 item.setData(Qt.ItemDataRole.UserRole, job_id)
                 self._list.addItem(item)
             self._status_label.setText(err_msg)
@@ -616,7 +677,12 @@ class SubplaceJoinerTab(QWidget):
     def set_selected_account(self, username: str):
         """Update the selected-account footer label from external account switches."""
         username = (username or '').strip()
-        self._selected_label.setText(f'Selected: {username if username else "(none)"}')
+        self._selected_label.setText(
+            tr(
+                'ui.gui.subplace_joiner_tab.selected_value',
+                value0=username if username else tr('subplace.none'),
+            )
+        )
         unresolved = set(self.recent_ids) | set(self.favorites)
         for place_id in unresolved:
             if self._place_name_cache.get(place_id) == place_id:
@@ -640,40 +706,40 @@ class SubplaceJoinerTab(QWidget):
 
         row0 = QHBoxLayout()
         row0.setSpacing(4)
-        placeid_lbl = QLabel('PlaceID:')
+        placeid_lbl = QLabel(tr('ui.gui.subplace_joiner_tab.placeid'))
         row0.addWidget(placeid_lbl, 0)
         self.PlaceID_search = QLineEdit()
-        self.PlaceID_search.setPlaceholderText('Place ID to search')
+        self.PlaceID_search.setPlaceholderText(tr('ui.gui.subplace_joiner_tab.place_id_to_search'))
         self.PlaceID_search.returnPressed.connect(self.on_search_clicked)
         self.PlaceID_search.textChanged.connect(self._update_favorite_btn)
         row0.addWidget(self.PlaceID_search, 1)
-        self.search_btn = QPushButton('Search')
+        self.search_btn = QPushButton(tr('ui.gui.subplace_joiner_tab.search'))
         self.search_btn.clicked.connect(self.on_search_clicked)
         row0.addWidget(self.search_btn, 0)
         top_layout.addLayout(row0)
 
         row1 = QHBoxLayout()
         row1.setSpacing(4)
-        search_lbl = QLabel('Search:')
+        search_lbl = QLabel(tr('ui.gui.subplace_joiner_tab.search_2'))
         search_lbl.setMinimumWidth(placeid_lbl.sizeHint().width())
         row1.addWidget(search_lbl, 0)
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText('Filter by name or ID')
+        self.search_input.setPlaceholderText(tr('ui.gui.subplace_joiner_tab.filter_by_name_or_id'))
         self.search_input.textChanged.connect(self.apply_search_and_sort)
         row1.addWidget(self.search_input, 1)
-        self.favorite_btn = QPushButton('Favorite')
+        self.favorite_btn = QPushButton(tr('ui.gui.subplace_joiner_tab.favorite'))
         self.favorite_btn.clicked.connect(self.on_favorite_clicked)
         row1.addWidget(self.favorite_btn, 0)
         sort_combo = QComboBox()
-        for item in (
-            'PlaceID ↑',
-            'PlaceID ↓',
-            'Created ↑',
-            'Created ↓',
-            'Updated ↑',
-            'Updated ↓',
+        for label, value in (
+            (tr('subplace.sort.place_id_asc'), 'place_id_asc'),
+            (tr('subplace.sort.place_id_desc'), 'place_id_desc'),
+            (tr('subplace.sort.created_asc'), 'created_asc'),
+            (tr('subplace.sort.created_desc'), 'created_desc'),
+            (tr('subplace.sort.updated_asc'), 'updated_asc'),
+            (tr('subplace.sort.updated_desc'), 'updated_desc'),
         ):
-            sort_combo.addItem(item)
+            sort_combo.addItem(label, value)
         self.sort_combo = sort_combo
         sort_combo.currentIndexChanged.connect(self.apply_search_and_sort)
         row1.addWidget(sort_combo, 0)
@@ -689,7 +755,7 @@ class SubplaceJoinerTab(QWidget):
         sidebar = QVBoxLayout()
         sidebar.setSpacing(4)
 
-        recent_label = QLabel('Recent PlaceIDs')
+        recent_label = QLabel(tr('ui.gui.subplace_joiner_tab.recent_placeids'))
         recent_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         sidebar.addWidget(recent_label)
 
@@ -708,7 +774,7 @@ class SubplaceJoinerTab(QWidget):
         self._recent_scroll.setWidget(self.recent_contents)
         sidebar.addWidget(self._recent_scroll, 1)
 
-        fav_label = QLabel('Favorited PlaceIDs')
+        fav_label = QLabel(tr('ui.gui.subplace_joiner_tab.favorited_placeids'))
         fav_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         sidebar.addWidget(fav_label)
 
@@ -750,11 +816,11 @@ class SubplaceJoinerTab(QWidget):
         footer_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         footer_layout = QHBoxLayout(footer_widget)
         footer_layout.setContentsMargins(8, 4, 8, 4)
-        self._selected_label = QLabel('Selected: (none)')
+        self._selected_label = QLabel(tr('ui.gui.subplace_joiner_tab.selected_none'))
         self._selected_label.setStyleSheet('color: palette(placeholder-text); font-size: 9pt;')
         footer_layout.addWidget(self._selected_label)
         footer_layout.addStretch()
-        clear_cache_btn = QPushButton('Clear Cache')
+        clear_cache_btn = QPushButton(tr('ui.gui.subplace_joiner_tab.clear_cache'))
         clear_cache_btn.clicked.connect(self._clear_roblox_cache)
         footer_layout.addWidget(clear_cache_btn)
         root.addWidget(footer_widget)
@@ -923,13 +989,17 @@ class SubplaceJoinerTab(QWidget):
 
     def _show_sidebar_context_menu(self, place_id: str, btn: QPushButton, pos):
         menu = QMenu(self)
-        rename_action = menu.addAction('Rename')
+        rename_action = menu.addAction(tr('ui.gui.subplace_joiner_tab.rename'))
         remove_recent_action = None
         remove_fav_action = None
         if place_id in self.recent_ids:
-            remove_recent_action = menu.addAction('Remove from recents')
+            remove_recent_action = menu.addAction(
+                tr('ui.gui.subplace_joiner_tab.remove_from_recents')
+            )
         if place_id in self.favorites:
-            remove_fav_action = menu.addAction('Remove from favorites')
+            remove_fav_action = menu.addAction(
+                tr('ui.gui.subplace_joiner_tab.remove_from_favorites')
+            )
         action = menu.exec(btn.mapToGlobal(pos))
         if action is None:
             return
@@ -946,7 +1016,12 @@ class SubplaceJoinerTab(QWidget):
 
     def _rename_sidebar_entry(self, place_id: str, btn: QPushButton):
         current = self._custom_names.get(place_id) or self._place_name_cache.get(place_id, place_id)
-        name, ok = QInputDialog.getText(self, 'Rename', f'Name for {place_id}:', text=current)
+        name, ok = QInputDialog.getText(
+            self,
+            tr('ui.gui.subplace_joiner_tab.rename'),
+            tr('ui.gui.subplace_joiner_tab.name_for_value', value0=place_id),
+            text=current,
+        )
         if not ok or not name.strip():
             return
         name = name.strip()
@@ -992,7 +1067,11 @@ class SubplaceJoinerTab(QWidget):
 
     def _update_favorite_btn(self):
         pid = self._extract_place_id(self.PlaceID_search.text())
-        self.favorite_btn.setText('Unfavorite' if pid in self.favorites else 'Favorite')
+        self.favorite_btn.setText(
+            tr('ui.gui.subplace_joiner_tab.unfavorite')
+            if pid in self.favorites
+            else tr('ui.gui.subplace_joiner_tab.favorite')
+        )
 
     def on_favorite_clicked(self):
         place_id = self._extract_place_id(self.PlaceID_search.text())
@@ -1336,9 +1415,11 @@ class SubplaceJoinerTab(QWidget):
                 card.join_btn.setEnabled(False)
                 card.fetch_jobs_btn.setEnabled(False)
                 card.job_id_edit.setEnabled(False)
-                card.join_btn.setToolTip('Join unavailable: placeId is missing for this card')
+                card.join_btn.setToolTip(
+                    tr('ui.gui.subplace_joiner_tab.join_unavailable_placeid_is_missing_for_this')
+                )
                 card.fetch_jobs_btn.setToolTip(
-                    'JobIds unavailable: placeId is missing for this card'
+                    tr('ui.gui.subplace_joiner_tab.jobids_unavailable_placeid_is_missing_for_this')
                 )
                 log_buffer.log(
                     'subplace',
@@ -1381,7 +1462,7 @@ class SubplaceJoinerTab(QWidget):
             match = not text or (text in name) or (pid is not None and text in str(pid))
             card.setVisible(match)
 
-        mode = (self.sort_combo.currentText() or '').strip()
+        mode = str(self.sort_combo.currentData() or 'place_id_asc')
         visible = [c for c in self._cards if c.isVisible()]
 
         def _iso_ts(iso):
@@ -1392,17 +1473,20 @@ class SubplaceJoinerTab(QWidget):
             except Exception:
                 return float('-inf')
 
-        if 'PlaceID' in mode:
-            visible.sort(key=lambda c: getattr(c, 'place_id', 0) or 0, reverse='↓' in mode)
-        elif 'Created' in mode:
+        if mode.startswith('place_id_'):
+            visible.sort(
+                key=lambda c: getattr(c, 'place_id', 0) or 0,
+                reverse=mode.endswith('_desc'),
+            )
+        elif mode.startswith('created_'):
             visible.sort(
                 key=lambda c: _iso_ts(getattr(c, 'created_iso', None)),
-                reverse='↓' in mode,
+                reverse=mode.endswith('_desc'),
             )
-        elif 'Updated' in mode:
+        elif mode.startswith('updated_'):
             visible.sort(
                 key=lambda c: _iso_ts(getattr(c, 'updated_iso', None)),
-                reverse='↓' in mode,
+                reverse=mode.endswith('_desc'),
             )
 
         self._cards = visible + [c for c in self._cards if not c.isVisible()]
@@ -1528,9 +1612,7 @@ class SubplaceJoinerTab(QWidget):
                 return
         self.joining_place = True
         log_buffer.log('subplace', f'Launching Roblox deeplink to placeId={place_id}')
-        if not self._launch_roblox_uri(
-            f'roblox://experiences/start?placeId={place_id}'
-        ):
+        if not self._launch_roblox_uri(f'roblox://experiences/start?placeId={place_id}'):
             log_buffer.log('subplace', 'Failed to launch Roblox deeplink without elevation')
 
     def _launch_roblox_uri(self, target: str) -> bool:
@@ -1546,9 +1628,7 @@ class SubplaceJoinerTab(QWidget):
         ):
             from ..utils.platform_macos import relaunch_roblox_with_proxy_env
 
-            return relaunch_roblox_with_proxy_env(
-                self._proxy_master.roblox_env_proxy_url(), target
-            )
+            return relaunch_roblox_with_proxy_env(self._proxy_master.roblox_env_proxy_url(), target)
         return launch_as_standard_user(target)
 
     def _join_root(self, root_place_id: int, cookie: str | None = None) -> bool:

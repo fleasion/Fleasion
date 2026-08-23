@@ -1,5 +1,7 @@
 """JSON tree viewer widget for cache files - displays JSON in a clean tree view."""
 
+from ..localization import tr, tr_count
+
 from PyQt6.QtCore import QSize, Qt, QTimer
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -75,38 +77,42 @@ class CacheJsonViewer(QWidget):
         # Single toolbar row: search | nav buttons (hidden until search) | expand/collapse | adv | match
         toolbar = QHBoxLayout()
         toolbar.setSpacing(4)
-        toolbar.addWidget(QLabel('Search:'))
+        toolbar.addWidget(QLabel(tr('ui.cache.cache_json_viewer.search')))
 
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText('Search keys and values...')
+        self.search_input.setPlaceholderText(
+            tr('ui.cache.cache_json_viewer.search_keys_and_values')
+        )
         self.search_input.textChanged.connect(self._on_search_text_changed)
         toolbar.addWidget(self.search_input)
 
         # Navigation buttons — hidden until a search is active
-        self.prev_match_btn = QPushButton('↑')
+        self.prev_match_btn = QPushButton(tr('ui.cache.cache_json_viewer.text'))
         self.prev_match_btn.setFixedWidth(30)
-        self.prev_match_btn.setToolTip('Previous match')
+        self.prev_match_btn.setToolTip(tr('ui.cache.cache_json_viewer.previous_match'))
         self.prev_match_btn.clicked.connect(self._cycle_to_prev_match)
         self.prev_match_btn.hide()
         toolbar.addWidget(self.prev_match_btn)
 
-        self.next_match_btn = QPushButton('↓')
+        self.next_match_btn = QPushButton(tr('ui.cache.cache_json_viewer.text_2'))
         self.next_match_btn.setFixedWidth(30)
-        self.next_match_btn.setToolTip('Next match')
+        self.next_match_btn.setToolTip(tr('ui.cache.cache_json_viewer.next_match'))
         self.next_match_btn.clicked.connect(self._cycle_to_next_match)
         self.next_match_btn.hide()
         toolbar.addWidget(self.next_match_btn)
 
-        expand_btn = QPushButton('Expand All')
+        expand_btn = QPushButton(tr('ui.cache.cache_json_viewer.expand_all'))
         expand_btn.clicked.connect(self._expand_all)
         toolbar.addWidget(expand_btn)
 
-        collapse_btn = QPushButton('Collapse All')
+        collapse_btn = QPushButton(tr('ui.cache.cache_json_viewer.collapse_all'))
         collapse_btn.clicked.connect(self._collapse_all)
         toolbar.addWidget(collapse_btn)
 
-        self.adv_checkbox = QCheckBox('Adv')
-        self.adv_checkbox.setToolTip('Show boilerplate fields (entryId, context, etc.)')
+        self.adv_checkbox = QCheckBox(tr('ui.cache.cache_json_viewer.adv'))
+        self.adv_checkbox.setToolTip(
+            tr('ui.cache.cache_json_viewer.show_boilerplate_fields_entryid_context_etc')
+        )
         self.adv_checkbox.stateChanged.connect(self._on_advanced_toggled)
         toolbar.addWidget(self.adv_checkbox)
 
@@ -266,7 +272,7 @@ class CacheJsonViewer(QWidget):
             self.node_values[id(item)] = value
 
             # Add a dummy child so expand arrow shows
-            dummy = QTreeWidgetItem(item, ['(loading...)'])
+            dummy = QTreeWidgetItem(item, [tr('cache_json.loading')])
 
         elif isinstance(value, list):
             # Array: show count with preview if object array
@@ -281,10 +287,15 @@ class CacheJsonViewer(QWidget):
                 # Show preview for object arrays
                 preview = self._get_preview_text(value[0]) if isinstance(value[0], dict) else ''
                 preview_text = f': {{{preview}}}' if preview else ': [...]'
+                count_text = tr_count(
+                    item_count,
+                    'cache_json.item_count.one',
+                    'cache_json.item_count.other',
+                )
                 display = (
-                    f'{key}: [{item_count} items]{preview_text}'
+                    f'{key}: [{count_text}]{preview_text}'
                     if key
-                    else f'[{item_count} items]{preview_text}'
+                    else f'[{count_text}]{preview_text}'
                 )
                 item = QTreeWidgetItem(parent_item, [display])
                 item.setExpanded(False)
@@ -295,7 +306,7 @@ class CacheJsonViewer(QWidget):
                 self._lazy_arrays[id(item)] = {'array_data': value, 'loaded': False}
 
                 # Add dummy child so expand arrow shows
-                dummy = QTreeWidgetItem(item, ['(loading...)'])
+                dummy = QTreeWidgetItem(item, [tr('cache_json.loading')])
         else:
             # Scalar value
             if isinstance(value, str):
@@ -352,7 +363,7 @@ class CacheJsonViewer(QWidget):
                 # Remove placeholder if present
                 if item.childCount() == 1:
                     child_text = item.child(0).text(0)
-                    if child_text == '(loading...)':
+                    if child_text == tr('cache_json.loading'):
                         item.removeChild(item.child(0))
 
                         # Add actual dict children with duplicate value combining
@@ -452,7 +463,7 @@ class CacheJsonViewer(QWidget):
             # No matches — hide nav, show count label
             self.prev_match_btn.hide()
             self.next_match_btn.hide()
-            self.match_label.setText('No matches')
+            self.match_label.setText(tr('ui.cache.cache_json_viewer.no_matches'))
             self.match_label.show()
 
     def _cycle_to_next_match(self):
@@ -491,10 +502,14 @@ class CacheJsonViewer(QWidget):
         """Update the match counter label."""
         if self._search_matches:
             self.match_label.setText(
-                f'Match {self._current_match_index + 1} of {len(self._search_matches)}'
+                tr(
+                    'ui.cache.cache_json_viewer.match_value_of_value',
+                    value0=self._current_match_index + 1,
+                    value1=len(self._search_matches),
+                )
             )
         else:
-            self.match_label.setText('No matches')
+            self.match_label.setText(tr('ui.cache.cache_json_viewer.no_matches'))
 
     def _on_advanced_toggled(self, state):
         """Toggle advanced mode (show/hide boilerplate fields)."""

@@ -1,5 +1,7 @@
 """Proxy tab - live view of traffic seen by the Roblox Env Proxy explicit proxy."""
 
+from ..localization import tr
+
 import base64
 import json
 from datetime import datetime
@@ -28,21 +30,68 @@ from ..utils.paths import PROXY_TRAFFIC_FILE
 from .proxy_tab_ui import Ui_Form as Ui_ProxyTab
 from .rules_dialog_ui import Ui_Dialog as Ui_RulesDialog
 
-_TABLE_HEADERS = ('#', 'Time', 'Method', 'Host', 'Path', 'Status', 'Size', 'ms')
-
-_RULES_TABLE_HEADERS = (
-    'Enabled', 'Direction', 'Type', 'Match/Path', 'Replacement', 'Host filter', 'Path filter',
+# Stable persistence keys for saved column widths. These intentionally keep the
+# pre-localization values; only the displayed headers are translated.
+_TABLE_COLUMN_KEYS = ('#', 'Time', 'Method', 'Host', 'Path', 'Status', 'Size', 'ms')
+_RULES_TABLE_COLUMN_KEYS = (
+    'Enabled',
+    'Direction',
+    'Type',
+    'Match/Path',
+    'Replacement',
+    'Host filter',
+    'Path filter',
 )
 
-_TUNNEL_NOTE = 'No preview available - this connection was tunneled (opaque TLS), not decrypted.'
+
+def _table_headers() -> tuple[str, ...]:
+    return (
+        tr('proxy.table.number'),
+        tr('proxy.table.time'),
+        tr('proxy.table.method'),
+        tr('proxy.table.host'),
+        tr('proxy.table.path'),
+        tr('proxy.table.status'),
+        tr('proxy.table.size'),
+        tr('proxy.table.ms'),
+    )
+
+
+def _direction_options() -> tuple[tuple[str, str], ...]:
+    return (
+        (tr('proxy.rules.direction.both'), 'both'),
+        (tr('proxy.rules.direction.request'), 'request'),
+        (tr('proxy.rules.direction.response'), 'response'),
+    )
+
+
+def _type_options() -> tuple[tuple[str, str], ...]:
+    return (
+        (tr('proxy.rules.type.plain_text'), 'plain'),
+        (tr('proxy.rules.type.regex'), 'regex'),
+        (tr('proxy.rules.type.json_path'), 'json_path'),
+        (tr('proxy.rules.type.query_param'), 'query_param'),
+        (tr('proxy.rules.type.header'), 'header'),
+    )
+
 
 # Fields preserved to disk when the "Preserve" checkbox is on - everything
 # needed to redraw a row (including its color tint) and its request/response
 # preview text, but not anything tied to a live connection (pending_stage
 # can't survive a restart, so it's always reset on load).
 _PRESERVE_FIELDS = (
-    'time', 'host', 'port', 'method', 'path', 'intercepted', 'status', 'size', 'ms',
-    'was_intercepted', 'dropped_request', 'dropped_response',
+    'time',
+    'host',
+    'port',
+    'method',
+    'path',
+    'intercepted',
+    'status',
+    'size',
+    'ms',
+    'was_intercepted',
+    'dropped_request',
+    'dropped_response',
 )
 
 
@@ -109,7 +158,7 @@ def _format_timestamp(value) -> str:
         return ''
     try:
         return datetime.fromtimestamp(value).strftime('%H:%M:%S.%f')[:-3]
-    except (OSError, OverflowError, ValueError):
+    except OSError, OverflowError, ValueError:
         return ''
 
 
@@ -140,8 +189,6 @@ def _format_size(value) -> str:
 
 def _format_ms(value) -> str:
     return '' if value is None else f'{value} ms'
-
-
 
 
 class _NumericSortItem(QTableWidgetItem):
@@ -325,24 +372,13 @@ class AutoReplaceRulesDialog(QDialog):
     apply_auto_replace_rules/_header_rules/_query_rules in proxy/server.py).
     """
 
-    _DIRECTIONS = ('both', 'request', 'response')
-    _DIRECTION_LABELS = {'both': 'Both', 'request': 'Request', 'response': 'Response'}
-    _TYPES = ('plain', 'regex', 'json_path', 'query_param', 'header')
-    _TYPE_LABELS = {
-        'plain': 'Plain text',
-        'regex': 'Regex',
-        'json_path': 'JSON path',
-        'query_param': 'Query param',
-        'header': 'Header',
-    }
-
     def __init__(self, proxy_master=None, config_manager=None, parent=None):
         super().__init__(parent)
         self._proxy_master = proxy_master
         self._config = config_manager
         self.ui = Ui_RulesDialog()
         self.ui.setupUi(self)
-        self.setWindowTitle('Auto Replace Rules')
+        self.setWindowTitle(tr('ui.gui.proxy_tab.auto_replace_rules'))
         self.resize(950, 500)
 
         self.ui.rulesTable.setEditTriggers(
@@ -353,7 +389,10 @@ class AutoReplaceRulesDialog(QDialog):
         self.ui.rulesTable.setSelectionMode(self.ui.rulesTable.SelectionMode.ExtendedSelection)
         self.ui.rulesTable.verticalHeader().setVisible(False)
         self._col_resizer = _TableColumnResizer(
-            self.ui.rulesTable, _RULES_TABLE_HEADERS, self._config, 'auto_replace_rules_column_widths'
+            self.ui.rulesTable,
+            _RULES_TABLE_COLUMN_KEYS,
+            self._config,
+            'auto_replace_rules_column_widths',
         )
 
         self._rules: list = (
@@ -400,20 +439,29 @@ class AutoReplaceRulesDialog(QDialog):
             table.setItem(row, 0, enabled_item)
 
             direction_box = _CompactComboBox()
-            direction_box.addItems([self._DIRECTION_LABELS[d] for d in self._DIRECTIONS])
-            direction_box.setCurrentIndex(self._DIRECTIONS.index(rule.get('direction', 'both')))
+            for label, value in _direction_options():
+                direction_box.addItem(label, value)
+            direction_index = direction_box.findData(rule.get('direction', 'both'))
+            direction_box.setCurrentIndex(max(0, direction_index))
             direction_box.currentIndexChanged.connect(
                 lambda _i, r=row: self._on_direction_changed(r)
             )
             table.setCellWidget(row, 1, direction_box)
 
             type_box = _CompactComboBox()
-            type_box.addItems([self._TYPE_LABELS[t] for t in self._TYPES])
-            type_box.setCurrentIndex(self._TYPES.index(rule.get('type', 'plain')))
+            for label, value in _type_options():
+                type_box.addItem(label, value)
+            type_index = type_box.findData(rule.get('type', 'plain'))
+            type_box.setCurrentIndex(max(0, type_index))
             type_box.currentIndexChanged.connect(lambda _i, r=row: self._on_type_changed(r))
             table.setCellWidget(row, 2, type_box)
 
-            for col, key in ((3, 'match'), (4, 'replacement'), (5, 'host_filter'), (6, 'path_filter')):
+            for col, key in (
+                (3, 'match'),
+                (4, 'replacement'),
+                (5, 'host_filter'),
+                (6, 'path_filter'),
+            ):
                 table.setItem(row, col, QTableWidgetItem(str(rule.get(key, ''))))
         self._loading = False
 
@@ -425,14 +473,14 @@ class AutoReplaceRulesDialog(QDialog):
         if self._loading or row >= len(self._rules):
             return
         widget = self.ui.rulesTable.cellWidget(row, 1)
-        self._rules[row]['direction'] = self._DIRECTIONS[widget.currentIndex()]
+        self._rules[row]['direction'] = str(widget.currentData() or 'both')
         self._save()
 
     def _on_type_changed(self, row: int) -> None:
         if self._loading or row >= len(self._rules):
             return
         widget = self.ui.rulesTable.cellWidget(row, 2)
-        self._rules[row]['type'] = self._TYPES[widget.currentIndex()]
+        self._rules[row]['type'] = str(widget.currentData() or 'plain')
         self._save()
 
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
@@ -479,7 +527,10 @@ class AutoReplaceRulesDialog(QDialog):
 
     def _import_rules(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
-            self, 'Import Auto Replace Rules', '', 'JSON Files (*.json);;All Files (*)'
+            self,
+            tr('ui.gui.proxy_tab.import_auto_replace_rules'),
+            '',
+            tr('ui.gui.proxy_tab.json_files_json_all_files'),
         )
         if not file_path:
             return
@@ -491,14 +542,21 @@ class AutoReplaceRulesDialog(QDialog):
                 raise ValueError('expected a list of rules')
             self._rules = [self._default_rule() | r for r in imported if isinstance(r, dict)]
         except (OSError, ValueError, TypeError) as exc:
-            QMessageBox.warning(self, 'Import Failed', f'Could not import rules: {exc}')
+            QMessageBox.warning(
+                self,
+                tr('ui.gui.proxy_tab.import_failed'),
+                tr('ui.gui.proxy_tab.could_not_import_rules_value', value0=exc),
+            )
             return
         self._render_rules()
         self._save()
 
     def _export_rules(self) -> None:
         file_path, _ = QFileDialog.getSaveFileName(
-            self, 'Export Auto Replace Rules', 'auto_replace_rules.json', 'JSON Files (*.json)'
+            self,
+            tr('ui.gui.proxy_tab.export_auto_replace_rules'),
+            'auto_replace_rules.json',
+            tr('ui.gui.proxy_tab.json_files_json'),
         )
         if not file_path:
             return
@@ -506,7 +564,11 @@ class AutoReplaceRulesDialog(QDialog):
             with open(file_path, 'w', encoding='utf-8') as handle:
                 json.dump({'rules': self._rules}, handle, indent=2)
         except OSError as exc:
-            QMessageBox.warning(self, 'Export Failed', f'Could not export rules: {exc}')
+            QMessageBox.warning(
+                self,
+                tr('ui.gui.proxy_tab.export_failed'),
+                tr('ui.gui.proxy_tab.could_not_export_rules_value', value0=exc),
+            )
 
 
 class ProxyTrafficTab(QWidget):
@@ -537,16 +599,12 @@ class ProxyTrafficTab(QWidget):
         # edge instead of flush like the other tabs.
         self.ui.verticalLayout_3.setContentsMargins(0, 0, 0, 0)
 
-        self.ui.trafficTable.setColumnCount(len(_TABLE_HEADERS))
-        self.ui.trafficTable.setHorizontalHeaderLabels(_TABLE_HEADERS)
+        self.ui.trafficTable.setColumnCount(len(_TABLE_COLUMN_KEYS))
+        self.ui.trafficTable.setHorizontalHeaderLabels(_table_headers())
         self.ui.trafficTable.verticalHeader().setVisible(False)
         self.ui.trafficTable.setEditTriggers(self.ui.trafficTable.EditTrigger.NoEditTriggers)
-        self.ui.trafficTable.setSelectionBehavior(
-            self.ui.trafficTable.SelectionBehavior.SelectRows
-        )
-        self.ui.trafficTable.setSelectionMode(
-            self.ui.trafficTable.SelectionMode.ExtendedSelection
-        )
+        self.ui.trafficTable.setSelectionBehavior(self.ui.trafficTable.SelectionBehavior.SelectRows)
+        self.ui.trafficTable.setSelectionMode(self.ui.trafficTable.SelectionMode.ExtendedSelection)
         self.ui.trafficTable.setSortingEnabled(True)
         header = self.ui.trafficTable.horizontalHeader()
         header.setSortIndicator(0, Qt.SortOrder.AscendingOrder)
@@ -554,7 +612,10 @@ class ProxyTrafficTab(QWidget):
         # scraper's cache table does it - see _TableColumnResizer for why the
         # last column doesn't just use Qt's own Stretch resize mode.
         self._col_resizer = _TableColumnResizer(
-            self.ui.trafficTable, _TABLE_HEADERS, self._config, 'proxy_traffic_column_widths'
+            self.ui.trafficTable,
+            _TABLE_COLUMN_KEYS,
+            self._config,
+            'proxy_traffic_column_widths',
         )
 
         self.ui.filterEdit.textChanged.connect(self._apply_filter)
@@ -566,9 +627,9 @@ class ProxyTrafficTab(QWidget):
         self.ui.enableCheckBox.setChecked(False)
         self.ui.enableCheckBox.toggled.connect(self._on_intercept_all_toggled)
 
-        help_btn = QPushButton('?')
+        help_btn = QPushButton(tr('ui.gui.proxy_tab.text'))
         help_btn.setMaximumSize(25, 22)
-        help_btn.setToolTip('About this tab')
+        help_btn.setToolTip(tr('ui.gui.proxy_tab.about_this_tab'))
         help_btn.clicked.connect(self._show_help)
         self.ui.horizontalLayout_3.insertWidget(
             self.ui.horizontalLayout_3.indexOf(self.ui.clearButton), help_btn
@@ -584,13 +645,21 @@ class ProxyTrafficTab(QWidget):
         self.ui.requestText.setReadOnly(False)
 
         forward_menu = QMenu(self)
-        forward_menu.addAction('Forward selected', lambda: self._resolve_action('forward', False))
-        forward_menu.addAction('Forward all', lambda: self._resolve_action('forward', True))
+        forward_menu.addAction(
+            tr('ui.gui.proxy_tab.forward_selected'), lambda: self._resolve_action('forward', False)
+        )
+        forward_menu.addAction(
+            tr('ui.gui.proxy_tab.forward_all'), lambda: self._resolve_action('forward', True)
+        )
         self.ui.forwardButton.setMenu(forward_menu)
 
         drop_menu = QMenu(self)
-        drop_menu.addAction('Drop selected', lambda: self._resolve_action('drop', False))
-        drop_menu.addAction('Drop all', lambda: self._resolve_action('drop', True))
+        drop_menu.addAction(
+            tr('ui.gui.proxy_tab.drop_selected'), lambda: self._resolve_action('drop', False)
+        )
+        drop_menu.addAction(
+            tr('ui.gui.proxy_tab.drop_all'), lambda: self._resolve_action('drop', True)
+        )
         self.ui.dropButton.setMenu(drop_menu)
 
         # A/D/R act on the selected row - forward/drop only apply while it's
@@ -623,9 +692,11 @@ class ProxyTrafficTab(QWidget):
         # Set the checkbox and load any previously-saved rows BEFORE wiring
         # the toggled signal, so restoring the saved state doesn't get
         # mistaken for the user flipping it (which would re-save/clear it).
-        preserve_enabled = bool(
-            self._config.settings.get('proxy_traffic_preserve', False)
-        ) if self._config is not None else False
+        preserve_enabled = (
+            bool(self._config.settings.get('proxy_traffic_preserve', False))
+            if self._config is not None
+            else False
+        )
         self._preserve_enabled = preserve_enabled
         self._preserved_traffic = _load_preserved_traffic() if preserve_enabled else []
         # Preserved rows use negative synthetic ids (-N..-1) so they can
@@ -665,13 +736,11 @@ class ProxyTrafficTab(QWidget):
         footer_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         footer_layout = QHBoxLayout(footer_widget)
         footer_layout.setContentsMargins(8, 4, 8, 4)
-        warning_label = QLabel(
-            'Warning: This tab may expose your Roblox login. Never open or stream it for anyone.'
-        )
+        warning_label = QLabel(tr('ui.gui.proxy_tab.warning_this_tab_may_expose_your_roblox'))
         warning_label.setStyleSheet('color: #ffcc66;')
         footer_layout.addWidget(warning_label)
         footer_layout.addStretch()
-        clear_cache_btn = QPushButton('Clear Cache')
+        clear_cache_btn = QPushButton(tr('ui.gui.proxy_tab.clear_cache'))
         clear_cache_btn.clicked.connect(self._clear_roblox_cache)
         footer_layout.addWidget(clear_cache_btn)
         self.ui.verticalLayout_3.addWidget(footer_widget)
@@ -750,7 +819,9 @@ class ProxyTrafficTab(QWidget):
         table.blockSignals(True)
         table.clearSelection()
         selection_model = table.selectionModel()
-        select_flags = QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows
+        select_flags = (
+            QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows
+        )
         current_row = -1
         for row in range(table.rowCount()):
             entry_id = self._row_entry_id(row)
@@ -779,8 +850,8 @@ class ProxyTrafficTab(QWidget):
             self._loaded_completed_response_key = None
             self.ui.requestText.clear()
             self.ui.responseText.clear()
-            self.ui.requestGroup.setTitle('Request')
-            self.ui.responseGroup.setTitle('Response')
+            self.ui.requestGroup.setTitle(tr('ui.gui.proxy_tab.request'))
+            self.ui.responseGroup.setTitle(tr('ui.gui.proxy_tab.response'))
 
         # setCurrentCell() auto-scrolls to keep the current cell visible, which
         # would yank the view to wherever the selected row landed. Force the
@@ -804,8 +875,8 @@ class ProxyTrafficTab(QWidget):
             self._loaded_completed_response_key = None
             self.ui.requestText.clear()
             self.ui.responseText.clear()
-            self.ui.requestGroup.setTitle('Request')
-            self.ui.responseGroup.setTitle('Response')
+            self.ui.requestGroup.setTitle(tr('ui.gui.proxy_tab.request'))
+            self.ui.responseGroup.setTitle(tr('ui.gui.proxy_tab.response'))
 
     def _show_entry(self, entry: dict) -> None:
         # Never inject any note/annotation into the box text itself - it's
@@ -839,7 +910,8 @@ class ProxyTrafficTab(QWidget):
         if pending_response_key != self._loaded_pending_response_key:
             if pending_stage == 'response':
                 _set_text_preserving_scroll(
-                    self.ui.responseText, self._format_preview('format_env_proxy_response_preview', entry)
+                    self.ui.responseText,
+                    self._format_preview('format_env_proxy_response_preview', entry),
                 )
             self._loaded_pending_response_key = pending_response_key
 
@@ -854,14 +926,14 @@ class ProxyTrafficTab(QWidget):
 
         self.ui.responseText.setReadOnly(pending_stage != 'response')
         self.ui.requestGroup.setTitle(
-            'Request - HELD (editable, then Forward/Drop)'
+            tr('ui.gui.proxy_tab.request_held_editable_then_forward_drop')
             if pending_stage == 'request'
-            else 'Request'
+            else tr('ui.gui.proxy_tab.request')
         )
         self.ui.responseGroup.setTitle(
-            'Response - HELD (editable, then Forward/Drop)'
+            tr('ui.gui.proxy_tab.response_held_editable_then_forward_drop')
             if pending_stage == 'response'
-            else 'Response'
+            else tr('ui.gui.proxy_tab.response')
         )
 
     def _format_preview(self, method_name: str, entry: dict) -> str:
@@ -870,7 +942,7 @@ class ProxyTrafficTab(QWidget):
         fmt = getattr(self._proxy_master, method_name, None)
         text = fmt(entry) if callable(fmt) else ''
         if not text and entry.get('method') == 'CONNECT':
-            return _TUNNEL_NOTE
+            return tr('proxy.tunnel_note')
         return text
 
     def _resolve_action(self, action: str, all_rows: bool) -> None:
@@ -926,8 +998,14 @@ class ProxyTrafficTab(QWidget):
         if entry is None:
             return
         menu = QMenu(self)
-        menu.addAction('Copy request', lambda: self._copy_to_clipboard(self.ui.requestText.toPlainText()))
-        menu.addAction('Copy response', lambda: self._copy_to_clipboard(self.ui.responseText.toPlainText()))
+        menu.addAction(
+            tr('ui.gui.proxy_tab.copy_request'),
+            lambda: self._copy_to_clipboard(self.ui.requestText.toPlainText()),
+        )
+        menu.addAction(
+            tr('ui.gui.proxy_tab.copy_response'),
+            lambda: self._copy_to_clipboard(self.ui.responseText.toPlainText()),
+        )
         menu.exec(self.ui.trafficTable.viewport().mapToGlobal(pos))
 
     def _copy_to_clipboard(self, text: str) -> None:
@@ -1036,17 +1114,7 @@ class ProxyTrafficTab(QWidget):
 
     def _show_help(self) -> None:
         msg = QMessageBox(self)
-        msg.setWindowTitle('Proxy Tab Help')
+        msg.setWindowTitle(tr('ui.gui.proxy_tab.proxy_tab_help'))
         msg.setTextFormat(Qt.TextFormat.RichText)
-        msg.setText(
-            'This tab shows all network traffic coming from and to the Roblox process.<br>'
-            'You can edit the data in the traffic by intercepting it (done by typing in '
-            'whatever you want to intercept in the "Auto intercept" input field).<br>'
-            'You can also drop intercepted traffic.<br>'
-            '<br>'
-            '<b>Some helpful keybinds to improve speed are:</b><br>'
-            '- A — Forwards the selected API(s)<br>'
-            '- D — Drops the selected API(s)<br>'
-            '- R — Replays the selected API(s)'
-        )
+        msg.setText(tr('ui.gui.proxy_tab.this_tab_shows_all_network_traffic_coming'))
         msg.exec()

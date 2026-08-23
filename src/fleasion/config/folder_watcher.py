@@ -1,5 +1,7 @@
 """Watch the Fleasion config folder for externally copied configuration files."""
 
+from ..localization import tr
+
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -235,14 +237,11 @@ class ConfigFolderWatcher(QObject):
             inspection = self.config_manager.inspect_config_file(path)
             if inspection.status == 'valid':
                 if not self._try_import(name, path):
-                    self._warning_names[name] = {
-                        'collision': 'A config with the destination name already exists.',
-                        'import': 'Fleasion could not import this file.',
-                    }.get(self._last_import_failure or 'import', 'Fleasion could not import this file.')
+                    self._warning_names[name] = self._last_import_failure or 'import'
             elif inspection.status == 'invalid':
-                self._warning_names[name] = 'This is not valid Fleasion configuration JSON.'
+                self._warning_names[name] = 'invalid'
             elif inspection.status == 'unreadable':
-                self._warning_names[name] = 'Fleasion could not read this file.'
+                self._warning_names[name] = 'unreadable'
             # Binary files are intentionally ignored after the delayed check.
 
         if self._pending_names:
@@ -261,10 +260,12 @@ class ConfigFolderWatcher(QObject):
         self._warning_active = True
         try:
             dialog = QMessageBox(self._parent_widget())
-            dialog.setWindowTitle('Config Import Warning')
+            dialog.setWindowTitle(tr('ui.config.folder_watcher.config_import_warning'))
             dialog.setIcon(QMessageBox.Icon.Warning)
             dialog.setText(message)
-            ok_button = dialog.addButton('OK', QMessageBox.ButtonRole.AcceptRole)
+            ok_button = dialog.addButton(
+                tr('ui.config.folder_watcher.ok'), QMessageBox.ButtonRole.AcceptRole
+            )
             dialog.setDefaultButton(ok_button)
             result = dialog.exec()
             if result == int(QMessageBox.DialogCode.Accepted):
@@ -279,19 +280,37 @@ class ConfigFolderWatcher(QObject):
 
     @staticmethod
     def _warning_message(names: list[str], details: dict[str, str]) -> str:
-        quoted = [f'“{name}”' for name in names]
-        if all(reason.startswith('This is not valid') for reason in details.values()):
+        quoted = [tr('config_watcher.quoted_name', name=name) for name in names]
+        if all(reason == 'invalid' for reason in details.values()):
             if len(quoted) == 1:
-                return f'{quoted[0]} is not a valid Fleasion config.'
+                return tr('config_watcher.invalid_one', name=quoted[0])
             if len(quoted) <= 3:
-                return f'{", ".join(quoted[:-1])} and {quoted[-1]} are not valid Fleasion configs.'
-            return (
-                f'{", ".join(quoted[:3])}, and {len(quoted) - 3} more '
-                'are not valid Fleasion configs.'
+                return tr(
+                    'config_watcher.invalid_many',
+                    names=', '.join(quoted[:-1]),
+                    last=quoted[-1],
+                )
+            return tr(
+                'config_watcher.invalid_many_more',
+                names=', '.join(quoted[:3]),
+                count=len(quoted) - 3,
             )
 
-        lines = ['Some files could not be imported into Fleasion configs:']
-        lines.extend(f'• {name}: {reason}' for name, reason in details.items())
+        reason_text = {
+            'collision': tr('config_watcher.reason.collision'),
+            'import': tr('config_watcher.reason.import_failed'),
+            'invalid': tr('config_watcher.reason.invalid_json'),
+            'unreadable': tr('config_watcher.reason.unreadable'),
+        }
+        lines = [tr('config_watcher.some_failed')]
+        lines.extend(
+            tr(
+                'config_watcher.detail_line',
+                name=name,
+                reason=reason_text.get(reason, tr('config_watcher.reason.import_failed')),
+            )
+            for name, reason in details.items()
+        )
         return '\n'.join(lines)
 
     def _parent_widget(self) -> QWidget | None:

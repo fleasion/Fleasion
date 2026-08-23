@@ -1,5 +1,7 @@
 """JSON tree viewer widget."""
 
+from ..localization import tr, tr_count
+
 import gzip as gzip_module
 import io
 
@@ -24,7 +26,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ..cache.rbxm_preview import RbxmPreviewWidget, is_rbx_model_data
-from ..utils import format_count, get_icon_path
+from ..utils import get_icon_path
 from ..utils.clipboard import copy_pixmap_to_clipboard
 
 
@@ -259,11 +261,11 @@ class AssetFetcherThread(QThread):
                 if data:
                     self.data_ready.emit(data)
                 elif status == 404:
-                    self.error.emit('Asset not found (deleted or invalid ID)')
+                    self.error.emit(tr('json.fetch.asset_not_found'))
                 elif status == 403:
-                    self.error.emit('Asset is privated (could not bypass)')
+                    self.error.emit(tr('json.fetch.asset_private'))
                 else:
-                    self.error.emit('No data returned (Asset may be deleted or privated)')
+                    self.error.emit(tr('json.fetch.no_data'))
 
             elif isinstance(val, str) and (val.startswith('http://') or val.startswith('https://')):
                 from urllib.parse import urlparse as _up
@@ -295,9 +297,9 @@ class AssetFetcherThread(QThread):
                 if data:
                     self.data_ready.emit(data)
                 else:
-                    self.error.emit('No data returned (Asset may be deleted or privated)')
+                    self.error.emit(tr('json.fetch.no_data'))
             else:
-                self.error.emit(f'Cannot fetch: {val}')
+                self.error.emit(tr('json.fetch.cannot_fetch', value=val))
         except Exception as e:
             if not self._stop_requested:
                 self.error.emit(str(e))
@@ -371,7 +373,7 @@ class MeshLoaderThread(QThread):
             if obj_content:
                 self.mesh_ready.emit(obj_content)
             else:
-                self.error.emit('Failed to convert mesh to OBJ format')
+                self.error.emit(tr('json.preview.mesh_conversion_failed'))
         except Exception as e:
             if not self._stop_requested:
                 self.error.emit(str(e))
@@ -426,7 +428,7 @@ class SolidModelLoaderThread(QThread):
             if obj_content:
                 self.mesh_ready.emit(obj_content)
             else:
-                self.error.emit('Failed to convert SolidModel to OBJ format')
+                self.error.emit(tr('json.preview.solidmodel_conversion_failed'))
         except Exception as e:
             if not self._stop_requested:
                 self.error.emit(str(e))
@@ -446,7 +448,7 @@ class JsonTreeViewer(QDialog):
     ):
         super().__init__(parent)
         self.config_manager = config_manager
-        self.setWindowTitle(f'JSON - {filename}')
+        self.setWindowTitle(tr('ui.gui.json_viewer.json_value', value0=filename))
         self.resize(1200, 650)
 
         # Set window flags to allow minimize/maximize
@@ -519,35 +521,35 @@ class JsonTreeViewer(QDialog):
 
         # Search bar
         search_layout = QHBoxLayout()
-        search_layout.addWidget(QLabel('Search:'))
+        search_layout.addWidget(QLabel(tr('ui.gui.json_viewer.search')))
         self.search_input = QLineEdit()
         self.search_input.textChanged.connect(self._on_search_text_changed)
         search_layout.addWidget(self.search_input)
 
         # Navigation buttons for cycling through matches
-        self.prev_match_btn = QPushButton('↑')
+        self.prev_match_btn = QPushButton(tr('ui.gui.json_viewer.text'))
         self.prev_match_btn.setFixedWidth(30)
-        self.prev_match_btn.setToolTip('Previous match')
+        self.prev_match_btn.setToolTip(tr('ui.gui.json_viewer.previous_match'))
         self.prev_match_btn.clicked.connect(self._cycle_to_prev_match)
         self.prev_match_btn.setEnabled(False)
         search_layout.addWidget(self.prev_match_btn)
 
-        self.next_match_btn = QPushButton('↓')
+        self.next_match_btn = QPushButton(tr('ui.gui.json_viewer.text_2'))
         self.next_match_btn.setFixedWidth(30)
-        self.next_match_btn.setToolTip('Next match')
+        self.next_match_btn.setToolTip(tr('ui.gui.json_viewer.next_match'))
         self.next_match_btn.clicked.connect(self._cycle_to_next_match)
         self.next_match_btn.setEnabled(False)
         search_layout.addWidget(self.next_match_btn)
 
-        clear_btn = QPushButton('Clear')
+        clear_btn = QPushButton(tr('ui.gui.json_viewer.clear'))
         clear_btn.clicked.connect(lambda: self.search_input.clear())
         search_layout.addWidget(clear_btn)
 
-        expand_btn = QPushButton('Expand All')
+        expand_btn = QPushButton(tr('ui.gui.json_viewer.expand_all'))
         expand_btn.clicked.connect(self._expand_all)
         search_layout.addWidget(expand_btn)
 
-        collapse_btn = QPushButton('Collapse All')
+        collapse_btn = QPushButton(tr('ui.gui.json_viewer.collapse_all'))
         collapse_btn.clicked.connect(self._collapse_all)
         search_layout.addWidget(collapse_btn)
 
@@ -580,13 +582,13 @@ class JsonTreeViewer(QDialog):
 
         # Import buttons
         btn_layout = QHBoxLayout()
-        btn_layout.addWidget(QLabel('Import selected as:'))
+        btn_layout.addWidget(QLabel(tr('ui.gui.json_viewer.import_selected_as')))
 
-        ids_btn = QPushButton('IDs to Replace')
+        ids_btn = QPushButton(tr('ui.gui.json_viewer.ids_to_replace'))
         ids_btn.clicked.connect(self._import_as_replace_ids)
         btn_layout.addWidget(ids_btn)
 
-        repl_btn = QPushButton('Replacement ID')
+        repl_btn = QPushButton(tr('ui.gui.json_viewer.replacement_id'))
         repl_btn.clicked.connect(self._import_as_replacement)
         btn_layout.addWidget(repl_btn)
 
@@ -598,7 +600,12 @@ class JsonTreeViewer(QDialog):
 
         btn_layout.addSpacing(8)
 
-        self.selection_label = QLabel(f'Selected: {format_count(0, "value")}')
+        self.selection_label = QLabel(
+            tr(
+                'ui.gui.json_viewer.selected_value',
+                value0=tr_count(0, 'count.value.one', 'count.value.other'),
+            )
+        )
         self.selection_label.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
@@ -710,7 +717,12 @@ class JsonTreeViewer(QDialog):
     def _on_selection_change(self):
         """Handle selection change and trigger asset preview."""
         vals = self._get_selected_values()
-        self.selection_label.setText(f'Selected: {format_count(vals, "value")}')
+        self.selection_label.setText(
+            tr(
+                'ui.gui.json_viewer.selected_value',
+                value0=tr_count(vals, 'count.value.one', 'count.value.other'),
+            )
+        )
 
         # Only preview when exactly one leaf value is selected
         if len(vals) == 1:
@@ -743,7 +755,7 @@ class JsonTreeViewer(QDialog):
         preview_group_layout.setContentsMargins(0, 0, 0, 0)
         preview_group_layout.setSpacing(4)
 
-        self.preview_title_label = QLabel('Preview')
+        self.preview_title_label = QLabel(tr('ui.gui.json_viewer.preview'))
         preview_group_layout.addWidget(self.preview_title_label)
 
         self.preview_scroll = QScrollArea()
@@ -761,7 +773,7 @@ class JsonTreeViewer(QDialog):
         self.preview_container_layout.addWidget(self.obj_viewer)
 
         # Loading indicator
-        self.loading_label = QLabel('Loading...')
+        self.loading_label = QLabel(tr('ui.gui.json_viewer.loading'))
         self.loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.loading_label.setStyleSheet(
             'QLabel { background-color: palette(base); color: #888; font-size: 14px; padding: 20px; }'
@@ -770,7 +782,7 @@ class JsonTreeViewer(QDialog):
         self.loading_label.hide()
 
         # Image viewer
-        self.image_label = QLabel('Select a single asset ID or URL to preview')
+        self.image_label = QLabel(tr('ui.gui.json_viewer.select_a_single_asset_id_or_url'))
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image_label.setStyleSheet('QLabel { background-color: palette(base); color: #888; }')
         self.image_label.setScaledContents(False)
@@ -800,7 +812,7 @@ class JsonTreeViewer(QDialog):
         # Text viewer (hex dump / plain text)
         self.text_viewer = QTextEdit()
         self.text_viewer.setReadOnly(True)
-        self.text_viewer.setPlaceholderText('No preview available')
+        self.text_viewer.setPlaceholderText(tr('ui.gui.json_viewer.no_preview_available'))
         self.preview_container_layout.addWidget(self.text_viewer)
 
         # JSON viewer
@@ -842,12 +854,12 @@ class JsonTreeViewer(QDialog):
         controls_layout.setContentsMargins(0, 0, 0, 0)
         controls_layout.setSpacing(4)
 
-        self.stop_preview_btn = QPushButton('Stop Preview')
+        self.stop_preview_btn = QPushButton(tr('ui.gui.json_viewer.stop_preview'))
         self.stop_preview_btn.clicked.connect(self._stop_preview)
         self.stop_preview_btn.hide()
         controls_layout.addWidget(self.stop_preview_btn)
 
-        self.rbxm_view_btn = QPushButton('Swap to RBXM View')
+        self.rbxm_view_btn = QPushButton(tr('ui.gui.json_viewer.swap_to_rbxm_view'))
         self.rbxm_view_btn.clicked.connect(self._swap_to_rbxm_view)
         self.rbxm_view_btn.hide()
         controls_layout.addWidget(self.rbxm_view_btn)
@@ -882,7 +894,7 @@ class JsonTreeViewer(QDialog):
             display = str(val)
             if len(display) > 60:
                 display = display[:57] + '...'
-            self.preview_title_label.setText(f'Preview: {display}')
+            self.preview_title_label.setText(tr('ui.gui.json_viewer.preview_value', value0=display))
         except Exception:
             pass
 
@@ -892,7 +904,7 @@ class JsonTreeViewer(QDialog):
         self._asset_fetcher.start()
 
     def _on_fetch_error(self, error: str):
-        self._show_text_preview(f'Failed to fetch asset:\n{error}')
+        self._show_text_preview(tr('json.preview.fetch_failed', error=error))
 
     def _on_asset_fetched(self, data: bytes):
         """Dispatch fetched bytes to the appropriate preview handler."""
@@ -999,7 +1011,9 @@ class JsonTreeViewer(QDialog):
     def _preview_image(self, data: bytes):
         self._image_loader = ImageLoaderThread(data)
         self._image_loader.image_ready.connect(self._on_image_ready)
-        self._image_loader.error.connect(lambda e: self._show_text_preview(f'Image error: {e}'))
+        self._image_loader.error.connect(
+            lambda e: self._show_text_preview(tr('json.preview.image_error', error=e))
+        )
         self._image_loader.start()
 
     def _on_image_ready(self, pixmap: QPixmap):
@@ -1027,7 +1041,9 @@ class JsonTreeViewer(QDialog):
     def _preview_mesh(self, data: bytes):
         self._mesh_loader = MeshLoaderThread(data)
         self._mesh_loader.mesh_ready.connect(self._on_mesh_ready)
-        self._mesh_loader.error.connect(lambda e: self._show_text_preview(f'Mesh error: {e}'))
+        self._mesh_loader.error.connect(
+            lambda e: self._show_text_preview(tr('json.preview.mesh_error', error=e))
+        )
         self._mesh_loader.start()
 
     def _on_mesh_ready(self, obj_content: str):
@@ -1077,7 +1093,7 @@ class JsonTreeViewer(QDialog):
                 pass
 
         except Exception as e:
-            self._show_text_preview(f'Audio error: {e}')
+            self._show_text_preview(tr('json.preview.audio_error', error=e))
 
     def _preview_font(self, data: bytes):
         """Preview a font asset (TTF, OTF, TTC)."""
@@ -1099,7 +1115,7 @@ class JsonTreeViewer(QDialog):
             self.stop_preview_btn.show()
 
         except Exception as e:
-            self._show_text_preview(f'Font error: {e}')
+            self._show_text_preview(tr('json.preview.font_error', error=e))
 
     def _preview_animation(self, data: bytes):
         """Preview RBXM/RBXMX animation data."""
@@ -1134,7 +1150,7 @@ class JsonTreeViewer(QDialog):
                     pass
             self._preview_hex(decompressed)
         except Exception as e:
-            self._show_text_preview(f'Animation error: {e}')
+            self._show_text_preview(tr('json.preview.animation_error', error=e))
 
     def _preview_json(self, data: bytes):
         """Preview JSON data in the embedded JSON viewer."""
@@ -1150,11 +1166,13 @@ class JsonTreeViewer(QDialog):
             self.json_viewer.show()
             self.stop_preview_btn.show()
         except Exception as e:
-            self._show_text_preview(f'JSON error: {e}')
+            self._show_text_preview(tr('json.preview.json_error', error=e))
 
-    def _preview_rbxm(self, data: bytes, title_prefix: str = 'RBXM/RBXMX structure'):
+    def _preview_rbxm(self, data: bytes, title_prefix: str | None = None):
         """Preview raw RBXM/RBXMX structure in the shared RBXM viewer."""
         try:
+            if title_prefix is None:
+                title_prefix = tr('json.preview.rbxm_structure')
             asset_label = (
                 '' if self._previewing_value is None else str(self._previewing_value).strip()
             )
@@ -1166,24 +1184,26 @@ class JsonTreeViewer(QDialog):
             if len(display) > 60:
                 display = display[:57] + '...'
             self.preview_title_label.setText(
-                f'{title_prefix}: {display}' if display else title_prefix
+                tr('json.preview.title_with_value', title=title_prefix, value=display)
+                if display
+                else title_prefix
             )
         except Exception as e:
-            self._preview_hex(data, reason=f'RBXM/RBXMX structure parse failed: {e}')
+            self._preview_hex(data, reason=tr('json.preview.rbxm_parse_failed', error=e))
 
     def _preview_hex(self, data: bytes, reason: str | None = None):
         """Show a hex dump for unrecognised content."""
         preview_size = min(1024, len(data))
-        lines = [f'Size: {len(data)} bytes']
+        lines = [tr('json.preview.hex.size_bytes', count=len(data))]
         if reason:
-            lines.append(f'Why is this a Hex Dump?: {reason}')
-        lines.append(f'\nFirst {preview_size} bytes (hex dump):\n')
+            lines.append(tr('json.preview.hex.reason', reason=reason))
+        lines.append(tr('json.preview.hex.first_bytes', count=preview_size))
         for i in range(0, preview_size, 16):
             hex_part = ' '.join(f'{b:02x}' for b in data[i : i + 16])
             ascii_part = ''.join(chr(b) if 32 <= b < 127 else '.' for b in data[i : i + 16])
             lines.append(f'{i:08x}  {hex_part:<48}  {ascii_part}')
         if len(data) > preview_size:
-            lines.append(f'\n... ({len(data) - preview_size} more bytes)')
+            lines.append(tr('json.preview.hex.more_bytes', count=len(data) - preview_size))
         self._show_text_preview('\n'.join(lines))
 
     def _swap_to_rbxm_view(self):
@@ -1200,7 +1220,7 @@ class JsonTreeViewer(QDialog):
         self._solidmodel_loader = SolidModelLoaderThread(data)
         self._solidmodel_loader.mesh_ready.connect(self._on_mesh_ready)
         self._solidmodel_loader.error.connect(
-            lambda e: self._show_text_preview(f'SolidModel error: {e}')
+            lambda e: self._show_text_preview(tr('json.preview.solidmodel_error', error=e))
         )
         self._solidmodel_loader.start()
 
@@ -1223,14 +1243,21 @@ class JsonTreeViewer(QDialog):
 
             # Extract texture map IDs in order
             map_order = ['color', 'normal', 'metalness', 'roughness', 'emissive']
+            map_display_names = {
+                'color': tr('json.texture_map.color'),
+                'normal': tr('json.texture_map.normal'),
+                'metalness': tr('json.texture_map.metalness'),
+                'roughness': tr('json.texture_map.roughness'),
+                'emissive': tr('json.texture_map.emissive'),
+            }
             maps = {}
             for elem in map_order:
                 node = root.find(elem)
                 if node is not None and node.text:
-                    maps[elem.capitalize()] = node.text
+                    maps[map_display_names[elem]] = node.text
 
             if not maps:
-                self._show_text_preview('No texture maps found in texture pack')
+                self._show_text_preview(tr('json.preview.texturepack_no_maps'))
                 return
 
             # Clear texture data storage
@@ -1248,12 +1275,14 @@ class JsonTreeViewer(QDialog):
 
             # Create placeholder for each texture map
             for map_name, map_id in maps.items():
-                header = QLabel(f'{map_name}  |  {map_id}')
+                header = QLabel(
+                    tr('ui.gui.json_viewer.value_value', value0=map_name, value1=map_id)
+                )
                 header.setStyleSheet('font-weight: bold; color: #888; padding: 5px;')
                 header.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
                 tp_layout.addWidget(header)
 
-                img_label = QLabel('Loading...')
+                img_label = QLabel(tr('ui.gui.json_viewer.loading'))
                 img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 img_label.setStyleSheet(
                     'background-color: palette(base); padding: 10px; min-height: 100px;'
@@ -1291,7 +1320,7 @@ class JsonTreeViewer(QDialog):
             self._hide_loading()
 
         except Exception as e:
-            self._show_text_preview(f'Texture pack preview error: {e}')
+            self._show_text_preview(tr('json.preview.texturepack_error', error=e))
 
     def _on_texturepack_texture_fetched(self, map_name: str, map_id: str, data: bytes):
         """Handle fetched texture data for a texture pack map."""
@@ -1368,7 +1397,7 @@ class JsonTreeViewer(QDialog):
                 _ = img_label.isVisible()
             except RuntimeError:
                 return
-            img_label.setText(f'Error: {error}')
+            img_label.setText(tr('ui.gui.json_viewer.error_value', value0=error))
             img_label.setStyleSheet('color: #ff6b6b; padding: 10px;')
         except Exception:
             pass
@@ -1402,7 +1431,7 @@ class JsonTreeViewer(QDialog):
             return
 
         menu = QMenu(self)
-        copy_action = menu.addAction('Copy Image')
+        copy_action = menu.addAction(tr('ui.gui.json_viewer.copy_image'))
 
         action = menu.exec(self.image_label.mapToGlobal(pos))
         if action == copy_action:
@@ -1417,12 +1446,12 @@ class JsonTreeViewer(QDialog):
 
         menu = QMenu(self)
 
-        copy_image_action = menu.addAction('Copy Image')
+        copy_image_action = menu.addAction(tr('ui.gui.json_viewer.copy_image'))
         menu.addSeparator()
-        copy_name_action = menu.addAction(f'Copy Name ({map_name})')
-        copy_id_action = menu.addAction(f'Copy ID ({map_id})')
+        copy_name_action = menu.addAction(tr('ui.gui.json_viewer.copy_name_value', value0=map_name))
+        copy_id_action = menu.addAction(tr('ui.gui.json_viewer.copy_id_value', value0=map_id))
         menu.addSeparator()
-        copy_xml_action = menu.addAction('Copy TexturePack XML')
+        copy_xml_action = menu.addAction(tr('ui.gui.json_viewer.copy_texturepack_xml'))
 
         action = menu.exec(label.mapToGlobal(pos))
 
@@ -1464,7 +1493,7 @@ class JsonTreeViewer(QDialog):
         self.preview_panel.hide()
         self._previewing_value = None
         try:
-            self.preview_title_label.setText('Preview')
+            self.preview_title_label.setText(tr('ui.gui.json_viewer.preview'))
         except Exception:
             pass
 
@@ -1619,7 +1648,7 @@ class JsonTreeViewer(QDialog):
 
         # Always use worker thread to prevent UI freezing
         self._is_searching = True
-        self.search_progress_label.setText('Searching...')
+        self.search_progress_label.setText(tr('ui.gui.json_viewer.searching'))
         self.search_progress_label.show()
 
         self._search_worker = JsonSearchWorker(root_items, query)
@@ -1632,7 +1661,14 @@ class JsonTreeViewer(QDialog):
         """Handle search progress update."""
         if total > 0:
             percent = int((current / total) * 100)
-            self.search_progress_label.setText(f'Searching... {percent}% ({current:,}/{total:,})')
+            self.search_progress_label.setText(
+                tr(
+                    'ui.gui.json_viewer.searching_value_value_value',
+                    value0=percent,
+                    value1=current,
+                    value2=total,
+                )
+            )
 
     def _on_search_complete(self, matches: list):
         """Handle search results from worker thread."""
@@ -1668,11 +1704,13 @@ class JsonTreeViewer(QDialog):
             # Update labels
             self.search_progress_label.hide()
             if len(matches) > 1:
-                self.match_label.setText(f'Match 1/{len(matches)} - Use ↑↓ to navigate')
+                self.match_label.setText(
+                    tr('ui.gui.json_viewer.match_1_value_use_to_navigate', value0=len(matches))
+                )
             elif len(matches) == 1:
-                self.match_label.setText('Found 1 match')
+                self.match_label.setText(tr('ui.gui.json_viewer.found_1_match'))
             else:
-                self.match_label.setText('No matches found')
+                self.match_label.setText(tr('ui.gui.json_viewer.no_matches_found'))
 
         finally:
             self.tree.setUpdatesEnabled(True)
@@ -1708,7 +1746,11 @@ class JsonTreeViewer(QDialog):
 
         # Update match indicator with current position
         self.match_label.setText(
-            f'Match {self._current_match_index + 1}/{len(self._search_matches)} - Use ↑↓ to navigate'
+            tr(
+                'ui.gui.json_viewer.match_value_value_use_to_navigate',
+                value0=self._current_match_index + 1,
+                value1=len(self._search_matches),
+            )
         )
 
     def _expand_all(self):
@@ -1738,7 +1780,7 @@ class JsonTreeViewer(QDialog):
         dialog.setIcon(QMessageBox.Icon.Information)
         dialog.setWindowTitle(title)
         dialog.setText(message)
-        dialog.setInformativeText('You can turn this off in Settings > Scraped Games.')
+        dialog.setInformativeText(tr('ui.gui.json_viewer.you_can_turn_this_off_in_settings'))
         dialog.setMinimumWidth(640)
         dialog.setStyleSheet(
             'QLabel#qt_msgbox_informativelabel { color: palette(window-text); font-size: 7pt; }'
@@ -1757,16 +1799,34 @@ class JsonTreeViewer(QDialog):
         vals = self._get_selected_values()
         if vals:
             self.on_import_ids(vals)
-            value_label = 'asset ID' if all(isinstance(v, int) for v in vals) else 'value'
+            all_asset_ids = all(isinstance(v, int) for v in vals)
+            preview = f'{", ".join(str(v) for v in vals[:5])}{"..." if len(vals) > 5 else ""}'
+            if all_asset_ids:
+                message = tr(
+                    'json.replacer.added_one_asset_id'
+                    if len(vals) == 1
+                    else 'json.replacer.added_asset_ids',
+                    count=len(vals),
+                    preview=preview,
+                )
+            else:
+                message = tr(
+                    'json.replacer.added_one_value'
+                    if len(vals) == 1
+                    else 'json.replacer.added_values',
+                    count=len(vals),
+                    preview=preview,
+                )
             self._show_replacer_notification(
-                'Added to Replacer',
-                f'Added {format_count(vals, value_label)} to replacer:\n'
-                f'{", ".join(str(v) for v in vals[:5])}{"..." if len(vals) > 5 else ""}',
+                tr('json.replacer.added_title'),
+                message,
             )
             self._maybe_close_after_replace()
         else:
             QMessageBox.information(
-                self, 'Info', 'No valid values selected (numeric or links/paths)'
+                self,
+                tr('ui.gui.json_viewer.info'),
+                tr('ui.gui.json_viewer.no_valid_values_selected_numeric_or_links'),
             )
 
     def _import_as_replacement(self):
@@ -1774,14 +1834,16 @@ class JsonTreeViewer(QDialog):
         vals = self._get_selected_values()
         if not vals:
             QMessageBox.information(
-                self, 'Info', 'No valid values selected (numeric or links/paths)'
+                self,
+                tr('ui.gui.json_viewer.info'),
+                tr('ui.gui.json_viewer.no_valid_values_selected_numeric_or_links'),
             )
             return
         if len(vals) > 1:
             reply = QMessageBox.question(
                 self,
-                'Multiple Values',
-                f'Only the first value ({vals[0]}) will be used. Continue?',
+                tr('ui.gui.json_viewer.multiple_values'),
+                tr('ui.gui.json_viewer.only_the_first_value_value_will_be', value0=vals[0]),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.Yes,
             )
@@ -1790,8 +1852,8 @@ class JsonTreeViewer(QDialog):
         selected_value = vals[0]
         self.on_import_replacement(selected_value)
         if isinstance(selected_value, int):
-            result_text = f'Replace With set to asset ID {selected_value}'
+            result_text = tr('json.replacer.replace_with_asset_id', value=selected_value)
         else:
-            result_text = f'Replace With set to value {selected_value}'
-        self._show_replacer_notification('Replace With Set', result_text)
+            result_text = tr('json.replacer.replace_with_value', value=selected_value)
+        self._show_replacer_notification(tr('json.replacer.replace_with_title'), result_text)
         self._maybe_close_after_replace()

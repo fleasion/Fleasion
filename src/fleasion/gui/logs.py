@@ -1,5 +1,7 @@
 """Logs window."""
 
+from ..localization import tr
+
 import sys
 
 from PyQt6.QtCore import Qt, QTimer
@@ -25,7 +27,7 @@ class LogsWindow(QDialog):
     def __init__(self):
         super().__init__()
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-        self.setWindowTitle('Logs')
+        self.setWindowTitle(tr('ui.gui.logs.logs'))
         self.resize(600, 400)
         self.setWindowFlags(
             Qt.WindowType.Window
@@ -57,14 +59,14 @@ class LogsWindow(QDialog):
         bottom = QHBoxLayout()
         bottom.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
-        copy_btn = QPushButton('Copy All')
+        copy_btn = QPushButton(tr('ui.gui.logs.copy_all'))
         copy_btn.setFixedSize(80, 22)
         copy_btn.clicked.connect(self._copy_all)
         bottom.addWidget(copy_btn)
 
         bottom.addSpacing(6)
 
-        open_folder_btn = QPushButton('Open Log Folder')
+        open_folder_btn = QPushButton(tr('ui.gui.logs.open_log_folder'))
         open_folder_btn.setFixedSize(110, 22)
         open_folder_btn.clicked.connect(lambda: open_folder(LOGS_DIR))
         bottom.addWidget(open_folder_btn)
@@ -72,16 +74,18 @@ class LogsWindow(QDialog):
         if sys.platform == 'darwin':
             bottom.addSpacing(6)
 
-            open_helper_logs_btn = QPushButton('Open Helper Logs')
+            open_helper_logs_btn = QPushButton(tr('ui.gui.logs.open_helper_logs'))
             open_helper_logs_btn.setFixedSize(118, 22)
-            open_helper_logs_btn.setToolTip('Open the root-owned macOS proxy helper diagnostics')
+            open_helper_logs_btn.setToolTip(
+                tr('ui.gui.logs.open_the_root_owned_macos_proxy_helper')
+            )
             open_helper_logs_btn.clicked.connect(lambda: open_folder(HELPER_LOG_DIR))
             bottom.addWidget(open_helper_logs_btn)
 
         bottom.addSpacing(6)
 
         self._search_input = QLineEdit()
-        self._search_input.setPlaceholderText('Search…')
+        self._search_input.setPlaceholderText(tr('ui.gui.logs.search'))
         self._search_input.setFixedHeight(22)
         self._search_input.setClearButtonEnabled(True)
         self._search_input.textChanged.connect(self._on_search)
@@ -195,7 +199,9 @@ class LogsWindow(QDialog):
 
     def _refresh_time_label(self):
         total = time_tracker.get_total_seconds()
-        self.time_label.setText(f'Time wasted: {time_tracker.format_duration(total)}')
+        self.time_label.setText(
+            tr('ui.gui.logs.time_wasted_value', value0=time_tracker.format_duration(total))
+        )
 
     def closeEvent(self, a0):
         self.timer.stop()

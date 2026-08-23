@@ -1,5 +1,7 @@
 """Replacer config window."""
 
+from ..localization import tr, tr_count
+
 import json
 import re
 import sys
@@ -98,15 +100,13 @@ _ID_SPLIT_RE = re.compile(r'[,\s;]+')
 
 def _replacement_path_tooltip(*, empty_removes: bool = True) -> str:
     lines = [
-        'For a config that comes with files, click Open Configs below, create a folder there, '
-        'and put the files in that folder.',
-        'For example, /ExampleOBJ/Example.obj loads the file at '
-        'Configs/ExampleOBJ/Example.obj.',
-        'Asset folders can be nested up to 10 folders deep.',
-        f'You can also use a normal path such as {local_file_path_example()}.',
+        tr('replacer.path_tooltip.config_files'),
+        tr('replacer.path_tooltip.example'),
+        tr('replacer.path_tooltip.nesting'),
+        tr('replacer.path_tooltip.normal_path', path=local_file_path_example()),
     ]
     if empty_removes:
-        lines.append('Leave this empty to remove the selected assets.')
+        lines.append(tr('replacer.path_tooltip.empty_removes'))
     return '\n'.join(lines)
 
 
@@ -497,7 +497,7 @@ class _ScrollableConfigMenu(QMenu):
             self.item_widgets[name] = row
 
         if not entries:
-            row = QLabel('No configs')
+            row = QLabel(tr('ui.gui.replacer_config.no_configs'))
             row.setStyleSheet('padding: 5px 8px; color: palette(placeholder-text);')
             row.setFixedHeight(_CONFIG_MENU_ROW_HEIGHT_PX)
             row.installEventFilter(self)
@@ -636,7 +636,7 @@ class ReplacerConfigWindow(QDialog):
         self._proxy_gates: list[ProxyGate] = []
         self._env_proxy_gates: list[ProxyGate] = []
 
-        self.setWindowTitle('Dashboard')
+        self.setWindowTitle(tr('ui.gui.replacer_config.dashboard'))
         self.resize(900, 750)
         self.setMinimumSize(800, 650)
         if sys.platform == 'darwin':
@@ -705,12 +705,12 @@ class ReplacerConfigWindow(QDialog):
 
         # Create Replacer tab
         replacer_tab = self._create_replacer_tab()
-        self.tab_widget.addTab(replacer_tab, 'Replacer')
+        self.tab_widget.addTab(replacer_tab, tr('ui.gui.replacer_config.replacer'))
 
         # Create Cache tab if proxy_master is available
         if self.proxy_master and hasattr(self.proxy_master, 'cache_manager'):
             cache_tab = self._create_cache_tab()
-            self.tab_widget.addTab(cache_tab, 'Scraper')
+            self.tab_widget.addTab(cache_tab, tr('ui.gui.replacer_config.scraper'))
 
         # Create Modifications tab
         if self._mod_manager is not None:
@@ -723,7 +723,7 @@ class ReplacerConfigWindow(QDialog):
                 proxy_master=self.proxy_master,
                 hotkey_controller=self._hotkey_controller,
             )
-            self.tab_widget.addTab(modifications_tab, 'Modifications')
+            self.tab_widget.addTab(modifications_tab, tr('ui.gui.replacer_config.modifications'))
 
         # Create Rando Stuff tab
         from .rando_stuff_tab import RandoStuffTab
@@ -745,12 +745,14 @@ class ReplacerConfigWindow(QDialog):
         self._rando_stuff_tab.selected_account_changed.connect(
             self._subplace_tab.set_selected_account
         )
-        self.tab_widget.addTab(self._proxy_required(self._subplace_tab), 'Subplace Joiner')
+        self.tab_widget.addTab(
+            self._proxy_required(self._subplace_tab), tr('ui.gui.replacer_config.subplace_joiner')
+        )
         if self.proxy_master is not None:
             self.proxy_master.register_module_interceptor(self._subplace_tab)
             self._registered_module_interceptors.append(self._subplace_tab)
 
-        self.tab_widget.addTab(self._rando_stuff_tab, 'Miscellaneous')
+        self.tab_widget.addTab(self._rando_stuff_tab, tr('ui.gui.replacer_config.miscellaneous'))
         if self.proxy_master is not None:
             self.proxy_master.register_module_interceptor(self._rando_stuff_tab)
             self._registered_module_interceptors.append(self._rando_stuff_tab)
@@ -762,13 +764,15 @@ class ReplacerConfigWindow(QDialog):
             config_manager=self.config_manager,
             proxy_master=self.proxy_master,
         )
-        self.tab_widget.addTab(self._env_proxy_required(self._proxy_traffic_tab), 'Proxy')
+        self.tab_widget.addTab(
+            self._env_proxy_required(self._proxy_traffic_tab), tr('ui.gui.replacer_config.proxy')
+        )
 
         # Create Settings tab
         from .settings_tab import SettingsTab
 
         self._settings_tab = SettingsTab(self.config_manager, system_tray=self._system_tray)
-        self.tab_widget.addTab(self._settings_tab, 'Settings')
+        self.tab_widget.addTab(self._settings_tab, tr('ui.gui.replacer_config.settings'))
 
         main_layout.addWidget(self.tab_widget)
 
@@ -798,18 +802,14 @@ class ReplacerConfigWindow(QDialog):
     def _env_proxy_required(self, widget: QWidget) -> ProxyGate:
         gate = ProxyGate(
             widget,
-            message=(
-                'This section is closed because Roblox Env Proxy mode is not '
-                'selected in Settings.'
-            ),
+            message=tr('replacer.proxy_gate.env_mode_required'),
         )
         self._env_proxy_gates.append(gate)
         return gate
 
     def _env_proxy_effective_enabled(self) -> bool:
         return bool(
-            self.config_manager.proxy_features_enabled
-            and self.config_manager.proxy_mode == 'env'
+            self.config_manager.proxy_features_enabled and self.config_manager.proxy_mode == 'env'
         )
 
     def refresh_env_proxy_gate(self):
@@ -878,19 +878,21 @@ class ReplacerConfigWindow(QDialog):
 
     def _create_config_section(self, parent_layout):
         """Create the configuration selector section."""
-        config_group = QGroupBox('Configuration')
+        config_group = QGroupBox(tr('ui.gui.replacer_config.configuration'))
         config_group.setStyleSheet('QGroupBox::title { padding-left: 5px; }')
         config_layout = QVBoxLayout()
 
         # Row 1: Configuration controls
         row1 = QHBoxLayout()
-        editing_label = QLabel('Editing:')
+        editing_label = QLabel(tr('ui.gui.replacer_config.editing'))
         editing_label.setFixedWidth(50)
         row1.addWidget(editing_label)
 
         # Use button with menu (same style as enabled configs)
         # Prepend a single space plus a tiny hair-space to give a subtle gap
-        self.config_menu_btn = QPushButton(' \u200a' + self.config_manager.last_config)
+        self.config_menu_btn = QPushButton(
+            tr('ui.gui.replacer_config.value', value0=self.config_manager.last_config)
+        )
         self.config_menu = _ScrollableConfigMenu(self.config_menu_btn)
         self.config_menu.aboutToShow.connect(self._rebuild_editing_menu)
         self.config_menu.item_selected.connect(self._on_config_select)
@@ -901,11 +903,11 @@ class ReplacerConfigWindow(QDialog):
 
         row1.addSpacing(12)
 
-        enabled_label = QLabel('Enabled:')
+        enabled_label = QLabel(tr('ui.gui.replacer_config.enabled'))
         enabled_label.setFixedWidth(54)
         row1.addWidget(enabled_label)
 
-        self.enabled_menu_btn = QPushButton('Select...')
+        self.enabled_menu_btn = QPushButton(tr('ui.gui.replacer_config.select'))
         self.enabled_menu = _ScrollableConfigMenu(self.enabled_menu_btn, checkable=True)
         self.enabled_menu.aboutToShow.connect(self._rebuild_enabled_menu)
         self.enabled_menu.item_toggled.connect(self._on_config_toggle)
@@ -916,17 +918,17 @@ class ReplacerConfigWindow(QDialog):
 
         row1.addSpacing(8)
 
-        separator = QLabel('|')
+        separator = QLabel(tr('ui.gui.replacer_config.text'))
         separator.setStyleSheet('padding-bottom: 6px;')
         row1.addWidget(separator)
 
         row1.addSpacing(8)
 
         for text, action in [
-            ('New', 'new'),
-            ('Duplicate', 'dup'),
-            ('Rename', 'rename'),
-            ('Delete', 'delete'),
+            (tr('replacer.config.new'), 'new'),
+            (tr('replacer.config.duplicate'), 'dup'),
+            (tr('replacer.config.rename'), 'rename'),
+            (tr('replacer.config.delete'), 'delete'),
         ]:
             btn = QPushButton(text)
             btn.clicked.connect(lambda checked, a=action: self._config_action(a))
@@ -944,7 +946,7 @@ class ReplacerConfigWindow(QDialog):
         """Create the rules tree section."""
         # Label
         label_layout = QHBoxLayout()
-        title_label = QLabel('Replacement Profiles:')
+        title_label = QLabel(tr('ui.gui.replacer_config.replacement_profiles'))
         title_label.setStyleSheet('font-weight: bold; padding-left: 5px;')
         label_layout.addWidget(title_label)
 
@@ -953,7 +955,15 @@ class ReplacerConfigWindow(QDialog):
 
         # Tree
         self.tree = ReplacerRulesTree(self)
-        self.tree.setHeaderLabels(['Status', 'Profile Name', 'Mode', 'Asset IDs', 'Replacement'])
+        self.tree.setHeaderLabels(
+            [
+                tr('ui.gui.replacer_config.status'),
+                tr('ui.gui.replacer_config.profile_name'),
+                tr('ui.gui.replacer_config.mode'),
+                tr('ui.gui.replacer_config.asset_ids'),
+                tr('ui.gui.replacer_config.replacement'),
+            ]
+        )
         self.tree.setSelectionMode(QTreeWidget.SelectionMode.ExtendedSelection)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._show_context_menu)
@@ -978,7 +988,7 @@ class ReplacerConfigWindow(QDialog):
 
     def _create_edit_section(self, parent_layout):
         """Create the add/edit profile section."""
-        edit_group = QGroupBox('Add/Edit Profile')
+        edit_group = QGroupBox(tr('ui.gui.replacer_config.add_edit_profile'))
         edit_group.setStyleSheet('QGroupBox::title { padding-left: 5px; }')
         edit_layout = QVBoxLayout()
         edit_layout.setSpacing(4)
@@ -986,28 +996,28 @@ class ReplacerConfigWindow(QDialog):
         # Profile name
         name_layout = QHBoxLayout()
         name_layout.setSpacing(5)
-        label0 = QLabel('Profile Name:')
+        label0 = QLabel(tr('ui.gui.replacer_config.profile_name_2'))
         label0.setFixedWidth(85)
         name_layout.addWidget(label0)
         self.name_entry = QLineEdit()
-        self.name_entry.setPlaceholderText('Optional profile name')
+        self.name_entry.setPlaceholderText(tr('ui.gui.replacer_config.optional_profile_name'))
         name_layout.addWidget(self.name_entry)
         edit_layout.addLayout(name_layout)
 
         # Asset IDs
         ids_layout = QHBoxLayout()
         ids_layout.setSpacing(5)
-        label = QLabel('Asset IDs:')
+        label = QLabel(tr('ui.gui.replacer_config.asset_ids_2'))
         label.setFixedWidth(85)
         ids_layout.addWidget(label)
         self.replace_entry = QLineEdit()
         self.replace_entry.setPlaceholderText(
-            'IDs or AssetTypes separated by commas, spaces, or semicolons'
+            tr('ui.gui.replacer_config.ids_or_assettypes_separated_by_commas_spaces')
         )
         ids_layout.addWidget(self.replace_entry)
 
         # Add Asset Types filter button
-        self.asset_types_btn = QPushButton('Asset Types')
+        self.asset_types_btn = QPushButton(tr('ui.gui.replacer_config.asset_types'))
         self.asset_types_btn.setFixedWidth(80)
         self.asset_types_btn.clicked.connect(self._show_asset_types_popup)
         from ..cache.asset_type_filter import CategoryFilterPopup
@@ -1022,18 +1032,18 @@ class ReplacerConfigWindow(QDialog):
         # Replacement field (auto-detects mode)
         replace_layout = QHBoxLayout()
         replace_layout.setSpacing(5)
-        label2 = QLabel('Replace With:')
+        label2 = QLabel(tr('ui.gui.replacer_config.replace_with'))
         label2.setFixedWidth(85)
         replace_layout.addWidget(label2)
         self.replacement_entry = FileDropLineEdit()
         self.replacement_entry.setPlaceholderText(
-            'ID, URL, file path, or /ExampleOBJ/Example.obj'
+            tr('ui.gui.replacer_config.id_url_file_path_or_exampleobj_example')
         )
         self.replacement_entry.setToolTip(_replacement_path_tooltip())
         self.replacement_entry.fileDropped.connect(self._store_dropped_replacement_path)
         label2.setToolTip(_replacement_path_tooltip())
         replace_layout.addWidget(self.replacement_entry)
-        browse_btn = QPushButton('Browse...')
+        browse_btn = QPushButton(tr('ui.gui.replacer_config.browse'))
         browse_btn.clicked.connect(self._browse_local_file)
         browse_btn.setFixedWidth(80)
         replace_layout.addWidget(browse_btn)
@@ -1042,16 +1052,16 @@ class ReplacerConfigWindow(QDialog):
         # Buttons
         btn_layout = QHBoxLayout()
         for text, callback in [
-            ('Add New', self._add_rule),
-            ('Load Selected', self._load_selected),
-            ('Update Selected', self._update_selected),
+            (tr('replacer.rules.add_new'), self._add_rule),
+            (tr('replacer.rules.load_selected'), self._load_selected),
+            (tr('replacer.rules.update_selected'), self._update_selected),
         ]:
             btn = QPushButton(text)
             btn.setMinimumWidth(130)
             btn.clicked.connect(callback)
             btn_layout.addWidget(btn)
         btn_layout.addStretch()
-        import_btn = QPushButton('Scraped games...')
+        import_btn = QPushButton(tr('ui.gui.replacer_config.scraped_games'))
         import_btn.setMinimumWidth(130)
         import_btn.clicked.connect(self._open_prejsons_browser)
         btn_layout.addWidget(import_btn)
@@ -1069,27 +1079,27 @@ class ReplacerConfigWindow(QDialog):
         footer_layout = QHBoxLayout(footer_widget)
         footer_layout.setContentsMargins(8, 4, 8, 4)
 
-        path_label = QLabel(f'Configs: {CONFIGS_FOLDER}')
+        path_label = QLabel(tr('ui.gui.replacer_config.configs_value', value0=CONFIGS_FOLDER))
         path_label.setStyleSheet('color: gray; font-size: 8pt; padding-left: 5px;')
         footer_layout.addWidget(path_label)
 
         footer_layout.addStretch()
 
-        help_btn = QPushButton('?')
+        help_btn = QPushButton(tr('ui.gui.replacer_config.text_2'))
         help_btn.setMaximumWidth(25)
-        help_btn.setToolTip('View keybinds')
+        help_btn.setToolTip(tr('ui.gui.replacer_config.view_keybinds'))
         help_btn.clicked.connect(self._show_keybinds_help)
         footer_layout.addWidget(help_btn)
 
-        clear_cache_btn = QPushButton('Clear Cache')
+        clear_cache_btn = QPushButton(tr('ui.gui.replacer_config.clear_cache'))
         clear_cache_btn.clicked.connect(self._clear_roblox_cache)
         footer_layout.addWidget(clear_cache_btn)
 
-        configs_btn = QPushButton('Open Configs')
+        configs_btn = QPushButton(tr('ui.gui.replacer_config.open_configs'))
         configs_btn.clicked.connect(lambda: open_folder(CONFIGS_FOLDER))
         footer_layout.addWidget(configs_btn)
 
-        undo_btn = QPushButton('Undo (Ctrl+Z)')
+        undo_btn = QPushButton(tr('ui.gui.replacer_config.undo_ctrl_z'))
         undo_btn.clicked.connect(self._do_undo)
         footer_layout.addWidget(undo_btn)
 
@@ -1105,18 +1115,9 @@ class ReplacerConfigWindow(QDialog):
         from PyQt6.QtWidgets import QMessageBox
 
         msg = QMessageBox(self)
-        msg.setWindowTitle('Keybinds')
+        msg.setWindowTitle(tr('ui.gui.replacer_config.keybinds'))
         msg.setTextFormat(Qt.TextFormat.RichText)
-        msg.setText(
-            '<b>All keybinds.</b><br>'
-            '- Ctrl+Z — Undo last change<br>'
-            '- Ctrl+Y — Redo last change<br>'
-            '- Ctrl+A — Select all rows<br>'
-            '- Delete — Delete selected rows<br>'
-            '<br>'
-            '<b>Tips.</b><br>'
-            '- Right-click a profile to delete, enable, or disable it'
-        )
+        msg.setText(tr('ui.gui.replacer_config.b_all_keybinds_b_br_ctrl_z'))
         msg.exec()
 
     def _open_prejsons_browser(self):
@@ -1177,11 +1178,13 @@ class ReplacerConfigWindow(QDialog):
         """Update the enabled menu button text."""
         enabled = self.config_manager.enabled_configs
         if not enabled:
-            self.enabled_menu_btn.setText('No Configs Enabled')
+            self.enabled_menu_btn.setText(tr('ui.gui.replacer_config.no_configs_enabled'))
         elif len(enabled) == 1:
             self.enabled_menu_btn.setText(enabled[0])
         else:
-            self.enabled_menu_btn.setText(f'{len(enabled)} configs enabled')
+            self.enabled_menu_btn.setText(
+                tr('ui.gui.replacer_config.value_configs_enabled', value0=len(enabled))
+            )
         # Keep the Editing button styled to reflect whether the currently
         # selected editing profile is enabled or not.
         try:
@@ -1311,8 +1314,8 @@ class ReplacerConfigWindow(QDialog):
         if profile_count == 0 or 0 < enabled_count < profile_count:
             return _MIXED_STATUS, 0
         if enabled_count == profile_count:
-            return 'On', 1 if profile_count > 0 else 0
-        return 'Off', 0
+            return tr('replacer.status.on'), 1 if profile_count > 0 else 0
+        return tr('replacer.status.off'), 0
 
     def _profile_display(
         self,
@@ -1321,7 +1324,7 @@ class ReplacerConfigWindow(QDialog):
         path: tuple[int, ...],
         group_depth: int | None = None,
     ) -> tuple[list[str], list]:
-        name = rule.get('name', f'Profile {fallback_index + 1}')
+        name = rule.get('name') or tr('replacer.profile.default_name', index=fallback_index + 1)
         enabled = rule.get('enabled', True)
         mode = rule.get('mode', 'id')
         if 'remove' in rule and 'mode' not in rule:
@@ -1330,21 +1333,21 @@ class ReplacerConfigWindow(QDialog):
         if mode == 'id':
             with_id = rule.get('with_id')
             if with_id is not None:
-                action = 'ID'
+                action = tr('replacer.action.id')
                 replace_with = str(with_id)
             else:
-                action = 'Remove'
+                action = tr('replacer.action.remove')
                 replace_with = '-'
         elif mode == 'cdn':
-            action = 'CDN'
+            action = tr('replacer.action.cdn')
             cdn_url = rule.get('cdn_url', '')
             replace_with = cdn_url[:40] + '...' if len(cdn_url) > 40 else cdn_url
         elif mode == 'local':
-            action = 'Local'
+            action = tr('replacer.action.local')
             local_path = rule.get('local_path', '')
             replace_with = Path(local_path).name if local_path else ''
         elif mode == 'remove':
-            action = 'Remove'
+            action = tr('replacer.action.remove')
             replace_with = '-'
         else:
             action = mode.upper()
@@ -1354,16 +1357,16 @@ class ReplacerConfigWindow(QDialog):
         if group_depth is None:
             group_depth = self._group_depth(path[:-1])
         values = [
-            'On' if enabled else 'Off',
+            tr('replacer.status.on') if enabled else tr('replacer.status.off'),
             self._entry_display_name(name, group_depth),
             action,
-            format_count(id_count, 'ID'),
+            tr_count(id_count, 'count.id.one', 'count.id.other'),
             replace_with,
         ]
         sort_values = [
             1 if enabled else 0,
             name.lower(),
-            action.lower(),
+            mode,
             id_count,
             replace_with.lower(),
         ]
@@ -1402,14 +1405,18 @@ class ReplacerConfigWindow(QDialog):
                 id_count += child_ids
                 enabled_count += child_enabled
             status, sort_enabled = self._status_from_summary(profile_count, enabled_count)
-            name = entry.get('name', 'Group')
+            name = entry.get('name') or tr('replacer.group.label')
             item = ReplacerTreeItem(
                 [
                     status,
                     self._group_display_name(name, path),
-                    'Group',
-                    format_count(id_count, 'ID'),
-                    format_count(profile_count, 'profile'),
+                    tr('replacer.group.label'),
+                    tr_count(id_count, 'count.id.one', 'count.id.other'),
+                    tr_count(
+                        profile_count,
+                        'count.profile.one',
+                        'count.profile.other',
+                    ),
                 ]
             )
             item.setData(0, _ROLE_KIND, _KIND_GROUP)
@@ -1529,7 +1536,7 @@ class ReplacerConfigWindow(QDialog):
         selected_config_changed = previous_config != current_config
         tree_config_changed = previous_tree_config != current_config
 
-        self.config_menu_btn.setText(' \u200a' + current_config)
+        self.config_menu_btn.setText(tr('ui.gui.replacer_config.value', value0=current_config))
         if update_enabled_menu and hasattr(self, 'enabled_menu'):
             self._rebuild_enabled_menu(sync_from_disk=False)
         if (changed or selected_config_changed or tree_config_changed) and hasattr(self, 'tree'):
@@ -1589,7 +1596,7 @@ class ReplacerConfigWindow(QDialog):
         if name != self.config_manager.last_config:
             self.config_manager.last_config = name
             # Keep a single space plus a hair-space between icon and text
-            self.config_menu_btn.setText(' \u200a' + name)
+            self.config_menu_btn.setText(tr('ui.gui.replacer_config.value', value0=name))
             self.undo_manager.clear()
             self.undo_manager.save_state(self.config_manager.replacement_rules, copy_state=False)
             self._refresh_tree()
@@ -1657,9 +1664,9 @@ class ReplacerConfigWindow(QDialog):
 
         file_path, _ = QFileDialog.getOpenFileName(
             self,
-            'Select Local File',
+            tr('ui.gui.replacer_config.select_local_file'),
             initial_dir,
-            'All Files (*)',
+            tr('ui.gui.replacer_config.all_files'),
         )
         if file_path:
             self.replacement_entry.setText(local_replacement_path_for_storage(file_path))
@@ -1673,18 +1680,25 @@ class ReplacerConfigWindow(QDialog):
         current = self.config_manager.last_config
 
         if action == 'new':
-            name, ok = QInputDialog.getText(self, 'New Config', 'Name:')
+            name, ok = QInputDialog.getText(
+                self, tr('ui.gui.replacer_config.new_config'), tr('ui.gui.replacer_config.name')
+            )
             if ok and name:
                 name = name.strip()
                 if not self.config_manager.is_valid_config_name(name):
                     QMessageBox.warning(
                         self,
-                        'Invalid Name',
-                        'Config names cannot contain: \\ / : * ? " < > |',
+                        tr('ui.gui.replacer_config.invalid_name'),
+                        tr('ui.gui.replacer_config.config_names_cannot_contain'),
                     )
                 elif not self.config_manager.create_config(name):
                     QMessageBox.warning(
-                        self, 'Invalid Name', f"A config named '{name}' already exists."
+                        self,
+                        tr('ui.gui.replacer_config.invalid_name'),
+                        tr(
+                            'ui.gui.replacer_config.a_config_named_value_already_exists',
+                            value0=name,
+                        ),
                     )
                 else:
                     self.config_manager.last_config = name
@@ -1696,18 +1710,27 @@ class ReplacerConfigWindow(QDialog):
                     self._refresh_tree()
 
         elif action == 'dup':
-            name, ok = QInputDialog.getText(self, 'Duplicate', f"Copy of '{current}':")
+            name, ok = QInputDialog.getText(
+                self,
+                tr('ui.gui.replacer_config.duplicate'),
+                tr('ui.gui.replacer_config.copy_of_value', value0=current),
+            )
             if ok and name:
                 name = name.strip()
                 if not self.config_manager.is_valid_config_name(name):
                     QMessageBox.warning(
                         self,
-                        'Invalid Name',
-                        'Config names cannot contain: \\ / : * ? " < > |',
+                        tr('ui.gui.replacer_config.invalid_name'),
+                        tr('ui.gui.replacer_config.config_names_cannot_contain'),
                     )
                 elif not self.config_manager.duplicate_config(current, name):
                     QMessageBox.warning(
-                        self, 'Invalid Name', f"A config named '{name}' already exists."
+                        self,
+                        tr('ui.gui.replacer_config.invalid_name'),
+                        tr(
+                            'ui.gui.replacer_config.a_config_named_value_already_exists',
+                            value0=name,
+                        ),
                     )
                 else:
                     self.config_manager.last_config = name
@@ -1719,30 +1742,44 @@ class ReplacerConfigWindow(QDialog):
                     self._refresh_tree()
 
         elif action == 'rename':
-            name, ok = QInputDialog.getText(self, 'Rename', 'New name:', text=current)
+            name, ok = QInputDialog.getText(
+                self,
+                tr('ui.gui.replacer_config.rename'),
+                tr('ui.gui.replacer_config.new_name'),
+                text=current,
+            )
             if ok and name:
                 name = name.strip()
                 if not self.config_manager.is_valid_config_name(name):
                     QMessageBox.warning(
                         self,
-                        'Invalid Name',
-                        'Config names cannot contain: \\ / : * ? " < > |',
+                        tr('ui.gui.replacer_config.invalid_name'),
+                        tr('ui.gui.replacer_config.config_names_cannot_contain'),
                     )
                 elif name != current and not self.config_manager.rename_config(current, name):
                     QMessageBox.warning(
-                        self, 'Invalid Name', f"A config named '{name}' already exists."
+                        self,
+                        tr('ui.gui.replacer_config.invalid_name'),
+                        tr(
+                            'ui.gui.replacer_config.a_config_named_value_already_exists',
+                            value0=name,
+                        ),
                     )
                 elif name != current:
                     self._refresh_combo()
 
         elif action == 'delete':
             if len(self.config_manager.config_names) <= 1:
-                QMessageBox.critical(self, 'Error', 'Cannot delete last config')
+                QMessageBox.critical(
+                    self,
+                    tr('ui.gui.replacer_config.error'),
+                    tr('ui.gui.replacer_config.cannot_delete_last_config'),
+                )
             else:
                 reply = QMessageBox.question(
                     self,
-                    'Delete',
-                    f"Delete '{current}'?",
+                    tr('ui.gui.replacer_config.delete'),
+                    tr('ui.gui.replacer_config.delete_value', value0=current),
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                     QMessageBox.StandardButton.Yes,
                 )
@@ -1791,15 +1828,19 @@ class ReplacerConfigWindow(QDialog):
         # Multi-select operations (available when multiple items selected)
         if len(selected_items) > 1:
             if selected_profile_paths:
-                menu.addAction('Enable Selected', self._enable_selected)
-                menu.addAction('Disable Selected', self._disable_selected)
+                menu.addAction(tr('ui.gui.replacer_config.enable_selected'), self._enable_selected)
+                menu.addAction(
+                    tr('ui.gui.replacer_config.disable_selected'), self._disable_selected
+                )
                 if len(selected_profile_paths) == len(selected_items) and self._paths_share_parent(
                     selected_profile_paths
                 ):
                     menu.addSeparator()
-                    menu.addAction('Create Group', self._create_group_from_selected)
+                    menu.addAction(
+                        tr('ui.gui.replacer_config.create_group'), self._create_group_from_selected
+                    )
             menu.addSeparator()
-            menu.addAction('Delete Selected', self._delete_selected)
+            menu.addAction(tr('ui.gui.replacer_config.delete_selected'), self._delete_selected)
         else:
             # Single item operations
             path = item.data(0, _ROLE_PATH)
@@ -1807,26 +1848,44 @@ class ReplacerConfigWindow(QDialog):
                 return
             entry = self._entry_at_path(self.config_manager.replacement_rules, path)
             if self._is_group(entry):
-                menu.addAction('Enable Group', lambda: self._set_group_profiles_enabled(path, True))
                 menu.addAction(
-                    'Disable Group',
+                    tr('ui.gui.replacer_config.enable_group'),
+                    lambda: self._set_group_profiles_enabled(path, True),
+                )
+                menu.addAction(
+                    tr('ui.gui.replacer_config.disable_group'),
                     lambda: self._set_group_profiles_enabled(path, False),
                 )
                 menu.addSeparator()
-                menu.addAction('Rename Group', lambda: self._rename_group(path))
+                menu.addAction(
+                    tr('ui.gui.replacer_config.rename_group'), lambda: self._rename_group(path)
+                )
                 menu.addSeparator()
-                menu.addAction('Delete Group', lambda: self._delete_selected())
+                menu.addAction(
+                    tr('ui.gui.replacer_config.delete_group'), lambda: self._delete_selected()
+                )
             elif self._is_profile(entry):
                 enabled = entry.get('enabled', True)
-                text = 'Disable Profile' if enabled else 'Enable Profile'
+                text = tr('replacer.profile.disable') if enabled else tr('replacer.profile.enable')
                 menu.addAction(text, lambda: self._toggle_profile(path))
-                menu.addAction('Rename Profile', lambda: self._rename_profile(path))
-                menu.addAction('Edit Asset IDs', lambda: self._edit_asset_ids(path))
-                menu.addAction('Edit Replacement', lambda: self._edit_replacement(path))
+                menu.addAction(
+                    tr('ui.gui.replacer_config.rename_profile'), lambda: self._rename_profile(path)
+                )
+                menu.addAction(
+                    tr('ui.gui.replacer_config.edit_asset_ids'), lambda: self._edit_asset_ids(path)
+                )
+                menu.addAction(
+                    tr('ui.gui.replacer_config.edit_replacement'),
+                    lambda: self._edit_replacement(path),
+                )
                 menu.addSeparator()
-                menu.addAction('Create Group', self._create_group_from_selected)
+                menu.addAction(
+                    tr('ui.gui.replacer_config.create_group'), self._create_group_from_selected
+                )
                 menu.addSeparator()
-                menu.addAction('Delete Profile', lambda: self._delete_selected())
+                menu.addAction(
+                    tr('ui.gui.replacer_config.delete_profile'), lambda: self._delete_selected()
+                )
 
         if menu.actions():
             menu.exec(self.tree.mapToGlobal(pos))
@@ -1875,7 +1934,12 @@ class ReplacerConfigWindow(QDialog):
         if not self._is_profile(rule):
             return
         old_name = rule.get('name', f'Profile {path[-1] + 1}')
-        name, ok = QInputDialog.getText(self, 'Rename', 'New name:', text=old_name)
+        name, ok = QInputDialog.getText(
+            self,
+            tr('ui.gui.replacer_config.rename'),
+            tr('ui.gui.replacer_config.new_name'),
+            text=old_name,
+        )
         if ok and name and name.strip():
             rules_copy = deepcopy(rules)
             rule_copy = self._entry_at_path(rules_copy, path)
@@ -1892,7 +1956,12 @@ class ReplacerConfigWindow(QDialog):
         if not self._is_group(group):
             return
         old_name = group.get('name', 'Group')
-        name, ok = QInputDialog.getText(self, 'Rename', 'New name:', text=old_name)
+        name, ok = QInputDialog.getText(
+            self,
+            tr('ui.gui.replacer_config.rename'),
+            tr('ui.gui.replacer_config.new_name'),
+            text=old_name,
+        )
         if ok and name and name.strip():
             rules_copy = deepcopy(rules)
             group_copy = self._entry_at_path(rules_copy, path)
@@ -1930,17 +1999,26 @@ class ReplacerConfigWindow(QDialog):
         if not paths:
             return
         if len(paths) != len(self.tree.selectedItems()):
-            QMessageBox.information(self, 'Create Group', 'Select only profiles to create a group.')
+            QMessageBox.information(
+                self,
+                tr('ui.gui.replacer_config.create_group'),
+                tr('ui.gui.replacer_config.select_only_profiles_to_create_a_group'),
+            )
             return
         if not self._paths_share_parent(paths):
             QMessageBox.information(
                 self,
-                'Create Group',
-                'Select profiles in the same group or config level.',
+                tr('ui.gui.replacer_config.create_group'),
+                tr('ui.gui.replacer_config.select_profiles_in_the_same_group_or'),
             )
             return
 
-        name, ok = QInputDialog.getText(self, 'Rename', 'New name:', text='New Group')
+        name, ok = QInputDialog.getText(
+            self,
+            tr('ui.gui.replacer_config.rename'),
+            tr('ui.gui.replacer_config.new_name'),
+            text=tr('replacer.group.new_default_name'),
+        )
         if not ok or not name or not name.strip():
             return
 
@@ -1987,11 +2065,11 @@ class ReplacerConfigWindow(QDialog):
         if not self._is_profile(rule):
             return
 
-        name = rule.get('name', f'Profile {path[-1] + 1}')
+        name = rule.get('name') or tr('replacer.profile.default_name', index=path[-1] + 1)
         ids = rule.get('replace_ids', [])
 
         dialog = QDialog(self)
-        dialog.setWindowTitle(f'Asset IDs - {name}')
+        dialog.setWindowTitle(tr('ui.gui.replacer_config.asset_ids_value', value0=name))
         dialog.resize(400, 350)
         if icon_path := get_icon_path():
             from PyQt6.QtGui import QIcon
@@ -2000,11 +2078,16 @@ class ReplacerConfigWindow(QDialog):
 
         layout = QVBoxLayout()
 
-        title = QLabel(f'Profile: {name}')
+        title = QLabel(tr('ui.gui.replacer_config.profile_value', value0=name))
         title.setStyleSheet('font-weight: bold;')
         layout.addWidget(title)
 
-        count_label = QLabel(f'Total: {format_count(ids, "asset ID")}')
+        count_label = QLabel(
+            tr(
+                'ui.gui.replacer_config.total_value',
+                value0=tr_count(ids, 'count.asset_id.one', 'count.asset_id.other'),
+            )
+        )
         layout.addWidget(count_label)
 
         text_edit = QTextEdit()
@@ -2023,7 +2106,16 @@ class ReplacerConfigWindow(QDialog):
             rule_copy['replace_ids'] = new_ids
             self._save_with_undo(rules_copy)
             self._refresh_tree()
-            count_label.setText(f'Total: {format_count(new_ids, "asset ID")}')
+            count_label.setText(
+                tr(
+                    'ui.gui.replacer_config.total_value',
+                    value0=tr_count(
+                        new_ids,
+                        'count.asset_id.one',
+                        'count.asset_id.other',
+                    ),
+                )
+            )
 
         def copy_all():
             from PyQt6.QtWidgets import QApplication
@@ -2031,16 +2123,16 @@ class ReplacerConfigWindow(QDialog):
             QApplication.clipboard().setText(', '.join(str(i) for i in ids))
 
         btn_layout = QHBoxLayout()
-        copy_btn = QPushButton('Copy All')
+        copy_btn = QPushButton(tr('ui.gui.replacer_config.copy_all'))
         copy_btn.clicked.connect(copy_all)
         btn_layout.addWidget(copy_btn)
 
-        save_btn = QPushButton('Save and Close')
+        save_btn = QPushButton(tr('ui.gui.replacer_config.save_and_close'))
         save_btn.clicked.connect(lambda: (save_ids(), dialog.accept()))
         btn_layout.addWidget(save_btn)
 
         # Add Asset Types menu to Edit Asset IDs
-        types_btn = QPushButton('Asset Types')
+        types_btn = QPushButton(tr('ui.gui.replacer_config.asset_types'))
 
         def show_dialog_types_popup():
             def on_filters_changed(filters):
@@ -2129,7 +2221,7 @@ class ReplacerConfigWindow(QDialog):
         types_btn.clicked.connect(show_dialog_types_popup)
         btn_layout.addWidget(types_btn)
 
-        cancel_btn = QPushButton('Cancel')
+        cancel_btn = QPushButton(tr('ui.gui.replacer_config.cancel'))
         cancel_btn.clicked.connect(dialog.reject)
         btn_layout.addWidget(cancel_btn)
 
@@ -2155,7 +2247,7 @@ class ReplacerConfigWindow(QDialog):
             old_value = str(rule.get('with_id', '')) if rule.get('with_id') is not None else ''
 
         dialog = QDialog(self)
-        dialog.setWindowTitle('Edit Replacement')
+        dialog.setWindowTitle(tr('ui.gui.replacer_config.edit_replacement'))
         dialog.resize(400, 100)
         if icon_path := get_icon_path():
             from PyQt6.QtGui import QIcon
@@ -2163,7 +2255,7 @@ class ReplacerConfigWindow(QDialog):
             dialog.setWindowIcon(QIcon(str(icon_path)))
 
         layout = QVBoxLayout()
-        label = QLabel('Replacement (ID, URL, file path, or empty to remove):')
+        label = QLabel(tr('ui.gui.replacer_config.replacement_id_url_file_path_or_empty'))
         layout.addWidget(label)
 
         line_edit = FileDropLineEdit()
@@ -2178,7 +2270,7 @@ class ReplacerConfigWindow(QDialog):
 
         btn_layout = QHBoxLayout()
 
-        browse_btn = QPushButton('Browse...')
+        browse_btn = QPushButton(tr('ui.gui.replacer_config.browse'))
         browse_btn.setFixedWidth(80)
         browse_btn.setAutoDefault(False)
 
@@ -2192,9 +2284,9 @@ class ReplacerConfigWindow(QDialog):
 
             path, _ = QFileDialog.getOpenFileName(
                 dialog,
-                'Select Local File',
+                tr('ui.gui.replacer_config.select_local_file'),
                 initial_dir,
-                'All Files (*)',
+                tr('ui.gui.replacer_config.all_files'),
             )
             if path:
                 line_edit.setText(local_replacement_path_for_storage(path))
@@ -2205,13 +2297,13 @@ class ReplacerConfigWindow(QDialog):
 
         btn_layout.addStretch()
 
-        ok_btn = QPushButton('OK')
+        ok_btn = QPushButton(tr('ui.gui.replacer_config.ok'))
         ok_btn.setFixedWidth(80)
         ok_btn.setDefault(True)
         ok_btn.clicked.connect(dialog.accept)
         btn_layout.addWidget(ok_btn)
 
-        cancel_btn = QPushButton('Cancel')
+        cancel_btn = QPushButton(tr('ui.gui.replacer_config.cancel'))
         cancel_btn.setFixedWidth(80)
         cancel_btn.clicked.connect(dialog.reject)
         btn_layout.addWidget(cancel_btn)
@@ -2226,12 +2318,20 @@ class ReplacerConfigWindow(QDialog):
         new_mode, extra = self._detect_mode(new_value)
 
         if '_raw' in extra:
-            QMessageBox.critical(self, 'Error', f"Invalid replacement: '{extra['_raw']}'")
+            QMessageBox.critical(
+                self,
+                tr('ui.gui.replacer_config.error'),
+                tr('ui.gui.replacer_config.invalid_replacement_value', value0=extra['_raw']),
+            )
             return
 
         if new_mode == 'local' and 'local_path' in extra:
             if not resolve_local_replacement_path(extra['local_path']).is_file():
-                QMessageBox.critical(self, 'Error', f'File not found: {extra["local_path"]}')
+                QMessageBox.critical(
+                    self,
+                    tr('ui.gui.replacer_config.error'),
+                    tr('ui.gui.replacer_config.file_not_found_value', value0=extra['local_path']),
+                )
                 return
 
         rules_copy = deepcopy(rules)
@@ -2411,7 +2511,11 @@ class ReplacerConfigWindow(QDialog):
         """Get rule from input fields."""
         ids = self._parse_ids(self.replace_entry.text())
         if not ids:
-            QMessageBox.critical(self, 'Error', 'Enter at least one asset ID')
+            QMessageBox.critical(
+                self,
+                tr('ui.gui.replacer_config.error'),
+                tr('ui.gui.replacer_config.enter_at_least_one_asset_id'),
+            )
             return None
 
         replacement = self.replacement_entry.text().strip()
@@ -2431,8 +2535,11 @@ class ReplacerConfigWindow(QDialog):
                 # Failed to parse as ID
                 QMessageBox.critical(
                     self,
-                    'Error',
-                    f"Invalid replacement: '{extra['_raw']}'\nMust be an asset ID, URL, or file path",
+                    tr('ui.gui.replacer_config.error'),
+                    tr(
+                        'ui.gui.replacer_config.invalid_replacement_value_must_be_an_asset',
+                        value0=extra['_raw'],
+                    ),
                 )
                 return None
             # Empty = remove (no with_id)
@@ -2444,14 +2551,17 @@ class ReplacerConfigWindow(QDialog):
                 if status >= 400:
                     QMessageBox.warning(
                         self,
-                        'Warning',
-                        f'CDN URL returned status {status}. Adding anyway.',
+                        tr('ui.gui.replacer_config.warning'),
+                        tr(
+                            'ui.gui.replacer_config.cdn_url_returned_status_value_adding_anyway',
+                            value0=status,
+                        ),
                     )
             except URLError as e:
                 reply = QMessageBox.question(
                     self,
-                    'URL Check Failed',
-                    f'Could not verify CDN URL:\n{e}\n\nAdd anyway?',
+                    tr('ui.gui.replacer_config.url_check_failed'),
+                    tr('ui.gui.replacer_config.could_not_verify_cdn_url_value_add', value0=e),
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                     QMessageBox.StandardButton.Yes,
                 )
@@ -2463,7 +2573,11 @@ class ReplacerConfigWindow(QDialog):
         elif mode == 'local':
             local_path = extra['local_path']
             if not resolve_local_replacement_path(local_path).is_file():
-                QMessageBox.critical(self, 'Error', f'File not found: {local_path}')
+                QMessageBox.critical(
+                    self,
+                    tr('ui.gui.replacer_config.error'),
+                    tr('ui.gui.replacer_config.file_not_found_value', value0=local_path),
+                )
                 return None
             rule['local_path'] = local_path
 
@@ -2547,8 +2661,8 @@ class ReplacerConfigWindow(QDialog):
         if has_group:
             reply = QMessageBox.question(
                 self,
-                'Delete Group',
-                'Delete selected groups and all nested contents?',
+                tr('ui.gui.replacer_config.delete_group'),
+                tr('ui.gui.replacer_config.delete_selected_groups_and_all_nested_contents'),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.Yes,
             )
