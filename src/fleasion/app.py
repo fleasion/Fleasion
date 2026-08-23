@@ -26,6 +26,8 @@ from PyQt6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QStyle,
+    QTextBrowser,
     QVBoxLayout,
 )
 
@@ -96,15 +98,64 @@ def _linux_client_display_name() -> str:
     return selected_linux_client_display_name()
 
 
-class _FirstTimeSetupMessageBox(QMessageBox):
-    """Message box that must be acknowledged with OK."""
+class _FirstTimeSetupDialog(QDialog):
+    """Scrollable first-run guide that always keeps its acknowledgement visible."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._can_accept = False
+        self.setModal(True)
+
+        layout = QVBoxLayout(self)
+        content_layout = QHBoxLayout()
+
+        icon_label = QLabel(self)
+        icon_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
+        icon_label.setPixmap(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation).pixmap(32, 32)
+        )
+        content_layout.addWidget(icon_label, 0)
+
+        self._body = QTextBrowser(self)
+        self._body.setReadOnly(True)
+        self._body.setOpenExternalLinks(False)
+        self._body.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._body.setMinimumSize(0, 0)
+        content_layout.addWidget(self._body, 1)
+        layout.addLayout(content_layout, 1)
+
+        button_layout = QHBoxLayout()
+        button_layout.addStretch(1)
+        self.ok_button = QPushButton(self)
+        self.ok_button.setDefault(True)
+        self.ok_button.clicked.connect(self.accept)
+        button_layout.addWidget(self.ok_button)
+        layout.addLayout(button_layout)
+
+    def setText(self, text: str):
+        self._body.setPlainText(text)
 
     def allow_accept(self):
         self._can_accept = True
+
+    def _fit_to_available_screen(self):
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is None:
+            return
+
+        available = screen.availableGeometry()
+        max_width = max(1, int(available.width() * 0.90))
+        max_height = max(1, int(available.height() * 0.85))
+        self.setMaximumSize(max_width, max_height)
+        self.resize(min(680, max_width), min(620, max_height))
+
+        frame = self.frameGeometry()
+        frame.moveCenter(available.center())
+        self.move(frame.topLeft())
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._fit_to_available_screen()
 
     def accept(self):
         if self._can_accept:
@@ -4821,14 +4872,12 @@ def main():
             w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
             for w in _top
         )
-        welcome_box = _FirstTimeSetupMessageBox(_parent)
+        welcome_box = _FirstTimeSetupDialog(_parent)
         if _on_top:
             welcome_box.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
         welcome_box.setWindowTitle(tr('onboarding.welcome.title'))
         welcome_box.setText(tr('onboarding.welcome.body'))
-        welcome_box.setIcon(QMessageBox.Icon.Information)
-        welcome_box.setStandardButtons(QMessageBox.StandardButton.Ok)
-        ok_button = welcome_box.button(QMessageBox.StandardButton.Ok)
+        ok_button = welcome_box.ok_button
         wait_seconds = 15
         remaining_seconds = wait_seconds
         if ok_button is not None:
