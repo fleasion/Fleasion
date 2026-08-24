@@ -14,6 +14,11 @@ from fleasion.translations.pt import PORTUGUESE
 
 
 _APP = None
+_TRANSLATED_LANGUAGES = [
+    code
+    for code, _name in localization.available_languages()
+    if code != localization.DEFAULT_LANGUAGE
+]
 
 
 def _qapp():
@@ -93,7 +98,7 @@ def test_remove_source_accepts_every_registered_language_token(monkeypatch):
         app.processEvents()
 
 
-@pytest.mark.parametrize('language', ['es', 'pt'])
+@pytest.mark.parametrize('language', _TRANSLATED_LANGUAGES)
 def test_translated_modifications_tab_does_not_clip_visible_controls(language):
     app = _qapp()
     previous_language = get_language()
@@ -138,7 +143,7 @@ def test_translated_modifications_tab_does_not_clip_visible_controls(language):
         app.processEvents()
 
 
-@pytest.mark.parametrize('language', ['es', 'pt'])
+@pytest.mark.parametrize('language', _TRANSLATED_LANGUAGES)
 def test_translated_buttons_fit_content_without_consuming_surplus_width(language):
     app = _qapp()
     previous_language = get_language()
@@ -171,7 +176,7 @@ def test_translated_buttons_fit_content_without_consuming_surplus_width(language
         app.processEvents()
 
 
-@pytest.mark.parametrize('language', ['es', 'pt'])
+@pytest.mark.parametrize('language', _TRANSLATED_LANGUAGES)
 def test_translated_modification_statuses_resize_when_text_changes(language):
     app = _qapp()
     previous_language = get_language()

@@ -10,10 +10,11 @@ from PyQt6.QtWidgets import QApplication, QLabel, QLineEdit, QPushButton
 from fleasion.config import manager as manager_module
 from fleasion.config.manager import ConfigManager
 from fleasion.gui.replacer_config import ReplacerConfigWindow
-from fleasion.localization import get_language, set_language
+from fleasion.localization import DEFAULT_LANGUAGE, available_languages, get_language, set_language
 
 
 _APP = None
+_TRANSLATED_LANGUAGES = [code for code, _name in available_languages() if code != DEFAULT_LANGUAGE]
 
 
 def _qapp():
@@ -22,7 +23,7 @@ def _qapp():
     return _APP
 
 
-@pytest.mark.parametrize('language', ['es', 'pt'])
+@pytest.mark.parametrize('language', _TRANSLATED_LANGUAGES)
 def test_translated_replacer_controls_do_not_clip_text(tmp_path, monkeypatch, language):
     app = _qapp()
     config_dir = Path(tmp_path) / 'FleasionNT'

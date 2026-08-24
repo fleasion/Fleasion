@@ -7,8 +7,28 @@ from pathlib import Path
 
 from fleasion import localization
 from fleasion.config import manager as manager_module
+from fleasion.translations.de import GERMAN
 from fleasion.translations.es import SPANISH
+from fleasion.translations.fr import FRENCH
+from fleasion.translations.kk import KAZAKH
+from fleasion.translations.pl import POLISH
 from fleasion.translations.pt import PORTUGUESE
+from fleasion.translations.ru import RUSSIAN
+from fleasion.translations.tr import TURKISH
+from fleasion.translations.zh import CHINESE
+
+
+_TRANSLATED_CATALOGS = {
+    'es': SPANISH,
+    'pt': PORTUGUESE,
+    'ru': RUSSIAN,
+    'kk': KAZAKH,
+    'tr': TURKISH,
+    'de': GERMAN,
+    'fr': FRENCH,
+    'zh': CHINESE,
+    'pl': POLISH,
+}
 
 
 def test_english_is_default_and_supported_languages_are_available():
@@ -16,6 +36,13 @@ def test_english_is_default_and_supported_languages_are_available():
         ('en', 'English'),
         ('es', 'Español'),
         ('pt', 'Português (Brasil)'),
+        ('ru', 'Русский'),
+        ('kk', 'Қазақша'),
+        ('tr', 'Türkçe'),
+        ('de', 'Deutsch'),
+        ('fr', 'Français'),
+        ('zh', '简体中文'),
+        ('pl', 'Polski'),
     )
     assert localization.normalize_language(None) == 'en'
     assert localization.normalize_language('en-US') == 'en'
@@ -24,6 +51,15 @@ def test_english_is_default_and_supported_languages_are_available():
     assert localization.normalize_language('pt') == 'pt'
     assert localization.normalize_language('pt-BR') == 'pt'
     assert localization.normalize_language('pt_PT') == 'en'
+    assert localization.normalize_language('ru-RU') == 'ru'
+    assert localization.normalize_language('kk-KZ') == 'kk'
+    assert localization.normalize_language('tr-TR') == 'tr'
+    assert localization.normalize_language('de-DE') == 'de'
+    assert localization.normalize_language('fr-FR') == 'fr'
+    assert localization.normalize_language('pl-PL') == 'pl'
+    assert localization.normalize_language('zh-CN') == 'zh'
+    assert localization.normalize_language('zh_Hans') == 'zh'
+    assert localization.normalize_language('zh-TW') == 'en'
     assert localization.normalize_language('not-a-language') == 'en'
 
 
@@ -67,6 +103,34 @@ def test_portuguese_translation_lookup_formats_and_counts():
         localization.set_language('en')
 
 
+def test_new_translation_lookup_formats_and_counts():
+    catalogs = {
+        'ru': RUSSIAN,
+        'kk': KAZAKH,
+        'tr': TURKISH,
+        'de': GERMAN,
+        'fr': FRENCH,
+        'zh': CHINESE,
+        'pl': POLISH,
+    }
+    for code, catalog in catalogs.items():
+        localization.set_language(code)
+        try:
+            assert localization.get_language() == code
+            assert localization.tr('language.picker.title') == catalog['language.picker.title']
+            assert localization.tr('onboarding.welcome.ok_countdown', seconds=4) == catalog[
+                'onboarding.welcome.ok_countdown'
+            ].format(seconds=4)
+            assert localization.tr_count(1, 'count.asset.one', 'count.asset.other') == catalog[
+                'count.asset.one'
+            ].format(count=1)
+            assert localization.tr_count(3, 'count.asset.one', 'count.asset.other') == catalog[
+                'count.asset.other'
+            ].format(count=3)
+        finally:
+            localization.set_language('en')
+
+
 def test_profile_error_actions_are_localized():
     localization.set_language('es')
     try:
@@ -83,7 +147,17 @@ def test_translation_catalogs_match_english_keys_markup_and_placeholders():
     placeholder_re = re.compile(r'\{[^{}]+\}')
     tag_re = re.compile(r'<[^>]+>')
 
-    for catalog in (SPANISH, PORTUGUESE):
+    for catalog in (
+        SPANISH,
+        PORTUGUESE,
+        RUSSIAN,
+        KAZAKH,
+        TURKISH,
+        GERMAN,
+        FRENCH,
+        CHINESE,
+        POLISH,
+    ):
         assert list(catalog) == list(localization.ENGLISH)
         assert len(catalog) == len(localization.ENGLISH)
 
@@ -94,7 +168,113 @@ def test_translation_catalogs_match_english_keys_markup_and_placeholders():
                 placeholder_re.findall(english)
             ), identifier
             assert tag_re.findall(translated) == tag_re.findall(english), identifier
+            assert translated.count('\n') == english.count('\n'), identifier
             assert 'ZXQ' not in translated, identifier
+
+
+def test_translated_onboarding_uses_the_actual_ui_labels():
+    label_keys = (
+        'ui.gui.replacer_config.replacer',
+        'ui.gui.replacer_config.scraped_games',
+        'ui.gui.replacer_config.asset_ids',
+        'ui.gui.json_viewer.replacement_id',
+        'replacer.rules.add_new',
+        'ui.gui.replacer_config.enabled',
+        'ui.gui.replacer_config.clear_cache',
+        'ui.gui.replacer_config.scraper',
+    )
+
+    for code, catalog in _TRANSLATED_CATALOGS.items():
+        welcome = catalog['onboarding.welcome.body']
+        assert 'Default' in welcome, code
+        for identifier in label_keys:
+            label = catalog[identifier].rstrip(':')
+            assert label in welcome, (code, identifier, label)
+
+
+def test_translated_open_directory_help_matches_the_button_label():
+    for code, catalog in _TRANSLATED_CATALOGS.items():
+        label = catalog['app.click_here_to_open_directory']
+        assert catalog['ui.app.click_here_to_open_directory'] == label, code
+        for identifier in (
+            'app.most_likely_causes_br_a_antivirus_security',
+            'ui.app.most_likely_causes_br_a_antivirus_security',
+        ):
+            assert label in catalog[identifier], (code, identifier, label)
+
+
+def test_new_language_font_samples_cover_their_writing_systems():
+    alphabets = {
+        'ru': set('абвгдеёжзийклмнопрстуфхцчшщъыьэюя'),
+        'kk': set('аәбвгғдеёжзийкқлмнңоөпрстуұүфхһцчшщъыіьэюя'),
+        'tr': set('abcçdefgğhıijklmnoöprsştuüvyz'),
+        'de': set('abcdefghijklmnopqrstuvwxyzäöüß'),
+        'fr': set(string.ascii_lowercase),
+        'pl': set('aąbcćdeęfghijklłmnńoóprsśtuwyzźż'),
+    }
+    sample_keys = (
+        'font_viewer.sample.lowercase',
+        'font_viewer.sample.uppercase',
+        'font_viewer.sample.pack_my_box',
+        'font_viewer.sample.quick_brown_fox',
+        'font_viewer.sample.quick_zebras',
+    )
+    for code, alphabet in alphabets.items():
+        catalog = _TRANSLATED_CATALOGS[code]
+        sample_text = ''.join(catalog[identifier].lower() for identifier in sample_keys)
+        assert alphabet <= set(sample_text), code
+
+    for identifier in (
+        'font_viewer.sample.pack_my_box',
+        'font_viewer.sample.quick_brown_fox',
+        'font_viewer.sample.quick_zebras',
+    ):
+        sample = CHINESE[identifier]
+        assert sample != localization.ENGLISH[identifier], identifier
+        assert any('\u4e00' <= character <= '\u9fff' for character in sample), identifier
+
+
+def test_turkish_terminology_and_font_samples_are_consistent():
+    shared_terms = {
+        'Scraped Games': 'Taranan Oyunlar',
+        'Preview': 'Önizleme',
+        'Request': 'İstek',
+        'Run Anyway (Bad)': 'Yine de Çalıştır (Önerilmez)',
+        'Replace With Set': 'Değiştirme Ayarlandı',
+    }
+    for english, expected in shared_terms.items():
+        identifiers = [
+            identifier
+            for identifier, source_text in localization.ENGLISH.items()
+            if source_text == english
+        ]
+        assert identifiers, english
+        assert {TURKISH[identifier] for identifier in identifiers} == {expected}, english
+
+    catalog_text = '\n'.join(TURKISH.values())
+    for stale_term in (
+        'Replacer',
+        'Scraper',
+        'scraper',
+        'Replace With',
+        'Scraped games',
+        'Settings >',
+        'Proxy Mode',
+        'Asset IDs',
+        'Replacement ID',
+        'Add new',
+        'Clear Cache',
+        'banlayamaz/banlamaz',
+    ):
+        assert stale_term not in catalog_text
+
+    alphabet = set('abcçdefgğhıijklmnoöprsştuüvyz')
+    for identifier in (
+        'font_viewer.sample.pack_my_box',
+        'font_viewer.sample.quick_brown_fox',
+        'font_viewer.sample.quick_zebras',
+    ):
+        assert alphabet <= set(TURKISH[identifier].casefold()), identifier
 
 
 def test_spanish_terminology_is_consistent():

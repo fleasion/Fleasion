@@ -8,6 +8,13 @@ from typing import Any
 from .translations.en import ENGLISH
 from .translations.es import SPANISH
 from .translations.pt import PORTUGUESE
+from .translations.ru import RUSSIAN
+from .translations.kk import KAZAKH
+from .translations.tr import TURKISH
+from .translations.de import GERMAN
+from .translations.fr import FRENCH
+from .translations.zh import CHINESE
+from .translations.pl import POLISH
 
 DEFAULT_LANGUAGE = 'en'
 
@@ -15,15 +22,34 @@ LANGUAGES: dict[str, str] = {
     'en': 'English',
     'es': 'Español',
     'pt': 'Português (Brasil)',
+    'ru': 'Русский',
+    'kk': 'Қазақша',
+    'tr': 'Türkçe',
+    'de': 'Deutsch',
+    'fr': 'Français',
+    'zh': '简体中文',
+    'pl': 'Polski',
 }
 
 _TRANSLATIONS: dict[str, Mapping[str, str]] = {
     DEFAULT_LANGUAGE: ENGLISH,
     'es': SPANISH,
     'pt': PORTUGUESE,
+    'ru': RUSSIAN,
+    'kk': KAZAKH,
+    'tr': TURKISH,
+    'de': GERMAN,
+    'fr': FRENCH,
+    'zh': CHINESE,
+    'pl': POLISH,
 }
 _LANGUAGE_ALIASES = {
     'pt-br': 'pt',
+    'zh-cn': 'zh',
+    'zh-hans': 'zh',
+    'zh-hans-cn': 'zh',
+    'zh-hans-sg': 'zh',
+    'zh-sg': 'zh',
 }
 _current_language = DEFAULT_LANGUAGE
 
@@ -36,7 +62,7 @@ def normalize_language(language: Any) -> str:
     if value in _LANGUAGE_ALIASES:
         return _LANGUAGE_ALIASES[value]
     base = value.split('-', 1)[0]
-    if base == 'pt':
+    if base in {'pt', 'zh'}:
         return DEFAULT_LANGUAGE
     return base if base in _TRANSLATIONS else DEFAULT_LANGUAGE
 
