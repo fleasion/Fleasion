@@ -23,6 +23,17 @@ def _manager(tmp_path, monkeypatch):
     return manager_module.ConfigManager(), configs_dir
 
 
+def test_default_watcher_folder_matches_config_manager_active_folder(tmp_path, monkeypatch):
+    app = _qapp()
+    manager, configs_dir = _manager(tmp_path, monkeypatch)
+    watcher = ConfigFolderWatcher(manager)
+    try:
+        assert watcher.folder == configs_dir
+    finally:
+        watcher.stop()
+    assert app is not None
+
+
 def test_new_valid_files_are_renamed_and_external_configs_are_visible(tmp_path, monkeypatch):
     app = _qapp()
     manager, configs_dir = _manager(tmp_path, monkeypatch)

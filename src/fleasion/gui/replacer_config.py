@@ -55,7 +55,6 @@ from PyQt6.QtWidgets import (
 
 from ..utils import (
     APP_NAME,
-    CONFIGS_FOLDER,
     PREJSONS_DIR,
     format_count,
     get_icon_path,
@@ -113,6 +112,37 @@ def _replacement_path_tooltip(*, empty_removes: bool = True) -> str:
     if empty_removes:
         lines.append(tr('replacer.path_tooltip.empty_removes'))
     return '\n'.join(lines)
+
+
+class _ElidedLabel(QLabel):
+    """Label that keeps long dynamic text readable without widening the window."""
+
+    def __init__(self, text: str = '', parent: QWidget | None = None):
+        super().__init__(parent)
+        self._full_text = text
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self._refresh_text()
+
+    def set_full_text(self, text: str) -> None:
+        self._full_text = text
+        self.setToolTip(text)
+        self._refresh_text()
+
+    def _refresh_text(self) -> None:
+        available_width = max(0, self.contentsRect().width() - 4)
+        display_text = self.fontMetrics().elidedText(
+            self._full_text,
+            Qt.TextElideMode.ElideMiddle,
+            available_width,
+        )
+        if self.text() != display_text:
+            super().setText(display_text)
+        self.setToolTip(self._full_text)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._refresh_text()
 
 
 class UndoManager:
@@ -1088,9 +1118,13 @@ class ReplacerConfigWindow(QDialog):
         footer_layout = QHBoxLayout(footer_widget)
         footer_layout.setContentsMargins(8, 4, 8, 4)
 
-        path_label = QLabel(tr('ui.gui.replacer_config.configs_value', value0=CONFIGS_FOLDER))
-        path_label.setStyleSheet('color: gray; font-size: 8pt; padding-left: 5px;')
-        footer_layout.addWidget(path_label)
+        self._configs_path_label = _ElidedLabel(
+            tr('ui.gui.replacer_config.configs_value', value0=self.config_manager.configs_folder)
+        )
+        self._configs_path_label.setStyleSheet(
+            'color: gray; font-size: 8pt; padding-left: 5px;'
+        )
+        footer_layout.addWidget(self._configs_path_label)
 
         footer_layout.addStretch()
 
@@ -1105,7 +1139,7 @@ class ReplacerConfigWindow(QDialog):
         footer_layout.addWidget(clear_cache_btn)
 
         configs_btn = QPushButton(tr('ui.gui.replacer_config.open_configs'))
-        configs_btn.clicked.connect(lambda: open_folder(CONFIGS_FOLDER))
+        configs_btn.clicked.connect(self._open_configs_folder)
         footer_layout.addWidget(configs_btn)
 
         undo_btn = QPushButton(tr('ui.gui.replacer_config.undo_ctrl_z'))
@@ -1113,6 +1147,14 @@ class ReplacerConfigWindow(QDialog):
         footer_layout.addWidget(undo_btn)
 
         parent_layout.addWidget(footer_widget)
+
+    def _open_configs_folder(self):
+        """Open the same config folder used by this window's ConfigManager."""
+        configs_folder = self.config_manager.configs_folder
+        self._configs_path_label.set_full_text(
+            tr('ui.gui.replacer_config.configs_value', value0=configs_folder)
+        )
+        open_folder(configs_folder)
 
     def _clear_roblox_cache(self):
         from .delete_cache import DeleteCacheWindow

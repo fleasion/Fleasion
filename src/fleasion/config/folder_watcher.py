@@ -10,7 +10,6 @@ from PyQt6.QtCore import QFileSystemWatcher, QObject, QTimer, pyqtSignal
 from PyQt6.QtWidgets import QApplication, QMessageBox, QWidget
 
 from ..utils import log_buffer
-from ..utils.paths import CONFIGS_FOLDER
 from .manager import MAX_CONFIG_ASSET_FOLDER_DEPTH, ConfigManager
 
 _WATCH_RETRY_INTERVAL_MS = 2000
@@ -36,12 +35,12 @@ class ConfigFolderWatcher(QObject):
         config_manager: ConfigManager,
         parent: QObject | None = None,
         *,
-        folder: Path = CONFIGS_FOLDER,
+        folder: Path | None = None,
         parent_provider: Callable[[], QWidget | None] | None = None,
     ):
         super().__init__(parent)
         self.config_manager = config_manager
-        self.folder = Path(folder)
+        self.folder = Path(config_manager.configs_folder if folder is None else folder)
         self.folder.mkdir(parents=True, exist_ok=True)
         self._parent_provider = parent_provider
         self._stopped = False

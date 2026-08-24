@@ -1445,6 +1445,11 @@ class ConfigManager:
         self._save_settings()
 
     @property
+    def configs_folder(self) -> Path:
+        """Return the folder this manager currently uses for config files."""
+        return Path(CONFIGS_FOLDER)
+
+    @property
     def config_names(self) -> list[str]:
         """Get list of all config names."""
         return self._refresh_config_names_cache()

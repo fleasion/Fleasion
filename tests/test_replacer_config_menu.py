@@ -6,9 +6,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtCore import QEvent, QPointF, QRect, Qt
 from PyQt6.QtGui import QMouseEvent
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QPushButton
 
 from fleasion.config import manager as manager_module
+from fleasion.gui import replacer_config as replacer_config_module
 from fleasion.gui.replacer_config import (
     ReplacerConfigWindow,
     _ScrollableConfigMenu,
@@ -87,6 +88,32 @@ def test_scrollable_config_menu_toggles_from_full_row_width():
 
     assert row.isChecked()
     assert toggles == [('a', True)]
+    assert app is not None
+
+
+def test_open_configs_uses_config_manager_active_folder(tmp_path, monkeypatch):
+    app = _qapp()
+    config_dir = tmp_path / 'FleasionNT'
+    configs_dir = config_dir / 'configs'
+    monkeypatch.setattr(manager_module, 'CONFIG_DIR', config_dir)
+    monkeypatch.setattr(manager_module, 'CONFIG_FILE', config_dir / 'settings.json')
+    monkeypatch.setattr(manager_module, 'CONFIGS_FOLDER', configs_dir)
+
+    opened = []
+    monkeypatch.setattr(replacer_config_module, 'open_folder', lambda path: opened.append(path))
+    config_manager = manager_module.ConfigManager()
+    window = ReplacerConfigWindow(config_manager)
+    try:
+        open_buttons = [
+            button
+            for button in window.findChildren(QPushButton)
+            if button.text() == 'Open Configs'
+        ]
+        assert len(open_buttons) == 1
+        open_buttons[0].click()
+        assert opened == [configs_dir]
+    finally:
+        window.close()
     assert app is not None
 
 
