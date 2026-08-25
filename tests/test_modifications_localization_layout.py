@@ -200,3 +200,29 @@ def test_translated_modification_statuses_resize_when_text_changes(language):
             tab.deleteLater()
         set_language(previous_language)
         app.processEvents()
+
+
+def test_custom_font_browse_uses_filter_identifier(monkeypatch):
+    app = _qapp()
+    tab = ModificationsTab(_FakeModificationManager())
+    captured = {}
+
+    def fake_get_open_file_name(_parent, _caption, _initial_dir, file_filter):
+        captured['filter'] = file_filter
+        return '', ''
+
+    monkeypatch.setattr(
+        'fleasion.gui.modifications_tab.QFileDialog.getOpenFileName',
+        fake_get_open_file_name,
+    )
+    try:
+        font_row = next(
+            row for row in tab.findChildren(ModRowWidget) if row._is_font
+        )
+        assert font_row._file_filter == 'modifications.filter.font_files'
+        font_row._on_browse()
+        assert captured['filter'] == tr('modifications.filter.font_files')
+    finally:
+        tab.close()
+        tab.deleteLater()
+        app.processEvents()

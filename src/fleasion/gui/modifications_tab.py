@@ -3699,7 +3699,7 @@ class ModificationsTab(QWidget):
                 self._manager,
                 _builtin_label(name),
                 path,
-                file_filter=_file_filter_text(IMAGE_FILTER),
+                file_filter=IMAGE_FILTER,
             )
             sky_section.add_widget(row)
             self._row_widgets[path] = row
@@ -3714,7 +3714,7 @@ class ModificationsTab(QWidget):
                 self._manager,
                 _builtin_label(name),
                 path,
-                file_filter=_file_filter_text(IMAGE_FILTER),
+                file_filter=IMAGE_FILTER,
             )
             sky_section.add_widget(row)
             self._row_widgets[path] = row
@@ -3725,7 +3725,7 @@ class ModificationsTab(QWidget):
         tex_section = CollapsibleSection(tr('modifications.section.textures'), expanded=True)
         for name, path, filt in TEXTURES:
             row = ModRowWidget(
-                self._manager, _builtin_label(name), path, file_filter=_file_filter_text(filt)
+                self._manager, _builtin_label(name), path, file_filter=filt
             )
             tex_section.add_widget(row)
             self._row_widgets[path] = row
@@ -3748,7 +3748,7 @@ class ModificationsTab(QWidget):
                 self._manager,
                 _builtin_label(name),
                 path,
-                file_filter=_file_filter_text(MESH_FILTER),
+                file_filter=MESH_FILTER,
             )
             self._mesh_section.add_widget(row)
             self._row_widgets[path] = row
@@ -3769,7 +3769,7 @@ class ModificationsTab(QWidget):
                 self._manager,
                 _builtin_label(name),
                 path,
-                file_filter=_file_filter_text(SOUND_FILTER),
+                file_filter=SOUND_FILTER,
                 mute_bundled=bundled,
             )
             sounds_section.add_widget(row)
@@ -3783,7 +3783,7 @@ class ModificationsTab(QWidget):
             self._manager,
             tr('modifications.custom_font'),
             target_path_for_current_platform(r'content\fonts\CustomFont.ttf'),
-            file_filter=_file_filter_text(FONT_FILTER),
+            file_filter=FONT_FILTER,
             is_font=True,
         )
         font_section.add_widget(font_row)
@@ -3806,7 +3806,7 @@ class ModificationsTab(QWidget):
                     self._manager,
                     name,
                     target,
-                    file_filter=_file_filter_text(MESH_FILTER),
+                    file_filter=MESH_FILTER,
                     deletable=True,
                 )
                 row.delete_requested.connect(partial(self._on_row_deleted, row))
@@ -3967,7 +3967,7 @@ class ModificationsTab(QWidget):
                 self._manager,
                 name,
                 target,
-                file_filter=_file_filter_text(MESH_FILTER),
+                file_filter=MESH_FILTER,
                 deletable=True,
             )
             row.delete_requested.connect(partial(self._on_row_deleted, row))

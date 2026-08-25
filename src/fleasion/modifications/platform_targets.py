@@ -189,6 +189,55 @@ def _read_sober_original_asset(target_path: str | Path) -> bytes | None:
     return None
 
 
+def _read_sober_original_asset_directory(target_dir: str | Path) -> dict[str, bytes]:
+    """Read immediate files from a directory in Sober's packaged assets."""
+    try:
+        from ..utils.platform_linux import SOBER_DATA_DIR, SOBER_LEGACY_EXE_DIR
+    except Exception:
+        return {}
+
+    try:
+        rel = _normalise_relative_target(target_dir)
+    except ValueError:
+        return {}
+
+    result: dict[str, bytes] = {}
+    for root in (SOBER_DATA_DIR / 'assets', SOBER_LEGACY_EXE_DIR):
+        directory = root / rel
+        try:
+            paths = sorted(path for path in directory.iterdir() if path.is_file())
+        except OSError:
+            paths = []
+        for path in paths:
+            data = _read_file(path)
+            if data is not None:
+                result.setdefault(path.name, data)
+
+    packages_dir = SOBER_DATA_DIR / 'packages'
+    try:
+        apks = sorted(packages_dir.glob('*/com.roblox.client/base.apk'))
+    except OSError:
+        apks = []
+
+    prefix = f'assets/{rel.rstrip("/")}/'
+    for apk in apks:
+        try:
+            with zipfile.ZipFile(apk) as archive:
+                for member in archive.namelist():
+                    if not member.startswith(prefix):
+                        continue
+                    name = member[len(prefix) :]
+                    if not name or '/' in name or name in result:
+                        continue
+                    try:
+                        result[name] = archive.read(member)
+                    except KeyError:
+                        continue
+        except OSError, zipfile.BadZipFile:
+            continue
+    return result
+
+
 def read_current_platform_original_asset(
     target_path: str | Path,
     resource_dir: Path | None = None,
@@ -209,3 +258,25 @@ def read_current_platform_original_asset(
     if client_key == 'sober':
         return _read_sober_original_asset(target_path)
     return None
+
+
+def read_current_platform_original_directory(
+    target_dir: str | Path,
+    resource_dir: Path | None = None,
+) -> dict[str, bytes]:
+    """Read immediate original files from a platform-native asset directory."""
+    if not sys.platform.startswith('linux'):
+        return {}
+
+    if resource_dir is not None:
+        client_key = _linux_resource_client_key(resource_dir)
+    else:
+        try:
+            from ..utils.platform_linux import selected_linux_client_key
+
+            client_key = selected_linux_client_key()
+        except Exception:
+            client_key = 'sober'
+    if client_key == 'sober':
+        return _read_sober_original_asset_directory(target_dir)
+    return {}

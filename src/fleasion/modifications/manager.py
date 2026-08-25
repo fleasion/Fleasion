@@ -51,6 +51,7 @@ from .platform_targets import (
     canonical_target_path,
     content_prefixed_resource_root,
     read_current_platform_original_asset,
+    read_current_platform_original_directory,
     target_path_for_resource_dir,
 )
 from .stash_paths import resource_stash_dir
@@ -1014,6 +1015,12 @@ class ModificationManager(QObject):
                             data,
                             _font_helper_dirs(self._roblox_dirs),
                             self._stash_dir,
+                            family_manifest_loader=lambda resource_dir: (
+                                read_current_platform_original_directory(
+                                    FAMILIES_REL,
+                                    resource_dir=resource_dir,
+                                )
+                            ),
                         )
                     finally:
                         self._protect_managed_files_locked()
