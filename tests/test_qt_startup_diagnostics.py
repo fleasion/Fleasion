@@ -46,6 +46,16 @@ assert QOpenGLContext.globalShareContext() is None
     subprocess.run([sys.executable, '-c', code], check=True, env=env)
 
 
+def test_lazy_3d_previews_use_child_opengl_windows() -> None:
+    from PyQt6.QtOpenGL import QOpenGLWindow
+
+    from fleasion.cache.animation_viewer import AnimationGLWidget
+    from fleasion.cache.obj_viewer import ObjViewerWidget
+
+    assert issubclass(ObjViewerWidget, QOpenGLWindow)
+    assert issubclass(AnimationGLWidget, QOpenGLWindow)
+
+
 def test_qt_warning_logging_suppresses_repeated_messages(monkeypatch) -> None:
     entries: list[tuple[str, str]] = []
     monkeypatch.setattr(qt_diagnostics, '_counts', {})

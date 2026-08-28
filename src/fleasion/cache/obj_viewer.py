@@ -9,14 +9,13 @@ import numpy as np
 from OpenGL.GL import *
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QGuiApplication
-from PyQt6.QtOpenGLWidgets import QOpenGLWidget
+from PyQt6.QtOpenGL import QOpenGLWindow
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMenu,
     QMessageBox,
     QPushButton,
-    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -39,17 +38,15 @@ from .fps_controls import (
 from .gl_format import legacy_gl_format, set_perspective
 
 
-class ObjViewerWidget(QOpenGLWidget):
-    """OpenGL widget for displaying OBJ files with optimized rendering."""
+class ObjViewerWidget(QOpenGLWindow):
+    """OpenGL window for displaying OBJ files with optimized rendering."""
 
     def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-
-        # Prevent scrollbars from spawning by allowing the widget to compress gracefully
-        # Slightly larger minimum so viewers are usable on small panels
-        self.setMinimumSize(120, 120)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        # QOpenGLWindow is embedded in the QWidget dashboard through
+        # QWidget.createWindowContainer(). Keeping the OpenGL surface as a child
+        # QWindow avoids changing the dashboard's top-level surface type when the
+        # preview is created after startup.
+        super().__init__()
 
         # Mesh Data
         self.vertices = []
@@ -822,7 +819,10 @@ class ObjViewerPanel(QWidget):
                 'obj_show_wireframe', False
             )
             self.viewer.show_grid = self.config_manager.settings.get('obj_show_grid', True)
-        layout.addWidget(self.viewer, stretch=1)
+        self.viewer_container = QWidget.createWindowContainer(self.viewer, self)
+        self.viewer_container.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.viewer_container.setMinimumSize(120, 120)
+        layout.addWidget(self.viewer_container, stretch=1)
 
         # Controls
         controls_layout = QHBoxLayout()

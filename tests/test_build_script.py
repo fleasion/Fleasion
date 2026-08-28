@@ -36,6 +36,16 @@ def test_windows_packaging_disables_upx_for_native_runtime_compatibility() -> No
     assert 'Install UPX' not in workflow_source
 
 
+def test_windows_archive_check_recurses_into_pyz_and_tracks_qopenglwindow() -> None:
+    root = Path(__file__).resolve().parents[1]
+    spec_source = (root / 'Fleasion.spec').read_text(encoding='utf-8')
+    workflow_source = (root / '.github/workflows/build.yml').read_text(encoding='utf-8')
+
+    assert 'pyi-archive_viewer -r -b -l' in workflow_source
+    assert "'PyQt6.QtOpenGL'," in spec_source
+    assert "'PyQt6.QtOpenGLWidgets'," not in spec_source
+
+
 def test_packaging_collects_lz4_native_extensions() -> None:
     spec_path = Path(__file__).resolve().parents[1] / 'Fleasion.spec'
     spec_source = spec_path.read_text(encoding='utf-8')

@@ -135,11 +135,11 @@ jobs:
           if (-not $exe) {
             throw 'Could not find the Windows executable in dist/.'
           }
-          $listing = uv run pyi-archive_viewer -b -l $exe.FullName | Out-String
+          $listing = uv run pyi-archive_viewer -r -b -l $exe.FullName | Out-String
           foreach ($required in @(
             'fleasion.cache.obj_viewer',
             'fleasion.cache.animation_viewer',
-            'QtOpenGLWidgets',
+            'QtOpenGL',
             'opengl32sw.dll'
           )) {
             if ($listing -notmatch [regex]::Escape($required)) {

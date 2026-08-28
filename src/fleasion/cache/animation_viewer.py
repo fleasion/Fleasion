@@ -20,7 +20,7 @@ import numpy as np
 from OpenGL.GL import *
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QAction, QGuiApplication
-from PyQt6.QtOpenGLWidgets import QOpenGLWidget
+from PyQt6.QtOpenGL import QOpenGLWindow
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -939,11 +939,13 @@ def get_rig_path(rig_type: str) -> Path:
 # OpenGL viewer widget
 
 
-class AnimationGLWidget(QOpenGLWidget):
-    """OpenGL widget for displaying animated rigs."""
+class AnimationGLWidget(QOpenGLWindow):
+    """OpenGL child window for displaying animated rigs."""
 
     def __init__(self, parent=None):
-        super().__init__(parent)
+        # Embedded via QWidget.createWindowContainer() so adding the preview at
+        # runtime does not change/recreate the dashboard's top-level surface.
+        super().__init__()
         self.parts: Dict[str, Part] = {}
         self.motors: List[Motor6D] = []
         self.keyframes: List[Keyframe] = []
@@ -972,9 +974,6 @@ class AnimationGLWidget(QOpenGLWidget):
         self.display_lists: Dict[str, int] = {}
         self.grid_display_list: int = 0
 
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        # Slightly larger minimum so viewers are usable on small panels
-        self.setMinimumSize(120, 120)
         self.setFormat(legacy_gl_format())
 
         # Camera state
@@ -1695,8 +1694,13 @@ class AnimationViewerPanel(QWidget):
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # OpenGL viewer
-        layout.addWidget(self.gl_widget, stretch=1)
+        # OpenGL viewer. Keep the GL surface in a child QWindow so creating it
+        # after the dashboard is visible does not recreate the dashboard's
+        # native top-level window.
+        self.gl_container = QWidget.createWindowContainer(self.gl_widget, self)
+        self.gl_container.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.gl_container.setMinimumSize(120, 120)
+        layout.addWidget(self.gl_container, stretch=1)
 
         # Controls
         controls_layout = QHBoxLayout()

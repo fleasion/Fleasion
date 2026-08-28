@@ -36,7 +36,6 @@ _QT_HIDDEN_IMPORTS = [
     'PyQt6.QtGui',
     'PyQt6.QtNetwork',
     'PyQt6.QtOpenGL',
-    'PyQt6.QtOpenGLWidgets',
     'PyQt6.QtWidgets',
 ]
 
