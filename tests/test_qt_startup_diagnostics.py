@@ -30,6 +30,13 @@ assert 'OpenGL.GL' not in sys.modules
     subprocess.run([sys.executable, '-c', code], check=True, env=os.environ.copy())
 
 
+def test_windows_legacy_gl_format_does_not_request_msaa(monkeypatch) -> None:
+    from fleasion.cache import gl_format
+
+    monkeypatch.setattr(gl_format.sys, 'platform', 'win32')
+    assert gl_format.legacy_gl_format().samples() == 0
+
+
 def test_startup_opengl_config_does_not_create_global_share_context() -> None:
     code = """
 import sys

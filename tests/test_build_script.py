@@ -26,14 +26,22 @@ def test_packaging_collects_numpy_extensions_without_upx() -> None:
     assert "'numpy.libs/*.dll'" in spec_source
 
 
-def test_windows_packaging_disables_upx_for_native_runtime_compatibility() -> None:
+def test_windows_packaging_uses_upx_but_excludes_graphics_runtime() -> None:
     root = Path(__file__).resolve().parents[1]
     spec_source = (root / 'Fleasion.spec').read_text(encoding='utf-8')
     workflow_source = (root / '.github/workflows/build.yml').read_text(encoding='utf-8')
 
-    assert '_use_upx = False' in spec_source
-    assert "_use_upx = sys.platform == 'win32'" not in spec_source
-    assert 'Install UPX' not in workflow_source
+    assert "_use_upx = sys.platform == 'win32'" in spec_source
+    assert 'Install UPX' in workflow_source
+    for required_exclusion in (
+        "'Qt6Gui.dll'",
+        "'Qt6Widgets.dll'",
+        "'Qt6OpenGL.dll'",
+        "'PyQt6/*.pyd'",
+        "'qwindows.dll'",
+        "'opengl32sw.dll'",
+    ):
+        assert required_exclusion in spec_source
 
 
 def test_windows_archive_check_recurses_into_pyz_and_tracks_qopenglwindow() -> None:

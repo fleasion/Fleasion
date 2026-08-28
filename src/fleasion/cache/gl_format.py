@@ -16,7 +16,12 @@ def legacy_gl_format() -> QSurfaceFormat:
     fmt.setProfile(QSurfaceFormat.OpenGLContextProfile.CompatibilityProfile)
     fmt.setOption(QSurfaceFormat.FormatOption.DeprecatedFunctions)
     fmt.setDepthBufferSize(24)
-    if not sys.platform.startswith('linux'):
+    # Keep Windows preview surfaces single-sampled while the embedded-child
+    # presentation path is in use. This removes MSAA framebuffer negotiation as
+    # a compatibility variable; macOS keeps the previous 4x request.
+    if sys.platform == 'win32':
+        fmt.setSamples(0)
+    elif sys.platform == 'darwin':
         fmt.setSamples(4)
     return fmt
 

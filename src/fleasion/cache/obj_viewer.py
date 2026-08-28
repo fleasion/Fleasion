@@ -77,6 +77,12 @@ class ObjViewerWidget(QOpenGLWindow):
         self.needs_rebuild = False
         self._gl_context_logged = False
         self._paint_error_logged = False
+        self._first_resize_logged = False
+        self._first_paint_started_logged = False
+        self._first_paint_completed_logged = False
+        self._first_frame_swapped_logged = False
+        self._presentation_watchdog_scheduled = False
+        self.frameSwapped.connect(self._on_frame_swapped)
 
         # Display options
         self.show_wireframe = False
@@ -253,6 +259,7 @@ class ObjViewerWidget(QOpenGLWindow):
     def initializeGL(self):
         """Initialize OpenGL with high quality lighting."""
         self._log_gl_context_once()
+        self._schedule_presentation_watchdog()
         glEnable(GL_DEPTH_TEST)
         glEnable(GL_LIGHTING)
         glEnable(GL_LIGHT0)  # Key Light
@@ -285,13 +292,20 @@ class ObjViewerWidget(QOpenGLWindow):
 
         glClearColor(0.12, 0.12, 0.15, 1.0)
         glShadeModel(GL_SMOOTH)
+        error = glGetError()
+        log_buffer.log(
+            'OpenGL',
+            f'OBJ viewer initializeGL complete; gl_error={self._gl_error_text(error)}; '
+            f'{self._surface_state()}',
+        )
 
     def _log_gl_context_once(self):
         if self._gl_context_logged:
             return
         self._gl_context_logged = True
         try:
-            fmt = self.context().format()
+            context = self.context()
+            fmt = context.format()
             version = glGetString(GL_VERSION)
             renderer = glGetString(GL_RENDERER)
             vendor = glGetString(GL_VENDOR)
@@ -303,6 +317,9 @@ class ObjViewerWidget(QOpenGLWindow):
                     f'profile={fmt.profile().name} '
                     f'renderable={fmt.renderableType().name} '
                     f'samples={fmt.samples()} '
+                    f'depth={fmt.depthBufferSize()} stencil={fmt.stencilBufferSize()} '
+                    f'alpha={fmt.alphaBufferSize()} swap={fmt.swapBehavior().name} '
+                    f'swap_interval={fmt.swapInterval()} context_valid={context.isValid()} '
                     f'version={version.decode(errors="replace") if version else "unknown"} '
                     f'renderer={renderer.decode(errors="replace") if renderer else "unknown"} '
                     f'vendor={vendor.decode(errors="replace") if vendor else "unknown"}'
@@ -310,6 +327,65 @@ class ObjViewerWidget(QOpenGLWindow):
             )
         except Exception as exc:
             log_buffer.log('OpenGL', f'Could not read OBJ viewer context details: {exc}')
+
+    @staticmethod
+    def _gl_error_text(error: int) -> str:
+        return 'GL_NO_ERROR' if error == GL_NO_ERROR else f'0x{int(error):04X}'
+
+    def _surface_state(self) -> str:
+        try:
+            size = self.size()
+            context = self.context()
+            context_valid = bool(context and context.isValid())
+            return (
+                f'size={size.width()}x{size.height()} '
+                f'dpr={self.devicePixelRatio():.2f} '
+                f'visible={self.isVisible()} exposed={self.isExposed()} '
+                f'context_valid={context_valid} fbo={self.defaultFramebufferObject()}'
+            )
+        except Exception as exc:
+            return f'state_unavailable={type(exc).__name__}: {exc}'
+
+    def _sample_center_pixel(self) -> str:
+        """Sample one rendered pixel so logs can separate rendering from presentation."""
+        try:
+            size = self.size()
+            x = max(0, size.width() // 2)
+            y = max(0, size.height() // 2)
+            pixel = glReadPixels(x, y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE)
+            if isinstance(pixel, (bytes, bytearray, memoryview)):
+                values = np.frombuffer(pixel, dtype=np.uint8)
+            else:
+                values = np.asarray(pixel, dtype=np.uint8).reshape(-1)
+            if values.size < 4:
+                return f'unexpected_readback_size={values.size}'
+            return f'rgba=({values[0]},{values[1]},{values[2]},{values[3]})'
+        except Exception as exc:
+            return f'readback_failed={type(exc).__name__}: {exc}'
+
+    def _schedule_presentation_watchdog(self) -> None:
+        if self._presentation_watchdog_scheduled:
+            return
+        self._presentation_watchdog_scheduled = True
+        QTimer.singleShot(2000, self._log_presentation_watchdog)
+
+    def _log_presentation_watchdog(self) -> None:
+        log_buffer.log(
+            'OpenGL',
+            (
+                'OBJ viewer presentation after 2000 ms: '
+                f'paint_started={self._first_paint_started_logged} '
+                f'paint_completed={self._first_paint_completed_logged} '
+                f'frame_swapped={self._first_frame_swapped_logged} '
+                f'{self._surface_state()}'
+            ),
+        )
+
+    def _on_frame_swapped(self) -> None:
+        if self._first_frame_swapped_logged:
+            return
+        self._first_frame_swapped_logged = True
+        log_buffer.log('OpenGL', f'OBJ viewer first frame swapped; {self._surface_state()}')
 
     def resizeGL(self, w: int, h: int):
         """Handle standard clean projection resize."""
@@ -319,11 +395,36 @@ class ObjViewerWidget(QOpenGLWindow):
         aspect = w / h if h > 0 else 1.0
         set_perspective(45.0, aspect, 0.1, 100.0)
         glMatrixMode(GL_MODELVIEW)
+        if not self._first_resize_logged:
+            self._first_resize_logged = True
+            error = glGetError()
+            log_buffer.log(
+                'OpenGL',
+                f'OBJ viewer first resizeGL {w}x{h}; '
+                f'gl_error={self._gl_error_text(error)}; {self._surface_state()}',
+            )
 
     def paintGL(self):
         """Render the scene using cached display list."""
+        first_paint = not self._first_paint_started_logged
+        if first_paint:
+            self._first_paint_started_logged = True
+            log_buffer.log('OpenGL', f'OBJ viewer first paintGL started; {self._surface_state()}')
         try:
             self._paint_scene()
+            if first_paint:
+                render_error = glGetError()
+                center_pixel = self._sample_center_pixel()
+                readback_error = glGetError()
+                self._first_paint_completed_logged = True
+                log_buffer.log(
+                    'OpenGL',
+                    f'OBJ viewer first paintGL complete; '
+                    f'render_gl_error={self._gl_error_text(render_error)}; '
+                    f'center_pixel={center_pixel}; '
+                    f'readback_gl_error={self._gl_error_text(readback_error)}; '
+                    f'{self._surface_state()}',
+                )
         except Exception as exc:
             if not self._paint_error_logged:
                 self._paint_error_logged = True

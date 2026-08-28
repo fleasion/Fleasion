@@ -101,6 +101,35 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 libportaudio2 libpipewire-0.3-0 libspa-0.2-modules libpulse0
 
+      - name: Install UPX
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $maxRetries = 5
+          $maxAttempts = $maxRetries + 1
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            Write-Host "Installing UPX (attempt $attempt/$maxAttempts)..."
+            choco install upx -y --no-progress
+            $installExitCode = $LASTEXITCODE
+
+            if ($installExitCode -eq 0) {
+              if (Get-Command upx -ErrorAction SilentlyContinue) {
+                upx --version
+                if ($LASTEXITCODE -eq 0) {
+                  break
+                }
+              }
+            }
+
+            if ($attempt -eq $maxAttempts) {
+              throw "UPX installation failed after $maxAttempts attempts."
+            }
+
+            $delaySeconds = [int][Math]::Min(60, [Math]::Pow(2, $attempt) * 5)
+            Write-Host "Retrying UPX installation in $delaySeconds seconds..."
+            Start-Sleep -Seconds $delaySeconds
+          }
+
       - name: Test Windows Qt startup path
         if: runner.os == 'Windows'
         env:

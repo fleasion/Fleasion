@@ -262,11 +262,11 @@ _macos_target_arch = (
     if sys.platform == 'darwin'
     else None
 )
-# Do not rewrite bundled Qt/PyQt/OpenGL native binaries with UPX. Fleasion's
-# Windows dashboard can fall back between vendor and software OpenGL paths at
-# runtime, so preserving the exact wheels' DLL/PYD bytes is worth the larger
-# one-file executable for compatibility and diagnosability.
-_use_upx = False
+# Keep UPX's size savings for the Windows one-file build, but leave the native
+# Qt/PyQt graphics stack byte-for-byte as shipped by its wheels. The dashboard
+# no longer depends on OpenGL at startup, so there is no reason to disable UPX
+# for unrelated binaries while we diagnose driver-specific preview failures.
+_use_upx = sys.platform == 'win32'
 _bundled_macos_helpers = {
     'arm64': Path('dist/fleasion-proxy-helper-arm64'),
     'x86_64': Path('dist/fleasion-proxy-helper-x86_64'),
@@ -402,6 +402,9 @@ exe = EXE(
         'Qt6Network.dll',
         'Qt6OpenGL.dll',
         'Qt6Svg.dll',
+        'PyQt6/*.pyd',
+        'qwindows.dll',
+        'opengl32sw.dll',
         'libEGL.dll',
         'libGLESv2.dll',
     ],

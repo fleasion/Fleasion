@@ -973,6 +973,14 @@ class AnimationGLWidget(QOpenGLWindow):
         # Display lists for mesh caching (major performance boost)
         self.display_lists: Dict[str, int] = {}
         self.grid_display_list: int = 0
+        self._gl_context_logged = False
+        self._paint_error_logged = False
+        self._first_resize_logged = False
+        self._first_paint_started_logged = False
+        self._first_paint_completed_logged = False
+        self._first_frame_swapped_logged = False
+        self._presentation_watchdog_scheduled = False
+        self.frameSwapped.connect(self._on_frame_swapped)
 
         self.setFormat(legacy_gl_format())
 
@@ -1134,8 +1142,98 @@ class AnimationGLWidget(QOpenGLWindow):
             log_buffer.log('AnimationViewer', traceback.format_exc())
             return False
 
+    @staticmethod
+    def _gl_error_text(error: int) -> str:
+        return 'GL_NO_ERROR' if error == GL_NO_ERROR else f'0x{int(error):04X}'
+
+    def _surface_state(self) -> str:
+        try:
+            size = self.size()
+            context = self.context()
+            context_valid = bool(context and context.isValid())
+            return (
+                f'size={size.width()}x{size.height()} '
+                f'dpr={self.devicePixelRatio():.2f} '
+                f'visible={self.isVisible()} exposed={self.isExposed()} '
+                f'context_valid={context_valid} fbo={self.defaultFramebufferObject()}'
+            )
+        except Exception as exc:
+            return f'state_unavailable={type(exc).__name__}: {exc}'
+
+    def _sample_center_pixel(self) -> str:
+        """Sample one rendered pixel so logs can separate rendering from presentation."""
+        try:
+            size = self.size()
+            x = max(0, size.width() // 2)
+            y = max(0, size.height() // 2)
+            pixel = glReadPixels(x, y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE)
+            if isinstance(pixel, (bytes, bytearray, memoryview)):
+                values = np.frombuffer(pixel, dtype=np.uint8)
+            else:
+                values = np.asarray(pixel, dtype=np.uint8).reshape(-1)
+            if values.size < 4:
+                return f'unexpected_readback_size={values.size}'
+            return f'rgba=({values[0]},{values[1]},{values[2]},{values[3]})'
+        except Exception as exc:
+            return f'readback_failed={type(exc).__name__}: {exc}'
+
+    def _log_gl_context_once(self) -> None:
+        if self._gl_context_logged:
+            return
+        self._gl_context_logged = True
+        try:
+            context = self.context()
+            fmt = context.format()
+            version = glGetString(GL_VERSION)
+            renderer = glGetString(GL_RENDERER)
+            vendor = glGetString(GL_VENDOR)
+            log_buffer.log(
+                'OpenGL',
+                (
+                    'Animation viewer context: '
+                    f'{fmt.majorVersion()}.{fmt.minorVersion()} '
+                    f'profile={fmt.profile().name} '
+                    f'renderable={fmt.renderableType().name} '
+                    f'samples={fmt.samples()} '
+                    f'depth={fmt.depthBufferSize()} stencil={fmt.stencilBufferSize()} '
+                    f'alpha={fmt.alphaBufferSize()} swap={fmt.swapBehavior().name} '
+                    f'swap_interval={fmt.swapInterval()} context_valid={context.isValid()} '
+                    f'version={version.decode(errors="replace") if version else "unknown"} '
+                    f'renderer={renderer.decode(errors="replace") if renderer else "unknown"} '
+                    f'vendor={vendor.decode(errors="replace") if vendor else "unknown"}'
+                ),
+            )
+        except Exception as exc:
+            log_buffer.log('OpenGL', f'Could not read animation viewer context details: {exc}')
+
+    def _schedule_presentation_watchdog(self) -> None:
+        if self._presentation_watchdog_scheduled:
+            return
+        self._presentation_watchdog_scheduled = True
+        QTimer.singleShot(2000, self._log_presentation_watchdog)
+
+    def _log_presentation_watchdog(self) -> None:
+        log_buffer.log(
+            'OpenGL',
+            (
+                'Animation viewer presentation after 2000 ms: '
+                f'paint_started={self._first_paint_started_logged} '
+                f'paint_completed={self._first_paint_completed_logged} '
+                f'frame_swapped={self._first_frame_swapped_logged} '
+                f'{self._surface_state()}'
+            ),
+        )
+
+    def _on_frame_swapped(self) -> None:
+        if self._first_frame_swapped_logged:
+            return
+        self._first_frame_swapped_logged = True
+        log_buffer.log('OpenGL', f'Animation viewer first frame swapped; {self._surface_state()}')
+
     def initializeGL(self):
         """Initialize OpenGL settings."""
+        self._log_gl_context_once()
+        self._schedule_presentation_watchdog()
         glEnable(GL_DEPTH_TEST)
         glEnable(GL_LIGHTING)
         glEnable(GL_LIGHT0)
@@ -1155,6 +1253,12 @@ class AnimationGLWidget(QOpenGLWindow):
         glLightfv(GL_LIGHT1, GL_DIFFUSE, [0.3, 0.3, 0.3, 1])
 
         glClearColor(0.15, 0.15, 0.18, 1.0)
+        error = glGetError()
+        log_buffer.log(
+            'OpenGL',
+            f'Animation viewer initializeGL complete; gl_error={self._gl_error_text(error)}; '
+            f'{self._surface_state()}',
+        )
 
     def resizeGL(self, w: int, h: int):
         """Handle resize."""
@@ -1164,8 +1268,16 @@ class AnimationGLWidget(QOpenGLWindow):
         aspect = w / h if h > 0 else 1
         set_perspective(30, aspect, 0.1, 500.0)
         glMatrixMode(GL_MODELVIEW)
+        if not self._first_resize_logged:
+            self._first_resize_logged = True
+            error = glGetError()
+            log_buffer.log(
+                'OpenGL',
+                f'Animation viewer first resizeGL {w}x{h}; '
+                f'gl_error={self._gl_error_text(error)}; {self._surface_state()}',
+            )
 
-    def paintGL(self):
+    def _paint_scene(self):
         """Render the animation frame."""
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         glLoadIdentity()
@@ -1220,6 +1332,42 @@ class AnimationGLWidget(QOpenGLWindow):
 
         # Draw XYZ axis indicator
         self._draw_axis_indicator()
+
+    def paintGL(self):
+        """Render an animation frame and log the first presentation lifecycle."""
+        first_paint = not self._first_paint_started_logged
+        if first_paint:
+            self._first_paint_started_logged = True
+            log_buffer.log(
+                'OpenGL', f'Animation viewer first paintGL started; {self._surface_state()}'
+            )
+        try:
+            self._paint_scene()
+            if first_paint:
+                render_error = glGetError()
+                center_pixel = self._sample_center_pixel()
+                readback_error = glGetError()
+                self._first_paint_completed_logged = True
+                log_buffer.log(
+                    'OpenGL',
+                    f'Animation viewer first paintGL complete; '
+                    f'render_gl_error={self._gl_error_text(render_error)}; '
+                    f'center_pixel={center_pixel}; '
+                    f'readback_gl_error={self._gl_error_text(readback_error)}; '
+                    f'{self._surface_state()}',
+                )
+        except Exception as exc:
+            if not self._paint_error_logged:
+                self._paint_error_logged = True
+                log_buffer.log(
+                    'OpenGL',
+                    f'Animation viewer paint failed: {type(exc).__name__}: {exc}',
+                )
+            try:
+                glClearColor(0.08, 0.08, 0.10, 1.0)
+                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+            except Exception:
+                pass
 
     def _update_world_transforms(self):
         """Update world transforms for all parts based on current animation frame."""
