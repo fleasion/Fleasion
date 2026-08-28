@@ -12,7 +12,7 @@ import subprocess
 import sys
 import threading
 import time
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from PyQt6.QtCore import QEvent, QObject, QSharedMemory, Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
@@ -2798,6 +2798,29 @@ def _choose_macos_auth_source_on_launch(config_manager, tray=None, *, force: boo
     return 'dismissed'
 
 
+def _windows_auth_profile_matches_username(details: dict) -> bool:
+    """Return whether Windows auth diagnostics describe one coherent user profile."""
+    username = str(details.get('username') or '').strip()
+    userprofile_text = str(details.get('userprofile') or '').strip()
+    local_appdata_text = str(details.get('local_appdata') or '').strip()
+    default_cookie_path_text = str(details.get('default_cookie_path') or '').strip()
+    if not all((username, userprofile_text, local_appdata_text, default_cookie_path_text)):
+        return False
+
+    userprofile = PureWindowsPath(userprofile_text)
+    local_appdata = PureWindowsPath(local_appdata_text)
+    default_cookie_path = PureWindowsPath(default_cookie_path_text)
+    if userprofile.name.casefold() != username.casefold():
+        return False
+
+    try:
+        local_appdata.relative_to(userprofile)
+        default_cookie_path.relative_to(local_appdata)
+    except ValueError:
+        return False
+    return True
+
+
 def _show_auth_cookie_unavailable_dialog(details: dict, tray=None):
     """Show a user-facing popup when no readable Roblox auth cookie can be found."""
     _top = QApplication.topLevelWidgets()
@@ -2878,7 +2901,11 @@ def _show_auth_cookie_unavailable_dialog(details: dict, tray=None):
             ),
             attempted_count=len(attempted),
         )
-        most_likely_html = tr('app.auth_warning.windows_guidance')
+        most_likely_html = tr(
+            'app.auth_warning.windows_same_user_guidance'
+            if _windows_auth_profile_matches_username(details)
+            else 'app.auth_warning.windows_guidance'
+        )
 
     msg = _ForcedAcknowledgeMessageBox(_parent)
     if _on_top:

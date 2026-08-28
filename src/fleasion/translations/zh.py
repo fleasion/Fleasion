@@ -42,6 +42,7 @@ CHINESE: dict[str, str] = {
     'app.auth_warning.macos_skipped': '您选择在没有 Roblox 登录令牌的情况下继续。<br><br>',
     'app.auth_warning.windows_diagnostics': '诊断信息：<br>Windows 用户名：{username}<br>USERPROFILE：{userprofile}<br>Fleasion LocalAppData：{local_appdata}<br>默认 Cookie 路径：{default_cookie_path}<br>已检查的候选路径：{attempted_count}<br><br>',
     'app.auth_warning.windows_guidance': '最可能的原因：<br>Fleasion 与 Roblox 正在不同的 Windows 用户账户下运行，或者 Fleasion 在提权/启动期间继承了错误的 LocalAppData 路径。<br><br>快速修复：<br>1) 从系统托盘彻底退出 Fleasion。<br>2) 使用运行 Roblox 的同一个 Windows 账户启动 Fleasion。<br>3) 如果 Windows 显示 UAC 提示，不要使用其他管理员账户批准。<br>4) 启动一次 Roblox，然后重启 Fleasion。<br><br>',
+    'app.auth_warning.windows_same_user_guidance': '最可能的原因：<br>Fleasion 的 Windows 用户名与配置文件路径相匹配。如果您还运行着其他第三方 Roblox 账户管理器，它很可能正在干扰 Roblox 登录令牌。<br><br>快速修复：<br>1) 完全关闭第三方 Roblox 账户管理器，包括其系统托盘/后台进程。<br>2) 正常启动一次 Roblox。<br>3) 重启 Fleasion。<br><br>',
     'app.autostart.failure.other': '注册自动启动失败。\n请查看应用程序日志了解详情。\n\n关闭“登录时启动”可停止显示此错误。',
     'app.autostart.failure.title_disable': '无法禁用登录时启动',
     'app.autostart.failure.title_enable': '登录时启动需要修复',
