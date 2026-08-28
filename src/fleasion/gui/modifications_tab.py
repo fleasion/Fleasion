@@ -545,7 +545,18 @@ class CollapsibleSection(QWidget):
         self._animation: QPropertyAnimation | None = None
 
         # --- Header row ---
-        header_layout = QHBoxLayout()
+        # Keep the header in its own fixed-height widget.  During a collapse,
+        # the content's maximumHeight changes before the parent layout has
+        # necessarily applied the section's new sizeHint.  A bare QHBoxLayout
+        # can absorb that transient spare height and visibly push the header
+        # separator downward for a paint frame.  A fixed-height wrapper keeps
+        # the header geometry stable while the content viewport clips closed.
+        self._header_widget = QWidget()
+        self._header_widget.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Fixed,
+        )
+        header_layout = QHBoxLayout(self._header_widget)
         header_layout.setContentsMargins(4, 4, 4, 4)
 
         self._arrow = QPushButton()
@@ -585,9 +596,13 @@ class CollapsibleSection(QWidget):
         main = QVBoxLayout()
         main.setContentsMargins(0, 0, 0, 4)
         main.setSpacing(0)
-        main.addLayout(header_layout)
+        main.addWidget(self._header_widget)
         main.addWidget(sep)
         main.addWidget(self._content)
+        # Absorb any transient excess section height below the content.  This
+        # is important during collapse because the child maximumHeight can be
+        # updated one event-loop turn before the parent geometry catches up.
+        main.addStretch()
         self.setLayout(main)
 
     def paintEvent(self, a0):  # noqa: N802
@@ -631,6 +646,14 @@ class CollapsibleSection(QWidget):
         self._expanded = not self._expanded
         self._set_arrow_state(self._expanded)
 
+        # A collapse animates the clipping height of _content.  If its layout
+        # remains active, Qt re-lays out (and squashes) every child on every
+        # animation frame; complex sections such as Fast Flags then visibly
+        # bounce/reflow instead of simply sliding closed.  Freeze the existing
+        # child geometries while collapsing so _content behaves as a viewport.
+        # Re-enable the layout once the content is fully clipped away.
+        self._content_layout.setEnabled(True)
+
         self._animation = QPropertyAnimation(self._content, b'maximumHeight')
         self._animation.setDuration(200)
         self._animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
@@ -644,10 +667,16 @@ class CollapsibleSection(QWidget):
             # the actual visible size rather than QWIDGETSIZE_MAX.
             actual = self._content.height()
             self._content.setMaximumHeight(actual)
+            self._content_layout.setEnabled(False)
             self._animation.setStartValue(actual)
             self._animation.setEndValue(0)
+            self._animation.finished.connect(self._finish_collapse)
 
         self._animation.start()
+
+    def _finish_collapse(self):
+        self._content_layout.setEnabled(True)
+        self._content_layout.activate()
 
 
 # ═══════════════════════════════════════════════════════════════════

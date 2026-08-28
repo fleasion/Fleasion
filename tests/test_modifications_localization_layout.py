@@ -4,11 +4,18 @@ import pytest
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from PyQt6.QtCore import QObject, pyqtSignal
-from PyQt6.QtWidgets import QApplication, QLabel, QLineEdit, QPushButton
+from PyQt6.QtCore import QEventLoop, QObject, QTimer, pyqtSignal
+from PyQt6.QtWidgets import (
+    QApplication,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from fleasion import localization
-from fleasion.gui.modifications_tab import ModificationsTab, ModRowWidget
+from fleasion.gui.modifications_tab import CollapsibleSection, ModificationsTab, ModRowWidget
 from fleasion.localization import get_language, set_language, tr
 from fleasion.translations.pt import PORTUGUESE
 
@@ -249,3 +256,76 @@ def test_framerate_cap_load_clamps_values_before_qspinbox(framerate_cap, expecte
             tab.close()
             tab.deleteLater()
         app.processEvents()
+
+
+def test_collapsing_section_clips_content_without_reflowing_children():
+    app = _qapp()
+    host = QWidget()
+    host.resize(900, 700)
+    host_layout = QVBoxLayout(host)
+    section = CollapsibleSection('Fast Flags', expanded=True)
+
+    # Model the Fast Flags section: one tall child with a complex internal
+    # layout.  Its geometry must stay stable while the outer content viewport
+    # closes, otherwise Qt visibly reflows it on every animation frame.
+    inner = QWidget()
+    inner_layout = QVBoxLayout(inner)
+    for index in range(20):
+        inner_layout.addWidget(QLabel(f'row {index}'))
+    section.add_widget(inner)
+    host_layout.addWidget(section)
+    host_layout.addStretch()
+
+    host.show()
+    app.processEvents()
+    initial_inner_height = inner.height()
+    initial_content_height = section._content.height()
+    assert initial_inner_height > 0
+    assert initial_content_height > 0
+
+    section.toggle()
+    wait = QEventLoop()
+    QTimer.singleShot(90, wait.quit)
+    wait.exec()
+
+    assert 0 < section._content.height() < initial_content_height
+    assert inner.height() == initial_inner_height
+    assert not section._content_layout.isEnabled()
+
+    wait = QEventLoop()
+    QTimer.singleShot(180, wait.quit)
+    wait.exec()
+    assert section._content.height() == 0
+    assert section._content_layout.isEnabled()
+
+    host.close()
+    host.deleteLater()
+    app.processEvents()
+
+
+def test_collapsible_header_does_not_absorb_transient_collapse_space():
+    app = _qapp()
+    section = CollapsibleSection('Fast Flags', expanded=True)
+    inner = QWidget()
+    inner.setMinimumHeight(600)
+    section.add_widget(inner)
+
+    # Reproduce the ordering that caused the one-frame bounce: the outer
+    # section still has its previous tall geometry while the animated content
+    # maximum has already shrunk.  The header must not consume that spare
+    # height while the parent layout catches up.
+    section.resize(900, 700)
+    section.show()
+    app.processEvents()
+    header_y = section._header_widget.y()
+    header_height = section._header_widget.height()
+
+    for content_height in (400, 200, 50, 0):
+        section._content.setMaximumHeight(content_height)
+        section.layout().activate()
+        assert section._header_widget.y() == header_y
+        assert section._header_widget.height() == header_height
+
+    section.close()
+    section.deleteLater()
+    app.processEvents()
