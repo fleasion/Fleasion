@@ -69,6 +69,7 @@ DESKTOP_OPENERS = (
     ('kde-open', ()),
     ('gnome-open', ()),
 )
+_DESKTOP_OPENER_STARTUP_TIMEOUT_SEC = 0.35
 
 LINUX_APPLICATIONS_DIR = USER_HOME / '.local' / 'share' / 'applications'
 LINUX_INSTALL_DIR = USER_HOME / '.local' / 'share' / APP_NAME
@@ -656,25 +657,57 @@ def _standard_user_run(args: list[str], **kwargs) -> subprocess.CompletedProcess
     return subprocess.run(args, env=env, preexec_fn=_demote, **kwargs)
 
 
-def _desktop_open_command(target: str) -> list[str] | None:
+def _desktop_open_commands(target: str):
+    """Yield available desktop opener commands in fallback order."""
     for executable, extra_args in DESKTOP_OPENERS:
         resolved = shutil.which(executable)
         if resolved:
-            return [resolved, *extra_args, target]
-    return None
+            yield [resolved, *extra_args, target]
 
 
 def _open_with_desktop_handler(target: str, label: str) -> bool:
-    command = _desktop_open_command(target)
-    if command is None:
+    opener_found = False
+    for command in _desktop_open_commands(target):
+        opener_found = True
+        try:
+            process = _standard_user_popen(command)
+        except Exception as exc:
+            log_buffer.log(
+                'Launch',
+                f'Failed to start {Path(command[0]).name} for {label}: {exc}',
+            )
+            continue
+
+        try:
+            return_code = process.wait(timeout=_DESKTOP_OPENER_STARTUP_TIMEOUT_SEC)
+        except subprocess.TimeoutExpired:
+            # Some openers remain alive while the desktop application starts. A
+            # process that survives the startup window is treated as successfully
+            # handed off so we do not launch the target more than once.
+            return True
+        except Exception as exc:
+            # The child process started successfully; if its status cannot be
+            # observed, preserve the previous detached-launch behavior.
+            log_buffer.log(
+                'Launch',
+                f'Could not verify {Path(command[0]).name} for {label}: {exc}',
+            )
+            return True
+
+        if return_code == 0:
+            return True
+
+        log_buffer.log(
+            'Launch',
+            f'{Path(command[0]).name} failed to open {label} (exit {return_code}); '
+            'trying another desktop opener',
+        )
+
+    if not opener_found:
         log_buffer.log('Launch', f'Cannot open {label}: no desktop opener found')
-        return False
-    try:
-        _standard_user_popen(command)
-        return True
-    except Exception as exc:
-        log_buffer.log('Launch', f'Failed to open {label}: {exc}')
-        return False
+    else:
+        log_buffer.log('Launch', f'Failed to open {label}: all desktop openers failed')
+    return False
 
 
 def _launch_target_for_log(target: str) -> str:

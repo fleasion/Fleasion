@@ -144,6 +144,19 @@ def _detached_kwargs_with_env(env: dict[str, str] | None = None) -> dict:
     return kwargs
 
 
+class _FakePopen:
+    def __init__(self, return_code: int = 0, *, times_out: bool = False):
+        self.return_code = return_code
+        self.times_out = times_out
+        self.wait_timeouts = []
+
+    def wait(self, timeout=None):
+        self.wait_timeouts.append(timeout)
+        if self.times_out:
+            raise platform_linux.subprocess.TimeoutExpired('desktop-opener', timeout)
+        return self.return_code
+
+
 def test_find_sober_resource_dirs_prefers_asset_overlay(tmp_path, monkeypatch):
     installation = _flatpak_installation(SOBER_CLIENT, tmp_path)
     data_dir = installation.paths.data_root
@@ -282,7 +295,7 @@ def test_launch_as_standard_user_opens_http_url(monkeypatch):
 
     def fake_popen(args, **kwargs):
         calls.append((args, kwargs))
-        return object()
+        return _FakePopen()
 
     monkeypatch.setattr(platform_linux.subprocess, 'Popen', fake_popen)
 
@@ -307,7 +320,7 @@ def test_launch_as_standard_user_opens_http_url_with_gio_fallback(monkeypatch):
 
     def fake_popen(args, **kwargs):
         calls.append((args, kwargs))
-        return object()
+        return _FakePopen()
 
     monkeypatch.setattr(platform_linux.subprocess, 'Popen', fake_popen)
 
@@ -575,7 +588,7 @@ def test_open_folder_uses_detached_standard_user_launch(tmp_path, monkeypatch):
 
     def fake_popen(args, **kwargs):
         calls.append((args, kwargs))
-        return object()
+        return _FakePopen()
 
     monkeypatch.setattr(platform_linux.subprocess, 'Popen', fake_popen)
 
@@ -589,6 +602,67 @@ def test_open_folder_uses_detached_standard_user_launch(tmp_path, monkeypatch):
             _detached_kwargs_with_env(),
         )
     ]
+
+
+def test_open_folder_falls_back_when_first_desktop_opener_exits_nonzero(tmp_path, monkeypatch):
+    calls = []
+    log_calls = []
+    available = {
+        'xdg-open': '/usr/bin/xdg-open',
+        'gio': '/usr/bin/gio',
+    }
+
+    monkeypatch.setattr(platform_linux.os, 'geteuid', lambda: 1000)
+    monkeypatch.setattr(platform_linux.shutil, 'which', available.get)
+    monkeypatch.setattr(
+        platform_linux.log_buffer,
+        'log',
+        lambda category, message: log_calls.append((category, message)),
+    )
+
+    def fake_popen(args, **kwargs):
+        calls.append((args, kwargs))
+        return _FakePopen(return_code=3 if args[0].endswith('xdg-open') else 0)
+
+    monkeypatch.setattr(platform_linux.subprocess, 'Popen', fake_popen)
+
+    target = tmp_path / 'exports'
+
+    assert platform_linux.open_folder(target) is True
+    assert [call[0] for call in calls] == [
+        ['/usr/bin/xdg-open', str(target)],
+        ['/usr/bin/gio', 'open', str(target)],
+    ]
+    assert log_calls == [
+        (
+            'Launch',
+            'xdg-open failed to open folder (exit 3); trying another desktop opener',
+        )
+    ]
+
+
+def test_open_folder_treats_long_running_desktop_opener_as_success(tmp_path, monkeypatch):
+    calls = []
+    process = _FakePopen(times_out=True)
+    available = {
+        'xdg-open': '/usr/bin/xdg-open',
+        'gio': '/usr/bin/gio',
+    }
+
+    monkeypatch.setattr(platform_linux.os, 'geteuid', lambda: 1000)
+    monkeypatch.setattr(platform_linux.shutil, 'which', available.get)
+
+    def fake_popen(args, **kwargs):
+        calls.append((args, kwargs))
+        return process
+
+    monkeypatch.setattr(platform_linux.subprocess, 'Popen', fake_popen)
+
+    target = tmp_path / 'exports'
+
+    assert platform_linux.open_folder(target) is True
+    assert [call[0] for call in calls] == [['/usr/bin/xdg-open', str(target)]]
+    assert process.wait_timeouts == [platform_linux._DESKTOP_OPENER_STARTUP_TIMEOUT_SEC]
 
 
 def test_open_folder_returns_false_when_no_desktop_opener(tmp_path, monkeypatch):
