@@ -628,7 +628,10 @@ class ProxyTrafficTab(QWidget):
         self.ui.enableCheckBox.toggled.connect(self._on_intercept_all_toggled)
 
         help_btn = QPushButton(tr('ui.gui.proxy_tab.text'))
-        help_btn.setMaximumSize(25, 22)
+        # Match the native height of the neighboring buttons.  This is the same
+        # approach used by the replacer footer help button: constrain width only
+        # and let the active Qt style choose the vertical geometry.
+        help_btn.setMaximumWidth(25)
         help_btn.setToolTip(tr('ui.gui.proxy_tab.about_this_tab'))
         help_btn.clicked.connect(self._show_help)
         self.ui.horizontalLayout_3.insertWidget(
