@@ -236,7 +236,7 @@ def test_new_language_font_samples_cover_their_writing_systems():
 
 def test_turkish_terminology_and_font_samples_are_consistent():
     shared_terms = {
-        'Scraped Games': 'Taranan Oyunlar',
+        'Scraped Games': 'Mevcut Oyunlar',
         'Preview': 'Önizleme',
         'Request': 'İstek',
         'Run Anyway (Bad)': 'Yine de Çalıştır (Önerilmez)',
@@ -258,6 +258,8 @@ def test_turkish_terminology_and_font_samples_are_consistent():
         'scraper',
         'Replace With',
         'Scraped games',
+        'Taranan Oyunlar',
+        'Taranan oyunlar',
         'Settings >',
         'Proxy Mode',
         'Asset IDs',
