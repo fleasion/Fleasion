@@ -263,7 +263,11 @@ _macos_target_arch = (
     if sys.platform == 'darwin'
     else None
 )
-_use_upx = sys.platform == 'win32'
+# Do not rewrite bundled Qt/PyQt/OpenGL native binaries with UPX. Fleasion's
+# Windows dashboard can fall back between vendor and software OpenGL paths at
+# runtime, so preserving the exact wheels' DLL/PYD bytes is worth the larger
+# one-file executable for compatibility and diagnosability.
+_use_upx = False
 _bundled_macos_helpers = {
     'arm64': Path('dist/fleasion-proxy-helper-arm64'),
     'x86_64': Path('dist/fleasion-proxy-helper-x86_64'),

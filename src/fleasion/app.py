@@ -3985,19 +3985,13 @@ def kill_other_fleasion_instances():
 
 
 def _configure_opengl_for_legacy_viewers() -> None:
-    """Configure Qt before any OpenGL preview widgets create contexts."""
+    """Set only platform policy needed by future OpenGL preview widgets."""
     if sys.platform.startswith('linux'):
         os.environ.setdefault('QT_OPENGL', 'desktop')
-    try:
-        QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
-    except Exception as exc:
-        log_buffer.log('OpenGL', f'Could not enable shared OpenGL contexts: {exc}')
-    try:
-        from .cache.gl_format import configure_default_legacy_gl_format
-
-        configure_default_legacy_gl_format()
-    except Exception as exc:
-        log_buffer.log('OpenGL', f'Could not configure default OpenGL format: {exc}')
+    # Do not enable AA_ShareOpenGLContexts or set a global QSurfaceFormat here.
+    # Either action is unnecessary for Fleasion's independent preview widgets;
+    # each viewer sets its own format before its context is created. Keeping the
+    # application startup GL-free avoids touching fragile Windows GPU paths.
 
 
 def _check_linux_gui_dependencies() -> bool:
@@ -4126,6 +4120,26 @@ def main():
 
     _suppress_dashboard = _args.no_dashboard
     log_buffer.log('App', f'Version {__version__}')
+
+    # Frozen GUI builds do not have a useful console for Qt's native warnings.
+    # Capture warnings/errors in the normal rotating log before Qt/OpenGL setup.
+    from .utils.qt_diagnostics import install_qt_message_logging
+
+    install_qt_message_logging()
+    log_buffer.log(
+        'App',
+        'Runtime '
+        f'{platform.system()} {platform.release()} ({platform.version()}) '
+        f'{platform.machine()}; Python {platform.python_version()}; '
+        f'frozen={bool(getattr(sys, "frozen", False))}',
+    )
+    log_buffer.log(
+        'Qt',
+        'Graphics env: '
+        f'QT_OPENGL={os.environ.get("QT_OPENGL", "<unset>")}, '
+        f'QT_QPA_PLATFORM={os.environ.get("QT_QPA_PLATFORM", "<unset>")}, '
+        f'QT_ANGLE_PLATFORM={os.environ.get("QT_ANGLE_PLATFORM", "<unset>")}',
+    )
 
     current_platform = platform.system()
     if current_platform not in {'Windows', 'Darwin', 'Linux'}:

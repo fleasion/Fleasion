@@ -5,7 +5,6 @@ from __future__ import annotations
 import math
 import sys
 
-from OpenGL.GL import glFrustum
 from PyQt6.QtGui import QSurfaceFormat
 
 
@@ -22,13 +21,12 @@ def legacy_gl_format() -> QSurfaceFormat:
     return fmt
 
 
-def configure_default_legacy_gl_format() -> None:
-    """Install the legacy GL format before Qt creates OpenGL contexts."""
-    QSurfaceFormat.setDefaultFormat(legacy_gl_format())
-
-
 def set_perspective(fov_y_degrees: float, aspect: float, near: float, far: float) -> None:
     """Set a perspective projection without relying on GLU."""
+    # Keep PyOpenGL out of the normal dashboard startup path. Importing OpenGL.GL
+    # can load the platform OpenGL runtime even when no 3D preview is ever opened.
+    from OpenGL.GL import glFrustum
+
     if aspect <= 0.0:
         aspect = 1.0
     if near <= 0.0:

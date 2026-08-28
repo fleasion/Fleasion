@@ -26,6 +26,16 @@ def test_packaging_collects_numpy_extensions_without_upx() -> None:
     assert "'numpy.libs/*.dll'" in spec_source
 
 
+def test_windows_packaging_disables_upx_for_native_runtime_compatibility() -> None:
+    root = Path(__file__).resolve().parents[1]
+    spec_source = (root / 'Fleasion.spec').read_text(encoding='utf-8')
+    workflow_source = (root / '.github/workflows/build.yml').read_text(encoding='utf-8')
+
+    assert '_use_upx = False' in spec_source
+    assert "_use_upx = sys.platform == 'win32'" not in spec_source
+    assert 'Install UPX' not in workflow_source
+
+
 def test_packaging_collects_lz4_native_extensions() -> None:
     spec_path = Path(__file__).resolve().parents[1] / 'Fleasion.spec'
     spec_source = spec_path.read_text(encoding='utf-8')

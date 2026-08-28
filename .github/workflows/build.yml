@@ -101,41 +101,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 libportaudio2 libpipewire-0.3-0 libspa-0.2-modules libpulse0
 
-      - name: Install UPX
+      - name: Test Windows Qt startup path
         if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $maxRetries = 5
-          $maxAttempts = $maxRetries + 1
-          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
-            Write-Host "Installing UPX (attempt $attempt/$maxAttempts)..."
-            choco install upx -y --no-progress
-            $installExitCode = $LASTEXITCODE
-
-            if ($installExitCode -eq 0) {
-              if (Get-Command upx -ErrorAction SilentlyContinue) {
-                upx --version
-                $verifyExitCode = $LASTEXITCODE
-                if ($verifyExitCode -eq 0) {
-                  break
-                }
-                Write-Warning "UPX verification failed with exit code $verifyExitCode."
-              } else {
-                $verifyExitCode = 1
-                Write-Warning 'Chocolatey reported success, but upx is not available on PATH.'
-              }
-            } else {
-              Write-Warning "Chocolatey failed to install UPX with exit code $installExitCode."
-            }
-
-            if ($attempt -eq $maxAttempts) {
-              throw "UPX installation failed after $maxAttempts attempts."
-            }
-
-            $delaySeconds = [int][Math]::Min(60, [Math]::Pow(2, $attempt) * 5)
-            Write-Host "Retrying UPX installation in $delaySeconds seconds..."
-            Start-Sleep -Seconds $delaySeconds
-          }
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: >
+          uv run pytest -q
+          tests/test_qt_startup_diagnostics.py
+          tests/test_build_script.py
 
       - name: Test macOS proxy helper
         if: runner.os == 'macOS'
@@ -153,6 +126,26 @@ jobs:
 
       - name: Build package
         run: uv run build
+
+      - name: Verify Windows lazy OpenGL payload
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem dist/Fleasion-v*-Windows.exe | Select-Object -First 1
+          if (-not $exe) {
+            throw 'Could not find the Windows executable in dist/.'
+          }
+          $listing = uv run pyi-archive_viewer -b -l $exe.FullName | Out-String
+          foreach ($required in @(
+            'fleasion.cache.obj_viewer',
+            'fleasion.cache.animation_viewer',
+            'QtOpenGLWidgets',
+            'opengl32sw.dll'
+          )) {
+            if ($listing -notmatch [regex]::Escape($required)) {
+              throw "Windows package is missing required lazy OpenGL payload: $required"
+            }
+          }
 
       - name: Prepare Linux executable
         if: runner.os == 'Linux'

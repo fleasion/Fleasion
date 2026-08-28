@@ -50,13 +50,11 @@ from ..utils import format_count, log_buffer, open_folder
 from ..utils.clipboard import copy_pixmap_to_clipboard
 from ..utils.roblox_auth import get_roblosecurity as _get_roblosecurity
 from . import mesh_processing
-from .animation_viewer import AnimationViewerPanel
 from .audio_player import AudioPlayerWidget
 from .asset_type_filter import CategoryFilterPopup, asset_type_display_name
 from .cache_json_viewer import CacheJsonViewer
 from .cache_manager import CacheManager
 from .font_viewer import FontViewerWidget
-from .obj_viewer import ObjViewerPanel
 from .rbxm_preview import RbxmPreviewWidget, is_rbx_model_data
 
 
@@ -1227,6 +1225,12 @@ class CacheViewerTab(QWidget):
         )
         self._asset_info: dict[str, dict] = {}  # asset_id -> resolved metadata, hash, row
         self._current_pixmap = None  # Store current image for resize
+        # OpenGL preview widgets are intentionally created on first 3D preview.
+        # A QOpenGLWidget changes how its entire top-level window is composed,
+        # which can make the dashboard unusable on Windows systems with broken
+        # OpenGL/driver paths even while the preview itself is hidden.
+        self.obj_viewer = None
+        self.animation_viewer = None
 
         # OPTIMIZATION: Cache asset_id -> row mapping for O(1) lookups instead of O(n) linear search
         # Updated whenever table structure changes (populate, sort). Validates on read for thread-safety.
@@ -1978,11 +1982,6 @@ class CacheViewerTab(QWidget):
         self.preview_container_layout = QVBoxLayout()
         self.preview_container_layout.setContentsMargins(5, 5, 5, 5)
 
-        # 3D Viewer for meshes
-        self.obj_viewer = ObjViewerPanel(config_manager=self.config_manager)
-        self.obj_viewer.clear_requested.connect(self._clear_preview)
-        self.preview_container_layout.addWidget(self.obj_viewer)
-
         # Loading indicator
         self.loading_label = QLabel(tr('ui.cache.cache_viewer.loading'))
         self.loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -2015,10 +2014,6 @@ class CacheViewerTab(QWidget):
         audio_wrapper_layout.addStretch(1)
         self.audio_wrapper.setLayout(audio_wrapper_layout)
         self.preview_container_layout.addWidget(self.audio_wrapper)
-
-        # Animation viewer
-        self.animation_viewer = AnimationViewerPanel(config_manager=self.config_manager)
-        self.preview_container_layout.addWidget(self.animation_viewer)
 
         # Text viewer for other types
         self.text_viewer = QTextEdit()
@@ -2058,10 +2053,9 @@ class CacheViewerTab(QWidget):
         self.preview_scroll.setWidget(self.preview_container)
         preview_group_layout.addWidget(self.preview_scroll)
 
-        # Initially hide all preview widgets
-        self.obj_viewer.hide()
+        # Initially hide all non-OpenGL preview widgets. The 3D viewers do not
+        # exist yet and are created only when a 3D asset is actually previewed.
         self.audio_wrapper.hide()
-        self.animation_viewer.hide()
         self.text_viewer.hide()
         self.json_viewer.hide()
         self.rbxm_viewer.hide()
@@ -2071,6 +2065,34 @@ class CacheViewerTab(QWidget):
 
         preview_widget.setLayout(preview_layout)
         return preview_widget
+
+    def _ensure_obj_viewer(self):
+        """Create the mesh OpenGL widget only when a mesh is actually previewed."""
+        if self.obj_viewer is None:
+            from .obj_viewer import ObjViewerPanel
+
+            log_buffer.log('OpenGL', 'Creating OBJ preview widget on demand')
+            viewer = ObjViewerPanel(config_manager=self.config_manager)
+            viewer.clear_requested.connect(self._clear_preview)
+            viewer.hide()
+            self.preview_container_layout.insertWidget(0, viewer)
+            self.obj_viewer = viewer
+        return self.obj_viewer
+
+    def _ensure_animation_viewer(self):
+        """Create the animation OpenGL widget only when an animation is previewed."""
+        if self.animation_viewer is None:
+            from .animation_viewer import AnimationViewerPanel
+
+            log_buffer.log('OpenGL', 'Creating animation preview widget on demand')
+            viewer = AnimationViewerPanel(config_manager=self.config_manager)
+            viewer.hide()
+            index = self.preview_container_layout.indexOf(self.text_viewer)
+            self.preview_container_layout.insertWidget(
+                index if index >= 0 else self.preview_container_layout.count(), viewer
+            )
+            self.animation_viewer = viewer
+        return self.animation_viewer
 
     def _create_actions(self, parent_layout):
         """Create action buttons."""
@@ -3658,11 +3680,13 @@ class CacheViewerTab(QWidget):
         self._stop_all_loaders()
 
         # Hide all preview widgets first
-        self.obj_viewer.hide()
+        if self.obj_viewer is not None:
+            self.obj_viewer.hide()
         self.image_label.hide()
         self.loading_label.hide()
         self.audio_wrapper.hide()
-        self.animation_viewer.hide()
+        if self.animation_viewer is not None:
+            self.animation_viewer.hide()
         self.text_viewer.hide()
         self.json_viewer.hide()
         self.rbxm_viewer.hide()
@@ -3690,7 +3714,8 @@ class CacheViewerTab(QWidget):
             pass
 
         # Stop animation playback
-        self.animation_viewer.stop()
+        if self.animation_viewer is not None:
+            self.animation_viewer.stop()
 
         asset_type = asset['type']
         asset_id = asset['id']
@@ -4748,8 +4773,9 @@ class CacheViewerTab(QWidget):
         self._stop_all_loaders()
 
         # Hide and clear UI widgets
-        self.obj_viewer.hide()
-        self.obj_viewer.clear()
+        if self.obj_viewer is not None:
+            self.obj_viewer.hide()
+            self.obj_viewer.clear()
         self.image_label.clear()
 
         # Completely hide the preview window as requested
@@ -4772,8 +4798,9 @@ class CacheViewerTab(QWidget):
             self.audio_player.stop()
             self.audio_player.deleteLater()
             self.audio_player = None
-        self.animation_viewer.hide()
-        self.animation_viewer.clear()
+        if self.animation_viewer is not None:
+            self.animation_viewer.hide()
+            self.animation_viewer.clear()
         self.text_viewer.hide()
         self.text_viewer.clear()
         self.rbxm_viewer.hide()
@@ -4874,12 +4901,14 @@ class CacheViewerTab(QWidget):
             return
 
         self._stop_all_loaders()
-        self.obj_viewer.hide()
+        if self.obj_viewer is not None:
+            self.obj_viewer.hide()
         self.image_label.hide()
         self.loading_label.hide()
         self.audio_wrapper.hide()
-        self.animation_viewer.hide()
-        self.animation_viewer.stop()
+        if self.animation_viewer is not None:
+            self.animation_viewer.hide()
+            self.animation_viewer.stop()
         self.text_viewer.hide()
         self.json_viewer.hide()
         self.font_wrapper.hide()
@@ -4914,9 +4943,17 @@ class CacheViewerTab(QWidget):
             pass
 
         self._hide_loading()
-        self.obj_viewer.load_obj(obj_content, '')
-        self.obj_viewer.show()
-        self.stop_preview_btn.show()
+        try:
+            obj_viewer = self._ensure_obj_viewer()
+            obj_viewer.load_obj(obj_content, '')
+            obj_viewer.show()
+            self.stop_preview_btn.show()
+        except Exception as exc:
+            log_buffer.log(
+                'OpenGL',
+                f'Could not create/load OBJ preview: {type(exc).__name__}: {exc}',
+            )
+            self._show_text_preview(tr('cache.preview.mesh_error', error=exc))
 
     def _preview_solidmodel(self, data: bytes, asset_id: str):
         """Preview a SolidModel asset in 3D using background thread."""
@@ -5456,8 +5493,9 @@ class CacheViewerTab(QWidget):
         self._hide_loading()
         try:
             # Load in the animation viewer (must be on main thread for OpenGL)
-            if self.animation_viewer.load_animation(data):
-                self.animation_viewer.show()
+            animation_viewer = self._ensure_animation_viewer()
+            if animation_viewer.load_animation(data):
+                animation_viewer.show()
                 self.stop_preview_btn.show()
                 return
 
