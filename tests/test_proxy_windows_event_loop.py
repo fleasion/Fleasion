@@ -1,5 +1,6 @@
 import asyncio
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -173,7 +174,7 @@ def test_proactor_accept_fault_cleanup_raises_retry_signal(monkeypatch):
     proxy._running = True
 
     with pytest.raises(proxy_master._RetryProxyWithWindowsSelector):
-        asyncio.run(proxy._raise_selector_retry_for_proactor_accept_fault())
+        asyncio.run(proxy._raise_selector_retry_for_proactor_tls_failure())
 
     assert stopped == [True]
     assert proxy._proxy is None
@@ -197,7 +198,7 @@ def test_proactor_tls_timeout_does_not_retry_with_selector(monkeypatch):
     proxy._windows_proactor_accept_fault = False
     proxy._proxy = FakeProxy()
 
-    asyncio.run(proxy._raise_selector_retry_for_proactor_accept_fault())
+    asyncio.run(proxy._raise_selector_retry_for_proactor_tls_failure())
 
     assert stopped == []
 
@@ -209,7 +210,7 @@ def test_proactor_accept_fault_does_not_retry_twice(monkeypatch):
     proxy._windows_selector_fallback_attempted = True
     proxy._windows_proactor_accept_fault = True
 
-    asyncio.run(proxy._raise_selector_retry_for_proactor_accept_fault())
+    asyncio.run(proxy._raise_selector_retry_for_proactor_tls_failure())
 
 
 def test_raw_tls_loopback_probe_bypasses_asyncio_transports(tmp_path):
@@ -231,3 +232,180 @@ def test_raw_tls_loopback_probe_bypasses_asyncio_transports(tmp_path):
 
     assert ok, detail
     assert 'protocol=TLSv1.2' in detail
+
+
+@pytest.mark.skipif(not proxy_master.ssl.HAS_TLSv1_3, reason='TLS 1.3 is unavailable')
+def test_raw_tls_loopback_probe_can_negotiate_tls13(tmp_path):
+    ca_cert, ca_key = generate_ca(tmp_path)
+    cert, key = generate_multi_host_cert(
+        'default',
+        {'assetdelivery.roblox.com'},
+        ca_cert,
+        ca_key,
+        tmp_path,
+    )
+
+    ok, detail = proxy_master._run_raw_tls_loopback_probe_sync(
+        'assetdelivery.roblox.com',
+        ca_cert,
+        cert,
+        key,
+        tls_max_version=proxy_master.ssl.TLSVersion.MAXIMUM_SUPPORTED,
+    )
+
+    assert ok, detail
+    assert 'protocol=TLSv1.3' in detail
+
+
+def test_proactor_tls_failure_retries_when_blocking_tls_is_healthy(monkeypatch):
+    monkeypatch.setattr(proxy_master, 'IS_WINDOWS', True)
+    stopped = []
+    loopbacks = []
+
+    class FakeProxy:
+        async def stop(self):
+            stopped.append(True)
+
+    monkeypatch.setattr(
+        proxy_master,
+        '_set_active_hosts_loopbacks',
+        lambda value: loopbacks.append(value),
+    )
+    monkeypatch.setattr(proxy_master, 'log_buffer', SimpleNamespace(log=lambda *_args: None))
+    proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
+    proxy._windows_proactor_accept_fault = False
+    proxy._windows_selector_fallback_attempted = False
+    proxy._loop = FakeProactorEventLoop()
+    proxy._proxy = FakeProxy()
+    proxy._active_proxy_port = 58443
+    proxy._env_proxy_ready = threading.Event()
+    proxy._env_proxy_ready.set()
+    proxy._running = True
+
+    with pytest.raises(proxy_master._RetryProxyWithWindowsSelector):
+        asyncio.run(proxy._raise_selector_retry_for_proactor_tls_failure(raw_tls_probe_ok=True))
+
+    assert stopped == [True]
+    assert proxy._proxy is None
+    assert proxy._active_proxy_port is None
+    assert not proxy._env_proxy_ready.is_set()
+    assert not proxy._running
+    assert loopbacks == [None]
+
+
+def test_in_memory_tls_probe_bypasses_socket_layer(tmp_path):
+    ca_cert, ca_key = generate_ca(tmp_path)
+    cert, key = generate_multi_host_cert(
+        'default',
+        {'assetdelivery.roblox.com'},
+        ca_cert,
+        ca_key,
+        tmp_path,
+    )
+
+    ok, detail = proxy_master._run_in_memory_tls_probe_sync(
+        'assetdelivery.roblox.com',
+        ca_cert,
+        cert,
+        key,
+    )
+
+    assert ok, detail
+    assert 'protocol=TLSv1.2' in detail
+
+
+def test_windows_startup_tls_relaxes_cap_before_switching_loopback(monkeypatch):
+    monkeypatch.setattr(proxy_master, 'IS_WINDOWS', True)
+    calls = []
+    tls_changes = []
+    monkeypatch.setattr(proxy_master, 'log_buffer', SimpleNamespace(log=lambda *_args: None))
+
+    async def fake_self_test(
+        hosts,
+        _ca_cert_path,
+        _port,
+        explicit_proxy,
+        loopback_host,
+        tls_max_version,
+    ):
+        calls.append((set(hosts), explicit_proxy, loopback_host, tls_max_version))
+        if (
+            loopback_host == '127.0.0.1'
+            and tls_max_version is proxy_master.ssl.TLSVersion.MAXIMUM_SUPPORTED
+        ):
+            return True, []
+        return False, ['timed out']
+
+    class FakeProxy:
+        def set_local_tls_max_version(self, version):
+            tls_changes.append(version)
+
+    monkeypatch.setattr(proxy_master, '_tls_self_test_result', fake_self_test)
+    proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
+    proxy._proxy = FakeProxy()
+    proxy._env_proxy_loopback_host = '127.0.0.1'
+
+    ok = asyncio.run(
+        proxy._run_startup_tls_self_test(
+            {'assetdelivery.roblox.com', 'gamejoin.roblox.com'},
+            Path('ca.crt'),
+            58443,
+            explicit_proxy=True,
+        )
+    )
+
+    assert ok
+    assert proxy._env_proxy_loopback_host == '127.0.0.1'
+    assert proxy._active_local_tls_max_version is proxy_master.ssl.TLSVersion.MAXIMUM_SUPPORTED
+    assert tls_changes == [proxy_master.ssl.TLSVersion.MAXIMUM_SUPPORTED]
+    assert [call[2:] for call in calls] == [
+        ('127.0.0.1', proxy_master.PROXY_TLS_MAX_VERSION),
+        ('127.0.0.1', proxy_master.ssl.TLSVersion.MAXIMUM_SUPPORTED),
+        ('127.0.0.1', proxy_master.ssl.TLSVersion.MAXIMUM_SUPPORTED),
+    ]
+
+
+def test_windows_env_proxy_startup_tls_can_switch_to_ipv6_loopback(monkeypatch):
+    monkeypatch.setattr(proxy_master, 'IS_WINDOWS', True)
+    tls_changes = []
+    monkeypatch.setattr(proxy_master, 'log_buffer', SimpleNamespace(log=lambda *_args: None))
+
+    async def fake_self_test(
+        _hosts,
+        _ca_cert_path,
+        _port,
+        _explicit_proxy,
+        loopback_host,
+        tls_max_version,
+    ):
+        if loopback_host == '::1' and tls_max_version is proxy_master.PROXY_TLS_MAX_VERSION:
+            return True, []
+        return False, ['timed out']
+
+    class FakeProxy:
+        def set_local_tls_max_version(self, version):
+            tls_changes.append(version)
+
+    monkeypatch.setattr(proxy_master, '_tls_self_test_result', fake_self_test)
+    proxy = proxy_master.ProxyMaster.__new__(proxy_master.ProxyMaster)
+    proxy._proxy = FakeProxy()
+    proxy._env_proxy_loopback_host = '127.0.0.1'
+    proxy._active_proxy_port = 58443
+
+    ok = asyncio.run(
+        proxy._run_startup_tls_self_test(
+            {'assetdelivery.roblox.com', 'gamejoin.roblox.com'},
+            Path('ca.crt'),
+            58443,
+            explicit_proxy=True,
+        )
+    )
+
+    assert ok
+    assert proxy._env_proxy_loopback_host == '::1'
+    assert proxy._active_local_tls_max_version is proxy_master.PROXY_TLS_MAX_VERSION
+    assert proxy.roblox_env_proxy_url() == 'http://[::1]:58443'
+    assert tls_changes == [
+        proxy_master.ssl.TLSVersion.MAXIMUM_SUPPORTED,
+        proxy_master.PROXY_TLS_MAX_VERSION,
+    ]

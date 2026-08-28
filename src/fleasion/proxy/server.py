@@ -1307,13 +1307,14 @@ class FleasionProxy:
         self._upstream_mode = normalize_upstream_mode(upstream_mode)
         self._connector = self._build_connector()
 
+        self._local_tls_max_version = PROXY_TLS_MAX_VERSION
         self._host_ssl_ctxs: Dict[str, ssl.SSLContext] = {}
         for host, (cert_path, key_path) in host_certs.items():
             ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             ctx.load_cert_chain(str(cert_path), str(key_path))
             ctx.verify_mode = ssl.CERT_NONE
             ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-            ctx.maximum_version = PROXY_TLS_MAX_VERSION
+            ctx.maximum_version = self._local_tls_max_version
             ctx.set_alpn_protocols(['http/1.1'])
             self._host_ssl_ctxs[host] = ctx
 
@@ -1330,9 +1331,21 @@ class FleasionProxy:
         self._server_ssl_ctx.load_cert_chain(str(default_cert_path), str(default_key_path))
         self._server_ssl_ctx.verify_mode = ssl.CERT_NONE
         self._server_ssl_ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-        self._server_ssl_ctx.maximum_version = PROXY_TLS_MAX_VERSION
+        self._server_ssl_ctx.maximum_version = self._local_tls_max_version
         self._server_ssl_ctx.set_alpn_protocols(['http/1.1'])
         self._server_ssl_ctx.set_servername_callback(self._sni_callback)
+
+    def set_local_tls_max_version(self, version: ssl.TLSVersion) -> None:
+        """Update the TLS ceiling used by local client-facing contexts.
+
+        Fleasion normally caps local interception at TLS 1.2 for Windows
+        compatibility.  Startup diagnostics may relax that ceiling when a
+        machine cannot complete the capped loopback handshake.
+        """
+        self._local_tls_max_version = version
+        self._server_ssl_ctx.maximum_version = version
+        for ctx in self._host_ssl_ctxs.values():
+            ctx.maximum_version = version
 
     def _log_sni_once(self, key: str, message: str) -> None:
         if key in self._sni_diagnostics_seen:
@@ -1411,7 +1424,7 @@ class FleasionProxy:
             ctx.load_cert_chain(str(cert_path), str(key_path))
             ctx.verify_mode = ssl.CERT_NONE
             ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-            ctx.maximum_version = PROXY_TLS_MAX_VERSION
+            ctx.maximum_version = self._local_tls_max_version
             ctx.set_alpn_protocols(['http/1.1'])
         except Exception as exc:
             try:

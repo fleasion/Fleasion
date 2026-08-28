@@ -1,5 +1,6 @@
 import asyncio
 import socket
+import ssl
 import tempfile
 import unittest
 from pathlib import Path
@@ -406,6 +407,41 @@ def test_direct_upstream_refresh_retries_a_fresh_endpoint(monkeypatch, tmp_path)
     assert [endpoint.ip for endpoint in proxy._upstream_endpoints[host]] == [refreshed_ip]
     assert bypass_updates == [{host: [refreshed_ip]}]
     assert proxy._connector.state_for(host).direct_ip_unhealthy_until == 0.0
+
+
+def test_local_tls_max_version_can_be_relaxed(tmp_path):
+    ca_cert, ca_key = generate_ca(tmp_path)
+    host_cert = generate_host_cert(ASSET_DELIVERY_HOST, ca_cert, ca_key, tmp_path)
+    default_cert = generate_multi_host_cert(
+        'default',
+        {ASSET_DELIVERY_HOST},
+        ca_cert,
+        ca_key,
+        tmp_path,
+    )
+    proxy = FleasionProxy(
+        texture_stripper=SimpleNamespace(),
+        cache_scraper=SimpleNamespace(enabled=False),
+        host_certs={ASSET_DELIVERY_HOST: host_cert},
+        default_cert=default_cert,
+        upstream_endpoints={},
+        explicit_proxy=True,
+        port=0,
+        ca_cert_path=ca_cert,
+        ca_key_path=ca_key,
+        cert_cache_dir=tmp_path,
+    )
+
+    proxy.set_local_tls_max_version(ssl.TLSVersion.MAXIMUM_SUPPORTED)
+    generated_ctx = proxy._get_or_generate_host_ctx('dynamic.example')
+
+    assert proxy._server_ssl_ctx.maximum_version is ssl.TLSVersion.MAXIMUM_SUPPORTED
+    assert (
+        proxy._host_ssl_ctxs[ASSET_DELIVERY_HOST].maximum_version
+        is ssl.TLSVersion.MAXIMUM_SUPPORTED
+    )
+    assert generated_ctx is not None
+    assert generated_ctx.maximum_version is ssl.TLSVersion.MAXIMUM_SUPPORTED
 
 
 def test_explicit_proxy_connect_upgrades_to_tls_and_serves_http(tmp_path):

@@ -684,27 +684,43 @@ def _manual_socks5_proxy_from_settings(config_manager) -> Optional[Socks5ProxyCo
     return Socks5ProxyConfig(host=host, port=port, username=username, password=password)
 
 
-def _connect_tls_for_self_test(host: str | None, ca_cert_path: Path, port: int) -> dict:
+def _connect_tls_for_self_test(
+    host: str | None,
+    ca_cert_path: Path,
+    port: int,
+    loopback_host: str = '127.0.0.1',
+    tls_max_version: ssl.TLSVersion = PROXY_TLS_MAX_VERSION,
+) -> dict:
     ctx = ssl.create_default_context(cafile=str(ca_cert_path))
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-    ctx.maximum_version = PROXY_TLS_MAX_VERSION
+    ctx.maximum_version = tls_max_version
     if host is None:
         ctx.check_hostname = False
-    with socket.create_connection(('127.0.0.1', port), timeout=5.0) as raw_sock:
+    with socket.create_connection((loopback_host, port), timeout=5.0) as raw_sock:
         with ctx.wrap_socket(raw_sock, server_hostname=host) as tls_sock:
             cert = tls_sock.getpeercert()
             return cert if isinstance(cert, dict) else {}
 
 
 def _connect_explicit_proxy_tls_for_self_test(
-    host: str | None, ca_cert_path: Path, port: int
+    host: str | None,
+    ca_cert_path: Path,
+    port: int,
+    loopback_host: str = '127.0.0.1',
+    tls_max_version: ssl.TLSVersion = PROXY_TLS_MAX_VERSION,
 ) -> dict:
     if host is None:
-        return _connect_tls_for_self_test(host, ca_cert_path, port)
+        return _connect_tls_for_self_test(
+            host,
+            ca_cert_path,
+            port,
+            loopback_host=loopback_host,
+            tls_max_version=tls_max_version,
+        )
     ctx = ssl.create_default_context(cafile=str(ca_cert_path))
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-    ctx.maximum_version = PROXY_TLS_MAX_VERSION
-    with socket.create_connection(('127.0.0.1', port), timeout=5.0) as raw_sock:
+    ctx.maximum_version = tls_max_version
+    with socket.create_connection((loopback_host, port), timeout=5.0) as raw_sock:
         request = (
             f'CONNECT {host}:443 HTTP/1.1\r\n'
             f'Host: {host}:443\r\n'
@@ -735,7 +751,12 @@ def _cert_dict_san_hosts(cert: dict) -> set[str]:
 
 
 def _run_tls_self_test_sync(
-    hosts: set[str], ca_cert_path: Path, port: int, explicit_proxy: bool = False
+    hosts: set[str],
+    ca_cert_path: Path,
+    port: int,
+    explicit_proxy: bool = False,
+    loopback_host: str = '127.0.0.1',
+    tls_max_version: ssl.TLSVersion = PROXY_TLS_MAX_VERSION,
 ) -> tuple[bool, list[str]]:
     failures: list[str] = []
     connector = (
@@ -743,13 +764,25 @@ def _run_tls_self_test_sync(
     )
     for host in sorted(hosts):
         try:
-            connector(host, ca_cert_path, port)
+            connector(
+                host,
+                ca_cert_path,
+                port,
+                loopback_host=loopback_host,
+                tls_max_version=tls_max_version,
+            )
         except Exception as exc:
             failures.append(f'{host}: {type(exc).__name__}: {exc}')
 
     if not explicit_proxy:
         try:
-            default_cert = _connect_tls_for_self_test(None, ca_cert_path, port)
+            default_cert = _connect_tls_for_self_test(
+                None,
+                ca_cert_path,
+                port,
+                loopback_host=loopback_host,
+                tls_max_version=tls_max_version,
+            )
             san_hosts = _cert_dict_san_hosts(default_cert)
             missing = sorted(host for host in hosts if host.lower() not in san_hosts)
             if missing:
@@ -761,7 +794,12 @@ def _run_tls_self_test_sync(
 
 
 async def _tls_self_test_result(
-    hosts: set[str], ca_cert_path: Path, port: int, explicit_proxy: bool = False
+    hosts: set[str],
+    ca_cert_path: Path,
+    port: int,
+    explicit_proxy: bool = False,
+    loopback_host: str = '127.0.0.1',
+    tls_max_version: ssl.TLSVersion = PROXY_TLS_MAX_VERSION,
 ) -> tuple[bool, list[str]]:
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
@@ -771,6 +809,8 @@ async def _tls_self_test_result(
         ca_cert_path,
         port,
         explicit_proxy,
+        loopback_host,
+        tls_max_version,
     )
 
 
@@ -779,31 +819,35 @@ def _run_raw_tls_loopback_probe_sync(
     ca_cert_path: Path,
     cert_path: Path,
     key_path: Path,
+    loopback_host: str = '127.0.0.1',
+    tls_max_version: ssl.TLSVersion = PROXY_TLS_MAX_VERSION,
 ) -> tuple[bool, str]:
-    """Test the bundled TLS stack without asyncio transports.
-
-    The normal self-test exercises the actual proxy listener, which is what
-    we need for startup validation.  This compact probe is only run after a
-    failure to distinguish an asyncio SSL transport problem from a lower
-    level OpenSSL/Windows loopback failure.
-    """
+    """Test local TLS over a blocking loopback socket, without asyncio."""
     server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     server_ctx.load_cert_chain(str(cert_path), str(key_path))
     server_ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-    server_ctx.maximum_version = PROXY_TLS_MAX_VERSION
+    server_ctx.maximum_version = tls_max_version
     server_ctx.set_alpn_protocols(['http/1.1'])
 
-    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_result: dict[str, str] = {}
+
+    def _capture_sni(_ssl_obj, server_name, _initial_ctx) -> None:
+        server_result['sni'] = server_name or '<none>'
+
+    server_ctx.set_servername_callback(_capture_sni)
+
+    family = socket.AF_INET6 if ':' in loopback_host else socket.AF_INET
+    listener = socket.socket(family, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    listener.bind(('127.0.0.1', 0))
+    listener.bind((loopback_host, 0))
     listener.listen(1)
     listener.settimeout(6.0)
     port = int(listener.getsockname()[1])
-    server_result: dict[str, str] = {}
 
     def _serve_once() -> None:
         try:
             raw_sock, _address = listener.accept()
+            server_result['accepted'] = 'yes'
             with raw_sock:
                 raw_sock.settimeout(5.0)
                 with server_ctx.wrap_socket(raw_sock, server_side=True) as tls_sock:
@@ -824,8 +868,8 @@ def _run_raw_tls_loopback_probe_sync(
     try:
         client_ctx = ssl.create_default_context(cafile=str(ca_cert_path))
         client_ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-        client_ctx.maximum_version = PROXY_TLS_MAX_VERSION
-        with socket.create_connection(('127.0.0.1', port), timeout=5.0) as raw_sock:
+        client_ctx.maximum_version = tls_max_version
+        with socket.create_connection((loopback_host, port), timeout=5.0) as raw_sock:
             with client_ctx.wrap_socket(raw_sock, server_hostname=host) as tls_sock:
                 client_protocol = tls_sock.version() or 'unknown'
                 cipher = tls_sock.cipher()
@@ -841,7 +885,14 @@ def _run_raw_tls_loopback_probe_sync(
     server_thread.join(timeout=6.0)
     if client_error is not None:
         server_error = server_result.get('error', 'none')
-        return False, f'client={client_error}; server={server_error}'
+        accepted = server_result.get('accepted', 'no')
+        sni = server_result.get('sni', 'not-seen')
+        alive = 'yes' if server_thread.is_alive() else 'no'
+        return (
+            False,
+            f'client={client_error}; server={server_error}; accepted={accepted}; '
+            f'sni={sni}; server_thread_alive={alive}',
+        )
     if server_thread.is_alive():
         return False, 'server thread did not finish after client handshake'
     if 'error' in server_result:
@@ -854,6 +905,8 @@ async def _run_raw_tls_loopback_probe(
     ca_cert_path: Path,
     cert_path: Path,
     key_path: Path,
+    loopback_host: str = '127.0.0.1',
+    tls_max_version: ssl.TLSVersion = PROXY_TLS_MAX_VERSION,
 ) -> tuple[bool, str]:
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
@@ -863,6 +916,92 @@ async def _run_raw_tls_loopback_probe(
         ca_cert_path,
         cert_path,
         key_path,
+        loopback_host,
+        tls_max_version,
+    )
+
+
+def _run_in_memory_tls_probe_sync(
+    host: str,
+    ca_cert_path: Path,
+    cert_path: Path,
+    key_path: Path,
+    tls_max_version: ssl.TLSVersion = PROXY_TLS_MAX_VERSION,
+) -> tuple[bool, str]:
+    """Exercise OpenSSL/certificates without touching the socket layer."""
+    server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_ctx.load_cert_chain(str(cert_path), str(key_path))
+    server_ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    server_ctx.maximum_version = tls_max_version
+    server_ctx.set_alpn_protocols(['http/1.1'])
+
+    client_ctx = ssl.create_default_context(cafile=str(ca_cert_path))
+    client_ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    client_ctx.maximum_version = tls_max_version
+    client_ctx.set_alpn_protocols(['http/1.1'])
+
+    client_in = ssl.MemoryBIO()
+    client_out = ssl.MemoryBIO()
+    server_in = ssl.MemoryBIO()
+    server_out = ssl.MemoryBIO()
+    client = client_ctx.wrap_bio(
+        client_in,
+        client_out,
+        server_side=False,
+        server_hostname=host,
+    )
+    server = server_ctx.wrap_bio(server_in, server_out, server_side=True)
+    client_done = False
+    server_done = False
+
+    try:
+        for _ in range(64):
+            if not client_done:
+                try:
+                    client.do_handshake()
+                    client_done = True
+                except ssl.SSLWantReadError:
+                    pass
+            client_bytes = client_out.read()
+            if client_bytes:
+                server_in.write(client_bytes)
+
+            if not server_done:
+                try:
+                    server.do_handshake()
+                    server_done = True
+                except ssl.SSLWantReadError:
+                    pass
+            server_bytes = server_out.read()
+            if server_bytes:
+                client_in.write(server_bytes)
+
+            if client_done and server_done:
+                cipher = client.cipher()
+                cipher_name = cipher[0] if cipher else 'unknown'
+                return True, f'protocol={client.version() or "unknown"}; cipher={cipher_name}'
+    except Exception as exc:
+        return False, f'{type(exc).__name__}: {exc}'
+
+    return False, 'handshake did not complete after 64 in-memory exchanges'
+
+
+async def _run_in_memory_tls_probe(
+    host: str,
+    ca_cert_path: Path,
+    cert_path: Path,
+    key_path: Path,
+    tls_max_version: ssl.TLSVersion = PROXY_TLS_MAX_VERSION,
+) -> tuple[bool, str]:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        None,
+        _run_in_memory_tls_probe_sync,
+        host,
+        ca_cert_path,
+        cert_path,
+        key_path,
+        tls_max_version,
     )
 
 
@@ -3866,6 +4005,9 @@ class ProxyMaster:
         self._thread: Optional[threading.Thread] = None
         self._running = False
         self._active_proxy_port: Optional[int] = None
+        self._env_proxy_loopback_host = '127.0.0.1'
+        self._active_local_tls_max_version = PROXY_TLS_MAX_VERSION
+        self._tls_startup_attempts: list[dict] = []
         self._lock = threading.Lock()
         self._env_proxy_ready = threading.Event()
         self._hosts_proxy_ready = threading.Event()
@@ -3931,7 +4073,9 @@ class ProxyMaster:
 
     def roblox_env_proxy_url(self) -> str:
         port = self._active_proxy_port or MACOS_PROXY_BACKEND_PORT
-        return f'http://127.0.0.1:{port}'
+        host = getattr(self, '_env_proxy_loopback_host', '127.0.0.1')
+        url_host = f'[{host}]' if ':' in host else host
+        return f'http://{url_host}:{port}'
 
     def _linux_client_installation(self):
         installation = getattr(self, '_active_linux_client_installation', None)
@@ -4967,7 +5111,7 @@ class ProxyMaster:
                 reason = (
                     f'Proactor accept WinError {_WINDOWS_PROACTOR_ACCEPT_WINERROR}'
                     if getattr(self, '_windows_proactor_accept_fault', False)
-                    else 'unknown Proactor accept fault'
+                    else 'Proactor TLS listener failure with healthy blocking TLS'
                 )
                 log_buffer.log(
                     'Proxy',
@@ -4983,20 +5127,146 @@ class ProxyMaster:
             # returns unexpectedly or startup aborts after flags were primed.
             self._cleanup_linux_client_proxy_state()
 
-    async def _raise_selector_retry_for_proactor_accept_fault(self) -> None:
+    async def _run_startup_tls_self_test(
+        self,
+        hosts: set[str],
+        ca_cert_path: Path,
+        port: int,
+        *,
+        explicit_proxy: bool,
+    ) -> bool:
+        """Validate local TLS and try narrow Windows-only recovery profiles.
+
+        The default remains IPv4 + TLS 1.2.  On Windows, a failed local
+        handshake may be caused by the temporary TLS 1.2 compatibility cap
+        or by an IPv4-only loopback filter.  Probe one representative host
+        before the full route set so those fallbacks do not multiply startup
+        time for a machine whose loopback TLS path is broken.
+        """
+        hosts = set(hosts)
+        if not hosts:
+            self._tls_startup_attempts = []
+            return True
+
+        if not IS_WINDOWS:
+            ok = await _run_tls_self_test(
+                hosts, ca_cert_path, port, explicit_proxy=explicit_proxy
+            )
+            self._tls_startup_attempts = [
+                {
+                    'loopback': '127.0.0.1',
+                    'tls_max': PROXY_TLS_MAX_VERSION.name,
+                    'ok': ok,
+                    'failures': [],
+                }
+            ]
+            return ok
+
+        profiles: list[tuple[str, ssl.TLSVersion]] = [
+            ('127.0.0.1', PROXY_TLS_MAX_VERSION),
+            ('127.0.0.1', ssl.TLSVersion.MAXIMUM_SUPPORTED),
+        ]
+        loopback_ips = getattr(self._proxy, 'loopback_ips_for_hosts', None)
+        available_loopbacks = (
+            set(loopback_ips()) if callable(loopback_ips) else {'127.0.0.1', '::1'}
+        )
+        if explicit_proxy and '::1' in available_loopbacks:
+            profiles.extend(
+                [
+                    ('::1', PROXY_TLS_MAX_VERSION),
+                    ('::1', ssl.TLSVersion.MAXIMUM_SUPPORTED),
+                ]
+            )
+
+        representative_hosts = {min(hosts)}
+        attempts: list[dict] = []
+        current_tls_max = PROXY_TLS_MAX_VERSION
+
+        for index, (loopback_host, tls_max_version) in enumerate(profiles):
+            if tls_max_version != current_tls_max:
+                set_tls_max = getattr(self._proxy, 'set_local_tls_max_version', None)
+                if not callable(set_tls_max):
+                    continue
+                set_tls_max(tls_max_version)
+                current_tls_max = tls_max_version
+
+            probe_hosts = representative_hosts if len(profiles) > 1 else hosts
+            ok, failures = await _tls_self_test_result(
+                probe_hosts,
+                ca_cert_path,
+                port,
+                explicit_proxy,
+                loopback_host,
+                tls_max_version,
+            )
+            if ok and probe_hosts != hosts:
+                ok, failures = await _tls_self_test_result(
+                    hosts,
+                    ca_cert_path,
+                    port,
+                    explicit_proxy,
+                    loopback_host,
+                    tls_max_version,
+                )
+
+            attempts.append(
+                {
+                    'loopback': loopback_host,
+                    'tls_max': tls_max_version.name,
+                    'ok': ok,
+                    'failures': list(failures),
+                }
+            )
+            if ok:
+                self._active_local_tls_max_version = tls_max_version
+                if explicit_proxy:
+                    self._env_proxy_loopback_host = loopback_host
+                _log_tls_self_test_passed(hosts, explicit_proxy)
+                if index:
+                    url_host = f'[{loopback_host}]' if ':' in loopback_host else loopback_host
+                    log_buffer.log(
+                        'ProxyDiag',
+                        'Local TLS fallback selected: '
+                        f'loopback={url_host}; tls_max={tls_max_version.name}; '
+                        f'proxy_url=http://{url_host}:{port}',
+                    )
+                self._tls_startup_attempts = attempts
+                return True
+
+            _log_tls_self_test_failures(failures)
+            if index + 1 < len(profiles):
+                next_host, next_max = profiles[index + 1]
+                next_url_host = f'[{next_host}]' if ':' in next_host else next_host
+                log_buffer.log(
+                    'ProxyDiag',
+                    'Local TLS route failed; trying fallback '
+                    f'loopback={next_url_host}; tls_max={next_max.name}',
+                )
+
+        self._tls_startup_attempts = attempts
+        return False
+
+    async def _raise_selector_retry_for_proactor_tls_failure(
+        self, *, raw_tls_probe_ok: bool = False
+    ) -> None:
         loop = getattr(self, '_loop', None)
+        accept_fault = bool(getattr(self, '_windows_proactor_accept_fault', False))
         if (
             not IS_WINDOWS
             or loop is None
             or 'proactor' not in type(loop).__name__.lower()
-            or not getattr(self, '_windows_proactor_accept_fault', False)
+            or (not accept_fault and not raw_tls_probe_ok)
             or getattr(self, '_windows_selector_fallback_attempted', False)
         ):
             return
+        reason = (
+            f'Windows Proactor accept WinError {_WINDOWS_PROACTOR_ACCEPT_WINERROR}'
+            if accept_fault
+            else 'asyncio TLS failed while the blocking raw TLS probe passed'
+        )
         log_buffer.log(
             'ProxyDiag',
-            f'TLS startup self-test failed after Windows Proactor accept WinError '
-            f'{_WINDOWS_PROACTOR_ACCEPT_WINERROR}; cleaning up the failed '
+            f'TLS startup self-test failed after {reason}; cleaning up the failed '
             'listener before Selector retry',
         )
         try:
@@ -5017,6 +5287,9 @@ class ProxyMaster:
             self._env_proxy_ready.clear()
             self._hosts_proxy_ready.clear()
             self._active_proxy_port = None
+            self._env_proxy_loopback_host = '127.0.0.1'
+            self._active_local_tls_max_version = PROXY_TLS_MAX_VERSION
+            self._tls_startup_attempts = []
 
             self._thread = threading.Thread(
                 target=self._run_proxy_worker,
@@ -5546,22 +5819,102 @@ class ProxyMaster:
         # before the hosts file points Roblox at us. In particular, do not probe
         # delayed Sober ClientSettings routes before their bootstrap window has
         # elapsed: those hosts are intentionally not active yet.
-        if not await _run_tls_self_test(
-            set(active_hosts), ca_cert_path, listen_port, explicit_proxy=env_proxy_mode
+        if not await self._run_startup_tls_self_test(
+            set(active_hosts),
+            ca_cert_path,
+            listen_port,
+            explicit_proxy=env_proxy_mode,
         ):
             probe_host = min(active_hosts)
-            raw_probe_ok, raw_probe_detail = await _run_raw_tls_loopback_probe(
-                probe_host,
-                ca_cert_path,
-                default_cert[0],
-                default_cert[1],
-            )
-            raw_probe_status = 'passed' if raw_probe_ok else 'failed'
-            log_buffer.log(
-                'TLS',
-                f'Raw TLS loopback probe {raw_probe_status} for {probe_host}: {raw_probe_detail}',
-            )
-            await self._raise_selector_retry_for_proactor_accept_fault()
+            tls_attempts = list(getattr(self, '_tls_startup_attempts', []))
+            raw_tls_attempts: list[dict] = []
+            raw_probe_ok = False
+            for attempt in tls_attempts:
+                loopback_host = str(attempt.get('loopback') or '127.0.0.1')
+                tls_max_name = str(attempt.get('tls_max') or PROXY_TLS_MAX_VERSION.name)
+                tls_max_version = getattr(
+                    ssl.TLSVersion,
+                    tls_max_name,
+                    PROXY_TLS_MAX_VERSION,
+                )
+                try:
+                    candidate_ok, candidate_detail = await _run_raw_tls_loopback_probe(
+                        probe_host,
+                        ca_cert_path,
+                        default_cert[0],
+                        default_cert[1],
+                        loopback_host,
+                        tls_max_version,
+                    )
+                except Exception as exc:
+                    candidate_ok = False
+                    candidate_detail = f'{type(exc).__name__}: {exc}'
+                raw_tls_attempts.append(
+                    {
+                        'loopback': loopback_host,
+                        'tls_max': tls_max_name,
+                        'ok': candidate_ok,
+                        'detail': candidate_detail,
+                    }
+                )
+                candidate_status = 'passed' if candidate_ok else 'failed'
+                log_buffer.log(
+                    'TLS',
+                    f'Raw TLS loopback probe {candidate_status} for {probe_host}: '
+                    f'loopback={loopback_host}; tls_max={tls_max_name}; '
+                    f'{candidate_detail}',
+                )
+                if candidate_ok:
+                    raw_probe_ok = True
+                    break
+
+            memory_tls_attempts: list[dict] = []
+            memory_probe_ok = False
+            seen_tls_max: set[str] = set()
+            for attempt in tls_attempts:
+                tls_max_name = str(attempt.get('tls_max') or PROXY_TLS_MAX_VERSION.name)
+                if tls_max_name in seen_tls_max:
+                    continue
+                seen_tls_max.add(tls_max_name)
+                tls_max_version = getattr(
+                    ssl.TLSVersion,
+                    tls_max_name,
+                    PROXY_TLS_MAX_VERSION,
+                )
+                try:
+                    candidate_ok, candidate_detail = await _run_in_memory_tls_probe(
+                        probe_host,
+                        ca_cert_path,
+                        default_cert[0],
+                        default_cert[1],
+                        tls_max_version,
+                    )
+                except Exception as exc:
+                    candidate_ok = False
+                    candidate_detail = f'{type(exc).__name__}: {exc}'
+                memory_tls_attempts.append(
+                    {
+                        'tls_max': tls_max_name,
+                        'ok': candidate_ok,
+                        'detail': candidate_detail,
+                    }
+                )
+                candidate_status = 'passed' if candidate_ok else 'failed'
+                log_buffer.log(
+                    'TLS',
+                    f'In-memory TLS probe {candidate_status} for {probe_host}: '
+                    f'tls_max={tls_max_name}; {candidate_detail}',
+                )
+                memory_probe_ok = memory_probe_ok or candidate_ok
+
+            if memory_probe_ok and not raw_probe_ok:
+                log_buffer.log(
+                    'ProxyDiag',
+                    'OpenSSL/certificate TLS passed in memory but every tested local TCP '
+                    'TLS profile failed; a Windows socket/filter driver is the likely '
+                    'failure boundary',
+                )
+            await self._raise_selector_retry_for_proactor_tls_failure(raw_tls_probe_ok=raw_probe_ok)
             log_buffer.log(
                 'Error',
                 'Proxy startup aborted: TLS self-test failed for active intercept hosts',
@@ -5576,6 +5929,11 @@ class ProxyMaster:
                     'selector_fallback_attempted': getattr(
                         self, '_windows_selector_fallback_attempted', False
                     ),
+                    'tls_attempts': tls_attempts,
+                    'raw_tls_attempts': raw_tls_attempts,
+                    'memory_tls_attempts': memory_tls_attempts,
+                    'in_memory_tls_ok': memory_probe_ok,
+                    'raw_tls_loopback_ok': raw_probe_ok,
                 },
             )
             await self._proxy.stop()
