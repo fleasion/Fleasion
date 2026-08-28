@@ -23,7 +23,6 @@ from PyQt6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFrame,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -52,6 +51,7 @@ from ..utils.roblox_auth import (
 )
 from ..utils.secure_tokens import decrypt_token, encrypt_token
 from ..utils.windows import launch_as_standard_user, resolve_roblox_player_exe_for_launch
+from .modifications_tab import CollapsibleSection
 from .proxy_gate import ProxyGate
 
 ACCOUNTS_FILE = CONFIG_DIR / 'accounts.json'
@@ -890,7 +890,7 @@ class RandoStuffTab(QWidget):
     def _setup_ui(self):
         outer = QVBoxLayout()
         outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(8)
+        outer.setSpacing(0)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -903,15 +903,22 @@ class RandoStuffTab(QWidget):
         root.setContentsMargins(10, 10, 10, 10)
         root.setSpacing(10)
 
-        rejoin_group = QGroupBox(tr('ui.gui.rando_stuff_tab.reserved_server_rejoin'))
-        rjl = QVBoxLayout(rejoin_group)
+        # Match Modifications/Settings: every utility lives in the same
+        # collapsible rounded section card instead of a native QGroupBox.
+        self._rejoin_section = CollapsibleSection(
+            tr('ui.gui.rando_stuff_tab.reserved_server_rejoin'),
+            expanded=True,
+        )
+        rejoin_body = QWidget()
+        rjl = QVBoxLayout(rejoin_body)
+        rjl.setContentsMargins(0, 0, 0, 0)
+        rjl.setSpacing(6)
 
         btn_row = QHBoxLayout()
         self._btn = QPushButton(tr('ui.gui.rando_stuff_tab.rejoin_reserved_server'))
         btn_row.addWidget(self._btn)
         help_btn = QPushButton(tr('ui.gui.rando_stuff_tab.text'))
-        _btn_h = self._btn.sizeHint().height()
-        help_btn.setFixedSize(_btn_h, _btn_h)
+        help_btn.setMaximumWidth(self._btn.sizeHint().height())
         help_btn.setToolTip(tr('ui.gui.rando_stuff_tab.what_is_a_reserved_server'))
         help_btn.clicked.connect(self._show_reserved_server_help)
         btn_row.addWidget(help_btn)
@@ -921,19 +928,19 @@ class RandoStuffTab(QWidget):
         place_row = QHBoxLayout()
         place_lbl = QLabel(tr('ui.gui.rando_stuff_tab.placeid'))
         place_row.addWidget(place_lbl)
-        # shift the reserved server placeID input box slightly to the right (only the input)
         self._place_id_input = QLineEdit()
         self._place_id_input.setPlaceholderText(
             tr('ui.gui.rando_stuff_tab.reserved_server_placeid')
         )
         self._place_id_input.textChanged.connect(self._on_reserved_fields_changed)
-        place_row.addSpacing(23)
         place_row.addWidget(self._place_id_input, 1)
         rjl.addLayout(place_row)
 
         access_row = QHBoxLayout()
         access_lbl = QLabel(tr('ui.gui.rando_stuff_tab.accesscode'))
-        access_lbl.setMinimumWidth(place_lbl.sizeHint().width())
+        label_width = max(place_lbl.sizeHint().width(), access_lbl.sizeHint().width())
+        place_lbl.setMinimumWidth(label_width)
+        access_lbl.setMinimumWidth(label_width)
         access_row.addWidget(access_lbl)
         self._access_code_input = QLineEdit()
         self._access_code_input.setPlaceholderText(
@@ -951,11 +958,14 @@ class RandoStuffTab(QWidget):
         self._rejoin_timer.timeout.connect(self._tick_rejoin_timer)
         self._rejoin_timer_secs = 0
 
-        self._rejoin_proxy_gate = ProxyGate(rejoin_group, compact=True)
+        self._rejoin_section.add_widget(rejoin_body)
+        self._rejoin_proxy_gate = ProxyGate(self._rejoin_section, compact=True)
         root.addWidget(self._rejoin_proxy_gate)
 
-        mi_group = QGroupBox(tr('ui.gui.rando_stuff_tab.multi_instance'))
-        mil = QVBoxLayout(mi_group)
+        self._multi_instance_section = CollapsibleSection(
+            tr('ui.gui.rando_stuff_tab.multi_instance'),
+            expanded=True,
+        )
         self._multi_chk = QCheckBox(tr('ui.gui.rando_stuff_tab.enable_multi_instance_launching'))
         if not IS_WINDOWS:
             self._multi_chk.setChecked(False)
@@ -963,38 +973,55 @@ class RandoStuffTab(QWidget):
             self._multi_chk.setToolTip(
                 tr('ui.gui.rando_stuff_tab.multi_instance_launching_depends_on_a_windows')
             )
-        mil.addWidget(self._multi_chk)
-        root.addWidget(mi_group)
+        self._multi_instance_section.add_widget(self._multi_chk)
+        root.addWidget(self._multi_instance_section)
 
-        am_group = QGroupBox(tr('ui.gui.rando_stuff_tab.account_manager'))
-        aml = QVBoxLayout(am_group)
+        self._account_manager_section = CollapsibleSection(
+            tr('ui.gui.rando_stuff_tab.account_manager'),
+            expanded=True,
+        )
+        account_body = QWidget()
+        account_layout = QHBoxLayout(account_body)
+        account_layout.setContentsMargins(0, 0, 0, 0)
+        account_layout.setSpacing(10)
 
+        # Account selection stays in a narrow left column.  The controls that
+        # used to sit below the list now occupy the right column, eliminating
+        # the large empty list area on wide/tall windows.
         self._account_list = QListWidget()
         self._account_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._account_list.customContextMenuRequested.connect(self._on_account_ctx_menu)
-        aml.addWidget(self._account_list)
+        self._account_list.setMinimumWidth(180)
+        self._account_list.setMaximumWidth(300)
+        self._account_list.setMinimumHeight(150)
+        account_layout.addWidget(self._account_list, 1)
+
+        account_details = QWidget()
+        account_details_layout = QVBoxLayout(account_details)
+        account_details_layout.setContentsMargins(0, 0, 0, 0)
+        account_details_layout.setSpacing(6)
 
         self._selected_label = QLabel(tr('ui.gui.rando_stuff_tab.selected_none'))
         self._selected_label.setStyleSheet('color: palette(placeholder-text); font-size: 9pt;')
-        aml.addWidget(self._selected_label)
+        account_details_layout.addWidget(self._selected_label)
 
         self._private_server_input = QLineEdit()
         self._private_server_input.setPlaceholderText(
             tr('ui.gui.rando_stuff_tab.game_link_e_g_https_www_roblox')
         )
         self._private_server_input.textChanged.connect(self._on_game_link_changed)
-        aml.addWidget(self._private_server_input)
+        account_details_layout.addWidget(self._private_server_input)
 
         self._subplace_id_input = QLineEdit()
         self._subplace_id_input.setPlaceholderText(
             tr('ui.gui.rando_stuff_tab.subplace_id_optional')
         )
         self._subplace_id_input.textChanged.connect(self._on_subplace_id_changed)
-        aml.addWidget(self._subplace_id_input)
+        account_details_layout.addWidget(self._subplace_id_input)
 
         self._job_id_input = QLineEdit()
         self._job_id_input.setPlaceholderText(tr('ui.gui.rando_stuff_tab.jobid_optional'))
-        aml.addWidget(self._job_id_input)
+        account_details_layout.addWidget(self._job_id_input)
 
         am_btns = QHBoxLayout()
         self._add_acct_btn = QPushButton(tr('ui.gui.rando_stuff_tab.add_account'))
@@ -1011,16 +1038,23 @@ class RandoStuffTab(QWidget):
         am_btns.addWidget(self._launch_acct_btn)
         am_btns.addWidget(self._switch_acct_btn)
         am_btns.addStretch()
-        aml.addLayout(am_btns)
+        account_details_layout.addLayout(am_btns)
+        account_details_layout.addStretch()
+        account_layout.addWidget(account_details, 4)
 
-        root.addWidget(am_group)
+        self._account_manager_section.add_widget(account_body)
+        root.addWidget(self._account_manager_section)
 
         self._populate_account_list()
 
-        username_group = QGroupBox(
-            tr('ui.gui.rando_stuff_tab.username_spoofer_client_sided_only_you_see')
+        self._username_spoofer_section = CollapsibleSection(
+            tr('ui.gui.rando_stuff_tab.username_spoofer_client_sided_only_you_see'),
+            expanded=True,
         )
-        username_layout = QVBoxLayout(username_group)
+        username_body = QWidget()
+        username_layout = QVBoxLayout(username_body)
+        username_layout.setContentsMargins(0, 0, 0, 0)
+        username_layout.setSpacing(6)
 
         self._username_save_chk = QCheckBox(
             tr('ui.gui.rando_stuff_tab.save_username_spoofer_settings')
@@ -1090,11 +1124,21 @@ class RandoStuffTab(QWidget):
         username_layout.addLayout(self_row)
         username_layout.addWidget(self._username_self_game_creator_chk)
 
-        self._username_spoofer_proxy_gate = ProxyGate(username_group, compact=True)
+        self._username_spoofer_section.add_widget(username_body)
+        self._username_spoofer_proxy_gate = ProxyGate(
+            self._username_spoofer_section,
+            compact=True,
+        )
         root.addWidget(self._username_spoofer_proxy_gate)
 
-        ac_group = QGroupBox(tr('ui.gui.rando_stuff_tab.r6_r15_animation_converter'))
-        acl = QVBoxLayout(ac_group)
+        self._animation_converter_section = CollapsibleSection(
+            tr('ui.gui.rando_stuff_tab.r6_r15_animation_converter'),
+            expanded=True,
+        )
+        animation_body = QWidget()
+        acl = QVBoxLayout(animation_body)
+        acl.setContentsMargins(0, 0, 0, 0)
+        acl.setSpacing(6)
 
         import_row = QHBoxLayout()
         self._ac_import_btn = QPushButton(tr('ui.gui.rando_stuff_tab.import_rbxmx_rbxm'))
@@ -1123,10 +1167,17 @@ class RandoStuffTab(QWidget):
         self._ac_status_lbl = QLabel('')
         acl.addWidget(self._ac_status_lbl)
 
-        root.addWidget(ac_group)
+        self._animation_converter_section.add_widget(animation_body)
+        root.addWidget(self._animation_converter_section)
 
-        subplace_blacklist_group = QGroupBox(tr('ui.gui.rando_stuff_tab.subplace_blacklist'))
-        subplace_blacklist_layout = QVBoxLayout(subplace_blacklist_group)
+        self._subplace_blacklist_section = CollapsibleSection(
+            tr('ui.gui.rando_stuff_tab.subplace_blacklist'),
+            expanded=True,
+        )
+        subplace_blacklist_body = QWidget()
+        subplace_blacklist_layout = QVBoxLayout(subplace_blacklist_body)
+        subplace_blacklist_layout.setContentsMargins(0, 0, 0, 0)
+        subplace_blacklist_layout.setSpacing(6)
         subplace_blacklist_row = QHBoxLayout()
         self._subplace_blacklist_btn = QPushButton(tr('ui.gui.rando_stuff_tab.blacklist_subplaces'))
         self._subplace_blacklist_btn.clicked.connect(self._show_subplace_blacklist_dialog)
@@ -1153,10 +1204,18 @@ class RandoStuffTab(QWidget):
         )
         subplace_blacklist_layout.addWidget(self._subplace_block_radio)
         subplace_blacklist_layout.addWidget(self._subplace_stall_radio)
-        self._subplace_blacklist_proxy_gate = ProxyGate(subplace_blacklist_group, compact=True)
+        self._subplace_blacklist_section.add_widget(subplace_blacklist_body)
+        self._subplace_blacklist_proxy_gate = ProxyGate(
+            self._subplace_blacklist_section,
+            compact=True,
+        )
         root.addWidget(self._subplace_blacklist_proxy_gate)
 
-        root.addStretch()
+        # Give all spare viewport height to the trailing spacer.  Without a
+        # positive stretch factor QVBoxLayout distributes that space back
+        # across Preferred collapsible cards, so collapsed sections keep
+        # giant empty bodies instead of shrinking to their headers.
+        root.addStretch(1)
 
         footer_widget = QWidget()
         footer_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
