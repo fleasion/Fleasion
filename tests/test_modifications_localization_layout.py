@@ -226,3 +226,26 @@ def test_custom_font_browse_uses_filter_identifier(monkeypatch):
         tab.close()
         tab.deleteLater()
         app.processEvents()
+
+
+@pytest.mark.parametrize(
+    ('framerate_cap', 'expected'),
+    [
+        (2**63, 999_999_999),
+        (-(2**63), 0),
+        ('not-a-number', 0),
+    ],
+)
+def test_framerate_cap_load_clamps_values_before_qspinbox(framerate_cap, expected):
+    app = _qapp()
+    manager = _FakeModificationManager()
+    manager.framerate_cap = framerate_cap
+    tab = None
+    try:
+        tab = ModificationsTab(manager)
+        assert tab._fflag_widget._framerate_cap.value() == expected
+    finally:
+        if tab is not None:
+            tab.close()
+            tab.deleteLater()
+        app.processEvents()

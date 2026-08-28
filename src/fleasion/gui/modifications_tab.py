@@ -3572,7 +3572,19 @@ class FFlagSection(QWidget):
         self._grass_min.setValue(s.get('grass_min') or 0)
         self._grass_motion.setValue(s.get('grass_motion') or 0)
 
-        self._framerate_cap.setValue(self._manager.framerate_cap)
+        # QSpinBox.setValue() is bound to a signed 32-bit C++ int.  Values
+        # loaded from GlobalBasicSettings_13.xml (or an older config) are not
+        # inherently bounded, so passing an oversized integer through PyQt can
+        # raise OverflowError before QSpinBox gets a chance to clamp it.
+        try:
+            framerate_cap = int(self._manager.framerate_cap)
+        except (TypeError, ValueError, OverflowError):
+            framerate_cap = 0
+        framerate_cap = max(
+            self._framerate_cap.minimum(),
+            min(self._framerate_cap.maximum(), framerate_cap),
+        )
+        self._framerate_cap.setValue(framerate_cap)
 
         for w in widgets:
             w.blockSignals(False)
