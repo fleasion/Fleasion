@@ -1,6 +1,44 @@
+import sys
+import types
+
 from PyQt6.QtGui import QColor, QPalette
 
 from fleasion.gui.theme import ThemeManager
+
+
+class _FakeStyle:
+    def __init__(self, name='mock-style', palette=None):
+        self._name = name
+        self._palette = palette or QPalette()
+
+    def objectName(self):
+        return self._name
+
+    def standardPalette(self):
+        return self._palette
+
+
+class _FakeApp:
+    def __init__(self, style=None, palette=None):
+        self._style = style or _FakeStyle()
+        self._palette = palette or QPalette()
+        self.style_name = None
+        self.applied_palette = None
+
+    def style(self):
+        return self._style
+
+    def setStyle(self, style_name):
+        self.style_name = style_name
+        self._style = _FakeStyle(style_name, self._style.standardPalette())
+
+    def setPalette(self, palette):
+        self.applied_palette = palette
+        self._palette = palette
+
+    def palette(self):
+        return self._palette
+
 
 
 def test_panel_colors_keep_forced_dark_palette_independent_colors(monkeypatch):
@@ -152,3 +190,119 @@ def assert_palette_colors(palette, expected):
 def assert_disabled_palette_colors(palette, expected):
     for role, color_name in expected.items():
         assert palette.color(QPalette.ColorGroup.Disabled, role) == QColor(color_name)
+
+
+def test_windows_system_theme_routes_dark_to_fleasion_dark_palette(monkeypatch):
+    monkeypatch.setattr(sys, 'platform', 'win32')
+    monkeypatch.setattr(ThemeManager, '_current_theme', 'System')
+    monkeypatch.setattr(ThemeManager, '_effective_theme', 'System')
+    monkeypatch.setattr(
+        ThemeManager,
+        '_set_color_scheme',
+        staticmethod(lambda _app, _name: None),
+    )
+    monkeypatch.setattr(
+        ThemeManager,
+        '_windows_system_theme',
+        staticmethod(lambda _app: 'Dark'),
+    )
+    app = _FakeApp()
+
+    ThemeManager._apply_system_theme(app)
+
+    assert ThemeManager._current_theme == 'System'
+    assert ThemeManager._effective_theme == 'Dark'
+    assert app.style_name == 'Fusion'
+    assert app.applied_palette.color(QPalette.ColorRole.Window) == QColor('#323232')
+    assert app.applied_palette.color(QPalette.ColorRole.Base) == QColor('#242424')
+    colors = ThemeManager.panel_colors(app.applied_palette)
+    assert colors.section_background == QColor('#272727')
+    assert colors.container_background_css == 'background-color: rgb(64, 64, 64);'
+
+
+def test_windows_system_theme_routes_light_to_fleasion_light_palette(monkeypatch):
+    monkeypatch.setattr(sys, 'platform', 'win32')
+    monkeypatch.setattr(ThemeManager, '_current_theme', 'System')
+    monkeypatch.setattr(ThemeManager, '_effective_theme', 'System')
+    monkeypatch.setattr(
+        ThemeManager,
+        '_set_color_scheme',
+        staticmethod(lambda _app, _name: None),
+    )
+    monkeypatch.setattr(
+        ThemeManager,
+        '_windows_system_theme',
+        staticmethod(lambda _app: 'Light'),
+    )
+    app = _FakeApp()
+
+    ThemeManager._apply_system_theme(app)
+
+    assert ThemeManager._current_theme == 'System'
+    assert ThemeManager._effective_theme == 'Light'
+    assert app.applied_palette.color(QPalette.ColorRole.Window) == QColor('#efefef')
+    assert app.applied_palette.color(QPalette.ColorRole.Base) == QColor('#ffffff')
+    colors = ThemeManager.panel_colors(app.applied_palette)
+    assert colors.section_background == QColor('#f0f0f0')
+
+
+def test_windows_system_theme_reads_apps_use_light_theme_registry(monkeypatch):
+    class _Key:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    values = {'AppsUseLightTheme': 0}
+    fake_winreg = types.SimpleNamespace(
+        HKEY_CURRENT_USER=object(),
+        KEY_QUERY_VALUE=1,
+        OpenKey=lambda *_args, **_kwargs: _Key(),
+        QueryValueEx=lambda _key, name: (values[name], 4),
+    )
+    monkeypatch.setitem(sys.modules, 'winreg', fake_winreg)
+
+    assert ThemeManager._windows_system_theme(_FakeApp()) == 'Dark'
+    values['AppsUseLightTheme'] = 1
+    assert ThemeManager._windows_system_theme(_FakeApp()) == 'Light'
+
+
+def test_macos_system_theme_keeps_qt_system_palette(monkeypatch):
+    monkeypatch.setattr(sys, 'platform', 'darwin')
+    monkeypatch.setattr(ThemeManager, '_current_theme', 'System')
+    monkeypatch.setattr(ThemeManager, '_effective_theme', 'Dark')
+    color_scheme_names = []
+    monkeypatch.setattr(
+        ThemeManager,
+        '_set_color_scheme',
+        staticmethod(lambda _app, name: color_scheme_names.append(name)),
+    )
+    system_palette = QPalette()
+    system_palette.setColor(QPalette.ColorRole.Window, QColor('#123456'))
+    app = _FakeApp(style=_FakeStyle('macos', system_palette))
+
+    ThemeManager._apply_system_theme(app)
+
+    assert color_scheme_names == ['Unknown']
+    assert ThemeManager._effective_theme == 'System'
+    assert app.style_name == 'Fusion'
+    assert app.applied_palette.color(QPalette.ColorRole.Window) == QColor('#123456')
+
+
+def test_linux_system_theme_still_restores_global_qt_style(monkeypatch):
+    monkeypatch.setattr(sys, 'platform', 'linux')
+    monkeypatch.setattr(ThemeManager, '_system_style_name', 'breeze')
+    monkeypatch.setattr(ThemeManager, '_effective_theme', 'Dark')
+    monkeypatch.setattr(
+        ThemeManager,
+        '_set_color_scheme',
+        staticmethod(lambda _app, _name: None),
+    )
+    app = _FakeApp(style=_FakeStyle('Fusion'))
+
+    ThemeManager._apply_system_theme(app)
+
+    assert ThemeManager._effective_theme == 'System'
+    assert app.style_name == 'breeze'
+    assert isinstance(app.applied_palette, QPalette)

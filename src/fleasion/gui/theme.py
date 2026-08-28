@@ -23,6 +23,10 @@ class ThemeManager:
 
     _system_style_name: ClassVar[str | None] = None
     _current_theme: ClassVar[str] = 'System'
+    # Visual theme after resolving the System option.  Windows System maps to
+    # one of Fleasion's explicit Light/Dark palettes; Linux and macOS keep
+    # their Qt-provided system theme behavior.
+    _effective_theme: ClassVar[str] = 'System'
 
     @staticmethod
     def apply_theme(theme: str) -> None:
@@ -33,6 +37,7 @@ class ThemeManager:
 
         ThemeManager._remember_system_theme(app)
         ThemeManager._current_theme = theme
+        ThemeManager._effective_theme = theme
 
         if theme == 'System':
             ThemeManager._apply_system_theme(app)
@@ -54,6 +59,10 @@ class ThemeManager:
         ThemeManager._set_color_scheme(app, 'Unknown')
 
         if sys.platform.startswith('linux'):
+            # Linux deliberately keeps the desktop's real Qt style/palette.
+            # Users commonly choose a global Qt theme (Breeze, Kvantum, etc.)
+            # and System should continue to mean exactly that.
+            ThemeManager._effective_theme = 'System'
             current_style = app.style()
             current_style_name = current_style.objectName() if current_style else None
             if (
@@ -64,8 +73,61 @@ class ThemeManager:
             app.setPalette(QPalette())
             return
 
+        if sys.platform == 'win32':
+            # Qt's Windows system dark palette is not the palette Fleasion uses
+            # for its Dark option (and can be noticeably darker).  Keep the
+            # saved/selected option as System, but resolve Windows' actual app
+            # appearance and use the exact same Fleasion palette as Light/Dark.
+            effective = ThemeManager._windows_system_theme(app)
+            ThemeManager._effective_theme = effective
+            app.setStyle('Fusion')
+            app.setPalette(
+                ThemeManager._dark_palette()
+                if effective == 'Dark'
+                else ThemeManager._light_palette()
+            )
+            return
+
+        # macOS already reports its current appearance through Qt's platform
+        # theme.  Unlike Windows, keep System dynamic/native instead of mapping
+        # it to Fleasion's forced palettes.
+        ThemeManager._effective_theme = 'System'
         app.setStyle('Fusion')
         app.setPalette(app.style().standardPalette())
+
+    @staticmethod
+    def _windows_system_theme(app: QApplication) -> str:
+        """Return the Windows app appearance as ``Light`` or ``Dark``.
+
+        Read the Windows personalization setting directly instead of inferring
+        it from Qt's palette -- the palette is the part we intentionally do not
+        trust for System mode on Windows.  Qt/palette checks are only fallbacks
+        for unusual environments where the registry value is unavailable.
+        """
+        try:
+            import winreg
+
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r'Software\Microsoft\Windows\CurrentVersion\Themes\Personalize',
+                0,
+                winreg.KEY_QUERY_VALUE,
+            ) as key:
+                use_light, _value_type = winreg.QueryValueEx(key, 'AppsUseLightTheme')
+            return 'Light' if int(use_light) else 'Dark'
+        except (ImportError, OSError, TypeError, ValueError):
+            pass
+
+        style_hints = app.styleHints()
+        color_scheme_getter = getattr(style_hints, 'colorScheme', None)
+        if callable(color_scheme_getter):
+            color_scheme = color_scheme_getter()
+            if color_scheme == ThemeManager._qt_color_scheme('Dark'):
+                return 'Dark'
+            if color_scheme == ThemeManager._qt_color_scheme('Light'):
+                return 'Light'
+
+        return 'Dark' if app.palette().window().color().lightness() < 128 else 'Light'
 
     @staticmethod
     def _apply_forced_theme(app: QApplication, theme: str) -> None:
@@ -204,9 +266,9 @@ class ThemeManager:
     def panel_colors(palette: QPalette | None = None) -> PanelThemeColors:
         """Return colors for custom panels without losing forced-theme styling.
 
-        The forced Light/Dark themes keep the previous Fleasion look. System
-        follows the active Qt palette so Linux desktop themes can supply their
-        own colors.
+        Forced Light/Dark keep the Fleasion palette.  Windows System resolves
+        to one of those same palettes, while Linux/macOS System continue using
+        the active Qt palette.
         """
         app = QApplication.instance()
         if palette is None:
@@ -215,14 +277,18 @@ class ThemeManager:
             else:
                 palette = QPalette()
 
-        if ThemeManager._current_theme == 'System':
+        panel_theme = ThemeManager._current_theme
+        if panel_theme == 'System':
+            panel_theme = ThemeManager._effective_theme
+
+        if panel_theme == 'System':
             return PanelThemeColors(
                 section_background=palette.alternateBase().color(),
                 section_border=palette.mid().color(),
                 container_background_css='background-color: palette(alternate-base);',
             )
 
-        is_dark = ThemeManager._current_theme == 'Dark'
+        is_dark = panel_theme == 'Dark'
         return PanelThemeColors(
             section_background=QColor('#272727') if is_dark else QColor('#f0f0f0'),
             section_border=QColor('#3a3a3a') if is_dark else QColor('#d0d0d0'),
