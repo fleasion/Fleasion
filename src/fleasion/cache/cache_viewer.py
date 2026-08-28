@@ -1226,8 +1226,8 @@ class CacheViewerTab(QWidget):
         self._asset_info: dict[str, dict] = {}  # asset_id -> resolved metadata, hash, row
         self._current_pixmap = None  # Store current image for resize
         # OpenGL preview surfaces are intentionally created only for a 3D
-        # preview. They live in child QWindows so the dashboard itself remains
-        # a normal raster top-level window on systems with fragile GL drivers.
+        # preview. Rendering stays offscreen and is copied into raster widgets
+        # so the dashboard never depends on native OpenGL window presentation.
         self.obj_viewer = None
         self.animation_viewer = None
 

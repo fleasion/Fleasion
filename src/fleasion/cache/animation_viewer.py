@@ -20,7 +20,6 @@ import numpy as np
 from OpenGL.GL import *
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QAction, QGuiApplication
-from PyQt6.QtOpenGL import QOpenGLWindow
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -49,6 +48,7 @@ from .fps_controls import (
     movement_key_from_event,
 )
 from .gl_format import legacy_gl_format, set_perspective
+from .offscreen_gl_widget import OffscreenOpenGLWidget
 
 # Math helpers
 
@@ -939,13 +939,13 @@ def get_rig_path(rig_type: str) -> Path:
 # OpenGL viewer widget
 
 
-class AnimationGLWidget(QOpenGLWindow):
-    """OpenGL child window for displaying animated rigs."""
+class AnimationGLWidget(OffscreenOpenGLWidget):
+    """Offscreen OpenGL renderer presented through a normal QWidget."""
 
     def __init__(self, parent=None):
-        # Embedded via QWidget.createWindowContainer() so adding the preview at
-        # runtime does not change/recreate the dashboard's top-level surface.
-        super().__init__()
+        # Keep the animation renderer on the same offscreen-raster path as OBJ
+        # previews so Windows never has to present a native OpenGL child surface.
+        super().__init__(parent)
         self.parts: Dict[str, Part] = {}
         self.motors: List[Motor6D] = []
         self.keyframes: List[Keyframe] = []
@@ -978,9 +978,9 @@ class AnimationGLWidget(QOpenGLWindow):
         self._first_resize_logged = False
         self._first_paint_started_logged = False
         self._first_paint_completed_logged = False
-        self._first_frame_swapped_logged = False
+        self._first_frame_presented_logged = False
         self._presentation_watchdog_scheduled = False
-        self.frameSwapped.connect(self._on_frame_swapped)
+        self.framePresented.connect(self._on_frame_presented)
 
         self.setFormat(legacy_gl_format())
 
@@ -1219,16 +1219,18 @@ class AnimationGLWidget(QOpenGLWindow):
                 'Animation viewer presentation after 2000 ms: '
                 f'paint_started={self._first_paint_started_logged} '
                 f'paint_completed={self._first_paint_completed_logged} '
-                f'frame_swapped={self._first_frame_swapped_logged} '
+                f'frame_presented={self._first_frame_presented_logged} '
                 f'{self._surface_state()}'
             ),
         )
 
-    def _on_frame_swapped(self) -> None:
-        if self._first_frame_swapped_logged:
+    def _on_frame_presented(self) -> None:
+        if self._first_frame_presented_logged:
             return
-        self._first_frame_swapped_logged = True
-        log_buffer.log('OpenGL', f'Animation viewer first frame swapped; {self._surface_state()}')
+        self._first_frame_presented_logged = True
+        log_buffer.log(
+            'OpenGL', f'Animation viewer first raster frame presented; {self._surface_state()}'
+        )
 
     def initializeGL(self):
         """Initialize OpenGL settings."""
@@ -1842,13 +1844,8 @@ class AnimationViewerPanel(QWidget):
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # OpenGL viewer. Keep the GL surface in a child QWindow so creating it
-        # after the dashboard is visible does not recreate the dashboard's
-        # native top-level window.
-        self.gl_container = QWidget.createWindowContainer(self.gl_widget, self)
-        self.gl_container.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.gl_container.setMinimumSize(120, 120)
-        layout.addWidget(self.gl_container, stretch=1)
+        # OpenGL renders offscreen; the QWidget itself presents the raster frame.
+        layout.addWidget(self.gl_widget, stretch=1)
 
         # Controls
         controls_layout = QHBoxLayout()

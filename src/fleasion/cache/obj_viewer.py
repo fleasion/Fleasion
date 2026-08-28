@@ -9,7 +9,6 @@ import numpy as np
 from OpenGL.GL import *
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QGuiApplication
-from PyQt6.QtOpenGL import QOpenGLWindow
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -36,17 +35,17 @@ from .fps_controls import (
     movement_key_from_event,
 )
 from .gl_format import legacy_gl_format, set_perspective
+from .offscreen_gl_widget import OffscreenOpenGLWidget
 
 
-class ObjViewerWidget(QOpenGLWindow):
-    """OpenGL window for displaying OBJ files with optimized rendering."""
+class ObjViewerWidget(OffscreenOpenGLWidget):
+    """Offscreen OpenGL renderer presented through a normal QWidget."""
 
     def __init__(self, parent=None):
-        # QOpenGLWindow is embedded in the QWidget dashboard through
-        # QWidget.createWindowContainer(). Keeping the OpenGL surface as a child
-        # QWindow avoids changing the dashboard's top-level surface type when the
-        # preview is created after startup.
-        super().__init__()
+        # Render into an offscreen framebuffer and let QWidget paint the result.
+        # This avoids both QOpenGLWidget top-level recreation and black native
+        # QOpenGLWindow child surfaces seen on some Windows/AMD configurations.
+        super().__init__(parent)
 
         # Mesh Data
         self.vertices = []
@@ -80,9 +79,9 @@ class ObjViewerWidget(QOpenGLWindow):
         self._first_resize_logged = False
         self._first_paint_started_logged = False
         self._first_paint_completed_logged = False
-        self._first_frame_swapped_logged = False
+        self._first_frame_presented_logged = False
         self._presentation_watchdog_scheduled = False
-        self.frameSwapped.connect(self._on_frame_swapped)
+        self.framePresented.connect(self._on_frame_presented)
 
         # Display options
         self.show_wireframe = False
@@ -376,16 +375,18 @@ class ObjViewerWidget(QOpenGLWindow):
                 'OBJ viewer presentation after 2000 ms: '
                 f'paint_started={self._first_paint_started_logged} '
                 f'paint_completed={self._first_paint_completed_logged} '
-                f'frame_swapped={self._first_frame_swapped_logged} '
+                f'frame_presented={self._first_frame_presented_logged} '
                 f'{self._surface_state()}'
             ),
         )
 
-    def _on_frame_swapped(self) -> None:
-        if self._first_frame_swapped_logged:
+    def _on_frame_presented(self) -> None:
+        if self._first_frame_presented_logged:
             return
-        self._first_frame_swapped_logged = True
-        log_buffer.log('OpenGL', f'OBJ viewer first frame swapped; {self._surface_state()}')
+        self._first_frame_presented_logged = True
+        log_buffer.log(
+            'OpenGL', f'OBJ viewer first raster frame presented; {self._surface_state()}'
+        )
 
     def resizeGL(self, w: int, h: int):
         """Handle standard clean projection resize."""
@@ -920,10 +921,7 @@ class ObjViewerPanel(QWidget):
                 'obj_show_wireframe', False
             )
             self.viewer.show_grid = self.config_manager.settings.get('obj_show_grid', True)
-        self.viewer_container = QWidget.createWindowContainer(self.viewer, self)
-        self.viewer_container.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.viewer_container.setMinimumSize(120, 120)
-        layout.addWidget(self.viewer_container, stretch=1)
+        layout.addWidget(self.viewer, stretch=1)
 
         # Controls
         controls_layout = QHBoxLayout()
