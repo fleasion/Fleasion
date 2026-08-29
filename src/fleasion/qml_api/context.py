@@ -9,7 +9,15 @@ from typing import TYPE_CHECKING, Any
 from PySide6.QtCore import QObject, Property, QUrl, Signal, Slot
 
 from .. import __version__
-from ..utils import APP_DISCORD, APP_NAME, APP_REPO, get_icon_path, open_folder
+from ..localization import tr
+from ..utils import (
+    APP_DISCORD,
+    APP_NAME,
+    APP_REPO,
+    get_icon_path,
+    launch_as_standard_user,
+    open_folder,
+)
 from ..utils.paths import CONFIGS_FOLDER, LOGS_DIR
 from .cache import CacheApi
 from .logs import LogsApi
@@ -38,6 +46,9 @@ class AppContext(QObject):
     cacheCleanupRequested = Signal()
     notificationRequested = Signal(str, str, str)
     errorOccurred = Signal(str)
+    envProxyMigrationRequested = Signal(str, str, bool, str, str)
+    envProxyMigrationAcknowledged = Signal(bool)
+    authWarningRequested = Signal(str, str, str, bool, str, str, str)
     firstRunChanged = Signal()
     setupCompleted = Signal()
 
@@ -104,7 +115,11 @@ class AppContext(QObject):
             controller.errorOccurred.connect(self.errorOccurred)
         self._proxy.errorOccurred.connect(self.errorOccurred)
         self._settings.errorOccurred.connect(self.errorOccurred)
-        self._settings.restartRequired.connect(lambda _reason: self.restartRequested.emit())
+        self._settings.restartRequired.connect(
+            lambda reason: self.notificationRequested.emit(
+                tr('settings.language.restart_required_title'), reason, 'info'
+            )
+        )
         self._cache.sendToReplacerRequested.connect(self._prepare_replacer_from_cache)
         self._cache.sendSelectionToReplacerRequested.connect(
             self._prepare_replacer_selection_from_cache
@@ -203,6 +218,14 @@ class AppContext(QObject):
         self.firstRunChanged.emit()
         self.setupCompleted.emit()
 
+    @Slot(bool)
+    def acknowledgeEnvProxyMigration(self, apply_now: bool) -> None:  # noqa: N802
+        """Record the one-time migration and optionally apply it to a running Player."""
+        if self._settings._config.env_proxy_migration_v1_complete:
+            return
+        self._settings._config.env_proxy_migration_v1_complete = True
+        self.envProxyMigrationAcknowledged.emit(bool(apply_now))
+
     @Slot(str)
     def openUrl(self, value: str) -> None:  # noqa: N802
         from PySide6.QtGui import QDesktopServices
@@ -221,6 +244,10 @@ class AppContext(QObject):
     def openDiscord(self) -> None:  # noqa: N802
         value = APP_DISCORD if APP_DISCORD.startswith('http') else f'https://{APP_DISCORD}'
         self.openUrl(value)
+
+    @Slot()
+    def openRobloxLogin(self) -> None:  # noqa: N802
+        launch_as_standard_user('https://www.roblox.com/login')
 
     @Slot()
     def openConfigsFolder(self) -> None:  # noqa: N802

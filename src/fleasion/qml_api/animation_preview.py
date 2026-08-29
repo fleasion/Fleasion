@@ -11,6 +11,7 @@ from PySide6.QtCore import QObject, Property, QUrl, Signal, Slot
 from PySide6.QtQml import QmlElement
 
 from ..cache.animation_document import load_animation_data
+from ..localization import tr
 from ..cache.roblox_document import RBXM_MAGIC, decompress_if_needed
 from .animation_conversion import AnimationConversionApi
 from .models import DictListModel
@@ -86,11 +87,11 @@ class AnimationPreviewApi(QObject):
         try:
             data = decompress_if_needed(data)
         except Exception:
-            self._error_text = 'The compressed animation payload could not be read.'
+            self._error_text = tr('qml.dynamic.animation_preview.compressed_read_failed')
             return False
         keyframes = load_animation_data(data)
         if not keyframes:
-            self._error_text = 'No supported animation keyframes were found.'
+            self._error_text = tr('qml.dynamic.animation_preview.no_keyframes')
             return False
 
         duration = max(0.0, max(keyframe.time for keyframe in keyframes))

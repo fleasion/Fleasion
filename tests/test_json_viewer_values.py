@@ -1,6 +1,6 @@
 import pytest
 
-pytest.importorskip('PyQt6')
+pytest.importorskip('PySide6')
 
 from fleasion.gui.json_viewer import _coerce_import_value
 

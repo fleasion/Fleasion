@@ -474,10 +474,16 @@ def test_all_translation_identifiers_exist_in_english_table():
             for expression in identifier_expressions:
                 keys = _translation_keys_from_expression(expression)
                 if keys is None:
+                    relative = path.relative_to(source_root)
+                    if relative.parts[0] == 'qml_api' or relative.name == 'qml_runtime.py':
+                        # QML-facing identifiers include controlled mapping lookups and
+                        # semantic f-string families. tests/test_qml_localization.py
+                        # statically validates those against the merged QML catalog.
+                        continue
                     unsupported_dynamic.append(f'{location}: {ast.unparse(expression)}')
                     continue
                 for key in keys:
-                    if key not in localization.ENGLISH:
+                    if key not in localization._ENGLISH_CATALOG:
                         unknown.append(f'{location}: {key}')
 
     assert not unsupported_dynamic, (
@@ -730,7 +736,7 @@ def test_ui_label_constants_and_helper_returns_are_localized():
             continue
         source_text = path.read_text(encoding='utf-8')
         tree = ast.parse(source_text, filename=str(path))
-        is_ui_module = 'PyQt6' in source_text
+        is_ui_module = 'PySide6' in source_text
         for node in ast.walk(tree):
             if is_ui_module and isinstance(node, (ast.Assign, ast.AnnAssign)):
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
@@ -810,7 +816,7 @@ def test_ui_collection_labels_are_localized_before_display():
         if path.name == 'localization.py' or 'translations' in path.parts:
             continue
         source_text = path.read_text(encoding='utf-8')
-        if 'PyQt6' not in source_text:
+        if 'PySide6' not in source_text:
             continue
         tree = ast.parse(source_text, filename=str(path))
 
@@ -977,7 +983,7 @@ def test_local_variables_forwarded_to_ui_do_not_hide_literal_text():
         if path.name == 'localization.py' or 'translations' in path.parts:
             continue
         source_text = path.read_text(encoding='utf-8')
-        if 'PyQt6' not in source_text:
+        if 'PySide6' not in source_text:
             continue
         tree = ast.parse(source_text, filename=str(path))
         for function in (
@@ -1056,7 +1062,7 @@ def test_nested_ui_defaults_and_overloads_do_not_hide_literal_text():
         if path.name == 'localization.py' or 'translations' in path.parts:
             continue
         source_text = path.read_text(encoding='utf-8')
-        if 'PyQt6' not in source_text:
+        if 'PySide6' not in source_text:
             continue
         tree = ast.parse(source_text, filename=str(path))
         for node in ast.walk(tree):

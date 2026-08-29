@@ -6,6 +6,7 @@ from PySide6.QtCore import QObject, Property, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtQml import QmlElement
 
+from ..localization import tr
 from ..utils.metadata import APP_REPO, APP_VERSION
 from ..utils.update_resolver import ReleaseCandidate, UpdateResolver
 from .tasks import TaskState
@@ -36,7 +37,7 @@ class UpdateApi(QObject):
         self._task = TaskState(self)
         self._latest_version = ''
         self._release_url = ''
-        self._status_text = 'Updates have not been checked yet.'
+        self._status_text = tr('qml.dynamic.update.not_checked')
         self._manual_check = False
         self._task.busyChanged.connect(self.checkingChanged)
         self._task.succeeded.connect(self._apply_result)
@@ -88,9 +89,9 @@ class UpdateApi(QObject):
         if bool(self._task.property('busy')):
             return False
         self._manual_check = manual
-        self._status_text = 'Checking GitHub for a newer release…'
+        self._status_text = tr('qml.dynamic.update.checking_github')
         self.stateChanged.emit()
-        return self._task.run('Checking for updates…', self._resolver.check)
+        return self._task.run(tr('qml.dynamic.update.checking_task'), self._resolver.check)
 
     @Slot(object)
     def _apply_result(self, result: object) -> None:
@@ -98,26 +99,26 @@ class UpdateApi(QObject):
         if isinstance(result, ReleaseCandidate):
             self._latest_version = UpdateResolver.display_version(result.tag)
             self._release_url = result.html_url
-            self._status_text = f'Fleasion {self._latest_version} is available.'
+            self._status_text = tr('qml.dynamic.update.available', version=self._latest_version)
             self.stateChanged.emit()
             self.updateAvailable.emit()
             self.checkCompleted.emit(True)
             return
         self._latest_version = ''
         self._release_url = ''
-        self._status_text = f'Fleasion {self.currentVersion} is up to date.'
+        self._status_text = tr('qml.dynamic.update.up_to_date', version=self.currentVersion)
         self.stateChanged.emit()
         self.checkCompleted.emit(False)
         if manual:
             self.notificationRequested.emit(
-                'No update available',
+                tr('qml.dynamic.update.none_available_title'),
                 self._status_text,
                 'success',
             )
 
     @Slot(str)
     def _apply_failure(self, message: str) -> None:
-        self._status_text = 'The update check could not be completed.'
+        self._status_text = tr('qml.dynamic.update.failed_status')
         self.stateChanged.emit()
         if self._manual_check:
-            self.errorOccurred.emit(f'Update check failed: {message}')
+            self.errorOccurred.emit(tr('qml.dynamic.update.failed_error', error=message))

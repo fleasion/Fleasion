@@ -201,7 +201,7 @@ def test_fluent_dialog_standard_buttons_dispatch_without_platform_delegates():
     engine.addImportPath(str(qml_root))
     component = QQmlComponent(engine)
     component.setData(
-        b'''import QtQuick
+        b"""import QtQuick
 import QtQuick.Controls
 import Fleasion.Components
 ApplicationWindow {
@@ -219,7 +219,7 @@ ApplicationWindow {
         Qt.callLater(() => dialog.footer.standardButton(DialogButtonBox.Ok).click())
     }
 }
-''',
+""",
         QUrl(),
     )
     window = component.create()
@@ -228,9 +228,9 @@ ApplicationWindow {
         for _ in range(5):
             application.processEvents()
         assert window.property('acceptedHit') is True
-        assert sum(
-            'FluentButton' in _class_name(child) for child in window.findChildren(QObject)
-        ) >= 2
+        assert (
+            sum('FluentButton' in _class_name(child) for child in window.findChildren(QObject)) >= 2
+        )
     finally:
         window.deleteLater()
         engine.deleteLater()
@@ -269,6 +269,8 @@ def test_runtime_shutdown_restores_proxy_and_files_after_controller_failure(
         _startup_repair=SimpleNamespace(shutdown=record('repair.stop')),
     )
     runtime._startup_reapply_thread = None
+    runtime._manual_upstream_credentials_timer = SimpleNamespace(stop=record('upstream.timer.stop'))
+    runtime._permission_denied_timer = SimpleNamespace(stop=record('permission.timer.stop'))
     runtime._config = SimpleNamespace(
         proxy_mode='direct',
         close_env_proxy_roblox_on_exit=False,
@@ -286,7 +288,9 @@ def test_runtime_shutdown_restores_proxy_and_files_after_controller_failure(
         'QLocalServer',
         SimpleNamespace(removeServer=lambda _name: calls.append('server.remove')),
     )
-    monkeypatch.setattr(runtime_module.time_tracker, 'save', lambda _config: calls.append('time.save'))
+    monkeypatch.setattr(
+        runtime_module.time_tracker, 'save', lambda _config: calls.append('time.save')
+    )
     monkeypatch.setattr(runtime_module.log_buffer, 'log', lambda *_args: None)
 
     runtime.shutdown()
@@ -335,22 +339,23 @@ def test_roblox_uri_argument_is_validated_and_forwarded_to_running_instance(
     assert runtime_module._normalized_roblox_uri('roblox:\nshow') is None
 
 
-def test_runtime_routes_linux_roblox_uri_through_env_proxy_lifecycle(
+def test_runtime_preserves_linux_roblox_uri_for_selected_client(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    launches: list[tuple[Path, str]] = []
+    launches: list[str] = []
     runtime = QmlRuntime.__new__(QmlRuntime)
     runtime._shutting_down = False
     runtime._config = SimpleNamespace(proxy_mode='env', proxy_features_enabled=True)
-    runtime._lifecycle = SimpleNamespace(
-        handle_player_launch=lambda executable, target: launches.append((executable, target))
-        or True
-    )
     monkeypatch.setattr(runtime_module.sys, 'platform', 'linux')
+    monkeypatch.setattr(
+        runtime_module,
+        'launch_as_standard_user',
+        lambda target: launches.append(target) or True,
+    )
 
     runtime._launch_roblox_uri('roblox:example')
 
-    assert launches == [(Path('org.vinegarhq.Sober'), 'roblox:example')]
+    assert launches == ['roblox:example']
 
 
 def test_roblox_file_open_events_queue_until_runtime_is_ready():

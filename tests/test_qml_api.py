@@ -774,8 +774,12 @@ def test_settings_bridge_updates_typed_values_and_signals(config_manager):
     controller = SettingsApi(config_manager)  # pyright: ignore[reportCallIssue]
     changed: list[str] = []
     restarts: list[str] = []
+    proxy_transitions: list[tuple[str, str]] = []
     controller.changed.connect(changed.append)
     controller.restartRequired.connect(restarts.append)
+    controller.proxyModeTransitionRequested.connect(
+        lambda previous, current: proxy_transitions.append((previous, current))
+    )
 
     controller.theme = 'Dark'
     controller.accentColor = '#0067c0'
@@ -811,7 +815,8 @@ def test_settings_bridge_updates_typed_values_and_signals(config_manager):
         'export_naming',
         'export_naming',
     ]
-    assert restarts == ['The proxy mode changed.']
+    assert restarts == []
+    assert proxy_transitions == [('env', 'hosts')]
     controller.shutdown()
 
 
@@ -849,5 +854,114 @@ def test_settings_bridge_validates_and_persists_advanced_upstream(config_manager
         controller.clearUpstreamPassword('http')
         assert not controller.httpProxyPasswordStored
         assert restarts == [None, None]
+    finally:
+        controller.shutdown()
+
+
+def test_settings_first_run_language_applies_immediately_without_restart(config_manager):
+    from fleasion import localization
+
+    config_manager.first_time_setup_complete = False
+    previous_language = localization.get_language()
+    localization.set_language('en')
+    controller = SettingsApi(config_manager)  # pyright: ignore[reportCallIssue]
+    restarts: list[str] = []
+    controller.restartRequired.connect(restarts.append)
+    try:
+        controller.language = 'es'
+
+        assert config_manager.language == 'es'
+        assert localization.get_language() == 'es'
+        assert controller.firstRunGuide == localization.tr('onboarding.welcome.body')
+        assert restarts == []
+    finally:
+        localization.set_language(previous_language)
+        controller.shutdown()
+
+
+def test_settings_existing_install_language_waits_for_restart(config_manager):
+    from fleasion import localization
+
+    config_manager.first_time_setup_complete = True
+    previous_language = localization.get_language()
+    localization.set_language('en')
+    controller = SettingsApi(config_manager)  # pyright: ignore[reportCallIssue]
+    restarts: list[str] = []
+    controller.restartRequired.connect(restarts.append)
+    try:
+        controller.language = 'de'
+
+        assert config_manager.language == 'de'
+        assert localization.get_language() == 'en'
+        assert restarts == [localization.tr('settings.language.restart_required_body')]
+    finally:
+        localization.set_language(previous_language)
+        controller.shutdown()
+
+
+def test_macos_browser_auth_source_is_validated_before_persisting(
+    config_manager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fleasion.qml_api import settings as settings_api_module
+    from fleasion.utils import roblox_auth
+
+    monkeypatch.setattr(settings_api_module.sys, 'platform', 'darwin')
+    calls: list[tuple[bool, bool, str | None]] = []
+
+    def discover(
+        include_keychain: bool = False,
+        *,
+        explicit_import: bool = False,
+        browser: str | None = None,
+    ) -> tuple[str | None, str]:
+        calls.append((include_keychain, explicit_import, browser))
+        return 'cookie-value', browser or ''
+
+    monkeypatch.setattr(roblox_auth, 'discover_browser_roblosecurity', discover)
+    monkeypatch.setattr(roblox_auth, 'notify_auth_source_changed', lambda: None)
+    controller = SettingsApi(config_manager)  # pyright: ignore[reportCallIssue]
+    try:
+        assert controller.selectMacosAuthSource('Chrome')
+        deadline = time.monotonic() + 2.0
+        while controller.authTask.property('busy') and time.monotonic() < deadline:
+            QCoreApplication.processEvents()
+            time.sleep(0.01)
+        QCoreApplication.processEvents()
+
+        assert calls == [(True, True, 'Chrome')]
+        assert config_manager.macos_auth_source == 'Chrome'
+        assert controller.authStatus == 'Chrome'
+    finally:
+        controller.shutdown()
+
+
+def test_macos_browser_auth_source_does_not_persist_missing_login(
+    config_manager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fleasion.qml_api import settings as settings_api_module
+    from fleasion.utils import roblox_auth
+
+    monkeypatch.setattr(settings_api_module.sys, 'platform', 'darwin')
+    monkeypatch.setattr(
+        roblox_auth,
+        'discover_browser_roblosecurity',
+        lambda **_kwargs: (None, ''),
+    )
+    controller = SettingsApi(config_manager)  # pyright: ignore[reportCallIssue]
+    errors: list[str] = []
+    controller.errorOccurred.connect(errors.append)
+    try:
+        assert controller.selectMacosAuthSource('Firefox')
+        deadline = time.monotonic() + 2.0
+        while controller.authTask.property('busy') and time.monotonic() < deadline:
+            QCoreApplication.processEvents()
+            time.sleep(0.01)
+        QCoreApplication.processEvents()
+
+        assert config_manager.macos_auth_source == ''
+        assert errors
+        assert 'Firefox' in errors[-1]
     finally:
         controller.shutdown()

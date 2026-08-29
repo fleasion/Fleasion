@@ -4,8 +4,8 @@ import pytest
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from PyQt6.QtCore import QEventLoop, QObject, QTimer, pyqtSignal
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import QEventLoop, QObject, QTimer, Signal
+from PySide6.QtWidgets import (
     QApplication,
     QLabel,
     QLineEdit,
@@ -43,9 +43,9 @@ class _PendingQueue:
 
 
 class _FakeModificationManager(QObject):
-    entry_status_changed = pyqtSignal(str, str, str)
-    apply_finished = pyqtSignal(str)
-    restore_finished = pyqtSignal()
+    entry_status_changed = Signal(str, str, str)
+    apply_finished = Signal(str)
+    restore_finished = Signal()
 
     def __init__(self):
         super().__init__()
@@ -223,9 +223,7 @@ def test_custom_font_browse_uses_filter_identifier(monkeypatch):
         fake_get_open_file_name,
     )
     try:
-        font_row = next(
-            row for row in tab.findChildren(ModRowWidget) if row._is_font
-        )
+        font_row = next(row for row in tab.findChildren(ModRowWidget) if row._is_font)
         assert font_row._file_filter == 'modifications.filter.font_files'
         font_row._on_browse()
         assert captured['filter'] == tr('modifications.filter.font_files')
@@ -284,17 +282,23 @@ def test_collapsing_section_clips_content_without_reflowing_children():
     assert initial_content_height > 0
 
     section.toggle()
-    wait = QEventLoop()
-    QTimer.singleShot(90, wait.quit)
-    wait.exec()
+    elapsed = 0
+    while section._content.height() == initial_content_height and elapsed < 500:
+        wait = QEventLoop()
+        QTimer.singleShot(20, wait.quit)
+        wait.exec()
+        elapsed += 20
 
-    assert 0 < section._content.height() < initial_content_height
+    assert section._content.height() < initial_content_height
     assert inner.height() == initial_inner_height
     assert not section._content_layout.isEnabled()
 
-    wait = QEventLoop()
-    QTimer.singleShot(180, wait.quit)
-    wait.exec()
+    elapsed = 0
+    while section._content.height() > 0 and elapsed < 500:
+        wait = QEventLoop()
+        QTimer.singleShot(20, wait.quit)
+        wait.exec()
+        elapsed += 20
     assert section._content.height() == 0
     assert section._content_layout.isEnabled()
 

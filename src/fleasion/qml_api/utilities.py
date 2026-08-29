@@ -11,7 +11,14 @@ from typing import Any, Final
 from PySide6.QtCore import QObject, Property, QTimer, Qt, Signal, Slot
 from PySide6.QtQml import QmlElement
 
-from ..utils.roblox_auth import discover_browser_roblosecurity, get_roblosecurity, set_roblosecurity
+from ..localization import tr
+from ..utils.logging import log_buffer
+from ..utils.roblox_auth import (
+    LinuxAuthWriteError,
+    discover_browser_roblosecurity,
+    get_roblosecurity,
+    set_roblosecurity,
+)
 from .account_store import AccountStore, StoredAccount
 from .animation_conversion import AnimationConversionApi
 from .models import DictListModel
@@ -119,7 +126,9 @@ class UtilitiesApi(QObject):
         self._refresh_model()
         if self.multiInstanceEnabled:
             self._multi_instance.start()
-        self._validation_task.run('Checking stored accounts…', self._validate_stored_accounts)
+        self._validation_task.run(
+            tr('qml.dynamic.utilities.checking_stored_accounts'), self._validate_stored_accounts
+        )
 
     @Property(QObject, constant=True)
     def accountsModel(self) -> QObject:  # noqa: N802
@@ -265,13 +274,13 @@ class UtilitiesApi(QObject):
     def addAccount(self, cookie: str) -> bool:  # noqa: N802
         cleaned = cookie.strip()
         if not cleaned:
-            self.errorOccurred.emit('Paste a .ROBLOSECURITY cookie first.')
+            self.errorOccurred.emit(tr('qml.dynamic.utilities.cookie_required'))
             return False
         if self._account_task.busy:
             return False
         self._store_pending_account_cookie(cleaned)
         started = self._account_task.run(
-            'Validating account with Roblox…',
+            tr('qml.dynamic.utilities.validating_account'),
             lambda: self._validated_account_result(cleaned, operation='add'),
         )
         if not started:
@@ -281,7 +290,7 @@ class UtilitiesApi(QObject):
     @Slot(result=bool)
     def importBrowserAccount(self) -> bool:  # noqa: N802
         return self._account_task.run(
-            'Looking for your Roblox browser sign-in…',
+            tr('qml.dynamic.utilities.finding_browser_login'),
             self._discover_browser_account,
         )
 
@@ -308,7 +317,9 @@ class UtilitiesApi(QObject):
             self._selected_username = ''
             self.selectedAccountChanged.emit()
         self._refresh_model()
-        self.notificationRequested.emit('Account removed', username, 'success')
+        self.notificationRequested.emit(
+            tr('qml.dynamic.utilities.account_removed_title'), username, 'success'
+        )
 
     @Slot(int, str, str, str, result=bool)
     def launchAccount(  # noqa: N802
@@ -325,9 +336,7 @@ class UtilitiesApi(QObject):
         if not cookie:
             self._account_status[account.username] = 'expired'
             self._refresh_model()
-            self.errorOccurred.emit(
-                'The stored cookie could not be decrypted. Re-add this account.'
-            )
+            self.errorOccurred.emit(tr('qml.dynamic.utilities.stored_cookie_decrypt_failed'))
             return False
         try:
             request = parse_account_launch_request(target, job_id, subplace)
@@ -339,7 +348,7 @@ class UtilitiesApi(QObject):
         self.selectedAccountChanged.emit()
         cancel_event = threading.Event()
         started = self._launch_task.run(
-            f'Launching Roblox as {account.username}…',
+            tr('qml.dynamic.utilities.launching_as', username=account.username),
             lambda: self._launch_account_worker(account, cookie, request, cancel_event),
         )
         if started:
@@ -361,34 +370,38 @@ class UtilitiesApi(QObject):
         account = self._accounts[row]
         cookie = self._store.cookie(account)
         if not cookie:
-            self.errorOccurred.emit(
-                'The stored cookie could not be decrypted. Re-add this account.'
-            )
+            self.errorOccurred.emit(tr('qml.dynamic.utilities.stored_cookie_decrypt_failed'))
             return False
-        if not set_roblosecurity(cookie):
-            self.errorOccurred.emit('Roblox cookie storage could not be updated on this platform.')
+        try:
+            switched = set_roblosecurity(cookie)
+        except LinuxAuthWriteError as exc:
+            log_buffer.log('accounts', f'Linux account switch was not performed: {exc.code}')
+            self.errorOccurred.emit(str(exc))
+            return False
+        if not switched:
+            self.errorOccurred.emit(tr('qml.dynamic.utilities.cookie_storage_update_failed'))
             return False
         self._selected_username = account.username
         self._push_username_current_user(account)
         self.selectedAccountChanged.emit()
-        self.notificationRequested.emit('Account switched', account.username, 'success')
+        self.notificationRequested.emit(
+            tr('qml.dynamic.utilities.account_switched_title'), account.username, 'success'
+        )
         return True
 
     @Slot(result=bool)
     def rejoinReservedServer(self) -> bool:  # noqa: N802
         if not self._rejoin.arm():
-            self.errorOccurred.emit(
-                'Enter a valid reserved place and access code before it expires.'
-            )
+            self.errorOccurred.emit(tr('qml.dynamic.utilities.reserved_credentials_invalid'))
             return False
         from ..utils.windows import launch_as_standard_user
 
         if not launch_as_standard_user(f'roblox://placeId={self._reserved_place_id}'):
-            self.errorOccurred.emit('Roblox could not be opened for the reserved-server rejoin.')
+            self.errorOccurred.emit(tr('qml.dynamic.utilities.reserved_rejoin_open_failed'))
             return False
         self.notificationRequested.emit(
-            'Reserved rejoin armed',
-            'The next Roblox join request will be redirected to the captured server.',
+            tr('qml.dynamic.utilities.reserved_rejoin_armed_title'),
+            tr('qml.dynamic.utilities.reserved_rejoin_armed_detail'),
             'success',
         )
         return True
@@ -415,7 +428,7 @@ class UtilitiesApi(QObject):
             explicit_import=True,
         )
         if not cookie:
-            raise RuntimeError('No signed-in Roblox account was found in supported browsers')
+            raise RuntimeError(tr('qml.dynamic.utilities.no_browser_account_found'))
         result = self._validated_account_result(cookie, operation='browser', source=source)
         self._store_pending_account_cookie(cookie)
         return result
@@ -489,12 +502,12 @@ class UtilitiesApi(QObject):
     def _apply_account_operation(self, result: object) -> None:
         if not isinstance(result, Mapping):
             self._consume_pending_account_cookie()
-            self._on_account_operation_failed('Roblox returned invalid account data')
+            self._on_account_operation_failed(tr('qml.dynamic.utilities.invalid_account_data'))
             return
         username = str(result.get('username') or '').strip()
         cookie = self._consume_pending_account_cookie()
         if not username or not cookie:
-            self._on_account_operation_failed('Roblox returned invalid account data')
+            self._on_account_operation_failed(tr('qml.dynamic.utilities.invalid_account_data'))
             return
         account = self._store.create(username, cookie, str(result.get('userId') or ''))
         self._accounts = [item for item in self._accounts if item.username != username]
@@ -506,37 +519,48 @@ class UtilitiesApi(QObject):
         self._refresh_model()
         self.selectedAccountChanged.emit()
         source = str(result.get('source') or '')
-        message = f'{username} imported from {source}' if source else f'{username} added securely'
-        self.notificationRequested.emit('Account ready', message, 'success')
+        message = (
+            tr('qml.dynamic.utilities.account_imported_from', username=username, source=source)
+            if source
+            else tr('qml.dynamic.utilities.account_added_securely', username=username)
+        )
+        self.notificationRequested.emit(
+            tr('qml.dynamic.utilities.account_ready_title'), message, 'success'
+        )
 
     @Slot(str)
     def _on_account_operation_failed(self, message: str) -> None:
         self._consume_pending_account_cookie()
-        self.errorOccurred.emit(f'Account validation failed: {message}')
+        self.errorOccurred.emit(
+            tr('qml.dynamic.utilities.account_validation_failed', error=message)
+        )
 
     @Slot(object)
     def _on_launch_finished(self, result: object) -> None:
         self._launch_cancel_event = None
         if isinstance(result, Mapping) and bool(result.get('cancelled')):
             self.notificationRequested.emit(
-                'Launch cancelled',
-                'The selected-account launch was stopped.',
+                tr('qml.dynamic.utilities.launch_cancelled_title'),
+                tr('qml.dynamic.utilities.launch_cancelled_detail'),
                 'info',
             )
             return
         if not isinstance(result, Mapping) or not bool(result.get('launched')):
-            self.errorOccurred.emit('Roblox could not be opened for the selected account.')
+            self.errorOccurred.emit(tr('qml.dynamic.utilities.selected_account_open_failed'))
             return
         self.notificationRequested.emit(
-            'Roblox launched',
-            f'Using {result.get("username", "the selected account")}',
+            tr('qml.dynamic.utilities.roblox_launched_title'),
+            tr(
+                'qml.dynamic.utilities.using_account',
+                username=result.get('username') or tr('qml.dynamic.utilities.selected_account'),
+            ),
             'success',
         )
 
     @Slot(str)
     def _on_launch_failed(self, message: str) -> None:
         self._launch_cancel_event = None
-        self.errorOccurred.emit(f'Account launch failed: {message}')
+        self.errorOccurred.emit(tr('qml.dynamic.utilities.account_launch_failed', error=message))
 
     @Slot(object)
     def _apply_validation_results(self, result: object) -> None:
@@ -614,9 +638,9 @@ class UtilitiesApi(QObject):
                     'userId': account.user_id,
                     'status': status,
                     'statusText': {
-                        'valid': 'Validated',
-                        'expired': 'Needs attention',
-                    }.get(status, 'Stored securely'),
+                        'valid': tr('qml.dynamic.utilities.status_validated'),
+                        'expired': tr('qml.dynamic.utilities.status_needs_attention'),
+                    }.get(status, tr('qml.dynamic.utilities.status_stored_securely')),
                 }
             )
         self._model.replace_items(rows)

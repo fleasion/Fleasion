@@ -14,6 +14,7 @@ from PySide6.QtCore import QObject, Property, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtQml import QmlElement
 
+from ..localization import tr
 from ..utils.logging import log_buffer
 from ..utils.paths import CONFIG_DIR
 from ..utils.roblox_auth import get_roblosecurity
@@ -168,7 +169,7 @@ def _nonnegative_int(value: object, default: int = 0) -> int:
         return default
     try:
         return max(0, int(value))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
 
 
@@ -177,7 +178,7 @@ def _optional_number(value: object) -> float | None:
         return None
     try:
         return max(0.0, float(value))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 
@@ -494,27 +495,33 @@ class SubplacesApi(QObject):
     def serverStatusText(self) -> str:  # noqa: N802
         if self._server_task.busy:
             return (
-                f'Loading more public servers…'
+                tr('qml.dynamic.subplaces.loading_more_servers')
                 if self._server_model.rowCount()
-                else 'Finding public servers…'
+                else tr('qml.dynamic.subplaces.finding_servers')
             )
         count = self._server_model.rowCount()
         if self._server_error:
             return self._server_error
         if count == 0:
-            return 'No active public servers were reported.'
+            return tr('qml.dynamic.subplaces.no_active_servers')
         if self._server_cursor:
-            return f'{count} servers loaded across {self._server_page_count} page(s); more available.'
-        return f'{count} public servers loaded across {self._server_page_count} page(s).'
+            return tr(
+                'qml.dynamic.subplaces.servers_loaded_more_available',
+                count=count,
+                pages=self._server_page_count,
+            )
+        return tr(
+            'qml.dynamic.subplaces.servers_loaded', count=count, pages=self._server_page_count
+        )
 
     @Slot(str, result=bool)
     def search(self, value: str) -> bool:
         place_id = extract_place_id(value)
         if not place_id:
-            self.errorOccurred.emit('Enter a numeric place ID or a Roblox experience URL.')
+            self.errorOccurred.emit(tr('qml.dynamic.subplaces.place_id_or_url_required'))
             return False
         return self._task.run(
-            'Finding every place in this experience…',
+            tr('qml.dynamic.subplaces.finding_places'),
             lambda: self._client.discover(place_id),
         )
 
@@ -539,7 +546,9 @@ class SubplacesApi(QObject):
         self._refresh_rows_favorite_state()
         self._refresh_history_models()
         self.favoriteChanged.emit()
-        self.notificationRequested.emit('Favorites updated', message, 'success')
+        self.notificationRequested.emit(
+            tr('qml.dynamic.subplaces.favorites_updated_title'), message, 'success'
+        )
 
     @Slot(str, str)
     def renameSavedPlace(self, value: str, name: str) -> None:  # noqa: N802
@@ -564,13 +573,13 @@ class SubplacesApi(QObject):
     def launch(self, value: str, job_id: str = '', root_place_id: str = '') -> bool:
         place_id = extract_place_id(value)
         if not place_id:
-            self.errorOccurred.emit('The selected place does not have a valid place ID.')
+            self.errorOccurred.emit(tr('qml.dynamic.subplaces.selected_place_id_invalid'))
             return False
         coordinator = self._join_coordinator
         if coordinator is not None:
             normalized_root = extract_place_id(root_place_id) or root_place_id.strip()
             accepted = self._launch_task.run_cancellable(
-                'Preparing the selected place…',
+                tr('qml.dynamic.subplaces.preparing_place'),
                 lambda cancel_event: self._prepare_intercepted_launch(
                     place_id,
                     normalized_root,
@@ -579,23 +588,25 @@ class SubplacesApi(QObject):
                 ),
             )
             if not accepted:
-                self.errorOccurred.emit('Another place launch is already being prepared.')
+                self.errorOccurred.emit(tr('qml.dynamic.subplaces.launch_already_preparing'))
             return accepted
 
         target = build_place_launch_uri(place_id, job_id)
         try:
             launched = self._launcher(target)
         except Exception as exc:
-            self.errorOccurred.emit(f'Roblox could not be launched: {exc}')
+            self.errorOccurred.emit(tr('qml.dynamic.subplaces.roblox_launch_failed', error=exc))
             return False
         if not launched:
             if coordinator is not None:
                 coordinator.cancel()
-            self.errorOccurred.emit(
-                'Roblox could not be launched. Check that Roblox Player is installed.'
-            )
+            self.errorOccurred.emit(tr('qml.dynamic.subplaces.roblox_not_installed'))
             return False
-        self.notificationRequested.emit('Joining place', f'Opening place {place_id}', 'success')
+        self.notificationRequested.emit(
+            tr('qml.dynamic.subplaces.joining_place_title'),
+            tr('qml.dynamic.subplaces.opening_place', place_id=place_id),
+            'success',
+        )
         return True
 
     def _prepare_intercepted_launch(
@@ -629,9 +640,7 @@ class SubplacesApi(QObject):
             return {'error': f'Roblox could not be launched: {exc}'}
         if not launched:
             coordinator.cancel()
-            return {
-                'error': 'Roblox could not be launched. Check that Roblox Player is installed.'
-            }
+            return {'error': 'Roblox could not be launched. Check that Roblox Player is installed.'}
         return {'placeId': place_id}
 
     @Slot(object)
@@ -645,8 +654,8 @@ class SubplacesApi(QObject):
         place_id = str(result.get('placeId') or '')
         if place_id:
             self.notificationRequested.emit(
-                'Joining place',
-                f'Opening place {place_id}',
+                tr('qml.dynamic.subplaces.joining_place_title'),
+                tr('qml.dynamic.subplaces.opening_place', place_id=place_id),
                 'success',
             )
 
@@ -655,7 +664,7 @@ class SubplacesApi(QObject):
         coordinator = self._join_coordinator
         if coordinator is not None:
             coordinator.cancel()
-        self.errorOccurred.emit(f'Roblox could not be launched: {message}')
+        self.errorOccurred.emit(tr('qml.dynamic.subplaces.roblox_launch_failed', error=message))
 
     @Slot(str, result=bool)
     def openBrowser(self, value: str) -> bool:  # noqa: N802
@@ -668,10 +677,10 @@ class SubplacesApi(QObject):
     def openServers(self, value: str, place_name: str) -> bool:  # noqa: N802
         place_id = extract_place_id(value)
         if not place_id:
-            self.errorOccurred.emit('A valid place ID is required to browse public servers.')
+            self.errorOccurred.emit(tr('qml.dynamic.subplaces.valid_place_id_required_for_servers'))
             return False
         if self._server_task.busy:
-            self.errorOccurred.emit('Another public server page is still loading.')
+            self.errorOccurred.emit(tr('qml.dynamic.subplaces.server_page_loading'))
             return False
         self._server_place_id = place_id
         self._server_place_name = place_name.strip() or f'Place {place_id}'
@@ -732,7 +741,7 @@ class SubplacesApi(QObject):
     def joinServer(self, job_id: str) -> bool:  # noqa: N802
         normalized = job_id.strip()
         if not self._server_place_id or not normalized:
-            self.errorOccurred.emit('The selected public server does not have a valid Job ID.')
+            self.errorOccurred.emit(tr('qml.dynamic.subplaces.selected_server_job_id_invalid'))
             return False
         root_place_id = self._root_place_id_for(self._server_place_id)
         return self.launch(self._server_place_id, normalized, root_place_id)
@@ -752,7 +761,11 @@ class SubplacesApi(QObject):
         place_id = self._server_place_id
         order = 'Desc' if sort_order == 'Desc' else 'Asc'
         return self._server_task.run(
-            'Finding public servers…' if reset else 'Loading the next server page…',
+            (
+                tr('qml.dynamic.subplaces.finding_servers')
+                if reset
+                else tr('qml.dynamic.subplaces.loading_next_server_page')
+            ),
             lambda: {
                 'page': self._client.public_servers(
                     place_id,
@@ -831,7 +844,7 @@ class SubplacesApi(QObject):
 
     @Slot(str)
     def _on_server_failed(self, message: str) -> None:
-        self._server_error = f'Could not load public servers: {message}'
+        self._server_error = tr('qml.dynamic.subplaces.load_servers_failed', error=message)
         self.serverStateChanged.emit()
 
     def _apply_server_sort(self) -> None:
@@ -896,14 +909,14 @@ class SubplacesApi(QObject):
         self.stateChanged.emit()
         self.favoriteChanged.emit()
         self.notificationRequested.emit(
-            'Experience loaded',
-            f'Found {len(self._source_rows)} places',
+            tr('qml.dynamic.subplaces.experience_loaded_title'),
+            tr('qml.dynamic.subplaces.places_found', count=len(self._source_rows)),
             'success',
         )
 
     @Slot(str)
     def _on_search_failed(self, message: str) -> None:
-        self.errorOccurred.emit(f'Subplace search failed: {message}')
+        self.errorOccurred.emit(tr('qml.dynamic.subplaces.search_failed', error=message))
 
     def _apply_filter(self) -> None:
         rows = [
@@ -941,7 +954,7 @@ class SubplacesApi(QObject):
         try:
             self._settings_store.save(self._recent_ids, self._favorites, self._custom_names)
         except OSError as exc:
-            self.errorOccurred.emit(f'Could not save subplace history: {exc}')
+            self.errorOccurred.emit(tr('qml.dynamic.subplaces.save_history_failed', error=exc))
 
     def _history_rows(self, values: list[str]) -> list[dict[str, str]]:
         known_names = {

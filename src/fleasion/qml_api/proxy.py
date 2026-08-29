@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING, Any, Final
 from PySide6.QtCore import QObject, Property, QTimer, QUrl, Signal, Slot
 from PySide6.QtQml import QmlElement
 
+from ..localization import tr
+from ..translations.qml_sources import QML_SOURCE_IDS
 from ..proxy.traffic_archive import ProxyTrafficArchive
 from .models import DictListModel
 from .tasks import TaskState
@@ -67,34 +69,37 @@ _RULE_DIRECTIONS: Final = frozenset({'both', 'request', 'response'})
 _RULE_TYPES: Final = frozenset({'plain', 'regex', 'json_path', 'query_param', 'header'})
 _MAX_IMPORTED_RULES: Final = 10_000
 _MAX_RULE_IMPORT_BYTES: Final = 8 * 1024 * 1024
-_DIRECTION_LABELS: Final = {
-    'both': 'Both',
-    'request': 'Request',
-    'response': 'Response',
-}
-_TYPE_LABELS: Final = {
-    'plain': 'Plain text',
-    'regex': 'Regular expression',
-    'json_path': 'JSON path',
-    'query_param': 'Query parameter',
-    'header': 'Header',
-}
-_TUNNEL_NOTE: Final = (
-    'No preview is available because this TLS connection was tunneled without decryption.'
-)
+
+
+def _direction_label(direction: str) -> str:
+    return {
+        'both': tr('proxy.rules.direction.both'),
+        'request': tr('proxy.rules.direction.request'),
+        'response': tr('proxy.rules.direction.response'),
+    }[direction]
+
+
+def _type_label(rule_type: str) -> str:
+    return {
+        'plain': tr('proxy.rules.type.plain_text'),
+        'regex': tr('proxy.rules.type.regex'),
+        'json_path': tr('proxy.rules.type.json_path'),
+        'query_param': tr('proxy.rules.type.query_param'),
+        'header': tr('proxy.rules.type.header'),
+    }[rule_type]
 
 
 def _time_text(timestamp: Any) -> str:
     try:
         return datetime.fromtimestamp(float(timestamp)).strftime('%H:%M:%S')
-    except (TypeError, ValueError, OSError, OverflowError):
+    except TypeError, ValueError, OSError, OverflowError:
         return ''
 
 
 def _size_text(size_value: Any) -> str:
     try:
         size = max(0, int(size_value or 0))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         size = 0
     if size >= 1024 * 1024:
         return f'{size / (1024 * 1024):.1f} MB'
@@ -199,6 +204,10 @@ class ProxyApi(QObject):
         self._preserve_timer.start()
         self.refresh()
 
+    @Property(str, constant=True)
+    def trafficPrivacyWarning(self) -> str:  # noqa: N802
+        return tr('ui.gui.proxy_tab.warning_this_tab_may_expose_your_roblox')
+
     @Property(QObject, constant=True)
     def model(self) -> QObject:
         return self._model
@@ -226,12 +235,14 @@ class ProxyApi(QObject):
     @Property(str, notify=statusChanged)
     def statusText(self) -> str:  # noqa: N802
         if self._lifecycle_action == 'start':
-            return 'Starting'
+            return tr(QML_SOURCE_IDS['Starting'])
         if self._lifecycle_action == 'stop':
-            return 'Stopping'
+            return tr('qml.dynamic.proxy.stopping')
         if self._lifecycle_action == 'restart':
-            return 'Restarting'
-        return 'Connected' if self.running else 'Stopped'
+            return tr('qml.dynamic.proxy.restarting')
+        return (
+            tr('qml.dynamic.proxy.connected') if self.running else tr('qml.dynamic.proxy.stopped')
+        )
 
     @Property(str, notify=lifecycleChanged)
     def lifecycleAction(self) -> str:  # noqa: N802
@@ -268,9 +279,7 @@ class ProxyApi(QObject):
     def refresh(self) -> None:
         traffic = self._traffic_snapshot()
         entries_by_id = {
-            int(entry.get('id', -1)): entry
-            for entry in traffic
-            if isinstance(entry.get('id'), int)
+            int(entry.get('id', -1)): entry for entry in traffic if isinstance(entry.get('id'), int)
         }
         pending_count = sum(1 for entry in traffic if entry.get('pending_stage'))
         signature = (
@@ -309,7 +318,7 @@ class ProxyApi(QObject):
         try:
             return [dict(entry) for entry in self._proxy.get_env_proxy_traffic()]
         except Exception as exc:
-            self.errorOccurred.emit(f'Could not read proxy traffic: {exc}')
+            self.errorOccurred.emit(tr('qml.dynamic.proxy.read_traffic_failed', error=exc))
             return []
 
     @staticmethod
@@ -434,7 +443,7 @@ class ProxyApi(QObject):
             try:
                 self._proxy.clear_env_proxy_traffic()
             except Exception as exc:
-                self.errorOccurred.emit(f'Could not clear proxy traffic: {exc}')
+                self.errorOccurred.emit(tr('qml.dynamic.proxy.clear_traffic_failed', error=exc))
                 return
         self._last_signature = ()
         self._force_model_reset = True
@@ -462,7 +471,7 @@ class ProxyApi(QObject):
             return
         snapshot = [dict(entry) for entry in live]
         self._preserve_task.run(
-            'Saving traffic history',
+            tr('qml.dynamic.proxy.saving_traffic_history'),
             lambda: self._traffic_archive.save_snapshot(snapshot),
         )
 
@@ -482,7 +491,7 @@ class ProxyApi(QObject):
         if self._shutdown_requested.is_set():
             return False
         if self._proxy is None:
-            self.errorOccurred.emit('The proxy service is unavailable.')
+            self.errorOccurred.emit(tr('qml.dynamic.proxy.service_unavailable'))
             return False
         if self._lifecycle_task.busy:
             self._queued_lifecycle_action = action
@@ -517,7 +526,7 @@ class ProxyApi(QObject):
             try:
                 self._proxy.clear_env_proxy_traffic()
             except Exception as exc:
-                self.errorOccurred.emit(f'Could not checkpoint proxy traffic: {exc}')
+                self.errorOccurred.emit(tr('qml.dynamic.proxy.checkpoint_failed', error=exc))
 
     def _finish_lifecycle_checkpoint(self) -> None:
         if not self._lifecycle_checkpoint_pending:
@@ -557,7 +566,13 @@ class ProxyApi(QObject):
 
     @Slot(str)
     def _lifecycle_failed(self, message: str) -> None:
-        self.errorOccurred.emit(f'Proxy {self._lifecycle_action or "operation"} failed: {message}')
+        self.errorOccurred.emit(
+            tr(
+                'qml.dynamic.proxy.lifecycle_failed',
+                action=self._lifecycle_action or tr('qml.dynamic.proxy.operation'),
+                error=message,
+            )
+        )
         self._finish_lifecycle()
 
     def _finish_lifecycle(self) -> None:
@@ -603,10 +618,10 @@ class ProxyApi(QObject):
     @Slot(int, str, str, str, result=bool)
     def resolve(self, request_id: int, stage: str, action: str, edited_text: str) -> bool:
         if request_id < 0:
-            self.errorOccurred.emit('Preserved traffic is read-only.')
+            self.errorOccurred.emit(tr('qml.dynamic.proxy.preserved_read_only'))
             return False
         if stage not in {'request', 'response'} or action not in {'forward', 'drop'}:
-            self.errorOccurred.emit('The held traffic action is invalid.')
+            self.errorOccurred.emit(tr('qml.dynamic.proxy.held_action_invalid'))
             return False
         if self._proxy is None or not hasattr(self._proxy, 'submit_env_proxy_pending'):
             return False
@@ -615,10 +630,12 @@ class ProxyApi(QObject):
                 self._proxy.submit_env_proxy_pending(request_id, stage, action, edited_text)
             )
         except Exception as exc:
-            self.errorOccurred.emit(f'Could not {action} held traffic: {exc}')
+            self.errorOccurred.emit(
+                tr('qml.dynamic.proxy.resolve_held_failed', action=action, error=exc)
+            )
             return False
         if not resolved:
-            self.errorOccurred.emit('That request is no longer being held.')
+            self.errorOccurred.emit(tr('qml.dynamic.proxy.request_no_longer_held'))
             return False
         self._last_signature = ()
         QTimer.singleShot(0, self.refresh)
@@ -627,7 +644,7 @@ class ProxyApi(QObject):
     @Slot(str, result=int)
     def resolveAll(self, action: str) -> int:  # noqa: N802
         if action not in {'forward', 'drop'}:
-            self.errorOccurred.emit('The held traffic action is invalid.')
+            self.errorOccurred.emit(tr('qml.dynamic.proxy.held_action_invalid'))
             return 0
         if self._proxy is None or not hasattr(self._proxy, 'get_env_proxy_pending_intercepts'):
             return 0
@@ -637,7 +654,9 @@ class ProxyApi(QObject):
                 if self._proxy.submit_env_proxy_pending(request_id, stage, action, None):
                     resolved += 1
         except Exception as exc:
-            self.errorOccurred.emit(f'Could not {action} held traffic: {exc}')
+            self.errorOccurred.emit(
+                tr('qml.dynamic.proxy.resolve_held_failed', action=action, error=exc)
+            )
             return resolved
         self._last_signature = ()
         QTimer.singleShot(0, self.refresh)
@@ -646,17 +665,17 @@ class ProxyApi(QObject):
     @Slot(int, str, result=bool)
     def replay(self, request_id: int, edited_text: str) -> bool:
         if request_id < 0:
-            self.errorOccurred.emit('Preserved traffic cannot be replayed.')
+            self.errorOccurred.emit(tr('qml.dynamic.proxy.preserved_cannot_replay'))
             return False
         if self._proxy is None or not hasattr(self._proxy, 'replay_env_proxy_request'):
             return False
         try:
             replaying = bool(self._proxy.replay_env_proxy_request(request_id, edited_text))
         except Exception as exc:
-            self.errorOccurred.emit(f'Could not replay request: {exc}')
+            self.errorOccurred.emit(tr('qml.dynamic.proxy.replay_failed', error=exc))
             return False
         if not replaying:
-            self.errorOccurred.emit('The selected request cannot be replayed.')
+            self.errorOccurred.emit(tr('qml.dynamic.proxy.selected_cannot_replay'))
             return False
         self._last_signature = ()
         return True
@@ -680,9 +699,7 @@ class ProxyApi(QObject):
             'path': str(entry.get('path') or ''),
             'status': _status_text(entry),
             'sizeText': _size_text(entry.get('size')),
-            'durationText': (
-                f'{entry.get("ms")} ms' if entry.get('ms') is not None else ''
-            ),
+            'durationText': (f'{entry.get("ms")} ms' if entry.get('ms') is not None else ''),
             'pendingStage': stage,
             'pending': bool(stage),
             'requestText': self._format_preview(entry, 'request'),
@@ -715,9 +732,9 @@ class ProxyApi(QObject):
                 raw = preview_entry.get(f'{stage}_raw')
                 text = bytes(raw).decode('utf-8', errors='replace') if raw else ''
         except Exception as exc:
-            return f'Preview unavailable: {exc}'
+            return tr('qml.dynamic.proxy.preview_unavailable', error=exc)
         if not text and entry.get('method') == 'CONNECT':
-            return _TUNNEL_NOTE
+            return tr('proxy.tunnel_note')
         return _redact_sensitive_headers(text)
 
     def _load_rules(self) -> list[dict[str, Any]]:
@@ -726,7 +743,7 @@ class ProxyApi(QObject):
         try:
             return [_normalized_rule(dict(rule)) for rule in self._proxy.get_auto_replace_rules()]
         except Exception as exc:
-            self.errorOccurred.emit(f'Could not load auto-replace rules: {exc}')
+            self.errorOccurred.emit(tr('qml.dynamic.proxy.load_rules_failed', error=exc))
             return []
 
     def _refresh_rules_model(self) -> None:
@@ -735,9 +752,9 @@ class ProxyApi(QObject):
                 'key': str(index),
                 'ruleEnabled': rule['enabled'],
                 'direction': rule['direction'],
-                'directionLabel': _DIRECTION_LABELS[rule['direction']],
+                'directionLabel': _direction_label(rule['direction']),
                 'ruleType': rule['type'],
-                'typeLabel': _TYPE_LABELS[rule['type']],
+                'typeLabel': _type_label(rule['type']),
                 'matchText': rule['match'],
                 'replacement': rule['replacement'],
                 'hostFilter': rule['host_filter'],
@@ -749,12 +766,12 @@ class ProxyApi(QObject):
 
     def _save_rules(self, replacement: list[dict[str, Any]]) -> bool:
         if self._proxy is None or not hasattr(self._proxy, 'set_auto_replace_rules'):
-            self.errorOccurred.emit('Auto-replace rules are unavailable.')
+            self.errorOccurred.emit(tr('qml.dynamic.proxy.rules_unavailable'))
             return False
         try:
             self._proxy.set_auto_replace_rules(replacement)
         except Exception as exc:
-            self.errorOccurred.emit(f'Could not save auto-replace rules: {exc}')
+            self.errorOccurred.emit(tr('qml.dynamic.proxy.save_rules_failed', error=exc))
             return False
         self._rules = replacement
         self._refresh_rules_model()
@@ -764,7 +781,7 @@ class ProxyApi(QObject):
     def rule(self, key: str) -> dict[str, Any]:
         try:
             rule = self._rules[int(key)]
-        except (ValueError, IndexError):
+        except ValueError, IndexError:
             return {}
         return {
             'enabled': rule['enabled'],
@@ -813,8 +830,8 @@ class ProxyApi(QObject):
         try:
             index = int(key)
             self._rules[index]
-        except (ValueError, IndexError):
-            self.errorOccurred.emit('The selected auto-replace rule no longer exists.')
+        except ValueError, IndexError:
+            self.errorOccurred.emit(tr('qml.dynamic.proxy.selected_rule_missing'))
             return False
         rule = self._build_rule(
             enabled,
@@ -842,13 +859,13 @@ class ProxyApi(QObject):
         path_filter: str,
     ) -> dict[str, Any]:
         if direction not in _RULE_DIRECTIONS:
-            self.errorOccurred.emit('Choose a valid rule direction.')
+            self.errorOccurred.emit(tr('qml.dynamic.proxy.rule_direction_invalid'))
             return {}
         if rule_type not in _RULE_TYPES:
-            self.errorOccurred.emit('Choose a valid auto-replace rule type.')
+            self.errorOccurred.emit(tr('qml.dynamic.proxy.rule_type_invalid'))
             return {}
         if not match_text.strip():
-            self.errorOccurred.emit('Enter text, a field name, or a path to match.')
+            self.errorOccurred.emit(tr('qml.dynamic.proxy.match_required'))
             return {}
         return {
             'enabled': enabled,
@@ -865,7 +882,7 @@ class ProxyApi(QObject):
         try:
             index = int(key)
             current = self._rules[index]
-        except (ValueError, IndexError):
+        except ValueError, IndexError:
             return False
         if current['enabled'] == enabled:
             return True
@@ -877,7 +894,7 @@ class ProxyApi(QObject):
     def duplicateRule(self, key: str) -> bool:  # noqa: N802
         try:
             rule = dict(self._rules[int(key)])
-        except (ValueError, IndexError):
+        except ValueError, IndexError:
             return False
         return self._save_rules([*self._rules, rule])
 
@@ -886,7 +903,7 @@ class ProxyApi(QObject):
         try:
             index = int(key)
             self._rules[index]
-        except (ValueError, IndexError):
+        except ValueError, IndexError:
             return False
         return self._save_rules(
             [dict(rule) for rule_index, rule in enumerate(self._rules) if rule_index != index]
@@ -904,13 +921,11 @@ class ProxyApi(QObject):
                 raise ValueError('expected a list of rules')
             if len(imported) > _MAX_IMPORTED_RULES:
                 raise ValueError(f'expected at most {_MAX_IMPORTED_RULES} rules')
-            replacement = [
-                _normalized_rule(rule) for rule in imported if isinstance(rule, dict)
-            ]
+            replacement = [_normalized_rule(rule) for rule in imported if isinstance(rule, dict)]
             if len(replacement) != len(imported):
                 raise ValueError('every rule must be a JSON object')
         except (OSError, UnicodeError, ValueError, TypeError, json.JSONDecodeError) as exc:
-            self.errorOccurred.emit(f'Could not import auto-replace rules: {exc}')
+            self.errorOccurred.emit(tr('qml.dynamic.proxy.import_rules_failed', error=exc))
             return False
         return self._save_rules(replacement)
 
@@ -925,7 +940,7 @@ class ProxyApi(QObject):
                 encoding='utf-8',
             )
         except OSError as exc:
-            self.errorOccurred.emit(f'Could not export auto-replace rules: {exc}')
+            self.errorOccurred.emit(tr('qml.dynamic.proxy.export_rules_failed', error=exc))
             return False
         return True
 

@@ -24,7 +24,7 @@ from fleasion.utils.animation_conversion import (
 
 
 def _pose_xml(name: str) -> str:
-    return f'''<Item class="Pose" referent="RBX{name.replace(' ', '')}">
+    return f"""<Item class="Pose" referent="RBX{name.replace(' ', '')}">
 <Properties>
   <CoordinateFrame name="CFrame">
     <X>0</X><Y>0</Y><Z>0</Z>
@@ -35,12 +35,12 @@ def _pose_xml(name: str) -> str:
   <string name="Name">{name}</string>
   <float name="Weight">1</float>
 </Properties>
-</Item>'''
+</Item>"""
 
 
 def _animation_xml(rig: str) -> bytes:
     torso = 'Torso' if rig == 'R6' else 'LowerTorso'
-    return f'''<roblox version="4">
+    return f"""<roblox version="4">
 <Item class="KeyframeSequence" referent="RBXSequence">
 <Properties><string name="Name">Animation</string></Properties>
 <Item class="Keyframe" referent="RBXKeyframe">
@@ -49,7 +49,7 @@ def _animation_xml(rig: str) -> bytes:
 {_pose_xml(torso)}
 </Item>
 </Item>
-</roblox>'''.encode()
+</roblox>""".encode()
 
 
 def test_animation_conversion_pipeline_maps_both_player_rigs(tmp_path: Path) -> None:
@@ -58,10 +58,7 @@ def test_animation_conversion_pipeline_maps_both_player_rigs(tmp_path: Path) -> 
 
     prepared = prepare_animation_source(source)
     converted = convert_animation_rig(prepared.xml_bytes, 'R15')
-    names = {
-        value.text
-        for value in ET.fromstring(converted).iterfind(".//string[@name='Name']")
-    }
+    names = {value.text for value in ET.fromstring(converted).iterfind(".//string[@name='Name']")}
 
     assert prepared.detected_rig == 'R6'
     assert not prepared.converted_from_binary
@@ -70,8 +67,7 @@ def test_animation_conversion_pipeline_maps_both_player_rigs(tmp_path: Path) -> 
 
     returned = convert_animation_rig(converted, 'R6')
     returned_names = {
-        value.text
-        for value in ET.fromstring(returned).iterfind(".//string[@name='Name']")
+        value.text for value in ET.fromstring(returned).iterfind(".//string[@name='Name']")
     }
     assert 'Torso' in returned_names
     assert 'Left Arm' in returned_names
@@ -259,3 +255,44 @@ def _wait_for_task(api: Any) -> None:
     if application is not None:
         application.processEvents()
     assert not task.busy
+
+
+def test_linux_account_switch_surfaces_safe_write_reason(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from fleasion.qml_api import utilities as utilities_module
+    from fleasion.qml_api.account_store import StoredAccount
+    from fleasion.qml_api.utilities import UtilitiesApi
+    from fleasion.utils.roblox_auth import LinuxAuthWriteError
+
+    class SignalStub:
+        def __init__(self) -> None:
+            self.values: list[tuple[object, ...]] = []
+
+        def emit(self, *values: object) -> None:
+            self.values.append(values)
+
+    errors = SignalStub()
+    account = StoredAccount('Player', 'encrypted', '123')
+    fake = SimpleNamespace(
+        _accounts=[account],
+        _store=SimpleNamespace(cookie=lambda _account: 'secret-cookie'),
+        errorOccurred=errors,
+        notificationRequested=SignalStub(),
+        selectedAccountChanged=SignalStub(),
+        _selected_username='',
+        _push_username_current_user=lambda _account: None,
+    )
+    monkeypatch.setattr(
+        utilities_module,
+        'set_roblosecurity',
+        lambda _cookie: (_ for _ in ()).throw(
+            LinuxAuthWriteError(
+                'cookie_store_permission_denied',
+                "Sober's local cookie store is read-only.",
+            )
+        ),
+    )
+
+    assert not UtilitiesApi.switchToAccount(fake, 0)  # type: ignore[arg-type]
+    assert errors.values == [("Sober's local cookie store is read-only.",)]

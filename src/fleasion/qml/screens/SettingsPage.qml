@@ -61,6 +61,16 @@ Rectangle {
         return mode === "hosts" ? 1 : 0;
     }
 
+    function optionIndex(options, value) {
+        if (!options)
+            return 0;
+        for (let index = 0; index < options.length; ++index) {
+            if (options[index].value === value)
+                return index;
+        }
+        return 0;
+    }
+
     Component.onCompleted: {
         synchronizeSettings();
         if (controller)
@@ -128,6 +138,22 @@ Rectangle {
                             root.controller.theme = themes[index];
                             Theme.colorScheme = colorSchemes[index];
                         }
+                    }
+                }
+
+                SettingRow {
+                    Layout.fillWidth: true
+                    title: root.controller ? root.controller.languageSectionTitle : ""
+                    description: root.controller ? root.controller.languageSectionDescription : ""
+                    iconText: "文"
+
+                    FluentComboBox {
+                        model: root.controller ? root.controller.languageOptions : []
+                        textRole: "label"
+                        currentIndex: root.controller ? root.optionIndex(model, root.controller.language) : 0
+                        enabled: Boolean(root.controller)
+                        Accessible.name: root.controller ? root.controller.languageSectionTitle : ""
+                        onActivated: index => root.controller.language = model[index].value
                     }
                 }
 
@@ -217,6 +243,34 @@ Rectangle {
 
             Settings.RobloxAuthSettings {
                 controller: root.controller
+            }
+
+            Card {
+                Layout.fillWidth: true
+                visible: root.controller && root.controller.linuxClientOptions.length > 0
+                flat: true
+                padding: Theme.panelPadding
+                topPadding: Theme.spaceXs
+                bottomPadding: Theme.spaceXs
+                contentSpacing: Theme.spaceXs
+                title: root.controller ? root.controller.linuxClientSectionTitle : ""
+                subtitle: root.controller ? root.controller.linuxClientStatus : ""
+
+                SettingRow {
+                    Layout.fillWidth: true
+                    title: root.controller ? root.controller.linuxClientSectionTitle : ""
+                    description: root.controller ? root.controller.linuxClientStatus : ""
+                    iconText: "◆"
+
+                    FluentComboBox {
+                        model: root.controller ? root.controller.linuxClientOptions : []
+                        textRole: "label"
+                        currentIndex: root.controller ? root.optionIndex(model, root.controller.linuxClient) : 0
+                        enabled: Boolean(root.controller && root.controller.linuxClientSelectionEnabled)
+                        Accessible.name: root.controller ? root.controller.linuxClientSectionTitle : ""
+                        onActivated: index => root.controller.linuxClient = model[index].value
+                    }
+                }
             }
 
             Card {

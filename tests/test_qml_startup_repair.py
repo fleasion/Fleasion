@@ -10,6 +10,7 @@ from PySide6.QtQml import QQmlComponent, QQmlEngine
 from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import QApplication
 
+from fleasion.qml_api import repair as repair_module
 from fleasion.qml_api.repair import StartupRepairApi
 from fleasion.utils import linux_proxy_helper
 
@@ -19,6 +20,9 @@ from fleasion.utils import linux_proxy_helper
     [
         ('port_bind_failed', 'port'),
         ('hosts_write_exhausted', 'hosts'),
+        ('hosts_entries_would_exceed_limit', 'hosts'),
+        ('hosts_file_too_large', 'hosts'),
+        ('hosts_file_repair_failed', 'hosts'),
         ('linux_hosts_read_only', 'hosts'),
         ('linux_helper_unavailable', 'helper'),
         ('macos_helper_unavailable', 'helper'),
@@ -26,6 +30,7 @@ from fleasion.utils import linux_proxy_helper
         ('macos_ca_trust_failed', 'certificate'),
         ('macos_relay_failed', 'helper'),
         ('roblox_ca_patch_failed', 'certificate'),
+        ('roblox_permission_denied', 'certificate'),
         ('tls_self_test_failed', 'tls'),
         ('windows_upstream_firewall', 'firewall'),
     ],
@@ -85,6 +90,31 @@ def test_known_startup_error_becomes_a_structured_request() -> None:
         controller.shutdown()  # pyright: ignore[reportCallIssue]
 
 
+def test_oversized_hosts_request_offers_verified_safe_repair() -> None:
+    controller = StartupRepairApi()  # pyright: ignore[reportCallIssue]
+    try:
+        assert controller.report_error(
+            'hosts_file_too_large',
+            {
+                'hosts_path': '/etc/hosts',
+                'hosts_directory': '/etc',
+                'hosts_size_bytes': 2 * 1024 * 1024,
+                'hosts_size_limit_bytes': 512 * 1024,
+            },
+        )
+        _wait_until(lambda: controller.active)
+
+        action_ids = [
+            controller.actions.get(index)['actionId']
+            for index in range(controller.actions.property('count'))
+        ]
+        assert action_ids[0] == 'repair_hosts'
+        assert 'open_hosts_folder' in action_ids
+        assert controller.actions.get(0)['requiresConfirmation'] is True
+    finally:
+        controller.shutdown()  # pyright: ignore[reportCallIssue]
+
+
 def test_read_only_linux_hosts_request_contains_copyable_nix_configuration() -> None:
     controller = StartupRepairApi()  # pyright: ignore[reportCallIssue]
     try:
@@ -101,6 +131,55 @@ def test_read_only_linux_hosts_request_contains_copyable_nix_configuration() -> 
             "  127.0.0.1 gamejoin.roblox.com\n'';"
         )
         assert controller.supplementalTitle == 'Nix configuration'
+    finally:
+        controller.shutdown()  # pyright: ignore[reportCallIssue]
+
+
+def test_windows_ca_permission_failure_offers_narrow_acl_repair(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(repair_module.sys, 'platform', 'win32')
+    controller = StartupRepairApi()  # pyright: ignore[reportCallIssue]
+    try:
+        assert controller.report_error(
+            'roblox_ca_patch_failed',
+            {
+                'failed': [
+                    {
+                        'resource_dir': r'C:\\Roblox\\Versions\\version-123\\content',
+                        'error': 'Permission denied (WinError 5)',
+                    }
+                ]
+            },
+        )
+        _wait_until(lambda: controller.active)
+
+        actions = [
+            controller.actions.get(index) for index in range(controller.actions.property('count'))
+        ]
+        repair = next(item for item in actions if item['actionId'] == 'repair_roblox_permissions')
+        assert repair['requiresConfirmation'] is True
+        assert 'Modify' in repair['confirmationText']
+        assert controller.requestPayload['permission_repair_paths']
+    finally:
+        controller.shutdown()  # pyright: ignore[reportCallIssue]
+
+
+def test_modification_permission_failure_uses_same_windows_acl_repair() -> None:
+    controller = StartupRepairApi()  # pyright: ignore[reportCallIssue]
+    try:
+        assert controller.report_error(
+            'roblox_permission_denied',
+            {'paths': [r'C:\\Roblox\\Versions\\version-123']},
+        )
+        _wait_until(lambda: controller.active)
+
+        action_ids = [
+            controller.actions.get(index)['actionId']
+            for index in range(controller.actions.property('count'))
+        ]
+        assert action_ids[0] == 'repair_roblox_permissions'
+        assert controller.actions.get(0)['requiresConfirmation'] is True
     finally:
         controller.shutdown()  # pyright: ignore[reportCallIssue]
 
@@ -169,7 +248,7 @@ def test_startup_repair_coordinator_loads_the_matching_fluent_dialog() -> None:
     warnings: list[str] = []
     engine.warnings.connect(lambda errors: warnings.extend(error.toString() for error in errors))
     component.setData(
-        b'''import QtQuick
+        b"""import QtQuick
 import QtQuick.Controls
 import "dialogs" as Dialogs
 
@@ -188,7 +267,7 @@ ApplicationWindow {
         appController: rootWindow.appController
     }
 }
-''',
+""",
         QUrl.fromLocalFile(str(qml_root / 'StartupRepairTestHarness.qml')),
     )
     controller = StartupRepairApi()  # pyright: ignore[reportCallIssue]

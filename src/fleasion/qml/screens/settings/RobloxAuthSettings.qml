@@ -38,7 +38,13 @@ Card {
             model: [qsTr("Choose when needed"), qsTr("Encrypted manual token"), "Chrome", "Safari", "Firefox", "Brave", "Edge", "Chromium", "Opera", "Vivaldi"]
             currentIndex: root.sourceIndex(root.controller.macosAuthSource)
             Accessible.name: qsTr("Roblox login source")
-            onActivated: index => root.controller.macosAuthSource = root.sourceValues[index]
+            onActivated: index => {
+                const source = root.sourceValues[index];
+                if (source === "" || source === "manual")
+                    root.controller.macosAuthSource = source;
+                else
+                    root.controller.selectMacosAuthSource(source);
+            }
         }
     }
 

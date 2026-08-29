@@ -19,13 +19,7 @@ from fleasion.qml_api.modification_inspector import ModificationInspector
 from fleasion.qml_api.modifications import ModificationsApi
 
 
-_EARLY_MESH = (
-    b'version 1.00\n'
-    b'1\n'
-    b'[0,0,0][0,1,0][0,0,0]'
-    b'[1,0,0][0,1,0][1,0,0]'
-    b'[0,1,0][0,1,0][0,1,0]'
-)
+_EARLY_MESH = b'version 1.00\n1\n[0,0,0][0,1,0][0,0,0][1,0,0][0,1,0][1,0,0][0,1,0][0,1,0][0,1,0]'
 
 
 class _ManagerStub(QObject):
@@ -363,3 +357,16 @@ def test_windows_qml_capture_uses_qt_key_and_preserves_extended_scan_codes(
         }
     }
     bridge.shutdown()
+
+
+def test_framerate_cap_clamps_oversized_stored_values_before_qt_boundary(tmp_path: Path) -> None:
+    manager = _ManagerStub([], tmp_path / 'stash')
+    manager.framerate_cap = 2**63
+    controller = ModificationsApi(  # pyright: ignore[reportCallIssue]
+        manager,  # pyright: ignore[reportArgumentType]
+        profile_manager=FastFlagProfileManager(tmp_path / 'profiles'),
+    )
+    try:
+        assert controller.framerateCap == 1_000
+    finally:
+        controller.shutdown()

@@ -10,6 +10,7 @@ from PySide6.QtCore import QObject, Property, Qt, Signal, Slot
 from PySide6.QtQml import QmlElement
 
 from ..cache.cache_manager import CacheManager
+from ..localization import tr
 from ..prejsons import (
     CatalogSnapshot,
     CommunityPreset,
@@ -246,9 +247,9 @@ class CommunityPresetsApi(QObject):
         if self._task.busy:
             return False
         self._operation = 'catalog'
-        self._set_status('Fetching community presets…')
+        self._set_status(tr('qml.dynamic.community.fetching_presets'))
         return self._task.run(
-            'Fetching community presets…',
+            tr('qml.dynamic.community.fetching_presets'),
             lambda: self._store.load(refresh=force),
         )
 
@@ -259,7 +260,7 @@ class CommunityPresetsApi(QObject):
         preset = self._preset(preset_id)
         source = self._source_for_kind(preset, kind) if preset is not None else ''
         if preset is None or not source:
-            self.errorOccurred.emit('This preset does not provide the selected JSON source.')
+            self.errorOccurred.emit(tr('qml.dynamic.community.selected_json_source_missing'))
             return False
 
         self._payload_generation += 1
@@ -278,8 +279,8 @@ class CommunityPresetsApi(QObject):
             )
 
         self._operation = 'payload'
-        self._set_status('Loading preset values…')
-        return self._task.run('Loading preset values…', load)
+        self._set_status(tr('qml.dynamic.community.loading_values'))
+        return self._task.run(tr('qml.dynamic.community.loading_values'), load)
 
     @Slot()
     def closePayload(self) -> None:  # noqa: N802
@@ -327,8 +328,8 @@ class CommunityPresetsApi(QObject):
             )
 
         self._operation = 'import'
-        self._set_status('Importing custom preset…')
-        return self._task.run('Importing custom preset…', import_preset)
+        self._set_status(tr('qml.dynamic.community.importing_custom_preset'))
+        return self._task.run(tr('qml.dynamic.community.importing_custom_preset'), import_preset)
 
     @Slot(str, result=bool)
     def removeCustom(self, preset_id: str) -> bool:  # noqa: N802
@@ -336,23 +337,23 @@ class CommunityPresetsApi(QObject):
         if preset is None or preset.custom_path is None:
             return False
         if not self._store.delete_custom(preset.custom_path):
-            self.errorOccurred.emit('The custom preset could not be deleted.')
+            self.errorOccurred.emit(tr('qml.dynamic.community.delete_custom_preset_failed'))
             return False
         self._presets = [
             entry for entry in self._presets if entry.custom_path != preset.custom_path
         ]
         self._refresh_catalog_model()
-        self.notificationRequested.emit('Preset removed', preset.name, 'success')
+        self.notificationRequested.emit(
+            tr('qml.dynamic.community.preset_removed_title'), preset.name, 'success'
+        )
         return True
 
     @Slot(result=bool)
     def useSelectedAsTargets(self) -> bool:  # noqa: N802
         selected = set(self._value_selection.values())
-        values = _unique_values(
-            value.value for value in self._values if value.row_id in selected
-        )
+        values = _unique_values(value.value for value in self._values if value.row_id in selected)
         if not values:
-            self.errorOccurred.emit('Select at least one importable value.')
+            self.errorOccurred.emit(tr('qml.dynamic.community.select_importable_value'))
             return False
         targets = ', '.join(str(value) for value in values)
         self.draftRequested.emit(self._draft_name(), targets, '')
@@ -364,7 +365,7 @@ class CommunityPresetsApi(QObject):
         selected = set(self._value_selection.values())
         values = [value for value in self._values if value.row_id in selected]
         if len(values) != 1:
-            self.errorOccurred.emit('Select exactly one replacement value.')
+            self.errorOccurred.emit(tr('qml.dynamic.community.select_one_replacement_value'))
             return False
         self.draftRequested.emit(self._draft_name(), '', values[0].value_text)
         self.draftPrepared.emit()
@@ -390,8 +391,8 @@ class CommunityPresetsApi(QObject):
         elif operation == 'import' and isinstance(result, _ImportResult):
             self._apply_catalog(result.snapshot)
             self.notificationRequested.emit(
-                'Preset imported',
-                f'{result.imported_count} community preset(s) added',
+                tr('qml.dynamic.community.preset_imported_title'),
+                tr('qml.dynamic.community.presets_added', count=result.imported_count),
                 'success',
             )
 
@@ -436,9 +437,7 @@ class CommunityPresetsApi(QObject):
             for preset in self._presets
             if preset.place_id is not None
         ]
-        self._metadata_threads = [
-            thread for thread in self._metadata_threads if thread.is_alive()
-        ]
+        self._metadata_threads = [thread for thread in self._metadata_threads if thread.is_alive()]
         worker_count = min(4, len(requests))
         for worker_index in range(worker_count):
             batch = requests[worker_index::worker_count]

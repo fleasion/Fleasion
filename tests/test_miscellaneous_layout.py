@@ -2,8 +2,8 @@ import os
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from PyQt6.QtCore import QEventLoop, QPoint, QTimer
-from PyQt6.QtWidgets import QApplication, QGroupBox
+from PySide6.QtCore import QEventLoop, QPoint, QTimer
+from PySide6.QtWidgets import QApplication, QGroupBox
 
 import fleasion.gui.rando_stuff_tab as rando
 from fleasion.gui.modifications_tab import CollapsibleSection

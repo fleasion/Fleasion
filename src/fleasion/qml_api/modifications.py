@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, Any, Final
 from PySide6.QtCore import QObject, Property, QTimer, QUrl, Signal, Slot
 from PySide6.QtQml import QmlElement
 
+from ..localization import tr
+from ..translations.qml_sources import QML_SOURCE_IDS
 from ..modifications.catalog import (
     ModificationCatalogEntry,
     built_in_modifications,
@@ -28,6 +30,30 @@ from .tasks import TaskState
 if TYPE_CHECKING:
     from ..config.manager import ConfigManager
     from ..modifications.manager import ModificationManager
+
+
+def _built_in_display_name(definition: ModificationCatalogEntry) -> str:
+    return tr(f'qml.dynamic.modifications.built_in.{definition.key.replace("-", "_")}')
+
+
+def _built_in_limitation(value: str) -> str:
+    if not value:
+        return ''
+    return tr('qml.dynamic.modifications.sober_mesh_limitation')
+
+
+def _localized_file_filter(value: str) -> str:
+    identifiers = {
+        'Audio files (*.mp3 *.ogg *.wav);;All files (*)': 'qml.dynamic.modifications.filter.audio',
+        'Font files (*.ttf *.otf *.ttc);;All files (*)': 'qml.dynamic.modifications.filter.font',
+        'Image files (*.dds *.png);;All files (*)': 'qml.dynamic.modifications.filter.image_dds_png',
+        'Image files (*.jpg *.jpeg *.png);;All files (*)': 'qml.dynamic.modifications.filter.image_jpeg_png',
+        'Image files (*.png *.jpg *.jpeg *.tex);;All files (*)': 'qml.dynamic.modifications.filter.image_png_tex',
+        'Mesh files (*.mesh *.obj);;All files (*)': 'qml.dynamic.modifications.filter.mesh',
+    }
+    identifier = identifiers.get(value)
+    return tr(identifier) if identifier is not None else value
+
 
 QML_IMPORT_NAME = 'Fleasion'
 QML_IMPORT_MAJOR_VERSION = 1
@@ -263,7 +289,7 @@ class ModificationsApi(QObject):
     def soberMeshLimitation(self) -> str:  # noqa: N802
         return next(
             (
-                entry.limitation
+                _built_in_limitation(entry.limitation)
                 for entry in self._built_in_entries
                 if entry.category == 'avatar_meshes' and entry.limitation
             ),
@@ -484,7 +510,11 @@ class ModificationsApi(QObject):
 
     @Property(int, notify=statusChanged)
     def framerateCap(self) -> int:  # noqa: N802
-        return 0 if self._manager is None else self._manager.framerate_cap
+        if self._manager is None:
+            return 0
+        # QML's SpinBox exposes a signed C++ int. Stored/XML values are not
+        # inherently bounded, so clamp before crossing the Python/Qt boundary.
+        return _bounded_int(self._manager.framerate_cap, default=0, maximum=1_000)
 
     @Slot()
     def refresh(self) -> None:
@@ -554,7 +584,7 @@ class ModificationsApi(QObject):
             None,
         )
         if entry is None:
-            self.errorOccurred.emit('The selected modification no longer exists.')
+            self.errorOccurred.emit(tr('qml.dynamic.modifications.selected_modification_missing'))
             return False
         try:
             source_type, source = detect_modification_source(
@@ -589,9 +619,7 @@ class ModificationsApi(QObject):
             except OSError, ValueError:
                 continue
             return relative
-        self.errorOccurred.emit(
-            'Choose a target file inside one of the detected Roblox resource directories.'
-        )
+        self.errorOccurred.emit(tr('qml.dynamic.modifications.target_outside_resources'))
         return ''
 
     @Slot(str, result=bool)
@@ -600,11 +628,11 @@ class ModificationsApi(QObject):
             return False
         restore = getattr(self._manager, 'restore_orphaned_stash', None)
         if not callable(restore) or not restore(target_path):
-            self.errorOccurred.emit('The original backup could not be restored.')
+            self.errorOccurred.emit(tr('qml.dynamic.modifications.restore_original_failed'))
             return False
         self.refresh()
         self.notificationRequested.emit(
-            'Original restored',
+            tr('qml.dynamic.modifications.original_restored_title'),
             target_path,
             'success',
         )
@@ -622,10 +650,10 @@ class ModificationsApi(QObject):
     def applyBuiltIn(self, catalog_key: str, source: str) -> bool:  # noqa: N802
         definition = self._built_in_by_key.get(catalog_key)
         if definition is None:
-            self.errorOccurred.emit('The selected built-in modification does not exist.')
+            self.errorOccurred.emit(tr('qml.dynamic.modifications.built_in_missing'))
             return False
         if not definition.supported:
-            self.errorOccurred.emit(definition.limitation)
+            self.errorOccurred.emit(_built_in_limitation(definition.limitation))
             return False
         try:
             source_type, source_value = detect_modification_source(definition.target_path, source)
@@ -634,7 +662,7 @@ class ModificationsApi(QObject):
             return False
         self._apply_built_in_source(definition, source_type, source_value)
         self.notificationRequested.emit(
-            'Modification queued',
+            tr('qml.dynamic.modifications.queued_title'),
             definition.name,
             'success',
         )
@@ -644,7 +672,7 @@ class ModificationsApi(QObject):
     def muteBuiltIn(self, catalog_key: str) -> bool:  # noqa: N802
         definition = self._built_in_by_key.get(catalog_key)
         if definition is None or not definition.mute_source:
-            self.errorOccurred.emit('This built-in modification does not have a mute source.')
+            self.errorOccurred.emit(tr('qml.dynamic.modifications.mute_source_missing'))
             return False
         self._apply_built_in_source(definition, 'bundled', definition.mute_source)
         return True
@@ -698,8 +726,8 @@ class ModificationsApi(QObject):
         for entry, source_type, source_value in resolved:
             self._apply_built_in_source(entry, source_type, source_value)
         self.notificationRequested.emit(
-            'Skybox queued',
-            'The source will be applied to all six outdoor sky faces.',
+            tr('qml.dynamic.modifications.skybox_queued_title'),
+            tr('qml.dynamic.modifications.skybox_queued_detail'),
             'success',
         )
         return True
@@ -718,7 +746,7 @@ class ModificationsApi(QObject):
     @Slot(int)
     def setFramerateCap(self, value: int) -> None:  # noqa: N802
         if self._manager is not None:
-            self._manager.framerate_cap = max(0, value)
+            self._manager.framerate_cap = max(0, min(value, 1_000))
             self._manager.sync_saved_global_settings()
             self.statusChanged.emit()
 
@@ -739,7 +767,9 @@ class ModificationsApi(QObject):
             manager.write_fast_flags(settings)
             return ('apply', revision)
 
-        return self._preset_task.run('Applying allowlisted FastFlags…', operation)
+        return self._preset_task.run(
+            tr('qml.dynamic.modifications.applying_allowlisted_fastflags'), operation
+        )
 
     @Slot(result=bool)
     def resetAllowlistedFastFlags(self) -> bool:  # noqa: N802
@@ -762,7 +792,9 @@ class ModificationsApi(QObject):
             manager.reset_framerate_cap()
             return ('reset', revision)
 
-        return self._preset_task.run('Restoring default FastFlag settings…', operation)
+        return self._preset_task.run(
+            tr('qml.dynamic.modifications.restoring_default_fastflags'), operation
+        )
 
     @Slot(str, str, result=bool)
     def setFastFlag(self, name: str, value: str) -> bool:  # noqa: N802
@@ -858,22 +890,24 @@ class ModificationsApi(QObject):
     @Slot(str, bool, result=bool)
     def importFastFlagsJson(self, text: str, replace: bool = False) -> bool:  # noqa: N802
         if len(text.encode('utf-8')) > _MAX_FAST_FLAG_IMPORT_BYTES:
-            self.errorOccurred.emit('The FastFlag JSON exceeds the 8 MiB import limit.')
+            self.errorOccurred.emit(tr('qml.dynamic.modifications.fastflag_json_size_limit'))
             return False
         try:
             payload = json.loads(text)
         except json.JSONDecodeError as exc:
-            self.errorOccurred.emit(f'The FastFlag JSON is invalid: {exc.msg}.')
+            self.errorOccurred.emit(
+                tr('qml.dynamic.modifications.fastflag_json_invalid', error=exc.msg)
+            )
             return False
         if not isinstance(payload, dict):
-            self.errorOccurred.emit('The JSON root must contain FastFlag name/value pairs.')
+            self.errorOccurred.emit(tr('qml.dynamic.modifications.fastflag_json_root_invalid'))
             return False
         if len(payload) > _MAX_FAST_FLAGS:
-            self.errorOccurred.emit('The FastFlag JSON exceeds the 10,000-entry limit.')
+            self.errorOccurred.emit(tr('qml.dynamic.modifications.fastflag_entry_limit'))
             return False
         normalized = normalize_custom_fflags(payload)
         if len(normalized) != len(payload):
-            self.errorOccurred.emit('Every FastFlag value must be a string, number, or boolean.')
+            self.errorOccurred.emit(tr('modifications.fastflag.import_values_invalid'))
             return False
         current = {} if replace else self._custom_fast_flags()
         current.update(normalized)
@@ -881,8 +915,8 @@ class ModificationsApi(QObject):
             return False
         self._save_custom_fast_flags(current)
         self.notificationRequested.emit(
-            'FastFlags imported',
-            f'{len(normalized)} value{"" if len(normalized) == 1 else "s"} loaded',
+            tr('qml.dynamic.modifications.fastflags_imported_title'),
+            tr('qml.dynamic.modifications.fastflag_values_loaded', count=len(normalized)),
             'success',
         )
         return True
@@ -892,11 +926,11 @@ class ModificationsApi(QObject):
         path = self._local_path(value)
         try:
             if path.stat().st_size > _MAX_FAST_FLAG_IMPORT_BYTES:
-                self.errorOccurred.emit('The FastFlag JSON exceeds the 8 MiB import limit.')
+                self.errorOccurred.emit(tr('qml.dynamic.modifications.fastflag_json_size_limit'))
                 return False
             text = path.read_text(encoding='utf-8')
         except UnicodeDecodeError:
-            self.errorOccurred.emit('The FastFlag file must contain UTF-8 JSON text.')
+            self.errorOccurred.emit(tr('qml.dynamic.modifications.fastflag_utf8_required'))
             return False
         except OSError as exc:
             self.errorOccurred.emit(str(exc))
@@ -917,7 +951,9 @@ class ModificationsApi(QObject):
         except OSError as exc:
             self.errorOccurred.emit(str(exc))
             return False
-        self.notificationRequested.emit('FastFlags exported', str(destination), 'success')
+        self.notificationRequested.emit(
+            tr('qml.dynamic.modifications.fastflags_exported_title'), str(destination), 'success'
+        )
         return True
 
     @Slot()
@@ -934,7 +970,9 @@ class ModificationsApi(QObject):
             self.errorOccurred.emit(str(exc))
             return False
         self.refreshProfiles()
-        self.notificationRequested.emit('FastFlag profile saved', saved_name, 'success')
+        self.notificationRequested.emit(
+            tr('qml.dynamic.modifications.fastflag_profile_saved_title'), saved_name, 'success'
+        )
         return True
 
     @Slot(str, bool, result=bool)
@@ -949,7 +987,9 @@ class ModificationsApi(QObject):
         flags = {} if replace else self._custom_fast_flags()
         flags.update(loaded)
         self._save_custom_fast_flags(flags)
-        self.notificationRequested.emit('FastFlag profile loaded', name, 'success')
+        self.notificationRequested.emit(
+            tr('qml.dynamic.modifications.fastflag_profile_loaded_title'), name, 'success'
+        )
         return True
 
     @Slot(str, str, result=bool)
@@ -996,7 +1036,7 @@ class ModificationsApi(QObject):
     @Slot(bool)
     def loadFastFlagCatalog(self, force: bool = False) -> None:  # noqa: N802
         self._catalog_task.run(
-            'Retrieving Roblox FastFlags…',
+            tr('qml.dynamic.modifications.retrieving_fastflags'),
             lambda: FastFlagCatalog.load(force=force),
         )
 
@@ -1022,8 +1062,8 @@ class ModificationsApi(QObject):
         if added:
             self._save_custom_fast_flags(flags)
             self.notificationRequested.emit(
-                'FastFlags added',
-                f'{added} catalog entr{"y" if added == 1 else "ies"} added',
+                tr('qml.dynamic.modifications.fastflags_added_title'),
+                tr('qml.dynamic.modifications.catalog_entries_added', count=added),
                 'success',
             )
         self._catalog_selection.clear()
@@ -1032,7 +1072,7 @@ class ModificationsApi(QObject):
     @Slot(object)
     def _apply_catalog(self, values: object) -> None:
         if not isinstance(values, dict):
-            self.errorOccurred.emit('The FastFlag catalog returned invalid data.')
+            self.errorOccurred.emit(tr('qml.dynamic.modifications.fastflag_catalog_invalid'))
             return
         self._catalog_values = {
             str(name): value if isinstance(value, str) else None
@@ -1184,12 +1224,12 @@ class ModificationsApi(QObject):
                 {
                     'catalogKey': definition.key,
                     'category': definition.category,
-                    'name': definition.name,
+                    'name': _built_in_display_name(definition),
                     'targetPath': definition.target_path,
-                    'fileFilter': definition.file_filter,
+                    'fileFilter': _localized_file_filter(definition.file_filter),
                     'muteAvailable': bool(definition.mute_source),
                     'supported': definition.supported,
-                    'limitation': definition.limitation,
+                    'limitation': _built_in_limitation(definition.limitation),
                     'configured': manager_entry is not None,
                     'entryId': '' if manager_entry is None else str(manager_entry.get('id', '')),
                     'sourceType': source_type,
@@ -1213,7 +1253,7 @@ class ModificationsApi(QObject):
         self._available_head_variants_model.replace_items(
             {
                 'catalogKey': key,
-                'name': self._built_in_by_key[key].name,
+                'name': _built_in_display_name(self._built_in_by_key[key]),
             }
             for key in sorted(
                 self._head_variant_keys - self._visible_head_variants,
@@ -1226,9 +1266,13 @@ class ModificationsApi(QObject):
         if not source_value:
             return ''
         if source_type == 'bundled':
-            return 'Muted' if 'empty' in source_value else 'Bundled replacement'
+            return (
+                tr('qml.dynamic.modifications.source_muted')
+                if 'empty' in source_value
+                else tr('qml.dynamic.modifications.source_bundled')
+            )
         if source_type == 'asset_id':
-            return f'Asset {source_value}'
+            return tr(QML_SOURCE_IDS['Asset %1'], value0=source_value)
         if source_type == 'cdn_url':
             return source_value
         return Path(source_value).name or source_value
@@ -1327,7 +1371,9 @@ class ModificationsApi(QObject):
         try:
             refresh()
         except Exception as exc:
-            self.errorOccurred.emit(f'Could not refresh custom FastFlags: {exc}')
+            self.errorOccurred.emit(
+                tr('qml.dynamic.modifications.refresh_custom_fastflags_failed', error=exc)
+            )
 
     def _migrate_misfiled_custom_flags(self) -> None:
         """Recover custom flags stored in the preset mapping by the first QML bridge."""
@@ -1363,14 +1409,14 @@ class ModificationsApi(QObject):
         if operation == 'reset':
             self.statusChanged.emit()
             self.notificationRequested.emit(
-                'Allowlisted FastFlags reset',
-                'Roblox ClientSettings and the framerate cap were restored.',
+                tr('qml.dynamic.modifications.allowlisted_reset_title'),
+                tr('qml.dynamic.modifications.allowlisted_reset_detail'),
                 'success',
             )
         else:
             self.notificationRequested.emit(
-                'Allowlisted FastFlags applied',
-                'The preset values were written to detected Roblox installations.',
+                tr('qml.dynamic.modifications.allowlisted_applied_title'),
+                tr('qml.dynamic.modifications.allowlisted_applied_detail'),
                 'success',
             )
         if self._preset_apply_pending:
@@ -1380,7 +1426,9 @@ class ModificationsApi(QObject):
     @Slot(str)
     def _on_preset_task_failed(self, message: str) -> None:
         self._preset_apply_pending = False
-        self.errorOccurred.emit(f'Could not update allowlisted FastFlags: {message}')
+        self.errorOccurred.emit(
+            tr('qml.dynamic.modifications.update_allowlisted_failed', error=message)
+        )
 
     def _refresh_catalog_model(self) -> None:
         rows = []

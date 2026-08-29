@@ -421,7 +421,7 @@ class _RichTextButton(QPushButton):
         super().setText(self._label + (f' {self._suffix}' if self._suffix else ''))
 
     def sizeHint(self):
-        from PyQt6.QtGui import QFont, QFontMetrics
+        from PySide6.QtGui import QFont, QFontMetrics
 
         hint = super().sizeHint()
         if not self._suffix:
@@ -3607,7 +3607,7 @@ class FFlagSection(QWidget):
         # raise OverflowError before QSpinBox gets a chance to clamp it.
         try:
             framerate_cap = int(self._manager.framerate_cap)
-        except (TypeError, ValueError, OverflowError):
+        except TypeError, ValueError, OverflowError:
             framerate_cap = 0
         framerate_cap = max(
             self._framerate_cap.minimum(),
@@ -3765,9 +3765,7 @@ class ModificationsTab(QWidget):
         # ── Textures ─────────────────────────────────────────────
         tex_section = CollapsibleSection(tr('modifications.section.textures'), expanded=True)
         for name, path, filt in TEXTURES:
-            row = ModRowWidget(
-                self._manager, _builtin_label(name), path, file_filter=filt
-            )
+            row = ModRowWidget(self._manager, _builtin_label(name), path, file_filter=filt)
             tex_section.add_widget(row)
             self._row_widgets[path] = row
         self._container_layout.addWidget(tex_section)

@@ -11,7 +11,7 @@ import tempfile
 import threading
 import time
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from types import MappingProxyType
 from typing import Callable, Mapping
 
@@ -842,6 +842,28 @@ def _get_roblosecurity_from_path(cookie_path: Path) -> str | None:
 def get_auth_failure_details() -> dict[str, object]:
     """Return diagnostics for the most recent default cookie lookup failure."""
     return dict(_LAST_AUTH_FAILURE_DETAILS)
+
+
+def windows_auth_profile_matches_username(details: Mapping[str, object]) -> bool:
+    """Return whether Windows auth diagnostics describe one coherent user profile."""
+    username = str(details.get('username') or '').strip()
+    userprofile_text = str(details.get('userprofile') or '').strip()
+    local_appdata_text = str(details.get('local_appdata') or '').strip()
+    default_cookie_path_text = str(details.get('default_cookie_path') or '').strip()
+    if not all((username, userprofile_text, local_appdata_text, default_cookie_path_text)):
+        return False
+
+    userprofile = PureWindowsPath(userprofile_text)
+    local_appdata = PureWindowsPath(local_appdata_text)
+    default_cookie_path = PureWindowsPath(default_cookie_path_text)
+    if userprofile.name.casefold() != username.casefold():
+        return False
+    try:
+        local_appdata.relative_to(userprofile)
+        default_cookie_path.relative_to(local_appdata)
+    except ValueError:
+        return False
+    return True
 
 
 def _mark_auth_cookie_available(cookie: str) -> None:

@@ -17,6 +17,8 @@ from PySide6.QtQml import QmlElement
 
 from ..cache.cache_manager import CacheManager
 from ..cache.roblox_document import classify_roblox_document
+from ..localization import tr
+from ..translations.qml_sources import QML_SOURCE_IDS
 from ..utils import open_folder
 from .animation_preview import AnimationPreviewApi
 from .font_preview import FontPreviewApi
@@ -61,9 +63,7 @@ _SORT_KEYS: Final = frozenset({'typeName', 'name', 'creator', 'assetId', 'size',
 _SEARCH_COLUMNS: Final = frozenset(
     {'id', 'type', 'name', 'creator', 'hash', 'cached_at', 'updated_at', 'created_at', 'url'}
 )
-_DEFAULT_SEARCH_COLUMNS: Final = frozenset(
-    {'id', 'type', 'name', 'creator', 'hash', 'cached_at'}
-)
+_DEFAULT_SEARCH_COLUMNS: Final = frozenset({'id', 'type', 'name', 'creator', 'hash', 'cached_at'})
 _VISIBLE_COLUMNS: Final = frozenset({'type', 'asset', 'size', 'cached_at'})
 _VIEW_SETTINGS_DELAY_MS: Final = 400
 
@@ -558,8 +558,8 @@ class CacheApi(QObject):
         self.blacklistChanged.emit()
         self.refresh()
         self.notificationRequested.emit(
-            'Cache filter updated',
-            f'{len(updated)} asset IDs hidden from the cache browser',
+            tr('qml.dynamic.cache.filter_updated_title'),
+            tr('qml.dynamic.cache.hidden_asset_ids', count=len(updated)),
             'success',
         )
         return len(updated)
@@ -595,7 +595,7 @@ class CacheApi(QObject):
             return {'action': 'clear', 'count': int(self._cache.clear_cache())}
 
         self._task_action = 'clear'
-        return self._task.run('Clearing cached assets…', clear)
+        return self._task.run(tr('qml.dynamic.cache.clearing_assets'), clear)
 
     @Slot(list, result=list)
     def commonExportFormats(self, keys: list[str]) -> list[str]:  # noqa: N802
@@ -622,7 +622,7 @@ class CacheApi(QObject):
         rows = [self._row_for_key(key) for key in keys]
         rows = [row for row in rows if row]
         if not rows:
-            self.errorOccurred.emit('Select at least one cached asset to export.')
+            self.errorOccurred.emit(tr('qml.dynamic.cache.select_asset_to_export'))
             return False
 
         def export() -> dict[str, int | str]:
@@ -649,7 +649,7 @@ class CacheApi(QObject):
             }
 
         self._task_action = 'export'
-        return self._task.run(f'Exporting {len(rows)} cached assets…', export)
+        return self._task.run(tr('qml.dynamic.cache.exporting_assets', count=len(rows)), export)
 
     @Slot(str, result=bool)
     def convertedCopyAvailable(self, key: str) -> bool:  # noqa: N802
@@ -670,7 +670,7 @@ class CacheApi(QObject):
                 row['_copyFormat'] = format_name
                 rows.append(row)
         if not rows:
-            self.errorOccurred.emit('The selection has no supported converted file format.')
+            self.errorOccurred.emit(tr('qml.dynamic.cache.no_supported_converted_format'))
             return False
 
         def convert() -> dict[str, object]:
@@ -701,14 +701,16 @@ class CacheApi(QObject):
             }
 
         self._task_action = 'copy-converted'
-        return self._task.run(f'Preparing {len(rows)} converted file(s)…', convert)
+        return self._task.run(
+            tr('qml.dynamic.cache.preparing_converted_files', count=len(rows)), convert
+        )
 
     @Slot(list, str, result=bool)
     def exportGameDump(self, keys: list[str], destination_value: str) -> bool:  # noqa: N802
         rows = [self._row_for_key(key) for key in keys]
         rows = [row for row in rows if row]
         if not rows:
-            self.errorOccurred.emit('Select at least one cached asset for the game dump.')
+            self.errorOccurred.emit(tr('qml.dynamic.cache.select_asset_for_game_dump'))
             return False
 
         by_type: dict[str, dict[str, int]] = {}
@@ -726,7 +728,7 @@ class CacheApi(QObject):
                 name = f'{name} ({name_counts[count_key]})'
             bucket[name] = int(asset_id)
         if not by_type:
-            self.errorOccurred.emit('The selected rows did not contain valid Roblox asset IDs.')
+            self.errorOccurred.emit(tr('qml.dynamic.cache.no_valid_asset_ids'))
             return False
 
         destination = self._local_path(destination_value)
@@ -741,12 +743,12 @@ class CacheApi(QObject):
                 encoding='utf-8',
             )
         except OSError as exc:
-            self.errorOccurred.emit(f'Could not write the game dump: {exc}')
+            self.errorOccurred.emit(tr('qml.dynamic.cache.write_game_dump_failed', error=exc))
             return False
         total = sum(len(values) for values in by_type.values())
         self.notificationRequested.emit(
-            'Game dump exported',
-            f'{total} cached assets saved to {destination}',
+            tr('qml.dynamic.cache.game_dump_exported_title'),
+            tr('qml.dynamic.cache.game_dump_saved', count=total, destination=destination),
             'success',
         )
         return True
@@ -757,10 +759,10 @@ class CacheApi(QObject):
             return False
         asset_ids = sorted(_parse_asset_ids(value), key=int)
         if not asset_ids:
-            self.errorOccurred.emit('Enter at least one valid Roblox asset ID.')
+            self.errorOccurred.emit(tr('qml.dynamic.cache.enter_valid_asset_id'))
             return False
         if len(asset_ids) > 100:
-            self.errorOccurred.emit('Load at most 100 asset IDs at a time.')
+            self.errorOccurred.emit(tr('qml.dynamic.cache.asset_id_limit'))
             return False
 
         def load(cancel_event: threading.Event) -> dict[str, int | str]:
@@ -804,7 +806,9 @@ class CacheApi(QObject):
             return {'action': 'load', 'count': loaded, 'failed': failed}
 
         self._task_action = 'load'
-        return self._task.run_cancellable(f'Loading {len(asset_ids)} Roblox assets…', load)
+        return self._task.run_cancellable(
+            tr('qml.dynamic.cache.loading_assets', count=len(asset_ids)), load
+        )
 
     @Slot(list, result=bool)
     def deleteAssets(self, keys: list[str]) -> bool:  # noqa: N802
@@ -819,10 +823,10 @@ class CacheApi(QObject):
         self._selection.clear()
         self.refresh()
         if failed:
-            self.errorOccurred.emit(f'{failed} cached assets could not be deleted.')
+            self.errorOccurred.emit(tr('qml.dynamic.cache.delete_failed', count=failed))
         self.notificationRequested.emit(
-            'Cache updated',
-            f'{deleted} cached assets deleted',
+            tr('qml.dynamic.cache.updated_title'),
+            tr('qml.dynamic.cache.assets_deleted', count=deleted),
             'success' if not failed else 'warning',
         )
         return deleted > 0
@@ -845,9 +849,11 @@ class CacheApi(QObject):
             self.errorOccurred.emit(str(exc))
             return False
         if result is None:
-            self.errorOccurred.emit('The asset could not be exported in that format.')
+            self.errorOccurred.emit(tr('qml.dynamic.cache.asset_export_format_failed'))
             return False
-        self.notificationRequested.emit('Asset exported', str(result), 'success')
+        self.notificationRequested.emit(
+            tr('qml.dynamic.cache.asset_exported_title'), str(result), 'success'
+        )
         return True
 
     @Slot(str, result=list)
@@ -877,7 +883,7 @@ class CacheApi(QObject):
             seen.add(asset_id)
             asset_ids.append(asset_id)
         if not asset_ids:
-            self.errorOccurred.emit('The selection does not contain any reusable asset IDs.')
+            self.errorOccurred.emit(tr('qml.dynamic.cache.no_reusable_asset_ids'))
             return False
         self.sendSelectionToReplacerRequested.emit(asset_ids)
         return True
@@ -974,15 +980,11 @@ class CacheApi(QObject):
             'type': row.get('typeName'),
             'name': row.get('name'),
             'creator': ' '.join(
-                str(value)
-                for value in (row.get('creator'), row.get('creatorId'))
-                if value
+                str(value) for value in (row.get('creator'), row.get('creatorId')) if value
             ),
             'hash': row.get('hash'),
             'cached_at': ' '.join(
-                str(value)
-                for value in (row.get('cachedAt'), row.get('cachedAtText'))
-                if value
+                str(value) for value in (row.get('cachedAt'), row.get('cachedAtText')) if value
             ),
             'updated_at': row.get('updatedAt'),
             'created_at': row.get('createdAt'),
@@ -1041,7 +1043,7 @@ class CacheApi(QObject):
             try:
                 save()
             except Exception as exc:
-                self.errorOccurred.emit(f'Could not save cache view options: {exc}')
+                self.errorOccurred.emit(tr('qml.dynamic.cache.save_view_options_failed', error=exc))
 
     @Slot(str)
     def _load_texture_map(self, asset_id: str) -> None:
@@ -1133,8 +1135,8 @@ class CacheApi(QObject):
             self._set_preview('none', '', '')
             self.refresh()
             self.notificationRequested.emit(
-                'Cache cleared',
-                f'{deleted} cached assets removed',
+                tr('qml.dynamic.cache.cleared_title'),
+                tr('qml.dynamic.cache.assets_removed', count=deleted),
                 'success',
             )
             return
@@ -1144,9 +1146,16 @@ class CacheApi(QObject):
             count = count_value if isinstance(count_value, int) else 0
             failed = failed_value if isinstance(failed_value, int) else 0
             self.notificationRequested.emit(
-                'Cache export complete',
-                f'{count} assets exported to the Fleasion exports folder'
-                + (f'; {failed} could not be converted' if failed else ''),
+                tr('qml.dynamic.cache.export_complete_title'),
+                (
+                    tr(
+                        'qml.dynamic.cache.assets_exported_partial',
+                        count=count,
+                        failed=failed,
+                    )
+                    if failed
+                    else tr('qml.dynamic.cache.assets_exported', count=count)
+                ),
                 'warning' if failed else 'success',
             )
             return
@@ -1160,12 +1169,19 @@ class CacheApi(QObject):
             failed_value = payload.get('failed')
             failed = failed_value if isinstance(failed_value, int) else 0
             if not _copy_file_urls(paths):
-                self.errorOccurred.emit('The converted files could not be placed on the clipboard.')
+                self.errorOccurred.emit(tr('qml.dynamic.cache.clipboard_failed'))
                 return
             self.notificationRequested.emit(
-                'Converted files copied',
-                f'{len(paths)} converted file(s) are ready to paste'
-                + (f'; {failed} could not be converted' if failed else ''),
+                tr('qml.dynamic.cache.converted_files_copied_title'),
+                (
+                    tr(
+                        'qml.dynamic.cache.converted_files_ready_partial',
+                        count=len(paths),
+                        failed=failed,
+                    )
+                    if failed
+                    else tr('qml.dynamic.cache.converted_files_ready', count=len(paths))
+                ),
                 'warning' if failed else 'success',
             )
             return
@@ -1177,9 +1193,16 @@ class CacheApi(QObject):
             self.refresh()
             self._texture_pack_preview.refresh()
             self.notificationRequested.emit(
-                'Asset load complete',
-                f'{count} Roblox assets added to the cache'
-                + (f'; {failed} could not be downloaded' if failed else ''),
+                tr('qml.dynamic.cache.asset_load_complete_title'),
+                (
+                    tr(
+                        'qml.dynamic.cache.assets_loaded_partial',
+                        count=count,
+                        failed=failed,
+                    )
+                    if failed
+                    else tr('qml.dynamic.cache.assets_loaded', count=count)
+                ),
                 'warning' if failed else 'success',
             )
 
@@ -1189,13 +1212,18 @@ class CacheApi(QObject):
         self.errorOccurred.emit(message)
 
     def _open_folder(self, value: object, label: str) -> None:
+        folder_name = tr(
+            QML_SOURCE_IDS['Cache folder'] if label == 'cache' else QML_SOURCE_IDS['Exports']
+        )
         if not isinstance(value, Path):
-            self.errorOccurred.emit(f'The {label} folder is unavailable.')
+            self.errorOccurred.emit(tr('qml.dynamic.cache.folder_unavailable', folder=folder_name))
             return
         try:
             open_folder(value)
         except Exception as exc:
-            self.errorOccurred.emit(f'Could not open the {label} folder: {exc}')
+            self.errorOccurred.emit(
+                tr('qml.dynamic.cache.open_folder_failed', folder=folder_name, error=exc)
+            )
 
     @staticmethod
     def _fetch_manual_metadata(

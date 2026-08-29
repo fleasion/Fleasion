@@ -21,6 +21,18 @@ ApplicationWindow {
     property bool proxyVisited: false
     property bool logsVisited: false
     property bool settingsVisited: false
+    property string migrationTitle: ""
+    property string migrationMessage: ""
+    property bool migrationCanApplyNow: false
+    property string migrationAcceptText: ""
+    property string migrationRejectText: ""
+    property string authWarningTitle: ""
+    property string authWarningMessage: ""
+    property string authWarningDetail: ""
+    property bool authWarningCanOpenLogin: false
+    property string authWarningContinueText: ""
+    property string authWarningLoginText: ""
+    property string authWarningExitText: ""
 
     width: 1280
     height: 800
@@ -225,6 +237,81 @@ ApplicationWindow {
     }
 
     Loader {
+        id: migrationLoader
+
+        active: false
+        sourceComponent: root.migrationCanApplyNow ? migrationChoiceComponent : migrationNoticeComponent
+    }
+
+    Component {
+        id: migrationNoticeComponent
+
+        Dialogs.NotificationDialog {
+            parent: Overlay.overlay
+            anchors.centerIn: parent
+            heading: root.migrationTitle
+            message: root.migrationMessage
+            closePolicy: Popup.NoAutoClose
+            Component.onCompleted: open()
+            onAccepted: root.appController.acknowledgeEnvProxyMigration(false)
+            onClosed: migrationLoader.active = false
+        }
+    }
+
+    Component {
+        id: migrationChoiceComponent
+
+        Dialogs.ConfirmDialog {
+            parent: Overlay.overlay
+            anchors.centerIn: parent
+            heading: root.migrationTitle
+            message: root.migrationMessage
+            acceptText: root.migrationAcceptText
+            rejectText: root.migrationRejectText
+            closePolicy: Popup.NoAutoClose
+            Component.onCompleted: open()
+            onConfirmed: root.appController.acknowledgeEnvProxyMigration(true)
+            onRejected: root.appController.acknowledgeEnvProxyMigration(false)
+            onClosed: migrationLoader.active = false
+        }
+    }
+
+    Loader {
+        id: authWarningLoader
+
+        active: false
+        sourceComponent: Component {
+            Dialogs.AuthWarningDialog {
+                parent: Overlay.overlay
+                anchors.centerIn: parent
+                heading: root.authWarningTitle
+                message: root.authWarningMessage
+                detail: root.authWarningDetail
+                canOpenLogin: root.authWarningCanOpenLogin
+                continueText: root.authWarningContinueText
+                loginText: root.authWarningLoginText
+                exitText: root.authWarningExitText
+                onContinueRequested: {
+                    close();
+                    authWarningLoader.active = false;
+                }
+                onLoginRequested: {
+                    if (root.appController.settings.supportsBrowserAuthSource)
+                        root.navigate("settings");
+                    else
+                        root.appController.openRobloxLogin();
+                    close();
+                    authWarningLoader.active = false;
+                }
+                onExitRequested: root.appController.quitRequested()
+                onLinkRequested: url => root.appController.openUrl(url)
+                Component.onCompleted: open()
+                onClosed: authWarningLoader.active = false
+            }
+        }
+    }
+
+    Loader {
         id: aboutLoader
 
         active: false
@@ -336,6 +423,26 @@ ApplicationWindow {
 
         function onErrorOccurred(message) {
             toastHost.error(qsTr("Something went wrong: %1").arg(message));
+        }
+
+        function onEnvProxyMigrationRequested(title, message, canApplyNow, acceptText, rejectText) {
+            root.migrationTitle = title;
+            root.migrationMessage = message;
+            root.migrationCanApplyNow = canApplyNow;
+            root.migrationAcceptText = acceptText;
+            root.migrationRejectText = rejectText;
+            migrationLoader.active = true;
+        }
+
+        function onAuthWarningRequested(title, message, detail, canOpenLogin, continueText, loginText, exitText) {
+            root.authWarningTitle = title;
+            root.authWarningMessage = message;
+            root.authWarningDetail = detail;
+            root.authWarningCanOpenLogin = canOpenLogin;
+            root.authWarningContinueText = continueText;
+            root.authWarningLoginText = loginText;
+            root.authWarningExitText = exitText;
+            authWarningLoader.active = true;
         }
 
         function onDashboardVisibilityRequested(visible) {

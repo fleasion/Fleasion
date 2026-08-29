@@ -7,6 +7,8 @@ from typing import Any, Final
 
 from PySide6.QtCore import QObject, QTimer, Qt, Signal
 
+from ..localization import tr
+
 
 def _qt_key_value(key: Qt.Key) -> int:
     return int(key.value)
@@ -101,10 +103,10 @@ class CustomFastFlagHotkeys(QObject):
 
     def begin_capture(self, name: str) -> bool:
         if self._controller is None or self._config is None:
-            self.errorOccurred.emit('Global FastFlag hotkeys are unavailable on this platform.')
+            self.errorOccurred.emit(tr('qml.dynamic.hotkeys.unavailable_platform'))
             return False
         if name not in self._config.custom_fflags:
-            self.errorOccurred.emit('The selected FastFlag no longer exists.')
+            self.errorOccurred.emit(tr('qml.dynamic.hotkeys.fastflag_missing'))
             return False
         self._capture_name = name
         self._pending_linux_modifier = None
@@ -113,14 +115,14 @@ class CustomFastFlagHotkeys(QObject):
             service = self._controller.service
             if not service.begin_capture():
                 self._capture_name = ''
-                detail = service.last_error or 'Fleasion could not read Linux input devices.'
+                detail = service.last_error or tr('qml.dynamic.hotkeys.linux_input_read_failed')
                 self._capture_message = detail
                 self.captureChanged.emit()
                 self.errorOccurred.emit(detail)
                 return False
-            self._capture_message = 'Press a key, mouse button, or scroll the wheel.'
+            self._capture_message = tr('qml.dynamic.hotkeys.capture_linux_prompt')
         else:
-            self._capture_message = 'Press a key, click the capture area, or scroll.'
+            self._capture_message = tr('qml.dynamic.hotkeys.capture_prompt')
         self.captureChanged.emit()
         return True
 
@@ -144,7 +146,7 @@ class CustomFastFlagHotkeys(QObject):
             return False
         scan_code = native_scan_code & 0xFF
         if not scan_code:
-            self._capture_message = 'That key did not provide a usable physical scan code.'
+            self._capture_message = tr('qml.dynamic.hotkeys.scan_code_invalid')
             self.captureChanged.emit()
             return False
         modifiers = self._modifier_mask(qt_modifiers)
@@ -161,9 +163,7 @@ class CustomFastFlagHotkeys(QObject):
         }
         if own_modifier:
             self._pending_windows_key = (scan_code, qt_key)
-            self._capture_message = (
-                'Release the modifier to bind it alone, or press another key for a combination.'
-            )
+            self._capture_message = tr('qml.dynamic.hotkeys.release_modifier_prompt')
             self.captureChanged.emit()
             return True
         self._pending_windows_key = None
@@ -228,18 +228,15 @@ class CustomFastFlagHotkeys(QObject):
         try:
             launch_permission_setup()
         except OSError as exc:
-            self.errorOccurred.emit(f'Could not start the permission setup: {exc}')
+            self.errorOccurred.emit(tr('qml.dynamic.hotkeys.permission_setup_failed', error=exc))
             return False
-        self._capture_message = (
-            'Complete the permission prompt, then retry. A sign-out may be required '
-            'before the new group membership applies.'
-        )
+        self._capture_message = tr('qml.dynamic.hotkeys.permission_prompt_complete')
         self.captureChanged.emit()
         return True
 
     def binding_text(self, name: str) -> str:
         if self._config is None:
-            return 'Not assigned'
+            return tr('qml.dynamic.hotkeys.not_assigned')
         binding = self._config.custom_fflag_keybinds.get(name)
         if sys.platform.startswith('linux'):
             from ..modifications.hotkeys.linux import binding_text
@@ -266,9 +263,7 @@ class CustomFastFlagHotkeys(QObject):
         own_modifier = modifier_mask_for_evdev_code(code)
         if own_modifier:
             self._pending_linux_modifier = code
-            self._capture_message = (
-                'Release the modifier to bind it alone, or press another key for a combination.'
-            )
+            self._capture_message = tr('qml.dynamic.hotkeys.release_modifier_prompt')
             self.captureChanged.emit()
             return
         self._pending_linux_modifier = None

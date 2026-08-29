@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 from PySide6.QtCore import QObject, Property, QTimer, Signal, Slot
 from PySide6.QtQml import QmlElement
 
+from ..localization import tr
 from ..utils.logging import log_buffer
 
 if TYPE_CHECKING:
@@ -138,8 +139,8 @@ class SubplaceBlacklistApi(QObject):
         else:
             log_buffer.log('subplace', 'Subplace blacklist cleared')
         self.notificationRequested.emit(
-            'Subplace blacklist updated',
-            f'{count} place ID(s) active',
+            tr('qml.dynamic.subplace_blacklist.updated_title'),
+            tr('qml.dynamic.subplace_blacklist.active_ids', count=count),
             'success',
         )
         return True
@@ -152,8 +153,8 @@ class SubplaceBlacklistApi(QObject):
         self.bypassChanged.emit()
         log_buffer.log('subplace', 'Subplace blacklist bypass enabled for 5 seconds')
         self.notificationRequested.emit(
-            'Blacklist bypass active',
-            'Subplace joins are allowed for five seconds.',
+            tr('qml.dynamic.subplace_blacklist.bypass_title'),
+            tr('qml.dynamic.subplace_blacklist.bypass_detail'),
             'info',
         )
 

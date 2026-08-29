@@ -10,10 +10,10 @@ QOpenGLWidget top-level-window recreation behavior.
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QImage, QOffscreenSurface, QOpenGLContext, QPainter, QSurfaceFormat
-from PyQt6.QtOpenGL import QOpenGLFramebufferObject, QOpenGLFramebufferObjectFormat
-from PyQt6.QtWidgets import QWidget
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QImage, QOffscreenSurface, QOpenGLContext, QPainter, QSurfaceFormat
+from PySide6.QtOpenGL import QOpenGLFramebufferObject, QOpenGLFramebufferObjectFormat
+from PySide6.QtWidgets import QWidget
 
 from ..utils.logging import log_buffer
 
@@ -21,7 +21,7 @@ from ..utils.logging import log_buffer
 class OffscreenOpenGLWidget(QWidget):
     """QWidget that renders OpenGL offscreen and presents it as a raster image."""
 
-    framePresented = pyqtSignal()
+    framePresented = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)

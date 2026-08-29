@@ -182,6 +182,7 @@ class LinuxHotkeyService(QObject):
         self._qt_deleted = threading.Event()
         self._lock = threading.Lock()
         self._fds: dict[int, set[int]] = {}
+        self._fd_paths: dict[int, Path] = {}
         self._pressed: set[int] = set()
         self._bindings: dict[str, dict[str, int | str]] = {}
         self._was_active: dict[str, bool] = {}
@@ -229,6 +230,7 @@ class LinuxHotkeyService(QObject):
             return False
 
         opened: dict[int, set[int]] = {}
+        opened_paths: dict[int, Path] = {}
         errors: list[str] = []
         for path in paths:
             try:
@@ -237,6 +239,7 @@ class LinuxHotkeyService(QObject):
                 errors.append(f'{path.name}: {exc.strerror or exc}')
                 continue
             opened[fd] = set()
+            opened_paths[fd] = path
         if not opened:
             self.last_error = 'Cannot read /dev/input/event*' + (
                 f' ({"; ".join(errors)})' if errors else '.'
@@ -245,6 +248,7 @@ class LinuxHotkeyService(QObject):
 
         with self._lock:
             self._fds = opened
+            self._fd_paths = opened_paths
             self._pressed.clear()
             self._was_active = {
                 name: self._binding_is_active(binding) for name, binding in self._bindings.items()
@@ -277,8 +281,10 @@ class LinuxHotkeyService(QObject):
             except OSError as exc:
                 if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
                     return
+                self._drop_device(fd, exc)
                 return
             if not raw:
+                self._drop_device(fd, 'end-of-device')
                 return
             complete_size = len(raw) - len(raw) % _INPUT_EVENT.size
             for offset in range(0, complete_size, _INPUT_EVENT.size):
@@ -287,6 +293,28 @@ class LinuxHotkeyService(QObject):
                     self._set_key_state(fd, code, value == 1)
                 elif event_type == _EV_REL and code == _REL_WHEEL and value:
                     self._handle_wheel(value)
+
+
+    def _drop_device(self, fd: int, reason: OSError | str) -> None:
+        """Remove an input device that disconnected or became unusable."""
+        with self._lock:
+            if fd not in self._fds:
+                return
+            path = self._fd_paths.pop(fd, Path(f'fd:{fd}'))
+            self._fds.pop(fd, None)
+            self._pressed = set().union(*self._fds.values()) if self._fds else set()
+            self._was_active = {
+                name: self._binding_is_active(binding) for name, binding in self._bindings.items()
+            }
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        detail = reason.strerror or reason if isinstance(reason, OSError) else reason
+        log_buffer.log(
+            'CustomFFlags',
+            f'Linux keybind reader dropped {path.name} after input-device error: {detail}',
+        )
 
     def _set_key_state(self, fd: int, code: int, pressed: bool) -> None:
         with self._lock:
@@ -371,6 +399,7 @@ class LinuxHotkeyService(QObject):
         with self._lock:
             fds = tuple(self._fds)
             self._fds.clear()
+            self._fd_paths.clear()
             self._pressed.clear()
             self._was_active.clear()
         for fd in fds:

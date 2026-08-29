@@ -57,6 +57,25 @@ Item {
             }
         }
 
+        Rectangle {
+            Layout.fillWidth: true
+            implicitHeight: privacyWarning.implicitHeight + Theme.spaceMd
+            radius: Theme.radiusSm
+            color: Theme.warningSubtle
+
+            Text {
+                id: privacyWarning
+
+                anchors.fill: parent
+                anchors.margins: Theme.spaceXs
+                text: root.controller ? root.controller.trafficPrivacyWarning : ""
+                color: Theme.warning
+                font.pointSize: TypeScale.caption
+                font.weight: Font.DemiBold
+                wrapMode: Text.WordWrap
+            }
+        }
+
         RowLayout {
             Layout.fillWidth: true
             spacing: Theme.sectionGap

@@ -154,7 +154,7 @@ def test_linux_hotkey_reader_does_not_spin_after_all_devices_disconnect(monkeypa
     service._fd_paths = {43: Path('/dev/input/event27')}
     select_calls = []
     monkeypatch.setattr(
-        'fleasion.gui.linux_hotkeys.select.select',
+        'fleasion.modifications.hotkeys.linux.select.select',
         lambda *args: select_calls.append(args) or ([43], [], []),
     )
     monkeypatch.setattr(

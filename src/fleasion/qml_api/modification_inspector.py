@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Final
 from PySide6.QtCore import QObject, Property, QUrl, Signal, Slot
 
 from ..cache.tools.ktx_to_png import convert as ktx_to_png
+from ..localization import tr
 from ..modifications.dds_to_png import tex_to_png_bytes
 from ..modifications.manager import MOD_ORIGINALS_DIR, normalise_target_path
 from ..modifications.platform_targets import read_current_platform_original_asset
@@ -117,7 +118,7 @@ class ModificationInspector(QObject):
             mode = 'original' if version == 'original' else 'replacement'
             data = self._load_data(mode)
         if data is None:
-            self.errorOccurred.emit(f'The {mode} file is not available.')
+            self.errorOccurred.emit(tr('qml.dynamic.modification_inspector.file_unavailable'))
             return False
         destination = self._local_path(value)
         if version == 'converted' and self._converted_suffix and not destination.suffix:
@@ -129,7 +130,7 @@ class ModificationInspector(QObject):
             self.errorOccurred.emit(str(exc))
             return False
         self.notificationRequested.emit(
-            'Modification exported',
+            tr('qml.dynamic.modification_inspector.exported_title'),
             str(destination),
             'success',
         )

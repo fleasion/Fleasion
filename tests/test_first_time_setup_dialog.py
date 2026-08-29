@@ -2,7 +2,7 @@ import os
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from PyQt6.QtWidgets import QApplication, QDialog
+from PySide6.QtWidgets import QApplication, QDialog
 
 from fleasion.app import _FirstTimeSetupDialog
 

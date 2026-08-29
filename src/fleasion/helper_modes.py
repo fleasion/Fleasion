@@ -66,11 +66,18 @@ def _cleanup_hosts_once() -> int:
         _cancel_hosts_cleanup_on_reboot,
         _flush_dns,
         _remove_hosts_entries,
+        hosts_file_is_oversized,
+        repair_hosts_file,
     )
 
     error_details: dict[str, object] = {}
     try:
-        if not _remove_hosts_entries(set(INTERCEPT_HOSTS), error_details=error_details):
+        cleaned = (
+            repair_hosts_file(set(INTERCEPT_HOSTS), error_details=error_details)
+            if hosts_file_is_oversized(error_details)
+            else _remove_hosts_entries(set(INTERCEPT_HOSTS), error_details=error_details)
+        )
+        if not cleaned:
             detail = error_details.get('error') or 'unknown hosts write failure'
             _log(
                 'Hosts',

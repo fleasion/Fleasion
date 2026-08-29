@@ -15,6 +15,8 @@ from PySide6.QtCore import QObject, Property, QUrl, Signal, Slot
 from PySide6.QtQml import QmlElement
 
 from ..cache.cache_manager import CacheManager
+from ..localization import tr
+from ..translations.qml_sources import QML_SOURCE_IDS
 from ..config.manager import (
     CONFIGS_FOLDER,
     ConfigManager,
@@ -80,13 +82,17 @@ def _replacement_display(rule: dict[str, Any]) -> tuple[str, str]:
         mode = 'remove' if rule.get('remove') else 'id'
     if mode == 'id':
         replacement_id = rule.get('with_id')
-        return ('Asset ID', str(replacement_id)) if replacement_id is not None else ('Remove', '')
+        return (
+            (tr(QML_SOURCE_IDS['Asset ID']), str(replacement_id))
+            if replacement_id is not None
+            else (tr(QML_SOURCE_IDS['Remove']), '')
+        )
     if mode == 'cdn':
-        return 'CDN URL', str(rule.get('cdn_url', ''))
+        return tr('qml.dynamic.replacer.cdn_url'), str(rule.get('cdn_url', ''))
     if mode == 'local':
-        return 'Local file', str(rule.get('local_path', ''))
+        return tr(QML_SOURCE_IDS['Local file']), str(rule.get('local_path', ''))
     if mode == 'remove':
-        return 'Remove', ''
+        return tr(QML_SOURCE_IDS['Remove']), ''
     return mode.title(), ''
 
 
@@ -195,10 +201,15 @@ class ReplacerApi(QObject):
     @Property(list, notify=modelChanged)
     def groupDestinations(self) -> list[dict[str, Any]]:  # noqa: N802
         destinations: list[dict[str, Any]] = [
-            {'path': '', 'label': 'Profile root', 'name': 'Profile root', 'depth': 0}
+            {
+                'path': '',
+                'label': tr('qml.dynamic.replacer.profile_root'),
+                'name': tr('qml.dynamic.replacer.profile_root'),
+                'depth': 0,
+            }
         ]
         for path, group, depth in _iter_groups(self._config.replacement_rules):
-            name = str(group.get('name', 'Group'))
+            name = str(group.get('name') or tr('qml.dynamic.replacer.group'))
             destinations.append(
                 {
                     'path': _path_to_string(path),
@@ -239,20 +250,22 @@ class ReplacerApi(QObject):
     def createConfig(self, name: str) -> bool:  # noqa: N802
         clean_name = name.strip()
         if not self._config.create_config(clean_name):
-            self.errorOccurred.emit('Choose a unique profile name without reserved characters.')
+            self.errorOccurred.emit(tr('qml.dynamic.replacer.profile_name_invalid'))
             return False
         self._config.last_config = clean_name
         self._undo.clear()
         self._redo.clear()
         self.refresh()
-        self.notificationRequested.emit('Profile created', clean_name, 'success')
+        self.notificationRequested.emit(
+            tr('qml.dynamic.replacer.profile_created_title'), clean_name, 'success'
+        )
         return True
 
     @Slot(str, str, result=bool)
     def renameConfig(self, old_name: str, new_name: str) -> bool:  # noqa: N802
         clean_name = new_name.strip()
         if not self._config.rename_config(old_name, clean_name):
-            self.errorOccurred.emit('The profile could not be renamed.')
+            self.errorOccurred.emit(tr('qml.dynamic.replacer.rename_profile_failed'))
             return False
         self.refresh()
         return True
@@ -261,7 +274,7 @@ class ReplacerApi(QObject):
     def duplicateConfig(self, source_name: str, new_name: str) -> bool:  # noqa: N802
         clean_name = new_name.strip()
         if not self._config.duplicate_config(source_name, clean_name):
-            self.errorOccurred.emit('The profile could not be duplicated.')
+            self.errorOccurred.emit(tr('qml.dynamic.replacer.duplicate_profile_failed'))
             return False
         self._config.last_config = clean_name
         self.refresh()
@@ -270,7 +283,7 @@ class ReplacerApi(QObject):
     @Slot(str, result=bool)
     def deleteConfig(self, name: str) -> bool:  # noqa: N802
         if not self._config.delete_config(name):
-            self.errorOccurred.emit('At least one profile must remain.')
+            self.errorOccurred.emit(tr('qml.dynamic.replacer.profile_required'))
             return False
         self._undo.clear()
         self._redo.clear()
@@ -285,7 +298,9 @@ class ReplacerApi(QObject):
         rules = deepcopy(self._config.replacement_rules)
         rules.append(rule)
         self._save(rules)
-        self.notificationRequested.emit('Replacement added', str(rule['name']), 'success')
+        self.notificationRequested.emit(
+            tr('qml.dynamic.replacer.replacement_added_title'), str(rule['name']), 'success'
+        )
         return True
 
     @Slot(str, str, str, str, result=bool)
@@ -313,7 +328,7 @@ class ReplacerApi(QObject):
     def addGroup(self, name: str) -> bool:  # noqa: N802
         clean_name = name.strip()
         if not clean_name:
-            self.errorOccurred.emit('Enter a group name.')
+            self.errorOccurred.emit(tr('qml.dynamic.replacer.group_name_required'))
             return False
         rules = deepcopy(self._config.replacement_rules)
         rules.append({'type': 'group', 'name': clean_name, 'expanded': True, 'children': []})
@@ -324,13 +339,13 @@ class ReplacerApi(QObject):
     def renameGroup(self, path_value: str, name: str) -> bool:  # noqa: N802
         clean_name = name.strip()
         if not clean_name:
-            self.errorOccurred.emit('Enter a group name.')
+            self.errorOccurred.emit(tr('qml.dynamic.replacer.group_name_required'))
             return False
         path = _path_from_string(path_value)
         rules = deepcopy(self._config.replacement_rules)
         group = _entry_at_path(rules, path)
         if not path or group is None or group.get('type') != 'group':
-            self.errorOccurred.emit('The selected group no longer exists.')
+            self.errorOccurred.emit(tr('qml.dynamic.replacer.selected_group_missing'))
             return False
         if group.get('name') == clean_name:
             return True
@@ -392,8 +407,7 @@ class ReplacerApi(QObject):
     @Slot(str, bool, bool)
     def selectEntry(self, path_value: str, toggle: bool, extend: bool) -> None:  # noqa: N802
         if path_value not in {
-            _path_to_string(path)
-            for path, _entry in _iter_entries(self._config.replacement_rules)
+            _path_to_string(path) for path, _entry in _iter_entries(self._config.replacement_rules)
         }:
             return
         visible_paths = [str(row.get('path', '')) for row in self._model.snapshot()]
@@ -443,11 +457,11 @@ class ReplacerApi(QObject):
     def groupEntries(self, path_values: list[str], name: str) -> bool:  # noqa: N802
         clean_name = name.strip()
         if not clean_name:
-            self.errorOccurred.emit('Enter a group name.')
+            self.errorOccurred.emit(tr('qml.dynamic.replacer.group_name_required'))
             return False
         paths = _valid_paths(self._config.replacement_rules, path_values)
         if not self.canGroupEntries([_path_to_string(path) for path in paths]):
-            self.errorOccurred.emit('Select replacement rules from the same level to group them.')
+            self.errorOccurred.emit(tr('qml.dynamic.replacer.same_level_required'))
             return False
 
         rules = deepcopy(self._config.replacement_rules)
@@ -473,8 +487,12 @@ class ReplacerApi(QObject):
         selection_after = _paths_for_entry_ids(rules, selected_ids)
         self._save(rules, selection_after=selection_after)
         self.notificationRequested.emit(
-            'Group created',
-            f'{clean_name} · {len(children)} replacement(s)',
+            tr('qml.dynamic.replacer.group_created_title'),
+            tr(
+                'qml.dynamic.replacer.group_created_detail',
+                name=clean_name,
+                count=len(children),
+            ),
             'success',
         )
         return True
@@ -495,9 +513,7 @@ class ReplacerApi(QObject):
 
     @Slot(list, bool, result=bool)
     def setEntriesEnabled(self, path_values: list[str], enabled: bool) -> bool:  # noqa: N802
-        paths = _prune_descendant_paths(
-            _valid_paths(self._config.replacement_rules, path_values)
-        )
+        paths = _prune_descendant_paths(_valid_paths(self._config.replacement_rules, path_values))
         if not paths:
             return False
         rules = deepcopy(self._config.replacement_rules)
@@ -530,7 +546,10 @@ class ReplacerApi(QObject):
         if not 0 <= source_index < len(siblings) or not 0 <= target_index < len(siblings):
             return False
         selected_ids = _entry_ids_for_paths(rules, self._selection.values())
-        siblings[source_index], siblings[target_index] = siblings[target_index], siblings[source_index]
+        siblings[source_index], siblings[target_index] = (
+            siblings[target_index],
+            siblings[source_index],
+        )
         selection_after = _paths_for_entry_ids(rules, selected_ids)
         self._save(rules, selection_after=selection_after)
         return True
@@ -548,7 +567,7 @@ class ReplacerApi(QObject):
         if not source_paths:
             return False
         if destination_path_value and not _path_from_string(destination_path_value):
-            self.errorOccurred.emit('Choose an existing group or the profile root.')
+            self.errorOccurred.emit(tr('qml.dynamic.replacer.choose_group_or_root'))
             return False
         destination_path = _path_from_string(destination_path_value)
         destination = (
@@ -557,21 +576,19 @@ class ReplacerApi(QObject):
             else None
         )
         if destination_path and (destination is None or destination.get('type') != 'group'):
-            self.errorOccurred.emit('Choose an existing group or the profile root.')
+            self.errorOccurred.emit(tr('qml.dynamic.replacer.choose_group_or_root'))
             return False
         if any(
             destination_path == path or destination_path[: len(path)] == path
             for path in source_paths
         ):
-            self.errorOccurred.emit('A group cannot be moved into itself or one of its children.')
+            self.errorOccurred.emit(tr('qml.dynamic.replacer.group_cycle_invalid'))
             return False
 
         rules = deepcopy(self._config.replacement_rules)
         selected_ids = _entry_ids_for_paths(rules, self._selection.values())
         moving_entries = [
-            entry
-            for path in source_paths
-            if (entry := _entry_at_path(rules, path)) is not None
+            entry for path in source_paths if (entry := _entry_at_path(rules, path)) is not None
         ]
         if not moving_entries:
             return False
@@ -583,7 +600,7 @@ class ReplacerApi(QObject):
         adjusted_destination = _adjust_path_after_removals(destination_path, source_paths)
         destination_entries = _entries_at_parent_path(rules, adjusted_destination)
         if destination_entries is None:
-            self.errorOccurred.emit('The destination group is no longer available.')
+            self.errorOccurred.emit(tr('qml.dynamic.replacer.destination_group_missing'))
             return False
         if adjusted_destination:
             destination_group = _entry_at_path(rules, adjusted_destination)
@@ -609,8 +626,8 @@ class ReplacerApi(QObject):
         selection_after = _paths_for_entry_ids(rules, selected_ids)
         self._save(rules, selection_after=selection_after)
         self.notificationRequested.emit(
-            'Replacements moved',
-            f'{len(moving_entries)} item(s) moved',
+            tr('qml.dynamic.replacer.replacements_moved_title'),
+            tr('qml.dynamic.replacer.items_moved', count=len(moving_entries)),
             'success',
         )
         return True
@@ -623,7 +640,7 @@ class ReplacerApi(QObject):
         position: str,
     ) -> bool:
         if not self.manualOrder or self._query:
-            self.errorOccurred.emit('Clear sorting and search before reordering replacements.')
+            self.errorOccurred.emit(tr('qml.dynamic.replacer.clear_sort_search_before_reorder'))
             return False
         if position == 'root':
             return self.moveEntries(path_values, '', -1)
@@ -702,7 +719,9 @@ class ReplacerApi(QObject):
         except OSError as exc:
             self.errorOccurred.emit(str(exc))
             return False
-        self.notificationRequested.emit('Profile exported', str(destination), 'success')
+        self.notificationRequested.emit(
+            tr('qml.dynamic.replacer.profile_exported_title'), str(destination), 'success'
+        )
         return True
 
     @Slot(str, result=dict)
@@ -724,7 +743,7 @@ class ReplacerApi(QObject):
         if not clean_id:
             return
         self._draft = {
-            'name': f'Cached asset {clean_id}',
+            'name': tr('qml.dynamic.replacer.cached_asset_name', asset_id=clean_id),
             'targets': '' if as_replacement else clean_id,
             'replacement': clean_id if as_replacement else '',
         }
@@ -805,11 +824,7 @@ class ReplacerApi(QObject):
         rules = self._config.replacement_rules
         if self._query:
             all_rows = list(self._flatten(rules, respect_expanded=False))
-            rows = [
-                row
-                for row in all_rows
-                if self._query in str(row['searchText']).casefold()
-            ]
+            rows = [row for row in all_rows if self._query in str(row['searchText']).casefold()]
         else:
             rows = list(self._flatten(rules, respect_expanded=True))
         self._model.replace_items(rows)
@@ -835,7 +850,10 @@ class ReplacerApi(QObject):
             path = (*parent_path, index)
             path_value = _path_to_string(path)
             parent_path_value = _path_to_string(parent_path)
-            name = str(entry.get('name', f'Profile {index + 1}'))
+            name = str(
+                entry.get('name')
+                or tr('qml.dynamic.replacer.default_profile_name', index=index + 1)
+            )
             if entry.get('type') == 'group':
                 children = entry.get('children', [])
                 if not isinstance(children, list):
@@ -859,7 +877,7 @@ class ReplacerApi(QObject):
                     'childCount': len(children),
                     'canMoveUp': index > 0,
                     'canMoveDown': index + 1 < len(entries),
-                    'action': 'Group',
+                    'action': tr('qml.dynamic.replacer.group'),
                     'replacement': '',
                     'targets': '',
                     'targetCount': profile_count,
@@ -966,9 +984,12 @@ class ReplacerApi(QObject):
     ) -> dict[str, Any] | None:
         targets = self._parse_targets(target_text)
         if not targets:
-            self.errorOccurred.emit('Enter at least one asset ID or asset type.')
+            self.errorOccurred.emit(tr('qml.dynamic.replacer.asset_target_required'))
             return None
-        clean_name = name.strip() or f'Profile {len(self._config.replacement_rules) + 1}'
+        clean_name = name.strip() or tr(
+            'qml.dynamic.replacer.default_profile_name',
+            index=len(self._config.replacement_rules) + 1,
+        )
         replacement = replacement_text.strip().strip('"\'')
         rule: dict[str, Any] = {
             'name': clean_name,
@@ -981,7 +1002,7 @@ class ReplacerApi(QObject):
         if replacement.startswith(('https://', 'http://')):
             parsed = urlparse(replacement)
             if not parsed.netloc:
-                self.errorOccurred.emit('Enter a valid HTTP or HTTPS URL.')
+                self.errorOccurred.emit(tr('qml.dynamic.replacer.valid_http_url_required'))
                 return None
             rule.update(mode='cdn', cdn_url=replacement)
             return rule
@@ -992,7 +1013,7 @@ class ReplacerApi(QObject):
             pass
         path = self._local_path(replacement)
         if not resolve_local_replacement_path(path).is_file():
-            self.errorOccurred.emit('The selected replacement file does not exist.')
+            self.errorOccurred.emit(tr('qml.dynamic.replacer.replacement_file_missing'))
             return None
         rule.update(mode='local', local_path=local_replacement_path_for_storage(path))
         return rule

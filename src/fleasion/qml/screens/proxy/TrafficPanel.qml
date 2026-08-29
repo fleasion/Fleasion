@@ -19,6 +19,25 @@ Card {
     padding: 0
     contentSpacing: Theme.spaceXs
 
+    Rectangle {
+        Layout.fillWidth: true
+        implicitHeight: livePrivacyWarning.implicitHeight + Theme.spaceMd
+        radius: Theme.radiusSm
+        color: Theme.warningSubtle
+
+        Text {
+            id: livePrivacyWarning
+
+            anchors.fill: parent
+            anchors.margins: Theme.spaceXs
+            text: root.controller ? root.controller.trafficPrivacyWarning : ""
+            color: Theme.warning
+            font.pointSize: TypeScale.caption
+            font.weight: Font.DemiBold
+            wrapMode: Text.WordWrap
+        }
+    }
+
     RowLayout {
         Layout.fillWidth: true
         spacing: Theme.spaceSm

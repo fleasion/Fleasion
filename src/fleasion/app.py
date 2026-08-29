@@ -12,7 +12,7 @@ import subprocess
 import sys
 import threading
 import time
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QSharedMemory, Qt, QTimer, Signal, Slot
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
@@ -191,16 +191,9 @@ class _ForcedAcknowledgeMessageBox(QMessageBox):
 
 def _prepare_env_proxy_migration(config_manager: ConfigManager) -> bool:
     """Select Env Proxy before privilege gates and report a legacy migration."""
-    if config_manager.env_proxy_migration_v1_complete:
-        return False
+    from .startup_migrations import prepare_env_proxy_migration
 
-    # Assign even when the merged in-memory default is already Env so the new
-    # mode is durable on disk before any acknowledgement dialog can appear.
-    config_manager.proxy_mode = 'env'
-
-    # First-time users learn about Env Proxy in the setup guide. Existing
-    # users receive the dedicated migration acknowledgement later in startup.
-    return bool(config_manager.first_time_setup_complete)
+    return prepare_env_proxy_migration(config_manager)
 
 
 def _show_env_proxy_migration(config_manager: ConfigManager, roblox_monitor) -> None:
@@ -930,7 +923,7 @@ def _prompt_first_time_language(config_manager: ConfigManager) -> None:
     if _on_top:
         dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
     if icon_path := get_icon_path():
-        from PyQt6.QtGui import QIcon
+        from PySide6.QtGui import QIcon
 
         dialog.setWindowIcon(QIcon(str(icon_path)))
 
@@ -2799,26 +2792,10 @@ def _choose_macos_auth_source_on_launch(config_manager, tray=None, *, force: boo
 
 
 def _windows_auth_profile_matches_username(details: dict) -> bool:
-    """Return whether Windows auth diagnostics describe one coherent user profile."""
-    username = str(details.get('username') or '').strip()
-    userprofile_text = str(details.get('userprofile') or '').strip()
-    local_appdata_text = str(details.get('local_appdata') or '').strip()
-    default_cookie_path_text = str(details.get('default_cookie_path') or '').strip()
-    if not all((username, userprofile_text, local_appdata_text, default_cookie_path_text)):
-        return False
+    """Compatibility wrapper for the shared Windows auth-profile diagnostic."""
+    from .utils.roblox_auth import windows_auth_profile_matches_username
 
-    userprofile = PureWindowsPath(userprofile_text)
-    local_appdata = PureWindowsPath(local_appdata_text)
-    default_cookie_path = PureWindowsPath(default_cookie_path_text)
-    if userprofile.name.casefold() != username.casefold():
-        return False
-
-    try:
-        local_appdata.relative_to(userprofile)
-        default_cookie_path.relative_to(local_appdata)
-    except ValueError:
-        return False
-    return True
+    return windows_auth_profile_matches_username(details)
 
 
 def _show_auth_cookie_unavailable_dialog(details: dict, tray=None):
@@ -3944,7 +3921,10 @@ def _request_other_fleasion_instances_exit(
 def _handle_single_instance_command(socket: QLocalSocket, tray: SystemTray):
     try:
         command = bytes(socket.readAll()).decode('utf-8', errors='replace').strip()
-        if command.lower() == 'quit':
+        if command.lower() == 'show':
+            if hasattr(tray, '_show_replacer_config'):
+                tray._show_replacer_config()
+        elif command.lower() == 'quit':
             tray._exit_app()
         elif command.lower() == 'quit-preserve-env-player':
             tray._exit_app(preserve_roblox=True)
@@ -4475,19 +4455,9 @@ def main():
         cache_scraper=getattr(proxy_master, 'cache_scraper', None),
         read_only_lock_enabled=config_manager.lock_roblox_files_read_only,
     )
-    if not config_manager.lock_roblox_files_read_only:
-        if not config_manager.read_only_lock_migration_v1_complete:
-            # One-time cleanup for persistent guards left by older builds,
-            # including the old cacert.pem lock.
-            mod_manager.clear_managed_file_read_only(
-                (roblox_dir / 'ssl' / 'cacert.pem' for roblox_dir in mod_manager.roblox_dirs),
-                clear_untracked=True,
-            )
-            config_manager.read_only_lock_migration_v1_complete = True
-        else:
-            # Exact original modes persisted by the new opt-in guard survive a
-            # crash and can be restored without changing unrelated files.
-            mod_manager.clear_managed_file_read_only(clear_untracked=False)
+    from .startup_migrations import restore_read_only_guard_state
+
+    restore_read_only_guard_state(config_manager, mod_manager)
     macos_bootstrapper_bridge = None
     if sys.platform == 'darwin':
         from .modifications.macos_bootstrapper_bridge import MacBootstrapperBridge

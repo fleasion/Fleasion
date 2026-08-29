@@ -11,11 +11,22 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Final
 
-from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QObject, Property, QTimer, QUrl, Signal, Slot
+from PySide6.QtCore import (
+    QByteArray,
+    QBuffer,
+    QIODevice,
+    QObject,
+    Property,
+    QTimer,
+    QUrl,
+    Signal,
+    Slot,
+)
 from PySide6.QtGui import QImage, QImageReader, QPixmap
 from PySide6.QtQml import QmlElement
 
 from ..cache.cache_manager import CacheManager
+from ..localization import tr
 from ..cache.roblox_document import classify_roblox_document
 from ..utils.clipboard import copy_pixmap_to_clipboard
 from .animation_preview import AnimationPreviewApi
@@ -33,9 +44,7 @@ _MAX_PREVIEW_BYTES: Final = 64 * 1024 * 1024
 _MAX_TEXT_BYTES: Final = 500_000
 _MAX_HEX_BYTES: Final = 4096
 _MAX_IMAGE_PIXELS: Final = 64 * 1024 * 1024
-_ANIMATION_TYPES: Final = frozenset(
-    {24, 48, 49, 50, 51, 52, 53, 54, 55, 56, 61, 78}
-)
+_ANIMATION_TYPES: Final = frozenset({24, 48, 49, 50, 51, 52, 53, 54, 55, 56, 61, 78})
 _IMAGE_TYPES: Final = frozenset({1, 2, 11, 12, 13, 18, 22})
 _MESH_TYPES: Final = frozenset({4, 39, 40, 75})
 _IMAGE_MAGIC: Final = (
@@ -143,9 +152,12 @@ def _printable_text(data: bytes) -> str | None:
     except UnicodeDecodeError:
         return None
     sample = text[:4096]
-    if sample and sum(character.isprintable() or character in '\r\n\t' for character in sample) / len(
+    if (
         sample
-    ) < 0.9:
+        and sum(character.isprintable() or character in '\r\n\t' for character in sample)
+        / len(sample)
+        < 0.9
+    ):
         return None
     return text
 
@@ -353,14 +365,18 @@ class PayloadPreviewApi(QObject):
             return False
         image = QImage.fromData(self._image_bytes)
         if image.isNull() or image.width() * image.height() > _MAX_IMAGE_PIXELS:
-            self.errorOccurred.emit('Qt could not safely decode this preview image.')
+            self.errorOccurred.emit(tr('qml.dynamic.preview.image_decode_failed'))
             return False
         try:
             copy_pixmap_to_clipboard(QPixmap.fromImage(image))
         except RuntimeError as exc:
             self.errorOccurred.emit(str(exc))
             return False
-        self.notificationRequested.emit('Image copied', 'Preview copied to the clipboard', 'success')
+        self.notificationRequested.emit(
+            tr('qml.dynamic.preview.image_copied_title'),
+            tr('qml.dynamic.preview.image_copied_detail'),
+            'success',
+        )
         return True
 
     @Slot()
@@ -432,7 +448,7 @@ class PayloadPreviewApi(QObject):
             self.previewChanged.emit()
             return
         if not self._texture_pack_preview.set_map_bytes(asset_id, working):
-            self._error_text = 'The TexturePack map was not a supported image.'
+            self._error_text = tr('qml.dynamic.preview.texture_map_unsupported')
         else:
             self._error_text = ''
         self.previewChanged.emit()
@@ -461,9 +477,13 @@ class PayloadPreviewApi(QObject):
             self._set_preview('image', '', source, error='')
             return
 
-        if asset_type == 3 or type_name == 'audio' or data.startswith(_AUDIO_MAGIC) or _looks_like_mp3(
-            data
-        ) or _looks_like_wave(data):
+        if (
+            asset_type == 3
+            or type_name == 'audio'
+            or data.startswith(_AUDIO_MAGIC)
+            or _looks_like_mp3(data)
+            or _looks_like_wave(data)
+        ):
             suffix = (
                 '.ogg'
                 if data.startswith(b'OggS')
@@ -502,12 +522,17 @@ class PayloadPreviewApi(QObject):
             self._set_preview('document', '', '', error='')
             return
 
-        if asset_type in _MESH_TYPES or type_name in {
-            'mesh',
-            'meshpart',
-            'solidmodel',
-            'mesh hidden surface removal',
-        } or data.startswith(b'version'):
+        if (
+            asset_type in _MESH_TYPES
+            or type_name
+            in {
+                'mesh',
+                'meshpart',
+                'solidmodel',
+                'mesh hidden surface removal',
+            }
+            or data.startswith(b'version')
+        ):
             from .mesh_geometry import MeshGeometry
 
             geometry = MeshGeometry()  # pyright: ignore[reportCallIssue]

@@ -6,6 +6,8 @@ from PySide6.QtCore import QByteArray, QObject, Property, Signal, Slot
 from PySide6.QtGui import QFontDatabase
 from PySide6.QtQml import QmlElement
 
+from ..localization import tr
+
 QML_IMPORT_NAME = 'Fleasion'
 QML_IMPORT_MAJOR_VERSION = 1
 QML_IMPORT_MINOR_VERSION = 0
@@ -61,7 +63,7 @@ class FontPreviewApi(QObject):
         if font_id < 0:
             self._families = []
             self._selected_family = ''
-            self._error_text = 'Qt could not load this font file.'
+            self._error_text = tr('qml.dynamic.font_preview.load_failed')
             self.changed.emit()
             return False
         families = list(QFontDatabase.applicationFontFamilies(font_id))
@@ -69,7 +71,7 @@ class FontPreviewApi(QObject):
             QFontDatabase.removeApplicationFont(font_id)
             self._families = []
             self._selected_family = ''
-            self._error_text = 'The font did not declare a usable family name.'
+            self._error_text = tr('qml.dynamic.font_preview.family_missing')
             self.changed.emit()
             return False
         self._font_id = font_id

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from typing import Any
+
+from PySide6.QtCore import QCoreApplication, QTranslator
 
 from .translations.en import ENGLISH
 from .translations.es import SPANISH
@@ -15,6 +18,17 @@ from .translations.de import GERMAN
 from .translations.fr import FRENCH
 from .translations.zh import CHINESE
 from .translations.pl import POLISH
+from .translations.qml_de import QML_GERMAN
+from .translations.qml_en import QML_ENGLISH
+from .translations.qml_es import QML_SPANISH
+from .translations.qml_fr import QML_FRENCH
+from .translations.qml_kk import QML_KAZAKH
+from .translations.qml_pl import QML_POLISH
+from .translations.qml_pt import QML_PORTUGUESE
+from .translations.qml_ru import QML_RUSSIAN
+from .translations.qml_sources import QML_SOURCE_IDS
+from .translations.qml_tr import QML_TURKISH
+from .translations.qml_zh import QML_CHINESE
 
 DEFAULT_LANGUAGE = 'en'
 
@@ -31,17 +45,18 @@ LANGUAGES: dict[str, str] = {
     'pl': 'Polski',
 }
 
+_ENGLISH_CATALOG: dict[str, str] = {**ENGLISH, **QML_ENGLISH}
 _TRANSLATIONS: dict[str, Mapping[str, str]] = {
-    DEFAULT_LANGUAGE: ENGLISH,
-    'es': SPANISH,
-    'pt': PORTUGUESE,
-    'ru': RUSSIAN,
-    'kk': KAZAKH,
-    'tr': TURKISH,
-    'de': GERMAN,
-    'fr': FRENCH,
-    'zh': CHINESE,
-    'pl': POLISH,
+    DEFAULT_LANGUAGE: _ENGLISH_CATALOG,
+    'es': {**SPANISH, **QML_SPANISH},
+    'pt': {**PORTUGUESE, **QML_PORTUGUESE},
+    'ru': {**RUSSIAN, **QML_RUSSIAN},
+    'kk': {**KAZAKH, **QML_KAZAKH},
+    'tr': {**TURKISH, **QML_TURKISH},
+    'de': {**GERMAN, **QML_GERMAN},
+    'fr': {**FRENCH, **QML_FRENCH},
+    'zh': {**CHINESE, **QML_CHINESE},
+    'pl': {**POLISH, **QML_POLISH},
 }
 _LANGUAGE_ALIASES = {
     'pt-br': 'pt',
@@ -52,6 +67,69 @@ _LANGUAGE_ALIASES = {
     'zh-sg': 'zh',
 }
 _current_language = DEFAULT_LANGUAGE
+_QML_PLACEHOLDER_RE = re.compile(r'%(?:n|\d+)')
+_FORMAT_FIELD_RE = re.compile(r'\{([A-Za-z_][A-Za-z0-9_]*)(?:![^}:]+)?(?::[^}]*)?\}')
+
+
+def _qml_placeholder_mapping(identifier: str, source_text: str) -> dict[str, str] | None:
+    english_fields = [
+        match.group(1) for match in _FORMAT_FIELD_RE.finditer(_ENGLISH_CATALOG[identifier])
+    ]
+    qml_placeholders = _QML_PLACEHOLDER_RE.findall(source_text)
+    if len(english_fields) != len(qml_placeholders):
+        return None
+
+    mapping: dict[str, str] = {}
+    for field, placeholder in zip(english_fields, qml_placeholders, strict=True):
+        previous = mapping.setdefault(field, placeholder)
+        if previous != placeholder:
+            return None
+    return mapping
+
+
+def _catalog_text_for_qml(identifier: str, source_text: str) -> str:
+    table = _TRANSLATIONS.get(_current_language, _ENGLISH_CATALOG)
+    translated = table.get(identifier, _ENGLISH_CATALOG[identifier])
+    mapping = _qml_placeholder_mapping(identifier, source_text)
+    if mapping is None:
+        return source_text
+    return _FORMAT_FIELD_RE.sub(
+        lambda match: mapping.get(match.group(1), match.group(0)), translated
+    )
+
+
+class _CatalogQTranslator(QTranslator):
+    """Serve QML ``qsTr`` lookups directly from Fleasion's Python catalogs."""
+
+    def translate(
+        self,
+        _context: str,
+        source_text: str,
+        _disambiguation: str | None = None,
+        _n: int = -1,
+    ) -> str:
+        identifier = QML_SOURCE_IDS.get(source_text)
+        return _catalog_text_for_qml(identifier, source_text) if identifier is not None else ''
+
+
+_qt_translator: _CatalogQTranslator | None = None
+
+
+def _refresh_qt_translator() -> None:
+    global _qt_translator
+
+    app = QCoreApplication.instance()
+    if app is None:
+        return
+    if _qt_translator is not None:
+        app.removeTranslator(_qt_translator)
+        _qt_translator.deleteLater()
+        _qt_translator = None
+    if _current_language == DEFAULT_LANGUAGE:
+        return
+
+    _qt_translator = _CatalogQTranslator(app)
+    app.installTranslator(_qt_translator)
 
 
 def normalize_language(language: Any) -> str:
@@ -73,9 +151,10 @@ def available_languages() -> tuple[tuple[str, str], ...]:
 
 
 def set_language(language: Any) -> str:
-    """Select the active language and return the normalized code."""
+    """Select the active language and refresh Qt's QML translator when available."""
     global _current_language
     _current_language = normalize_language(language)
+    _refresh_qt_translator()
     return _current_language
 
 
@@ -85,8 +164,8 @@ def get_language() -> str:
 
 def tr(identifier: str, /, **values: Any) -> str:
     """Look up a string identifier with English fallback and safe formatting."""
-    english = ENGLISH.get(identifier, identifier)
-    table = _TRANSLATIONS.get(_current_language, ENGLISH)
+    english = _ENGLISH_CATALOG.get(identifier, identifier)
+    table = _TRANSLATIONS.get(_current_language, _ENGLISH_CATALOG)
     text = table.get(identifier, english)
     if not values:
         return text
@@ -101,7 +180,7 @@ def tr(identifier: str, /, **values: Any) -> str:
 
 def translation_values(identifier: str) -> tuple[str, ...]:
     """Return every registered language's value for an identifier, without duplicates."""
-    english = ENGLISH.get(identifier, identifier)
+    english = _ENGLISH_CATALOG.get(identifier, identifier)
     values: list[str] = []
     for table in _TRANSLATIONS.values():
         value = table.get(identifier, english)

@@ -35,6 +35,7 @@ from ..cache.tools.solidmodel_converter.rbxm.types import (
     RbxInstance,
     RbxProperty,
 )
+from ..localization import tr
 from .models import DictListModel
 
 QML_IMPORT_NAME = 'Fleasion'
@@ -284,7 +285,7 @@ class RobloxDocumentPreviewApi(QObject):
             return ''
         root_count = len(session.document.roots)
         instance_count = len(session.document.instances)
-        return f'{root_count} roots · {instance_count} instances'
+        return tr('qml.dynamic.document.summary', roots=root_count, instances=instance_count)
 
     @Property(list, notify=changed)
     def exportFormats(self) -> list[str]:  # noqa: N802
@@ -340,7 +341,7 @@ class RobloxDocumentPreviewApi(QObject):
         """Load or restore one cached document editing session."""
         kind = classify_roblox_document(data)
         if kind is None:
-            self._set_error('This payload is not a Roblox document.')
+            self._set_error(tr('qml.dynamic.document.not_roblox_document'))
             return False
         digest = hashlib.sha256(data).hexdigest()
         previous = self._sessions.get(asset_key)
@@ -350,7 +351,7 @@ class RobloxDocumentPreviewApi(QObject):
             try:
                 document = load_roblox_document(data)
             except Exception as exc:
-                self._set_error(f'Could not parse the Roblox document: {exc}')
+                self._set_error(tr('qml.dynamic.document.parse_failed', error=exc))
                 return False
             session = _DocumentSession(data, digest, kind, label, document)
             self._sessions[asset_key] = session
@@ -406,7 +407,7 @@ class RobloxDocumentPreviewApi(QObject):
         if instance is None:
             return False
         if '\x00' in value or len(value) > 512:
-            self._set_error('Instance names must be at most 512 characters and cannot contain NUL.')
+            self._set_error(tr('qml.dynamic.document.instance_name_invalid'))
             return False
         prop = instance.properties.get('Name')
         before = copy.deepcopy(prop.value) if prop is not None else None
@@ -434,7 +435,7 @@ class RobloxDocumentPreviewApi(QObject):
             or len(normalized_name) > 128
             or normalized_name in instance.properties
         ):
-            self._set_error('Property names must be unique, non-empty, and at most 128 characters.')
+            self._set_error(tr('qml.dynamic.document.property_name_invalid'))
             return False
         aliases = {
             'STRING': PropertyFormat.STRING,
@@ -447,7 +448,7 @@ class RobloxDocumentPreviewApi(QObject):
         }
         fmt = aliases.get(normalized_type)
         if fmt is None:
-            self._set_error('Choose a supported editable property type.')
+            self._set_error(tr('qml.dynamic.document.property_type_invalid'))
             return False
         value = _default_property_value(fmt)
         instance.properties[normalized_name] = RbxProperty(normalized_name, fmt, value)
@@ -484,9 +485,7 @@ class RobloxDocumentPreviewApi(QObject):
         if instance is None:
             return False
         if not _CLASS_NAME_PATTERN.fullmatch(normalized) or len(normalized) > 128:
-            self._set_error(
-                'ClassName must start with a letter and contain only letters, digits, or underscores.'
-            )
+            self._set_error(tr('qml.dynamic.document.class_name_invalid'))
             return False
         if normalized == instance.class_name:
             return True
@@ -506,7 +505,12 @@ class RobloxDocumentPreviewApi(QObject):
         name = str(item.get('name') or '')
         prop = instance.properties.get(name)
         if prop is None or not _property_is_editable(prop):
-            self._set_error(f'{name or "This property"} is read-only.')
+            self._set_error(
+                tr(
+                    'qml.dynamic.document.property_read_only',
+                    property_name=name or tr('qml.dynamic.document.this_property'),
+                )
+            )
             return False
         try:
             replacement = _parse_property_value(text, prop, self._session)
@@ -561,7 +565,7 @@ class RobloxDocumentPreviewApi(QObject):
         try:
             session.document = load_roblox_document(session.source_data)
         except Exception as exc:
-            self._set_error(f'Could not restore the original document: {exc}')
+            self._set_error(tr('qml.dynamic.document.restore_failed', error=exc))
             return False
         session.edits.clear()
         self._tree.set_document(session.document)
@@ -592,10 +596,10 @@ class RobloxDocumentPreviewApi(QObject):
         session = self._session
         normalized = format_name.casefold().lstrip('.')
         if session is None:
-            self._set_error('Load a Roblox document before exporting it.')
+            self._set_error(tr('qml.dynamic.document.load_before_export'))
             return False
         if normalized not in self._export_formats():
-            self._set_error(f'{normalized.upper()} is not valid for this document.')
+            self._set_error(tr('qml.dynamic.document.format_invalid', format=normalized.upper()))
             return False
         try:
             destination = _local_path(destination_value)
@@ -604,12 +608,12 @@ class RobloxDocumentPreviewApi(QObject):
             data, _suffix = serialize_roblox_document(session.document, normalized)
             _atomic_write(destination, data)
         except (OSError, ValueError) as exc:
-            self._set_error(f'Could not export the edited document: {exc}')
+            self._set_error(tr('qml.dynamic.document.export_failed', error=exc))
             return False
         self._error_text = ''
         self.changed.emit()
         self.notificationRequested.emit(
-            'Edited document exported',
+            tr('qml.dynamic.document.exported_title'),
             str(destination),
             'success',
         )

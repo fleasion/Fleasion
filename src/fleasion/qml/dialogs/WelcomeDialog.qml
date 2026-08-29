@@ -11,6 +11,7 @@ FluentDialog {
 
     required property var appController
     property int page: 0
+    property int acknowledgementSeconds: 15
     signal finished
 
     parent: Overlay.overlay
@@ -20,6 +21,23 @@ FluentDialog {
     modal: true
     closePolicy: Popup.NoAutoClose
     padding: 0
+
+    function optionIndex(options, value) {
+        if (!options)
+            return 0;
+        for (let index = 0; index < options.length; ++index) {
+            if (options[index].value === value)
+                return index;
+        }
+        return 0;
+    }
+
+    Timer {
+        interval: 1000
+        repeat: true
+        running: root.opened && root.page === 0 && root.acknowledgementSeconds > 0
+        onTriggered: root.acknowledgementSeconds--
+    }
 
     background: Rectangle {
         color: Theme.surfaceElevated
@@ -90,6 +108,20 @@ FluentDialog {
             ColumnLayout {
                 spacing: Theme.spaceMd
 
+                SettingRow {
+                    Layout.fillWidth: true
+                    title: root.appController.settings.languageSectionTitle
+                    iconText: "文"
+
+                    FluentComboBox {
+                        model: root.appController.settings.languageOptions
+                        textRole: "label"
+                        currentIndex: root.optionIndex(model, root.appController.settings.language)
+                        Accessible.name: root.appController.settings.languageSectionTitle
+                        onActivated: index => root.appController.settings.language = model[index].value
+                    }
+                }
+
                 Card {
                     Layout.fillWidth: true
                     title: qsTr("One workspace, focused tools")
@@ -114,8 +146,29 @@ FluentDialog {
                     }
                 }
 
-                Item {
+                FluentScrollView {
+                    id: setupGuideScroll
+
+                    Layout.fillWidth: true
                     Layout.fillHeight: true
+                    clip: true
+
+                    Text {
+                        width: setupGuideScroll.availableWidth
+                        text: root.appController.settings.firstRunGuide
+                        color: Theme.textSecondary
+                        font.pointSize: TypeScale.caption
+                        wrapMode: Text.WordWrap
+                    }
+                }
+
+                Label {
+                    Layout.fillWidth: true
+                    visible: root.acknowledgementSeconds > 0
+                    text: qsTr("Read the warning to continue in %n second(s).", "", root.acknowledgementSeconds)
+                    color: Theme.warning
+                    font.pointSize: TypeScale.caption
+                    wrapMode: Text.WordWrap
                 }
             }
 
@@ -207,6 +260,7 @@ FluentDialog {
 
             FluentButton {
                 text: root.page === 0 ? qsTr("Continue") : qsTr("Start using Fleasion")
+                enabled: root.page !== 0 || root.acknowledgementSeconds <= 0
                 highlighted: true
                 onClicked: {
                     if (root.page === 0) {

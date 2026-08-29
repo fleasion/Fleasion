@@ -15,6 +15,7 @@ from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtQml import QmlElement
 
 from ..cache.cache_manager import CacheManager
+from ..localization import tr
 from ..utils import APP_CACHE_DIR
 from ..utils.clipboard import copy_pixmap_to_clipboard
 from .models import DictListModel
@@ -157,7 +158,7 @@ class TexturePackPreviewApi(QObject):
             xml_data = _bounded_xml(data)
             root = ET.fromstring(xml_data)
         except (ET.ParseError, OSError, ValueError) as exc:
-            self._error_text = f'The TexturePack metadata could not be read: {exc}'
+            self._error_text = tr('qml.dynamic.texture_pack.metadata_read_failed', error=exc)
             self.changed.emit()
             return False
 
@@ -176,7 +177,7 @@ class TexturePackPreviewApi(QObject):
             maps.append((display_name, slot_index, str(int(asset_id))))
 
         if not maps:
-            self._error_text = 'No supported texture maps were found in this TexturePack.'
+            self._error_text = tr('qml.dynamic.texture_pack.no_supported_maps')
             self.changed.emit()
             return False
 
@@ -211,14 +212,14 @@ class TexturePackPreviewApi(QObject):
         if data is None and self._cache is not None:
             data = self._cache.get_asset(asset_id, 1)
         if not data:
-            self.errorOccurred.emit('Load this TexturePack map before copying its image.')
+            self.errorOccurred.emit(tr('qml.dynamic.texture_pack.load_map_before_copy'))
             return False
         if len(data) > _MAX_CLIPBOARD_IMAGE_BYTES:
-            self.errorOccurred.emit('This map is too large to copy safely.')
+            self.errorOccurred.emit(tr('qml.dynamic.texture_pack.map_too_large_to_copy'))
             return False
         image = QImage.fromData(data)
         if image.isNull():
-            self.errorOccurred.emit('Qt could not decode this TexturePack map as an image.')
+            self.errorOccurred.emit(tr('qml.dynamic.texture_pack.map_decode_failed'))
             return False
         try:
             copy_pixmap_to_clipboard(QPixmap.fromImage(image))
@@ -226,8 +227,11 @@ class TexturePackPreviewApi(QObject):
             self.errorOccurred.emit(str(exc))
             return False
         self.notificationRequested.emit(
-            'Texture copied',
-            f'{entry.get("name", "Texture")} map copied to the clipboard',
+            tr('qml.dynamic.texture_pack.copied_title'),
+            tr(
+                'qml.dynamic.texture_pack.map_copied_detail',
+                name=entry.get('name') or tr('qml.dynamic.texture_pack.texture_fallback_name'),
+            ),
             'success',
         )
         return True
@@ -273,9 +277,7 @@ class TexturePackPreviewApi(QObject):
             return False
         source = self._captured_path(slot_index)
         if not source.is_file():
-            self.errorOccurred.emit(
-                'No captured KTX2 exists for this slot yet. Load the pack in Roblox first.'
-            )
+            self.errorOccurred.emit(tr('qml.dynamic.texture_pack.slot_not_captured'))
             return False
         destination_directory = self._slot_export_directory()
         destination_directory.mkdir(parents=True, exist_ok=True)
@@ -283,9 +285,11 @@ class TexturePackPreviewApi(QObject):
         try:
             shutil.copy2(source, destination)
         except OSError as exc:
-            self.errorOccurred.emit(f'Could not export the captured slot: {exc}')
+            self.errorOccurred.emit(tr('qml.dynamic.texture_pack.export_slot_failed', error=exc))
             return False
-        self.notificationRequested.emit('TexturePack slot exported', str(destination), 'success')
+        self.notificationRequested.emit(
+            tr('qml.dynamic.texture_pack.slot_exported_title'), str(destination), 'success'
+        )
         return True
 
     @Slot(result=int)
@@ -298,9 +302,7 @@ class TexturePackPreviewApi(QObject):
             if self._captured_path(slot_index).is_file()
         ]
         if not sources:
-            self.errorOccurred.emit(
-                'No captured KTX2 slots were found. Load the pack in Roblox first.'
-            )
+            self.errorOccurred.emit(tr('qml.dynamic.texture_pack.slots_not_captured'))
             return 0
         destination_directory = self._slot_export_directory()
         try:
@@ -308,11 +310,15 @@ class TexturePackPreviewApi(QObject):
             for slot_index, source in sources:
                 shutil.copy2(source, destination_directory / self._export_name(slot_index))
         except OSError as exc:
-            self.errorOccurred.emit(f'Could not export the captured slots: {exc}')
+            self.errorOccurred.emit(tr('qml.dynamic.texture_pack.export_slots_failed', error=exc))
             return 0
         self.notificationRequested.emit(
-            'TexturePack slots exported',
-            f'{len(sources)} KTX2 files saved to {destination_directory}',
+            tr('qml.dynamic.texture_pack.slots_exported_title'),
+            tr(
+                'qml.dynamic.texture_pack.files_saved',
+                count=len(sources),
+                destination=destination_directory,
+            ),
             'success',
         )
         return len(sources)
@@ -354,20 +360,16 @@ class TexturePackPreviewApi(QObject):
             captured_size = captured_path.stat().st_size if captured_path.is_file() else 0
             rows.append(
                 {
-                    'name': name,
+                    'name': tr(f'qml.dynamic.texture_pack.slot_name.{slot_index}'),
                     'slotIndex': slot_index,
-                    'slotLabel': f'Slot {slot_index}',
+                    'slotLabel': tr('qml.dynamic.texture_pack.slot_label', slot=slot_index),
                     'slotKey': f'{self._pack_asset_id}:{slot_index}',
                     'assetId': asset_id,
                     'hash': hash_value,
                     'sizeText': _format_bytes(size) if cached else '',
                     'imageSource': (
                         loaded_url
-                        or (
-                            f'image://fleasion-cache/1/{asset_id}?v={hash_value}'
-                            if info
-                            else ''
-                        )
+                        or (f'image://fleasion-cache/1/{asset_id}?v={hash_value}' if info else '')
                     ),
                     'cached': cached,
                     'captured': captured_size > 0,

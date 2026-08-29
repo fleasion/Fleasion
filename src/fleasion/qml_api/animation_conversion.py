@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Final, cast
 from PySide6.QtCore import QObject, Property, QUrl, Signal, Slot
 from PySide6.QtQml import QmlElement
 
+from ..localization import tr, verbatim
 from ..utils.animation_conversion import (
     AnimationRig,
     PreparedAnimation,
@@ -113,9 +114,9 @@ class AnimationConversionApi(QObject):
             self.errorOccurred.emit(str(exc))
             return False
         self._operation = 'load'
-        self._set_status('Reading and inspecting animation…')
+        self._set_status(tr('qml.dynamic.animation.reading_inspecting'))
         return self._task.run(
-            'Reading and inspecting animation…',
+            tr('qml.dynamic.animation.reading_inspecting'),
             lambda: self._prepare(path),
         )
 
@@ -125,16 +126,16 @@ class AnimationConversionApi(QObject):
             return False
         source = self._source
         if source is None:
-            self.errorOccurred.emit('Load an animation before converting it.')
+            self.errorOccurred.emit(tr('qml.dynamic.animation.load_before_converting'))
             return False
         if target not in {'R6', 'R15'}:
-            self.errorOccurred.emit('Animation target must be R6 or R15.')
+            self.errorOccurred.emit(tr('qml.dynamic.animation.target_must_be_r6_or_r15'))
             return False
         typed_target = cast('AnimationRig', target)
         expected_source = 'R15' if typed_target == 'R6' else 'R6'
         if source.detected_rig != expected_source:
             self.errorOccurred.emit(
-                f'This conversion requires a detected {expected_source} animation.'
+                tr('qml.dynamic.animation.requires_detected_rig', rig=verbatim(expected_source))
             )
             return False
         try:
@@ -148,9 +149,9 @@ class AnimationConversionApi(QObject):
             return _ConversionResult(self._save(converted, output_path), typed_target)
 
         self._operation = 'convert'
-        self._set_status(f'Converting animation to {typed_target}…')
+        self._set_status(tr('qml.dynamic.animation.converting_to_rig', rig=typed_target))
         return self._task.run(
-            f'Converting animation to {typed_target}…',
+            tr('qml.dynamic.animation.converting_to_rig', rig=typed_target),
             run_conversion,
         )
 
@@ -204,10 +205,12 @@ class AnimationConversionApi(QObject):
             return
         if operation == 'convert' and isinstance(result, _ConversionResult):
             self._last_output_path = str(result.destination)
-            self._set_status(f'Saved {result.destination.name}.')
+            self._set_status(
+                tr('qml.dynamic.animation.saved_file', filename=result.destination.name)
+            )
             self.outputChanged.emit()
             self.notificationRequested.emit(
-                'Animation converted',
+                tr('qml.dynamic.animation.converted_title'),
                 str(result.destination),
                 'success',
             )
