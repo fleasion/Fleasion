@@ -48,11 +48,16 @@ build = 'fleasion.scripts.build:main'
 [dependency-groups]
 dev = [
     "pyinstaller>=6.19.0",
+    "pyright>=1.1.411",
     "pytest>=9.0.0",
+    "ruff>=0.16.5",
 ]
 
 [tool.pyright]
-typeCheckingMode = "basic"
+typeCheckingMode = "strict"
+pythonVersion = "3.14"
+include = ["src", "tests", "launcher.py", "conftest.py"]
+exclude = ["build", "dist", ".agents"]
 
 [tool.pytest.ini_options]
 markers = [
@@ -62,70 +67,21 @@ markers = [
 [tool.ruff]
 line-length = 100
 target-version = "py314"
+extend-exclude = [".agents"]
 
 [tool.ruff.lint]
 preview = true
-
-# For now, disable all rules
-select = []
-
-# This is a rough set of rules we would like to eventually use
+select = ["ALL"]
 ignore = [
-    "E501",
-    "T201",
-    "EXE002",
-    "ANN204",
-    "RUF006",
-    "RUF029",
-    "S404",
-    "S602",
-    # "TC001",  # False positives with pydantic
-    # "TC002",  # False positives with pydantic
-    # "TC003",  # False positives with pydantic
-    "TD003",
-    "FIX002",
-    "W293",
-    "E303",
-    "G004",
-    "ERA",
-    "ANN201",
-    "ANN202",
-    "RET503",
-    "EM101",
-    "FBT001",
-    "FBT002",
-    "C901",
-    "PLR0914",
-    "PLR0915",
-    "PLR0904",
+    "COM812",  # Conflicts with ruff format
+    "CPY001",  # No repository-wide copyright-header policy
+    "D",       # Docstrings are opt-in per AGENTS.md
+    "DOC",     # Docstrings are opt-in per AGENTS.md
+    "ISC001",  # Conflicts with ruff format
+]
 
-    # Umbra preset
-    "ANN401",
-    "ASYNC109",
-    "COM812",
-    "CPY001",
-    "D",        # not needed here
-    "DOC",
-    "INP001",   # due to how I load modules this results in annoyances
-    "PD011",    # this is not a numpy codebase
-    "PERF203",
-    "PLC0414",  # pyright ruling for `as` imports needed
-    "PLR0912",
-    "PLR0913",
-    "PLR2004",  # I hate this rule
-    "PLR6301",
-    "Q000",
-    "RUF001",
-    "RUF009",
-    "SIM105",
-    "TRY003",   # over-eager rule
-    "TRY301",   # unrealistic rule
-    "UP034",
-]
-unfixable = [
-    "E501", # line length handled in other ways by ruff format
-    "ERA",  # Don"t delete commented out code
-]
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101"]  # pytest uses plain assert
 
 [tool.ruff.format]
 quote-style = "single"
