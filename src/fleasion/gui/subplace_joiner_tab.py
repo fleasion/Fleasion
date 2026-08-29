@@ -16,9 +16,9 @@ from urllib.parse import quote, urlparse
 import requests
 import urllib3
 from dateutil import parser as _dateutil_parser
-from PyQt6.QtCore import QObject, Qt, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QDesktopServices, QImage, QPalette, QPixmap
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import QObject, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QImage, QPalette, QPixmap
+from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QDialog,
@@ -135,7 +135,7 @@ def _humanize_time(iso_str: str) -> str:
 
 
 class _Invoker(QObject):
-    call = pyqtSignal(object)
+    call = Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -151,7 +151,7 @@ class _Invoker(QObject):
             traceback.print_exc()
 
 
-# GameCardWidget (inline, PyQt6)
+# GameCardWidget (inline, PySide6)
 
 from .prejsons_dialog import (
     _CARD_H,
@@ -227,7 +227,7 @@ class SubplaceGameCard(QFrame):
         self._setup_ui()
 
     def _setup_ui(self):
-        from PyQt6.QtGui import QFont
+        from PySide6.QtGui import QFont
 
         layout = QVBoxLayout()
         layout.setContentsMargins(7, 7, 7, 7)
@@ -332,9 +332,9 @@ class SubplaceGameCard(QFrame):
 class JobIdDialog(QDialog):
     """Fetches and displays public server jobIds for a given placeId."""
 
-    _results_ready = pyqtSignal(list, object)  # servers, next_cursor (object so None is allowed)
-    _error_ready = pyqtSignal(str)
-    _status_update = pyqtSignal(str)
+    _results_ready = Signal(list, object)  # servers, next_cursor (object so None is allowed)
+    _error_ready = Signal(str)
+    _status_update = Signal(str)
 
     _PAGE_LIMIT = 25
 

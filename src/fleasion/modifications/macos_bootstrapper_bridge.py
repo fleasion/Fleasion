@@ -6,7 +6,7 @@ import threading
 import time
 from pathlib import Path
 
-from PyQt6.QtCore import QFileSystemWatcher, QObject, QTimer
+from PySide6.QtCore import QFileSystemWatcher, QObject, QTimer
 
 from ..utils import log_buffer
 from ..utils.platform_macos import (

@@ -6,8 +6,8 @@ import os
 from collections.abc import Callable
 from pathlib import Path
 
-from PyQt6.QtCore import QFileSystemWatcher, QObject, QTimer, pyqtSignal
-from PyQt6.QtWidgets import QApplication, QMessageBox, QWidget
+from PySide6.QtCore import QFileSystemWatcher, QObject, QTimer, Signal
+from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 
 from ..utils import log_buffer
 from .manager import MAX_CONFIG_ASSET_FOLDER_DEPTH, ConfigManager
@@ -28,7 +28,7 @@ def _is_ignored_name(name: str) -> bool:
 class ConfigFolderWatcher(QObject):
     """Import newly appearing config files while Fleasion is running."""
 
-    configs_changed = pyqtSignal()
+    configs_changed = Signal()
 
     def __init__(
         self,

@@ -1,8 +1,11 @@
+import os
 import threading
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from fleasion import app as app_module
 from fleasion import __version__ as APP_VERSION
@@ -26,7 +29,8 @@ from fleasion.app import (
     _windows_ca_permission_denied_dirs,
     kill_other_fleasion_instances,
 )
-from PyQt6.QtCore import QCoreApplication, QEvent, QSharedMemory, QUrl
+from PySide6.QtCore import QEvent, QSharedMemory, QUrl
+from PySide6.QtWidgets import QApplication
 
 
 def test_macos_fleasion_process_matching_accepts_real_launch_forms():
@@ -1249,7 +1253,7 @@ def test_windows_upstream_dialog_escalates_when_firewall_rules_already_exist(mon
 
 
 def test_env_proxy_studio_launch_is_completely_untouched(monkeypatch):
-    qt_app = QCoreApplication.instance() or QCoreApplication([])
+    qt_app = QApplication.instance() or QApplication([])
     config = SimpleNamespace(
         proxy_mode='env',
         proxy_features_enabled=True,
@@ -1276,7 +1280,7 @@ def test_env_proxy_studio_launch_is_completely_untouched(monkeypatch):
 
 
 def test_windows_desktop_player_launch_uses_env_lifecycle(monkeypatch, tmp_path):
-    qt_app = QCoreApplication.instance() or QCoreApplication([])
+    qt_app = QApplication.instance() or QApplication([])
     config = SimpleNamespace(
         proxy_mode='env',
         proxy_features_enabled=True,
@@ -1322,7 +1326,7 @@ def test_windows_desktop_player_launch_uses_env_lifecycle(monkeypatch, tmp_path)
 
 
 def test_linux_browser_sober_launch_is_always_adopted_without_relaunch(monkeypatch):
-    qt_app = QCoreApplication.instance() or QCoreApplication([])
+    qt_app = QApplication.instance() or QApplication([])
     config = SimpleNamespace(
         proxy_mode='env',
         proxy_features_enabled=True,
@@ -2164,7 +2168,7 @@ def test_windows_hosts_to_env_live_switch_rearms_gdk_after_proxy_restart(monkeyp
 
 
 def test_macos_uri_watcher_handoff_passes_target_to_special_lifecycle(monkeypatch, tmp_path):
-    qt_app = QCoreApplication.instance() or QCoreApplication([])
+    qt_app = QApplication.instance() or QApplication([])
     from fleasion.utils import platform_macos
 
     monkeypatch.setattr(app_module.sys, 'platform', 'darwin')

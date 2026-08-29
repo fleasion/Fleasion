@@ -3,8 +3,8 @@ import os
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from PyQt6.QtCore import QFileSystemWatcher
-from PyQt6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtCore import QFileSystemWatcher
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from fleasion.config import ConfigFolderWatcher
 from fleasion.config import manager as manager_module

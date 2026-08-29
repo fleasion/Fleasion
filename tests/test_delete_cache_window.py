@@ -1,8 +1,8 @@
 import pytest
 
-pytest.importorskip('PyQt6')
+pytest.importorskip('PySide6')
 
-from PyQt6.QtWidgets import QApplication, QDialog, QTextEdit
+from PySide6.QtWidgets import QApplication, QDialog, QTextEdit
 
 from fleasion.gui.delete_cache import DeleteCacheWindow
 

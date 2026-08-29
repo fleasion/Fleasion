@@ -5,7 +5,7 @@ build-backend = 'uv_build'
 [project]
 name = 'fleasion'
 version = "2.4.1b1"
-description = 'Roblox asset interceptor and replacer with PyQt6 GUI'
+description = 'Roblox asset interceptor and replacer with PySide6 GUI'
 readme = 'README.md'
 requires-python = '>=3.14'
 dependencies = [
@@ -14,9 +14,6 @@ dependencies = [
     'cryptography>=49; sys_platform != "darwin"',
     'win11toast>=0.36.3; sys_platform == "win32"',
     'pywin32>=307; sys_platform == "win32"',
-    'pyqt6==6.7.1; sys_platform == "darwin"',
-    'pyqt6-qt6==6.7.3; sys_platform == "darwin"',
-    'pyqt6>=6.8.0; sys_platform != "darwin"',
     'python-dateutil>=2.9.0',
     'platformdirs>=4.0.0',
     'sounddevice>=0.5.3',
@@ -33,6 +30,8 @@ dependencies = [
     'numpy>=2.0.0; sys_platform != "win32"',
     'lz4>=4.4.5',
     'packaging>=26.2',
+    'pyside6==6.7.3; sys_platform == "darwin"',
+    'pyside6>=6.8.0; sys_platform != "darwin"',
 ]
 
 [project.urls]

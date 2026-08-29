@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import sys
 
-from PyQt6.QtGui import QSurfaceFormat
+from PySide6.QtGui import QSurfaceFormat
 
 
 def legacy_gl_format() -> QSurfaceFormat:

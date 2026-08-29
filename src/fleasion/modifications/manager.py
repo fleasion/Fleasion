@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 from typing import Iterable
 
-from PyQt6.QtCore import QObject, pyqtSignal
+from PySide6.QtCore import QObject, Signal
 
 from ..cache.tools.ktx_to_png import strip_prefixed_ktx
 from ..utils import (
@@ -426,10 +426,10 @@ class PendingModificationsQueue:
 class ModificationManager(QObject):
     """Core engine for modification entries: eager-write, stash, restore."""
 
-    entry_status_changed = pyqtSignal(str, str, str)  # (entry_id, status, error_msg)
-    apply_started = pyqtSignal(str)  # entry_id
-    apply_finished = pyqtSignal(str)  # entry_id
-    restore_finished = pyqtSignal()
+    entry_status_changed = Signal(str, str, str)  # (entry_id, status, error_msg)
+    apply_started = Signal(str)  # entry_id
+    apply_finished = Signal(str)  # entry_id
+    restore_finished = Signal()
 
     def __init__(self, cache_scraper=None, *, read_only_lock_enabled: bool = False):
         super().__init__()

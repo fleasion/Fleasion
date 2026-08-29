@@ -6,7 +6,8 @@ import os
 import sys
 import threading
 
-from PyQt6.QtCore import PYQT_VERSION_STR, QT_VERSION_STR, QtMsgType, qInstallMessageHandler
+from PySide6 import __version__ as PYSIDE_VERSION_STR
+from PySide6.QtCore import QtMsgType, qInstallMessageHandler, qVersion
 
 from .logging import log_buffer
 
@@ -99,5 +100,5 @@ def install_qt_message_logging() -> None:
     mode = 'verbose' if os.environ.get(_VERBOSE_ENV) == '1' else 'warnings/errors'
     log_buffer.log(
         'Qt',
-        f'Qt {QT_VERSION_STR}, PyQt {PYQT_VERSION_STR}; message logging={mode}',
+        f'Qt {qVersion()}, PySide {PYSIDE_VERSION_STR}; message logging={mode}',
     )

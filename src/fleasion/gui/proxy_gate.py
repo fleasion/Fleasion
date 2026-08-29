@@ -2,8 +2,8 @@
 
 from ..localization import tr
 
-from PyQt6.QtCore import QEvent, Qt
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import QEvent, Qt
+from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,

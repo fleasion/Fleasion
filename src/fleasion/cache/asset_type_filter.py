@@ -2,9 +2,9 @@
 
 from ..localization import tr
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QFontMetrics
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QFontMetrics
+from PySide6.QtWidgets import (
     QCheckBox,
     QFrame,
     QGridLayout,
@@ -148,7 +148,7 @@ def asset_type_display_name(type_id) -> str:
 
 
 class CategoryFilterPopup(QMenu):
-    filters_changed = pyqtSignal(set)
+    filters_changed = Signal(set)
 
     def __init__(self, parent=None, active_filters=None):
         super().__init__(parent)

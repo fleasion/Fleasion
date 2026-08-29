@@ -4,8 +4,8 @@ import pytest
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from PyQt6.QtCore import QEventLoop, QObject, QTimer, pyqtSignal
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import QObject, Signal
+from PySide6.QtWidgets import (
     QApplication,
     QLabel,
     QLineEdit,
@@ -43,9 +43,9 @@ class _PendingQueue:
 
 
 class _FakeModificationManager(QObject):
-    entry_status_changed = pyqtSignal(str, str, str)
-    apply_finished = pyqtSignal(str)
-    restore_finished = pyqtSignal()
+    entry_status_changed = Signal(str, str, str)
+    apply_finished = Signal(str)
+    restore_finished = Signal()
 
     def __init__(self):
         super().__init__()
@@ -284,17 +284,15 @@ def test_collapsing_section_clips_content_without_reflowing_children():
     assert initial_content_height > 0
 
     section.toggle()
-    wait = QEventLoop()
-    QTimer.singleShot(90, wait.quit)
-    wait.exec()
+    section._animation.setCurrentTime(90)
+    app.processEvents()
 
     assert 0 < section._content.height() < initial_content_height
     assert inner.height() == initial_inner_height
     assert not section._content_layout.isEnabled()
 
-    wait = QEventLoop()
-    QTimer.singleShot(180, wait.quit)
-    wait.exec()
+    section._animation.setCurrentTime(section._animation.duration())
+    app.processEvents()
     assert section._content.height() == 0
     assert section._content_layout.isEnabled()
 

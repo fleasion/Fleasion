@@ -14,7 +14,7 @@ import threading
 from collections.abc import Mapping
 from ctypes import wintypes
 
-from PyQt6.QtCore import QObject, pyqtSignal
+from PySide6.QtCore import QObject, Signal
 
 from ..utils import log_buffer
 from .hotkey_names import SMU_MOUSE_WHEEL_DOWN, SMU_MOUSE_WHEEL_UP, format_smu_virtual_key
@@ -158,7 +158,7 @@ def binding_text(binding) -> str:
 class WindowsHotkeyService(QObject):
     """Poll global key state and dispatch a binding exactly once per key press."""
 
-    activated = pyqtSignal(str)
+    activated = Signal(str)
 
     _MAPVK_VSC_TO_VK_EX = 3
     _POLL_SECONDS = 0.01
@@ -314,7 +314,7 @@ class WindowsHotkeyService(QObject):
 class WindowsCustomFFlagHotkeyController(QObject):
     """Keep custom FastFlag hotkeys alive independently of the dashboard."""
 
-    toggled = pyqtSignal(str)
+    toggled = Signal(str)
 
     def __init__(self, config_manager=None, proxy_master=None, parent=None):
         super().__init__(parent)

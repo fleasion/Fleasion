@@ -37,7 +37,7 @@ def test_windows_packaging_uses_upx_but_excludes_graphics_runtime() -> None:
         "'Qt6Gui.dll'",
         "'Qt6Widgets.dll'",
         "'Qt6OpenGL.dll'",
-        "'PyQt6/*.pyd'",
+        "'PySide6/*.pyd'",
         "'qwindows.dll'",
         "'opengl32sw.dll'",
     ):
@@ -50,8 +50,8 @@ def test_windows_archive_check_recurses_into_pyz_and_tracks_qopenglwindow() -> N
     workflow_source = (root / '.github/workflows/build.yml').read_text(encoding='utf-8')
 
     assert 'pyi-archive_viewer -r -b -l' in workflow_source
-    assert "'PyQt6.QtOpenGL'," in spec_source
-    assert "'PyQt6.QtOpenGLWidgets'," not in spec_source
+    assert "'PySide6.QtOpenGL'," in spec_source
+    assert "'PySide6.QtOpenGLWidgets'," not in spec_source
 
 
 def test_packaging_collects_lz4_native_extensions() -> None:

@@ -1,7 +1,7 @@
 import sys
 import types
 
-from PyQt6.QtGui import QColor, QPalette
+from PySide6.QtGui import QColor, QPalette
 
 from fleasion.gui.theme import ThemeManager
 

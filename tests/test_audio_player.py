@@ -4,7 +4,7 @@ import threading
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
-from PyQt6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication
 
 from fleasion.cache.audio_player import AudioPlayerWidget
 

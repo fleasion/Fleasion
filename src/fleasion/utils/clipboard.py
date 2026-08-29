@@ -4,9 +4,9 @@ import struct
 import sys
 import time
 
-from PyQt6.QtCore import QBuffer, QByteArray, QIODevice, QMimeData
-from PyQt6.QtGui import QImage, QPixmap
-from PyQt6.QtWidgets import QApplication
+from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QMimeData
+from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtWidgets import QApplication
 
 _BI_BITFIELDS = 3
 _LCS_sRGB = 0x73524742

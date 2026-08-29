@@ -730,7 +730,7 @@ def test_ui_label_constants_and_helper_returns_are_localized():
             continue
         source_text = path.read_text(encoding='utf-8')
         tree = ast.parse(source_text, filename=str(path))
-        is_ui_module = 'PyQt6' in source_text
+        is_ui_module = 'PySide6' in source_text
         for node in ast.walk(tree):
             if is_ui_module and isinstance(node, (ast.Assign, ast.AnnAssign)):
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
@@ -810,7 +810,7 @@ def test_ui_collection_labels_are_localized_before_display():
         if path.name == 'localization.py' or 'translations' in path.parts:
             continue
         source_text = path.read_text(encoding='utf-8')
-        if 'PyQt6' not in source_text:
+        if 'PySide6' not in source_text:
             continue
         tree = ast.parse(source_text, filename=str(path))
 
@@ -977,7 +977,7 @@ def test_local_variables_forwarded_to_ui_do_not_hide_literal_text():
         if path.name == 'localization.py' or 'translations' in path.parts:
             continue
         source_text = path.read_text(encoding='utf-8')
-        if 'PyQt6' not in source_text:
+        if 'PySide6' not in source_text:
             continue
         tree = ast.parse(source_text, filename=str(path))
         for function in (
@@ -1056,7 +1056,7 @@ def test_nested_ui_defaults_and_overloads_do_not_hide_literal_text():
         if path.name == 'localization.py' or 'translations' in path.parts:
             continue
         source_text = path.read_text(encoding='utf-8')
-        if 'PyQt6' not in source_text:
+        if 'PySide6' not in source_text:
             continue
         tree = ast.parse(source_text, filename=str(path))
         for node in ast.walk(tree):

@@ -5,8 +5,8 @@ from ..localization import tr
 import threading
 import time
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtWidgets import QDialog, QLabel, QPushButton, QTextEdit, QVBoxLayout
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtWidgets import QDialog, QLabel, QPushButton, QTextEdit, QVBoxLayout
 
 from ..utils import delete_cache, get_icon_path, log_buffer
 
@@ -16,8 +16,8 @@ class DeleteCacheWindow(QDialog):
 
     _CLOSE_AFTER_DONE_MS = 500
 
-    log_signal = pyqtSignal(str)
-    done_signal = pyqtSignal()
+    log_signal = Signal(str)
+    done_signal = Signal()
 
     def __init__(self):
         super().__init__()
@@ -38,7 +38,7 @@ class DeleteCacheWindow(QDialog):
     def _set_icon(self):
         """Set window icon."""
         if icon_path := get_icon_path():
-            from PyQt6.QtGui import QIcon
+            from PySide6.QtGui import QIcon
 
             self.setWindowIcon(QIcon(str(icon_path)))
 
@@ -67,7 +67,7 @@ class DeleteCacheWindow(QDialog):
 
     def _get_monospace_font(self):
         """Get a monospace font."""
-        from PyQt6.QtGui import QFontDatabase
+        from PySide6.QtGui import QFontDatabase
 
         font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
         font.setPointSize(9)

@@ -1,4 +1,4 @@
-"""Simple 3D OBJ viewer widget using PyQt6 OpenGL with display list caching."""
+"""Simple 3D OBJ viewer widget using PySide6 OpenGL with display list caching."""
 
 from ..localization import tr
 
@@ -7,9 +7,9 @@ import time
 
 import numpy as np
 from OpenGL.GL import *
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QAction, QGuiApplication
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QGuiApplication
+from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMenu,
@@ -890,7 +890,7 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
 class ObjViewerPanel(QWidget):
     """Panel with 3D viewer and controls."""
 
-    clear_requested = pyqtSignal()
+    clear_requested = Signal()
 
     def __init__(self, parent=None, config_manager=None):
         super().__init__(parent)

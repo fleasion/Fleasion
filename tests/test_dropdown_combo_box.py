@@ -2,8 +2,9 @@ import os
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from PyQt6.QtGui import QImage, QPainter
-from PyQt6.QtWidgets import QApplication, QStyle, QStyleFactory, QStyleOptionComboBox
+from PySide6.QtCore import QPoint
+from PySide6.QtGui import QImage, QPainter
+from PySide6.QtWidgets import QApplication, QStyle, QStyleFactory, QStyleOptionComboBox
 
 from fleasion.gui.modifications_tab import DropdownComboBox
 from fleasion.gui.theme import ThemeManager
@@ -32,7 +33,7 @@ def _render_combo(palette, *, enabled):
     image = QImage(combo.size(), QImage.Format.Format_ARGB32)
     image.fill(0)
     painter = QPainter(image)
-    combo.render(painter)
+    combo.render(painter, QPoint())
     painter.end()
 
     option = QStyleOptionComboBox()

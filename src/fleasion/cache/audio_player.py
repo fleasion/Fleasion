@@ -10,8 +10,8 @@ from pathlib import Path
 
 import numpy as np
 import soundfile as sf
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -142,7 +142,7 @@ def _log_audio_backend_once():
 class AudioPlayerWidget(QWidget):
     """Audio player widget with play/pause, volume, and seek controls."""
 
-    stopped = pyqtSignal()
+    stopped = Signal()
 
     def __init__(self, audio_file_path: str, parent=None, config_manager=None):
         """

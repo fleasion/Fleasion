@@ -18,7 +18,7 @@ import threading
 from collections.abc import Mapping
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, pyqtSignal
+from PySide6.QtCore import QObject, Signal
 
 from ..utils import log_buffer
 from .hotkey_names import SMU_MOUSE_WHEEL_DOWN, SMU_MOUSE_WHEEL_UP, format_smu_virtual_key
@@ -277,10 +277,10 @@ def launch_permission_setup() -> None:
 class LinuxHotkeyService(QObject):
     """Read global evdev state and emit an activation once per key-down edge."""
 
-    activated = pyqtSignal(str)
-    key_pressed = pyqtSignal(int, int)
-    key_released = pyqtSignal(int)
-    wheel_scrolled = pyqtSignal(int, int)
+    activated = Signal(str)
+    key_pressed = Signal(int, int)
+    key_released = Signal(int)
+    wheel_scrolled = Signal(int, int)
 
     def __init__(self, parent=None, input_dir: Path = Path('/dev/input')):
         super().__init__(parent)
@@ -528,7 +528,7 @@ class LinuxHotkeyService(QObject):
 class LinuxCustomFFlagHotkeyController(QObject):
     """Keep custom FastFlag hotkeys alive independently of the dashboard."""
 
-    toggled = pyqtSignal(str)
+    toggled = Signal(str)
 
     def __init__(self, config_manager=None, proxy_master=None, parent=None):
         super().__init__(parent)

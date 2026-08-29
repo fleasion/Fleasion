@@ -14,9 +14,9 @@ import threading
 import time
 from pathlib import Path, PureWindowsPath
 
-from PyQt6.QtCore import QEvent, QObject, QSharedMemory, Qt, QTimer, pyqtSignal, pyqtSlot
-from PyQt6.QtNetwork import QLocalServer, QLocalSocket
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import QEvent, QObject, QSharedMemory, Qt, QTimer, Signal, Slot
+from PySide6.QtNetwork import QLocalServer, QLocalSocket
+from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
@@ -243,7 +243,7 @@ def _show_env_proxy_migration(config_manager: ConfigManager, roblox_monitor) -> 
         msg.setStandardButtons(QMessageBox.StandardButton.Ok)
     msg.setInformativeText(details)
     if icon_path := get_icon_path():
-        from PyQt6.QtGui import QIcon
+        from PySide6.QtGui import QIcon
 
         msg.setWindowIcon(QIcon(str(icon_path)))
 
@@ -647,7 +647,7 @@ def _show_run_on_boot_failure(
     else:
         msg.setText(tr('app.failed_to_register_autostart_check_the_application'))
     if icon_path := get_icon_path():
-        from PyQt6.QtGui import QIcon
+        from PySide6.QtGui import QIcon
 
         msg.setWindowIcon(QIcon(str(icon_path)))
 
@@ -736,7 +736,7 @@ def _show_roblox_permission_failure(
         )
     )
     if icon_path := get_icon_path():
-        from PyQt6.QtGui import QIcon
+        from PySide6.QtGui import QIcon
 
         msg.setWindowIcon(QIcon(str(icon_path)))
 
@@ -910,7 +910,7 @@ def _show_desktop_integration_failure(parent) -> None:
     msg.setIcon(QMessageBox.Icon.Warning)
     msg.setText(tr('app.failed_to_create_desktop_start_menu_integration'))
     if icon_path := get_icon_path():
-        from PyQt6.QtGui import QIcon
+        from PySide6.QtGui import QIcon
 
         msg.setWindowIcon(QIcon(str(icon_path)))
     msg.exec()
@@ -930,7 +930,7 @@ def _prompt_first_time_language(config_manager: ConfigManager) -> None:
     if _on_top:
         dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
     if icon_path := get_icon_path():
-        from PyQt6.QtGui import QIcon
+        from PySide6.QtGui import QIcon
 
         dialog.setWindowIcon(QIcon(str(icon_path)))
 
@@ -978,7 +978,7 @@ def _prompt_first_time_startup_options(config_manager: ConfigManager, tray=None)
     if _on_top:
         dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
     if icon_path := get_icon_path():
-        from PyQt6.QtGui import QIcon
+        from PySide6.QtGui import QIcon
 
         dialog.setWindowIcon(QIcon(str(icon_path)))
 
@@ -2111,7 +2111,7 @@ def _show_admin_required_dialog(parent=None):
         msg.setInformativeText(tr('app.windows_did_not_start_fleasion_with_administrator'))
     msg.setStandardButtons(QMessageBox.StandardButton.Ok)
     if icon_path := get_icon_path():
-        from PyQt6.QtGui import QIcon
+        from PySide6.QtGui import QIcon
 
         msg.setWindowIcon(QIcon(str(icon_path)))
     msg.exec()
@@ -2170,7 +2170,7 @@ def _show_proxy_bind_error_dialog(details: dict):
     )
     msg.setStandardButtons(QMessageBox.StandardButton.Ok)
     if icon_path := get_icon_path():
-        from PyQt6.QtGui import QIcon
+        from PySide6.QtGui import QIcon
 
         msg.setWindowIcon(QIcon(str(icon_path)))
 
@@ -2243,7 +2243,7 @@ def _show_hosts_write_exhausted_dialog(details: dict):
         msg.addButton(QMessageBox.StandardButton.Ok)
 
         if icon_path := get_icon_path():
-            from PyQt6.QtGui import QIcon
+            from PySide6.QtGui import QIcon
 
             msg.setWindowIcon(QIcon(str(icon_path)))
 
@@ -2329,7 +2329,7 @@ def _show_linux_hosts_read_only_dialog(details: dict):
     copy_button.clicked.connect(_copy_nix_snippet)
 
     if icon_path := get_icon_path():
-        from PyQt6.QtGui import QIcon
+        from PySide6.QtGui import QIcon
 
         msg.setWindowIcon(QIcon(str(icon_path)))
 
@@ -2408,7 +2408,7 @@ def _show_macos_ca_patch_failed_dialog(details: dict):
     else:
         msg.setStandardButtons(QMessageBox.StandardButton.Ok)
     if icon_path := get_icon_path():
-        from PyQt6.QtGui import QIcon
+        from PySide6.QtGui import QIcon
 
         msg.setWindowIcon(QIcon(str(icon_path)))
 
@@ -2444,7 +2444,7 @@ def _show_macos_ca_trust_failed_dialog(details: dict):
     )
     msg.setStandardButtons(QMessageBox.StandardButton.Ok)
     if icon_path := get_icon_path():
-        from PyQt6.QtGui import QIcon
+        from PySide6.QtGui import QIcon
 
         msg.setWindowIcon(QIcon(str(icon_path)))
     msg.exec()
@@ -2545,7 +2545,7 @@ def _show_macos_relay_failed_dialog(details: dict) -> str:
         close_button = msg.addButton(QMessageBox.StandardButton.Close)
         msg.setDefaultButton(reinstall_button)
         if icon_path := get_icon_path():
-            from PyQt6.QtGui import QIcon
+            from PySide6.QtGui import QIcon
 
             msg.setWindowIcon(QIcon(str(icon_path)))
 
@@ -2660,7 +2660,7 @@ def _choose_macos_auth_source_on_launch(config_manager, tray=None, *, force: boo
         exit_button = msg.addButton(tr('app.exit_fleasion'), QMessageBox.ButtonRole.DestructiveRole)
         msg.addButton(QMessageBox.StandardButton.Ok)
         if icon_path := get_icon_path():
-            from PyQt6.QtGui import QIcon
+            from PySide6.QtGui import QIcon
 
             msg.setWindowIcon(QIcon(str(icon_path)))
         msg.exec()
@@ -2743,7 +2743,7 @@ def _choose_macos_auth_source_on_launch(config_manager, tray=None, *, force: boo
         dlg = AddAccountDialog(dialog, title=tr('app.auth_source.import_title'))
         dlg.set_ok_label(tr('app.auth_source.import_button'))
         if icon_path := get_icon_path():
-            from PyQt6.QtGui import QIcon
+            from PySide6.QtGui import QIcon
 
             dlg.setWindowIcon(QIcon(str(icon_path)))
         if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.result_cookie:
@@ -2775,7 +2775,7 @@ def _choose_macos_auth_source_on_launch(config_manager, tray=None, *, force: boo
     exit_btn.clicked.connect(_exit_from_auth_prompt)
 
     if icon_path := get_icon_path():
-        from PyQt6.QtGui import QIcon
+        from PySide6.QtGui import QIcon
 
         dialog.setWindowIcon(QIcon(str(icon_path)))
 
@@ -2944,7 +2944,7 @@ def _show_auth_cookie_unavailable_dialog(details: dict, tray=None):
         msg.addButton(QMessageBox.StandardButton.Ok)
 
     if icon_path := get_icon_path():
-        from PyQt6.QtGui import QIcon
+        from PySide6.QtGui import QIcon
 
         msg.setWindowIcon(QIcon(str(icon_path)))
 
@@ -3117,11 +3117,11 @@ def _show_tls_self_test_failed_dialog(details: dict) -> None:
 class _ProxyErrorInvoker(QObject):
     """Main-thread bridge for proxy startup errors emitted from worker threads."""
 
-    show_proxy_error = pyqtSignal(str, dict)
-    disable_proxy_features = pyqtSignal(str)
-    retry_proxy = pyqtSignal()
+    show_proxy_error = Signal(str, dict)
+    disable_proxy_features = Signal(str)
+    retry_proxy = Signal()
 
-    @pyqtSlot(str, dict)
+    @Slot(str, dict)
     def handle_proxy_error(self, code: str, details: dict):
         if code == 'port_bind_failed':
             _show_proxy_bind_error_dialog(details)
@@ -3239,13 +3239,13 @@ def _disable_proxy_features_after_start_failure(
 class _AuthCheckInvoker(QObject):
     """Main-thread bridge for the potentially prompting browser auth check."""
 
-    completed = pyqtSignal(bool, dict)
+    completed = Signal(bool, dict)
 
 
 class _RobloxUrlEventFilter(QObject):
     """Receive Roblox URL open events delivered to the macOS app bundle."""
 
-    roblox_uri_received = pyqtSignal(str)
+    roblox_uri_received = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -3286,8 +3286,8 @@ class _RobloxUrlEventFilter(QObject):
 class RobloxExitMonitor(QObject):
     """Monitors Roblox process and triggers cache deletion on exit."""
 
-    _studio_detected = pyqtSignal()
-    player_status_changed = pyqtSignal(
+    _studio_detected = Signal()
+    player_status_changed = Signal(
         bool
     )  # Emitted when RobloxPlayerBeta opens/closes (True = running)
 
@@ -3671,7 +3671,7 @@ class RobloxExitMonitor(QObject):
         layout.addLayout(btn_layout)
 
         if icon_path := get_icon_path():
-            from PyQt6.QtGui import QIcon
+            from PySide6.QtGui import QIcon
 
             dialog.setWindowIcon(QIcon(str(icon_path)))
 
@@ -4199,7 +4199,7 @@ def main():
     app.setApplicationName(APP_NAME)
     app.setApplicationDisplayName(APP_NAME)
     if icon_path := get_icon_path():
-        from PyQt6.QtGui import QIcon
+        from PySide6.QtGui import QIcon
 
         app.setWindowIcon(QIcon(str(icon_path)))
         if sys.platform == 'darwin':
@@ -4298,7 +4298,7 @@ def main():
 
             # Set icon if available
             if icon_path := get_icon_path():
-                from PyQt6.QtGui import QIcon
+                from PySide6.QtGui import QIcon
 
                 msg_box.setWindowIcon(QIcon(str(icon_path)))
 
@@ -4750,7 +4750,7 @@ def main():
         gate_label.setWordWrap(True)
         gate_layout.addWidget(gate_label)
         if icon_path := get_icon_path():
-            from PyQt6.QtGui import QIcon
+            from PySide6.QtGui import QIcon
 
             gate.setWindowIcon(QIcon(str(icon_path)))
         gate.show()
@@ -4884,7 +4884,7 @@ def main():
         )
         _no_roblox_msg.setStandardButtons(QMessageBox.StandardButton.Ok)
         if icon_path := get_icon_path():
-            from PyQt6.QtGui import QIcon
+            from PySide6.QtGui import QIcon
 
             _no_roblox_msg.setWindowIcon(QIcon(str(icon_path)))
         _no_roblox_msg.exec()
@@ -4944,7 +4944,7 @@ def main():
             countdown_timer.timeout.connect(_update_welcome_countdown)
             countdown_timer.start()
         if icon_path := get_icon_path():
-            from PyQt6.QtGui import QIcon
+            from PySide6.QtGui import QIcon
 
             welcome_box.setWindowIcon(QIcon(str(icon_path)))
         welcome_box.exec()

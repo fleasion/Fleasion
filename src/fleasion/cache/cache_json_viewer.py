@@ -2,8 +2,8 @@
 
 from ..localization import tr, tr_count
 
-from PyQt6.QtCore import QSize, Qt, QTimer
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtWidgets import (
     QCheckBox,
     QHBoxLayout,
     QHeaderView,

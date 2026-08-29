@@ -4,9 +4,9 @@ import sys
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtCore import QEvent, QPointF, QRect, Qt
-from PyQt6.QtGui import QMouseEvent
-from PyQt6.QtWidgets import QApplication, QPushButton
+from PySide6.QtCore import QEvent, QPointF, QRect, Qt
+from PySide6.QtGui import QMouseEvent
+from PySide6.QtWidgets import QApplication, QPushButton
 
 from fleasion.config import manager as manager_module
 from fleasion.gui import replacer_config as replacer_config_module
@@ -16,8 +16,13 @@ from fleasion.gui.replacer_config import (
 )
 
 
+_APP = None
+
+
 def _qapp():
-    return QApplication.instance() or QApplication([])
+    global _APP
+    _APP = QApplication.instance() or QApplication([])
+    return _APP
 
 
 def test_scrollable_config_menu_constrains_height_and_scrolls():
@@ -36,6 +41,9 @@ def test_scrollable_config_menu_constrains_height_and_scrolls():
     assert popup.scroll_area.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded
     assert popup.sizeHint().width() == popup.scroll_area.width()
     assert popup.actionGeometry(popup.actions()[0]).width() == popup.scroll_area.width()
+    popup.close()
+    popup.deleteLater()
+    app.processEvents()
     assert app is not None
 
 
@@ -64,6 +72,9 @@ def test_scrollable_config_menu_ignores_opening_release():
 
     assert row.isChecked()
     assert toggles == [('Default', True)]
+    popup.close()
+    popup.deleteLater()
+    app.processEvents()
     assert app is not None
 
 
@@ -88,6 +99,9 @@ def test_scrollable_config_menu_toggles_from_full_row_width():
 
     assert row.isChecked()
     assert toggles == [('a', True)]
+    popup.close()
+    popup.deleteLater()
+    app.processEvents()
     assert app is not None
 
 

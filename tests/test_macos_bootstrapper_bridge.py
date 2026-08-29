@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from PyQt6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication
 
 from fleasion.modifications.macos_bootstrapper_bridge import MacBootstrapperBridge
 

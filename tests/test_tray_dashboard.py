@@ -4,9 +4,9 @@ from types import SimpleNamespace
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QIcon, QPalette
-from PyQt6.QtWidgets import QApplication, QSystemTrayIcon
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QIcon, QPalette
+from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
 from fleasion import tray as tray_module
 from fleasion import app as app_module

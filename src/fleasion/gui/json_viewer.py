@@ -5,9 +5,9 @@ from ..localization import tr, tr_count
 import gzip as gzip_module
 import io
 
-from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QImage, QPixmap
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtWidgets import (
     QDialog,
     QGroupBox,
     QHBoxLayout,
@@ -46,8 +46,8 @@ def _coerce_import_value(value) -> int | str | None:
 class JsonSearchWorker(QThread):
     """Worker thread for searching JSON tree without blocking UI."""
 
-    results_ready = pyqtSignal(list)  # List of matching items
-    progress = pyqtSignal(int, int)  # Current, total
+    results_ready = Signal(list)  # List of matching items
+    progress = Signal(int, int)  # Current, total
 
     def __init__(self, root_items: list, query: str):
         super().__init__()
@@ -116,8 +116,8 @@ class JsonSearchWorker(QThread):
 class AssetFetcherThread(QThread):
     """Fetch raw bytes for a Roblox asset ID or direct URL in a background thread."""
 
-    data_ready = pyqtSignal(bytes)
-    error = pyqtSignal(str)
+    data_ready = Signal(bytes)
+    error = Signal(str)
 
     # Class-level scraper reference — set once by ProxyMaster/app startup.
     # Avoids threading it through every call site (replacer_config has no scraper ref).
@@ -308,8 +308,8 @@ class AssetFetcherThread(QThread):
 class ImageLoaderThread(QThread):
     """Load image bytes into a QPixmap in a background thread."""
 
-    image_ready = pyqtSignal(QPixmap)
-    error = pyqtSignal(str)
+    image_ready = Signal(QPixmap)
+    error = Signal(str)
 
     def __init__(self, data: bytes):
         super().__init__()
@@ -347,8 +347,8 @@ class ImageLoaderThread(QThread):
 class MeshLoaderThread(QThread):
     """Convert raw mesh bytes to OBJ string in a background thread."""
 
-    mesh_ready = pyqtSignal(str)
-    error = pyqtSignal(str)
+    mesh_ready = Signal(str)
+    error = Signal(str)
 
     def __init__(self, data: bytes):
         super().__init__()
@@ -382,8 +382,8 @@ class MeshLoaderThread(QThread):
 class SolidModelLoaderThread(QThread):
     """Convert raw SolidModel (CSG) bytes to OBJ string in a background thread."""
 
-    mesh_ready = pyqtSignal(str)
-    error = pyqtSignal(str)
+    mesh_ready = Signal(str)
+    error = Signal(str)
 
     def __init__(self, data: bytes):
         super().__init__()
@@ -497,7 +497,7 @@ class JsonTreeViewer(QDialog):
     def _set_icon(self):
         """Set window icon."""
         if icon_path := get_icon_path():
-            from PyQt6.QtGui import QIcon
+            from PySide6.QtGui import QIcon
 
             self.setWindowIcon(QIcon(str(icon_path)))
 
@@ -1079,7 +1079,7 @@ class JsonTreeViewer(QDialog):
 
             # Install global event filter to catch Space for play/pause while audio preview is active
             try:
-                from PyQt6.QtWidgets import QApplication
+                from PySide6.QtWidgets import QApplication
 
                 QApplication.instance().installEventFilter(self)
                 self._audio_key_filter_installed = True
@@ -1439,7 +1439,7 @@ class JsonTreeViewer(QDialog):
 
     def _show_texturepack_context_menu(self, pos, label: QLabel):
         """Show context menu for texturepack image."""
-        from PyQt6.QtWidgets import QApplication
+        from PySide6.QtWidgets import QApplication
 
         map_name = label.property('map_name')
         map_id = label.property('map_id')
@@ -1564,7 +1564,7 @@ class JsonTreeViewer(QDialog):
     def eventFilter(self, obj, event):
         """Global event filter to catch space key and toggle audio play/pause."""
         try:
-            from PyQt6.QtCore import QEvent
+            from PySide6.QtCore import QEvent
 
             if event.type() == QEvent.Type.KeyPress:
                 # Space toggles play/pause when audio preview is active
@@ -1584,7 +1584,7 @@ class JsonTreeViewer(QDialog):
         """Remove global audio key event filter if installed."""
         try:
             if self._audio_key_filter_installed:
-                from PyQt6.QtWidgets import QApplication
+                from PySide6.QtWidgets import QApplication
 
                 QApplication.instance().removeEventFilter(self)
                 self._audio_key_filter_installed = False

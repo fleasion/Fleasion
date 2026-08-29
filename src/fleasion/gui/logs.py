@@ -4,9 +4,9 @@ from ..localization import tr
 
 import sys
 
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QColor, QKeySequence, QShortcut, QTextCharFormat, QTextCursor
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QColor, QKeySequence, QShortcut, QTextCharFormat, QTextCursor
+from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QHBoxLayout,
@@ -43,7 +43,7 @@ class LogsWindow(QDialog):
 
     def _set_icon(self):
         if icon_path := get_icon_path():
-            from PyQt6.QtGui import QIcon
+            from PySide6.QtGui import QIcon
 
             self.setWindowIcon(QIcon(str(icon_path)))
 
@@ -113,7 +113,7 @@ class LogsWindow(QDialog):
         esc.activated.connect(self._clear_search)
 
     def _get_monospace_font(self):
-        from PyQt6.QtGui import QFontDatabase
+        from PySide6.QtGui import QFontDatabase
 
         font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
         font.setPointSize(10)

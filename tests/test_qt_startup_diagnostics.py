@@ -5,7 +5,7 @@ import subprocess
 import sys
 from types import SimpleNamespace
 
-from PyQt6.QtCore import QtMsgType
+from PySide6.QtCore import QtMsgType
 
 from fleasion.utils import qt_diagnostics
 
@@ -40,8 +40,8 @@ def test_windows_legacy_gl_format_requests_4x_msaa(monkeypatch) -> None:
 def test_startup_opengl_config_does_not_create_global_share_context() -> None:
     code = """
 import sys
-from PyQt6.QtGui import QOpenGLContext
-from PyQt6.QtWidgets import QApplication
+from PySide6.QtGui import QOpenGLContext
+from PySide6.QtWidgets import QApplication
 from fleasion.app import _configure_opengl_for_legacy_viewers
 _configure_opengl_for_legacy_viewers()
 assert 'OpenGL.GL' not in sys.modules
@@ -54,7 +54,7 @@ assert QOpenGLContext.globalShareContext() is None
 
 
 def test_lazy_3d_previews_use_raster_widgets_with_offscreen_gl() -> None:
-    from PyQt6.QtWidgets import QWidget
+    from PySide6.QtWidgets import QWidget
 
     from fleasion.cache.animation_viewer import AnimationGLWidget
     from fleasion.cache.obj_viewer import ObjViewerWidget
