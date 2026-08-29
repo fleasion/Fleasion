@@ -1026,14 +1026,60 @@ def test_roblox_launch_resolver_upgrades_registry_path_when_versions_scan_finds_
 
     module = _load_platform_windows(monkeypatch, registry_command=registry_command)
     monkeypatch.setattr(module, "get_roblox_player_exe_path", lambda: None)
-    monkeypatch.setattr(
-        module.os.path,
-        "expandvars",
-        lambda value: str(local_appdata) if value == r"%LocalAppData%" else value,
-    )
+    monkeypatch.setattr(module, "LOCAL_APPDATA", local_appdata)
 
     assert module._safe_mtime(current) > module._safe_mtime(stale)
     assert module.resolve_roblox_player_exe_for_launch() == current
+
+
+def test_roblox_launch_resolver_finds_player_near_registered_custom_launcher(tmp_path, monkeypatch):
+    custom_root = tmp_path / "CustomBootstrapper"
+    launcher = _touch(custom_root / "Bootstrapper.exe", 4000)
+    player = _touch(custom_root / "Versions" / "version-current" / "RobloxPlayerBeta.exe", 3000)
+    registry_command = f'"{launcher}" %1'
+
+    module = _load_platform_windows(monkeypatch, registry_command=registry_command)
+    monkeypatch.setattr(module, "get_roblox_player_exe_path", lambda: None)
+    monkeypatch.setattr(module, "LOCAL_APPDATA", tmp_path / "EmptyLocalAppData")
+
+    assert module.resolve_roblox_player_exe_for_launch() == player
+
+
+def test_roblox_launch_resolver_logs_source_diagnostics_when_nothing_is_found(tmp_path, monkeypatch):
+    registry_command = f'"{tmp_path / "MissingBootstrapper.exe"}" %1'
+    module = _load_platform_windows(monkeypatch, registry_command=registry_command)
+    logs = []
+    monkeypatch.setattr(module, "get_roblox_player_exe_path", lambda: None)
+    monkeypatch.setattr(module, "LOCAL_APPDATA", tmp_path / "EmptyLocalAppData")
+    monkeypatch.setattr(module, "_scan_for_player_exes", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        module.log_buffer,
+        "log",
+        lambda category, message: logs.append((category, message)),
+    )
+
+    assert module.resolve_roblox_player_exe_for_launch() is None
+    messages = [message for category, message in logs if category == "Launcher"]
+    assert any("resolver diagnostics" in message for message in messages)
+    assert any("running Roblox process" in message for message in messages)
+    assert any("roblox-player protocol" in message for message in messages)
+    assert any("LocalAppData Roblox\\Versions scan" in message for message in messages)
+    assert any("Program Files Roblox\\Versions scan" in message for message in messages)
+
+
+def test_roblox_launch_resolver_uses_valid_saved_custom_install_as_last_resort(tmp_path, monkeypatch):
+    saved_dir = tmp_path / "SavedCustomInstall"
+    player = _touch(saved_dir / "RobloxPlayerBeta.exe", 3000)
+    roblox_dirs = types.ModuleType("fleasion.utils.roblox_dirs")
+    roblox_dirs.load_saved_roblox_dirs = lambda: [saved_dir]
+
+    module = _load_platform_windows(monkeypatch, registry_command=None)
+    monkeypatch.setitem(sys.modules, "fleasion.utils.roblox_dirs", roblox_dirs)
+    monkeypatch.setattr(module, "get_roblox_player_exe_path", lambda: None)
+    monkeypatch.setattr(module, "LOCAL_APPDATA", tmp_path / "EmptyLocalAppData")
+    monkeypatch.setattr(module, "_scan_for_player_exes", lambda *_args, **_kwargs: [])
+
+    assert module.resolve_roblox_player_exe_for_launch() == player
 
 
 def test_roblox_launch_resolver_prefers_current_install_over_stale_running_player(tmp_path, monkeypatch):
@@ -1045,11 +1091,7 @@ def test_roblox_launch_resolver_prefers_current_install_over_stale_running_playe
 
     module = _load_platform_windows(monkeypatch, registry_command=registry_command)
     monkeypatch.setattr(module, "get_roblox_player_exe_path", lambda: stale)
-    monkeypatch.setattr(
-        module.os.path,
-        "expandvars",
-        lambda value: str(local_appdata) if value == r"%LocalAppData%" else value,
-    )
+    monkeypatch.setattr(module, "LOCAL_APPDATA", local_appdata)
 
     assert module.resolve_roblox_player_exe_for_launch() == current
 
@@ -1064,11 +1106,7 @@ def test_roblox_launch_resolver_rejects_registry_installer_target(tmp_path, monk
     module = _load_platform_windows(monkeypatch, registry_command=registry_command)
     monkeypatch.setattr(module, "get_roblox_player_exe_path", lambda: None)
     monkeypatch.setattr(module, "_scan_for_player_exes", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(
-        module.os.path,
-        "expandvars",
-        lambda value: str(tmp_path / "LocalAppData") if value == r"%LocalAppData%" else value,
-    )
+    monkeypatch.setattr(module, "LOCAL_APPDATA", tmp_path / "LocalAppData")
 
     assert module.resolve_roblox_player_exe_for_launch() is None
 
@@ -1082,11 +1120,7 @@ def test_roblox_launch_resolver_rejects_running_installer_target(tmp_path, monke
     module = _load_platform_windows(monkeypatch, registry_command=None)
     monkeypatch.setattr(module, "get_roblox_player_exe_path", lambda: installer)
     monkeypatch.setattr(module, "_scan_for_player_exes", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(
-        module.os.path,
-        "expandvars",
-        lambda value: str(tmp_path / "LocalAppData") if value == r"%LocalAppData%" else value,
-    )
+    monkeypatch.setattr(module, "LOCAL_APPDATA", tmp_path / "LocalAppData")
 
     assert module.resolve_roblox_player_exe_for_launch() is None
 

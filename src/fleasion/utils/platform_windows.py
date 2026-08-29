@@ -1828,30 +1828,45 @@ def _safe_mtime(path: Path) -> float:
 
 def _resolve_roblox_player_exe_for_launch() -> Optional[Path]:
     """Resolve best Roblox executable path for URI launches with fallbacks."""
-    candidates_by_path: dict[str, tuple[int, float, Path]] = {}
+    candidates_by_path: dict[str, tuple[int, float, Path, str]] = {}
+    diagnostics: list[str] = []
 
-    def _add(path: Path, priority: int) -> None:
+    def _add(path: Path, priority: int, source: str) -> bool:
         if not _is_roblox_player_exe_path(path):
-            return
-        if not path.is_file():
-            return
+            diagnostics.append(
+                f'{source}: ignored {path} (expected executable name {ROBLOX_PROCESS})'
+            )
+            return False
+        try:
+            is_file = path.is_file()
+        except (OSError, ValueError) as exc:
+            diagnostics.append(f'{source}: could not inspect {path}: {exc}')
+            return False
+        if not is_file:
+            diagnostics.append(f'{source}: candidate is missing or not a file: {path}')
+            return False
         key = str(path).lower()
-        candidate = (priority, _safe_mtime(path), path)
+        candidate = (priority, _safe_mtime(path), path, source)
         existing = candidates_by_path.get(key)
         if existing is not None and (existing[0], existing[1]) >= (
             candidate[0],
             candidate[1],
         ):
-            return
+            return True
         candidates_by_path[key] = candidate
+        return True
 
     # 1) Running client path. Useful for custom installs, but do not let a stale
     # running version outrank the current LocalAppData install.
     running_exe = get_roblox_player_exe_path()
     if running_exe is not None:
-        _add(running_exe, 250)
+        _add(running_exe, 250, 'running Roblox process')
+    else:
+        diagnostics.append('running Roblox process: no executable path found')
 
-    # 2) Registry shell/open command (lowest confidence; can be stale)
+    # 2) Registry shell/open command (lowest confidence; can be stale). Custom
+    # launchers/bootstrapper installs may register their launcher rather than
+    # RobloxPlayerBeta.exe, so mirror install discovery and search nearby too.
     try:
         with winreg.OpenKey(
             winreg.HKEY_CURRENT_USER,
@@ -1859,26 +1874,72 @@ def _resolve_roblox_player_exe_for_launch() -> Optional[Path]:
         ) as key:
             command, _ = winreg.QueryValueEx(key, '')
             exe_path = _extract_exe_from_command(command)
-            if exe_path is not None:
-                _add(exe_path, 200)
-    except OSError:
-        pass
+            if exe_path is None:
+                diagnostics.append('roblox-player protocol: command did not contain an executable')
+            else:
+                direct_added = _add(exe_path, 200, 'roblox-player protocol executable')
+                nearby = _scan_for_player_exes(exe_path.parent, 2)
+                for nearby_exe in nearby:
+                    _add(nearby_exe, 200, 'roblox-player protocol nearby scan')
+                if nearby:
+                    diagnostics.append(
+                        f'roblox-player protocol nearby scan: found {len(nearby)} player executable(s) '
+                        f'under {exe_path.parent}'
+                    )
+                elif not direct_added:
+                    diagnostics.append(
+                        f'roblox-player protocol nearby scan: found no {ROBLOX_PROCESS} under '
+                        f'{exe_path.parent}'
+                    )
+    except (OSError, ValueError) as exc:
+        diagnostics.append(f'roblox-player protocol: registry lookup unavailable ({exc})')
 
-    # 3) %LocalAppData%\Roblox\Versions
-    local_versions = Path(os.path.expandvars(r'%LocalAppData%')) / 'Roblox' / 'Versions'
-    for exe_path in _scan_for_player_exes(local_versions, 1):
-        _add(exe_path, 260)
+    # 3) %LocalAppData%\Roblox\Versions. Use the app-wide resolved LocalAppData
+    # path so launches honor --fleasion-user-localappdata and the same user-path
+    # selection as the rest of Fleasion.
+    local_versions = LOCAL_APPDATA / 'Roblox' / 'Versions'
+    local_candidates = _scan_for_player_exes(local_versions, 1)
+    for exe_path in local_candidates:
+        _add(exe_path, 260, 'LocalAppData Roblox\\Versions scan')
+    diagnostics.append(
+        f'LocalAppData Roblox\\Versions scan: found {len(local_candidates)} player executable(s) '
+        f'under {local_versions}'
+    )
 
     # 4) C:\Program Files (x86)\Roblox\Versions
     pf_versions = Path(r'C:\Program Files (x86)\Roblox\Versions')
-    for exe_path in _scan_for_player_exes(pf_versions, 2):
-        _add(exe_path, 240)
+    pf_candidates = _scan_for_player_exes(pf_versions, 2)
+    for exe_path in pf_candidates:
+        _add(exe_path, 240, 'Program Files Roblox\\Versions scan')
+    diagnostics.append(
+        f'Program Files Roblox\\Versions scan: found {len(pf_candidates)} player executable(s) '
+        f'under {pf_versions}'
+    )
+
+    # 5) Previously discovered install directories. These are validated when
+    # loaded and are especially useful for non-standard/bootstrapper installs.
+    try:
+        from .roblox_dirs import load_saved_roblox_dirs
+
+        saved_dirs = load_saved_roblox_dirs()
+    except Exception as exc:
+        saved_dirs = []
+        diagnostics.append(f'saved Roblox directories: unavailable ({exc})')
+    else:
+        for saved_dir in saved_dirs:
+            _add(saved_dir / ROBLOX_PROCESS, 180, 'saved Roblox directory')
+        diagnostics.append(f'saved Roblox directories: loaded {len(saved_dirs)} valid path(s)')
 
     if not candidates_by_path:
+        log_buffer.log('Launcher', 'Roblox executable resolution failed; resolver diagnostics:')
+        for detail in diagnostics:
+            log_buffer.log('Launcher', f'  {detail}')
         return None
     candidates = list(candidates_by_path.values())
     candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    return candidates[0][2]
+    selected = candidates[0]
+    log_buffer.log('Launcher', f'Roblox executable resolved via {selected[3]}: {selected[2]}')
+    return selected[2]
 
 
 def resolve_roblox_player_exe_for_launch() -> Optional[Path]:
