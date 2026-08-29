@@ -28,6 +28,7 @@ from .replacer import ReplacerApi
 from .settings import SettingsApi
 from .subplaces import SubplacesApi
 from .subplace_join import SubplaceJoinCoordinator
+from .tray import TrayApi
 from .utilities import UtilitiesApi
 from .update import UpdateApi
 
@@ -41,6 +42,7 @@ class AppContext(QObject):
 
     pageRequested = Signal(str)
     dashboardVisibilityRequested = Signal(bool)
+    aboutRequested = Signal()
     quitRequested = Signal()
     restartRequested = Signal()
     cacheCleanupRequested = Signal()
