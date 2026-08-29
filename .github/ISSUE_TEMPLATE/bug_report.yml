@@ -85,5 +85,3 @@ body:
           required: true
         - label: I attached `fleasion.log` from the reproduction above.
           required: true
-        - label: I checked the log/attachments for passwords, cookies, `.ROBLOSECURITY`, and other secrets.
-          required: true
