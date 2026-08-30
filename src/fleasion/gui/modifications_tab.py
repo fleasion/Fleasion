@@ -2593,7 +2593,7 @@ class WindowsHotkeyCaptureDialog(QDialog):
             }
             self.accept()
             return None
-        super().mousePressEvent(event)
+        return super().mousePressEvent(event)
 
     @override
     def wheelEvent(self, event: QWheelEvent) -> None:

@@ -1426,6 +1426,7 @@ class FleasionProxy:
         self._last_gamejoin_time: float = 0.0
         self._last_asset_traffic_time: float = 0.0
         self._asset_diag_generation: int = 0
+        self._asset_diag_tasks: set[asyncio.Task[None]] = set()
         self._on_upstream_connect_failure = on_upstream_connect_failure
         self._upstream_connect_failure_notified = False
         self._upstream_endpoint_refresher = upstream_endpoint_refresher
@@ -1957,9 +1958,11 @@ class FleasionProxy:
         self._last_gamejoin_time = time.monotonic()
         self._asset_diag_generation += 1
         generation = self._asset_diag_generation
-        asyncio.create_task(
+        task = asyncio.create_task(
             self._warn_if_asset_traffic_missing(generation, self._last_gamejoin_time)
         )
+        self._asset_diag_tasks.add(task)
+        task.add_done_callback(self._asset_diag_tasks.discard)
 
     async def _warn_if_asset_traffic_missing(self, generation: int, gamejoin_time: float) -> None:
         await asyncio.sleep(ASSET_TRAFFIC_MISSING_DIAGNOSTIC_SECONDS)

@@ -73,60 +73,77 @@ extend-exclude = [".agents"]
 preview = true
 select = ["ALL"]
 ignore = [
+    # Handled by Ruff format
     "line-too-long",
-    "print",
-    "shebang-missing-executable-file",
-    "missing-return-type-special-method",
-    "asyncio-dangling-task",
-    "unused-async",
-    "suspicious-subprocess-import",
-    "subprocess-popen-with-shell-equals-true",
-    # "TC001",  # False positives with pydantic
-    # "TC002",  # False positives with pydantic
-    # "TC003",  # False positives with pydantic
-    "missing-todo-link",
-    "line-contains-todo",
     "blank-line-with-whitespace",
     "too-many-blank-lines",
-    "logging-f-string",
-    "ERA",
+    "missing-trailing-comma",
+    "bad-quotes-inline-string",
+    "extraneous-parentheses",
+
+    # Documentation and type annotations
+    "D",  # Not needed here
+    "DOC",
+    "any-type",
+    "missing-return-type-special-method",
     "missing-return-type-undocumented-public-function",
     "missing-return-type-private-function",
-    "implicit-return",
-    "raw-string-in-exception",
+
+    # Imports and package structure
+    "implicit-namespace-package",  # Package lookup can make this annoying
+    "useless-import-alias",  # Pyright requires some `as` imports
+    # "typing-only-first-party-import",  # False positives with Pydantic
+    # "typing-only-third-party-import",  # False positives with Pydantic
+    # "typing-only-standard-library-import",  # False positives with Pydantic
+
+    # Function and class design
+    "no-self-use",  # Can easily break code
     "boolean-type-hint-positional-argument",
     "boolean-default-value-positional-argument",
-    "complex-structure",
-    "too-many-locals",
-    "too-many-statements",
+    "too-many-arguments",
     "too-many-public-methods",
 
-    # Umbra preset
-    "any-type",
-    "async-function-with-timeout",
-    "missing-trailing-comma",
-    "missing-copyright-notice",
-    "D",        # not needed here
-    "DOC",
-    "implicit-namespace-package",   # due to how I load modules this results in annoyances
-    "pandas-use-of-dot-values",    # this is not a numpy codebase
-    "try-except-in-loop",
-    "useless-import-alias",  # pyright ruling for `as` imports needed
+    # Complexity and control flow
+    "complex-structure",
     "too-many-branches",
-    "too-many-arguments",
+    "too-many-locals",
+    "too-many-statements",
     "magic-value-comparison",  # I hate this rule
-    "no-self-use",
-    "bad-quotes-inline-string",
-    "ambiguous-unicode-character-string",
-    "function-call-in-dataclass-default-argument",
+    "implicit-return-value",
+
+    # Exceptions
     "suppressible-exception",
-    "raise-vanilla-args",   # over-eager rule
-    "raise-within-try",   # unrealistic rule
-    "extraneous-parentheses",
+    "raise-vanilla-args",  # Over-eager rule
+    "raise-within-try",  # Unrealistic rule
+    # "raw-string-in-exception",  # Fine for libs like discord.py
+
+    # Async code
+    "unused-async",  # Can easily break code
+    "async-function-with-timeout",
+
+    # Logging and console output
+    "print",
+    "logging-f-string",  # I hate this rule
+
+    # Subprocess security
+    "suspicious-subprocess-import",
+    "subprocess-popen-with-shell-equals-true",
+
+    # Source and repository hygiene
+    "ERA",  # Keep commented-out code
+    "missing-todo-link",
+    "line-contains-todo",
+    "missing-copyright-notice",
+    "shebang-missing-executable-file",
+    "ambiguous-unicode-character-string",
+
+    # Data models and library-specific rules
+    "function-call-in-dataclass-default-argument",
+    "pandas-use-of-dot-values",  # Not a pandas codebase
 ]
 unfixable = [
-    "line-too-long", # line length handled in other ways by ruff format
-    "ERA",  # Don't delete commented out code
+    "ERA",  # Don't delete commented-out code
+    "line-too-long",  # Ruff format handles line length
 ]
 
 [tool.ruff.lint.per-file-ignores]
