@@ -2,8 +2,8 @@ import asyncio
 import errno
 import json
 import subprocess
-from datetime import datetime, timedelta, timezone
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Never, cast
@@ -19,7 +19,6 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
 from fleasion import linux_proxy_helper_daemon as daemon
-
 
 type JsonObject = dict[str, object]
 
@@ -163,7 +162,7 @@ def _make_ca_pem(
             x509.NameAttribute(NameOID.COMMON_NAME, common_name),
         ]
     )
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     cert = (
         x509.CertificateBuilder()
         .subject_name(subject)
@@ -436,7 +435,8 @@ def test_validate_fleasion_ca_certificate_rejects_non_fleasion_subject(tmp_path:
     except RuntimeError as exc:
         assert 'not Fleasion Proxy CA' in str(exc)
     else:
-        raise AssertionError('expected non-Fleasion CA rejection')
+        msg = 'expected non-Fleasion CA rejection'
+        raise AssertionError(msg)
 
 
 def test_validate_fleasion_ca_certificate_rejects_non_ca(tmp_path: Path) -> None:
@@ -448,7 +448,8 @@ def test_validate_fleasion_ca_certificate_rejects_non_ca(tmp_path: Path) -> None
     except RuntimeError as exc:
         assert 'not marked as a certificate authority' in str(exc)
     else:
-        raise AssertionError('expected non-CA rejection')
+        msg = 'expected non-CA rejection'
+        raise AssertionError(msg)
 
 
 def test_install_system_ca_refreshes_trust_when_target_is_current(
@@ -498,7 +499,8 @@ def test_read_hosts_update_rejects_non_allowlisted_hosts(tmp_path: Path) -> None
     except RuntimeError as exc:
         assert 'unsupported hosts requested: example.com' in str(exc)
     else:
-        raise AssertionError('expected invalid hosts update failure')
+        msg = 'expected invalid hosts update failure'
+        raise AssertionError(msg)
 
 
 def test_read_hosts_update_accepts_allowlisted_hosts(tmp_path: Path) -> None:
@@ -560,7 +562,8 @@ def test_apply_hosts_raises_when_read_only_hosts_is_missing_entries(
     except OSError as exc:
         assert exc.errno == errno.EROFS
     else:
-        raise AssertionError('expected read-only hosts failure when mappings are missing')
+        msg = 'expected read-only hosts failure when mappings are missing'
+        raise AssertionError(msg)
 
 
 def test_apply_hosts_delta_preserves_retained_entries(
@@ -671,7 +674,8 @@ def test_serve_requires_system_ca_before_applying_hosts(
     except RuntimeError as exc:
         assert 'Linux system trust-store install failed' in str(exc)
     else:
-        raise AssertionError('expected required system CA failure')
+        msg = 'expected required system CA failure'
+        raise AssertionError(msg)
 
     assert hosts_calls == []
 

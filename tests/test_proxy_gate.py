@@ -11,11 +11,11 @@ from fleasion.gui.proxy_gate import ProxyGate
 
 def _qapp() -> QApplication:
     app = QApplication.instance()
-    return cast(QApplication, app) if app is not None else QApplication([])
+    return cast('QApplication', app) if app is not None else QApplication([])
 
 
 def _overlay(gate: ProxyGate) -> QWidget:
-    return cast(QWidget, gate.__dict__['_overlay'])
+    return cast('QWidget', gate.__dict__['_overlay'])
 
 
 def test_proxy_gate_dismisses_for_session_without_proxy() -> None:

@@ -17,7 +17,7 @@ _app: QApplication | None = None
 def _qapp() -> QApplication:
     global _app
     app = QApplication.instance()
-    _app = cast(QApplication, app) if app is not None else QApplication([])
+    _app = cast('QApplication', app) if app is not None else QApplication([])
     return _app
 
 
@@ -37,28 +37,28 @@ def _no_user_resolution(_self: rando.RandoStuffTab) -> None:
 
 
 def _section(tab: rando.RandoStuffTab, name: str) -> CollapsibleSection:
-    return cast(CollapsibleSection, tab.__dict__[name])
+    return cast('CollapsibleSection', tab.__dict__[name])
 
 
 def _section_content(section: CollapsibleSection) -> QWidget:
-    return cast(QWidget, section.__dict__['_content'])
+    return cast('QWidget', section.__dict__['_content'])
 
 
 def _gate_content(tab: rando.RandoStuffTab, name: str) -> QWidget:
-    gate = cast(object, tab.__dict__[name])
-    return cast(QWidget, gate.__dict__['_content'])
+    gate = cast('object', tab.__dict__[name])
+    return cast('QWidget', gate.__dict__['_content'])
 
 
 def _account_list(tab: rando.RandoStuffTab) -> QListWidget:
-    return cast(QListWidget, tab.__dict__['_account_list'])
+    return cast('QListWidget', tab.__dict__['_account_list'])
 
 
 def _selected_label(tab: rando.RandoStuffTab) -> QLabel:
-    return cast(QLabel, tab.__dict__['_selected_label'])
+    return cast('QLabel', tab.__dict__['_selected_label'])
 
 
 def _private_server_input(tab: rando.RandoStuffTab) -> QLineEdit:
-    return cast(QLineEdit, tab.__dict__['_private_server_input'])
+    return cast('QLineEdit', tab.__dict__['_private_server_input'])
 
 
 def _build_tab(monkeypatch: pytest.MonkeyPatch) -> rando.RandoStuffTab:

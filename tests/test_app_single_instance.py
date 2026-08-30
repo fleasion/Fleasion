@@ -12,7 +12,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PySide6.QtCore import QEvent, QSharedMemory, QUrl
 from PySide6.QtWidgets import QApplication
 
-from fleasion import __version__ as APP_VERSION, app as app_module
+from fleasion import __version__, app as app_module
 from fleasion.app import kill_other_fleasion_instances
 from fleasion.utils import macos_proxy_helper
 
@@ -453,7 +453,7 @@ def _visible_owner_callback[ResultT](
 
 def test_macos_fleasion_process_matching_accepts_real_launch_forms() -> None:
     assert _looks_like_macos_fleasion_command(
-        f'/Applications/Fleasion.app/Contents/MacOS/Fleasion-v{APP_VERSION} --no-dashboard'
+        f'/Applications/Fleasion.app/Contents/MacOS/Fleasion-v{__version__} --no-dashboard'
     )
     assert _looks_like_macos_fleasion_command('/project/.venv/bin/Fleasion')
     assert _looks_like_macos_fleasion_command('/usr/bin/python3 /project/launcher.py')
@@ -468,7 +468,7 @@ def test_macos_fleasion_process_matching_rejects_unrelated_commands() -> None:
         "/bin/zsh -c tail '/Users/test/Library/Application Support/FleasionNT/logs/fleasion.log'"
     )
     assert not _looks_like_macos_fleasion_command(
-        f"/bin/zsh -c ps -axo command | rg 'Fleasion-v{APP_VERSION}|launcher.py'"
+        f"/bin/zsh -c ps -axo command | rg 'Fleasion-v{__version__}|launcher.py'"
     )
     assert not _looks_like_macos_fleasion_command('/usr/bin/python3 /tmp/not-fleasion.py')
 
@@ -489,7 +489,7 @@ def test_stale_single_instance_can_be_reclaimed_on_linux_without_gui_process(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(app_module.sys, 'platform', 'linux')
-    monkeypatch.setattr(app_module, '_other_fleasion_pids', _int_list_callback(lambda: []))
+    monkeypatch.setattr(app_module, '_other_fleasion_pids', _int_list_callback(list))
 
     assert _should_reclaim_stale_single_instance(QSharedMemory.SharedMemoryError.AlreadyExists)
 
@@ -1923,7 +1923,9 @@ def test_linux_instance_uri_uses_sober_without_env_proxy_relaunch(
 
 def test_windows_gdk_arming_waits_for_final_proxy_port(monkeypatch: pytest.MonkeyPatch) -> None:
     events: list[object] = []
-    cleanup = lambda: None
+
+    def cleanup() -> None:
+        pass
 
     class _Proxy:
         def wait_for_env_proxy_ready(self, timeout: float) -> bool:

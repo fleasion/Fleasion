@@ -14,11 +14,11 @@ from fleasion.cache.asset_type_filter import CategoryFilterPopup
 
 def _qapp() -> QApplication:
     app = QApplication.instance()
-    return cast(QApplication, app) if app is not None else QApplication([])
+    return cast('QApplication', app) if app is not None else QApplication([])
 
 
 def _natural_content_size(popup: CategoryFilterPopup) -> QSize:
-    return cast(QSize, getattr(popup, '_natural_content_size'))
+    return cast('QSize', getattr(popup, '_natural_content_size'))
 
 
 def test_asset_type_filter_import_does_not_load_opengl_viewers() -> None:

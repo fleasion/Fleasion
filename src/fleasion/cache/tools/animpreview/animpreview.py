@@ -1,11 +1,13 @@
-from __future__ import annotations
+from __future__ import annotations  # ruff: ignore[implicit-namespace-package]
 
 import math
 import os
 import sys
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as ET  # ruff: ignore[typing-only-standard-library-import]
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, cast, override
+
+from defusedxml import ElementTree as safe_et  # ruff: ignore[camelcase-imported-as-lowercase]
 
 type _Vec3 = tuple[float, float, float]
 type _Mat3 = list[list[float]]
@@ -14,39 +16,39 @@ type _Bounds = tuple[float, float, float, float, float, float]
 
 
 class _Matrix4x4(Protocol):
-    def Identity(self) -> None: ...  # ruff: ignore[invalid-function-name] - VTK API spelling
+    def Identity(self) -> None: ...  # ruff: ignore[invalid-function-name]
 
-    def SetElement(  # ruff: ignore[invalid-function-name] - VTK API spelling
+    def SetElement(  # ruff: ignore[invalid-function-name]
         self, row: int, column: int, value: float
     ) -> None: ...
 
-    def GetElement(self, row: int, column: int) -> float: ...  # ruff: ignore[invalid-function-name] - VTK API spelling
+    def GetElement(self, row: int, column: int) -> float: ...  # ruff: ignore[invalid-function-name]
 
 
 class _Matrix4x4Factory(Protocol):
     def __call__(self) -> _Matrix4x4: ...
 
-    def Multiply4x4(  # ruff: ignore[invalid-function-name] - VTK API spelling
+    def Multiply4x4(  # ruff: ignore[invalid-function-name]
         self, a: _Matrix4x4, b: _Matrix4x4, out: _Matrix4x4
     ) -> None: ...
 
-    def Invert(  # ruff: ignore[invalid-function-name] - VTK API spelling
+    def Invert(  # ruff: ignore[invalid-function-name]
         self, matrix: _Matrix4x4, out: _Matrix4x4
     ) -> None: ...
 
 
 class _Light(Protocol):
-    def SetLightTypeToHeadlight(self) -> None: ...  # ruff: ignore[invalid-function-name] - VTK API spelling
+    def SetLightTypeToHeadlight(self) -> None: ...  # ruff: ignore[invalid-function-name]
 
-    def SetLightTypeToSceneLight(self) -> None: ...  # ruff: ignore[invalid-function-name] - VTK API spelling
+    def SetLightTypeToSceneLight(self) -> None: ...  # ruff: ignore[invalid-function-name]
 
-    def SetIntensity(self, intensity: float) -> None: ...  # ruff: ignore[invalid-function-name] - VTK API spelling
+    def SetIntensity(self, intensity: float) -> None: ...  # ruff: ignore[invalid-function-name]
 
-    def SetPosition(  # ruff: ignore[invalid-function-name] - VTK API spelling
+    def SetPosition(  # ruff: ignore[invalid-function-name]
         self, x: float, y: float, z: float
     ) -> None: ...
 
-    def SetFocalPoint(  # ruff: ignore[invalid-function-name] - VTK API spelling
+    def SetFocalPoint(  # ruff: ignore[invalid-function-name]
         self, x: float, y: float, z: float
     ) -> None: ...
 
@@ -56,8 +58,8 @@ class _LightFactory(Protocol):
 
 
 class _VtkModule(Protocol):
-    vtkMatrix4x4: _Matrix4x4Factory  # ruff: ignore[mixed-case-variable-in-class-scope] - VTK API spelling
-    vtkLight: _LightFactory  # ruff: ignore[mixed-case-variable-in-class-scope] - VTK API spelling
+    vtkMatrix4x4: _Matrix4x4Factory  # ruff: ignore[mixed-case-variable-in-class-scope]
+    vtkLight: _LightFactory  # ruff: ignore[mixed-case-variable-in-class-scope]
 
 
 class _Mesh(Protocol):
@@ -79,7 +81,7 @@ class _Mesh(Protocol):
 class _PyVistaModule(Protocol):
     def read(self, path: str) -> _Mesh: ...
 
-    def Cube(  # ruff: ignore[invalid-function-name] - PyVista API spelling
+    def Cube(  # ruff: ignore[invalid-function-name]
         self,
         *,
         center: _Vec3,
@@ -90,15 +92,15 @@ class _PyVistaModule(Protocol):
 
 
 class _Actor(Protocol):
-    def SetUserMatrix(  # ruff: ignore[invalid-function-name] - VTK API spelling
+    def SetUserMatrix(  # ruff: ignore[invalid-function-name]
         self, matrix: _Matrix4x4
     ) -> None: ...
 
 
 class _Renderer(Protocol):
-    def RemoveAllLights(self) -> None: ...  # ruff: ignore[invalid-function-name] - VTK API spelling
+    def RemoveAllLights(self) -> None: ...  # ruff: ignore[invalid-function-name]
 
-    def AddLight(self, light: _Light) -> None: ...  # ruff: ignore[invalid-function-name] - VTK API spelling
+    def AddLight(self, light: _Light) -> None: ...  # ruff: ignore[invalid-function-name]
 
 
 class _Camera(Protocol):
@@ -107,11 +109,11 @@ class _Camera(Protocol):
     up: _Vec3
     view_angle: float
 
-    def SetClippingRange(  # ruff: ignore[invalid-function-name] - VTK API spelling
+    def SetClippingRange(  # ruff: ignore[invalid-function-name]
         self, near: float, far: float
     ) -> None: ...
 
-    def Azimuth(self, angle: float) -> None: ...  # ruff: ignore[invalid-function-name] - VTK API spelling
+    def Azimuth(self, angle: float) -> None: ...  # ruff: ignore[invalid-function-name]
 
 
 class _Plotter(Protocol):
@@ -126,7 +128,7 @@ class _Plotter(Protocol):
 
     def add_axes(self) -> object: ...
 
-    def add_mesh(  # ruff: ignore[too-many-arguments] - Mirrors the PyVista call surface used below
+    def add_mesh(  # ruff: ignore[too-many-arguments]
         self,
         mesh: _Mesh,
         *,
@@ -165,10 +167,10 @@ else:
     import pyvista as pv
     import vtk
 
-from PySide6.QtCore import (  # ruff: ignore[module-import-not-at-top-of-file] - Preserve legacy import order
+from PySide6.QtCore import (  # ruff: ignore[module-import-not-at-top-of-file]
     QTimer,
 )
-from PySide6.QtWidgets import (  # ruff: ignore[module-import-not-at-top-of-file] - Preserve legacy import order
+from PySide6.QtWidgets import (  # ruff: ignore[module-import-not-at-top-of-file]
     QApplication,
     QVBoxLayout,
     QWidget,
@@ -184,7 +186,7 @@ else:
     from pyvistaqt import QtInteractor
 
 try:
-    from ....utils import log_buffer
+    from fleasion.utils import log_buffer
 except ImportError:
     log_buffer = None
 
@@ -225,7 +227,7 @@ def parse_cframe(elem: ET.Element) -> tuple[_Vec3, list[float]]:
     z = float(_text(elem.find('Z'), '0'))
     r: list[float] = []
     for k in ('R00', 'R01', 'R02', 'R10', 'R11', 'R12', 'R20', 'R21', 'R22'):
-        if k in ('R00', 'R11', 'R22'):
+        if k in ('R00', 'R11', 'R22'):  # ruff: ignore[literal-membership]
             r.append(float(_text(elem.find(k), '1')))
         else:
             r.append(float(_text(elem.find(k), '0')))
@@ -341,14 +343,14 @@ def rot3_from_quat(q: _Quaternion) -> _Mat3:
     ]
 
 
-def quat_slerp(q0: _Quaternion, q1: _Quaternion, t: float) -> _Quaternion:
+def quat_slerp(q0: _Quaternion, q1: _Quaternion, t: float) -> _Quaternion:  # ruff: ignore[too-many-locals]
     w0, x0, y0, z0 = q0
     w1, x1, y1, z1 = q1
     dot = w0 * w1 + x0 * x1 + y0 * y1 + z0 * z1
     if dot < 0.0:
         dot = -dot
         w1, x1, y1, z1 = -w1, -x1, -y1, -z1
-    if dot > 0.9995:
+    if dot > 0.9995:  # ruff: ignore[magic-value-comparison]
         w = w0 + (w1 - w0) * t
         x = x0 + (x1 - x0) * t
         y = y0 + (y1 - y0) * t
@@ -407,9 +409,9 @@ class Keyframe:
 # Parse rig
 
 
-def load_rig(rig_path: str) -> tuple[dict[str, Part], list[Motor6D]]:
-    tree = ET.parse(rig_path)
-    root = tree.getroot()
+def load_rig(rig_path: str) -> tuple[dict[str, Part], list[Motor6D]]:  # ruff: ignore[too-many-locals]
+    tree = safe_et.parse(rig_path)
+    root = cast('ET.Element', tree.getroot())
 
     parts: dict[str, Part] = {}
     motors: list[Motor6D] = []
@@ -462,8 +464,8 @@ def load_rig(rig_path: str) -> tuple[dict[str, Part], list[Motor6D]]:
 
 
 def load_animation(anim_path: str) -> list[Keyframe]:
-    tree = ET.parse(anim_path)
-    root = tree.getroot()
+    tree = safe_et.parse(anim_path)
+    root = cast('ET.Element', tree.getroot())
 
     keys: list[Keyframe] = []
     for item in root.iter('Item'):
@@ -539,7 +541,7 @@ def detect_rig_prefix(parts: dict[str, Part]) -> str:
 
 
 def obj_path_for_part(mesh_dir: str, prefix: str, part_name: str) -> str:
-    return os.path.join(mesh_dir, f'{prefix}{part_name}.obj')
+    return os.path.join(mesh_dir, f'{prefix}{part_name}.obj')  # ruff: ignore[os-path-join]
 
 
 def load_obj_mesh(
@@ -555,7 +557,7 @@ def load_obj_mesh(
     candidates.append(obj_path_for_part(mesh_dir, other, part_name))
 
     for path in candidates:
-        if os.path.exists(path):
+        if os.path.exists(path):  # ruff: ignore[os-path-exists]
             try:
                 mesh = pv.read(path).triangulate().clean()
                 mesh = mesh.compute_normals(
@@ -565,10 +567,11 @@ def load_obj_mesh(
                     auto_orient_normals=True,
                     consistent_normals=True,
                 )
-                return mesh
-            except Exception as e:
+                return mesh  # ruff: ignore[try-consider-else, unnecessary-assign]
+            except Exception as e:  # ruff: ignore[blind-except]
                 if log_buffer is not None:
-                    log_buffer.log('AnimPreview', f'Failed to read {path}: {e}')
+                    message = f'Failed to read {path}: {e}'
+                    log_buffer.log('AnimPreview', message)
 
     # Fallback cube if missing
     return pv.Cube(
@@ -583,7 +586,7 @@ def load_obj_mesh(
 
 
 class AnimPreviewWidget(QWidget):
-    def __init__(
+    def __init__(  # ruff: ignore[too-many-locals, too-many-statements]
         self,
         rig_path: str,
         anim_path: str,
@@ -601,7 +604,7 @@ class AnimPreviewWidget(QWidget):
         # AA + background + axes first
         try:
             self.plotter.enable_anti_aliasing('ssaa')
-        except Exception:
+        except Exception:  # ruff: ignore[blind-except]
             self.plotter.enable_anti_aliasing('fxaa')
 
         self.plotter.set_background((0.95, 0.95, 0.95))
@@ -636,11 +639,13 @@ class AnimPreviewWidget(QWidget):
         self.keys = load_animation(anim_path)
 
         if not self.parts:
-            raise RuntimeError('Loaded 0 parts from rig. Wrong rig file or unexpected format.')
+            msg = 'Loaded 0 parts from rig. Wrong rig file or unexpected format.'
+            raise RuntimeError(msg)
         if not self.keys:
-            raise RuntimeError(
+            msg = (
                 'Loaded 0 keyframes from animation. output.rbxmx must be a KeyframeSequence export.'
             )
+            raise RuntimeError(msg)
 
         # Actors
         self.actors_by_part_ref: dict[str, _Actor] = {}
@@ -688,7 +693,7 @@ class AnimPreviewWidget(QWidget):
         self.timer.timeout.connect(self.tick)
         self.timer.start(16)
 
-    def tick(self) -> None:
+    def tick(self) -> None:  # ruff: ignore[complex-structure]
         self.time += 0.016
         if self.time > self.duration:
             self.time = 0.0
@@ -741,20 +746,20 @@ class AnimPreviewWidget(QWidget):
 
     @override
     def closeEvent(self, event: QCloseEvent) -> None:
-        try:
+        try:  # ruff: ignore[suppressible-exception]
             self.timer.stop()
-        except Exception:
+        except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass
-        try:
+        try:  # ruff: ignore[suppressible-exception]
             self.plotter.close()
-        except Exception:
+        except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass
         super().closeEvent(event)
 
 
 if __name__ == '__main__':
-    if len(sys.argv) < 3:
-        print('Usage: python animpreview.py <RIG.rbxmx> <ANIM.rbxmx>')
+    if len(sys.argv) < 3:  # ruff: ignore[magic-value-comparison]
+        print('Usage: python animpreview.py <RIG.rbxmx> <ANIM.rbxmx>')  # ruff: ignore[print]
         sys.exit(2)
 
     app = QApplication(sys.argv)

@@ -76,7 +76,7 @@ def test_composite_orm_uses_normal_source_for_roughness_mips(tmp_path: Path) -> 
     )
 
     assert output is not None
-    parsed = read_rgba8_ktx2_levels(open(output, 'rb').read())
+    parsed = read_rgba8_ktx2_levels(Path(output).read_bytes())
     assert parsed is not None
     levels, width, height = parsed
     assert (width, height) == (2, 2)

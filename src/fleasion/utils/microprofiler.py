@@ -18,10 +18,10 @@ import sys
 import threading
 import time
 import traceback
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping  # ruff: ignore[typing-only-standard-library-import]
 from ctypes import wintypes
 from pathlib import Path
-from types import FrameType
+from types import FrameType  # ruff: ignore[typing-only-standard-library-import]
 from typing import TYPE_CHECKING, Protocol, TypedDict
 
 _SAMPLE_INTERVAL_SECONDS = 1.0
@@ -115,7 +115,7 @@ else:
         return psapi
 
     def _python_frames() -> Mapping[int, FrameType]:
-        return sys._current_frames()
+        return sys._current_frames()  # ruff: ignore[private-member-access]
 
     def _json_values(values: list[str]) -> list[JsonValue]:
         return values
@@ -195,7 +195,7 @@ def _thread_cpu_seconds(thread_id: int) -> float | None:
     """Read user+kernel CPU seconds for a native thread."""
     kernel32 = _kernel32()
     access = _THREAD_QUERY_INFORMATION | _THREAD_QUERY_LIMITED_INFORMATION
-    handle = kernel32.OpenThread(access, False, thread_id)
+    handle = kernel32.OpenThread(access, False, thread_id)  # ruff: ignore[boolean-positional-value-in-call]
     if not handle:
         return None
 
@@ -340,7 +340,9 @@ class MicroProfiler:
         while not self._stop_event.wait(self.interval_seconds):
             try:
                 self._write(self._sample())
-            except Exception as exc:  # Diagnostics must never terminate Fleasion.
+            except (
+                Exception  # ruff: ignore[blind-except]
+            ) as exc:  # Diagnostics must never terminate Fleasion.
                 try:
                     self._write(
                         {
@@ -349,10 +351,10 @@ class MicroProfiler:
                             'error': f'{type(exc).__name__}: {exc}',
                         }
                     )
-                except Exception:
+                except Exception:  # ruff: ignore[blind-except]
                     return
 
-    def _sample(self) -> JsonObject:
+    def _sample(self) -> JsonObject:  # ruff: ignore[too-many-locals]
         now = time.monotonic()
         process_id = os.getpid()
         python_threads = _python_thread_details()
@@ -406,7 +408,7 @@ class MicroProfiler:
         memory_error = None
         try:
             memory = _process_memory(process_handle)
-        except Exception as exc:  # Keep CPU/thread samples if memory inspection fails.
+        except Exception as exc:  # Keep CPU/thread samples if memory inspection fails.  # ruff: ignore[blind-except]
             memory = None
             memory_error = f'{type(exc).__name__}: {exc}'
 
@@ -433,7 +435,7 @@ def _output_path() -> Path:
         path = executable_dir / filename
         with path.open('a', encoding='utf-8'):
             pass
-        return path
+        return path  # ruff: ignore[try-consider-else]
     except OSError:
         fallback_dir = Path.home() / 'AppData' / 'Local' / 'FleasionNT' / 'logs'
         fallback_dir.mkdir(parents=True, exist_ok=True)
@@ -451,7 +453,7 @@ def start_microprofiler(
     try:
         profiler = MicroProfiler(_output_path(), interval_seconds)
         profiler.start()
-    except Exception:
+    except Exception:  # ruff: ignore[blind-except]
         return None
     atexit.register(profiler.stop)
     return profiler

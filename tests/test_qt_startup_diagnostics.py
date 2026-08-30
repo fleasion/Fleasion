@@ -3,8 +3,9 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from collections.abc import Callable
 from types import SimpleNamespace
-from typing import Callable, cast
+from typing import cast
 
 import pytest
 from PySide6.QtCore import QMessageLogContext, QtMsgType
@@ -32,7 +33,7 @@ def _record_log(entries: list[tuple[str, str]]) -> Callable[[str, str], None]:
 
 
 def _context(category: str) -> QMessageLogContext:
-    return cast(QMessageLogContext, SimpleNamespace(category=category))
+    return cast('QMessageLogContext', SimpleNamespace(category=category))
 
 
 def test_cache_viewer_import_does_not_load_opengl_viewers() -> None:

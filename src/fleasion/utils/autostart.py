@@ -9,17 +9,19 @@ development checkout and updates the launch method when it changes.
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import logging
 import os
 import plistlib
-import subprocess
+import subprocess  # ruff: ignore[suspicious-subprocess-import]
 import sys
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, NotRequired, TypedDict
 
-from ..localization import tr
+from fleasion.localization import tr
+
 from .paths import USER_HOME
 
 logger = logging.getLogger(__name__)
@@ -55,11 +57,11 @@ else:
     def _json_launch_info(value: object) -> LaunchInfo | None:
         return value if isinstance(value, dict) else None
 
-    def _required_project(info: LaunchInfo) -> str:
+    def _required_project(info: LaunchInfo) -> str:  # ruff: ignore[reimplemented-operator]
         return info['project']
 
     def _query_windows_run_value() -> tuple[object, int] | None:
-        import winreg
+        import winreg  # ruff: ignore[import-outside-top-level]
 
         with winreg.OpenKey(
             winreg.HKEY_CURRENT_USER,
@@ -70,7 +72,7 @@ else:
             return winreg.QueryValueEx(key, _WINDOWS_RUN_VALUE)
 
     def _write_windows_run_value(command: str) -> None:
-        import winreg
+        import winreg  # ruff: ignore[import-outside-top-level]
 
         with winreg.CreateKeyEx(
             winreg.HKEY_CURRENT_USER,
@@ -81,7 +83,7 @@ else:
             winreg.SetValueEx(key, _WINDOWS_RUN_VALUE, 0, winreg.REG_SZ, command)
 
     def _delete_windows_run_value() -> None:
-        import winreg
+        import winreg  # ruff: ignore[import-outside-top-level]
 
         with winreg.OpenKey(
             winreg.HKEY_CURRENT_USER,
@@ -95,10 +97,10 @@ else:
 # Use Fleasion's log_buffer when available, fall back to Python logger
 def _log(msg: str) -> None:
     try:
-        from ..utils.logging import log_buffer
+        from fleasion.utils.logging import log_buffer  # ruff: ignore[import-outside-top-level]
 
         log_buffer.log('Autostart', msg)
-    except Exception:
+    except Exception:  # ruff: ignore[blind-except]
         logger.info(msg)
 
 
@@ -109,7 +111,7 @@ def _command_output(
     parts: list[str] = []
     for output in (getattr(result, 'stdout', None), getattr(result, 'stderr', None)):
         if isinstance(output, bytes):
-            output = output.decode(errors='replace')
+            output = output.decode(errors='replace')  # ruff: ignore[redefined-loop-name]
         if output:
             parts.append(str(output).strip())
     return ' '.join(parts)
@@ -153,7 +155,7 @@ def _set_windows_run_entry(launch_info: LaunchInfo) -> bool:
     """Create/update packaged Fleasion autostart without starting a subprocess."""
     try:
         _write_windows_run_value(_windows_run_command(launch_info))
-        return True
+        return True  # ruff: ignore[try-consider-else]
     except (ImportError, OSError) as exc:
         _log(f'Failed to update native Windows autostart: {exc}')
         return False
@@ -163,7 +165,7 @@ def _delete_windows_run_entry() -> bool:
     """Remove packaged Fleasion autostart from the current user's Run key."""
     try:
         _delete_windows_run_value()
-        return True
+        return True  # ruff: ignore[try-consider-else]
     except FileNotFoundError:
         return True
     except (ImportError, OSError) as exc:
@@ -173,7 +175,7 @@ def _delete_windows_run_entry() -> bool:
 
 def _delete_legacy_windows_task_async(config_dir: Path) -> None:
     """Remove the old task in a retryable background migration."""
-    global _legacy_task_cleanup_started
+    global _legacy_task_cleanup_started  # ruff: ignore[global-statement]
 
     marker = config_dir / _LEGACY_TASK_CLEANUP_MARKER
     if _legacy_task_cleanup_started or marker.exists():
@@ -182,9 +184,9 @@ def _delete_legacy_windows_task_async(config_dir: Path) -> None:
 
     def _cleanup() -> None:
         flags = _creation_flags()
-        try:
-            query = subprocess.run(
-                ['schtasks', '/Query', '/TN', TASK_NAME],
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
+            query = subprocess.run(  # ruff: ignore[replace-stdout-stderr, subprocess-run-without-check, subprocess-without-shell-equals-true]
+                ['schtasks', '/Query', '/TN', TASK_NAME],  # ruff: ignore[start-process-with-partial-path]
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -194,8 +196,8 @@ def _delete_legacy_windows_task_async(config_dir: Path) -> None:
             if query.returncode != 0:
                 marker.write_text('legacy task absent\n', encoding='utf-8')
                 return
-            deleted = subprocess.run(
-                ['schtasks', '/Delete', '/TN', TASK_NAME, '/F'],
+            deleted = subprocess.run(  # ruff: ignore[replace-stdout-stderr, subprocess-run-without-check, subprocess-without-shell-equals-true]
+                ['schtasks', '/Delete', '/TN', TASK_NAME, '/F'],  # ruff: ignore[start-process-with-partial-path]
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -209,7 +211,7 @@ def _delete_legacy_windows_task_async(config_dir: Path) -> None:
                     f'Legacy scheduled-task cleanup failed (rc={deleted.returncode}): '
                     f'{_command_output(deleted)}'
                 )
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             # No marker means a later Fleasion launch retries, while this slow
             # or unhealthy Task Scheduler call never delays the current launch.
             _log(f'Legacy scheduled-task cleanup deferred: {exc}')
@@ -229,13 +231,13 @@ def _project_root() -> Path:
 
 def _windows_uv_executable() -> str:
     """Return a stable absolute uv path for Windows task registration."""
-    import shutil
+    import shutil  # ruff: ignore[import-outside-top-level]
 
     for name in ('uv', 'uv.exe'):
         found = shutil.which(name)
         if found:
-            if os.name == 'nt' and not os.path.isabs(found):
-                found = os.path.abspath(found)
+            if os.name == 'nt' and not Path(found).is_absolute():
+                found = os.path.abspath(found)  # ruff: ignore[os-path-abspath]
             return found
 
     user_profile = os.environ.get('USERPROFILE') or str(Path.home())
@@ -273,8 +275,8 @@ def _desktop_exec_join(parts: list[str]) -> str:
 
 def _linux_installed_launcher() -> Path | None:
     try:
-        from .platform_linux import LINUX_LAUNCHER_PATH
-    except Exception:
+        from .platform_linux import LINUX_LAUNCHER_PATH  # ruff: ignore[import-outside-top-level]
+    except Exception:  # ruff: ignore[blind-except]
         return None
     try:
         if LINUX_LAUNCHER_PATH.is_file():
@@ -319,7 +321,7 @@ def _get_launch_info() -> LaunchInfo:
     if sys.platform == 'win32':
         uv = _windows_uv_executable()
     else:
-        import shutil
+        import shutil  # ruff: ignore[import-outside-top-level]
 
         uv = shutil.which('uv') or shutil.which('uv.exe') or 'uv'
     # Find project root (dir containing pyproject.toml)
@@ -338,41 +340,37 @@ def _task_exists() -> bool:
     if sys.platform.startswith('linux'):
         return LINUX_AUTOSTART_PATH.exists()
     try:
-        r = subprocess.run(
-            ['schtasks', '/Query', '/TN', TASK_NAME],
+        r = subprocess.run(  # ruff: ignore[subprocess-run-without-check, subprocess-without-shell-equals-true]
+            ['schtasks', '/Query', '/TN', TASK_NAME],  # ruff: ignore[start-process-with-partial-path]
             capture_output=True,
             creationflags=_creation_flags(),
             timeout=10,
         )
-        return r.returncode == 0
-    except Exception:
+        return r.returncode == 0  # ruff: ignore[try-consider-else]
+    except Exception:  # ruff: ignore[blind-except]
         return False
 
 
 def _delete_task() -> bool:
     if sys.platform == 'darwin':
-        try:
-            subprocess.run(
-                ['launchctl', 'unload', str(LAUNCH_AGENT_PATH)],
+        try:  # ruff: ignore[suppressible-exception]
+            subprocess.run(  # ruff: ignore[subprocess-run-without-check, subprocess-without-shell-equals-true]
+                ['launchctl', 'unload', str(LAUNCH_AGENT_PATH)],  # ruff: ignore[start-process-with-partial-path]
                 capture_output=True,
                 timeout=10,
             )
-        except Exception:
+        except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass
-        try:
+        with contextlib.suppress(OSError):
             LAUNCH_AGENT_PATH.unlink(missing_ok=True)
-        except OSError:
-            pass
         return not LAUNCH_AGENT_PATH.exists()
     if sys.platform.startswith('linux'):
-        try:
+        with contextlib.suppress(OSError):
             LINUX_AUTOSTART_PATH.unlink(missing_ok=True)
-        except OSError:
-            pass
         return not LINUX_AUTOSTART_PATH.exists()
     try:
-        result = subprocess.run(
-            ['schtasks', '/Delete', '/TN', TASK_NAME, '/F'],
+        result = subprocess.run(  # ruff: ignore[subprocess-run-without-check, subprocess-without-shell-equals-true]
+            ['schtasks', '/Delete', '/TN', TASK_NAME, '/F'],  # ruff: ignore[start-process-with-partial-path]
             capture_output=True,
             creationflags=_creation_flags(),
             timeout=10,
@@ -386,8 +384,8 @@ def _delete_task() -> bool:
         if _task_exists():
             _log(f'Scheduled task {TASK_NAME!r} still exists after deletion')
             return False
-        return True
-    except Exception as exc:
+        return True  # ruff: ignore[try-consider-else]
+    except Exception as exc:  # ruff: ignore[blind-except]
         _log(f'Failed to delete scheduled task {TASK_NAME!r}: {exc}')
         return False
 
@@ -421,7 +419,7 @@ def _windows_launch_action(launch_info: LaunchInfo) -> tuple[str, str]:
     ps_encoded = base64.b64encode(ps_script.encode('utf-16-le')).decode('ascii')
     return (
         'powershell.exe',
-        f'-WindowStyle Hidden -NoProfile -NonInteractive '
+        f'-WindowStyle Hidden -NoProfile -NonInteractive '  # ruff: ignore[implicit-string-concatenation-in-collection-literal]
         f'-ExecutionPolicy Bypass -EncodedCommand {ps_encoded}',
     )
 
@@ -434,7 +432,7 @@ def _create_windows_task_as_current_user(launch_info: LaunchInfo) -> bool:
     The Task Scheduler COM API supports the intended per-user interactive-token
     task without that elevation requirement.
     """
-    import textwrap
+    import textwrap  # ruff: ignore[import-outside-top-level]
 
     command, args = _windows_launch_action(launch_info)
     script = textwrap.dedent(
@@ -470,8 +468,8 @@ def _create_windows_task_as_current_user(launch_info: LaunchInfo) -> bool:
     ).strip()
     encoded = base64.b64encode(script.encode('utf-16-le')).decode('ascii')
     try:
-        result = subprocess.run(
-            [
+        result = subprocess.run(  # ruff: ignore[subprocess-run-without-check, subprocess-without-shell-equals-true]
+            [  # ruff: ignore[start-process-with-partial-path]
                 'powershell.exe',
                 '-NoProfile',
                 '-NonInteractive',
@@ -490,8 +488,8 @@ def _create_windows_task_as_current_user(launch_info: LaunchInfo) -> bool:
                 f'{result.stdout.decode(errors="replace").strip()} '
                 f'{result.stderr.decode(errors="replace").strip()}'
             )
-        return result.returncode == 0
-    except Exception as exc:
+        return result.returncode == 0  # ruff: ignore[try-consider-else]
+    except Exception as exc:  # ruff: ignore[blind-except]
         _log(f'Failed to create per-user scheduled task: {exc}')
         return False
 
@@ -504,7 +502,7 @@ def _grant_windows_task_user_control(windows_user_id: str) -> bool:
     user.  Preserve the task's existing ACL and add full control for the user
     that will update it on future normal launches.
     """
-    import textwrap
+    import textwrap  # ruff: ignore[import-outside-top-level]
 
     script = textwrap.dedent(
         f"""
@@ -523,8 +521,8 @@ def _grant_windows_task_user_control(windows_user_id: str) -> bool:
     ).strip()
     encoded = base64.b64encode(script.encode('utf-16-le')).decode('ascii')
     try:
-        result = subprocess.run(
-            [
+        result = subprocess.run(  # ruff: ignore[subprocess-run-without-check, subprocess-without-shell-equals-true]
+            [  # ruff: ignore[start-process-with-partial-path]
                 'powershell.exe',
                 '-NoProfile',
                 '-NonInteractive',
@@ -543,20 +541,20 @@ def _grant_windows_task_user_control(windows_user_id: str) -> bool:
                 f'{result.stdout.decode(errors="replace").strip()} '
                 f'{result.stderr.decode(errors="replace").strip()}'
             )
-        return result.returncode == 0
-    except Exception as exc:
+        return result.returncode == 0  # ruff: ignore[try-consider-else]
+    except Exception as exc:  # ruff: ignore[blind-except]
         _log(f'Failed to repair scheduled task permissions: {exc}')
         return False
 
 
-def _create_task(
+def _create_task(  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-return-statements, too-many-statements]
     launch_info: LaunchInfo,
     *,
     windows_user_id: str | None = None,
 ) -> bool:
     """Create a per-user autostart entry without elevation."""
     if sys.platform == 'darwin':
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
             if launch_info['mode'] == 'exe':
                 args = [launch_info['path'], '--no-dashboard']
                 working_dir = str(Path(launch_info['path']).parent)
@@ -594,13 +592,13 @@ def _create_task(
             # first one is still completing startup. macOS discovers the plist
             # automatically on the next login.
             _log('LaunchAgent updated; it will take effect at the next login')
-            return True
-        except Exception as e:
+            return True  # ruff: ignore[try-consider-else]
+        except Exception as e:  # ruff: ignore[blind-except]
             _log(f'Failed to create LaunchAgent: {e}')
             return False
 
     if sys.platform.startswith('linux'):
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
             if launch_info['mode'] == 'linux-launcher':
                 launcher = Path(launch_info['path'])
                 command = _desktop_exec_join([str(launcher), '--no-dashboard'])
@@ -631,17 +629,17 @@ def _create_task(
             LINUX_AUTOSTART_PATH.parent.mkdir(parents=True, exist_ok=True)
             LINUX_AUTOSTART_PATH.write_text(content, encoding='utf-8')
             _log('XDG autostart entry updated; it will take effect at the next login')
-            return True
-        except Exception as e:
+            return True  # ruff: ignore[try-consider-else]
+        except Exception as e:  # ruff: ignore[blind-except]
             _log(f'Failed to create XDG autostart entry: {e}')
             return False
 
     if not windows_user_id:
         return _create_windows_task_as_current_user(launch_info)
 
-    import html as _html
-    import tempfile
-    import textwrap
+    import html as _html  # ruff: ignore[import-outside-top-level]
+    import tempfile  # ruff: ignore[import-outside-top-level]
+    import textwrap  # ruff: ignore[import-outside-top-level]
 
     # Resolve the current user so the task is scoped to them specifically.
     # Without an explicit <UserId> in the XML, Windows may not associate the
@@ -649,9 +647,9 @@ def _create_task(
     if windows_user_id:
         raw_user_id = str(windows_user_id)
     else:
-        _username = os.environ.get('USERNAME', '')
-        _domain = os.environ.get('USERDOMAIN', os.environ.get('COMPUTERNAME', ''))
-        raw_user_id = f'{_domain}\\{_username}' if _domain else _username
+        username = os.environ.get('USERNAME', '')
+        domain = os.environ.get('USERDOMAIN', os.environ.get('COMPUTERNAME', ''))
+        raw_user_id = f'{domain}\\{username}' if domain else username
     user_id = _html.escape(raw_user_id)
 
     if launch_info['mode'] == 'exe':
@@ -731,8 +729,8 @@ def _create_task(
         tmp = f.name
 
     try:
-        r = subprocess.run(
-            ['schtasks', '/Create', '/TN', TASK_NAME, '/XML', tmp, '/F'],
+        r = subprocess.run(  # ruff: ignore[subprocess-run-without-check, subprocess-without-shell-equals-true]
+            ['schtasks', '/Create', '/TN', TASK_NAME, '/XML', tmp, '/F'],  # ruff: ignore[start-process-with-partial-path]
             capture_output=True,
             creationflags=_creation_flags(),
             timeout=15,
@@ -745,13 +743,13 @@ def _create_task(
             )
             return False
         return _grant_windows_task_user_control(raw_user_id)
-    except Exception as e:
+    except Exception as e:  # ruff: ignore[blind-except]
         _log(f'Failed to create scheduled task: {e}')
         return False
     finally:
-        try:
-            os.unlink(tmp)
-        except Exception:
+        try:  # ruff: ignore[suppressible-exception]
+            os.unlink(tmp)  # ruff: ignore[os-unlink]
+        except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass
 
 
@@ -762,19 +760,19 @@ def _get_stored_launch_info(config_dir: Path) -> LaunchInfo | None:
             return None
         payload: object = json.loads(p.read_text())
         return _json_launch_info(payload)
-    except Exception:
+    except Exception:  # ruff: ignore[blind-except]
         return None
 
 
 def _save_launch_info(config_dir: Path, info: LaunchInfo) -> None:
-    try:
+    try:  # ruff: ignore[suppressible-exception]
         (config_dir / 'autostart_info.json').write_text(json.dumps(info))
-    except Exception:
+    except Exception:  # ruff: ignore[blind-except, try-except-pass]
         pass
 
 
-def sync_autostart(
-    enabled: bool,
+def sync_autostart(  # ruff: ignore[complex-structure, too-many-branches]
+    enabled: bool,  # ruff: ignore[boolean-type-hint-positional-argument]
     config_dir: Path,
     *,
     windows_user_id: str | None = None,

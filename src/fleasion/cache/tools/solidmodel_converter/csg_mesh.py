@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import logging
 import struct
-from collections.abc import Sequence
+from collections.abc import Sequence  # ruff: ignore[typing-only-standard-library-import]
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path  # ruff: ignore[typing-only-standard-library-import]
 from typing import TYPE_CHECKING, TypedDict
 
 log = logging.getLogger(__name__)
@@ -48,7 +48,7 @@ def _byte_at(data: bytes, offset: int) -> int:
 def _decode_quantized_f32_component(raw: int) -> float:
     """Decode Roblox CSGMDL5's offset 16-bit unit-vector component."""
     value = (raw - 0x7FFF) & 0xFFFF
-    if value >= 0x8000:
+    if value >= 0x8000:  # ruff: ignore[magic-value-comparison]
         value -= 0x10000
     return value / 32767.0
 
@@ -151,7 +151,7 @@ class CSGVertex:
     ed3: float
 
     @staticmethod
-    def from_bytes(data: bytes, offset: int = 0) -> CSGVertex:
+    def from_bytes(data: bytes, offset: int = 0) -> CSGVertex:  # ruff: ignore[too-many-locals]
         """Parse a CSGVertex from 84 bytes at the given offset."""
         (
             px,
@@ -276,7 +276,8 @@ def _decode_faces5_state_machine(vertex_data: bytes, vertex_count: int) -> list[
 
     for i in range(vertex_count):
         if pos >= data_len:
-            raise ValueError(f'V5 Faces5: ran out of vertex_data early ({i}/{vertex_count})')
+            msg = f'V5 Faces5: ran out of vertex_data early ({i}/{vertex_count})'
+            raise ValueError(msg)
 
         v0 = vertex_data[pos]
         pos += 1
@@ -293,7 +294,8 @@ def _decode_faces5_state_machine(vertex_data: bytes, vertex_count: int) -> list[
         else:
             # 3-byte large positive delta
             if pos + 2 > data_len:
-                raise ValueError(f'V5 Faces5: truncated 3-byte delta at pos {pos - 1}')
+                msg = f'V5 Faces5: truncated 3-byte delta at pos {pos - 1}'
+                raise ValueError(msg)
             v1 = vertex_data[pos]
             pos += 1
             v2 = vertex_data[pos]
@@ -303,12 +305,13 @@ def _decode_faces5_state_machine(vertex_data: bytes, vertex_count: int) -> list[
         indices.append(index_out & 0x7FFFFF)
 
     if pos != data_len:
-        raise ValueError(f'V5 Faces5: {data_len - pos} unused vertex_data bytes')
+        msg = f'V5 Faces5: {data_len - pos} unused vertex_data bytes'
+        raise ValueError(msg)
 
     return indices
 
 
-def _parse_csg_mesh_v5(encrypted_data: bytes, version: int) -> CSGMeshData:
+def _parse_csg_mesh_v5(encrypted_data: bytes, version: int) -> CSGMeshData:  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
     """Parse a CSGMDL version-5 binary blob.
 
     V5 body layout (``body = encrypted_data[10:]``, fully plaintext after the
@@ -341,18 +344,21 @@ def _parse_csg_mesh_v5(encrypted_data: bytes, version: int) -> CSGMeshData:
     """
     body = encrypted_data[10:]
 
-    if len(body) < 22:
-        raise ValueError(f'CSGMDL v{version}: body too short ({len(body)} bytes)')
+    if len(body) < 22:  # ruff: ignore[magic-value-comparison]
+        msg = f'CSGMDL v{version}: body too short ({len(body)} bytes)'
+        raise ValueError(msg)
 
     # ── N: unique attribute entry count ────────────────────────────────────
-    N = struct.unpack_from('<H', body, 0)[0]
-    if N == 0 or N > 100_000:
-        raise ValueError(f'CSGMDL v{version}: implausible entry count {N}')
+    N = struct.unpack_from('<H', body, 0)[0]  # ruff: ignore[non-lowercase-variable-in-function]
+    if N == 0 or N > 100_000:  # ruff: ignore[magic-value-comparison]
+        msg = f'CSGMDL v{version}: implausible entry count {N}'
+        raise ValueError(msg)
 
-    # ── Positions: N × float32×3 ────────────────────────────────────────────
+    # ── Positions: N × float32×3 ────────────────────────────────────────────  # ruff: ignore[ambiguous-unicode-character-comment]
     pos_end = 2 + N * 12
     if pos_end > len(body):
-        raise ValueError(f'CSGMDL v{version}: position block overflows body')
+        msg = f'CSGMDL v{version}: position block overflows body'
+        raise ValueError(msg)
 
     positions: list[tuple[float, float, float]] = []
     for i in range(N):
@@ -363,12 +369,13 @@ def _parse_csg_mesh_v5(encrypted_data: bytes, version: int) -> CSGMeshData:
 
     def _require(size: int, label: str) -> None:
         if cursor + size > len(body):
-            raise ValueError(
+            msg = (
                 f'CSGMDL v{version}: {label} overflows body '
                 f'(offset={cursor}, size={size}, body_len={len(body)})'
             )
+            raise ValueError(msg)
 
-    # ── Normals: [uint16=count][uint32=count*6] count × int16×3  (quantised) ─
+    # ── Normals: [uint16=count][uint32=count*6] count × int16×3  (quantised) ─  # ruff: ignore[ambiguous-unicode-character-comment]
     _require(6, 'normal section header')
     ns_count = struct.unpack_from('<H', body, cursor)[0]
     ns_bytes = struct.unpack_from('<I', body, cursor + 2)[0]
@@ -394,7 +401,7 @@ def _parse_csg_mesh_v5(encrypted_data: bytes, version: int) -> CSGMeshData:
         )
     cursor += normal_data_size
 
-    # ── Colors: [uint16=count] count × uint8×4 ──────────────────────────────
+    # ── Colors: [uint16=count] count × uint8×4 ──────────────────────────────  # ruff: ignore[ambiguous-unicode-character-comment]
     _require(2, 'color section header')
     cs_count = struct.unpack_from('<H', body, cursor)[0]
     cursor += 2
@@ -406,7 +413,7 @@ def _parse_csg_mesh_v5(encrypted_data: bytes, version: int) -> CSGMeshData:
         colors.append((r, g, b, a))
     cursor += color_data_size
 
-    # ── NormalId / UV-gen type: [uint16=count] count × uint8 ────────────────
+    # ── NormalId / UV-gen type: [uint16=count] count × uint8 ────────────────  # ruff: ignore[ambiguous-unicode-character-comment]
     # Stores a NormalId value (1-6) encoding the dominant face axis for UV gen.
     _require(2, 'normal-id section header')
     es_count = struct.unpack_from('<H', body, cursor)[0]
@@ -416,7 +423,7 @@ def _parse_csg_mesh_v5(encrypted_data: bytes, version: int) -> CSGMeshData:
     extra_gen = list(body[cursor : cursor + es_count])
     cursor += es_count
 
-    # ── UV coordinates: [uint16=count] count × float32×2 ────────────────────
+    # ── UV coordinates: [uint16=count] count × float32×2 ────────────────────  # ruff: ignore[ambiguous-unicode-character-comment]
     _require(2, 'uv section header')
     us_count = struct.unpack_from('<H', body, cursor)[0]
     cursor += 2
@@ -428,7 +435,7 @@ def _parse_csg_mesh_v5(encrypted_data: bytes, version: int) -> CSGMeshData:
         uv_studs.append((us, vs))
     cursor += uv_data_size
 
-    # ── Tangents: [uint16=count][uint32=count*6] count × int16×3  (quantised)
+    # ── Tangents: [uint16=count][uint32=count*6] count × int16×3  (quantised)  # ruff: ignore[ambiguous-unicode-character-comment]
     _require(6, 'tangent section header')
     tc = struct.unpack_from('<H', body, cursor)[0]
     tb = struct.unpack_from('<I', body, cursor + 2)[0]
@@ -458,7 +465,8 @@ def _parse_csg_mesh_v5(encrypted_data: bytes, version: int) -> CSGMeshData:
     # Immediately follows the tangents section; NO separate trailer.
     faces_start = cursor
     if faces_start + 9 > len(body):
-        raise ValueError(f'CSGMDL v{version}: Faces5 block missing (body too short after tangents)')
+        msg = f'CSGMDL v{version}: Faces5 block missing (body too short after tangents)'
+        raise ValueError(msg)
 
     vertex_count_f = struct.unpack_from('<I', body, faces_start)[0]
     vertex_data_len = struct.unpack_from('<I', body, faces_start + 4)[0]
@@ -466,20 +474,22 @@ def _parse_csg_mesh_v5(encrypted_data: bytes, version: int) -> CSGMeshData:
     vd_end = vd_start + vertex_data_len
 
     if vd_end > len(body):
-        raise ValueError(
+        msg = (
             f'CSGMDL v{version}: vertex_data_len={vertex_data_len} overflows body '
             f'(faces_start={faces_start}, body_len={len(body)})'
         )
+        raise ValueError(msg)
 
     vertex_data = body[vd_start:vd_end]
 
-    # Range markers: uint8 count + count × uint32
+    # Range markers: uint8 count + count × uint32  # ruff: ignore[ambiguous-unicode-character-comment]
     rmc_offset = vd_end
     range_marker_count = _byte_at(body, rmc_offset)
     rm_start = rmc_offset + 1
     rm_end = rm_start + range_marker_count * 4
     if rm_end > len(body):
-        raise ValueError(f'CSGMDL v{version}: range_markers overflow body')
+        msg = f'CSGMDL v{version}: range_markers overflow body'
+        raise ValueError(msg)
     range_markers = [
         struct.unpack_from('<I', body, rm_start + i * 4)[0] for i in range(range_marker_count)
     ]
@@ -496,19 +506,23 @@ def _parse_csg_mesh_v5(encrypted_data: bytes, version: int) -> CSGMeshData:
     # ── Decode delta-encoded indices via Faces5 state machine ───────────────
     all_indices = _decode_faces5_state_machine(vertex_data, vertex_count_f)
 
-    if len(range_markers) < 2:
-        raise ValueError(f'CSGMDL v{version}: not enough range markers: {len(range_markers)}')
+    if len(range_markers) < 2:  # ruff: ignore[magic-value-comparison]
+        msg = f'CSGMDL v{version}: not enough range markers: {len(range_markers)}'
+        raise ValueError(msg)
     last_marker = range_markers[0]
     if last_marker > len(all_indices):
-        raise ValueError(f'CSGMDL v{version}: range marker 0 out of range: {last_marker}')
+        msg = f'CSGMDL v{version}: range marker 0 out of range: {last_marker}'
+        raise ValueError(msg)
     for i, marker in enumerate(range_markers[1:], start=1):
         if marker < last_marker:
-            raise ValueError(
+            msg = (
                 f'CSGMDL v{version}: range marker {i} ({marker}) is less than '
                 f'previous marker ({last_marker})'
             )
+            raise ValueError(msg)
         if marker > len(all_indices):
-            raise ValueError(f'CSGMDL v{version}: range marker {i} out of range: {marker}')
+            msg = f'CSGMDL v{version}: range marker {i} out of range: {marker}'
+            raise ValueError(msg)
         last_marker = marker
 
     # Split into sub-meshes using range markers.
@@ -620,7 +634,7 @@ def _parse_csg_mesh_v5(encrypted_data: bytes, version: int) -> CSGMeshData:
     )
 
 
-def parse_csg_mesh_full(encrypted_data: bytes) -> CSGMeshData:
+def parse_csg_mesh_full(encrypted_data: bytes) -> CSGMeshData:  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
     """Decrypt and parse a CSGMDL binary blob, returning full metadata.
 
     Parameters
@@ -656,7 +670,7 @@ def parse_csg_mesh_full(encrypted_data: bytes) -> CSGMeshData:
         )
 
     # v5+ uses a completely different body layout (plaintext, no XOR on body).
-    if version >= 5:
+    if version >= 5:  # ruff: ignore[magic-value-comparison]
         return _parse_csg_mesh_v5(encrypted_data, version)
 
     # Hash + Salt (32 bytes — we skip validation for now)
@@ -698,7 +712,7 @@ def parse_csg_mesh_full(encrypted_data: bytes) -> CSGMeshData:
     # v3/v4 trailer: sub-mesh metadata (20 bytes)
     submesh_boundaries: list[int] = []
     remaining = len(data) - offset
-    if version == 4 and remaining >= 4:
+    if version == 4 and remaining >= 4:  # ruff: ignore[magic-value-comparison]
         boundary_count = struct.unpack_from('<I', data, offset)[0]
         boundary_bytes = boundary_count * 4
         if boundary_count > 0 and boundary_bytes <= remaining - 4:
@@ -708,7 +722,7 @@ def parse_csg_mesh_full(encrypted_data: bytes) -> CSGMeshData:
             if (
                 boundaries
                 and all(0 <= b <= num_indices for b in boundaries)
-                and all(a <= b for a, b in zip(boundaries, boundaries[1:]))
+                and all(a <= b for a, b in zip(boundaries, boundaries[1:]))  # ruff: ignore[zip-instead-of-pairwise, zip-without-explicit-strict]
             ):
                 if boundaries[0] != 0:
                     boundaries.insert(0, 0)
@@ -729,7 +743,7 @@ def parse_csg_mesh_full(encrypted_data: bytes) -> CSGMeshData:
                     boundaries,
                 )
 
-    if not submesh_boundaries and remaining >= 20 and version >= 3:
+    if not submesh_boundaries and remaining >= 20 and version >= 3:  # ruff: ignore[magic-value-comparison]
         brep_ver = struct.unpack_from('<I', data, offset)[0]
         _padding = struct.unpack_from('<I', data, offset + 4)[0]
         b1 = struct.unpack_from('<I', data, offset + 8)[0]
@@ -809,7 +823,7 @@ def serialize_csg_mesh(
         If ``indices`` length is not a multiple of 3, or any index is out of
         range for the given ``vertices`` list.
     """
-    if version == 5:
+    if version == 5:  # ruff: ignore[magic-value-comparison]
         return serialize_csg_mesh_v5(vertices, indices)
 
     if len(indices) % 3 != 0:
@@ -832,11 +846,11 @@ def serialize_csg_mesh(
 
     # ── Vertices (84 bytes each) ─────────────────────────────────────────────
     # Layout mirrors CSGVertex.from_bytes exactly:
-    #   0..12  position  (3 × float32)
-    #  12..24  normal    (3 × float32)
-    #  24..28  color     (4 × uint8)
-    #  28..32  extra     (4 × uint8)
-    #  32..84  uv/uvStuds/uvDecal/tangent/edgeDist  (13 × float32)
+    #   0..12  position  (3 × float32)  # ruff: ignore[ambiguous-unicode-character-comment]
+    #  12..24  normal    (3 × float32)  # ruff: ignore[ambiguous-unicode-character-comment]
+    #  24..28  color     (4 × uint8)  # ruff: ignore[ambiguous-unicode-character-comment]
+    #  28..32  extra     (4 × uint8)  # ruff: ignore[ambiguous-unicode-character-comment]
+    #  32..84  uv/uvStuds/uvDecal/tangent/edgeDist  (13 × float32)  # ruff: ignore[ambiguous-unicode-character-comment]
     for v in vertices:
         buf.extend(struct.pack('<3f', v.px, v.py, v.pz))
         buf.extend(struct.pack('<3f', v.nx, v.ny, v.nz))
@@ -861,7 +875,9 @@ def serialize_csg_mesh(
             )
         )
 
-    assert len(buf) == 6 + 4 + 32 + 8 + num_vertices * CSGVERTEX_SIZE, 'vertex block size mismatch'
+    if len(buf) != 6 + 4 + 32 + 8 + num_vertices * CSGVERTEX_SIZE:
+        msg = 'vertex block size mismatch'
+        raise AssertionError(msg)
 
     # ── Indices ──────────────────────────────────────────────────────────────
     buf.extend(struct.pack('<I', num_indices))
@@ -874,7 +890,7 @@ def serialize_csg_mesh(
     # covering all triangles, with no separate collision or auxiliary meshes.
     # The parser pops trailing entries equal to num_indices and re-appends
     # it once, yielding submesh_boundaries = [0, num_indices].
-    if version >= 3:
+    if version >= 3:  # ruff: ignore[magic-value-comparison]
         buf.extend(struct.pack('<5I', 0, 0, num_indices, num_indices, num_indices))
 
     log.info(
@@ -926,8 +942,8 @@ def _encode_faces5(indices: list[int]) -> bytes:
     modular ring (range [-0x400000, 0x3FFFFF]).  Large out-of-range
     negative jumps wrap to a positive 23-bit value via ``% 0x800000``.
     """
-    _RING = 0x800000  # 2^23
-    _HALF = 0x400000  # 2^22
+    RING = 0x800000  # 2^23  # ruff: ignore[non-lowercase-variable-in-function]
+    HALF = 0x400000  # 2^22  # ruff: ignore[non-lowercase-variable-in-function]
 
     data = bytearray()
     index_out = 0
@@ -935,14 +951,14 @@ def _encode_faces5(indices: list[int]) -> bytes:
     for target in indices:
         # Shortest signed delta in the 23-bit modular ring
         raw = target - (index_out & 0x7FFFFF)
-        delta = ((raw + _HALF) % _RING) - _HALF  # → [-0x400000, 0x3FFFFF]
+        delta = ((raw + HALF) % RING) - HALF  # → [-0x400000, 0x3FFFFF]
 
-        if 0 <= delta <= 63:
+        if 0 <= delta <= 63:  # ruff: ignore[magic-value-comparison]
             data.append(delta)
-        elif -64 <= delta <= -1:
+        elif -64 <= delta <= -1:  # ruff: ignore[magic-value-comparison]
             data.append(delta + 128)  # maps -64→64, -1→127
         else:
-            d = delta % _RING  # unsigned 23-bit representation
+            d = delta % RING  # unsigned 23-bit representation
             data.append(0x80 | ((d >> 16) & 0x7F))
             data.append((d >> 8) & 0xFF)
             data.append(d & 0xFF)
@@ -992,11 +1008,13 @@ def serialize_csg_mesh_v5(
         Raw CSGMDL v5 bytes ready for storage in a ``MeshData`` property.
     """
     if len(indices) % 3 != 0:
-        raise ValueError(f'Index count {len(indices)} is not a multiple of 3')
+        msg = f'Index count {len(indices)} is not a multiple of 3'
+        raise ValueError(msg)
     if indices and max(indices) >= len(vertices):
-        raise ValueError(f'Max index {max(indices)} is out of range for {len(vertices)} vertices')
+        msg = f'Max index {max(indices)} is out of range for {len(vertices)} vertices'
+        raise ValueError(msg)
 
-    N = len(vertices)
+    N = len(vertices)  # ruff: ignore[non-lowercase-variable-in-function]
     num_indices = len(indices)
 
     body = bytearray()
@@ -1004,11 +1022,11 @@ def serialize_csg_mesh_v5(
     # ── N (unique attribute count) ───────────────────────────────────────────
     body += struct.pack('<H', N)
 
-    # ── Positions: N × float32×3 ─────────────────────────────────────────────
+    # ── Positions: N × float32×3 ─────────────────────────────────────────────  # ruff: ignore[ambiguous-unicode-character-comment]
     for v in vertices:
         body += struct.pack('<3f', v.px, v.py, v.pz)
 
-    # ── Normals: [uint16=N][uint32=N*6] N × int16×3 ──────────────────────────
+    # ── Normals: [uint16=N][uint32=N*6] N × int16×3 ──────────────────────────  # ruff: ignore[ambiguous-unicode-character-comment]
     body += struct.pack('<H', N)  # count
     body += struct.pack('<I', N * 6)  # byte length
     for v in vertices:
@@ -1019,26 +1037,26 @@ def serialize_csg_mesh_v5(
             _encode_quantized_f32_component(v.nz),
         )
 
-    # ── Colors: [uint16=N] N × uint8×4 ───────────────────────────────────────
+    # ── Colors: [uint16=N] N × uint8×4 ───────────────────────────────────────  # ruff: ignore[ambiguous-unicode-character-comment]
     body += struct.pack('<H', N)  # count
     for v in vertices:
         body += struct.pack('<4B', v.cr, v.cg, v.cb, v.ca)
 
-    # ── NormalIds: [uint16=N] N × uint8 ──────────────────────────────────────
+    # ── NormalIds: [uint16=N] N × uint8 ──────────────────────────────────────  # ruff: ignore[ambiguous-unicode-character-comment]
     # Each value is 1-6 (from extra_r if it was parsed from V5, else computed).
     body += struct.pack('<H', N)  # count
     for v in vertices:
         # Prefer the stored UV-gen type if it looks like a valid NormalId (1-6),
         # otherwise derive it fresh from the vertex normal direction.
-        nid = v.extra_r if 1 <= v.extra_r <= 6 else _compute_normal_id(v.nx, v.ny, v.nz)
+        nid = v.extra_r if 1 <= v.extra_r <= 6 else _compute_normal_id(v.nx, v.ny, v.nz)  # ruff: ignore[magic-value-comparison]
         body += struct.pack('<B', nid)
 
-    # ── UV coords: [uint16=N] N × float32×2 ──────────────────────────────────
+    # ── UV coords: [uint16=N] N × float32×2 ──────────────────────────────────  # ruff: ignore[ambiguous-unicode-character-comment]
     body += struct.pack('<H', N)  # count
     for v in vertices:
         body += struct.pack('<2f', v.u, v.v)
 
-    # ── Tangents: [uint16=N][uint32=N*6] N × int16×3 ─────────────────────────
+    # ── Tangents: [uint16=N][uint32=N*6] N × int16×3 ─────────────────────────  # ruff: ignore[ambiguous-unicode-character-comment]
     body += struct.pack('<H', N)  # count
     body += struct.pack('<I', N * 6)  # byte length
     for v in vertices:
@@ -1087,7 +1105,7 @@ def _detect_csgmdl_version(data: bytes) -> int | None:
     checks for the ``CSGMDL`` magic tag, returning the version integer on
     success or ``None`` if the data does not look like a valid CSGMDL blob.
     """
-    if len(data) < 10:
+    if len(data) < 10:  # ruff: ignore[magic-value-comparison]
         return None
     decrypted = xor_buffer(data[:10])
     if decrypted[:6] != HEADER_TAG:
@@ -1105,7 +1123,7 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-def export_obj(
+def export_obj(  # ruff: ignore[complex-structure, too-many-branches]
     vertices: list[CSGVertex],
     indices: list[int],
     output_path: Path,
@@ -1133,7 +1151,7 @@ def export_obj(
     degenerate_count = 0
     for i in range(0, len(indices), 3):
         i0, i1, i2 = indices[i], indices[i + 1], indices[i + 2]
-        if i0 == i1 or i1 == i2 or i0 == i2:
+        if i0 == i1 or i1 == i2 or i0 == i2:  # ruff: ignore[compare-with-tuple, repeated-equality-comparison]
             degenerate_count += 1
         else:
             valid_faces.append((i0, i1, i2))
@@ -1175,7 +1193,7 @@ def export_obj(
                     # Simple approach: just write all faces in order with group markers
                     i0, i1, i2 = valid_faces[face_idx]
                     f.write(
-                        f'f {i0 + 1}/{i0 + 1}/{i0 + 1} {i1 + 1}/{i1 + 1}/{i1 + 1} {i2 + 1}/{i2 + 1}/{i2 + 1}\n'
+                        f'f {i0 + 1}/{i0 + 1}/{i0 + 1} {i1 + 1}/{i1 + 1}/{i1 + 1} {i2 + 1}/{i2 + 1}/{i2 + 1}\n'  # ruff: ignore[line-too-long]
                     )
                     face_idx += 1
                     if face_idx >= sm_end:
@@ -1184,7 +1202,7 @@ def export_obj(
             # No sub-mesh info — write all faces as one group
             for i0, i1, i2 in valid_faces:
                 f.write(
-                    f'f {i0 + 1}/{i0 + 1}/{i0 + 1} {i1 + 1}/{i1 + 1}/{i1 + 1} {i2 + 1}/{i2 + 1}/{i2 + 1}\n'
+                    f'f {i0 + 1}/{i0 + 1}/{i0 + 1} {i1 + 1}/{i1 + 1}/{i1 + 1} {i2 + 1}/{i2 + 1}/{i2 + 1}\n'  # ruff: ignore[line-too-long]
                 )
 
     log.info(
@@ -1207,7 +1225,7 @@ class ObjMeshPart:
     cframe: CFrame | None = None  # keys: X,Y,Z, R00..R22
 
 
-def _transform_vertex(v: CSGVertex, cframe: CFrame) -> CSGVertex:
+def _transform_vertex(v: CSGVertex, cframe: CFrame) -> CSGVertex:  # ruff: ignore[too-many-locals]
     """Apply a CFrame transform to a vertex (local -> world space).
 
     CFrame rotation is a 3x3 matrix (R00..R22), translation is (X, Y, Z).
@@ -1276,7 +1294,7 @@ def _write_mtl_file(mtl_path: Path) -> None:
         f.write('illum 1\n')
 
 
-def export_obj_multi(
+def export_obj_multi(  # ruff: ignore[complex-structure, too-many-branches]
     parts: list[ObjMeshPart],
     output_path: Path,
 ) -> None:
@@ -1319,7 +1337,7 @@ def export_obj_multi(
             degenerate_count = 0
             for i in range(0, len(part.indices), 3):
                 i0, i1, i2 = part.indices[i], part.indices[i + 1], part.indices[i + 2]
-                if i0 == i1 or i1 == i2 or i0 == i2:
+                if i0 == i1 or i1 == i2 or i0 == i2:  # ruff: ignore[compare-with-tuple, repeated-equality-comparison]
                     degenerate_count += 1
                 else:
                     valid_faces.append((i0, i1, i2))

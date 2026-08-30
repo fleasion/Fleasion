@@ -8,9 +8,9 @@ import os
 import re
 import shlex
 import stat
-import subprocess
+import subprocess  # ruff: ignore[suspicious-subprocess-import]
 import sys
-import threading
+import threading  # ruff: ignore[typing-only-standard-library-import]
 import time
 import uuid
 import winreg  # pyright: ignore[reportMissingModuleSource]
@@ -115,7 +115,7 @@ class _GUID(ctypes.Structure):
     ]
 
 
-class _UNICODE_STRING(ctypes.Structure):
+class _UNICODE_STRING(ctypes.Structure):  # ruff: ignore[invalid-class-name]
     _fields_ = [
         ('Length', ctypes.wintypes.USHORT),
         ('MaximumLength', ctypes.wintypes.USHORT),
@@ -147,12 +147,12 @@ def _windows_oem_encoding() -> str:
             return f'cp{code_page}'
     except AttributeError, OSError, TypeError, ValueError:
         pass
-    return locale.getpreferredencoding(False) or 'utf-8'
+    return locale.getpreferredencoding(False) or 'utf-8'  # ruff: ignore[boolean-positional-value-in-call]
 
 
 def run_cmd(args: list[str], timeout: float = 10.0) -> tuple[int, str]:
     """Run a Windows command and return (return_code, combined output)."""
-    result = subprocess.run(
+    result = subprocess.run(  # ruff: ignore[subprocess-run-without-check, subprocess-without-shell-equals-true]
         args,
         capture_output=True,
         text=True,
@@ -199,17 +199,17 @@ def run_gdk_debugger_command_line(arguments: list[str] | None = None) -> int:
     kernel32.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
     kernel32.CloseHandle.restype = ctypes.wintypes.BOOL
 
-    thread_handle = kernel32.OpenThread(_THREAD_SUSPEND_RESUME, False, thread_id)
+    thread_handle = kernel32.OpenThread(_THREAD_SUSPEND_RESUME, False, thread_id)  # ruff: ignore[boolean-positional-value-in-call]
     if not thread_handle:
         return 1
     try:
         previous_count = kernel32.ResumeThread(thread_handle)
-        if previous_count == 0xFFFFFFFF:
+        if previous_count == 0xFFFFFFFF:  # ruff: ignore[magic-value-comparison]
             return 1
         # A debugger can be attached while another diagnostic tool has also
         # suspended the thread.  Fully resume it without looping forever.
         for _ in range(min(int(previous_count), 8)):
-            if kernel32.ResumeThread(thread_handle) == 0xFFFFFFFF:
+            if kernel32.ResumeThread(thread_handle) == 0xFFFFFFFF:  # ruff: ignore[magic-value-comparison]
                 return 1
         return 0
     finally:
@@ -378,7 +378,7 @@ def _terminate_process_direct(pid: int) -> tuple[bool, str]:
     kernel32.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
     kernel32.CloseHandle.restype = ctypes.wintypes.BOOL
 
-    handle = kernel32.OpenProcess(_PROCESS_TERMINATE, False, pid)
+    handle = kernel32.OpenProcess(_PROCESS_TERMINATE, False, pid)  # ruff: ignore[boolean-positional-value-in-call]
     if not handle:
         error = int(kernel32.GetLastError())
         return False, f'OpenProcess(PROCESS_TERMINATE) failed with WinError {error}'
@@ -394,7 +394,7 @@ def _terminate_process_direct(pid: int) -> tuple[bool, str]:
 def _query_exe_path(pid: int) -> Path | None:
     """Return the full executable path for a given PID via QueryFullProcessImageNameW."""
     k32 = _windll().kernel32
-    handle = k32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    handle = k32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)  # ruff: ignore[boolean-positional-value-in-call]
     if not handle:
         return None
     try:
@@ -410,10 +410,10 @@ def _query_exe_path(pid: int) -> Path | None:
 def _query_process_command_line(pid: int) -> str:
     """Return a process command line through the native Unicode NT API."""
     k32 = _windll().kernel32
-    handle = k32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    handle = k32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)  # ruff: ignore[boolean-positional-value-in-call]
     if not handle:
         return ''
-    try:
+    try:  # ruff: ignore[too-many-statements-in-try-clause]
         query = _windll().ntdll.NtQueryInformationProcess
         query.argtypes = [
             ctypes.wintypes.HANDLE,
@@ -505,7 +505,7 @@ def _pid_is_running(pid: int, exe_name: str) -> bool:
 
 def _env_proxy_owned_pid_if_running() -> int | None:
     """Return the PID of the current Env Proxy-owned Player, if it is alive."""
-    global _env_proxy_owned_process
+    global _env_proxy_owned_process  # ruff: ignore[global-statement]
 
     if _env_proxy_owned_process is None:
         return None
@@ -572,7 +572,7 @@ def _force_close_process_immediately(
             'Launcher',
             f'{label} taskkill /F /PID {pid} timed out after 10 seconds',
         )
-    except Exception as exc:
+    except Exception as exc:  # ruff: ignore[blind-except]
         log_buffer.log(
             'Launcher',
             f'{label} taskkill /F /PID {pid} failed: {type(exc).__name__}',
@@ -583,7 +583,7 @@ def _force_close_process_immediately(
 
     try:
         direct_ok, direct_detail = _terminate_process_direct(pid)
-    except Exception as exc:
+    except Exception as exc:  # ruff: ignore[blind-except]
         log_buffer.log(
             'Launcher',
             f'{label} direct PROCESS_TERMINATE fallback failed: {type(exc).__name__}',
@@ -672,7 +672,7 @@ def _get_roblox_gdk_package_identity(exe_path: Path) -> tuple[str, str] | None:
     if not package_full_name or '__' not in package_full_name:
         return None
 
-    try:
+    try:  # ruff: ignore[too-many-statements-in-try-clause]
         package_name = package_full_name.split('_', 1)[0]
         publisher_id = package_full_name.split('__', 1)[1]
         application_id = 'Game'
@@ -687,7 +687,7 @@ def _get_roblox_gdk_package_identity(exe_path: Path) -> tuple[str, str] | None:
             ):
                 application_id = candidate
                 break
-        return package_full_name, f'{package_name}_{publisher_id}!{application_id}'
+        return package_full_name, f'{package_name}_{publisher_id}!{application_id}'  # ruff: ignore[try-consider-else]
     except ET.ParseError, OSError, UnicodeError, ValueError:
         return None
 
@@ -697,16 +697,16 @@ def _find_installed_roblox_gdk_package_identity(
 ) -> tuple[str, str] | None:
     """Find the installed Store package before its Player process exists."""
     try:
-        result = subprocess.run(
-            [
+        result = subprocess.run(  # ruff: ignore[subprocess-run-without-check]
+            [  # ruff: ignore[start-process-with-partial-path]
                 'powershell.exe',
                 '-NoProfile',
                 '-NonInteractive',
                 '-ExecutionPolicy',
                 'Bypass',
                 '-Command',
-                "(Get-AppxPackage -Name 'ROBLOXCorporation.RobloxGDK' | "
-                'Sort-Object Version -Descending | Select-Object -First 1 -ExpandProperty InstallLocation)',
+                "(Get-AppxPackage -Name 'ROBLOXCorporation.RobloxGDK' | "  # ruff: ignore[implicit-string-concatenation-in-collection-literal]
+                'Sort-Object Version -Descending | Select-Object -First 1 -ExpandProperty InstallLocation)',  # ruff: ignore[line-too-long]
             ],
             capture_output=True,
             text=True,
@@ -762,12 +762,12 @@ def _enable_gdk_package_debugging(
     if _hresult_failed(init_result) and int(init_result) != _COINIT_CHANGED_MODE:
         log_buffer.log(
             'Launcher',
-            f'{label} Env Proxy GDK activation could not initialize COM: {_format_hresult(init_result)}',
+            f'{label} Env Proxy GDK activation could not initialize COM: {_format_hresult(init_result)}',  # ruff: ignore[line-too-long]
         )
         return False
     com_initialized = not _hresult_failed(init_result)
     debug_settings = None
-    try:
+    try:  # ruff: ignore[too-many-statements-in-try-clause]
         debug_settings = _create_com_instance(
             _CLSID_PACKAGE_DEBUG_SETTINGS,
             _IID_PACKAGE_DEBUG_SETTINGS,
@@ -795,10 +795,10 @@ def _enable_gdk_package_debugging(
         if _hresult_failed(result):
             log_buffer.log(
                 'Launcher',
-                f'{label} Env Proxy GDK activation could not enable package debugging: {_format_hresult(result)}',
+                f'{label} Env Proxy GDK activation could not enable package debugging: {_format_hresult(result)}',  # ruff: ignore[line-too-long]
             )
             return False
-        return True
+        return True  # ruff: ignore[try-consider-else]
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         log_buffer.log(
             'Launcher',
@@ -824,7 +824,7 @@ def _disable_gdk_package_debugging(package_full_name: str, label: str) -> bool:
         return False
     com_initialized = not _hresult_failed(init_result)
     debug_settings = None
-    try:
+    try:  # ruff: ignore[too-many-statements-in-try-clause]
         debug_settings = _create_com_instance(
             _CLSID_PACKAGE_DEBUG_SETTINGS,
             _IID_PACKAGE_DEBUG_SETTINGS,
@@ -841,10 +841,10 @@ def _disable_gdk_package_debugging(package_full_name: str, label: str) -> bool:
         if _hresult_failed(result):
             log_buffer.log(
                 'Launcher',
-                f'{label} Env Proxy GDK package debugging cleanup failed: {_format_hresult(result)}',
+                f'{label} Env Proxy GDK package debugging cleanup failed: {_format_hresult(result)}',  # ruff: ignore[line-too-long]
             )
             return False
-        return True
+        return True  # ruff: ignore[try-consider-else]
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         log_buffer.log(
             'Launcher',
@@ -864,7 +864,7 @@ def is_roblox_gdk_env_proxy_armed() -> bool:
 
 def arm_roblox_gdk_env_proxy(proxy_url: str) -> bool:
     """Arm package-aware Env Proxy before the user activates Store Roblox."""
-    global _gdk_env_proxy_armed_package
+    global _gdk_env_proxy_armed_package  # ruff: ignore[global-statement]
 
     identity = _find_installed_roblox_gdk_package_identity(report_diagnostics=True)
     if identity is None:
@@ -891,7 +891,7 @@ def arm_roblox_gdk_env_proxy(proxy_url: str) -> bool:
 
 def disarm_roblox_gdk_env_proxy() -> None:
     """Restore normal Store package activation after Env Proxy shuts down."""
-    global _gdk_env_proxy_armed_package
+    global _gdk_env_proxy_armed_package  # ruff: ignore[global-statement]
 
     identity = _gdk_env_proxy_armed_package
     _gdk_env_proxy_armed_package = None
@@ -917,7 +917,7 @@ def _proxy_environment(proxy_url: str) -> dict[str, str]:
     return environment
 
 
-def _activate_roblox_gdk_with_proxy_env(
+def _activate_roblox_gdk_with_proxy_env(  # ruff: ignore[complex-structure, too-many-arguments, too-many-branches, too-many-locals, too-many-return-statements, too-many-statements]
     proxy_url: str,
     *,
     label: str,
@@ -929,7 +929,7 @@ def _activate_roblox_gdk_with_proxy_env(
     cancel_event: threading.Event | None,
 ) -> tuple[int, str] | None:
     """Activate the Store package with a real package-scoped environment block."""
-    global _env_proxy_gdk_activation_in_progress
+    global _env_proxy_gdk_activation_in_progress  # ruff: ignore[global-statement]
 
     identity = _get_roblox_gdk_package_identity(exe_path)
     if identity is None and is_roblox_gdk_exe_path(exe_path):
@@ -954,7 +954,7 @@ def _activate_roblox_gdk_with_proxy_env(
     _env_proxy_gdk_activation_in_progress = True
     activation_manager = None
     debugging_enabled = False
-    try:
+    try:  # ruff: ignore[too-many-statements-in-try-clause]
         package_is_armed = _gdk_env_proxy_armed_package == identity
         if not package_is_armed:
             if not _enable_gdk_package_debugging(
@@ -974,7 +974,7 @@ def _activate_roblox_gdk_with_proxy_env(
 
         log_buffer.log(
             'Launcher',
-            f'Relaunching {label} through Fleasion env proxy (Xbox/GDK package activation): {app_user_model_id}',
+            f'Relaunching {label} through Fleasion env proxy (Xbox/GDK package activation): {app_user_model_id}',  # ruff: ignore[line-too-long]
         )
         if not _force_close_process_immediately(
             pid,
@@ -990,7 +990,7 @@ def _activate_roblox_gdk_with_proxy_env(
             return None
 
         if prepare_launch is not None:
-            try:
+            try:  # ruff: ignore[too-many-statements-in-try-clause]
                 if not prepare_launch(exe_path):
                     log_buffer.log(
                         'Launcher',
@@ -999,7 +999,7 @@ def _activate_roblox_gdk_with_proxy_env(
                     return None
                 related_exes: list[Path] = []
                 package_exe = (
-                    Path(os.environ.get('ProgramFiles', r'C:\Program Files'))
+                    Path(os.environ.get('ProgramFiles', r'C:\Program Files'))  # ruff: ignore[uncapitalized-environment-variables]
                     / 'WindowsApps'
                     / package_full_name
                     / ROBLOX_PROCESS
@@ -1020,10 +1020,10 @@ def _activate_roblox_gdk_with_proxy_env(
                             f'{label} Env Proxy GDK launch CA preparation failed: {related_exe}',
                         )
                         return None
-            except Exception as exc:
+            except Exception as exc:  # ruff: ignore[blind-except]
                 log_buffer.log(
                     'Launcher',
-                    f'{label} Env Proxy GDK launch CA preparation failed: {type(exc).__name__}: {exc}',
+                    f'{label} Env Proxy GDK launch CA preparation failed: {type(exc).__name__}: {exc}',  # ruff: ignore[line-too-long]
                 )
                 return None
 
@@ -1083,9 +1083,9 @@ def _activate_roblox_gdk_with_proxy_env(
 
         log_buffer.log(
             'Launcher',
-            f'{label} Env Proxy GDK activation returned PID {activated_pid.value} but no Player process appeared',
+            f'{label} Env Proxy GDK activation returned PID {activated_pid.value} but no Player process appeared',  # ruff: ignore[line-too-long]
         )
-        return None
+        return None  # ruff: ignore[try-consider-else]
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         log_buffer.log(
             'Launcher',
@@ -1152,7 +1152,7 @@ def _extract_roblox_deeplink(command_line: str, marker: str = 'roblox-player:') 
     return command_line[min(offsets) :].strip().strip('"')
 
 
-def _relaunch_roblox_exe_with_proxy_env(
+def _relaunch_roblox_exe_with_proxy_env(  # ruff: ignore[complex-structure, too-many-arguments, too-many-branches, too-many-locals, too-many-return-statements, too-many-statements]
     proxy_url: str,
     *,
     label: str,
@@ -1165,7 +1165,7 @@ def _relaunch_roblox_exe_with_proxy_env(
     prepare_launch: Callable[[Path], bool] | None = None,
 ) -> bool:
     """Relaunch a browser/shortcut-started Roblox process with proxy environment variables."""
-    global _env_proxy_owned_process
+    global _env_proxy_owned_process  # ruff: ignore[global-statement]
 
     now = time.monotonic()
     for key, timestamp in list(_env_proxy_relaunches.items()):
@@ -1227,7 +1227,7 @@ def _relaunch_roblox_exe_with_proxy_env(
             if is_gdk_env_proxy_activation_in_progress():
                 log_buffer.log(
                     'Launcher',
-                    f'{label} Env Proxy GDK activation already in progress; skipping duplicate handling',
+                    f'{label} Env Proxy GDK activation already in progress; skipping duplicate handling',  # ruff: ignore[line-too-long]
                 )
                 return False
             activated_process = _activate_roblox_gdk_with_proxy_env(
@@ -1246,7 +1246,7 @@ def _relaunch_roblox_exe_with_proxy_env(
             _env_proxy_relaunches[relaunch_key] = time.monotonic()
             return True
 
-        if not launch_arg:
+        if not launch_arg:  # ruff: ignore[if-else-block-instead-of-if-exp]
             launch_kind = 'plain executable'
         else:
             launch_kind = 'deeplink'
@@ -1306,7 +1306,7 @@ def _relaunch_roblox_exe_with_proxy_env(
                         f'{label} Env Proxy relaunch skipped: launch CA preparation failed',
                     )
                     return False
-            except Exception as exc:
+            except Exception as exc:  # ruff: ignore[blind-except]
                 log_buffer.log(
                     'Launcher',
                     f'{label} Env Proxy launch CA preparation failed: {type(exc).__name__}: {exc}',
@@ -1318,7 +1318,7 @@ def _relaunch_roblox_exe_with_proxy_env(
             if cancel_event is not None and cancel_event.is_set():
                 return False
             args = [str(exe_path), launch_arg] if launch_arg else [str(exe_path)]
-            child = subprocess.Popen(
+            child = subprocess.Popen(  # ruff: ignore[subprocess-without-shell-equals-true]
                 args,
                 cwd=str(exe_path.parent),
                 env=env,
@@ -1369,7 +1369,7 @@ def get_roblox_studio_exe_path() -> Path | None:
     return _query_exe_path(pid) if pid is not None else None
 
 
-def terminate_roblox() -> bool:
+def terminate_roblox() -> bool:  # ruff: ignore[complex-structure, too-many-branches]
     """Terminate Roblox if it is running. Return True when that termination completes."""
     pids = _find_pids(ROBLOX_PROCESS)
     if not pids:
@@ -1468,7 +1468,7 @@ def terminate_roblox() -> bool:
 
 def close_roblox_for_env_lifecycle() -> bool:
     """Close Env-owned Player normally, with an immediate exact-PID fallback."""
-    global _env_proxy_owned_process
+    global _env_proxy_owned_process  # ruff: ignore[global-statement]
 
     pid = (
         _env_proxy_owned_process[0]
@@ -1549,10 +1549,10 @@ def _delete_db_file(db_path: Path, messages: list[str], label: str = 'Storage da
         messages.append(f'{label} deleted successfully')
     except PermissionError:
         messages.append(f'{label}: Permission denied - attempting to unlock...')
-        try:
-            import pywintypes  # pyright: ignore[reportMissingModuleSource]
-            import win32con  # pyright: ignore[reportMissingModuleSource]
-            import win32file  # pyright: ignore[reportMissingModuleSource]
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
+            import pywintypes  # pyright: ignore[reportMissingModuleSource]  # ruff: ignore[import-outside-top-level]
+            import win32con  # pyright: ignore[reportMissingModuleSource]  # ruff: ignore[import-outside-top-level]
+            import win32file  # pyright: ignore[reportMissingModuleSource]  # ruff: ignore[import-outside-top-level]
 
             try:
                 handle = win32file.CreateFile(
@@ -1573,7 +1573,7 @@ def _delete_db_file(db_path: Path, messages: list[str], label: str = 'Storage da
             messages.append(f'{label}: unlocked and deleted successfully')
         except ImportError:
             messages.append(f'{label}: Failed: pywin32 not available for unlock')
-        except Exception as e:
+        except Exception as e:  # ruff: ignore[blind-except]
             messages.append(f'{label}: Failed to unlock: {e}')
     except OSError as e:
         messages.append(f'{label}: Failed: {e}')
@@ -1592,7 +1592,7 @@ def _delete_cache_file(path: Path, messages: list[str], label: str) -> None:
 
 def _delete_storage_family(db_path: Path, messages: list[str], suffix: str = '') -> None:
     """Delete one complete Roblox RbxStorage database and file-cache family."""
-    import shutil
+    import shutil  # ruff: ignore[import-outside-top-level]
 
     label_suffix = f' ({suffix})' if suffix else ''
     _delete_db_file(db_path, messages, f'Storage database{label_suffix}')
@@ -1703,20 +1703,20 @@ def _summarize_cache_messages(messages: list[str]) -> list[str]:
     return summary
 
 
-def delete_cache() -> list[str]:
+def delete_cache() -> list[str]:  # ruff: ignore[complex-structure, too-many-branches]
     """Delete Roblox cache with cleanup. Returns list of status messages."""
     messages: list[str] = []
 
     if is_roblox_running():
         messages.append('Roblox is running, terminating...')
         if not terminate_roblox():
-            messages.append('Roblox termination failed (taskkill did not succeed)')
+            messages.append('Roblox termination failed (taskkill did not succeed)')  # ruff: ignore[repeated-append]
             messages.append('Cache deletion aborted')
             return messages
         if wait_for_roblox_exit():
             messages.append('Roblox terminated successfully')
         else:
-            messages.append('Roblox termination timed out (process still running)')
+            messages.append('Roblox termination timed out (process still running)')  # ruff: ignore[repeated-append]
             messages.append('Cache deletion aborted')
             return messages
     else:
@@ -1726,12 +1726,14 @@ def delete_cache() -> list[str]:
     # deleting disk data so an old batch response cannot immediately repopulate
     # Roblox's fresh cache with a disabled config's replacement.
     try:
-        from ..proxy.addons.texture_stripper import TextureStripper
+        from fleasion.proxy.addons.texture_stripper import (  # ruff: ignore[import-outside-top-level]
+            TextureStripper,
+        )
 
         route_counts = TextureStripper.reset_routes('cache clear')
         if any(route_counts.values()):
             messages.append('Fleasion replacement routes cleared successfully')
-    except Exception as exc:
+    except Exception as exc:  # ruff: ignore[blind-except]
         log_buffer.log('Cache', f'Could not clear live replacement routes: {exc}')
 
     # Delete the complete standard and Microsoft Store/GDK cache families.
@@ -1739,16 +1741,16 @@ def delete_cache() -> list[str]:
     if Path(STORAGE_DB_GDK) != Path(STORAGE_DB) and Path(STORAGE_DB_GDK).parent.exists():
         _delete_storage_family(Path(STORAGE_DB_GDK), messages, 'GDK')
 
-    import shutil
+    import shutil  # ruff: ignore[import-outside-top-level]
 
     # Delete Fleasion APP_CACHE_DIR (preserve predownloaded assets only)
-    from .paths import APP_CACHE_DIR
+    from .paths import APP_CACHE_DIR  # ruff: ignore[import-outside-top-level]
 
     if APP_CACHE_DIR.exists():
-        try:
-            _preserve_set = {APP_CACHE_DIR / 'predownloaded'}
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
+            preserve_set = {APP_CACHE_DIR / 'predownloaded'}
             for child in APP_CACHE_DIR.iterdir():
-                if child in _preserve_set:
+                if child in preserve_set:
                     continue
                 if child.is_dir():
                     cast('Callable[..., None]', shutil.rmtree)(
@@ -1772,7 +1774,7 @@ def _is_process_elevated() -> bool:
         return False
     try:
         return bool(_windll().shell32.IsUserAnAdmin())
-    except Exception:
+    except Exception:  # ruff: ignore[blind-except]
         return False
 
 
@@ -1811,7 +1813,7 @@ class _STARTUPINFOW(ctypes.Structure):
     ]
 
 
-class _PROCESS_INFORMATION(ctypes.Structure):
+class _PROCESS_INFORMATION(ctypes.Structure):  # ruff: ignore[invalid-class-name]
     _fields_ = [
         ('hProcess', ctypes.wintypes.HANDLE),
         ('hThread', ctypes.wintypes.HANDLE),
@@ -1857,7 +1859,7 @@ def _is_roblox_player_exe_path(path: Path) -> bool:
     return path.name.lower() == ROBLOX_PROCESS.lower()
 
 
-def _scan_for_player_exes(root: Path, max_depth: int) -> list[Path]:
+def _scan_for_player_exes(root: Path, max_depth: int) -> list[Path]:  # ruff: ignore[complex-structure]
     """Return Roblox player executables found under a root folder."""
     results: list[Path] = []
     seen: set[str] = set()
@@ -1876,7 +1878,7 @@ def _scan_for_player_exes(root: Path, max_depth: int) -> list[Path]:
         _add(root / ROBLOX_PROCESS)
 
     def _recurse(path: Path, depth: int) -> None:
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
             for entry in os.scandir(path):
                 if not entry.is_dir():
                     continue
@@ -1900,7 +1902,7 @@ def _safe_mtime(path: Path) -> float:
         return 0.0
 
 
-def _resolve_roblox_player_exe_for_launch() -> Path | None:
+def _resolve_roblox_player_exe_for_launch() -> Path | None:  # ruff: ignore[complex-structure, too-many-branches, too-many-statements]
     """Resolve best Roblox executable path for URI launches with fallbacks."""
     candidates_by_path: dict[str, tuple[int, float, Path, str]] = {}
     diagnostics: list[str] = []
@@ -1941,7 +1943,7 @@ def _resolve_roblox_player_exe_for_launch() -> Path | None:
     # 2) Registry shell/open command (lowest confidence; can be stale). Custom
     # launchers/bootstrapper installs may register their launcher rather than
     # RobloxPlayerBeta.exe, so mirror install discovery and search nearby too.
-    try:
+    try:  # ruff: ignore[too-many-statements-in-try-clause]
         with winreg.OpenKey(
             winreg.HKEY_CURRENT_USER,
             r'Software\Classes\roblox-player\shell\open\command',
@@ -1957,7 +1959,7 @@ def _resolve_roblox_player_exe_for_launch() -> Path | None:
                     _add(nearby_exe, 200, 'roblox-player protocol nearby scan')
                 if nearby:
                     diagnostics.append(
-                        f'roblox-player protocol nearby scan: found {len(nearby)} player executable(s) '
+                        f'roblox-player protocol nearby scan: found {len(nearby)} player executable(s) '  # ruff: ignore[line-too-long]
                         f'under {exe_path.parent}'
                     )
                 elif not direct_added:
@@ -1993,10 +1995,10 @@ def _resolve_roblox_player_exe_for_launch() -> Path | None:
     # 5) Previously discovered install directories. These are validated when
     # loaded and are especially useful for non-standard/bootstrapper installs.
     try:
-        from .roblox_dirs import load_saved_roblox_dirs
+        from .roblox_dirs import load_saved_roblox_dirs  # ruff: ignore[import-outside-top-level]
 
         saved_dirs = load_saved_roblox_dirs()
-    except Exception as exc:
+    except Exception as exc:  # ruff: ignore[blind-except]
         saved_dirs = []
         diagnostics.append(f'saved Roblox directories: unavailable ({exc})')
     else:
@@ -2010,7 +2012,7 @@ def _resolve_roblox_player_exe_for_launch() -> Path | None:
             log_buffer.log('Launcher', f'  {detail}')
         return None
     candidates = list(candidates_by_path.values())
-    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)  # ruff: ignore[reimplemented-operator]
     selected = candidates[0]
     log_buffer.log('Launcher', f'Roblox executable resolved via {selected[3]}: {selected[2]}')
     return selected[2]
@@ -2021,7 +2023,7 @@ def resolve_roblox_player_exe_for_launch() -> Path | None:
     return _resolve_roblox_player_exe_for_launch()
 
 
-def _extract_launch_metadata(target_str: str) -> dict[str, str]:
+def _extract_launch_metadata(target_str: str) -> dict[str, str]:  # ruff: ignore[complex-structure]
     """Extract place/game identifiers from Roblox launch targets for diagnostics."""
     if not _is_roblox_launch_uri(target_str):
         return {}
@@ -2037,7 +2039,7 @@ def _extract_launch_metadata(target_str: str) -> dict[str, str]:
             values = query.get(key)
             if values and values[0]:
                 metadata[key] = values[0]
-    except Exception:
+    except Exception:  # ruff: ignore[blind-except, try-except-pass]
         pass
 
     # Direct key=value scans (covers non-standard forms too)
@@ -2052,7 +2054,7 @@ def _extract_launch_metadata(target_str: str) -> dict[str, str]:
     if 'placelauncherurl:' in target_str:
         encoded_url = target_str.split('placelauncherurl:', 1)[1].split('+', 1)[0]
         decoded_url = unquote(encoded_url)
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
             parsed = urlparse(decoded_url)
             query = parse_qs(parsed.query)
             for key in keys:
@@ -2061,7 +2063,7 @@ def _extract_launch_metadata(target_str: str) -> dict[str, str]:
                 values = query.get(key)
                 if values and values[0]:
                     metadata[key] = values[0]
-        except Exception:
+        except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass
 
     return metadata
@@ -2089,7 +2091,7 @@ def _launch_roblox_uri_direct(target_str: str) -> bool:
         )
         return False
     try:
-        subprocess.Popen(
+        subprocess.Popen(  # ruff: ignore[subprocess-without-shell-equals-true]
             [str(exe_path), target_str],
             cwd=str(exe_path.parent),
             stdin=subprocess.DEVNULL,
@@ -2102,14 +2104,15 @@ def _launch_roblox_uri_direct(target_str: str) -> bool:
             'Launcher',
             f'Direct Roblox launch via {exe_path} ({_format_launch_metadata(metadata)})',
         )
-        return True
+        return True  # ruff: ignore[try-consider-else]
     except OSError as exc:
         log_buffer.log('Launcher', f'Direct Roblox launch failed via {exe_path}: {exc}')
         return False
 
 
 def _build_launch_command(
-    target_str: str, prefer_direct_roblox_uri: bool = False
+    target_str: str,
+    prefer_direct_roblox_uri: bool = False,  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
 ) -> tuple[str, str | None]:
     """Build command line + cwd for token-based process creation."""
     is_uri = '://' in target_str or target_str.startswith(('roblox-player:', 'roblox:'))
@@ -2120,21 +2123,21 @@ def _build_launch_command(
                 metadata = _extract_launch_metadata(target_str)
                 log_buffer.log(
                     'Launcher',
-                    f'Using direct executable for Roblox URI launch: {exe_path} ({_format_launch_metadata(metadata)})',
+                    f'Using direct executable for Roblox URI launch: {exe_path} ({_format_launch_metadata(metadata)})',  # ruff: ignore[line-too-long]
                 )
                 return f'"{exe_path}" "{target_str}"', str(exe_path.parent)
             log_buffer.log(
                 'Launcher',
                 'Roblox URI executable resolution failed; using protocol fallback',
             )
-        system_root = Path(os.environ.get('SystemRoot', r'C:\Windows'))
+        system_root = Path(os.environ.get('SystemRoot', r'C:\Windows'))  # ruff: ignore[uncapitalized-environment-variables]
         rundll = system_root / 'System32' / 'rundll32.exe'
         cmdline = f'"{rundll}" url.dll,FileProtocolHandler "{target_str}"'
         return cmdline, None
 
     target_path = Path(target_str)
     if target_path.is_dir():
-        system_root = Path(os.environ.get('SystemRoot', r'C:\Windows'))
+        system_root = Path(os.environ.get('SystemRoot', r'C:\Windows'))  # ruff: ignore[uncapitalized-environment-variables]
         explorer = system_root / 'explorer.exe'
         return f'"{explorer}" "{target_str}"', str(target_path)
 
@@ -2142,7 +2145,7 @@ def _build_launch_command(
     return f'"{target_str}"', cwd
 
 
-def _launch_with_shell_token(target_str: str, prefer_direct_roblox_uri: bool = False) -> bool:
+def _launch_with_shell_token(target_str: str, prefer_direct_roblox_uri: bool = False) -> bool:  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument, too-many-locals, too-many-return-statements]
     """Launch target with the desktop shell's primary token (non-elevated)."""
     user32 = _windll().user32
     kernel32 = _windll().kernel32
@@ -2189,7 +2192,7 @@ def _launch_with_shell_token(target_str: str, prefer_direct_roblox_uri: bool = F
         log_buffer.log('Launcher', 'Could not resolve shell process id for unelevated launch')
         return False
 
-    shell_process = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, shell_pid.value)
+    shell_process = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, shell_pid.value)  # ruff: ignore[boolean-positional-value-in-call]
     if not shell_process:
         err = kernel32.GetLastError()
         log_buffer.log('Launcher', f'OpenProcess(shell) failed: WinError {err}')
@@ -2269,7 +2272,7 @@ def _wait_for_roblox_process_start(timeout: float = 6.0) -> bool:
     return is_roblox_running()
 
 
-def launch_as_standard_user(target: str | Path) -> bool:
+def launch_as_standard_user(target: str | Path) -> bool:  # ruff: ignore[complex-structure, too-many-branches, too-many-return-statements]
     """Launch a URI/path as a standard user when Fleasion is elevated."""
     target_str = str(target).strip()
     if not target_str:
@@ -2288,7 +2291,7 @@ def launch_as_standard_user(target: str | Path) -> bool:
 
     was_running_before = is_roblox_running() if is_roblox_uri else False
 
-    def _roblox_launch_confirmed(launch_started: bool, method: str) -> bool:
+    def _roblox_launch_confirmed(launch_started: bool, method: str) -> bool:  # ruff: ignore[boolean-type-hint-positional-argument]
         if not launch_started:
             return False
         if was_running_before:
@@ -2355,7 +2358,7 @@ def launch_as_standard_user(target: str | Path) -> bool:
     try:
         _startfile(target_str)
         log_buffer.log('Launcher', 'Launch succeeded via os.startfile')
-        return True
+        return True  # ruff: ignore[try-consider-else]
     except OSError as exc:
         log_buffer.log('Launcher', f'Fallback launch failed: {exc}')
         return False

@@ -3,7 +3,7 @@
 from typing import Literal
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtGui import QKeyEvent  # ruff: ignore[typing-only-third-party-import]
 
 MovementKey = Literal[
     'forward',

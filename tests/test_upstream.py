@@ -7,8 +7,7 @@ import unittest
 from collections.abc import Callable, Sequence
 from typing import cast
 
-from fleasion.proxy import upstream as upstream_module
-from fleasion.proxy import windows_proxy as windows_proxy_module
+from fleasion.proxy import upstream as upstream_module, windows_proxy as windows_proxy_module
 from fleasion.proxy.upstream import (
     AutoConnector,
     BaseUpstreamConnector,
@@ -135,7 +134,7 @@ class UpstreamHandshakeTests(unittest.TestCase):
             connector.connect(
                 'apis.roblox.com',
                 [UpstreamEndpoint(host='apis.roblox.com', ip='93.184.216.34')],
-                cast(ssl.SSLContext, None),
+                cast('ssl.SSLContext', None),
                 1.0,
             )
         )
@@ -170,15 +169,14 @@ class UpstreamHandshakeTests(unittest.TestCase):
             _recv_until(conn, b'\r\n\r\n')
             conn.sendall(b'HTTP/1.1 407 Proxy Authentication Required\r\n\r\n')
 
-        with _OneShotServer(handler) as server:
-            with self.assertRaises(OSError):
-                _blocking_http_connect_socket(
-                    '127.0.0.1',
-                    server.port,
-                    'assetdelivery.roblox.com',
-                    443,
-                    2.0,
-                )
+        with _OneShotServer(handler) as server, self.assertRaises(OSError):
+            _blocking_http_connect_socket(
+                '127.0.0.1',
+                server.port,
+                'assetdelivery.roblox.com',
+                443,
+                2.0,
+            )
 
     def test_socks5_handshake_parser(self) -> None:
         seen: dict[str, bytes] = {}

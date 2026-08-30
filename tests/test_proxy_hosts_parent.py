@@ -6,7 +6,6 @@ import pytest
 
 from fleasion.proxy import master as proxy_master
 
-
 type ErrorDetails = dict[str, object]
 
 
@@ -47,7 +46,8 @@ def _record_log(values: list[tuple[str, str]]) -> Callable[[str, str], None]:
 
 
 def _fail_read_text(*_args: object, **_kwargs: object) -> Never:
-    raise AssertionError('oversized file was read')
+    msg = 'oversized file was read'
+    raise AssertionError(msg)
 
 
 def test_windows_hosts_writer_creates_missing_immediate_parent(
@@ -212,7 +212,7 @@ def test_repair_hosts_file_streams_blank_lines_and_preserves_user_mappings(
     assert b'128.116.54.3 unrelated.example #gu_acc\r\n' in repaired
     assert details['repair_succeeded'] is True
     assert details['backup_deleted'] is True
-    backup_path = cast(str, details['backup_path'])
+    backup_path = cast('str', details['backup_path'])
     assert not Path(backup_path).exists()
 
 

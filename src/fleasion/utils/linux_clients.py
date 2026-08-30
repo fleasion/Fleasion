@@ -10,9 +10,14 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
+import subprocess  # ruff: ignore[suspicious-subprocess-import]
 import sys
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import (
+    Callable,  # ruff: ignore[typing-only-standard-library-import]
+    Iterable,  # ruff: ignore[typing-only-standard-library-import]
+    Mapping,  # ruff: ignore[typing-only-standard-library-import]
+    Sequence,  # ruff: ignore[typing-only-standard-library-import]
+)
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -233,7 +238,8 @@ def get_linux_client(key: str) -> LinuxClientDescriptor:
         return LINUX_CLIENTS_BY_KEY[normalized]
     except KeyError as exc:
         choices = ', '.join(LINUX_CLIENTS_BY_KEY)
-        raise ValueError(f'unknown Linux client {key!r}; expected one of: {choices}') from exc
+        msg = f'unknown Linux client {key!r}; expected one of: {choices}'
+        raise ValueError(msg) from exc
 
 
 def _flatpak_probe_env(
@@ -289,7 +295,7 @@ def _flatpak_info_succeeds(
             text=True,
             timeout=5,
         )
-    except Exception:
+    except Exception:  # ruff: ignore[blind-except]
         return False
     return result.returncode == 0
 
@@ -362,7 +368,7 @@ def query_default_roblox_handler(**kwargs: Unpack[_QueryHandlerKwargs]) -> str |
     return handlers[0] if handlers else None
 
 
-def select_linux_client(
+def select_linux_client(  # ruff: ignore[too-many-arguments]
     selection: str = 'auto',
     *,
     installed: Sequence[LinuxClientInstallation] | None = None,
@@ -375,7 +381,8 @@ def select_linux_client(
     normalized = str(selection).strip().casefold()
     if normalized != 'auto' and normalized not in LINUX_CLIENTS_BY_KEY:
         choices = ', '.join(('auto', *LINUX_CLIENTS_BY_KEY))
-        raise ValueError(f'Linux client selection must be one of: {choices}')
+        msg = f'Linux client selection must be one of: {choices}'
+        raise ValueError(msg)
     installations = (
         tuple(installed)
         if installed is not None

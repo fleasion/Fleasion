@@ -41,25 +41,25 @@ def local_file_path_from_mime_data(mime_data: QMimeData) -> str | None:
 class FileDropLineEdit(QLineEdit):
     """QLineEdit that accepts a dragged local file and inserts its path."""
 
-    fileDropped = Signal(str)
+    fileDropped = Signal(str)  # ruff: ignore[mixed-case-variable-in-class-scope]
 
     def __init__(self, *args: object, **kwargs: object) -> None:
-        cast(_CooperativeLineEditInitializer, super()).__init__(*args, **kwargs)
+        cast('_CooperativeLineEditInitializer', super()).__init__(*args, **kwargs)
         self.setAcceptDrops(True)
 
-    def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # ruff: ignore[invalid-function-name]
         if local_file_path_from_mime_data(event.mimeData()):
             event.acceptProposedAction()
             return
         super().dragEnterEvent(event)
 
-    def dragMoveEvent(self, event: QDragMoveEvent) -> None:  # noqa: N802
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:  # ruff: ignore[invalid-function-name]
         if local_file_path_from_mime_data(event.mimeData()):
             event.acceptProposedAction()
             return
         super().dragMoveEvent(event)
 
-    def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802
+    def dropEvent(self, event: QDropEvent) -> None:  # ruff: ignore[invalid-function-name]
         path = local_file_path_from_mime_data(event.mimeData())
         if not path:
             super().dropEvent(event)

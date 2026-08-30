@@ -1,5 +1,4 @@
 import json
-import os
 import stat
 import sys
 import threading
@@ -26,7 +25,6 @@ class _BrowserLoader(Protocol):
 
 type _BrowserLoaderEntry = tuple[str, _BrowserLoader]
 type _BrowserLoadersFactory = Callable[[bool], list[_BrowserLoaderEntry]]
-type _ValidationCallback = Callable[[str], bool | None]
 
 
 def _jar_loader(jar: CookieJar) -> _BrowserLoader:
@@ -86,7 +84,7 @@ def _empty_profile_candidates() -> list[Path]:
 
 def _browser_cookie_loaders(include_keychain: bool) -> list[_BrowserLoaderEntry]:
     callback = cast(
-        _BrowserLoadersFactory,
+        '_BrowserLoadersFactory',
         roblox_auth.__dict__['_browser_cookie_loaders'],
     )
     return callback(include_keychain)
@@ -426,7 +424,8 @@ def test_macos_safari_loader_continues_when_container_cookie_file_is_protected(
     def loader(cookie_file: str | None = None, **_kwargs: object) -> CookieJar:
         calls.append(cookie_file)
         if cookie_file == str(container):
-            raise PermissionError('Operation not permitted')
+            msg = 'Operation not permitted'
+            raise PermissionError(msg)
         return jar
 
     monkeypatch.setattr(roblox_auth.sys, 'platform', 'darwin')
@@ -583,7 +582,7 @@ def test_manual_token_storage_is_encrypted_and_used_when_selected(
 
     assert roblox_auth.store_manual_roblosecurity('manual-secret')
     assert 'manual-secret' not in token_path.read_text(encoding='utf-8')
-    assert stat.S_IMODE(os.stat(key_path).st_mode) == 0o600
+    assert stat.S_IMODE(key_path.stat().st_mode) == 0o600
     assert roblox_auth.get_roblosecurity(include_keychain_browsers=True) == 'manual-secret'
 
 
@@ -660,7 +659,7 @@ def test_macos_chrome_cookie_is_cached_encrypted_and_reused(
     assert key_path.exists()
     assert 'chrome-secret' not in cache_path.read_text(encoding='utf-8')
     assert json.loads(cache_path.read_text(encoding='utf-8'))['source'] == 'Chrome'
-    assert stat.S_IMODE(os.stat(key_path).st_mode) == 0o600
+    assert stat.S_IMODE(key_path.stat().st_mode) == 0o600
 
     _reset(monkeypatch, disable_persistent_cache=False)
     calls.clear()

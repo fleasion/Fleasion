@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from pytest import MonkeyPatch
 
 from fleasion.scripts import build, macos_build
 
@@ -35,7 +34,7 @@ def _build_x86_64(builder: macos_build.MacOSBuilder) -> None:
 
 
 def _slice_build_env() -> str:
-    return cast(str, macos_build.__dict__['_SLICE_BUILD_ENV'])
+    return cast('str', macos_build.__dict__['_SLICE_BUILD_ENV'])
 
 
 def test_windows_packaging_uses_no_custom_python_runtime_hook() -> None:
@@ -90,12 +89,12 @@ def test_packaging_collects_lz4_native_extensions() -> None:
     assert "_collect_package('lz4')" in spec_source
 
 
-def _set_reproducible_environment(monkeypatch: MonkeyPatch) -> None:
+def _set_reproducible_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     for name, value in build.REPRODUCIBLE_ENV.items():
         monkeypatch.setenv(name, value)
 
 
-def test_build_dispatches_to_macos_release_builder(monkeypatch: MonkeyPatch) -> None:
+def test_build_dispatches_to_macos_release_builder(monkeypatch: pytest.MonkeyPatch) -> None:
     _set_reproducible_environment(monkeypatch)
     monkeypatch.setattr(build.sys, 'platform', 'darwin')
     monkeypatch.delenv(build.MACOS_SLICE_BUILD_ENV, raising=False)
@@ -110,7 +109,9 @@ def test_build_dispatches_to_macos_release_builder(monkeypatch: MonkeyPatch) -> 
     assert calls == [None]
 
 
-def test_macos_slice_build_runs_pyinstaller_without_redispatch(monkeypatch: MonkeyPatch) -> None:
+def test_macos_slice_build_runs_pyinstaller_without_redispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _set_reproducible_environment(monkeypatch)
     monkeypatch.setattr(build.sys, 'platform', 'darwin')
     monkeypatch.setenv(build.MACOS_SLICE_BUILD_ENV, '1')
@@ -130,7 +131,7 @@ def test_macos_versions_are_normalized_for_comparison() -> None:
     assert _version_tuple('11.0.0') == (11, 0, 0)
 
 
-def test_macos_prerelease_paths_use_local_artifact_version(monkeypatch: MonkeyPatch) -> None:
+def test_macos_prerelease_paths_use_local_artifact_version(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(macos_build, 'read_project_version', lambda: '2.4.0b1')
     monkeypatch.delenv('GITHUB_ACTIONS', raising=False)
 
@@ -141,7 +142,7 @@ def test_macos_prerelease_paths_use_local_artifact_version(monkeypatch: MonkeyPa
     assert builder.zip_path == Path('dist/Fleasion-v2.4.0b1+local-MacOS-Universal.zip')
 
 
-def test_macos_stable_paths_use_canonical_version(monkeypatch: MonkeyPatch) -> None:
+def test_macos_stable_paths_use_canonical_version(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(macos_build, 'read_project_version', lambda: '2.4.0')
     monkeypatch.setenv('GITHUB_ACTIONS', 'true')
     monkeypatch.delenv('GITHUB_SHA', raising=False)
@@ -153,7 +154,7 @@ def test_macos_stable_paths_use_canonical_version(monkeypatch: MonkeyPatch) -> N
 
 
 def test_universal_verification_ignores_helper_symlink_targets(
-    monkeypatch: MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     builder = object.__new__(macos_build.MacOSBuilder)
     builder.executable_name = 'Fleasion-v1.0.0'
@@ -204,7 +205,7 @@ def test_universal_verification_ignores_helper_symlink_targets(
     _verify_app_architectures(builder, tmp_path)
 
 
-def test_arm_build_resolves_for_the_deployment_platform(monkeypatch: MonkeyPatch) -> None:
+def test_arm_build_resolves_for_the_deployment_platform(monkeypatch: pytest.MonkeyPatch) -> None:
     builder = object.__new__(macos_build.MacOSBuilder)
     builder.base_environment = {'MACOSX_DEPLOYMENT_TARGET': '11.0'}
     commands: list[tuple[list[str], dict[str, str] | None]] = []
@@ -250,7 +251,9 @@ def test_arm_build_resolves_for_the_deployment_platform(monkeypatch: MonkeyPatch
     assert verified_slices == [('arm64', 'Build')]
 
 
-def test_x86_build_uses_the_project_python_pin(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
+def test_x86_build_uses_the_project_python_pin(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     builder = object.__new__(macos_build.MacOSBuilder)
     builder.x86_environment_path = tmp_path / 'venv-x86'
     builder.x86_uv_path = tmp_path / 'uv-x86_64'

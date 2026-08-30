@@ -1,9 +1,8 @@
 import asyncio
-import os
 import stat
 import sys
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Never, Protocol, Self, cast
@@ -434,7 +433,7 @@ def _make_self_signed_ca_pem(
             x509.NameAttribute(NameOID.ORGANIZATION_NAME, organization),
         ]
     )
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     cert = (
         x509.CertificateBuilder()
         .subject_name(name)
@@ -511,7 +510,8 @@ def test_macos_proxy_start_blocks_when_ca_patch_verification_fails(
     asyncio.run(getattr(proxy, '_run_proxy')())
 
     assert getattr(proxy, '_running') is False
-    assert errors and errors[0][0] == 'macos_ca_patch_failed'
+    assert errors
+    assert errors[0][0] == 'macos_ca_patch_failed'
     assert hosts_calls == []
 
 
@@ -1486,7 +1486,7 @@ def test_linux_helper_refresh_requests_helper_update_without_direct_hosts_write(
         SimpleNamespace(log=_collect_log(logs)),
     )
 
-    import fleasion.utils.linux_proxy_helper as linux_proxy_helper
+    from fleasion.utils import linux_proxy_helper
 
     monkeypatch.setattr(
         linux_proxy_helper,
@@ -1543,7 +1543,7 @@ def test_linux_helper_custom_fflags_adds_only_clientsettings_endpoints(
     )
     monkeypatch.setattr(proxy_master, 'log_buffer', SimpleNamespace(log=_constant_callback(None)))
 
-    import fleasion.utils.linux_proxy_helper as linux_proxy_helper
+    from fleasion.utils import linux_proxy_helper
 
     monkeypatch.setattr(
         linux_proxy_helper,
@@ -1601,11 +1601,13 @@ def test_intercept_configuration_log_distinguishes_tls_coverage_from_active_rout
     assert logs == [
         (
             'InterceptConfig',
-            'Startup routing selection: custom_fflags=disabled; '
-            'clientsettings_intercepted=no; username_spoofer=enabled; '
-            'profile_api_intercepted=yes; '
-            'hosts=apis.roblox.com, assetdelivery.roblox.com, '
-            'contentdelivery.roblox.com, fts.rbxcdn.com, gamejoin.roblox.com',
+            (
+                'Startup routing selection: custom_fflags=disabled; '
+                'clientsettings_intercepted=no; username_spoofer=enabled; '
+                'profile_api_intercepted=yes; '
+                'hosts=apis.roblox.com, assetdelivery.roblox.com, '
+                'contentdelivery.roblox.com, fts.rbxcdn.com, gamejoin.roblox.com'
+            ),
         )
     ]
 
@@ -1629,7 +1631,7 @@ def test_linux_helper_refresh_skips_profile_api_when_webview_trust_fails(
         SimpleNamespace(log=_collect_log(logs)),
     )
 
-    import fleasion.utils.linux_proxy_helper as linux_proxy_helper
+    from fleasion.utils import linux_proxy_helper
 
     monkeypatch.setattr(
         linux_proxy_helper,
@@ -1752,9 +1754,7 @@ def test_macos_running_player_ca_repair_uses_direct_write_first(
         'fleasion.utils.platform_macos._resource_root_from_executable',
         _callback1(lambda _path: resources),
     )
-    monkeypatch.setattr(
-        platform_macos, 'find_bootstrapper_restore_resource_dirs', _callback0(lambda: [])
-    )
+    monkeypatch.setattr(platform_macos, 'find_bootstrapper_restore_resource_dirs', _callback0(list))
     monkeypatch.setattr(macos_proxy_helper, 'helper_patch_ca', fake_helper_patch)
     monkeypatch.setattr(
         proxy_master,
@@ -1799,7 +1799,8 @@ def test_macos_running_player_ca_repair_requests_full_strip_when_pre_read_fails(
         newline: str | None = None,
     ) -> str:
         if self == ssl_dir / 'cacert.pem':
-            raise OSError('permission denied')
+            msg = 'permission denied'
+            raise OSError(msg)
         return original_read_text(self, encoding=encoding, errors=errors, newline=newline)
 
     monkeypatch.setattr(proxy_master, 'IS_MACOS', True)
@@ -1857,7 +1858,8 @@ def test_macos_system_keychain_removes_stale_fleasion_ca_before_current_check(
             )
         if args[:3] == ['security', 'delete-certificate', '-Z']:
             return SimpleNamespace(returncode=0, stdout='', stderr='')
-        raise AssertionError(f'unexpected security call: {args}')
+        msg = f'unexpected security call: {args}'
+        raise AssertionError(msg)
 
     monkeypatch.setattr(
         proxy_master,
@@ -1894,7 +1896,7 @@ def test_proxy_find_roblox_dirs_ignores_invalid_registry_key_and_keeps_scanning(
     software_key = _Key()
     valid_key = _Key()
     valid_dir = Path('C:/ValidRoblox')
-    valid_exe = os.path.join(str(valid_dir), proxy_master.ROBLOX_PROCESS)
+    valid_exe = str(valid_dir / proxy_master.ROBLOX_PROCESS)
 
     def open_key(root: object, name: str) -> _Key:
         if root is fake_winreg.HKEY_CURRENT_USER and name == r'Software':
@@ -1902,7 +1904,8 @@ def test_proxy_find_roblox_dirs_ignores_invalid_registry_key_and_keeps_scanning(
         if root is software_key and name == 'ValidVendor':
             return valid_key
         if root is software_key and name == 'corrupt\x00key':
-            raise ValueError('embedded null character')
+            msg = 'embedded null character'
+            raise ValueError(msg)
         raise OSError
 
     def enum_key(key: _Key, index: int) -> str:
@@ -1931,7 +1934,7 @@ def test_proxy_find_roblox_dirs_ignores_invalid_registry_key_and_keeps_scanning(
         return value == valid_exe
 
     monkeypatch.setattr(proxy_master.os.path, 'isfile', isfile)
-    monkeypatch.setattr(proxy_master, 'load_saved_roblox_dirs', _callback0(lambda: []))
+    monkeypatch.setattr(proxy_master, 'load_saved_roblox_dirs', _callback0(list))
     monkeypatch.setattr(proxy_master, 'get_roblox_player_exe_path', _callback0(lambda: None))
     monkeypatch.setattr(proxy_master, 'get_roblox_studio_exe_path', _callback0(lambda: None))
     monkeypatch.setattr(proxy_master.log_buffer, 'log', _callback_args(lambda *_args: None))

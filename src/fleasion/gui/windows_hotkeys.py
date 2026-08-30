@@ -17,7 +17,8 @@ from typing import TYPE_CHECKING, Protocol
 
 from PySide6.QtCore import QObject, Signal
 
-from ..utils import log_buffer
+from fleasion.utils import log_buffer
+
 from .hotkey_names import SMU_MOUSE_WHEEL_DOWN, SMU_MOUSE_WHEEL_UP, format_smu_virtual_key
 
 type HotkeyBinding = dict[str, int | bool | str]
@@ -102,7 +103,9 @@ else:
 
         @callback_type
         def callback(code: int, message: int, lparam: int) -> int:
-            if code >= 0 and message == 0x020A:  # WM_MOUSEWHEEL
+            if (
+                code >= 0 and message == 0x020A  # ruff: ignore[magic-value-comparison]
+            ):  # WM_MOUSEWHEEL
                 data = ctypes.cast(lparam, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
                 delta = ctypes.c_short((data.mouseData >> 16) & 0xFFFF).value
                 if delta:
@@ -130,10 +133,10 @@ else:
         return [str(value) for value in disabled]
 
     def _set_config_disabled(config: object, values: list[str]) -> None:
-        setattr(config, 'custom_fflag_disabled', values)
+        setattr(config, 'custom_fflag_disabled', values)  # ruff: ignore[set-attr-with-constant]
 
     def _refresh_proxy(proxy: object) -> None:
-        getattr(proxy, 'refresh_custom_fflag_interception')()
+        getattr(proxy, 'refresh_custom_fflag_interception')()  # ruff: ignore[get-attr-with-constant]
 
 
 MOD_SHIFT = 0x01
@@ -156,13 +159,13 @@ _VK_RMENU = 0xA5
 
 
 def modifier_mask_for_virtual_key(virtual_key: int) -> int:
-    if virtual_key in (_VK_SHIFT, _VK_LSHIFT, _VK_RSHIFT):
+    if virtual_key in (_VK_SHIFT, _VK_LSHIFT, _VK_RSHIFT):  # ruff: ignore[literal-membership]
         return MOD_SHIFT
-    if virtual_key in (_VK_CONTROL, _VK_LCONTROL, _VK_RCONTROL):
+    if virtual_key in (_VK_CONTROL, _VK_LCONTROL, _VK_RCONTROL):  # ruff: ignore[literal-membership]
         return MOD_CTRL
-    if virtual_key in (_VK_MENU, _VK_LMENU, _VK_RMENU):
+    if virtual_key in (_VK_MENU, _VK_LMENU, _VK_RMENU):  # ruff: ignore[literal-membership]
         return MOD_ALT
-    if virtual_key in (_VK_LWIN, _VK_RWIN):
+    if virtual_key in (_VK_LWIN, _VK_RWIN):  # ruff: ignore[literal-membership]
         return MOD_WIN
     return 0
 
@@ -170,7 +173,7 @@ def modifier_mask_for_virtual_key(virtual_key: int) -> int:
 def normalize_binding(binding: object) -> HotkeyBinding | None:
     """Validate a persisted physical-key binding."""
     binding_map = _binding_mapping(binding)
-    if binding_map is None or binding_map.get('platform') not in (None, 'windows'):
+    if binding_map is None or binding_map.get('platform') not in (None, 'windows'):  # ruff: ignore[literal-membership]
         return None
     kind = binding_map.get('kind', 'key')
     modifiers = binding_map.get('modifiers', 0)
@@ -179,7 +182,7 @@ def normalize_binding(binding: object) -> HotkeyBinding | None:
         return None
     if kind == 'mouse_wheel':
         direction = binding_map.get('direction')
-        if binding_map.get('platform') != 'windows' or direction not in ('up', 'down'):
+        if binding_map.get('platform') != 'windows' or direction not in ('up', 'down'):  # ruff: ignore[literal-membership]
             return None
         return {
             'platform': 'windows',
@@ -189,12 +192,12 @@ def normalize_binding(binding: object) -> HotkeyBinding | None:
         }
     scan_code = binding_map.get('scan_code')
     if (
-        kind not in ('key', 'mouse_button')
+        kind not in ('key', 'mouse_button')  # ruff: ignore[literal-membership, too-many-boolean-expressions]
         or not isinstance(scan_code, int)
         or isinstance(scan_code, bool)
-        or not 0 < scan_code <= 0xFF
+        or not 0 < scan_code <= 0xFF  # ruff: ignore[magic-value-comparison]
         or not isinstance(extended, bool)
-        or (kind == 'mouse_button' and scan_code not in (1, 2, 4, 5, 6))
+        or (kind == 'mouse_button' and scan_code not in (1, 2, 4, 5, 6))  # ruff: ignore[literal-membership]
     ):
         return None
     result: HotkeyBinding = {
@@ -317,7 +320,7 @@ _SMU_WINDOWS_EXTENDED_SCAN_TO_VK = {
 }
 
 
-def _virtual_key_for_binding(scan_code: int, extended: bool) -> int:
+def _virtual_key_for_binding(scan_code: int, extended: bool) -> int:  # ruff: ignore[boolean-type-hint-positional-argument]
     if sys.platform == 'win32':
         try:
             mapped_scan_code = scan_code | (0xE000 if extended else 0)
@@ -391,7 +394,7 @@ class WindowsHotkeyService(QObject):
         )
         self._thread.start()
 
-    def _run(self, bindings: Mapping[str, HotkeyBinding]) -> None:
+    def _run(self, bindings: Mapping[str, HotkeyBinding]) -> None:  # ruff: ignore[complex-structure, too-many-branches, too-many-statements]
         user32 = _windll().user32
         user32.GetAsyncKeyState.argtypes = (ctypes.c_int,)
         user32.GetAsyncKeyState.restype = ctypes.c_short
@@ -399,7 +402,7 @@ class WindowsHotkeyService(QObject):
         user32.MapVirtualKeyW.restype = wintypes.UINT
         translated: dict[str, tuple[int, int]] = {}
         wheel_bindings: dict[str, tuple[str, int]] = {}
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
             for name, binding in bindings.items():
                 if binding.get('kind') == 'mouse_wheel':
                     wheel_bindings[name] = (str(binding['direction']), int(binding['modifiers']))
@@ -415,7 +418,7 @@ class WindowsHotkeyService(QObject):
                     translated[name] = (virtual_key, int(binding['modifiers']))
                 else:
                     log_buffer.log('CustomFFlags', f'Could not map the keybind for {name}.')
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log('CustomFFlags', f'Could not start Windows FastFlag key polling: {exc}')
             return
 
@@ -535,7 +538,7 @@ class WindowsCustomFFlagHotkeyController(QObject):
         if self._proxy_master is not None:
             try:
                 _refresh_proxy(self._proxy_master)
-            except Exception as exc:
+            except Exception as exc:  # ruff: ignore[blind-except]
                 log_buffer.log('CustomFFlags', f'Could not refresh proxy interception: {exc}')
         log_buffer.log(
             'CustomFFlags',

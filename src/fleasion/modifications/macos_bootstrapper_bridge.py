@@ -5,20 +5,21 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable
-from pathlib import Path
+from pathlib import Path  # ruff: ignore[typing-only-standard-library-import]
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QFileSystemWatcher, QObject, QTimer
 
-from ..utils import log_buffer
-from ..utils.platform_macos import (
+from fleasion.utils import log_buffer
+from fleasion.utils.platform_macos import (
     FROSTSTRAP_MOD_BACKUP_DIR,
     FROSTSTRAP_VERSIONS_DIR,
     appleblox_data_dir,
     find_bootstrapper_restore_resource_dirs,
     is_roblox_running,
 )
-from ..utils.threading import run_in_thread
+from fleasion.utils.threading import run_in_thread
+
 from .fflag_manager import CLIENT_SETTINGS_REL
 
 if TYPE_CHECKING:
@@ -161,7 +162,7 @@ class MacBootstrapperBridge(QObject):
     def _file_signature(path: Path) -> tuple[int, int] | None:
         try:
             stat_result = path.stat()
-            return stat_result.st_mtime_ns, stat_result.st_size
+            return stat_result.st_mtime_ns, stat_result.st_size  # ruff: ignore[try-consider-else]
         except OSError:
             return None
 
@@ -198,7 +199,7 @@ class MacBootstrapperBridge(QObject):
                 if callable(self._custom_fflag_prepare):
                     try:
                         self._custom_fflag_prepare()
-                    except Exception as exc:
+                    except Exception as exc:  # ruff: ignore[blind-except]
                         log_buffer.log(
                             'CustomFFlags',
                             f'Failed to arm a fresh response after bootstrapper rewrite: {exc}',
@@ -258,7 +259,7 @@ class MacBootstrapperBridge(QObject):
             if callable(self._custom_fflag_seed):
                 try:
                     self._custom_fflag_seed()
-                except Exception as exc:
+                except Exception as exc:  # ruff: ignore[blind-except]
                     log_buffer.log(
                         'CustomFFlags',
                         f'Failed to re-seed custom FastFlags after bootstrapper rewrite: {exc}',

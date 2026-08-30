@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..localization import tr
+from fleasion.localization import tr
 
 
 class ProxyGate(QWidget):
@@ -20,7 +20,7 @@ class ProxyGate(QWidget):
         self,
         content: QWidget,
         message: str | None = None,
-        compact: bool = False,
+        compact: bool = False,  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -71,12 +71,12 @@ class ProxyGate(QWidget):
         self._apply_style()
 
     def event(self, event: QEvent) -> bool:
-        if event.type() in (QEvent.Type.Resize, QEvent.Type.Show):
+        if event.type() in (QEvent.Type.Resize, QEvent.Type.Show):  # ruff: ignore[literal-membership]
             self._overlay.setGeometry(self.rect())
             self._overlay.raise_()
         return super().event(event)
 
-    def set_proxy_enabled(self, enabled: bool) -> None:
+    def set_proxy_enabled(self, enabled: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
         effective_enabled = enabled or self._dismissed_for_session
         self._content.setEnabled(effective_enabled)
         self._overlay.setVisible(not effective_enabled)

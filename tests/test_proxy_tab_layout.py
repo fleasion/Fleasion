@@ -14,7 +14,7 @@ _app: QApplication | None = None
 def _qapp() -> QApplication:
     global _app
     app = QApplication.instance()
-    _app = cast(QApplication, app) if app is not None else QApplication([])
+    _app = cast('QApplication', app) if app is not None else QApplication([])
     return _app
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
-from collections.abc import Iterable
+from collections.abc import Iterable  # ruff: ignore[typing-only-standard-library-import]
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -27,7 +27,7 @@ else:
         return value if isinstance(value, list) else None
 
 
-def _normalise_roblox_dir(value: str | Path) -> Path | None:
+def _normalise_roblox_dir(value: str | Path) -> Path | None:  # ruff: ignore[complex-structure, too-many-branches, too-many-return-statements]
     """Return a valid Roblox install/resource directory, or None."""
     try:
         path = Path(value)
@@ -53,8 +53,11 @@ def _normalise_roblox_dir(value: str | Path) -> Path | None:
         return None
 
     if sys.platform.startswith('linux'):
-        try:
-            from .platform_linux import SOBER_ASSET_OVERLAY_DIR, SOBER_LEGACY_EXE_DIR
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
+            from .platform_linux import (  # ruff: ignore[import-outside-top-level]
+                SOBER_ASSET_OVERLAY_DIR,
+                SOBER_LEGACY_EXE_DIR,
+            )
 
             resolved = path.resolve()
             for candidate in (SOBER_ASSET_OVERLAY_DIR, SOBER_LEGACY_EXE_DIR):
@@ -63,7 +66,7 @@ def _normalise_roblox_dir(value: str | Path) -> Path | None:
                         return path
                 except OSError:
                     pass
-        except Exception:
+        except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass
         if path.name in {'asset_overlay', 'exe'} and path.is_dir():
             return path
@@ -80,7 +83,7 @@ def _normalise_roblox_dir(value: str | Path) -> Path | None:
     return path
 
 
-def is_roblox_studio_resource_dir(path: Path) -> bool:
+def is_roblox_studio_resource_dir(path: Path) -> bool:  # ruff: ignore[too-many-return-statements]
     """Return True when *path* points at a Roblox Studio resource root."""
     if '\x00' in str(path):
         return False
@@ -95,7 +98,7 @@ def is_roblox_studio_resource_dir(path: Path) -> bool:
         if resolved.name == 'Resources':
             try:
                 app_bundle = resolved.parent.parent
-            except Exception:
+            except Exception:  # ruff: ignore[blind-except]
                 return False
             return app_bundle.name == 'RobloxStudio.app'
         return False

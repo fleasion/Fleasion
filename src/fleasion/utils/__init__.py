@@ -60,7 +60,7 @@ from .windows import (
 )
 
 
-def start_update_check() -> None:  # ruff: ignore[non-empty-init-module] - Preserve the lazy updater import
+def start_update_check() -> None:  # ruff: ignore[non-empty-init-module]
     from .updater import (  # ruff: ignore[import-outside-top-level]
         start_update_check as _start_update_check,
     )

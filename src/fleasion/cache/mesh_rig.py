@@ -129,13 +129,15 @@ def _decompress(data: bytes) -> bytes:
         try:
             return gzip.decompress(data)
         except Exception as exc:
-            raise MeshRigError(f'invalid gzip wrapper: {exc}') from exc
+            msg = f'invalid gzip wrapper: {exc}'
+            raise MeshRigError(msg) from exc
     return data
 
 
 def _require(data: bytes, offset: int, size: int, label: str) -> None:
     if offset < 0 or size < 0 or offset + size > len(data):
-        raise MeshRigError(f'{label} exceeds payload size')
+        msg = f'{label} exceeds payload size'
+        raise MeshRigError(msg)
 
 
 def _read_envelopes(data: bytes, offset: int, count: int) -> tuple[list[_Envelope], int]:
@@ -159,22 +161,25 @@ def _read_bones(data: bytes, offset: int, count: int) -> tuple[list[_BoneRecord]
 
 def _bone_name(name_table: bytes, offset: int) -> str:
     if offset >= len(name_table):
-        raise MeshRigError('bone name offset exceeds name table')
+        msg = 'bone name offset exceeds name table'
+        raise MeshRigError(msg)
     end = name_table.find(b'\0', offset)
     if end < 0:
-        raise MeshRigError('bone name is not null-terminated')
+        msg = 'bone name is not null-terminated'
+        raise MeshRigError(msg)
     try:
         return name_table[offset:end].decode('utf-8')
     except UnicodeDecodeError as exc:
-        raise MeshRigError('bone name is not valid UTF-8') from exc
+        msg = 'bone name is not valid UTF-8'
+        raise MeshRigError(msg) from exc
 
 
 def _finish_bones(records: list[_BoneRecord], name_table: bytes) -> list[Bone]:
     bones: list[Bone] = []
     for record in records:
         name_offset, parent_raw, lod_parent_raw, culling_distance, *transform = record
-        parent = None if parent_raw == 0xFFFF else parent_raw
-        lod_parent = None if lod_parent_raw == 0xFFFF else lod_parent_raw
+        parent = None if parent_raw == 0xFFFF else parent_raw  # ruff: ignore[magic-value-comparison]
+        lod_parent = None if lod_parent_raw == 0xFFFF else lod_parent_raw  # ruff: ignore[magic-value-comparison]
         matrix = (
             transform[0],
             transform[1],
@@ -209,16 +214,19 @@ def _finish_bones(records: list[_BoneRecord], name_table: bytes) -> list[Bone]:
 def _validate_bone_hierarchy(bones: list[Bone]) -> None:
     for bone in bones:
         if bone.parent is not None and bone.parent >= len(bones):
-            raise MeshRigError('bone parent index exceeds bone table')
+            msg = 'bone parent index exceeds bone table'
+            raise MeshRigError(msg)
         if bone.lod_parent is not None and bone.lod_parent >= len(bones):
-            raise MeshRigError('bone LOD parent index exceeds bone table')
+            msg = 'bone LOD parent index exceeds bone table'
+            raise MeshRigError(msg)
 
     states = [0] * len(bones)
 
     def visit(index: int) -> None:
         if states[index] == 1:
-            raise MeshRigError('bone hierarchy contains a cycle')
-        if states[index] == 2:
+            msg = 'bone hierarchy contains a cycle'
+            raise MeshRigError(msg)
+        if states[index] == 2:  # ruff: ignore[magic-value-comparison]
             return
         states[index] = 1
         parent = bones[index].parent
@@ -239,11 +247,13 @@ def _read_subsets(
         _faces_begin, _faces_length, vertices_begin, vertices_length, mapped_count = (
             struct.unpack_from('<5I', data, offset)
         )
-        if mapped_count > 26:
-            raise MeshRigError('subset contains more than 26 mapped bones')
+        if mapped_count > 26:  # ruff: ignore[magic-value-comparison]
+            msg = 'subset contains more than 26 mapped bones'
+            raise MeshRigError(msg)
         mapped = struct.unpack_from('<26H', data, offset + 20)[:mapped_count]
         if any(index >= bone_count for index in mapped):
-            raise MeshRigError('subset references an invalid bone')
+            msg = 'subset references an invalid bone'
+            raise MeshRigError(msg)
         subsets.append(_Subset(vertices_begin, vertices_length, tuple(mapped)))
         offset += 72
     return subsets, offset
@@ -257,28 +267,32 @@ def _read_faces(
     for _ in range(count):
         face = struct.unpack_from('<III', data, offset)
         if any(index >= vertex_count for index in face):
-            raise MeshRigError('face references an invalid vertex')
+            msg = 'face references an invalid vertex'
+            raise MeshRigError(msg)
         faces.append(mesh_processing.Face(*(index + 1 for index in face)))
         offset += 12
     return faces, offset
 
 
-def _map_weights(
+def _map_weights(  # ruff: ignore[complex-structure]
     vertex_count: int,
     envelopes: list[_Envelope],
     subsets: list[_Subset],
 ) -> list[tuple[tuple[int, int, int, int], tuple[float, float, float, float]]]:
     if len(envelopes) != vertex_count:
-        raise MeshRigError('skinning count does not match vertex count')
+        msg = 'skinning count does not match vertex count'
+        raise MeshRigError(msg)
 
     vertex_subsets: list[_Subset | None] = [None] * vertex_count
     for subset in subsets:
         end = subset.vertices_begin + subset.vertices_length
         if end > vertex_count:
-            raise MeshRigError('subset vertex range exceeds vertex table')
+            msg = 'subset vertex range exceeds vertex table'
+            raise MeshRigError(msg)
         for vertex_index in range(subset.vertices_begin, end):
             if vertex_subsets[vertex_index] is not None:
-                raise MeshRigError('subset vertex ranges overlap')
+                msg = 'subset vertex ranges overlap'
+                raise MeshRigError(msg)
             vertex_subsets[vertex_index] = subset
 
     mapped: list[tuple[tuple[int, int, int, int], tuple[float, float, float, float]]] = []
@@ -289,15 +303,18 @@ def _map_weights(
             if raw_weight == 0:
                 continue
             if subset is None or local_index >= len(subset.bone_indices):
-                raise MeshRigError('skinning references an invalid subset bone')
+                msg = 'skinning references an invalid subset bone'
+                raise MeshRigError(msg)
             bone_index = subset.bone_indices[local_index]
             combined[bone_index] = combined.get(bone_index, 0) + raw_weight
 
         total = sum(combined.values())
         if total <= 0:
-            raise MeshRigError('skinned vertex has no positive bone weights')
-        if len(combined) > 4:
-            raise MeshRigError('skinned vertex contains more than four bone influences')
+            msg = 'skinned vertex has no positive bone weights'
+            raise MeshRigError(msg)
+        if len(combined) > 4:  # ruff: ignore[magic-value-comparison]
+            msg = 'skinned vertex contains more than four bone influences'
+            raise MeshRigError(msg)
 
         joints = list(combined)
         weights = [combined[index] / total for index in joints]
@@ -312,17 +329,18 @@ def _map_weights(
     return mapped
 
 
-def _assemble(
+def _assemble(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
     version: str,
     vertices: list[mesh_processing.Vertex],
     faces: list[mesh_processing.Face],
     envelopes: list[_Envelope],
     bones: list[Bone],
     subsets: list[_Subset],
-    has_facs: bool,
+    has_facs: bool,  # ruff: ignore[boolean-type-hint-positional-argument]
 ) -> RiggedMesh:
     if not bones:
-        raise MeshRigError('skinning section does not contain bones')
+        msg = 'skinning section does not contain bones'
+        raise MeshRigError(msg)
     mapped = _map_weights(len(vertices), envelopes, subsets)
     rig_vertices: list[RigVertex] = []
     for vertex, (joints, weights) in zip(vertices, mapped, strict=False):
@@ -344,11 +362,12 @@ def _assemble(
     return RiggedMesh(version, tuple(rig_vertices), rig_faces, tuple(bones), has_facs)
 
 
-def _parse_v4_v5(data: bytes, version: str) -> RiggedMesh | None:
+def _parse_v4_v5(data: bytes, version: str) -> RiggedMesh | None:  # ruff: ignore[too-many-locals]
     header_size = struct.unpack_from('<H', data, 13)[0]
     expected_header_size = 32 if version == 'version 5.00' else 24
     if header_size != expected_header_size:
-        raise MeshRigError(f'unexpected {version} header size {header_size}')
+        msg = f'unexpected {version} header size {header_size}'
+        raise MeshRigError(msg)
     _require(data, 13, header_size, 'mesh header')
 
     vertex_count = struct.unpack_from('<I', data, 17)[0]
@@ -369,9 +388,10 @@ def _parse_v4_v5(data: bytes, version: str) -> RiggedMesh | None:
     _require(data, offset, lod_count * 4, 'LOD table')
     lods = list(struct.unpack_from(f'<{lod_count}I', data, offset)) if lod_count else []
     offset += lod_count * 4
-    if len(lods) >= 2:
+    if len(lods) >= 2:  # ruff: ignore[magic-value-comparison]
         if lods[0] > lods[1] or lods[1] > len(faces):
-            raise MeshRigError('main LOD face range is invalid')
+            msg = 'main LOD face range is invalid'
+            raise MeshRigError(msg)
         if lods[1] > lods[0]:
             faces = faces[lods[0] : lods[1]]
 
@@ -390,7 +410,8 @@ def _parse_v4_v5(data: bytes, version: str) -> RiggedMesh | None:
         has_facs = facs_format != 0 and facs_size > 0
         offset += facs_size
     if offset != len(data):
-        raise MeshRigError('unexpected trailing mesh data')
+        msg = 'unexpected trailing mesh data'
+        raise MeshRigError(msg)
 
     return _assemble(version, vertices, faces, envelopes, bones, subsets, has_facs)
 
@@ -419,32 +440,39 @@ def _parse_skinning_chunk(data: bytes) -> _SkinningData | None:
     offset += 4
     subsets, offset = _read_subsets(data, offset, subset_count, bone_count)
     if offset != len(data):
-        raise MeshRigError('unexpected trailing SKINNING data')
+        msg = 'unexpected trailing SKINNING data'
+        raise MeshRigError(msg)
     return envelopes, bones, subsets
 
 
-def _decode_draco_vertices(
+def _decode_draco_vertices(  # ruff: ignore[complex-structure, too-many-branches, too-many-statements]
     data: bytes,
 ) -> tuple[list[mesh_processing.Vertex], list[mesh_processing.Face]]:
-    if len(data) < 4:
-        raise MeshRigError('COREMESH v2 payload is too small')
+    if len(data) < 4:  # ruff: ignore[magic-value-comparison]
+        msg = 'COREMESH v2 payload is too small'
+        raise MeshRigError(msg)
     stream_size = struct.unpack_from('<I', data, 0)[0]
     if stream_size != len(data) - 4:
-        raise MeshRigError('COREMESH v2 Draco size does not match chunk size')
+        msg = 'COREMESH v2 Draco size does not match chunk size'
+        raise MeshRigError(msg)
     if not mesh_processing.DRACO_AVAILABLE:
-        raise MeshRigError('DracoPy is required to export a v7 rig')
+        msg = 'DracoPy is required to export a v7 rig'
+        raise MeshRigError(msg)
 
     decoder = cast('_DracoDecoder', mesh_processing.DracoPy)
     try:
         mesh = decoder.decode(data[4:])
     except Exception as exc:
-        raise MeshRigError(f'Draco decoding failed: {exc}') from exc
+        msg = f'Draco decoding failed: {exc}'
+        raise MeshRigError(msg) from exc
     if mesh is None or not isinstance(mesh, _HasPoints):
-        raise MeshRigError('Draco decoding returned invalid mesh data')
+        msg = 'Draco decoding returned invalid mesh data'
+        raise MeshRigError(msg)
 
     positions: NDArray[np.float32] = np.asarray(mesh.points, dtype=np.float32)
-    if positions.ndim != 2 or positions.shape[1] != 3 or len(positions) == 0:
-        raise MeshRigError('Draco positions have an invalid shape')
+    if positions.ndim != 2 or positions.shape[1] != 3 or len(positions) == 0:  # ruff: ignore[magic-value-comparison]
+        msg = 'Draco positions have an invalid shape'
+        raise MeshRigError(msg)
     vertices = [mesh_processing.Vertex() for _ in positions]
     for vertex, position in zip(vertices, positions, strict=False):
         vertex.px, vertex.py, vertex.pz = position
@@ -461,7 +489,7 @@ def _decode_draco_vertices(
                 dtype=dtype,
             )
             return values.reshape(-1, width) if values.ndim == 1 else values
-        except Exception:
+        except Exception:  # ruff: ignore[blind-except]
             return None
 
     normals: NDArray[np.float32] | None = attribute(1, 3, np.float32)
@@ -479,7 +507,8 @@ def _decode_draco_vertices(
     )
     for values, label in values_and_labels:
         if values is not None and len(values) != len(vertices):
-            raise MeshRigError(f'Draco {label} count does not match vertex count')
+            msg = f'Draco {label} count does not match vertex count'
+            raise MeshRigError(msg)
     for index, vertex in enumerate(vertices):
         if normals is not None:
             vertex.nx, vertex.ny, vertex.nz = normals[index]
@@ -494,7 +523,8 @@ def _decode_draco_vertices(
     for triangle in face_rows:
         a, b, c = map(int, triangle)
         if min(a, b, c) < 0 or max(a, b, c) >= len(vertices):
-            raise MeshRigError('Draco face references an invalid vertex')
+            msg = 'Draco face references an invalid vertex'
+            raise MeshRigError(msg)
         faces.append(mesh_processing.Face(a + 1, b + 1, c + 1))
     return vertices, faces
 
@@ -504,14 +534,16 @@ def _read_chunked_mesh(data: bytes) -> list[tuple[str, int, bytes]]:
     chunks: list[tuple[str, int, bytes]] = []
     offset = 13
     while offset < len(data):
-        if len(data) - offset < 16:
-            raise ValueError('truncated chunk header')
+        if len(data) - offset < 16:  # ruff: ignore[magic-value-comparison]
+            msg = 'truncated chunk header'
+            raise ValueError(msg)
         chunk_type = data[offset : offset + 8].decode('ascii', errors='replace').rstrip('\0')
         chunk_version, chunk_size = struct.unpack_from('<II', data, offset + 8)
         offset += 16
         chunk_end = offset + chunk_size
         if chunk_end > len(data):
-            raise ValueError(f'{chunk_type} chunk exceeds file size')
+            msg = f'{chunk_type} chunk exceeds file size'
+            raise ValueError(msg)
         chunks.append((chunk_type, chunk_version, data[offset:chunk_end]))
         offset = chunk_end
     return chunks
@@ -521,23 +553,27 @@ def _read_raw_coremesh(
     data: bytes,
 ) -> tuple[list[mesh_processing.Vertex], list[mesh_processing.Face]]:
     """Read the uncompressed COREMESH v1 payload used by FileMesh v6."""
-    if len(data) < 8:
-        raise ValueError('COREMESH v1 payload is too small')
+    if len(data) < 8:  # ruff: ignore[magic-value-comparison]
+        msg = 'COREMESH v1 payload is too small'
+        raise ValueError(msg)
     num_verts = struct.unpack_from('<I', data, 0)[0]
     vertex_end = 4 + num_verts * 40
     if vertex_end + 4 > len(data):
-        raise ValueError('COREMESH v1 vertex data exceeds chunk size')
+        msg = 'COREMESH v1 vertex data exceeds chunk size'
+        raise ValueError(msg)
     verts, offset = mesh_processing.read_vertices(data, 4, num_verts, 40)
     num_faces = struct.unpack_from('<I', data, offset)[0]
     offset += 4
     face_end = offset + num_faces * 12
     if face_end != len(data):
-        raise ValueError('COREMESH v1 face data does not match chunk size')
+        msg = 'COREMESH v1 face data does not match chunk size'
+        raise ValueError(msg)
     faces: list[mesh_processing.Face] = []
     for _ in range(num_faces):
         a, b, c = struct.unpack_from('<III', data, offset)
         if a >= num_verts or b >= num_verts or c >= num_verts:
-            raise ValueError('COREMESH v1 face references an invalid vertex')
+            msg = 'COREMESH v1 face references an invalid vertex'
+            raise ValueError(msg)
         faces.append(mesh_processing.Face(a + 1, b + 1, c + 1))
         offset += 12
     return verts, faces
@@ -549,17 +585,20 @@ def _apply_chunked_lod(
     """Select the highest-quality face range from a v6/v7 LODS v1 payload."""
     if not lod_data:
         return faces
-    if len(lod_data) < 7:
-        raise ValueError('LODS payload is too small')
+    if len(lod_data) < 7:  # ruff: ignore[magic-value-comparison]
+        msg = 'LODS payload is too small'
+        raise ValueError(msg)
     num_offsets = struct.unpack_from('<I', lod_data, 3)[0]
     offsets_end = 7 + num_offsets * 4
     if offsets_end > len(lod_data):
-        raise ValueError('LODS offsets exceed chunk size')
-    if num_offsets < 2:
+        msg = 'LODS offsets exceed chunk size'
+        raise ValueError(msg)
+    if num_offsets < 2:  # ruff: ignore[magic-value-comparison]
         return faces
     first, second = struct.unpack_from('<II', lod_data, 7)
     if first > second or second > len(faces):
-        raise ValueError('LODS face range is invalid')
+        msg = 'LODS face range is invalid'
+        raise ValueError(msg)
     if first == 0 and 0 < second < len(faces):
         mesh_processing.log_buffer.log(
             'Mesh',
@@ -569,7 +608,7 @@ def _apply_chunked_lod(
     return faces[first:second] if second > first else faces
 
 
-def _parse_v6_v7(data: bytes, version: str) -> RiggedMesh | None:
+def _parse_v6_v7(data: bytes, version: str) -> RiggedMesh | None:  # ruff: ignore[complex-structure]
     chunks = _read_chunked_mesh(data)
     coremesh = None
     lod_data = None
@@ -582,27 +621,31 @@ def _parse_v6_v7(data: bytes, version: str) -> RiggedMesh | None:
             lod_data = chunk_data
         elif chunk_type == 'SKINNING':
             if chunk_version != 1:
-                raise MeshRigError(f'unsupported SKINNING chunk version {chunk_version}')
+                msg = f'unsupported SKINNING chunk version {chunk_version}'
+                raise MeshRigError(msg)
             skinning = _parse_skinning_chunk(chunk_data)
         elif chunk_type == 'FACS' and chunk_version == 1:
             _require(chunk_data, 0, 4, 'FACS chunk')
             facs_size = struct.unpack_from('<I', chunk_data, 0)[0]
             if facs_size != len(chunk_data) - 4:
-                raise MeshRigError('FACS size does not match chunk size')
+                msg = 'FACS size does not match chunk size'
+                raise MeshRigError(msg)
             has_facs = facs_size > 0
 
     if skinning is None:
         return None
     if coremesh is None:
-        raise MeshRigError('rigged mesh does not contain COREMESH geometry')
+        msg = 'rigged mesh does not contain COREMESH geometry'
+        raise MeshRigError(msg)
 
     coremesh_version, coremesh_data = coremesh
     if version == 'version 6.00' and coremesh_version == 1:
         vertices, faces = _read_raw_coremesh(coremesh_data)
-    elif version == 'version 7.00' and coremesh_version == 2:
+    elif version == 'version 7.00' and coremesh_version == 2:  # ruff: ignore[magic-value-comparison]
         vertices, faces = _decode_draco_vertices(coremesh_data)
     else:
-        raise MeshRigError(f'unsupported COREMESH v{coremesh_version} for {version}')
+        msg = f'unsupported COREMESH v{coremesh_version} for {version}'
+        raise MeshRigError(msg)
     faces = _apply_chunked_lod(faces, lod_data)
 
     envelopes, bones, subsets = skinning
@@ -612,7 +655,7 @@ def _parse_v6_v7(data: bytes, version: str) -> RiggedMesh | None:
 def parse_rigged_mesh(data: bytes) -> RiggedMesh | None:
     """Return an embedded FileMesh rig, or ``None`` for a valid static/older mesh."""
     data = _decompress(data)
-    if len(data) < 13:
+    if len(data) < 13:  # ruff: ignore[magic-value-comparison]
         return None
     version = data[:12].decode('ascii', errors='ignore')
     try:
@@ -620,18 +663,18 @@ def parse_rigged_mesh(data: bytes) -> RiggedMesh | None:
             return _parse_v4_v5(data, version)
         if version in {'version 6.00', 'version 7.00'}:
             return _parse_v6_v7(data, version)
-        return None
+        return None  # ruff: ignore[try-consider-else]
     except (IndexError, struct.error, ValueError) as exc:
         if isinstance(exc, MeshRigError):
             raise
         raise MeshRigError(str(exc)) from exc
 
 
-def has_embedded_rig(data: bytes) -> bool:
+def has_embedded_rig(data: bytes) -> bool:  # ruff: ignore[complex-structure, too-many-return-statements]
     """Return whether a payload contains valid embedded bones and vertex weights."""
-    try:
+    try:  # ruff: ignore[too-many-statements-in-try-clause]
         data = _decompress(data)
-        if len(data) < 29:
+        if len(data) < 29:  # ruff: ignore[magic-value-comparison]
             return False
         version = data[:12].decode('ascii', errors='ignore')
         if version in {'version 4.00', 'version 4.01', 'version 5.00'}:
@@ -655,7 +698,7 @@ def has_embedded_rig(data: bytes) -> bool:
                 envelopes, _bones, subsets = skinning
                 _map_weights(len(envelopes), envelopes, subsets)
                 valid_skinning = True
-        return has_coremesh and valid_skinning
+        return has_coremesh and valid_skinning  # ruff: ignore[try-consider-else]
     except MeshRigError, ValueError, struct.error:
         return False
 
@@ -664,13 +707,15 @@ def _pad4(buffer: bytearray, value: int = 0) -> None:
     buffer.extend(bytes([value]) * (-len(buffer) % 4))
 
 
-def export_glb(data: bytes) -> bytes:
+def export_glb(data: bytes) -> bytes:  # ruff: ignore[complex-structure, too-many-locals, too-many-statements]
     """Export a skinned FileMesh as a single-file glTF 2.0 binary asset."""
     rig = parse_rigged_mesh(data)
     if rig is None:
-        raise MeshRigError('mesh does not contain an embedded rig')
-    if len(rig.bones) > 0xFFFF:
-        raise MeshRigError('GLB export supports at most 65535 bones')
+        msg = 'mesh does not contain an embedded rig'
+        raise MeshRigError(msg)
+    if len(rig.bones) > 0xFFFF:  # ruff: ignore[magic-value-comparison]
+        msg = 'GLB export supports at most 65535 bones'
+        raise MeshRigError(msg)
 
     positions = np.asarray([vertex.position for vertex in rig.vertices], dtype='<f4')
     normals = np.asarray([vertex.normal for vertex in rig.vertices], dtype='<f4')
@@ -678,7 +723,7 @@ def export_glb(data: bytes) -> bytes:
     colors = np.asarray([vertex.color for vertex in rig.vertices], dtype=np.uint8)
     joints = np.asarray([vertex.joints for vertex in rig.vertices], dtype='<u2')
     weights = np.asarray([vertex.weights for vertex in rig.vertices], dtype='<f4')
-    index_dtype = '<u2' if len(rig.vertices) <= 0xFFFF else '<u4'
+    index_dtype = '<u2' if len(rig.vertices) <= 0xFFFF else '<u4'  # ruff: ignore[magic-value-comparison]
     indices = np.asarray(rig.faces, dtype=index_dtype).reshape(-1)
 
     world_matrices: list[NDArray[np.float64]] = [
@@ -694,14 +739,15 @@ def export_glb(data: bytes) -> bytes:
                 world if bone.parent is None else np.linalg.inv(world_matrices[bone.parent]) @ world
             )
         except np.linalg.LinAlgError as exc:
-            raise MeshRigError(f'bone {bone.name!r} has a singular bind matrix') from exc
+            msg = f'bone {bone.name!r} has a singular bind matrix'
+            raise MeshRigError(msg) from exc
         local_matrices.append(local)
 
     binary = bytearray()
     buffer_views: list[dict[str, _JsonValue]] = []
     accessors: list[dict[str, _JsonValue]] = []
 
-    def add_accessor(
+    def add_accessor(  # ruff: ignore[too-many-arguments]
         array: NDArray[np.generic],
         component_type: int,
         accessor_type: str,
@@ -748,7 +794,7 @@ def export_glb(data: bytes) -> bytes:
     color_accessor = add_accessor(colors, 5121, 'VEC4', target=34962, normalized=True)
     joints_accessor = add_accessor(joints, 5123, 'VEC4', target=34962)
     weights_accessor = add_accessor(weights, 5126, 'VEC4', target=34962)
-    index_component = 5123 if indices.dtype.itemsize == 2 else 5125
+    index_component = 5123 if indices.dtype.itemsize == 2 else 5125  # ruff: ignore[magic-value-comparison]
     index_accessor = add_accessor(indices, index_component, 'SCALAR', target=34963)
     inverse_bind_array = np.asarray([matrix.T for matrix in inverse_bind_matrices], dtype='<f4')
     inverse_bind_accessor = add_accessor(inverse_bind_array, 5126, 'MAT4')

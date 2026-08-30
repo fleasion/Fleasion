@@ -1,14 +1,15 @@
 """Watch the Fleasion config folder for externally copied configuration files."""
 
 import os
-from collections.abc import Callable
+from collections.abc import Callable  # ruff: ignore[typing-only-standard-library-import]
 from pathlib import Path
 
 from PySide6.QtCore import QFileSystemWatcher, QObject, QTimer, Signal
 from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 
-from ..localization import tr
-from ..utils import log_buffer
+from fleasion.localization import tr
+from fleasion.utils import log_buffer
+
 from .manager import MAX_CONFIG_ASSET_FOLDER_DEPTH, ConfigManager
 
 _WATCH_RETRY_INTERVAL_MS = 2000
@@ -93,7 +94,7 @@ class ConfigFolderWatcher(QObject):
     def _directories_to_watch(self) -> set[str]:
         """Return Configs and asset directories through the supported depth."""
         watched = {str(self.folder)}
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
             for current_root, directory_names, _file_names in os.walk(self.folder):
                 current = Path(current_root)
                 try:
@@ -187,7 +188,7 @@ class ConfigFolderWatcher(QObject):
         if self._pending_names:
             self._retry_timer.start(1000)
 
-    def _check_new_file(self, name: str, path: Path) -> None:
+    def _check_new_file(self, name: str, path: Path) -> None:  # ruff: ignore[unused-method-argument]
         # Defer every candidate until it has survived the one-second stability
         # window. Editors write through temporary files and rename them into
         # place; inspecting those files immediately races their atomic save.
@@ -282,7 +283,7 @@ class ConfigFolderWatcher(QObject):
         if all(reason == 'invalid' for reason in details.values()):
             if len(quoted) == 1:
                 return tr('config_watcher.invalid_one', name=quoted[0])
-            if len(quoted) <= 3:
+            if len(quoted) <= 3:  # ruff: ignore[magic-value-comparison]
                 return tr(
                     'config_watcher.invalid_many',
                     names=', '.join(quoted[:-1]),
@@ -317,6 +318,6 @@ class ConfigFolderWatcher(QObject):
                 parent = self._parent_provider()
                 if parent is not None:
                     return parent
-            except Exception:
+            except Exception:  # ruff: ignore[blind-except, try-except-pass]
                 pass
         return QApplication.activeWindow()

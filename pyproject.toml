@@ -21,6 +21,7 @@ dependencies = [
     'zstandard>=0.21.0',
     'certifi>=2024.7.4',
     'requests>=2.32.0',
+    'defusedxml>=0.7.1',
     'colorama>=0.4.6',
     'pyopengl>=3.1.0',
     'pillow>=11.0.0',
@@ -72,18 +73,107 @@ extend-exclude = [".agents"]
 preview = true
 select = ["ALL"]
 ignore = [
-    "COM812",  # Conflicts with ruff format
-    "CPY001",  # No repository-wide copyright-header policy
+    "missing-trailing-comma",  # Conflicts with ruff format
+    "missing-copyright-notice",  # No repository-wide copyright-header policy
     "D",       # Docstrings are opt-in per AGENTS.md
     "DOC",     # Docstrings are opt-in per AGENTS.md
-    "ISC001",  # Conflicts with ruff format
+    "single-line-implicit-string-concatenation",  # Conflicts with ruff format
 ]
 
 [tool.ruff.lint.per-file-ignores]
 # Translation tables intentionally contain non-ASCII punctuation and long literal values;
 # changing those literals for style would alter localization data or reduce its fidelity.
-"src/fleasion/translations/*.py" = ["RUF001", "E501", "FURB156"]
-"tests/**/*.py" = ["S101", "INP001"]  # pytest uses plain assert; tests need not be packages
+"src/fleasion/translations/*.py" = ["ambiguous-unicode-character-string", "line-too-long", "hardcoded-string-charset"]
+"src/fleasion/cache/rbxm_parser.py" = ["reimplemented-container-builtin"]
+# XML parsing uses defusedxml; stdlib ElementTree remains only for types/construction/serialization.
+"src/fleasion/cache/animation_viewer.py" = ["suspicious-xml-etree-import"]
+"src/fleasion/cache/cache_viewer.py" = ["suspicious-xml-etree-import"]
+"src/fleasion/cache/rbxm_preview.py" = ["reimplemented-container-builtin", "suspicious-xml-etree-import"]
+"src/fleasion/cache/roblox_document.py" = ["suspicious-xml-etree-import"]
+"src/fleasion/cache/tools/animpreview/animpreview.py" = ["suspicious-xml-etree-import"]
+# Binary-layout documentation intentionally uses mathematical multiplication/range glyphs.
+"src/fleasion/cache/tools/solidmodel_converter/csg_mesh.py" = ["ambiguous-unicode-character-docstring"]
+"src/fleasion/cache/tools/solidmodel_converter/obj_to_csg.py" = ["ambiguous-unicode-character-docstring"]
+# Direct tool modules intentionally live in the existing namespace-style tools package.
+"src/fleasion/cache/tools/orm_compositor.py" = ["implicit-namespace-package"]
+"src/fleasion/cache/tools/rgba_ktx2.py" = ["implicit-namespace-package"]
+"src/fleasion/cache/tools/solidmodel_converter/rbxm/xml_writer.py" = ["suspicious-xml-etree-import"]
+"src/fleasion/gui/rando_stuff_tab.py" = ["suspicious-xml-etree-import"]
+"src/fleasion/proxy/addons/texture_stripper.py" = ["suspicious-xml-etree-import", "ambiguous-unicode-character-docstring"]
+"src/fleasion/utils/anim_converter.py" = ["suspicious-xml-etree-import"]
+"src/fleasion/utils/r15_to_r6.py" = ["suspicious-xml-etree-import", "ambiguous-unicode-character-docstring"]
+# These parse only trusted local application/platform XML and preserve existing serialization behavior.
+"src/fleasion/modifications/global_settings_manager.py" = ["suspicious-xml-element-tree-usage", "suspicious-xml-etree-import"]
+"src/fleasion/utils/platform_windows.py" = ["suspicious-xml-element-tree-usage", "suspicious-xml-etree-import"]
+# These files embed QSS/XML/PowerShell protocol templates whose exact runtime text is significant.
+"src/fleasion/cache/asset_type_filter.py" = ["line-too-long"]
+"src/fleasion/linux_proxy_helper_daemon.py" = ["line-too-long"]
+"src/fleasion/proxy/master.py" = ["line-too-long"]
+"src/fleasion/utils/autostart.py" = ["line-too-long"]
+# Tests intentionally exercise private/dynamic APIs, positional compatibility, runtime
+# annotations, callback signatures, and literal expectations from the audited baseline.
+"tests/**/*.py" = [
+    "assert",
+    "implicit-namespace-package",
+    "magic-value-comparison",
+    "get-attr-with-constant",
+    "set-attr-with-constant",
+    "typing-only-first-party-import",
+    "typing-only-third-party-import",
+    "typing-only-standard-library-import",
+    "boolean-type-hint-positional-argument",
+    "boolean-default-value-positional-argument",
+    "boolean-positional-value-in-call",
+    "no-self-use",
+    "private-member-access",
+    "unused-function-argument",
+    "unused-method-argument",
+    "unused-lambda-argument",
+    "missing-return-type-private-function",
+    "hardcoded-temp-file",
+    "suspicious-subprocess-import",
+]
+# File-specific test exceptions preserve unittest idioms, Qt/external API fakes,
+# import-isolation fixtures, scenario-heavy control flow, and reviewed subprocess/XML fixtures.
+"tests/test_account_cookie_storage.py" = ["compare-to-empty-string", "too-many-arguments", "too-many-positional-arguments"]
+"tests/test_animation_conversion.py" = ["suspicious-xml-element-tree-usage", "suspicious-xml-etree-import"]
+"tests/test_app_single_instance.py" = ["complex-structure", "invalid-function-name", "import-outside-top-level", "too-many-arguments", "unnecessary-lambda"]
+"tests/test_audio_player.py" = ["global-statement"]
+"tests/test_autostart.py" = ["unnecessary-lambda"]
+"tests/test_cache_manager_export.py" = ["mutable-class-default"]
+"tests/test_cache_viewer_metadata.py" = ["import-outside-top-level"]
+"tests/test_category_filter_popup.py" = ["subprocess-without-shell-equals-true"]
+"tests/test_config_manager.py" = ["too-many-public-methods", "pytest-unittest-assertion", "pytest-unittest-raises-assertion"]
+"tests/test_csg_mesh.py" = ["too-many-arguments", "too-many-positional-arguments"]
+"tests/test_custom_fflags.py" = ["async-busy-wait", "function-uses-loop-variable", "complex-structure", "too-many-arguments", "too-many-statements", "unused-async"]
+"tests/test_delete_cache_window.py" = ["unnecessary-dunder-call"]
+"tests/test_desktop_integration.py" = ["import-outside-top-level"]
+"tests/test_dropdown_combo_box.py" = ["global-statement"]
+"tests/test_first_time_setup_dialog.py" = ["invalid-function-name"]
+"tests/test_linux_proxy_helper_daemon.py" = ["pytest-assert-in-except", "subprocess-without-shell-equals-true"]
+"tests/test_localization.py" = ["complex-structure", "invalid-function-name", "manual-list-comprehension", "import-outside-top-level", "too-many-return-statements", "too-many-branches", "too-many-statements", "too-many-boolean-expressions", "too-many-nested-blocks", "ambiguous-unicode-character-string"]
+"tests/test_mesh_rig.py" = ["float-equality-comparison"]
+"tests/test_miscellaneous_layout.py" = ["global-statement"]
+"tests/test_modifications_localization_layout.py" = ["manual-list-comprehension", "global-statement"]
+"tests/test_macos_proxy_helper.py" = ["compare-to-empty-string", "pytest-raises-too-broad"]
+"tests/test_modifications_manager.py" = ["complex-structure", "pytest-raises-too-broad", "non-self-return-type"]
+"tests/test_platform_linux.py" = ["hardcoded-password-string"]
+"tests/test_platform_macos.py" = ["line-too-long"]
+"tests/test_platform_windows.py" = ["too-many-public-methods", "too-many-arguments", "non-self-return-type"]
+"tests/test_proxy_macos_startup.py" = ["complex-structure", "import-outside-top-level", "too-many-locals", "too-many-statements", "unused-async"]
+"tests/test_proxy_server.py" = ["async-function-with-timeout", "import-outside-top-level", "unnecessary-lambda", "pytest-unittest-assertion", "unused-async", "float-equality-comparison"]
+"tests/test_proxy_tab_layout.py" = ["global-statement"]
+"tests/test_proxy_windows_event_loop.py" = ["too-many-public-methods", "unused-async"]
+"tests/test_qt_startup_diagnostics.py" = ["import-outside-top-level", "subprocess-without-shell-equals-true"]
+"tests/test_replacer_config_localization_layout.py" = ["manual-list-comprehension", "global-statement"]
+"tests/test_replacer_config_menu.py" = ["invalid-function-name", "global-statement"]
+"tests/test_roblox_document.py" = ["pytest-unittest-assertion", "pytest-unittest-raises-assertion"]
+"tests/test_texture_stripper.py" = ["import-outside-top-level"]
+"tests/test_theme_manager.py" = ["invalid-function-name", "non-self-return-type"]
+"tests/test_tray_dashboard.py" = ["invalid-function-name", "import-outside-top-level"]
+"tests/test_upstream.py" = ["async-function-with-timeout", "blind-except", "too-many-statements-in-try-clause", "pytest-unittest-assertion", "pytest-unittest-raises-assertion", "non-self-return-type"]
+"tests/test_username_spoofer.py" = ["class-as-data-structure", "pytest-unittest-assertion"]
+"tests/test_windows_ktx_dll_loading.py" = ["import-outside-top-level"]
 
 [tool.ruff.format]
 quote-style = "single"

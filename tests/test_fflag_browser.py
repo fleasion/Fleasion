@@ -12,8 +12,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
-    QLineEdit,
     QLabel,
+    QLineEdit,
     QStyleOptionViewItem,
     QTableWidget,
     QTableWidgetItem,
@@ -37,7 +37,7 @@ type BrowserFlags = dict[str, str | None]
 
 def _qapp() -> QApplication:
     app = QApplication.instance()
-    return cast(QApplication, app) if app is not None else QApplication([])
+    return cast('QApplication', app) if app is not None else QApplication([])
 
 
 def _noop_refresh(_self: FFlagBrowserDialog, force: bool = False) -> None:
@@ -125,27 +125,27 @@ def _refresh(dialog: FFlagBrowserDialog, *, force: bool = False) -> None:
 
 
 def _dialog_table(dialog: FFlagBrowserDialog) -> QTableWidget:
-    return cast(QTableWidget, dialog.__dict__['_table'])
+    return cast('QTableWidget', dialog.__dict__['_table'])
 
 
 def _dialog_count(dialog: FFlagBrowserDialog) -> QLabel:
-    return cast(QLabel, dialog.__dict__['_count'])
+    return cast('QLabel', dialog.__dict__['_count'])
 
 
 def _dialog_search(dialog: FFlagBrowserDialog) -> QLineEdit:
-    return cast(QLineEdit, dialog.__dict__['_search'])
+    return cast('QLineEdit', dialog.__dict__['_search'])
 
 
 def _dialog_family_filter(dialog: FFlagBrowserDialog) -> QComboBox:
-    return cast(QComboBox, dialog.__dict__['_family_filter'])
+    return cast('QComboBox', dialog.__dict__['_family_filter'])
 
 
 def _dialog_flags(dialog: FFlagBrowserDialog) -> BrowserFlags:
-    return cast(BrowserFlags, dialog.__dict__['_flags'])
+    return cast('BrowserFlags', dialog.__dict__['_flags'])
 
 
 def _settings_url() -> str:
-    return cast(str, FFlagBrowserDialog.__dict__['_SETTINGS_URL'])
+    return cast('str', FFlagBrowserDialog.__dict__['_SETTINGS_URL'])
 
 
 def _bypass_header() -> dict[str, str]:
@@ -153,7 +153,7 @@ def _bypass_header() -> dict[str, str]:
 
 
 def _tracker_url(name: str) -> str:
-    return cast(str, FFlagBrowserDialog.__dict__[name])
+    return cast('str', FFlagBrowserDialog.__dict__[name])
 
 
 def _translations() -> dict[str, dict[str, str]]:
@@ -177,11 +177,11 @@ def _refresh_proxy_noop() -> None:
 
 
 def _editor_table(editor: CustomFFlagEditor) -> QTableWidget:
-    return cast(QTableWidget, editor.__dict__['_table'])
+    return cast('QTableWidget', editor.__dict__['_table'])
 
 
 def _add_flag_source() -> str:
-    callback = cast(Callable[..., object], CustomFFlagEditor.__dict__['_add_flag'])
+    callback = cast('Callable[..., object]', CustomFFlagEditor.__dict__['_add_flag'])
     return inspect.getsource(callback)
 
 
@@ -296,7 +296,7 @@ def test_fflag_browser_merges_live_values_with_the_tracker_lists(
     fetched: list[BrowserFlags] = []
 
     def record_flags(flags: object) -> None:
-        fetched.append(cast(BrowserFlags, flags))
+        fetched.append(cast('BrowserFlags', flags))
 
     dialog.flags_loaded.connect(record_flags)
 
@@ -311,7 +311,8 @@ def test_fflag_browser_merges_live_values_with_the_tracker_lists(
             return b'[C++] DFFlagDebugDrawBroadPhaseAABBs\n'
         if url == _tracker_url('_HISTORICAL_TRACKER_VARIABLES_URL'):
             return b'[C++] DFIntTaskSchedulerTargetFps\n'
-        raise AssertionError(f'unexpected URL: {url}')
+        msg = f'unexpected URL: {url}'
+        raise AssertionError(msg)
 
     monkeypatch.setattr(modifications_tab, 'http_get', fake_http_get)
     _fetch_flags(dialog)
@@ -397,7 +398,9 @@ def test_boolean_fflag_picker_commits_and_closes_after_selection() -> None:
     table.setItem(0, 1, QTableWidgetItem('True'))
     delegate = FastFlagValueDelegate(table)
     index = table.model().index(0, 1)
-    combo = cast(QComboBox, delegate.createEditor(table.viewport(), QStyleOptionViewItem(), index))
+    combo = cast(
+        'QComboBox', delegate.createEditor(table.viewport(), QStyleOptionViewItem(), index)
+    )
     committed: list[object] = []
     closed: list[tuple[object, object]] = []
 
@@ -428,7 +431,9 @@ def test_boolean_fflag_editor_reads_canonical_user_role_not_translated_display(
     table.setItem(0, 1, value_item)
     delegate = FastFlagValueDelegate(table)
     index = table.model().index(0, 1)
-    combo = cast(QComboBox, delegate.createEditor(table.viewport(), QStyleOptionViewItem(), index))
+    combo = cast(
+        'QComboBox', delegate.createEditor(table.viewport(), QStyleOptionViewItem(), index)
+    )
     monkeypatch.setattr(modifications_tab.QTimer, 'singleShot', _no_timer)
 
     delegate.setEditorData(combo, index)

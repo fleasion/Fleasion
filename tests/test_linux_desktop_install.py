@@ -5,7 +5,7 @@ from typing import cast
 
 import pytest
 
-from fleasion import __version__ as APP_VERSION
+from fleasion import __version__
 from fleasion.utils import platform_linux
 
 pytestmark = pytest.mark.skipif(
@@ -186,7 +186,7 @@ def test_install_desktop_entries_restores_sober_when_fleasion_is_uri_handler(
 def test_copy_linux_app_payload_copies_frozen_binary_and_icon(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    source_binary = tmp_path / 'Downloads' / f'Fleasion-v{APP_VERSION}'
+    source_binary = tmp_path / 'Downloads' / f'Fleasion-v{__version__}'
     source_binary.parent.mkdir()
     source_binary.write_bytes(b'binary')
     source_icon = tmp_path / 'Downloads' / 'fleasionlogoHR.ico'

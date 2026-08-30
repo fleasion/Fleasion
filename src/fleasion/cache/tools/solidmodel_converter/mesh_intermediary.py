@@ -22,7 +22,7 @@ import hashlib
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ....utils import APP_CACHE_DIR, log_buffer
+from fleasion.utils import APP_CACHE_DIR, log_buffer
 
 if TYPE_CHECKING:
     from .csg_mesh import CSGVertex
@@ -35,7 +35,7 @@ _GZIP_MAGIC = b'\x1f\x8b'
 def _decompress(data: bytes) -> bytes:
     """Strip zstd or gzip application-level wrapping if present."""
     if data[:4] == _ZSTD_MAGIC:
-        import zstandard  # type: ignore[import-untyped]
+        import zstandard  # type: ignore[import-untyped]  # ruff: ignore[import-outside-top-level]
 
         data = zstandard.ZstdDecompressor().decompress(data, max_output_size=64 * 1024 * 1024)
     elif data[:2] == _GZIP_MAGIC:
@@ -59,7 +59,7 @@ def is_binary_rbxm(data: bytes) -> bool:
 
 def _cache_obj_path(source: Path) -> Path:
     """Return a deterministic APP_CACHE_DIR OBJ path for *source*."""
-    h = hashlib.md5(str(source.resolve()).encode('utf-8')).hexdigest()
+    h = hashlib.md5(str(source.resolve()).encode('utf-8'), usedforsecurity=False).hexdigest()
     return APP_CACHE_DIR / f'{source.stem}_{h}.obj'
 
 
@@ -100,11 +100,14 @@ def mesh_file_to_cached_obj(mesh_path: Path) -> Path:
     # Lazy import to avoid loading DracoPy etc. at module load time
     # mesh_processing lives at fleasion/cache/mesh_processing.py — three levels
     # up from solidmodel_converter/mesh_intermediary.py
-    from ...mesh_processing import convert as mesh_to_obj_str
+    from fleasion.cache.mesh_processing import (  # ruff: ignore[import-outside-top-level]
+        convert as mesh_to_obj_str,
+    )
 
     mesh_path = Path(mesh_path).resolve()
     if not mesh_path.exists():
-        raise FileNotFoundError(f'Mesh file not found: {mesh_path}')
+        msg = f'Mesh file not found: {mesh_path}'
+        raise FileNotFoundError(msg)
 
     APP_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cached_obj = _cache_obj_path(mesh_path)
@@ -118,7 +121,8 @@ def mesh_file_to_cached_obj(mesh_path: Path) -> Path:
     obj_content = mesh_to_obj_str(data)
 
     if not obj_content:
-        raise ValueError(f'mesh_processing.convert produced no output for: {mesh_path}')
+        msg = f'mesh_processing.convert produced no output for: {mesh_path}'
+        raise ValueError(msg)
 
     cached_obj.write_text(obj_content, encoding='utf-8')
     log_buffer.log(
@@ -159,13 +163,13 @@ def _csg_vertices_to_obj(vertices: list[CSGVertex], indices: list[int]) -> str:
 
     # Vertex normals
     for v in vertices:
-        lines.append(f'vn {v.nx:.6f} {v.ny:.6f} {v.nz:.6f}\n')
+        lines.append(f'vn {v.nx:.6f} {v.ny:.6f} {v.nz:.6f}\n')  # ruff: ignore[manual-list-comprehension]
 
     lines.append('\n')
 
     # UV coordinates — undo the Roblox V-flip stored in CSGVertex
     for v in vertices:
-        lines.append(f'vt {v.u:.6f} {1.0 - v.v:.6f} 0.0\n')
+        lines.append(f'vt {v.u:.6f} {1.0 - v.v:.6f} 0.0\n')  # ruff: ignore[manual-list-comprehension]
 
     lines.append('\n')
 
@@ -227,12 +231,13 @@ def bin_file_to_cached_obj(bin_path: Path) -> Path:
         produces no geometry.
     """
     # Lazy imports to keep startup fast and avoid circular imports
-    from .converter import deserialize_rbxm
-    from .csg_mesh import parse_csg_mesh
+    from .converter import deserialize_rbxm  # ruff: ignore[import-outside-top-level]
+    from .csg_mesh import parse_csg_mesh  # ruff: ignore[import-outside-top-level]
 
     bin_path = Path(bin_path).resolve()
     if not bin_path.exists():
-        raise FileNotFoundError(f'CSG .bin file not found: {bin_path}')
+        msg = f'CSG .bin file not found: {bin_path}'
+        raise FileNotFoundError(msg)
 
     APP_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cached_obj = _cache_obj_path(bin_path)
@@ -247,9 +252,8 @@ def bin_file_to_cached_obj(bin_path: Path) -> Path:
     data = _decompress(raw)
 
     if not is_binary_rbxm(data):
-        raise ValueError(
-            f'.bin file does not look like a binary RBXM (got header {data[:8]!r}): {bin_path}'
-        )
+        msg = f'.bin file does not look like a binary RBXM (got header {data[:8]!r}): {bin_path}'
+        raise ValueError(msg)
 
     doc = deserialize_rbxm(data)
 
@@ -262,15 +266,17 @@ def bin_file_to_cached_obj(bin_path: Path) -> Path:
                 break
 
     if not mesh_data:
-        raise ValueError(
+        msg = (
             f'No MeshData found in any injectable root of: {bin_path}\n'
             f'  roots: {[r.class_name for r in doc.roots]}'
         )
+        raise ValueError(msg)
 
     vertices, indices = parse_csg_mesh(mesh_data)
 
     if not vertices or not indices:
-        raise ValueError(f'CSGMDL in {bin_path} produced no usable geometry')
+        msg = f'CSGMDL in {bin_path} produced no usable geometry'
+        raise ValueError(msg)
 
     obj_content = _csg_vertices_to_obj(vertices, indices)
     cached_obj.write_text(obj_content, encoding='utf-8')
@@ -285,16 +291,18 @@ def bin_file_to_cached_obj(bin_path: Path) -> Path:
 # .rbxmx (XML SolidModel export) -> cached OBJ
 
 
-def rbxmx_file_to_cached_obj(rbxmx_path: Path) -> Path:
+def rbxmx_file_to_cached_obj(rbxmx_path: Path) -> Path:  # ruff: ignore[complex-structure]
     """Parse MeshData from an RBXMX SolidModel export and convert to a cached OBJ."""
-    import base64
-    from xml.etree.ElementTree import parse as _xml_parse
+    import base64  # ruff: ignore[import-outside-top-level]
 
-    from .csg_mesh import parse_csg_mesh
+    from defusedxml.ElementTree import parse as _xml_parse  # ruff: ignore[import-outside-top-level]
+
+    from .csg_mesh import parse_csg_mesh  # ruff: ignore[import-outside-top-level]
 
     rbxmx_path = Path(rbxmx_path).resolve()
     if not rbxmx_path.exists():
-        raise FileNotFoundError(f'RBXMX file not found: {rbxmx_path}')
+        msg = f'RBXMX file not found: {rbxmx_path}'
+        raise FileNotFoundError(msg)
 
     APP_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cached_obj = _cache_obj_path(rbxmx_path)
@@ -307,6 +315,9 @@ def rbxmx_file_to_cached_obj(rbxmx_path: Path) -> Path:
 
     tree = _xml_parse(str(rbxmx_path))
     xml_root = tree.getroot()
+    if xml_root is None:
+        msg = 'RBXMX XML document has no root element'
+        raise ValueError(msg)
 
     mesh_data: bytes | None = None
     for item in xml_root.iter('Item'):
@@ -321,15 +332,17 @@ def rbxmx_file_to_cached_obj(rbxmx_path: Path) -> Path:
             break
 
     if not mesh_data:
-        raise ValueError(
+        msg = (
             f'No MeshData BinaryString found in .rbxmx: {rbxmx_path}\n'
             f'  Make sure this is a SolidModel (PartOperationAsset) export.'
         )
+        raise ValueError(msg)
 
     vertices, indices = parse_csg_mesh(mesh_data)
 
     if not vertices or not indices:
-        raise ValueError(f'CSGMDL in {rbxmx_path} produced no usable geometry')
+        msg = f'CSGMDL in {rbxmx_path} produced no usable geometry'
+        raise ValueError(msg)
 
     obj_content = _csg_vertices_to_obj(vertices, indices)
     cached_obj.write_text(obj_content, encoding='utf-8')

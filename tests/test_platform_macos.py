@@ -25,8 +25,8 @@ def _appleblox_custom_app_path() -> Path | None:
 
 
 def _launch_uri_parser() -> _LaunchUriParserLike:
-    parser_type = cast(type[object], platform_macos.__dict__['_IncrementalRobloxLaunchUriParser'])
-    return cast(_LaunchUriParserLike, parser_type())
+    parser_type = cast('type[object]', platform_macos.__dict__['_IncrementalRobloxLaunchUriParser'])
+    return cast('_LaunchUriParserLike', parser_type())
 
 
 def _intercept(
@@ -80,19 +80,23 @@ def _wait_window_true(timeout: float = 60.0) -> bool:
 
 
 def _raise_unknown_user(_path: Path) -> Never:
-    raise RuntimeError('unknown user')
+    msg = 'unknown user'
+    raise RuntimeError(msg)
 
 
 def _no_process_scan(_name: str) -> Never:
-    raise AssertionError('no process scan in hot path')
+    msg = 'no process scan in hot path'
+    raise AssertionError(msg)
 
 
 def _preserve_exe_failure() -> Never:
-    raise AssertionError('must preserve original executable')
+    msg = 'must preserve original executable'
+    raise AssertionError(msg)
 
 
 def _running_failure() -> Never:
-    raise AssertionError('original Player is already stopped')
+    msg = 'original Player is already stopped'
+    raise AssertionError(msg)
 
 
 def _make_player_app(path: Path) -> Path:

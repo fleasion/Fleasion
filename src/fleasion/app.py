@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import atexit
+import contextlib
 import html
 import json
 import os
@@ -10,7 +11,7 @@ import platform
 import secrets
 import shlex
 import signal
-import subprocess
+import subprocess  # ruff: ignore[suspicious-subprocess-import]
 import sys
 import threading
 import time
@@ -246,19 +247,23 @@ _single_instance_app: QApplication | None = None
 _single_instance_tray: SystemTray | None = None
 
 
-class RestartHandoffUncertain(RuntimeError):
+class RestartHandoffUncertain(RuntimeError):  # ruff: ignore[error-suffix-on-exception-name]
     """The old process cannot safely reclaim state from a failed replacement."""
 
 
 def _linux_client_launch_path() -> Path:
     """Return the selected Linux client's stable launch identity."""
-    from .utils.platform_linux import selected_linux_client_app_id
+    from .utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
+        selected_linux_client_app_id,
+    )
 
     return Path(selected_linux_client_app_id())
 
 
 def _linux_client_display_name() -> str:
-    from .utils.platform_linux import selected_linux_client_display_name
+    from .utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
+        selected_linux_client_display_name,
+    )
 
     return selected_linux_client_display_name()
 
@@ -297,7 +302,7 @@ class _FirstTimeSetupDialog(QDialog):
         button_layout.addWidget(self.ok_button)
         layout.addLayout(button_layout)
 
-    def setText(self, text: str) -> None:
+    def setText(self, text: str) -> None:  # ruff: ignore[invalid-function-name]
         self._body.setPlainText(text)
 
     def allow_accept(self) -> None:
@@ -318,7 +323,7 @@ class _FirstTimeSetupDialog(QDialog):
         frame.moveCenter(available.center())
         self.move(frame.topLeft())
 
-    def showEvent(self, event: QShowEvent) -> None:
+    def showEvent(self, event: QShowEvent) -> None:  # ruff: ignore[invalid-function-name]
         super().showEvent(event)
         self._fit_to_available_screen()
 
@@ -326,10 +331,10 @@ class _FirstTimeSetupDialog(QDialog):
         if self._can_accept:
             super().accept()
 
-    def reject(self) -> None:
+    def reject(self) -> None:  # ruff: ignore[no-self-use]
         return
 
-    def closeEvent(self, event: QCloseEvent) -> None:
+    def closeEvent(self, event: QCloseEvent) -> None:  # ruff: ignore[invalid-function-name, no-self-use]
         event.ignore()
 
 
@@ -347,7 +352,7 @@ class _ForcedAcknowledgeMessageBox(QMessageBox):
         if self._can_close:
             super().done(result)
 
-    def closeEvent(self, event: QCloseEvent) -> None:
+    def closeEvent(self, event: QCloseEvent) -> None:  # ruff: ignore[invalid-function-name]
         if self._can_close:
             event.accept()
         else:
@@ -410,7 +415,7 @@ def _show_env_proxy_migration(
         msg.setStandardButtons(QMessageBox.StandardButton.Ok)
     msg.setInformativeText(details)
     if icon_path := get_icon_path():
-        from PySide6.QtGui import QIcon
+        from PySide6.QtGui import QIcon  # ruff: ignore[import-outside-top-level]
 
         msg.setWindowIcon(QIcon(str(icon_path)))
 
@@ -439,7 +444,7 @@ class _MacOSAuthSourceDialog(QDialog):
         if self.allow_reject:
             super().reject()
 
-    def closeEvent(self, event: QCloseEvent) -> None:
+    def closeEvent(self, event: QCloseEvent) -> None:  # ruff: ignore[invalid-function-name]
         if self.allow_reject:
             event.accept()
         else:
@@ -460,9 +465,9 @@ def _quit_after_modal_closes(
         modal.allow_reject = True
     if isinstance(modal, _ForcedAcknowledgeMessageBox):
         modal.allow_close()
-    try:
+    try:  # ruff: ignore[suppressible-exception]
         modal.reject()
-    except Exception:
+    except Exception:  # ruff: ignore[blind-except, try-except-pass]
         pass
 
     def _quit() -> None:
@@ -483,7 +488,7 @@ def _is_admin() -> bool:
     """Return True if the current process has administrator/root privileges."""
     if sys.platform == 'darwin' or sys.platform.startswith('linux'):
         return hasattr(os, 'geteuid') and os.geteuid() == 0
-    import ctypes
+    import ctypes  # ruff: ignore[import-outside-top-level]
 
     try:
         if TYPE_CHECKING:
@@ -491,7 +496,7 @@ def _is_admin() -> bool:
         else:
             shell32 = ctypes.windll.shell32
         return bool(shell32.IsUserAnAdmin())
-    except Exception:
+    except Exception:  # ruff: ignore[blind-except]
         return False
 
 
@@ -503,7 +508,7 @@ def _cleanup_hosts_once() -> int:
         )
         return _HOSTS_CLEANUP_NOT_ADMIN_EXIT
 
-    from .proxy import master as proxy_master
+    from .proxy import master as proxy_master  # ruff: ignore[import-outside-top-level]
 
     remove_hosts_entries = _get_required_callable(proxy_master, '_remove_hosts_entries')
     flush_dns = _get_required_callable(proxy_master, '_flush_dns')
@@ -511,7 +516,7 @@ def _cleanup_hosts_once() -> int:
         proxy_master, '_cancel_hosts_cleanup_on_reboot'
     )
     error_details: ErrorDetails = {}
-    try:
+    try:  # ruff: ignore[too-many-statements-in-try-clause]
         if proxy_master.hosts_file_is_oversized(error_details):
             cleaned = proxy_master.repair_hosts_file(
                 set(proxy_master.INTERCEPT_HOSTS), error_details=error_details
@@ -528,7 +533,7 @@ def _cleanup_hosts_once() -> int:
             return _HOSTS_CLEANUP_WRITE_FAILED_EXIT
         flush_dns()
         cancel_hosts_cleanup_on_reboot()
-    except Exception as exc:
+    except Exception as exc:  # ruff: ignore[blind-except]
         log_buffer.log('Hosts', f'Elevated hosts cleanup child crashed: {exc!r}')
         return _HOSTS_CLEANUP_UNEXPECTED_EXIT
     log_buffer.log('Hosts', 'Elevated one-shot hosts cleanup completed')
@@ -541,7 +546,9 @@ def _run_privileged_hosts_cleanup(parent: QWidget | None = None) -> bool:
         return _cleanup_hosts_once() == 0
 
     if sys.platform.startswith('linux'):
-        from .utils.linux_proxy_helper import cleanup_hosts_with_pkexec
+        from .utils.linux_proxy_helper import (  # ruff: ignore[import-outside-top-level]
+            cleanup_hosts_with_pkexec,
+        )
 
         return cleanup_hosts_with_pkexec()
 
@@ -579,16 +586,16 @@ def _run_privileged_hosts_cleanup(parent: QWidget | None = None) -> bool:
     return False
 
 
-def _show_oversized_hosts_file_dialog(
+def _show_oversized_hosts_file_dialog(  # ruff: ignore[too-many-statements]
     details: ErrorDetails, on_repaired: VoidCallback | None = None
 ) -> bool:
     """Offer a streaming repair for an abnormally large system hosts file."""
-    import os
+    import os  # ruff: ignore[import-outside-top-level]
 
     hosts_path = str(details.get('hosts_path') or r'C:\Windows\System32\drivers\etc\hosts')
     hosts_directory = str(
         details.get('hosts_directory')
-        or os.path.dirname(hosts_path)
+        or os.path.dirname(hosts_path)  # ruff: ignore[os-path-dirname]
         or r'C:\Windows\System32\drivers\etc'
     )
     size = int(_preserve_int_input(details.get('hosts_size_bytes') or 0))
@@ -640,7 +647,10 @@ def _show_oversized_hosts_file_dialog(
             msg.hide()
 
         if repaired:
-            from .proxy.master import has_stale_hosts_entries, hosts_file_size
+            from .proxy.master import (  # ruff: ignore[import-outside-top-level]
+                has_stale_hosts_entries,
+                hosts_file_size,
+            )
 
             repaired_size = hosts_file_size()
             if (
@@ -667,12 +677,12 @@ def _show_oversized_hosts_file_dialog(
 
 def _show_hosts_capacity_dialog(details: ErrorDetails) -> None:
     """Explain that a normal-sized hosts file cannot fit new mappings safely."""
-    import os
+    import os  # ruff: ignore[import-outside-top-level]
 
     hosts_path = str(details.get('hosts_path') or r'C:\Windows\System32\drivers\etc\hosts')
     hosts_directory = str(
         details.get('hosts_directory')
-        or os.path.dirname(hosts_path)
+        or os.path.dirname(hosts_path)  # ruff: ignore[os-path-dirname]
         or r'C:\Windows\System32\drivers\etc'
     )
     limit = int(_preserve_int_input(details.get('hosts_size_limit_bytes') or 512 * 1024))
@@ -703,7 +713,7 @@ def _show_hosts_capacity_dialog(details: ErrorDetails) -> None:
 
 def _show_env_proxy_stale_hosts_dialog() -> bool:
     """Offer a one-shot privileged repair for oversized or stale Env Proxy hosts entries."""
-    from .proxy import master as proxy_master
+    from .proxy import master as proxy_master  # ruff: ignore[import-outside-top-level]
 
     other_proxy_owner_alive = _get_required_callable(proxy_master, '_other_proxy_owner_alive')
     if other_proxy_owner_alive():
@@ -771,7 +781,7 @@ def _show_env_proxy_stale_hosts_dialog() -> bool:
     return True
 
 
-def _should_sync_autostart_on_launch(run_on_boot: bool) -> bool:
+def _should_sync_autostart_on_launch(run_on_boot: bool) -> bool:  # ruff: ignore[boolean-type-hint-positional-argument]
     if not run_on_boot:
         return False
     if sys.platform == 'darwin':
@@ -783,14 +793,14 @@ def _should_sync_autostart_on_launch(run_on_boot: bool) -> bool:
     return False
 
 
-def _refresh_run_on_boot_ui(tray: SystemTray | None, enabled: bool) -> None:
+def _refresh_run_on_boot_ui(tray: SystemTray | None, enabled: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
     if tray is not None and hasattr(tray, 'run_on_boot_action'):
         tray.run_on_boot_action.setChecked(enabled)
     if tray is not None and hasattr(tray, '_refresh_settings_tab'):
         _call_tray_refresh_settings(tray)
 
 
-def _refresh_desktop_integration_ui(tray: SystemTray | None, enabled: bool) -> None:
+def _refresh_desktop_integration_ui(tray: SystemTray | None, enabled: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
     if tray is not None and hasattr(tray, 'desktop_integration_action'):
         tray.desktop_integration_action.setChecked(enabled)
     if tray is not None and hasattr(tray, '_refresh_settings_tab'):
@@ -808,7 +818,9 @@ def _show_run_on_boot_failure(
     )
     msg.setIcon(QMessageBox.Icon.Warning)
     if sys.platform == 'win32':
-        from .utils.autostart import windows_autostart_privilege_hint
+        from .utils.autostart import (  # ruff: ignore[import-outside-top-level]
+            windows_autostart_privilege_hint,
+        )
 
         if enabled:
             msg.setText(
@@ -822,7 +834,7 @@ def _show_run_on_boot_failure(
     else:
         msg.setText(tr('app.failed_to_register_autostart_check_the_application'))
     if icon_path := get_icon_path():
-        from PySide6.QtGui import QIcon
+        from PySide6.QtGui import QIcon  # ruff: ignore[import-outside-top-level]
 
         msg.setWindowIcon(QIcon(str(icon_path)))
 
@@ -862,22 +874,21 @@ def _show_run_on_boot_failure(
             msg.setStandardButtons(QMessageBox.StandardButton.Ok)
             msg.exec()
             return True
-        else:
-            log_buffer.log(
-                'Autostart',
-                'Elevated autostart repair did not complete successfully'
-                if enabled
-                else 'Elevated legacy autostart-task removal did not complete successfully',
-            )
-            msg.setWindowTitle(
-                tr('app.run_on_boot_repair_incomplete')
-                if enabled
-                else tr('app.run_on_boot_disable_incomplete')
-            )
-            msg.setIcon(QMessageBox.Icon.Warning)
-            msg.setText(tr('app.fleasion_could_not_confirm_that_the_run'))
-            msg.setStandardButtons(QMessageBox.StandardButton.Ok)
-            msg.exec()
+        log_buffer.log(
+            'Autostart',
+            'Elevated autostart repair did not complete successfully'
+            if enabled
+            else 'Elevated legacy autostart-task removal did not complete successfully',
+        )
+        msg.setWindowTitle(
+            tr('app.run_on_boot_repair_incomplete')
+            if enabled
+            else tr('app.run_on_boot_disable_incomplete')
+        )
+        msg.setIcon(QMessageBox.Icon.Warning)
+        msg.setText(tr('app.fleasion_could_not_confirm_that_the_run'))
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        msg.exec()
     return False
 
 
@@ -911,7 +922,7 @@ def _show_roblox_permission_failure(
         )
     )
     if icon_path := get_icon_path():
-        from PySide6.QtGui import QIcon
+        from PySide6.QtGui import QIcon  # ruff: ignore[import-outside-top-level]
 
         msg.setWindowIcon(QIcon(str(icon_path)))
 
@@ -925,7 +936,7 @@ def _show_roblox_permission_failure(
     if msg.clickedButton() != grant_button:
         return
 
-    from .utils.windows_permissions import (
+    from .utils.windows_permissions import (  # ruff: ignore[import-outside-top-level]
         clear_pending_repair,
         clear_repair_result,
         write_pending_repair,
@@ -934,12 +945,13 @@ def _show_roblox_permission_failure(
     try:
         clear_repair_result(CONFIG_DIR)
         if not write_pending_repair(paths, CONFIG_DIR):
-            raise OSError('No valid Roblox installation folders were selected')
+            msg_0 = 'No valid Roblox installation folders were selected'
+            raise OSError(msg_0)  # ruff: ignore[raise-within-try]
         relaunched = _relaunch_as_admin(
             extra_args='--repair-roblox-permissions',
             parent_hwnd=_window_handle(parent),
         )
-    except Exception as exc:
+    except Exception as exc:  # ruff: ignore[blind-except]
         clear_pending_repair(CONFIG_DIR)
         log_buffer.log('RobloxPermissions', f'Could not start elevated ACL repair: {exc}')
         return
@@ -988,7 +1000,7 @@ def _poll_roblox_permission_repair(
 
         def read_repair_result(config_dir: Path | None = None) -> ErrorDetails | None: ...
     else:
-        from .utils.windows_permissions import (
+        from .utils.windows_permissions import (  # ruff: ignore[import-outside-top-level]
             clear_pending_repair,
             clear_repair_result,
             read_repair_result,
@@ -1057,7 +1069,7 @@ def _poll_windows_firewall_repair(deadline: float) -> None:
 
         def read_repair_result(config_dir: Path | None = None) -> ErrorDetails | None: ...
     else:
-        from .utils.windows_firewall import (
+        from .utils.windows_firewall import (  # ruff: ignore[import-outside-top-level]
             clear_pending_repair,
             clear_repair_result,
             read_repair_result,
@@ -1108,7 +1120,7 @@ def _show_desktop_integration_failure(parent: QWidget | None) -> None:
     msg.setIcon(QMessageBox.Icon.Warning)
     msg.setText(tr('app.failed_to_create_desktop_start_menu_integration'))
     if icon_path := get_icon_path():
-        from PySide6.QtGui import QIcon
+        from PySide6.QtGui import QIcon  # ruff: ignore[import-outside-top-level]
 
         msg.setWindowIcon(QIcon(str(icon_path)))
     msg.exec()
@@ -1116,19 +1128,19 @@ def _show_desktop_integration_failure(parent: QWidget | None) -> None:
 
 def _prompt_first_time_language(config_manager: ConfigManager) -> None:
     """Make language the first choice shown to a new user."""
-    _top = QApplication.topLevelWidgets()
-    _parent = next((w for w in _top if w.isVisible()), None)
-    _on_top = any(
-        w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in _top
+    top = QApplication.topLevelWidgets()
+    parent = next((w for w in top if w.isVisible()), None)
+    on_top = any(
+        w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in top
     )
 
-    dialog = QDialog(_parent)
+    dialog = QDialog(parent)
     dialog.setModal(True)
     dialog.setWindowTitle(tr('language.picker.title'))
-    if _on_top:
+    if on_top:
         dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
     if icon_path := get_icon_path():
-        from PySide6.QtGui import QIcon
+        from PySide6.QtGui import QIcon  # ruff: ignore[import-outside-top-level]
 
         dialog.setWindowIcon(QIcon(str(icon_path)))
 
@@ -1162,23 +1174,23 @@ def _prompt_first_time_language(config_manager: ConfigManager) -> None:
     set_language(config_manager.language)
 
 
-def _prompt_first_time_startup_options(
+def _prompt_first_time_startup_options(  # ruff: ignore[too-many-locals, too-many-statements]
     config_manager: ConfigManager, tray: SystemTray | None = None
 ) -> None:
     """Ask first-time users which startup integrations Fleasion should create."""
-    _top = QApplication.topLevelWidgets()
-    _parent = next((w for w in _top if w.isVisible()), None)
-    _on_top = any(
-        w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in _top
+    top = QApplication.topLevelWidgets()
+    parent = next((w for w in top if w.isVisible()), None)
+    on_top = any(
+        w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in top
     )
 
-    dialog = QDialog(_parent)
+    dialog = QDialog(parent)
     dialog.setModal(True)
     dialog.setWindowTitle(tr('app.startup_integration'))
-    if _on_top:
+    if on_top:
         dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
     if icon_path := get_icon_path():
-        from PySide6.QtGui import QIcon
+        from PySide6.QtGui import QIcon  # ruff: ignore[import-outside-top-level]
 
         dialog.setWindowIcon(QIcon(str(icon_path)))
 
@@ -1219,22 +1231,24 @@ def _prompt_first_time_startup_options(
     enable_run_on_boot = run_on_boot_chk.isChecked()
     enable_desktop_integration = desktop_integration_chk.isChecked()
     try:
-        from .utils.desktop_integration import sync_desktop_integration
+        from .utils.desktop_integration import (  # ruff: ignore[import-outside-top-level]
+            sync_desktop_integration,
+        )
 
         desktop_ok = sync_desktop_integration(enable_desktop_integration)
-    except Exception as exc:
+    except Exception as exc:  # ruff: ignore[blind-except]
         desktop_ok = False
         log_buffer.log('DesktopIntegration', f'First-time desktop integration prompt failed: {exc}')
 
     try:
-        from .utils.autostart import sync_autostart
+        from .utils.autostart import sync_autostart  # ruff: ignore[import-outside-top-level]
 
         boot_ok = sync_autostart(
             enable_run_on_boot,
             CONFIG_DIR,
             proxy_mode=config_manager.proxy_mode,
         )
-    except Exception as exc:
+    except Exception as exc:  # ruff: ignore[blind-except]
         boot_ok = False
         log_buffer.log('Autostart', f'First-time run-on-boot prompt failed: {exc}')
 
@@ -1256,10 +1270,12 @@ def _append_windows_requesting_user_args(existing_args: list[str]) -> bool:
     if any(arg.startswith('--fleasion-requesting-user-sid=') for arg in existing_args):
         return True
     try:
-        from .utils.windows_permissions import current_windows_user_identity
+        from .utils.windows_permissions import (  # ruff: ignore[import-outside-top-level]
+            current_windows_user_identity,
+        )
 
         sid, _account_name = current_windows_user_identity()
-    except Exception as exc:
+    except Exception as exc:  # ruff: ignore[blind-except]
         log_buffer.log('UAC', f'Could not capture requesting Windows identity: {exc}')
         return False
     existing_args.extend(
@@ -1270,7 +1286,7 @@ def _append_windows_requesting_user_args(existing_args: list[str]) -> bool:
     return True
 
 
-def _relaunch_as_admin(
+def _relaunch_as_admin(  # ruff: ignore[complex-structure, too-many-arguments, too-many-branches, too-many-locals, too-many-return-statements, too-many-statements]
     extra_args: str = '',
     parent_hwnd: int | None = None,
     *,
@@ -1332,13 +1348,13 @@ def _relaunch_as_admin(
 
         script = 'do shell script ' + json.dumps(shell_cmd) + ' with administrator privileges'
         try:
-            result = subprocess.run(
-                ['osascript', '-e', script],
+            result = subprocess.run(  # ruff: ignore[subprocess-run-without-check, subprocess-without-shell-equals-true]
+                ['osascript', '-e', script],  # ruff: ignore[start-process-with-partial-path]
                 capture_output=True,
                 text=True,
                 timeout=120,
             )
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log('UAC', f'macOS administrator relaunch failed: {exc}')
             return False
 
@@ -1358,7 +1374,7 @@ def _relaunch_as_admin(
         )
         return False
 
-    import ctypes
+    import ctypes  # ruff: ignore[import-outside-top-level]
 
     existing_args = _strip_restart_handoff_args(list(sys.argv[1:]))
     if restart_handoff_token:
@@ -1398,7 +1414,7 @@ def _relaunch_as_admin(
         # invocation through it.  Running the Python interpreter directly in
         # the elevated process would miss the uv-managed virtualenv entirely,
         # causing import failures and a silent crash.
-        import shutil
+        import shutil  # ruff: ignore[import-outside-top-level]
 
         uv_exe = shutil.which('uv') or shutil.which('uv.exe')
         if uv_exe:
@@ -1417,10 +1433,10 @@ def _relaunch_as_admin(
 
     # Use ShellExecuteExW with SEE_MASK_NO_CONSOLE so the elevated process
     # (which may be uv.exe, a console app) never spawns a visible cmd window.
-    import ctypes.wintypes
+    import ctypes.wintypes  # ruff: ignore[import-outside-top-level]
 
-    SEE_MASK_NO_CONSOLE = 0x00008000
-    SEE_MASK_NOCLOSEPROCESS = 0x00000040
+    SEE_MASK_NO_CONSOLE = 0x00008000  # ruff: ignore[non-lowercase-variable-in-function]
+    SEE_MASK_NOCLOSEPROCESS = 0x00000040  # ruff: ignore[non-lowercase-variable-in-function]
 
     class _SHELLEXECUTEINFOW(ctypes.Structure):
         _fields_ = [
@@ -1448,7 +1464,7 @@ def _relaunch_as_admin(
     sei.lpVerb = 'runas'
     sei.lpFile = exe
     sei.lpParameters = params
-    sei.lpDirectory = os.path.dirname(os.path.abspath(exe)) or None
+    sei.lpDirectory = os.path.dirname(os.path.abspath(exe)) or None  # ruff: ignore[os-path-abspath, os-path-dirname]
     # SW_HIDE (0) for dev/uv mode: hides the uv.exe console wrapper.
     # SW_SHOWNORMAL (1) for compiled .exe: the exe IS the app, we need windows to show.
     sei.nShow = 1 if frozen else 0
@@ -1480,7 +1496,9 @@ def _relaunch_as_admin(
         else:
             err = ctypes.get_last_error()
             error_text = ctypes.FormatError(err)
-        if err == 1223:  # ERROR_CANCELLED: user declined UAC
+        if (
+            err == 1223  # ruff: ignore[magic-value-comparison]
+        ):  # ERROR_CANCELLED: user declined UAC
             log_buffer.log('UAC', 'Administrator relaunch was cancelled by the user')
         else:
             log_buffer.log(
@@ -1576,11 +1594,13 @@ def _repair_autostart_once(requesting_user_sid: str | None = None, *, enabled: b
         )
         return 1
 
-    from .utils.autostart import sync_autostart
+    from .utils.autostart import sync_autostart  # ruff: ignore[import-outside-top-level]
 
     windows_user_id = None
     if enabled:
-        from .utils.windows_permissions import windows_user_id_from_sid
+        from .utils.windows_permissions import (  # ruff: ignore[import-outside-top-level]
+            windows_user_id_from_sid,
+        )
 
         if not requesting_user_sid:
             log_buffer.log('Autostart', 'Elevated autostart repair has no requesting user identity')
@@ -1588,13 +1608,13 @@ def _repair_autostart_once(requesting_user_sid: str | None = None, *, enabled: b
 
         try:
             windows_user_id = windows_user_id_from_sid(requesting_user_sid)
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log('Autostart', f'Invalid requesting Windows identity: {exc}')
             return 1
 
     try:
         proxy_mode = ConfigManager().proxy_mode
-    except Exception:
+    except Exception:  # ruff: ignore[blind-except]
         proxy_mode = None
     if sync_autostart(
         enabled,
@@ -1619,7 +1639,7 @@ def _repair_autostart_once(requesting_user_sid: str | None = None, *, enabled: b
     return 1
 
 
-def _repair_roblox_permissions_once(requesting_user_sid: str | None = None) -> int:
+def _repair_roblox_permissions_once(requesting_user_sid: str | None = None) -> int:  # ruff: ignore[complex-structure]
     """Apply a pending targeted Roblox ACL repair from a one-shot UAC child."""
     if TYPE_CHECKING:
 
@@ -1633,7 +1653,7 @@ def _repair_roblox_permissions_once(requesting_user_sid: str | None = None) -> i
 
         def write_repair_result(result: ErrorDetails, config_dir: Path | None = None) -> None: ...
     else:
-        from .utils.windows_permissions import (
+        from .utils.windows_permissions import (  # ruff: ignore[import-outside-top-level]
             clear_pending_repair,
             grant_current_user_modify_access,
             read_pending_repair,
@@ -1668,7 +1688,7 @@ def _repair_roblox_permissions_once(requesting_user_sid: str | None = None) -> i
                 paths,
                 user_sid=requesting_user_sid,
             )
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             result = {
                 'ok': False,
                 'granted': [],
@@ -1702,7 +1722,7 @@ def _repair_windows_firewall_once() -> int:
 
         def write_repair_result(result: ErrorDetails, config_dir: Path | None = None) -> None: ...
     else:
-        from .utils.windows_firewall import (
+        from .utils.windows_firewall import (  # ruff: ignore[import-outside-top-level]
             clear_pending_repair,
             install_fleasion_firewall_rules,
             read_pending_repair,
@@ -1726,7 +1746,7 @@ def _repair_windows_firewall_once() -> int:
     else:
         try:
             result = install_fleasion_firewall_rules()
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             result = {
                 'ok': False,
                 'rules': [],
@@ -1753,7 +1773,7 @@ def _restart_handoff_path(token: str, phase: str = 'ready') -> Path | None:
     phase = str(phase or '')
     if phase not in _RESTART_HANDOFF_PHASES:
         return None
-    if len(token) != 32 or any(character not in '0123456789abcdef' for character in token):
+    if len(token) != 32 or any(character not in '0123456789abcdef' for character in token):  # ruff: ignore[magic-value-comparison]
         return None
     return CONFIG_DIR / f'.restart-{phase}-{token}'
 
@@ -1765,10 +1785,8 @@ def _cleanup_restart_handoff(token: str, *, preserve_abort: bool = False) -> Non
         marker = _restart_handoff_path(token, phase)
         if marker is None:
             continue
-        try:
+        with contextlib.suppress(OSError):
             marker.unlink(missing_ok=True)
-        except OSError:
-            pass
 
 
 def _write_restart_handoff_marker(token: str, phase: str, value: int) -> bool:
@@ -1776,7 +1794,7 @@ def _write_restart_handoff_marker(token: str, phase: str, value: int) -> bool:
     if marker is None or value <= 0:
         log_buffer.log('Restart', 'Rejected invalid restart handoff marker')
         return False
-    try:
+    try:  # ruff: ignore[too-many-statements-in-try-clause]
         marker.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, 'w', encoding='utf-8') as handle:
@@ -1794,14 +1812,14 @@ def _publish_restart_handoff(token: str) -> bool:
     return _write_restart_handoff_marker(token, 'ready', os.getpid())
 
 
-def _pid_is_alive(pid: int) -> bool:
+def _pid_is_alive(pid: int) -> bool:  # ruff: ignore[too-many-return-statements]
     """Return whether an application PID is alive without requiring termination rights."""
     if pid <= 0:
         return False
     if sys.platform != 'win32':
         try:
             os.kill(pid, 0)
-            return True
+            return True  # ruff: ignore[try-consider-else]
         except ProcessLookupError:
             return False
         except PermissionError:
@@ -1809,8 +1827,8 @@ def _pid_is_alive(pid: int) -> bool:
         except OSError:
             return False
 
-    import ctypes
-    import ctypes.wintypes
+    import ctypes  # ruff: ignore[import-outside-top-level]
+    import ctypes.wintypes  # ruff: ignore[import-outside-top-level]
 
     process_query_limited_information = 0x1000
     still_active = 259
@@ -1832,7 +1850,7 @@ def _pid_is_alive(pid: int) -> bool:
     kernel32.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
     kernel32.CloseHandle.restype = ctypes.wintypes.BOOL
 
-    handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+    handle = kernel32.OpenProcess(process_query_limited_information, False, pid)  # ruff: ignore[boolean-positional-value-in-call]
     if not handle:
         return False
     try:
@@ -1922,10 +1940,8 @@ def _wait_for_restart_release(token: str, parent_pid: int) -> bool:
             log_buffer.log('Restart', 'Parent aborted restart before ownership transfer')
             abort_marker = _restart_handoff_path(token, 'abort')
             if abort_marker is not None:
-                try:
+                with contextlib.suppress(OSError):
                     abort_marker.unlink(missing_ok=True)
-                except OSError:
-                    pass
             return False
         if marker.is_file():
             try:
@@ -1933,10 +1949,8 @@ def _wait_for_restart_release(token: str, parent_pid: int) -> bool:
             except OSError:
                 released_by = ''
             if released_by == str(parent_pid):
-                try:
+                with contextlib.suppress(OSError):
                     marker.unlink(missing_ok=True)
-                except OSError:
-                    pass
                 return True
         time.sleep(0.05)
     log_buffer.log('Restart', 'Parent never released single-instance ownership')
@@ -1952,7 +1966,7 @@ def _join_restart_handoff(token: str, parent_pid: int) -> bool:
 
 def _suspend_single_instance_for_handoff() -> bool:
     """Temporarily transfer the single-instance slot while keeping the proxy alive."""
-    global _single_instance_control_server
+    global _single_instance_control_server  # ruff: ignore[global-statement]
 
     shared_memory = _single_instance_shared_memory
     if shared_memory is None or not shared_memory.isAttached():
@@ -1974,15 +1988,14 @@ def _suspend_single_instance_for_handoff() -> bool:
         'Restart', f'Could not release single-instance lock: {shared_memory.errorString()}'
     )
     if not _resume_single_instance_after_handoff_failure():
-        raise RestartHandoffUncertain(
-            'Original process could not restore single-instance ownership after release failure'
-        )
+        msg = 'Original process could not restore single-instance ownership after release failure'
+        raise RestartHandoffUncertain(msg)
     return False
 
 
 def _resume_single_instance_after_handoff_failure() -> bool:
     """Reclaim both single-instance ownership surfaces after a failed restart."""
-    global _single_instance_control_server, _single_instance_shared_memory
+    global _single_instance_control_server, _single_instance_shared_memory  # ruff: ignore[global-statement]
 
     shared_memory = _single_instance_shared_memory
     if shared_memory is None or not shared_memory.isAttached():
@@ -2017,7 +2030,7 @@ def _resume_single_instance_after_handoff_failure() -> bool:
     return True
 
 
-def _abort_restart_child_and_wait(
+def _abort_restart_child_and_wait(  # ruff: ignore[too-many-arguments]
     token: str,
     parent_pid: int,
     application_pid: int | None,
@@ -2130,9 +2143,8 @@ def _run_restart_handoff_parent(
                             'single-instance ownership completely',
                         )
                         _cleanup_restart_handoff(token)
-                        raise RestartHandoffUncertain(
-                            'Original process could not restore single-instance ownership'
-                        )
+                        msg = 'Original process could not restore single-instance ownership'
+                        raise RestartHandoffUncertain(msg)
                 else:
                     log_buffer.log(
                         'Restart',
@@ -2140,9 +2152,8 @@ def _run_restart_handoff_parent(
                         'application may still own single-instance/proxy resources',
                     )
                     _cleanup_restart_handoff(token, preserve_abort=True)
-                    raise RestartHandoffUncertain(
-                        'Replacement application may still own restart resources'
-                    )
+                    msg = 'Replacement application may still own restart resources'
+                    raise RestartHandoffUncertain(msg)
         _cleanup_restart_handoff(token)
 
 
@@ -2179,7 +2190,7 @@ def _strip_restart_handoff_args(args: list[str]) -> list[str]:
     return cleaned
 
 
-def restart_fleasion_normally(
+def restart_fleasion_normally(  # ruff: ignore[complex-structure, too-many-branches, too-many-statements]
     *,
     preserve_env_proxy_player: bool = False,
     verify_startup: bool = False,
@@ -2249,7 +2260,7 @@ def restart_fleasion_normally(
         if sys.platform != 'win32':
             popen_kwargs['start_new_session'] = True
     elif sys.platform == 'win32':
-        import shutil
+        import shutil  # ruff: ignore[import-outside-top-level]
 
         uv_exe = shutil.which('uv') or shutil.which('uv.exe')
         if uv_exe:
@@ -2271,8 +2282,8 @@ def restart_fleasion_normally(
         popen_kwargs['creationflags'] = creationflags
 
     try:
-        process = subprocess.Popen(launch, **popen_kwargs)
-    except Exception as exc:
+        process = subprocess.Popen(launch, **popen_kwargs)  # ruff: ignore[subprocess-without-shell-equals-true]
+    except Exception as exc:  # ruff: ignore[blind-except]
         log_buffer.log('Restart', f'Failed to relaunch Fleasion: {exc}')
         return False
 
@@ -2313,8 +2324,8 @@ def _attempt_silent_elevation(  # pyright: ignore[reportUnusedFunction] - retain
 
 def _visible_parent_widget() -> QWidget | None:
     """Return the best visible Qt parent for startup dialogs."""
-    _top = QApplication.topLevelWidgets()
-    return next((w for w in _top if w.isVisible()), QApplication.activeWindow())
+    top = QApplication.topLevelWidgets()
+    return next((w for w in top if w.isVisible()), QApplication.activeWindow())
 
 
 def _window_handle(widget: QWidget | None) -> int | None:
@@ -2323,20 +2334,20 @@ def _window_handle(widget: QWidget | None) -> int | None:
         return None
     try:
         return int(widget.winId())
-    except Exception:
+    except Exception:  # ruff: ignore[blind-except]
         return None
 
 
 def _show_admin_required_dialog(parent: QWidget | None = None) -> None:
     """Warn that the non-elevated instance cannot provide Fleasion's core behavior."""
-    _top = QApplication.topLevelWidgets()
-    _parent = parent or _visible_parent_widget()
-    _on_top = any(
-        w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in _top
+    top = QApplication.topLevelWidgets()
+    parent_ = parent or _visible_parent_widget()
+    on_top = any(
+        w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in top
     )
 
-    msg = QMessageBox(_parent)
-    if _on_top:
+    msg = QMessageBox(parent_)
+    if on_top:
         msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
     msg.setWindowTitle(tr('app.administrator_mode_required'))
     msg.setIcon(QMessageBox.Icon.Warning)
@@ -2351,7 +2362,7 @@ def _show_admin_required_dialog(parent: QWidget | None = None) -> None:
         msg.setInformativeText(tr('app.windows_did_not_start_fleasion_with_administrator'))
     msg.setStandardButtons(QMessageBox.StandardButton.Ok)
     if icon_path := get_icon_path():
-        from PySide6.QtGui import QIcon
+        from PySide6.QtGui import QIcon  # ruff: ignore[import-outside-top-level]
 
         msg.setWindowIcon(QIcon(str(icon_path)))
     msg.exec()
@@ -2363,14 +2374,14 @@ def _show_proxy_bind_error_dialog(details: ErrorDetails) -> None:
     owners = _preserve_iterable(details.get('owners') or [])
     bind_reason = str(details.get('bind_reason') or '')
 
-    _top = QApplication.topLevelWidgets()
-    _parent = next((w for w in _top if w.isVisible()), None)
-    _on_top = any(
-        w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in _top
+    top = QApplication.topLevelWidgets()
+    parent = next((w for w in top if w.isVisible()), None)
+    on_top = any(
+        w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in top
     )
 
-    msg = QMessageBox(_parent)
-    if _on_top:
+    msg = QMessageBox(parent)
+    if on_top:
         msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
     msg.setWindowTitle(tr('app.proxy_port_conflict'))
     msg.setIcon(QMessageBox.Icon.Warning)
@@ -2387,7 +2398,7 @@ def _show_proxy_bind_error_dialog(details: ErrorDetails) -> None:
                 ),
                 pid=int(_preserve_int_input(_preserve_details(owner).get('pid') or 0)),
                 local_address=html.escape(
-                    str(_preserve_details(owner).get('local_address') or '0.0.0.0')
+                    str(_preserve_details(owner).get('local_address') or '0.0.0.0')  # ruff: ignore[hardcoded-bind-all-interfaces]
                 ),
                 port=port,
             )
@@ -2412,7 +2423,7 @@ def _show_proxy_bind_error_dialog(details: ErrorDetails) -> None:
     )
     msg.setStandardButtons(QMessageBox.StandardButton.Ok)
     if icon_path := get_icon_path():
-        from PySide6.QtGui import QIcon
+        from PySide6.QtGui import QIcon  # ruff: ignore[import-outside-top-level]
 
         msg.setWindowIcon(QIcon(str(icon_path)))
 
@@ -2428,7 +2439,7 @@ def _show_proxy_bind_error_dialog(details: ErrorDetails) -> None:
 
 def _show_hosts_write_exhausted_dialog(details: ErrorDetails) -> None:
     """Show a user-facing popup when hosts writes fail after all retries."""
-    import os
+    import os  # ruff: ignore[import-outside-top-level]
 
     default_hosts_path = (
         '/etc/hosts'
@@ -2442,14 +2453,14 @@ def _show_hosts_write_exhausted_dialog(details: ErrorDetails) -> None:
     )
     hosts_path = str(details.get('hosts_path') or default_hosts_path)
     hosts_directory = str(
-        details.get('hosts_directory') or os.path.dirname(hosts_path) or default_hosts_dir
+        details.get('hosts_directory') or os.path.dirname(hosts_path) or default_hosts_dir  # ruff: ignore[os-path-dirname]
     )
     raw_error = str(details.get('error') or '').strip()
 
-    _top = QApplication.topLevelWidgets()
-    _parent = next((w for w in _top if w.isVisible()), None)
-    _on_top = any(
-        w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in _top
+    top = QApplication.topLevelWidgets()
+    parent = next((w for w in top if w.isVisible()), None)
+    on_top = any(
+        w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in top
     )
 
     discord_url = APP_DISCORD
@@ -2457,8 +2468,8 @@ def _show_hosts_write_exhausted_dialog(details: ErrorDetails) -> None:
         discord_url = f'https://{discord_url}'
 
     while True:
-        msg = QMessageBox(_parent)
-        if _on_top:
+        msg = QMessageBox(parent)
+        if on_top:
             msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
         msg.setWindowTitle(tr('app.hosts_file_write_failed'))
         msg.setIcon(QMessageBox.Icon.Warning)
@@ -2485,7 +2496,7 @@ def _show_hosts_write_exhausted_dialog(details: ErrorDetails) -> None:
         msg.addButton(QMessageBox.StandardButton.Ok)
 
         if icon_path := get_icon_path():
-            from PySide6.QtGui import QIcon
+            from PySide6.QtGui import QIcon  # ruff: ignore[import-outside-top-level]
 
             msg.setWindowIcon(QIcon(str(icon_path)))
 
@@ -2538,14 +2549,14 @@ def _show_linux_hosts_read_only_dialog(details: ErrorDetails) -> None:
     raw_error = str(details.get('error') or '').strip()
     hosts_path = str(details.get('hosts_path') or '/etc/hosts')
 
-    _top = QApplication.topLevelWidgets()
-    _parent = next((w for w in _top if w.isVisible()), None)
-    _on_top = any(
-        w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in _top
+    top = QApplication.topLevelWidgets()
+    parent = next((w for w in top if w.isVisible()), None)
+    on_top = any(
+        w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in top
     )
 
-    msg = QMessageBox(_parent)
-    if _on_top:
+    msg = QMessageBox(parent)
+    if on_top:
         msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
     msg.setWindowTitle(tr('app.read_only_hosts_file'))
     msg.setIcon(QMessageBox.Icon.Warning)
@@ -2574,7 +2585,7 @@ def _show_linux_hosts_read_only_dialog(details: ErrorDetails) -> None:
     copy_button.clicked.connect(_copy_nix_snippet)
 
     if icon_path := get_icon_path():
-        from PySide6.QtGui import QIcon
+        from PySide6.QtGui import QIcon  # ruff: ignore[import-outside-top-level]
 
         msg.setWindowIcon(QIcon(str(icon_path)))
 
@@ -2587,12 +2598,12 @@ def _show_linux_hosts_read_only_dialog(details: ErrorDetails) -> None:
     msg.exec()
 
 
-def _show_macos_ca_patch_failed_dialog(details: ErrorDetails) -> str | None:
+def _show_macos_ca_patch_failed_dialog(details: ErrorDetails) -> str | None:  # ruff: ignore[complex-structure, too-many-branches]
     """Show a user-facing popup when Roblox cacert.pem cannot be verified."""
-    _top = QApplication.topLevelWidgets()
-    _parent = next((w for w in _top if w.isVisible()), None)
-    _on_top = any(
-        w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in _top
+    top = QApplication.topLevelWidgets()
+    parent = next((w for w in top if w.isVisible()), None)
+    on_top = any(
+        w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in top
     )
 
     failed: object = details.get('failed') or _empty_object_list()
@@ -2645,8 +2656,8 @@ def _show_macos_ca_patch_failed_dialog(details: ErrorDetails) -> str | None:
             'app.macos_ca_patch.diagnostics', lines='<br>'.join(failed_lines + unhealthy_lines)
         )
 
-    msg = QMessageBox(_parent)
-    if _on_top:
+    msg = QMessageBox(parent)
+    if on_top:
         msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
     msg.setWindowTitle(tr('app.macos_roblox_ca_patch_failed'))
     msg.setIcon(QMessageBox.Icon.Warning)
@@ -2665,7 +2676,7 @@ def _show_macos_ca_patch_failed_dialog(details: ErrorDetails) -> str | None:
     else:
         msg.setStandardButtons(QMessageBox.StandardButton.Ok)
     if icon_path := get_icon_path():
-        from PySide6.QtGui import QIcon
+        from PySide6.QtGui import QIcon  # ruff: ignore[import-outside-top-level]
 
         msg.setWindowIcon(QIcon(str(icon_path)))
 
@@ -2688,10 +2699,10 @@ def _show_macos_ca_trust_failed_dialog(details: ErrorDetails) -> None:
     raw_error = html.escape(
         str(details.get('error') or tr('app.macos_ca_trust.unknown_helper_error'))
     )
-    _top = QApplication.topLevelWidgets()
-    _parent = next((w for w in _top if w.isVisible()), None)
+    top = QApplication.topLevelWidgets()
+    parent = next((w for w in top if w.isVisible()), None)
 
-    msg = QMessageBox(_parent)
+    msg = QMessageBox(parent)
     msg.setWindowTitle(tr('app.macos_launcher_ca_trust_failed'))
     msg.setIcon(QMessageBox.Icon.Warning)
     msg.setText(tr('app.fleasion_could_not_establish_macos_trust_for'))
@@ -2701,7 +2712,7 @@ def _show_macos_ca_trust_failed_dialog(details: ErrorDetails) -> None:
     )
     msg.setStandardButtons(QMessageBox.StandardButton.Ok)
     if icon_path := get_icon_path():
-        from PySide6.QtGui import QIcon
+        from PySide6.QtGui import QIcon  # ruff: ignore[import-outside-top-level]
 
         msg.setWindowIcon(QIcon(str(icon_path)))
     msg.exec()
@@ -2768,12 +2779,12 @@ def _windows_ca_permission_denied_dirs(details: ErrorDetails) -> list[Path]:
 
 def _show_macos_relay_failed_dialog(details: ErrorDetails) -> str:
     """Explain a failed privileged relay and return the requested recovery action."""
-    from .utils.macos_proxy_helper import HELPER_LOG_DIR
+    from .utils.macos_proxy_helper import HELPER_LOG_DIR  # ruff: ignore[import-outside-top-level]
 
-    _top = QApplication.topLevelWidgets()
-    _parent = next((w for w in _top if w.isVisible()), None)
-    _on_top = any(
-        w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in _top
+    top = QApplication.topLevelWidgets()
+    parent = next((w for w in top if w.isVisible()), None)
+    on_top = any(
+        w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in top
     )
 
     backend_probe = _preserve_details(details.get('backend_probe') or {})
@@ -2796,8 +2807,8 @@ def _show_macos_relay_failed_dialog(details: ErrorDetails) -> str:
 
     attempts = int(_preserve_int_input(details.get('attempts') or 1))
     while True:
-        msg = QMessageBox(_parent)
-        if _on_top:
+        msg = QMessageBox(parent)
+        if on_top:
             msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
         msg.setWindowTitle(tr('app.macos_proxy_relay_failed'))
         msg.setIcon(QMessageBox.Icon.Warning)
@@ -2814,7 +2825,7 @@ def _show_macos_relay_failed_dialog(details: ErrorDetails) -> str:
         close_button = msg.addButton(QMessageBox.StandardButton.Close)
         msg.setDefaultButton(reinstall_button)
         if icon_path := get_icon_path():
-            from PySide6.QtGui import QIcon
+            from PySide6.QtGui import QIcon  # ruff: ignore[import-outside-top-level]
 
             msg.setWindowIcon(QIcon(str(icon_path)))
 
@@ -2838,7 +2849,7 @@ def _show_macos_relay_failed_dialog(details: ErrorDetails) -> str:
         return 'close'
 
 
-def _choose_macos_auth_source_on_launch(
+def _choose_macos_auth_source_on_launch(  # ruff: ignore[complex-structure, too-many-locals, too-many-statements]
     config_manager: ConfigManager, tray: SystemTray | None = None, *, force: bool = False
 ) -> str:
     """Ask macOS users which browser should be queried for Roblox auth."""
@@ -2846,31 +2857,34 @@ def _choose_macos_auth_source_on_launch(
         return 'unavailable'
     if config_manager.macos_auth_source and not force:
         try:
-            from .utils.roblox_auth import get_roblosecurity, notify_auth_source_changed
+            from .utils.roblox_auth import (  # ruff: ignore[import-outside-top-level]
+                get_roblosecurity,
+                notify_auth_source_changed,
+            )
 
             if get_roblosecurity(include_keychain_browsers=True):
                 return 'already-configured'
             log_buffer.log(
                 'Auth',
-                f'Configured Roblox login source {config_manager.macos_auth_source} did not produce a valid token; reopening browser picker',
+                f'Configured Roblox login source {config_manager.macos_auth_source} did not produce a valid token; reopening browser picker',  # ruff: ignore[line-too-long]
             )
             config_manager.macos_auth_source = ''
             notify_auth_source_changed()
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log(
                 'Auth',
-                f'Unexpected error while validating configured macOS auth source: {type(exc).__name__}: {exc}',
+                f'Unexpected error while validating configured macOS auth source: {type(exc).__name__}: {exc}',  # ruff: ignore[line-too-long]
             )
             config_manager.macos_auth_source = ''
 
-    _top = QApplication.topLevelWidgets()
-    _parent = next((w for w in _top if w.isVisible()), None)
-    _on_top = any(
-        w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in _top
+    top = QApplication.topLevelWidgets()
+    parent = next((w for w in top if w.isVisible()), None)
+    on_top = any(
+        w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in top
     )
 
-    dialog = _MacOSAuthSourceDialog(_parent)
-    if _on_top:
+    dialog = _MacOSAuthSourceDialog(parent)
+    if on_top:
         dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
     dialog.setWindowTitle(tr('app.roblox_login_source'))
     dialog.setMinimumWidth(620)
@@ -2931,7 +2945,7 @@ def _choose_macos_auth_source_on_launch(
         exit_button = msg.addButton(tr('app.exit_fleasion'), QMessageBox.ButtonRole.DestructiveRole)
         msg.addButton(QMessageBox.StandardButton.Ok)
         if icon_path := get_icon_path():
-            from PySide6.QtGui import QIcon
+            from PySide6.QtGui import QIcon  # ruff: ignore[import-outside-top-level]
 
             msg.setWindowIcon(QIcon(str(icon_path)))
         msg.exec()
@@ -2955,14 +2969,16 @@ def _choose_macos_auth_source_on_launch(
     def _choose(browser: str) -> None:
         _set_busy(browser)
         try:
-            from .utils.roblox_auth import discover_browser_roblosecurity
+            from .utils.roblox_auth import (  # ruff: ignore[import-outside-top-level]
+                discover_browser_roblosecurity,
+            )
 
             cookie, source = discover_browser_roblosecurity(
                 include_keychain=True,
                 explicit_import=True,
                 browser=browser,
             )
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log(
                 'Auth',
                 f'Unexpected error while checking {browser}: {type(exc).__name__}: {exc}',
@@ -3005,8 +3021,8 @@ def _choose_macos_auth_source_on_launch(
     buttons.extend((manual_btn, skip_btn))
 
     def _manual_import() -> None:
-        from .gui.rando_stuff_tab import AddAccountDialog
-        from .utils.roblox_auth import (
+        from .gui.rando_stuff_tab import AddAccountDialog  # ruff: ignore[import-outside-top-level]
+        from .utils.roblox_auth import (  # ruff: ignore[import-outside-top-level]
             store_manual_roblosecurity,
             validate_roblosecurity_for_import,
         )
@@ -3014,7 +3030,7 @@ def _choose_macos_auth_source_on_launch(
         dlg = AddAccountDialog(dialog, title=tr('app.auth_source.import_title'))
         dlg.set_ok_label(tr('app.auth_source.import_button'))
         if icon_path := get_icon_path():
-            from PySide6.QtGui import QIcon
+            from PySide6.QtGui import QIcon  # ruff: ignore[import-outside-top-level]
 
             dlg.setWindowIcon(QIcon(str(icon_path)))
         if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.result_cookie:
@@ -3037,7 +3053,7 @@ def _choose_macos_auth_source_on_launch(
         _save_and_accept('manual')
 
     def _continue_without_token() -> None:
-        selected['continue_without_token'] = '1'
+        selected['continue_without_token'] = '1'  # ruff: ignore[hardcoded-password-string]
         dialog.allow_reject = True
         dialog.reject()
 
@@ -3046,7 +3062,7 @@ def _choose_macos_auth_source_on_launch(
     exit_btn.clicked.connect(_exit_from_auth_prompt)
 
     if icon_path := get_icon_path():
-        from PySide6.QtGui import QIcon
+        from PySide6.QtGui import QIcon  # ruff: ignore[import-outside-top-level]
 
         dialog.setWindowIcon(QIcon(str(icon_path)))
 
@@ -3054,10 +3070,12 @@ def _choose_macos_auth_source_on_launch(
     if selected_browser := selected.get('browser'):
         config_manager.macos_auth_source = selected_browser
         try:
-            from .utils.roblox_auth import notify_auth_source_changed
+            from .utils.roblox_auth import (  # ruff: ignore[import-outside-top-level]
+                notify_auth_source_changed,
+            )
 
             notify_auth_source_changed()
-        except Exception:
+        except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass
         if tray is not None and hasattr(tray, '_refresh_settings_tab'):
             _call_tray_refresh_settings(tray)
@@ -3092,14 +3110,14 @@ def _windows_auth_profile_matches_username(details: ErrorDetails) -> bool:
     return True
 
 
-def _show_auth_cookie_unavailable_dialog(
+def _show_auth_cookie_unavailable_dialog(  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
     details: ErrorDetails, tray: SystemTray | None = None
 ) -> None:
     """Show a user-facing popup when no readable Roblox auth cookie can be found."""
-    _top = QApplication.topLevelWidgets()
-    _parent = next((w for w in _top if w.isVisible()), None)
-    _on_top = any(
-        w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in _top
+    top = QApplication.topLevelWidgets()
+    parent = next((w for w in top if w.isVisible()), None)
+    on_top = any(
+        w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) for w in top
     )
 
     discord_url = APP_DISCORD
@@ -3178,8 +3196,8 @@ def _show_auth_cookie_unavailable_dialog(
             else 'app.auth_warning.windows_guidance'
         )
 
-    msg = _ForcedAcknowledgeMessageBox(_parent)
-    if _on_top:
+    msg = _ForcedAcknowledgeMessageBox(parent)
+    if on_top:
         msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
     msg.setWindowTitle(tr('app.roblox_token_not_readable'))
     msg.setIcon(QMessageBox.Icon.Warning)
@@ -3202,7 +3220,7 @@ def _show_auth_cookie_unavailable_dialog(
         )
     )
     if sys.platform == 'darwin' or sys.platform.startswith('linux'):
-        import webbrowser
+        import webbrowser  # ruff: ignore[import-outside-top-level]
 
         open_login_button = msg.addButton(
             tr('app.open_roblox_login'), QMessageBox.ButtonRole.ActionRole
@@ -3215,7 +3233,7 @@ def _show_auth_cookie_unavailable_dialog(
         msg.addButton(QMessageBox.StandardButton.Ok)
 
     if icon_path := get_icon_path():
-        from PySide6.QtGui import QIcon
+        from PySide6.QtGui import QIcon  # ruff: ignore[import-outside-top-level]
 
         msg.setWindowIcon(QIcon(str(icon_path)))
 
@@ -3266,23 +3284,25 @@ def _show_auth_cookie_unavailable_dialog(
         if sys.platform.startswith('linux'):
             launch_as_standard_user('https://www.roblox.com/login')
         else:
-            import webbrowser
+            import webbrowser  # ruff: ignore[import-outside-top-level]
 
             webbrowser.open('https://www.roblox.com/login')
 
 
-def _show_windows_upstream_firewall_dialog(details: ErrorDetails) -> None:
+def _show_windows_upstream_firewall_dialog(details: ErrorDetails) -> None:  # ruff: ignore[complex-structure, too-many-statements]
     """Explain a blocked upstream connection and offer a targeted UAC repair."""
     if sys.platform != 'win32':
         return
 
-    from .utils.windows_firewall import get_fleasion_firewall_rule_status
+    from .utils.windows_firewall import (  # ruff: ignore[import-outside-top-level]
+        get_fleasion_firewall_rule_status,
+    )
 
     host = str(details.get('host') or tr('app.firewall.default_content_server'))
     parent = _visible_parent_widget()
     try:
         firewall_status = get_fleasion_firewall_rule_status()
-    except Exception as exc:
+    except Exception as exc:  # ruff: ignore[blind-except]
         log_buffer.log('WindowsFirewall', f'Could not inspect Fleasion firewall rules: {exc}')
         firewall_status = {'ok': False}
 
@@ -3316,7 +3336,7 @@ def _show_windows_upstream_firewall_dialog(details: ErrorDetails) -> None:
     msg.exec()
 
     if help_button is not None and msg.clickedButton() == help_button:
-        import webbrowser
+        import webbrowser  # ruff: ignore[import-outside-top-level]
 
         discord_url = APP_DISCORD
         if not discord_url.startswith(('http://', 'https://')):
@@ -3325,7 +3345,7 @@ def _show_windows_upstream_firewall_dialog(details: ErrorDetails) -> None:
         return
 
     if msg.clickedButton() == repair_button:
-        from .utils.windows_firewall import (
+        from .utils.windows_firewall import (  # ruff: ignore[import-outside-top-level]
             clear_pending_repair,
             clear_repair_result,
             write_pending_repair,
@@ -3338,7 +3358,7 @@ def _show_windows_upstream_firewall_dialog(details: ErrorDetails) -> None:
                 extra_args='--repair-firewall',
                 parent_hwnd=_window_handle(parent),
             )
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             clear_pending_repair(CONFIG_DIR)
             log_buffer.log('WindowsFirewall', f'Could not start elevated firewall repair: {exc}')
             relaunched = False
@@ -3359,7 +3379,7 @@ def _show_windows_upstream_firewall_dialog(details: ErrorDetails) -> None:
     if msg.clickedButton() == settings_button:
         try:
             subprocess.Popen(
-                [
+                [  # ruff: ignore[start-process-with-partial-path]
                     'control.exe',
                     '/name',
                     'Microsoft.WindowsFirewall',
@@ -3395,26 +3415,28 @@ class _ProxyErrorInvoker(QObject):
     retry_proxy = Signal()
 
     @Slot(str, dict)
-    def handle_proxy_error(self, code: str, details: dict[str, object]) -> None:
+    def handle_proxy_error(self, code: str, details: dict[str, object]) -> None:  # ruff: ignore[complex-structure, too-many-branches]
         if code == 'port_bind_failed':
             _show_proxy_bind_error_dialog(details)
         elif code == 'hosts_write_exhausted':
             _show_hosts_write_exhausted_dialog(details)
         elif code == 'hosts_entries_would_exceed_limit':
             _show_hosts_capacity_dialog(details)
-        elif code in ('hosts_file_too_large', 'hosts_file_repair_failed'):
+        elif code in ('hosts_file_too_large', 'hosts_file_repair_failed'):  # ruff: ignore[literal-membership]
             _show_oversized_hosts_file_dialog(details, on_repaired=self.retry_proxy.emit)
         elif code == 'linux_hosts_read_only':
             _show_linux_hosts_read_only_dialog(details)
         elif code == 'macos_ca_patch_failed':
             if _show_macos_ca_patch_failed_dialog(details) == 'install_helper':
-                from .utils.macos_proxy_helper import install_helper
+                from .utils.macos_proxy_helper import (  # ruff: ignore[import-outside-top-level]
+                    install_helper,
+                )
 
                 ok, detail = install_helper()
                 if ok:
                     log_buffer.log(
                         'ProxyHelper',
-                        'macOS proxy helper installed for protected cacert.pem; retrying proxy startup',
+                        'macOS proxy helper installed for protected cacert.pem; retrying proxy startup',  # ruff: ignore[line-too-long]
                     )
                     self.retry_proxy.emit()
                 else:
@@ -3442,13 +3464,15 @@ class _ProxyErrorInvoker(QObject):
             if action == 'retry':
                 self.retry_proxy.emit()
             elif action == 'reinstall':
-                from .utils.macos_proxy_helper import install_helper
+                from .utils.macos_proxy_helper import (  # ruff: ignore[import-outside-top-level]
+                    install_helper,
+                )
 
                 ok, detail = install_helper()
                 if ok:
                     log_buffer.log(
                         'ProxyHelper',
-                        'macOS proxy helper reinstalled after relay failure; retrying proxy startup',
+                        'macOS proxy helper reinstalled after relay failure; retrying proxy startup',  # ruff: ignore[line-too-long]
                     )
                     self.retry_proxy.emit()
                 else:
@@ -3539,7 +3563,7 @@ class _RobloxUrlEventFilter(QObject):
             return target
         return None
 
-    def eventFilter(self, _watched: QObject | None, event: QEvent) -> bool:
+    def eventFilter(self, _watched: QObject | None, event: QEvent) -> bool:  # ruff: ignore[invalid-function-name]
         target = self._event_target(event)
         if target is not None:
             if self._ready:
@@ -3588,7 +3612,7 @@ class RobloxExitMonitor(QObject):
         self._macos_plain_launch_lock = threading.Lock()
         self._macos_plain_launches: dict[int, Path] = {}
         if (
-            sys.platform == 'darwin'
+            sys.platform == 'darwin'  # ruff: ignore[too-many-boolean-expressions]
             and env_lifecycle is not None
             and proxy_master is not None
             and config_manager.proxy_mode == 'env'
@@ -3596,21 +3620,23 @@ class RobloxExitMonitor(QObject):
             and callable(getattr(proxy_master, 'wait_for_env_proxy_ready', None))
         ):
             try:
-                from .utils.platform_macos import MacOSRobloxUriInterceptor
+                from .utils.platform_macos import (  # ruff: ignore[import-outside-top-level]
+                    MacOSRobloxUriInterceptor,
+                )
 
                 self._macos_uri_interceptor = MacOSRobloxUriInterceptor(
                     is_armed=self._macos_uri_interception_armed,
                     on_intercepted=self._handle_macos_uri_interception,
                 )
                 self._macos_uri_interceptor.start()
-            except Exception as exc:
+            except Exception as exc:  # ruff: ignore[blind-except]
                 log_buffer.log(
                     'Launcher',
                     f'Could not start macOS Roblox URI watcher: {type(exc).__name__}: {exc}',
                 )
         self._studio_detected.connect(self._on_studio_detected)
 
-    def is_player_running(self) -> bool:
+    def is_player_running(self) -> bool:  # ruff: ignore[no-self-use]
         """Return whether Roblox Player is currently running."""
         return is_roblox_running()
 
@@ -3625,7 +3651,7 @@ class RobloxExitMonitor(QObject):
     def _macos_uri_interception_armed(self) -> bool:
         """Return whether it is safe to stop and replay a browser URI launch."""
         if (
-            sys.platform != 'darwin'
+            sys.platform != 'darwin'  # ruff: ignore[too-many-boolean-expressions]
             or self._proxy_master is None
             or self.env_lifecycle is None
             or self.config_manager.proxy_mode != 'env'
@@ -3637,7 +3663,7 @@ class RobloxExitMonitor(QObject):
         ready = getattr(self._proxy_master, 'wait_for_env_proxy_ready', None)
         try:
             return bool(callable(ready) and ready(timeout=0.0))
-        except Exception:
+        except Exception:  # ruff: ignore[blind-except]
             return False
 
     def _handle_macos_uri_interception(self, launch: MacOSRobloxPlayerLaunch, target: str) -> None:
@@ -3649,7 +3675,7 @@ class RobloxExitMonitor(QObject):
             self._macos_plain_launches.pop(int(launch.pid), None)
         self.env_lifecycle.handle_intercepted_player_launch(Path(launch.executable_path), target)
 
-    def _schedule_macos_plain_launch_fallback(self, exe_path: Path) -> None:
+    def _schedule_macos_plain_launch_fallback(self, exe_path: Path) -> None:  # ruff: ignore[complex-structure]
         """Keep ordinary Dock/Finder launches on the existing Env Proxy path."""
         if self._macos_uri_interceptor is None:
             return
@@ -3705,7 +3731,7 @@ class RobloxExitMonitor(QObject):
         finally:
             self._status_lock.release()
 
-    def _check_roblox_status_locked(self) -> None:
+    def _check_roblox_status_locked(self) -> None:  # ruff: ignore[complex-structure, too-many-branches, too-many-statements]
         """Check if Roblox has exited and trigger cache deletion if needed."""
         is_running = is_roblox_running()
         player_status_observed_at = time.monotonic()
@@ -3724,7 +3750,7 @@ class RobloxExitMonitor(QObject):
                     self.env_lifecycle.note_unexpected_player_exit()
 
         # --- Roblox Player: launch detection - check CA cert on new launch ---
-        if not self._player_was_running and is_running:
+        if not self._player_was_running and is_running:  # ruff: ignore[too-many-nested-blocks]
             if sys.platform.startswith('linux'):
                 exe_path = _linux_client_launch_path()
                 if self._mod_manager is not None:
@@ -3766,7 +3792,7 @@ class RobloxExitMonitor(QObject):
                         and self._proxy_master is not None
                         and proxy_features_enabled
                     ):
-                        from .utils.platform_windows import (
+                        from .utils.platform_windows import (  # ruff: ignore[import-outside-top-level]
                             is_env_proxy_relaunched_player_running,
                             is_gdk_env_proxy_activation_in_progress,
                             is_roblox_gdk_env_proxy_armed,
@@ -3798,7 +3824,7 @@ class RobloxExitMonitor(QObject):
                         elif is_env_proxy_relaunched_player_running():
                             log_buffer.log(
                                 'Launcher',
-                                'Roblox Env Proxy Player already running; skipping duplicate launch handling',
+                                'Roblox Env Proxy Player already running; skipping duplicate launch handling',  # ruff: ignore[line-too-long]
                             )
                             self._suppress_next_player_exit_cache_delete = False
                         else:
@@ -3831,7 +3857,7 @@ class RobloxExitMonitor(QObject):
                     elif not proxy_features_enabled:
                         log_buffer.log(
                             'Certificate',
-                            'Roblox launch detected: proxy features disabled, skipping proxy CA refresh',
+                            'Roblox launch detected: proxy features disabled, skipping proxy CA refresh',  # ruff: ignore[line-too-long]
                         )
                 else:
                     log_buffer.log(
@@ -3914,14 +3940,14 @@ class RobloxExitMonitor(QObject):
 
     def _on_studio_detected(self) -> None:
         """Show the Roblox Studio warning dialog (called on the main thread via signal)."""
-        _top = QApplication.topLevelWidgets()
-        _parent = next((w for w in _top if w.isVisible()), None)
-        _on_top = any(
+        top = QApplication.topLevelWidgets()
+        parent = next((w for w in top if w.isVisible()), None)
+        on_top = any(
             w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
-            for w in _top
+            for w in top
         )
-        dialog = QDialog(_parent)
-        if _on_top:
+        dialog = QDialog(parent)
+        if on_top:
             dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
         dialog.setWindowTitle(tr('app.roblox_studio_detected'))
 
@@ -3944,7 +3970,7 @@ class RobloxExitMonitor(QObject):
         layout.addLayout(btn_layout)
 
         if icon_path := get_icon_path():
-            from PySide6.QtGui import QIcon
+            from PySide6.QtGui import QIcon  # ruff: ignore[import-outside-top-level]
 
             dialog.setWindowIcon(QIcon(str(icon_path)))
 
@@ -3957,14 +3983,14 @@ class RobloxExitMonitor(QObject):
         suppress_btn.clicked.connect(_suppress)
         dialog.exec()
 
-    def _delete_cache_background(self) -> None:
+    def _delete_cache_background(self) -> None:  # ruff: ignore[no-self-use]
         """Delete cache in background thread."""
         messages = delete_cache()
         for msg in messages:
             log_buffer.log('Cache', msg)
 
 
-def _looks_like_fleasion_gui_command(command: str) -> bool:
+def _looks_like_fleasion_gui_command(command: str) -> bool:  # ruff: ignore[too-many-return-statements]
     """Return whether a process command is a Fleasion GUI app/dev launch."""
     try:
         tokens = shlex.split(command)
@@ -3992,7 +4018,7 @@ def _looks_like_fleasion_gui_command(command: str) -> bool:
     for index, token in enumerate(tokens):
         if Path(token).name == 'launcher.py':
             return True
-        if token == '-m' and index + 1 < len(tokens) and tokens[index + 1].lower() == 'fleasion':
+        if token == '-m' and index + 1 < len(tokens) and tokens[index + 1].lower() == 'fleasion':  # ruff: ignore[hardcoded-password-string]
             return True
     return False
 
@@ -4004,21 +4030,21 @@ def _looks_like_macos_fleasion_command(  # pyright: ignore[reportUnusedFunction]
     return _looks_like_fleasion_gui_command(command)
 
 
-def _other_fleasion_pids() -> list[int]:
+def _other_fleasion_pids() -> list[int]:  # ruff: ignore[complex-structure, too-many-branches]
     """Return PIDs of other Fleasion GUI processes (excludes current process and its parent)."""
-    import os
-    import subprocess
+    import os  # ruff: ignore[import-outside-top-level]
+    import subprocess  # ruff: ignore[import-outside-top-level, suspicious-subprocess-import]
 
     current_pid = os.getpid()
     parent_pid = os.getppid()
     safe_pids = {current_pid, parent_pid}
-    exe_name = os.path.basename(sys.executable)
+    exe_name = os.path.basename(sys.executable)  # ruff: ignore[os-path-basename]
     pids: list[int] = []
 
     if sys.platform != 'win32':
-        try:
-            result = subprocess.run(
-                ['ps', '-axo', 'pid=,ppid=,command='],
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
+            result = subprocess.run(  # ruff: ignore[subprocess-run-without-check]
+                ['ps', '-axo', 'pid=,ppid=,command='],  # ruff: ignore[start-process-with-partial-path]
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -4031,14 +4057,14 @@ def _other_fleasion_pids() -> list[int]:
                     continue
                 if pid not in safe_pids and _looks_like_fleasion_gui_command(command):
                     pids.append(pid)
-        except Exception:
+        except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass
         return pids
 
-    try:
-        if exe_name.lower() not in ('python.exe', 'python3.exe'):
-            result = subprocess.run(
-                ['tasklist', '/FI', f'IMAGENAME eq {exe_name}', '/FO', 'CSV', '/NH'],
+    try:  # ruff: ignore[too-many-nested-blocks, too-many-statements-in-try-clause]
+        if exe_name.lower() not in ('python.exe', 'python3.exe'):  # ruff: ignore[literal-membership]
+            result = subprocess.run(  # ruff: ignore[subprocess-run-without-check, subprocess-without-shell-equals-true]
+                ['tasklist', '/FI', f'IMAGENAME eq {exe_name}', '/FO', 'CSV', '/NH'],  # ruff: ignore[start-process-with-partial-path]
                 capture_output=True,
                 text=True,
                 encoding='utf-8',
@@ -4047,9 +4073,9 @@ def _other_fleasion_pids() -> list[int]:
                 timeout=10,
             )
             for line in result.stdout.strip().splitlines():
-                line = line.strip().strip('"')
+                line = line.strip().strip('"')  # ruff: ignore[redefined-loop-name]
                 parts = line.split('","')
-                if len(parts) >= 2:
+                if len(parts) >= 2:  # ruff: ignore[magic-value-comparison]
                     try:
                         pid = int(parts[1])
                         if pid not in safe_pids:
@@ -4061,8 +4087,8 @@ def _other_fleasion_pids() -> list[int]:
                 'Get-CimInstance Win32_Process -Filter "Name=\'python.exe\'" | '
                 'Select-Object ProcessId, CommandLine | ConvertTo-Json -Depth 1'
             )
-            result = subprocess.run(
-                ['powershell', '-NoProfile', '-Command', ps_cmd],
+            result = subprocess.run(  # ruff: ignore[subprocess-run-without-check, subprocess-without-shell-equals-true]
+                ['powershell', '-NoProfile', '-Command', ps_cmd],  # ruff: ignore[start-process-with-partial-path]
                 capture_output=True,
                 text=True,
                 encoding='utf-8',
@@ -4070,7 +4096,7 @@ def _other_fleasion_pids() -> list[int]:
                 creationflags=subprocess.CREATE_NO_WINDOW,
                 timeout=30,
             )
-            try:
+            try:  # ruff: ignore[too-many-statements-in-try-clause]
                 data = json.loads(result.stdout)
                 if isinstance(data, dict):
                     data = [data]
@@ -4083,7 +4109,7 @@ def _other_fleasion_pids() -> list[int]:
                         pids.append(pid)
             except json.JSONDecodeError, TypeError, ValueError:
                 pass
-    except Exception:
+    except Exception:  # ruff: ignore[blind-except, try-except-pass]
         pass
 
     return pids
@@ -4106,19 +4132,19 @@ def _request_running_instance_exit(
     preserve_env_proxy_player: bool = False,
 ) -> bool:
     """Ask the already-running Fleasion instance to exit through its Qt event loop."""
-    try:
+    try:  # ruff: ignore[too-many-statements-in-try-clause]
         socket = QLocalSocket()
         socket.connectToServer(_SINGLE_INSTANCE_CONTROL_SERVER)
         if not socket.waitForConnected(timeout_ms):
             return False
 
         command = 'quit-preserve-env-player' if preserve_env_proxy_player else 'quit'
-        socket.write(f'{command}\n'.encode('utf-8'))
+        socket.write(f'{command}\n'.encode())
         socket.waitForBytesWritten(1000)
         socket.disconnectFromServer()
         socket.waitForDisconnected(1000)
-        return True
-    except Exception:
+        return True  # ruff: ignore[try-consider-else]
+    except Exception:  # ruff: ignore[blind-except]
         return False
 
 
@@ -4133,18 +4159,18 @@ def _roblox_uri_from_argv() -> str | None:
 
 def _request_running_instance_launch(target: str, timeout_ms: int = 5000) -> bool:
     """Forward a Roblox deeplink to the already-running Fleasion instance."""
-    try:
+    try:  # ruff: ignore[too-many-statements-in-try-clause]
         socket = QLocalSocket()
         socket.connectToServer(_SINGLE_INSTANCE_CONTROL_SERVER)
         if not socket.waitForConnected(timeout_ms):
             return False
 
-        socket.write(f'launch-roblox\n{target}\n'.encode('utf-8'))
+        socket.write(f'launch-roblox\n{target}\n'.encode())
         socket.waitForBytesWritten(1000)
         socket.disconnectFromServer()
         socket.waitForDisconnected(1000)
-        return True
-    except Exception:
+        return True  # ruff: ignore[try-consider-else]
+    except Exception:  # ruff: ignore[blind-except]
         return False
 
 
@@ -4188,7 +4214,7 @@ def _arm_windows_gdk_env_proxy_when_ready(proxy_master: ProxyMaster, timeout: fl
         )
         return False
 
-    from .utils.platform_windows import (
+    from .utils.platform_windows import (  # ruff: ignore[import-outside-top-level]
         arm_roblox_gdk_env_proxy,
         disarm_roblox_gdk_env_proxy,
     )
@@ -4223,7 +4249,7 @@ def _request_other_fleasion_instances_exit(
 
 
 def _handle_single_instance_command(socket: QLocalSocket, tray: SystemTray) -> None:
-    try:
+    try:  # ruff: ignore[too-many-statements-in-try-clause]
         command = _qt_bytes(socket.readAll()).decode('utf-8', errors='replace').strip()
         if command.lower() == 'quit':
             _call_tray_exit(tray)
@@ -4233,7 +4259,7 @@ def _handle_single_instance_command(socket: QLocalSocket, tray: SystemTray) -> N
             target = command.split('\n', 1)[1].strip()
             if target.startswith(('roblox:', 'roblox-player:')):
                 run_in_thread(_launch_roblox_uri_for_instance)(tray, target)
-    except Exception:
+    except Exception:  # ruff: ignore[blind-except, try-except-pass]
         pass
 
 
@@ -4263,32 +4289,32 @@ def _start_single_instance_control_server(
 
 def kill_other_fleasion_instances() -> None:
     """Kill all other Fleasion instances except the current process."""
-    import os
-    import subprocess
+    import os  # ruff: ignore[import-outside-top-level]
+    import subprocess  # ruff: ignore[import-outside-top-level, suspicious-subprocess-import]
 
     if _request_other_fleasion_instances_exit():
         return
 
     for pid in _other_fleasion_pids():
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
             if sys.platform != 'win32':
                 os.kill(pid, signal.SIGTERM)
             else:
-                subprocess.run(
-                    ['taskkill', '/PID', str(pid)],
+                subprocess.run(  # ruff: ignore[subprocess-run-without-check, subprocess-without-shell-equals-true]
+                    ['taskkill', '/PID', str(pid)],  # ruff: ignore[start-process-with-partial-path]
                     capture_output=True,
                     creationflags=subprocess.CREATE_NO_WINDOW,
                     timeout=5,
                 )
                 if _wait_for_other_fleasion_instances_to_exit(2.0):
                     continue
-                subprocess.run(
-                    ['taskkill', '/F', '/PID', str(pid)],
+                subprocess.run(  # ruff: ignore[subprocess-run-without-check, subprocess-without-shell-equals-true]
+                    ['taskkill', '/F', '/PID', str(pid)],  # ruff: ignore[start-process-with-partial-path]
                     capture_output=True,
                     creationflags=subprocess.CREATE_NO_WINDOW,
                     timeout=5,
                 )
-        except Exception:
+        except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass
 
 
@@ -4307,7 +4333,9 @@ def _check_linux_gui_dependencies() -> bool:
     if not sys.platform.startswith('linux'):
         return True
 
-    from .utils.platform_linux import missing_linux_gui_packages
+    from .utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
+        missing_linux_gui_packages,
+    )
 
     missing = missing_linux_gui_packages()
     if not missing:
@@ -4335,78 +4363,80 @@ def _check_linux_gui_dependencies() -> bool:
     return False
 
 
-def main() -> None:
+def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
     """Main application entry point."""
-    global _single_instance_app, _single_instance_control_server
-    global _single_instance_shared_memory, _single_instance_tray
+    global _single_instance_app, _single_instance_control_server  # ruff: ignore[global-statement, repeated-global]
+    global _single_instance_shared_memory, _single_instance_tray  # ruff: ignore[global-statement]
 
-    import argparse as _ap
+    import argparse as _ap  # ruff: ignore[import-outside-top-level]
 
-    _parser = _ap.ArgumentParser(add_help=False)
-    _parser.add_argument(
+    parser = _ap.ArgumentParser(add_help=False)
+    parser.add_argument(
         '--no-dashboard',
         action='store_true',
         help='Suppress dashboard on launch (used by autostart task)',
     )
-    _parser.add_argument(
+    parser.add_argument(
         '--kill-others',
         action='store_true',
         help='Kill other Fleasion instances on startup (used when relaunching elevated)',
     )
-    _parser.add_argument(
+    parser.add_argument(
         '--preserve-env-proxy-player',
         action='store_true',
         help=_ap.SUPPRESS,
     )
-    _parser.add_argument('--restart-handoff-token', help=_ap.SUPPRESS)
-    _parser.add_argument('--restart-handoff-parent-pid', type=int, help=_ap.SUPPRESS)
-    _parser.add_argument('--proxy-debug', '-proxy-debug', action='store_true', help=_ap.SUPPRESS)
-    _parser.add_argument(
+    parser.add_argument('--restart-handoff-token', help=_ap.SUPPRESS)
+    parser.add_argument('--restart-handoff-parent-pid', type=int, help=_ap.SUPPRESS)
+    parser.add_argument('--proxy-debug', '-proxy-debug', action='store_true', help=_ap.SUPPRESS)
+    parser.add_argument(
         '--proxy-debug-mode',
         choices=['a', 'b', 'c', 'd', 'e', 'full'],
         help=_ap.SUPPRESS,
     )
-    _parser.add_argument('--fleasion-user-localappdata', help=_ap.SUPPRESS)
-    _parser.add_argument('--fleasion-requesting-user-sid', help=_ap.SUPPRESS)
-    _parser.add_argument('--repair-autostart', action='store_true', help=_ap.SUPPRESS)
-    _parser.add_argument('--disable-autostart', action='store_true', help=_ap.SUPPRESS)
-    _parser.add_argument('--repair-roblox-permissions', action='store_true', help=_ap.SUPPRESS)
-    _parser.add_argument('--repair-firewall', action='store_true', help=_ap.SUPPRESS)
-    _parser.add_argument('--cleanup-hosts', action='store_true', help=_ap.SUPPRESS)
-    _parser.add_argument('--fleasion-gdk-debugger', action='store_true', help=_ap.SUPPRESS)
-    _parser.add_argument('--microprofile', action='store_true', help=_ap.SUPPRESS)
-    _parser.add_argument(
+    parser.add_argument('--fleasion-user-localappdata', help=_ap.SUPPRESS)
+    parser.add_argument('--fleasion-requesting-user-sid', help=_ap.SUPPRESS)
+    parser.add_argument('--repair-autostart', action='store_true', help=_ap.SUPPRESS)
+    parser.add_argument('--disable-autostart', action='store_true', help=_ap.SUPPRESS)
+    parser.add_argument('--repair-roblox-permissions', action='store_true', help=_ap.SUPPRESS)
+    parser.add_argument('--repair-firewall', action='store_true', help=_ap.SUPPRESS)
+    parser.add_argument('--cleanup-hosts', action='store_true', help=_ap.SUPPRESS)
+    parser.add_argument('--fleasion-gdk-debugger', action='store_true', help=_ap.SUPPRESS)
+    parser.add_argument('--microprofile', action='store_true', help=_ap.SUPPRESS)
+    parser.add_argument(
         '--install-linux-privileged-helper',
         action='store_true',
         help='Install the root-owned Linux proxy helper and Polkit policy, then exit',
     )
-    _parser.add_argument(
+    parser.add_argument(
         '--linux-helper-promptless',
         action='store_true',
         help='Allow active sudo/wheel users to run the Linux proxy helper without future prompts',
     )
-    _args, _ = _parser.parse_known_args()
-    if _args.fleasion_gdk_debugger:
-        from .utils.platform_windows import run_gdk_debugger_command_line
+    args, _ = parser.parse_known_args()
+    if args.fleasion_gdk_debugger:
+        from .utils.platform_windows import (  # ruff: ignore[import-outside-top-level]
+            run_gdk_debugger_command_line,
+        )
 
         sys.exit(run_gdk_debugger_command_line())
-    if _args.cleanup_hosts:
+    if args.cleanup_hosts:
         sys.exit(_cleanup_hosts_once())
-    if _args.repair_autostart:
+    if args.repair_autostart:
         sys.exit(
             _repair_autostart_once(
-                _args.fleasion_requesting_user_sid,
-                enabled=not _args.disable_autostart,
+                args.fleasion_requesting_user_sid,
+                enabled=not args.disable_autostart,
             )
         )
-    if _args.repair_roblox_permissions:
-        sys.exit(_repair_roblox_permissions_once(_args.fleasion_requesting_user_sid))
-    if _args.repair_firewall:
+    if args.repair_roblox_permissions:
+        sys.exit(_repair_roblox_permissions_once(args.fleasion_requesting_user_sid))
+    if args.repair_firewall:
         sys.exit(_repair_windows_firewall_once())
     pending_roblox_uri = _roblox_uri_from_argv()
-    if _args.install_linux_privileged_helper:
+    if args.install_linux_privileged_helper:
         if not sys.platform.startswith('linux'):
-            print(
+            print(  # ruff: ignore[print]
                 'Linux privileged helper installation is only supported on Linux.',
                 file=sys.stderr,
             )
@@ -4420,27 +4450,31 @@ def main() -> None:
                 ca_cert_path: Path | None = None,
             ) -> ErrorDetails: ...
         else:
-            from .utils.linux_proxy_helper import install_privileged_helper
+            from .utils.linux_proxy_helper import (  # ruff: ignore[import-outside-top-level]
+                install_privileged_helper,
+            )
 
-        result = install_privileged_helper(enable_promptless=_args.linux_helper_promptless)
+        result = install_privileged_helper(enable_promptless=args.linux_helper_promptless)
         if not result.get('ok'):
-            print(
+            print(  # ruff: ignore[print]
                 f'Failed to install Linux privileged helper: {result.get("error") or result}',
                 file=sys.stderr,
             )
             sys.exit(1)
-        print(f'Installed Linux privileged helper: {result["helper"]}')
-        print(f'Installed Polkit policy: {result["policy"]}')
+        print(f'Installed Linux privileged helper: {result["helper"]}')  # ruff: ignore[print]
+        print(f'Installed Polkit policy: {result["policy"]}')  # ruff: ignore[print]
         if result.get('promptless_rule'):
-            print(f'Installed promptless Polkit rule: {result["promptless_rule"]}')
+            print(f'Installed promptless Polkit rule: {result["promptless_rule"]}')  # ruff: ignore[print]
         sys.exit(0)
 
-    _suppress_dashboard = _args.no_dashboard
+    suppress_dashboard = args.no_dashboard
     log_buffer.log('App', f'Version {__version__}')
 
     # Frozen GUI builds do not have a useful console for Qt's native warnings.
     # Capture warnings/errors in the normal rotating log before Qt/OpenGL setup.
-    from .utils.qt_diagnostics import install_qt_message_logging
+    from .utils.qt_diagnostics import (  # ruff: ignore[import-outside-top-level]
+        install_qt_message_logging,
+    )
 
     install_qt_message_logging()
     log_buffer.log(
@@ -4470,9 +4504,9 @@ def main() -> None:
         sys.exit(1)
 
     # The profiler is opt-in so normal releases do not collect diagnostics.
-    _microprofiler = start_microprofiler(enabled=_args.microprofile)
-    if _microprofiler is not None:
-        log_buffer.log('MicroProfiler', f'Writing diagnostics to {_microprofiler.output_path}')
+    microprofiler = start_microprofiler(enabled=args.microprofile)
+    if microprofiler is not None:
+        log_buffer.log('MicroProfiler', f'Writing diagnostics to {microprofiler.output_path}')
 
     _configure_opengl_for_legacy_viewers()
 
@@ -4489,11 +4523,13 @@ def main() -> None:
     app.setApplicationName(APP_NAME)
     app.setApplicationDisplayName(APP_NAME)
     if icon_path := get_icon_path():
-        from PySide6.QtGui import QIcon
+        from PySide6.QtGui import QIcon  # ruff: ignore[import-outside-top-level]
 
         app.setWindowIcon(QIcon(str(icon_path)))
         if sys.platform == 'darwin':
-            from .utils.platform_macos import set_application_icon
+            from .utils.platform_macos import (  # ruff: ignore[import-outside-top-level]
+                set_application_icon,
+            )
 
             set_application_icon(icon_path)
 
@@ -4512,30 +4548,27 @@ def main() -> None:
     # proves it survived imports/platform initialization (and, on Windows, UAC)
     # but waits here while the old process still owns both its working Env Proxy
     # and the single-instance slot. Only the parent can release that slot.
-    _restart_handoff_requested = bool(
-        _args.restart_handoff_token or _args.restart_handoff_parent_pid
-    )
-    if _restart_handoff_requested:
-        if (
-            not _args.restart_handoff_token
-            or not _args.restart_handoff_parent_pid
-            or _args.restart_handoff_parent_pid <= 0
-            or _args.kill_others
-            or (sys.platform == 'win32' and not _is_admin())
-            or not _join_restart_handoff(
-                _args.restart_handoff_token,
-                _args.restart_handoff_parent_pid,
-            )
-        ):
-            log_buffer.log('Restart', 'Verified replacement could not enter the handoff protocol')
-            sys.exit(1)
+    restart_handoff_requested = bool(args.restart_handoff_token or args.restart_handoff_parent_pid)
+    if restart_handoff_requested and (  # ruff: ignore[too-many-boolean-expressions]
+        not args.restart_handoff_token
+        or not args.restart_handoff_parent_pid
+        or args.restart_handoff_parent_pid <= 0
+        or args.kill_others
+        or (sys.platform == 'win32' and not _is_admin())
+        or not _join_restart_handoff(
+            args.restart_handoff_token,
+            args.restart_handoff_parent_pid,
+        )
+    ):
+        log_buffer.log('Restart', 'Verified replacement could not enter the handoff protocol')
+        sys.exit(1)
 
     # Gracefully release the existing instance before claiming shared memory.
     # The preserve command reaches the old lifecycle controller before its
     # proxy stops, so an Env Player can be adopted by this replacement.
-    if _args.kill_others and _other_fleasion_pids():
+    if args.kill_others and _other_fleasion_pids():
         _request_other_fleasion_instances_exit(
-            preserve_env_proxy_player=_args.preserve_env_proxy_player
+            preserve_env_proxy_player=args.preserve_env_proxy_player
         )
 
     # Single instance check.
@@ -4546,37 +4579,37 @@ def main() -> None:
     if _is_admin():
         # If launched with --kill-others, kill before clearing stale memory so
         # the shared memory slot is freed by the time we try to claim it.
-        if _args.kill_others:
+        if args.kill_others:
             kill_other_fleasion_instances()
-            import time as _time
+            import time as _time  # ruff: ignore[import-outside-top-level]
 
             _time.sleep(0.3)
-        _stale = QSharedMemory(_SINGLE_INSTANCE_KEY)
-        if _stale.attach():
-            _stale.detach()
+        stale = QSharedMemory(_SINGLE_INSTANCE_KEY)
+        if stale.attach():
+            stale.detach()
 
     shared_memory = QSharedMemory(_SINGLE_INSTANCE_KEY)
-    _shared_memory_created = shared_memory.create(1)
-    if not _shared_memory_created and _should_reclaim_stale_single_instance(shared_memory.error()):
+    shared_memory_created = shared_memory.create(1)
+    if not shared_memory_created and _should_reclaim_stale_single_instance(shared_memory.error()):
         # A hard termination can leave Qt's native shared-memory segment behind
         # on Unix-like platforms. Attach/detach removes it when no real
         # Fleasion GUI process still owns it; Linux proxy helpers are ignored by
         # _other_fleasion_pids() because they are not app instances.
-        _stale = QSharedMemory(_SINGLE_INSTANCE_KEY)
-        if _stale.attach():
-            _stale.detach()
+        stale = QSharedMemory(_SINGLE_INSTANCE_KEY)
+        if stale.attach():
+            stale.detach()
         shared_memory = QSharedMemory(_SINGLE_INSTANCE_KEY)
-        _shared_memory_created = shared_memory.create(1)
+        shared_memory_created = shared_memory.create(1)
 
-    if _shared_memory_created:
+    if shared_memory_created:
         _single_instance_shared_memory = shared_memory
 
-    if not _shared_memory_created:
+    if not shared_memory_created:  # ruff: ignore[collapsible-if]
         if shared_memory.error() == QSharedMemory.SharedMemoryError.AlreadyExists:
             # Another instance is already running.
             if pending_roblox_uri and _request_running_instance_launch(pending_roblox_uri):
                 sys.exit(0)
-            if _suppress_dashboard:
+            if suppress_dashboard:
                 sys.exit(0)
             # Non-admin processes cannot use taskkill on elevated processes — it
             # silently does nothing.  Branch on whether WE are admin rather than
@@ -4588,7 +4621,7 @@ def main() -> None:
 
             # Set icon if available
             if icon_path := get_icon_path():
-                from PySide6.QtGui import QIcon
+                from PySide6.QtGui import QIcon  # ruff: ignore[import-outside-top-level]
 
                 msg_box.setWindowIcon(QIcon(str(icon_path)))
 
@@ -4599,7 +4632,7 @@ def main() -> None:
                 kill_others_button = msg_box.addButton(
                     tr('app.kill_others'), QMessageBox.ButtonRole.AcceptRole
                 )
-                _kill_requires_elevation = False
+                kill_requires_elevation = False
             else:
                 # Not admin — taskkill on an elevated process silently fails.
                 # A single "Elevate & Kill Others" relaunches as admin with
@@ -4608,7 +4641,7 @@ def main() -> None:
                     tr('app.elevate_kill_others_recommended'),
                     QMessageBox.ButtonRole.AcceptRole,
                 )
-                _kill_requires_elevation = True
+                kill_requires_elevation = True
 
             msg_box.addButton(tr('app.run_anyway_bad'), QMessageBox.ButtonRole.AcceptRole)
             cancel_button = msg_box.addButton(tr('app.cancel'), QMessageBox.ButtonRole.RejectRole)
@@ -4620,7 +4653,7 @@ def main() -> None:
                 sys.exit(0)
 
             if msg_box.clickedButton() == kill_others_button:
-                if _kill_requires_elevation:
+                if kill_requires_elevation:
                     # Relaunch elevated with --kill-others.  The elevated copy will
                     # kill the running instance before claiming the shared memory
                     # slot — no second dialog shown.
@@ -4642,31 +4675,35 @@ def main() -> None:
     # process can still build the prompt UI and show a fallback dialog.
     config_manager = ConfigManager()
     set_language(config_manager.language)
-    if not _suppress_dashboard and not config_manager.first_time_setup_complete:
+    if not suppress_dashboard and not config_manager.first_time_setup_complete:
         _prompt_first_time_language(config_manager)
     if sys.platform.startswith('linux'):
-        from .utils.platform_linux import set_linux_client_preference
+        from .utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
+            set_linux_client_preference,
+        )
 
         set_linux_client_preference(config_manager.linux_client)
-    _env_proxy_migration_pending = _prepare_env_proxy_migration(config_manager)
-    config_manager.settings['_runtime_proxy_debug'] = bool(_args.proxy_debug)
-    config_manager.settings['_runtime_proxy_debug_mode'] = _args.proxy_debug_mode or 'full'
+    env_proxy_migration_pending = _prepare_env_proxy_migration(config_manager)
+    config_manager.settings['_runtime_proxy_debug'] = bool(args.proxy_debug)
+    config_manager.settings['_runtime_proxy_debug_mode'] = args.proxy_debug_mode or 'full'
 
     # Gate non-admin launches before opening the usable GUI. Some Windows setups
     # show UAC as a taskbar item instead of foregrounding it, so startup must
     # block here until UAC is accepted, denied, or fails.
-    _admin_prompt_needed = (
+    admin_prompt_needed = (
         sys.platform == 'win32'
         and config_manager.proxy_features_enabled
         and config_manager.proxy_mode != 'env'
         and not _is_admin()
     )
     if sys.platform == 'darwin' and config_manager.proxy_mode != 'env':
-        from .utils.macos_proxy_helper import helper_is_ready
+        from .utils.macos_proxy_helper import (  # ruff: ignore[import-outside-top-level]
+            helper_is_ready,
+        )
 
         start_proxy = config_manager.proxy_features_enabled and helper_is_ready()
     else:
-        start_proxy = config_manager.proxy_features_enabled and not _admin_prompt_needed
+        start_proxy = config_manager.proxy_features_enabled and not admin_prompt_needed
 
     # Start tracking time wasted from the stored total
     time_tracker.init(config_manager.time_wasted_seconds)
@@ -4688,7 +4725,7 @@ def main() -> None:
         if dashboard is not None:
             try:
                 dashboard.refresh_configs_from_disk()
-            except Exception as exc:
+            except Exception as exc:  # ruff: ignore[blind-except]
                 log_buffer.log('Config', f'Failed to refresh Dashboard after config import: {exc}')
 
     config_folder_watcher = ConfigFolderWatcher(
@@ -4745,7 +4782,7 @@ def main() -> None:
         if code == 'tls_self_test_failed':
             proxy_error_invoker.show_proxy_error.emit(code, dict(details))
             return
-        if code not in (
+        if code not in (  # ruff: ignore[literal-membership]
             'port_bind_failed',
             'hosts_write_exhausted',
             'hosts_entries_would_exceed_limit',
@@ -4783,7 +4820,9 @@ def main() -> None:
             mod_manager.clear_managed_file_read_only(clear_untracked=False)
     macos_bootstrapper_bridge = None
     if sys.platform == 'darwin':
-        from .modifications.macos_bootstrapper_bridge import MacBootstrapperBridge
+        from .modifications.macos_bootstrapper_bridge import (  # ruff: ignore[import-outside-top-level]
+            MacBootstrapperBridge,
+        )
 
         macos_bootstrapper_bridge = MacBootstrapperBridge(
             mod_manager,
@@ -4797,7 +4836,7 @@ def main() -> None:
         try:
             if config_manager.lock_roblox_files_read_only:
                 mod_manager.protect_managed_files()
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log('Modifications', f'Read-only guard refresh failed: {exc}')
 
     # Re-apply saved modifications on launch so the GUI state and Roblox files stay in sync.
@@ -4807,10 +4846,8 @@ def main() -> None:
     # 1. Graceful Windows shutdown / log-off: Qt fires commitDataRequest before
     #    the session ends, giving us a chance to clean up the hosts file.
     def _on_commit_data(_session: QSessionManager) -> None:
-        try:
+        with contextlib.suppress(NameError, AttributeError):
             env_lifecycle.cancel()
-        except NameError, AttributeError:
-            pass
         mod_manager.clear_managed_file_read_only()
         proxy_master.stop()
         mod_manager.restore_all()
@@ -4832,34 +4869,36 @@ def main() -> None:
     # Sync launch integrations on every launch (updates if launch method changed).
     # All platforms use per-user launch entries and reconcile from the normal
     # non-elevated GUI process.
-    _autostart_launch_sync_failed = False
-    _desktop_integration_launch_sync_failed = False
+    autostart_launch_sync_failed = False
+    desktop_integration_launch_sync_failed = False
     if config_manager.first_time_setup_complete and config_manager.desktop_integration:
         try:
-            from .utils.desktop_integration import sync_desktop_integration
+            from .utils.desktop_integration import (  # ruff: ignore[import-outside-top-level]
+                sync_desktop_integration,
+            )
 
-            _desktop_integration_launch_sync_failed = not sync_desktop_integration(True)
-        except Exception as exc:
-            _desktop_integration_launch_sync_failed = True
+            desktop_integration_launch_sync_failed = not sync_desktop_integration(True)  # ruff: ignore[boolean-positional-value-in-call]
+        except Exception as exc:  # ruff: ignore[blind-except]
+            desktop_integration_launch_sync_failed = True
             log_buffer.log('DesktopIntegration', f'Launch desktop integration sync failed: {exc}')
 
     if config_manager.first_time_setup_complete and _should_sync_autostart_on_launch(
         config_manager.run_on_boot
     ):
         try:
-            from .utils.autostart import sync_autostart
+            from .utils.autostart import sync_autostart  # ruff: ignore[import-outside-top-level]
 
-            _autostart_launch_sync_failed = not sync_autostart(
-                True,
+            autostart_launch_sync_failed = not sync_autostart(
+                True,  # ruff: ignore[boolean-positional-value-in-call]
                 CONFIG_DIR,
                 proxy_mode=config_manager.proxy_mode,
             )
-        except Exception as exc:
-            _autostart_launch_sync_failed = True
+        except Exception as exc:  # ruff: ignore[blind-except]
+            autostart_launch_sync_failed = True
             log_buffer.log('Autostart', f'Launch autostart sync failed: {exc}')
 
     # Start proxy only if enabled and we have admin rights
-    if start_proxy and config_manager.proxy_features_enabled and config_manager.proxy_mode == 'env':
+    if start_proxy and config_manager.proxy_features_enabled and config_manager.proxy_mode == 'env':  # ruff: ignore[collapsible-if]
         if not _show_env_proxy_stale_hosts_dialog():
             start_proxy = False
             log_buffer.log(
@@ -4886,10 +4925,12 @@ def main() -> None:
         _arm_windows_gdk_env_proxy_when_ready(proxy_master)
 
     # Env Proxy owns the selected Player/client lifecycle independently of Studio.
-    from .proxy.env_lifecycle import EnvProxyLifecycleController
+    from .proxy.env_lifecycle import (  # ruff: ignore[import-outside-top-level]
+        EnvProxyLifecycleController,
+    )
 
     if sys.platform == 'win32':
-        from .utils.platform_windows import (
+        from .utils.platform_windows import (  # ruff: ignore[import-outside-top-level]
             close_roblox_for_env_lifecycle,
             relaunch_roblox_with_proxy_env,
         )
@@ -4904,10 +4945,10 @@ def main() -> None:
         def _relaunch_env_player(
             proxy_url: str,
             _target: str | None,
-            force: bool,
+            force: bool,  # ruff: ignore[boolean-type-hint-positional-argument]
             cancel_event: threading.Event,
             _source_exe_path: Path | None,
-            _player_already_stopped: bool,
+            _player_already_stopped: bool,  # ruff: ignore[boolean-type-hint-positional-argument]
         ) -> bool:
             return relaunch_roblox_with_proxy_env(
                 proxy_url,
@@ -4916,22 +4957,24 @@ def main() -> None:
                 prepare_launch=_prepare_env_proxy_launch,
             )
 
-        _terminate_env_player = close_roblox_for_env_lifecycle
+        terminate_env_player = close_roblox_for_env_lifecycle
 
     elif sys.platform == 'darwin':
-        from .utils.platform_macos import relaunch_roblox_with_proxy_env
+        from .utils.platform_macos import (  # ruff: ignore[import-outside-top-level]
+            relaunch_roblox_with_proxy_env,
+        )
 
         def _prepare_env_proxy_launch(_path: Path) -> bool:
             proxy_master.rearm_custom_fflag_delivery_for_player_launch()
             return True
 
-        def _relaunch_env_player(
+        def _relaunch_env_player(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
             proxy_url: str,
             target: str | None,
-            force: bool,
+            force: bool,  # ruff: ignore[boolean-type-hint-positional-argument]
             cancel_event: threading.Event,
             source_exe_path: Path | None,
-            player_already_stopped: bool,
+            player_already_stopped: bool,  # ruff: ignore[boolean-type-hint-positional-argument]
         ) -> bool:
             return relaunch_roblox_with_proxy_env(
                 proxy_url,
@@ -4943,17 +4986,17 @@ def main() -> None:
                 prepare_launch=_prepare_env_proxy_launch,
             )
 
-        _terminate_env_player = terminate_roblox
+        terminate_env_player = terminate_roblox
 
     else:
 
         def _relaunch_env_player(
             _proxy_url: str,
             _target: str | None,
-            _force: bool,
+            _force: bool,  # ruff: ignore[boolean-type-hint-positional-argument]
             _cancel_event: threading.Event,
             _source_exe_path: Path | None,
-            _player_already_stopped: bool,
+            _player_already_stopped: bool,  # ruff: ignore[boolean-type-hint-positional-argument]
         ) -> bool:
             log_buffer.log(
                 'Launcher',
@@ -4962,7 +5005,7 @@ def main() -> None:
             )
             return False
 
-        _terminate_env_player = terminate_roblox
+        terminate_env_player = terminate_roblox
 
     env_lifecycle = EnvProxyLifecycleController(
         config_manager=config_manager,
@@ -4971,9 +5014,9 @@ def main() -> None:
         relaunch_player=_relaunch_env_player,
         is_player_running=is_roblox_running,
         get_player_identity=get_roblox_process_identity,
-        terminate_player=_terminate_env_player,
+        terminate_player=terminate_env_player,
         wait_for_player_exit=wait_for_roblox_exit,
-        adopted_player=_args.preserve_env_proxy_player,
+        adopted_player=args.preserve_env_proxy_player,
         max_repairs=2,
     )
     atexit.register(env_lifecycle.cancel)
@@ -4990,7 +5033,7 @@ def main() -> None:
     single_instance_control_server = _start_single_instance_control_server(app, tray)
     _single_instance_control_server = single_instance_control_server
 
-    if _env_proxy_migration_pending:
+    if env_proxy_migration_pending:
         _show_env_proxy_migration(config_manager, roblox_monitor)
 
     def _handle_roblox_uri_event(target: str) -> None:
@@ -5005,12 +5048,12 @@ def main() -> None:
 
         QTimer.singleShot(0, _launch_pending_roblox_uri)
     log_buffer.log('App', f'Persistent log file: {LOG_FILE}')
-    if _autostart_launch_sync_failed:
+    if autostart_launch_sync_failed:
         QTimer.singleShot(
             0,
             lambda: _show_run_on_boot_failure(_visible_parent_widget(), config_manager.proxy_mode),
         )
-    if _desktop_integration_launch_sync_failed:
+    if desktop_integration_launch_sync_failed:
         QTimer.singleShot(0, lambda: _show_desktop_integration_failure(_visible_parent_widget()))
 
     def _check_roblox_permission_failures() -> None:
@@ -5021,13 +5064,13 @@ def main() -> None:
 
     if sys.platform == 'win32':
         QTimer.singleShot(500, _check_roblox_permission_failures)
-    _admin_prompt_shown = False
+    admin_prompt_shown = False
 
     def _request_admin_once() -> None:
-        nonlocal _admin_prompt_shown
-        if _admin_prompt_shown or _is_admin():
+        nonlocal admin_prompt_shown
+        if admin_prompt_shown or _is_admin():
             return
-        _admin_prompt_shown = True
+        admin_prompt_shown = True
 
         gate = QDialog(None)
         gate.setModal(True)
@@ -5042,7 +5085,7 @@ def main() -> None:
         gate_label.setWordWrap(True)
         gate_layout.addWidget(gate_label)
         if icon_path := get_icon_path():
-            from PySide6.QtGui import QIcon
+            from PySide6.QtGui import QIcon  # ruff: ignore[import-outside-top-level]
 
             gate.setWindowIcon(QIcon(str(icon_path)))
         gate.show()
@@ -5058,7 +5101,7 @@ def main() -> None:
         gate.close()
         _show_admin_required_dialog()
 
-    if _admin_prompt_needed:
+    if admin_prompt_needed:
         _request_admin_once()
 
     def _install_macos_helper_and_start_proxy() -> None:
@@ -5069,16 +5112,19 @@ def main() -> None:
         ):
             return
 
-        from .utils.macos_proxy_helper import helper_is_ready, install_helper
+        from .utils.macos_proxy_helper import (  # ruff: ignore[import-outside-top-level]
+            helper_is_ready,
+            install_helper,
+        )
 
         if helper_is_ready():
             proxy_master.start()
             _refresh_managed_read_only_guard()
             return
-        if _suppress_dashboard:
+        if suppress_dashboard:
             log_buffer.log(
                 'ProxyHelper',
-                'Autostart launch skipped helper installation prompt; open Fleasion normally to install it',
+                'Autostart launch skipped helper installation prompt; open Fleasion normally to install it',  # ruff: ignore[line-too-long]
             )
             return
 
@@ -5113,10 +5159,10 @@ def main() -> None:
     if sys.platform == 'darwin' and config_manager.proxy_features_enabled and not start_proxy:
         _install_macos_helper_and_start_proxy()
 
-    if _restart_handoff_requested:
-        restart_cancelled = lambda: _restart_abort_requested(
-            _args.restart_handoff_token,
-            _args.restart_handoff_parent_pid,
+    if restart_handoff_requested:
+        restart_cancelled = lambda: _restart_abort_requested(  # ruff: ignore[lambda-assignment]
+            args.restart_handoff_token,
+            args.restart_handoff_parent_pid,
         )
         replacement_ready = single_instance_control_server is not None
         if not replacement_ready:
@@ -5144,7 +5190,7 @@ def main() -> None:
             )
             try:
                 proxy_master.stop()
-            except Exception as exc:
+            except Exception as exc:  # ruff: ignore[blind-except]
                 log_buffer.log('Restart', f'Replacement proxy cleanup failed: {exc}')
             if single_instance_control_server is not None:
                 single_instance_control_server.close()
@@ -5152,34 +5198,32 @@ def main() -> None:
             if shared_memory.isAttached():
                 shared_memory.detach()
             sys.exit(1)
-        if not _publish_restart_handoff(_args.restart_handoff_token):
+        if not _publish_restart_handoff(args.restart_handoff_token):
             sys.exit(1)
 
     # Warn if no Roblox installations can be found (same scan used for cert injection)
-    from .proxy.master import find_roblox_dirs
+    from .proxy.master import find_roblox_dirs  # ruff: ignore[import-outside-top-level]
 
     if not find_roblox_dirs():
-        _top = QApplication.topLevelWidgets()
-        _parent = next((w for w in _top if w.isVisible()), None)
-        _on_top = any(
+        top = QApplication.topLevelWidgets()
+        parent = next((w for w in top if w.isVisible()), None)
+        on_top = any(
             w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
-            for w in _top
+            for w in top
         )
-        _no_roblox_msg = QMessageBox(_parent)
-        if _on_top:
-            _no_roblox_msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
-        _no_roblox_msg.setWindowTitle(tr('app.roblox_not_found'))
-        _no_roblox_msg.setIcon(QMessageBox.Icon.Warning)
-        _no_roblox_msg.setText(tr('app.roblox_does_not_appear_to_be_installed'))
-        _no_roblox_msg.setInformativeText(
-            tr('app.fleasion_could_not_find_any_roblox_installations')
-        )
-        _no_roblox_msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        no_roblox_msg = QMessageBox(parent)
+        if on_top:
+            no_roblox_msg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
+        no_roblox_msg.setWindowTitle(tr('app.roblox_not_found'))
+        no_roblox_msg.setIcon(QMessageBox.Icon.Warning)
+        no_roblox_msg.setText(tr('app.roblox_does_not_appear_to_be_installed'))
+        no_roblox_msg.setInformativeText(tr('app.fleasion_could_not_find_any_roblox_installations'))
+        no_roblox_msg.setStandardButtons(QMessageBox.StandardButton.Ok)
         if icon_path := get_icon_path():
-            from PySide6.QtGui import QIcon
+            from PySide6.QtGui import QIcon  # ruff: ignore[import-outside-top-level]
 
-            _no_roblox_msg.setWindowIcon(QIcon(str(icon_path)))
-        _no_roblox_msg.exec()
+            no_roblox_msg.setWindowIcon(QIcon(str(icon_path)))
+        no_roblox_msg.exec()
 
     # Setup periodic status update
     status_timer = QTimer()
@@ -5198,15 +5242,15 @@ def main() -> None:
     QTimer.singleShot(1500, _refresh_managed_read_only_guard)
 
     # Show first-time setup guide if this is the first run.
-    if not _suppress_dashboard and not config_manager.first_time_setup_complete:
-        _top = QApplication.topLevelWidgets()
-        _parent = next((w for w in _top if w.isVisible()), None)
-        _on_top = any(
+    if not suppress_dashboard and not config_manager.first_time_setup_complete:
+        top = QApplication.topLevelWidgets()
+        parent = next((w for w in top if w.isVisible()), None)
+        on_top = any(
             w.isVisible() and bool(w.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
-            for w in _top
+            for w in top
         )
-        welcome_box = _FirstTimeSetupDialog(_parent)
-        if _on_top:
+        welcome_box = _FirstTimeSetupDialog(parent)
+        if on_top:
             welcome_box.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint)
         welcome_box.setWindowTitle(tr('onboarding.welcome.title'))
         welcome_box.setText(tr('onboarding.welcome.body'))
@@ -5239,7 +5283,7 @@ def main() -> None:
             countdown_timer.timeout.connect(_update_welcome_countdown)
             countdown_timer.start()
         if icon_path := get_icon_path():
-            from PySide6.QtGui import QIcon
+            from PySide6.QtGui import QIcon  # ruff: ignore[import-outside-top-level]
 
             welcome_box.setWindowIcon(QIcon(str(icon_path)))
         welcome_box.exec()
@@ -5247,21 +5291,21 @@ def main() -> None:
         config_manager.env_proxy_migration_v1_complete = True
         config_manager.first_time_setup_complete = True
         _call_tray_show_replacer_config(tray)
-    elif not _suppress_dashboard and config_manager.open_dashboard_on_launch:
+    elif not suppress_dashboard and config_manager.open_dashboard_on_launch:
         # Open dashboard on launch if enabled (suppressed when started by autostart task)
         _call_tray_show_replacer_config(tray)
 
-    _auth_prompt_shown = False
+    auth_prompt_shown = False
     auth_check_invoker = _AuthCheckInvoker()
 
-    def _handle_auth_check_complete(found: bool, details: dict[str, object]) -> None:
-        nonlocal _auth_prompt_shown
-        if found or _auth_prompt_shown:
+    def _handle_auth_check_complete(found: bool, details: dict[str, object]) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+        nonlocal auth_prompt_shown
+        if found or auth_prompt_shown:
             return
-        _auth_prompt_shown = True
+        auth_prompt_shown = True
         if sys.platform == 'darwin':
-            try:
-                from .utils.roblox_auth import (
+            try:  # ruff: ignore[too-many-statements-in-try-clause]
+                from .utils.roblox_auth import (  # ruff: ignore[import-outside-top-level]
                     get_auth_failure_details,
                     get_roblosecurity,
                     notify_auth_source_changed,
@@ -5270,7 +5314,7 @@ def main() -> None:
                 if config_manager.macos_auth_source:
                     log_buffer.log(
                         'Auth',
-                        f'Configured Roblox login source {config_manager.macos_auth_source} did not produce a valid token; reopening browser picker',
+                        f'Configured Roblox login source {config_manager.macos_auth_source} did not produce a valid token; reopening browser picker',  # ruff: ignore[line-too-long]
                     )
                     config_manager.macos_auth_source = ''
                     notify_auth_source_changed()
@@ -5285,23 +5329,26 @@ def main() -> None:
                     elif choice_result == 'skipped':
                         details = dict(details)
                         details['user_skipped_token'] = True
-            except Exception as exc:
+            except Exception as exc:  # ruff: ignore[blind-except]
                 log_buffer.log(
                     'Auth',
-                    f'Unexpected error while retrying macOS auth picker: {type(exc).__name__}: {exc}',
+                    f'Unexpected error while retrying macOS auth picker: {type(exc).__name__}: {exc}',  # ruff: ignore[line-too-long]
                 )
         _show_auth_cookie_unavailable_dialog(details, tray)
 
     auth_check_invoker.completed.connect(_handle_auth_check_complete)
     initial_auth_choice = _choose_macos_auth_source_on_launch(config_manager, tray)
     if initial_auth_choice == 'skipped':
-        _auth_prompt_shown = True
+        auth_prompt_shown = True
         try:
-            from .utils.roblox_auth import get_auth_failure_details, get_roblosecurity
+            from .utils.roblox_auth import (  # ruff: ignore[import-outside-top-level]
+                get_auth_failure_details,
+                get_roblosecurity,
+            )
 
             get_roblosecurity(include_keychain_browsers=False)
             skip_details = get_auth_failure_details()
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log(
                 'Auth',
                 f'Unexpected error while preparing token-skip warning: {type(exc).__name__}: {exc}',
@@ -5313,7 +5360,10 @@ def main() -> None:
 
     def _check_auth_cookie_once() -> None:
         try:
-            from .utils.roblox_auth import get_auth_failure_details, get_roblosecurity
+            from .utils.roblox_auth import (  # ruff: ignore[import-outside-top-level]
+                get_auth_failure_details,
+                get_roblosecurity,
+            )
 
             if sys.platform == 'darwin':
                 log_buffer.log('Auth', 'Running startup Roblox login discovery')
@@ -5322,7 +5372,7 @@ def main() -> None:
                 or sys.platform.startswith('linux')
             )
             details = get_auth_failure_details()
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log(
                 'Auth',
                 f'Unexpected error during startup auth check: {type(exc).__name__}: {exc}',

@@ -8,6 +8,7 @@ SharedStrings, markers, FaceControls / NumberPose, and full pose interpolation.
 from __future__ import annotations
 
 import base64
+import contextlib
 import io
 import math
 import struct
@@ -15,8 +16,10 @@ import uuid
 import xml.etree.ElementTree as ET
 from typing import Literal, TypedDict, cast
 
+from defusedxml import ElementTree as safe_et  # ruff: ignore[camelcase-imported-as-lowercase]
+
 type CFrameProperties = dict[str, float | int]
-type PropertyValue = str | bool | int | float | bytes | None | CFrameProperties
+type PropertyValue = str | bool | int | float | bytes | None | CFrameProperties  # ruff: ignore[none-not-at-end-of-union]
 
 
 class FloatCurveKey(TypedDict):
@@ -101,8 +104,10 @@ def detect_rig(data: bytes) -> str:
     replacement filters.  Use detect_player_rig() when you need rig info for
     conversion even on mixed animations.
     """
-    try:
-        from ..cache.animation_viewer import load_animation_data
+    try:  # ruff: ignore[too-many-statements-in-try-clause]
+        from fleasion.cache.animation_viewer import (  # ruff: ignore[import-outside-top-level]
+            load_animation_data,
+        )
 
         keyframes = load_animation_data(data)
         if not keyframes:
@@ -116,7 +121,7 @@ def detect_rig(data: bytes) -> str:
             return 'R6'
         if names & _R15_SIGNS:
             return 'R15'
-    except Exception:
+    except Exception:  # ruff: ignore[blind-except, try-except-pass]
         pass
     return 'unknown'
 
@@ -129,8 +134,10 @@ def detect_player_rig(data: bytes) -> str:
     version of a replacement can be served.  Returns 'unknown' only when no
     player body part names are present at all.
     """
-    try:
-        from ..cache.animation_viewer import load_animation_data
+    try:  # ruff: ignore[too-many-statements-in-try-clause]
+        from fleasion.cache.animation_viewer import (  # ruff: ignore[import-outside-top-level]
+            load_animation_data,
+        )
 
         keyframes = load_animation_data(data)
         if not keyframes:
@@ -142,15 +149,19 @@ def detect_player_rig(data: bytes) -> str:
             return 'R6'
         if names & _R15_SIGNS:
             return 'R15'
-    except Exception:
+    except Exception:  # ruff: ignore[blind-except, try-except-pass]
         pass
     return 'unknown'
 
 
 def rbxm_to_rbxmx(data: bytes) -> bytes:
     """Convert binary .rbxm bytes to .rbxmx XML bytes."""
-    from ..cache.tools.solidmodel_converter.rbxm.deserializer import RbxmDeserializer
-    from ..cache.tools.solidmodel_converter.rbxm.xml_writer import write_rbxmx as _write
+    from fleasion.cache.tools.solidmodel_converter.rbxm.deserializer import (  # ruff: ignore[import-outside-top-level]
+        RbxmDeserializer,
+    )
+    from fleasion.cache.tools.solidmodel_converter.rbxm.xml_writer import (  # ruff: ignore[import-outside-top-level]
+        write_rbxmx as _write,
+    )
 
     return _write(RbxmDeserializer().deserialize(data))
 
@@ -159,7 +170,7 @@ def rbxm_to_rbxmx(data: bytes) -> bytes:
 
 
 class _Instance:
-    __slots__ = ('class_name', 'name', 'properties', 'children', 'parent')
+    __slots__ = ('children', 'class_name', 'name', 'parent', 'properties')
 
     def __init__(self, class_name: str) -> None:
         self.class_name: str = class_name
@@ -193,10 +204,10 @@ class _Instance:
 
 def _parse_float_curve_binary(data: bytes) -> list[FloatCurveKey]:
     """Decode binary FloatCurve ValuesAndTimes -> list of {'Time': float, 'Value': float}."""
-    HDR = 8
-    KEY_STRIDE = 14
-    TIME_HDR = 8
-    TIME_SCALE = 14400.0
+    HDR = 8  # ruff: ignore[non-lowercase-variable-in-function]
+    KEY_STRIDE = 14  # ruff: ignore[non-lowercase-variable-in-function]
+    TIME_HDR = 8  # ruff: ignore[non-lowercase-variable-in-function]
+    TIME_SCALE = 14400.0  # ruff: ignore[non-lowercase-variable-in-function]
 
     if len(data) < HDR:
         return []
@@ -221,15 +232,15 @@ def _parse_float_curve_binary(data: bytes) -> list[FloatCurveKey]:
 # .rbxmx parser (in-memory)
 
 
-def _load_rbxmx_instances(
+def _load_rbxmx_instances(  # ruff: ignore[complex-structure, too-many-statements]
     source: bytes | bytearray | str,
 ) -> tuple[list[_Instance], dict[str, bytes]]:
     """Parse .rbxmx XML bytes or filepath into (list[_Instance], shared_strings dict)."""
     if isinstance(source, (bytes, bytearray)):
-        tree = ET.parse(io.BytesIO(source))
+        tree = safe_et.parse(io.BytesIO(source))
     else:
-        tree = ET.parse(source)
-    root = tree.getroot()
+        tree = safe_et.parse(source)
+    root = cast('ET.Element', tree.getroot())
 
     shared_strings: dict[str, bytes] = {}
     ss_root = root.find('SharedStrings')
@@ -238,12 +249,12 @@ def _load_rbxmx_instances(
             md5 = ss.get('md5', '')
             text = (ss.text or '').strip()
             if md5 and text:
-                try:
+                try:  # ruff: ignore[suppressible-exception]
                     shared_strings[md5] = base64.b64decode(text)
-                except Exception:
+                except Exception:  # ruff: ignore[blind-except, try-except-pass]
                     pass
 
-    def parse_props(props_elem: ET.Element, inst: _Instance) -> None:
+    def parse_props(props_elem: ET.Element, inst: _Instance) -> None:  # ruff: ignore[complex-structure, too-many-branches]
         for prop in props_elem:
             pname = prop.get('name', '')
             tag = prop.tag
@@ -255,12 +266,12 @@ def _load_rbxmx_instances(
                     inst.name = prop.text or ''
             elif tag == 'bool':
                 inst.properties[pname] = text.lower() == 'true'
-            elif tag in ('int', 'token'):
+            elif tag in ('int', 'token'):  # ruff: ignore[literal-membership]
                 try:
                     inst.properties[pname] = int(text)
                 except ValueError:
                     inst.properties[pname] = 0
-            elif tag in ('float', 'double'):
+            elif tag in ('float', 'double'):  # ruff: ignore[literal-membership]
                 try:
                     inst.properties[pname] = float(text)
                 except ValueError:
@@ -268,7 +279,7 @@ def _load_rbxmx_instances(
             elif tag == 'BinaryString':
                 try:
                     inst.properties[pname] = base64.b64decode(text) if text else b''
-                except Exception:
+                except Exception:  # ruff: ignore[blind-except]
                     inst.properties[pname] = b''
             elif tag == 'SharedString':
                 inst.properties[pname] = shared_strings.get(text, b'')
@@ -335,7 +346,7 @@ def _map_poses(
 
         pose_name = curve.parent.name if curve.parent else ''
 
-        if curve_type in ('Position', 'Rotation'):
+        if curve_type in ('Position', 'Rotation'):  # ruff: ignore[literal-membership]
             pose_map.setdefault(pose_name, {})
             for axis in ('X', 'Y', 'Z'):
                 for key in _get_axis_keys(curve, axis):
@@ -357,7 +368,7 @@ def _map_poses(
 # Interpolation
 
 
-def _interpolate_values(
+def _interpolate_values(  # ruff: ignore[complex-structure]
     final_values: dict[str, float | None],
     pose_name: str,
     pose_time: float,
@@ -379,14 +390,13 @@ def _interpolate_values(
                     and axis in pose_map[pose_name][t].get(value_type, {})
                 ):
                     prev_t = t
-            elif t > pose_time:
-                if (
-                    pose_name in pose_map
-                    and t in pose_map[pose_name]
-                    and axis in pose_map[pose_name][t].get(value_type, {})
-                ):
-                    next_t = t
-                    break
+            elif t > pose_time and (
+                pose_name in pose_map
+                and t in pose_map[pose_name]
+                and axis in pose_map[pose_name][t].get(value_type, {})
+            ):
+                next_t = t
+                break
 
         if prev_t is None and next_t is None:
             final_values[k] = 0.0
@@ -431,10 +441,10 @@ def _euler_xyz_to_rotation_matrix(rx: float, ry: float, rz: float) -> list[float
 def _parse_markers(data: bytes, curve_name: str) -> list[tuple[float, str, str]]:
     markers: list[tuple[float, str, str]] = []
     offset = 0
-    try:
+    try:  # ruff: ignore[too-many-statements-in-try-clause]
         count = struct.unpack_from('<I', data, offset)[0]
         offset += 4
-        if count > 10_000:
+        if count > 10_000:  # ruff: ignore[magic-value-comparison]
             return []
         for _ in range(count):
             if offset + 8 > len(data):
@@ -460,7 +470,7 @@ def _handle_markers(
         if mc.class_name != 'MarkerCurve':
             continue
         data = mc.properties.get('Markers', b'')
-        if not isinstance(data, bytes) or len(data) < 4:
+        if not isinstance(data, bytes) or len(data) < 4:  # ruff: ignore[magic-value-comparison]
             continue
         for t, name, value in _parse_markers(data, mc.name):
             kf = kf_by_time.get(t)
@@ -486,7 +496,7 @@ def _make_keyframe(t: float) -> _Instance:
     return kf
 
 
-def _convert_curve_anim(curve_anim: _Instance) -> _Instance:
+def _convert_curve_anim(curve_anim: _Instance) -> _Instance:  # ruff: ignore[complex-structure, too-many-statements]
     """Convert a CurveAnimation _Instance to a KeyframeSequence _Instance."""
     kf_seq = _Instance('KeyframeSequence')
     kf_seq.name = curve_anim.name
@@ -584,11 +594,11 @@ def _convert_curve_anim(curve_anim: _Instance) -> _Instance:
             }
             _interpolate_values(fv, pose_name, t, pose_map, key_times)
 
-            for k in fv:
+            for k in fv:  # ruff: ignore[dict-index-missing-items]
                 if fv[k] is None:
                     fv[k] = 0.0
             # Every entry was populated above; this cast expresses that loop invariant.
-            resolved_fv = cast(dict[str, float], fv)
+            resolved_fv = cast('dict[str, float]', fv)
 
             rm = _euler_xyz_to_rotation_matrix(
                 resolved_fv['RX'], resolved_fv['RY'], resolved_fv['RZ']
@@ -620,7 +630,7 @@ def _new_ref() -> str:
     return 'RBX' + uuid.uuid4().hex.upper()
 
 
-def _instance_to_xml(inst: _Instance, parent_elem: ET.Element) -> None:
+def _instance_to_xml(inst: _Instance, parent_elem: ET.Element) -> None:  # ruff: ignore[complex-structure]
     item = ET.SubElement(parent_elem, 'Item')
     item.set('class', inst.class_name)
     item.set('referent', _new_ref())
@@ -675,10 +685,8 @@ def _instances_to_rbxmx_bytes(instances: list[_Instance]) -> bytes:
         _instance_to_xml(inst, root)
 
     tree = ET.ElementTree(root)
-    try:
+    with contextlib.suppress(AttributeError):
         ET.indent(tree, space='  ')
-    except AttributeError:
-        pass
 
     buf = io.StringIO()
     tree.write(buf, encoding='unicode', xml_declaration=True)
@@ -710,6 +718,7 @@ def curve_anim_to_keyframe(data: bytes) -> bytes:
             output.append(inst)
 
     if found == 0:
-        raise ValueError('No CurveAnimation found in data')
+        msg = 'No CurveAnimation found in data'
+        raise ValueError(msg)
 
     return _instances_to_rbxmx_bytes(output)

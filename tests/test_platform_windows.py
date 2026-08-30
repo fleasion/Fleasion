@@ -282,7 +282,7 @@ def _describe_pids(pids: list[int]) -> str:
 
 
 def _last_argument(command: str) -> str:
-    return command.split()[-1]
+    return command.rsplit(maxsplit=1)[-1]
 
 
 def _path_equals(expected: Path) -> Callable[[Path], bool]:
@@ -365,7 +365,8 @@ def _load_platform_windows(
     module_name = 'fleasion.utils.platform_windows_under_test'
     spec = importlib.util.spec_from_file_location(module_name, source)
     if spec is None or spec.loader is None:
-        raise AssertionError(f'failed to load {source}')
+        msg = f'failed to load {source}'
+        raise AssertionError(msg)
     module = importlib.util.module_from_spec(spec)
     monkeypatch.setitem(sys.modules, module_name, module)
     spec.loader.exec_module(module)
@@ -516,8 +517,10 @@ def test_cache_cleanup_messages_combine_routine_storage_statuses(
 
     assert messages == [
         'Roblox was running; terminated successfully',
-        'Roblox cache storage deleted successfully '
-        '(database, database WAL, database shared memory, identifier, folder)',
+        (
+            'Roblox cache storage deleted successfully '
+            '(database, database WAL, database shared memory, identifier, folder)'
+        ),
         'Microsoft Store / GDK cache storage not found',
         'Fleasion obj cache deleted successfully',
     ]
@@ -699,7 +702,8 @@ def test_windows_identifies_the_store_gdk_player_path(monkeypatch: pytest.Monkey
     module = _load_platform_windows(monkeypatch)
 
     assert module.is_roblox_gdk_exe_path(
-        r'C:\Program Files\WindowsApps\ROBLOXCorporation.RobloxGDK_2.733.988.0_x64__55nm5eh3cm0pr\RobloxPlayerBeta.exe'
+        r'C:\Program Files\WindowsApps\ROBLOXCorporation.'
+        r'RobloxGDK_2.733.988.0_x64__55nm5eh3cm0pr\RobloxPlayerBeta.exe'
     )
     assert not module.is_roblox_gdk_exe_path(
         r'C:\Users\Sviat\AppData\Local\Roblox\Versions\version-current\RobloxPlayerBeta.exe'
@@ -801,7 +805,8 @@ def test_forced_gdk_relaunch_receives_ca_preparation_callback(
         force=True,
         prepare_launch=prepare,
     )
-    assert calls and calls[0]['prepare_launch'] is prepare
+    assert calls
+    assert calls[0]['prepare_launch'] is prepare
 
 
 def test_windows_proxy_environment_block_is_double_nul_terminated(

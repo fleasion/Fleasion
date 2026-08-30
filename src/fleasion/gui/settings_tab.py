@@ -1,4 +1,4 @@
-"""Settings tab – mirrors all settings available in the system tray menu."""
+"""Settings tab – mirrors all settings available in the system tray menu."""  # ruff: ignore[ambiguous-unicode-character-docstring]
 
 from __future__ import annotations
 
@@ -26,16 +26,17 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..gui.theme import ThemeManager
-from ..localization import available_languages, get_language, tr
-from ..utils import CONFIG_DIR, run_in_thread
-from ..utils.autostart import sync_autostart, windows_autostart_privilege_hint
-from ..utils.desktop_integration import sync_desktop_integration
-from ..utils.roblox_auth import (
+from fleasion.gui.theme import ThemeManager
+from fleasion.localization import available_languages, get_language, tr
+from fleasion.utils import CONFIG_DIR, run_in_thread
+from fleasion.utils.autostart import sync_autostart, windows_autostart_privilege_hint
+from fleasion.utils.desktop_integration import sync_desktop_integration
+from fleasion.utils.roblox_auth import (
     notify_auth_source_changed,
     store_manual_roblosecurity,
     validate_roblosecurity_for_import,
 )
+
 from .modifications_tab import CollapsibleSection, DropdownComboBox, NoWheelSpinBox
 
 if TYPE_CHECKING:
@@ -188,7 +189,7 @@ class SettingsTab(QWidget):
         self.setLayout(outer)
         self._update_container_bg()
 
-    def changeEvent(self, a0: QEvent) -> None:
+    def changeEvent(self, a0: QEvent) -> None:  # ruff: ignore[invalid-function-name]
         super().changeEvent(a0)
         if a0.type() == QEvent.Type.PaletteChange:
             self._update_container_bg()
@@ -249,7 +250,9 @@ class SettingsTab(QWidget):
         return section
 
     def _build_linux_client_section(self) -> CollapsibleSection:
-        from ..utils.linux_clients import LINUX_CLIENTS
+        from fleasion.utils.linux_clients import (  # ruff: ignore[import-outside-top-level]
+            LINUX_CLIENTS,
+        )
 
         section = CollapsibleSection(tr('settings.linux_client.section'), expanded=True)
 
@@ -287,7 +290,7 @@ class SettingsTab(QWidget):
         if not sys.platform.startswith('linux'):
             return
         try:
-            from ..utils.platform_linux import (
+            from fleasion.utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
                 linux_client_installations,
                 selected_linux_client_display_name,
             )
@@ -302,7 +305,7 @@ class SettingsTab(QWidget):
                     value1=detail,
                 )
             )
-        except Exception:
+        except Exception:  # ruff: ignore[blind-except]
             self._linux_client_status.setText(
                 tr('ui.gui.settings_tab.unable_to_detect_linux_roblox_clients')
             )
@@ -332,7 +335,7 @@ class SettingsTab(QWidget):
 
     # Proxy
 
-    def _build_proxy_section(self) -> CollapsibleSection:
+    def _build_proxy_section(self) -> CollapsibleSection:  # ruff: ignore[too-many-statements]
         section = CollapsibleSection(tr('settings.proxy.section'), expanded=True)
 
         self._proxy_features_chk = QCheckBox(tr('ui.gui.settings_tab.enable_proxy_features'))
@@ -391,9 +394,7 @@ class SettingsTab(QWidget):
         self._wire_preserving_chk.toggled.connect(self._on_wire_preserving_toggled)
         section.add_widget(self._wire_preserving_chk)
 
-        def _proxy_row(
-            label: str, host_value: str, port_value: int
-        ) -> tuple[QLineEdit, QSpinBox]:
+        def _proxy_row(label: str, host_value: str, port_value: int) -> tuple[QLineEdit, QSpinBox]:
             row = QHBoxLayout()
             row.setContentsMargins(0, 0, 0, 0)
             row.addWidget(QLabel(label))
@@ -585,9 +586,7 @@ class SettingsTab(QWidget):
         ):
             chk = QCheckBox(label)
             chk.setChecked(self._config.is_export_naming_enabled(option))
-            chk.toggled.connect(
-                partial(self._on_export_naming_toggled, option=option)
-            )
+            chk.toggled.connect(partial(self._on_export_naming_toggled, option=option))
             row.addWidget(chk)
             self._export_chks[option] = chk
         row.addStretch()
@@ -641,9 +640,9 @@ class SettingsTab(QWidget):
     def refresh_from_config(self) -> None:
         """Re-read all settings from config and update widgets (no signals emitted)."""
         for name, rb in self._theme_buttons.items():
-            rb.blockSignals(True)
+            rb.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
             rb.setChecked(name == self._config.theme)
-            rb.blockSignals(False)
+            rb.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
 
         for chk, value in [
             (self._open_dashboard_chk, self._config.open_dashboard_on_launch),
@@ -670,25 +669,25 @@ class SettingsTab(QWidget):
             (self._show_names_chk, self._config.show_names),
             (self._show_creator_id_chk, self._config.show_creator_id),
         ]:
-            chk.blockSignals(True)
+            chk.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
             chk.setChecked(value)
-            chk.blockSignals(False)
+            chk.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
 
         idx = self._upstream_mode_combo.findData(self._config.upstream_transport_mode)
-        self._upstream_mode_combo.blockSignals(True)
+        self._upstream_mode_combo.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
         self._upstream_mode_combo.setCurrentIndex(max(0, idx))
-        self._upstream_mode_combo.blockSignals(False)
+        self._upstream_mode_combo.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
 
         idx = self._proxy_mode_combo.findData(self._config.proxy_mode)
-        self._proxy_mode_combo.blockSignals(True)
+        self._proxy_mode_combo.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
         self._proxy_mode_combo.setCurrentIndex(max(0, idx))
-        self._proxy_mode_combo.blockSignals(False)
+        self._proxy_mode_combo.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
 
         if sys.platform.startswith('linux'):
             idx = self._linux_client_combo.findData(getattr(self._config, 'linux_client', 'auto'))
-            self._linux_client_combo.blockSignals(True)
+            self._linux_client_combo.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
             self._linux_client_combo.setCurrentIndex(max(0, idx))
-            self._linux_client_combo.blockSignals(False)
+            self._linux_client_combo.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
             self._refresh_linux_client_status()
 
         for widget, value in [
@@ -699,9 +698,9 @@ class SettingsTab(QWidget):
             (self._socks5_user, self._config.upstream_socks5_username),
             (self._socks5_pass, self._config.upstream_socks5_password),
         ]:
-            widget.blockSignals(True)
+            widget.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
             widget.setText(value)
-            widget.blockSignals(False)
+            widget.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
 
         for widget, value in [
             (self._http_proxy_port, self._config.upstream_http_connect_port),
@@ -712,31 +711,31 @@ class SettingsTab(QWidget):
             ),
             (self._cdn_limit_spin, self._config.vpn_compat_max_cdn_connections),
         ]:
-            widget.blockSignals(True)
+            widget.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
             widget.setValue(value)
-            widget.blockSignals(False)
+            widget.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
 
         self.set_cache_scraper_enabled(self._is_cache_scraper_enabled())
 
         for option, chk in self._export_chks.items():
-            chk.blockSignals(True)
+            chk.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
             chk.setChecked(self._config.is_export_naming_enabled(option))
-            chk.blockSignals(False)
+            chk.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
         if sys.platform == 'darwin':
             idx = self._macos_auth_source_combo.findData(self._config.macos_auth_source)
-            self._macos_auth_source_combo.blockSignals(True)
+            self._macos_auth_source_combo.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
             self._macos_auth_source_combo.setCurrentIndex(max(0, idx))
-            self._macos_auth_source_combo.blockSignals(False)
+            self._macos_auth_source_combo.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
 
         idx = self._language_combo.findData(self._config.language)
-        self._language_combo.blockSignals(True)
+        self._language_combo.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
         self._language_combo.setCurrentIndex(max(0, idx))
-        self._language_combo.blockSignals(False)
+        self._language_combo.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
 
     # Handlers
 
-    def _clear_roblox_cache(self) -> None:
-        from .delete_cache import DeleteCacheWindow
+    def _clear_roblox_cache(self) -> None:  # ruff: ignore[no-self-use]
+        from .delete_cache import DeleteCacheWindow  # ruff: ignore[import-outside-top-level]
 
         window = DeleteCacheWindow()
         window.show()
@@ -751,7 +750,7 @@ class SettingsTab(QWidget):
                 tr('settings.language.restart_required_body'),
             )
 
-    def _on_theme_toggled(self, checked: bool, theme: str) -> None:
+    def _on_theme_toggled(self, checked: bool, theme: str) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
         if not checked:
             return
         ThemeManager.apply_theme(theme)
@@ -760,12 +759,12 @@ class SettingsTab(QWidget):
             for name, action in self._tray.theme_actions.items():
                 action.setChecked(name == theme)
 
-    def _on_open_dashboard_toggled(self, checked: bool) -> None:
+    def _on_open_dashboard_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
         self._config.open_dashboard_on_launch = checked
         if self._tray and hasattr(self._tray, 'open_dashboard_action'):
             self._tray.open_dashboard_action.setChecked(checked)
 
-    def _on_proxy_features_toggled(self, checked: bool) -> None:
+    def _on_proxy_features_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
         if not checked:
             result = QMessageBox.warning(
                 self,
@@ -775,9 +774,9 @@ class SettingsTab(QWidget):
                 QMessageBox.StandardButton.Cancel,
             )
             if result != QMessageBox.StandardButton.Yes:
-                self._proxy_features_chk.blockSignals(True)
+                self._proxy_features_chk.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
                 self._proxy_features_chk.setChecked(True)
-                self._proxy_features_chk.blockSignals(False)
+                self._proxy_features_chk.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
                 return
 
         if self._tray and hasattr(self._tray, 'set_proxy_features_enabled'):
@@ -809,7 +808,9 @@ class SettingsTab(QWidget):
             mod_manager.restore_all()
 
         self._config.linux_client = new_client
-        from ..utils.platform_linux import set_linux_client_preference
+        from fleasion.utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
+            set_linux_client_preference,
+        )
 
         set_linux_client_preference(new_client)
 
@@ -819,25 +820,27 @@ class SettingsTab(QWidget):
             proxy_master.start()
         self._refresh_linux_client_status()
 
-    def _on_proxy_mode_changed(self, *_args: object) -> None:
+    def _on_proxy_mode_changed(self, *_args: object) -> None:  # ruff: ignore[complex-structure, too-many-branches, too-many-statements]
         previous_mode = self._config.proxy_mode
         new_mode = cast('str', self._proxy_mode_combo.currentData())
         self._config.proxy_mode = new_mode
         if self._config.run_on_boot:
             try:
                 boot_ok = sync_autostart(
-                    True,
+                    True,  # ruff: ignore[boolean-positional-value-in-call]
                     CONFIG_DIR,
                     proxy_mode=new_mode,
                 )
-            except Exception as exc:
+            except Exception as exc:  # ruff: ignore[blind-except]
                 boot_ok = False
                 log_message = f'Run on Boot mode refresh failed: {exc}'
                 try:
-                    from ..utils.logging import log_buffer
+                    from fleasion.utils.logging import (  # ruff: ignore[import-outside-top-level]
+                        log_buffer,
+                    )
 
                     log_buffer.log('Autostart', log_message)
-                except Exception:
+                except Exception:  # ruff: ignore[blind-except, try-except-pass]
                     pass
             if not boot_ok:
                 QMessageBox.warning(
@@ -859,7 +862,9 @@ class SettingsTab(QWidget):
                     # The proxy may have fallen back from 58443 to a dynamic
                     # port. Arm Store/GDK only after the restarted proxy has
                     # published its final loopback URL.
-                    from ..app import _arm_windows_gdk_env_proxy_when_ready
+                    from fleasion.app import (  # ruff: ignore[import-outside-top-level]
+                        _arm_windows_gdk_env_proxy_when_ready,
+                    )
 
                     run_in_thread(_arm_windows_gdk_env_proxy_when_ready)(proxy_master)
             monitor = getattr(self._tray, 'roblox_monitor', None) if self._tray else None
@@ -871,11 +876,15 @@ class SettingsTab(QWidget):
                 and monitor.is_player_running()
             ):
                 if sys.platform.startswith('linux'):
-                    from ..utils.platform_linux import selected_linux_client_app_id
+                    from fleasion.utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
+                        selected_linux_client_app_id,
+                    )
 
                     exe_path = Path(selected_linux_client_app_id())
                 else:
-                    from ..utils import get_roblox_player_exe_path
+                    from fleasion.utils import (  # ruff: ignore[import-outside-top-level]
+                        get_roblox_player_exe_path,
+                    )
 
                     exe_path = get_roblox_player_exe_path()
                 run_in_thread(lifecycle.handle_player_launch)(exe_path)
@@ -930,25 +939,27 @@ class SettingsTab(QWidget):
                 self._config.proxy_mode = previous_mode
                 previous_index = self._proxy_mode_combo.findData(previous_mode)
                 if previous_index >= 0:
-                    self._proxy_mode_combo.blockSignals(True)
+                    self._proxy_mode_combo.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
                     self._proxy_mode_combo.setCurrentIndex(previous_index)
-                    self._proxy_mode_combo.blockSignals(False)
+                    self._proxy_mode_combo.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
                 if self._config.run_on_boot:
                     try:
                         sync_autostart(
-                            True,
+                            True,  # ruff: ignore[boolean-positional-value-in-call]
                             CONFIG_DIR,
                             proxy_mode=previous_mode,
                         )
-                    except Exception as exc:
+                    except Exception as exc:  # ruff: ignore[blind-except]
                         try:
-                            from ..utils.logging import log_buffer
+                            from fleasion.utils.logging import (  # ruff: ignore[import-outside-top-level]
+                                log_buffer,
+                            )
 
                             log_buffer.log(
                                 'Autostart',
                                 f'Run on Boot rollback after failed mode switch failed: {exc}',
                             )
-                        except Exception:
+                        except Exception:  # ruff: ignore[blind-except, try-except-pass]
                             pass
                 QMessageBox.warning(
                     self,
@@ -959,7 +970,7 @@ class SettingsTab(QWidget):
         if self._tray and hasattr(self._tray, 'notify_proxy_mode_changed'):
             self._tray.notify_proxy_mode_changed()
 
-    def _on_wire_preserving_toggled(self, checked: bool) -> None:
+    def _on_wire_preserving_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
         self._config.wire_preserving_passthrough = checked
 
     def _on_http_proxy_changed(self, *_args: object) -> None:
@@ -998,9 +1009,9 @@ class SettingsTab(QWidget):
         if self._selected_manual_proxy_has_credentials():
             return
         auto_index = self._upstream_mode_combo.findData('auto')
-        self._upstream_mode_combo.blockSignals(True)
+        self._upstream_mode_combo.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
         self._upstream_mode_combo.setCurrentIndex(auto_index)
-        self._upstream_mode_combo.blockSignals(False)
+        self._upstream_mode_combo.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
         self._config.upstream_transport_mode = 'auto'
         proxy_master = getattr(self._tray, 'proxy_master', None)
         if proxy_master is not None and proxy_master.is_running:
@@ -1015,7 +1026,7 @@ class SettingsTab(QWidget):
         self._config.vpn_compat_max_assetdelivery_connections = self._asset_limit_spin.value()
         self._config.vpn_compat_max_cdn_connections = self._cdn_limit_spin.value()
 
-    def _on_run_on_boot_toggled(self, checked: bool) -> None:
+    def _on_run_on_boot_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
         ok = sync_autostart(
             checked,
             CONFIG_DIR,
@@ -1028,32 +1039,34 @@ class SettingsTab(QWidget):
         else:
             if sys.platform == 'win32':
                 # Imported on demand to avoid an app <-> GUI import cycle during startup.
-                from ..app import _show_run_on_boot_failure
+                from fleasion.app import (  # ruff: ignore[import-outside-top-level]
+                    _show_run_on_boot_failure,
+                )
 
                 if _show_run_on_boot_failure(self, self._config.proxy_mode, enabled=checked):
                     self._config.run_on_boot = checked
                     if self._tray and hasattr(self._tray, 'run_on_boot_action'):
                         self._tray.run_on_boot_action.setChecked(checked)
                     return
-            self._run_on_boot_chk.blockSignals(True)
+            self._run_on_boot_chk.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
             self._run_on_boot_chk.setChecked(not checked)
-            self._run_on_boot_chk.blockSignals(False)
+            self._run_on_boot_chk.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
             QMessageBox.warning(
                 self,
                 tr('ui.gui.settings_tab.run_on_boot_failed'),
                 tr('ui.gui.settings_tab.failed_to_register_the_autostart_task_check'),
             )
 
-    def _on_lock_roblox_files_toggled(self, checked: bool) -> None:
+    def _on_lock_roblox_files_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
         self._config.lock_roblox_files_read_only = checked
         mod_manager = getattr(self._tray, 'mod_manager', None)
         if mod_manager is not None and hasattr(mod_manager, 'set_read_only_lock_enabled'):
             mod_manager.set_read_only_lock_enabled(checked)
 
-    def _on_close_env_roblox_toggled(self, checked: bool) -> None:
+    def _on_close_env_roblox_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
         self._config.close_env_proxy_roblox_on_exit = checked
 
-    def _on_desktop_integration_toggled(self, checked: bool) -> None:
+    def _on_desktop_integration_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
         ok = sync_desktop_integration(checked)
         if ok:
             self._config.desktop_integration = checked
@@ -1061,7 +1074,7 @@ class SettingsTab(QWidget):
                 self._tray.desktop_integration_action.setChecked(checked)
             if sys.platform.startswith('linux') and self._config.run_on_boot:
                 if not sync_autostart(
-                    True,
+                    True,  # ruff: ignore[boolean-positional-value-in-call]
                     CONFIG_DIR,
                     proxy_mode=self._config.proxy_mode,
                 ):
@@ -1071,16 +1084,16 @@ class SettingsTab(QWidget):
                         tr('ui.gui.settings_tab.failed_to_refresh_the_autostart_task_after'),
                     )
         else:
-            self._desktop_integration_chk.blockSignals(True)
+            self._desktop_integration_chk.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
             self._desktop_integration_chk.setChecked(not checked)
-            self._desktop_integration_chk.blockSignals(False)
+            self._desktop_integration_chk.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
             QMessageBox.warning(
                 self,
                 tr('ui.gui.settings_tab.desktop_integration_failed'),
                 tr('ui.gui.settings_tab.failed_to_create_desktop_start_menu_integration'),
             )
 
-    def _on_always_on_top_toggled(self, checked: bool) -> None:
+    def _on_always_on_top_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
         self._config.always_on_top = checked
         if self._tray and hasattr(self._tray, 'always_on_top_action'):
             self._tray.always_on_top_action.setChecked(checked)
@@ -1095,17 +1108,17 @@ class SettingsTab(QWidget):
                     window.setWindowFlags(flags)
                     window.show()
 
-    def _on_close_to_tray_toggled(self, checked: bool) -> None:
+    def _on_close_to_tray_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
         self._config.close_to_tray = checked
         if self._tray and hasattr(self._tray, 'close_to_tray_action'):
             self._tray.close_to_tray_action.setChecked(checked)
 
-    def _on_auto_clear_cache_toggled(self, checked: bool) -> None:
+    def _on_auto_clear_cache_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
         self._config.auto_delete_cache_on_exit = checked
         if self._tray and hasattr(self._tray, 'auto_delete_cache_action'):
             self._tray.auto_delete_cache_action.setChecked(checked)
 
-    def _on_clear_cache_launch_toggled(self, checked: bool) -> None:
+    def _on_clear_cache_launch_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
         self._config.clear_cache_on_launch = checked
         if self._tray and hasattr(self._tray, 'clear_cache_action'):
             self._tray.clear_cache_action.setChecked(checked)
@@ -1119,7 +1132,7 @@ class SettingsTab(QWidget):
     def _on_import_manual_token(self) -> None:
         if sys.platform != 'darwin':
             return
-        from .rando_stuff_tab import AddAccountDialog
+        from .rando_stuff_tab import AddAccountDialog  # ruff: ignore[import-outside-top-level]
 
         dlg = AddAccountDialog(self, title=tr('settings.roblox_login.import_token_title'))
         dlg.set_ok_label(tr('settings.roblox_login.import'))
@@ -1148,9 +1161,9 @@ class SettingsTab(QWidget):
         self._config.macos_auth_source = 'manual'
         notify_auth_source_changed()
         idx = self._macos_auth_source_combo.findData('manual')
-        self._macos_auth_source_combo.blockSignals(True)
+        self._macos_auth_source_combo.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
         self._macos_auth_source_combo.setCurrentIndex(max(0, idx))
-        self._macos_auth_source_combo.blockSignals(False)
+        self._macos_auth_source_combo.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
         username = dlg.result_username or tr('settings.roblox_login.roblox_account_fallback')
         QMessageBox.information(
             self,
@@ -1158,74 +1171,76 @@ class SettingsTab(QWidget):
             tr('ui.gui.settings_tab.value_was_stored_encrypted', value0=username),
         )
 
-    def _on_close_scraped_games_toggled(self, checked: bool) -> None:
+    def _on_close_scraped_games_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
         self._config.close_scraped_games_on_open = checked
         if self._tray and hasattr(self._tray, 'close_scraped_games_action'):
             self._tray.close_scraped_games_action.setChecked(checked)
 
-    def _on_close_viewer_on_replace_toggled(self, checked: bool) -> None:
+    def _on_close_viewer_on_replace_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
         self._config.close_viewer_on_replace = checked
         if self._tray and hasattr(self._tray, 'close_viewer_on_replace_action'):
             self._tray.close_viewer_on_replace_action.setChecked(checked)
 
-    def _on_close_scraped_games_menu_on_open_toggled(self, checked: bool) -> None:
+    def _on_close_scraped_games_menu_on_open_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
         self._config.close_scraped_games_menu_on_open = checked
         if self._tray and hasattr(self._tray, 'close_scraped_games_menu_on_open_action'):
             self._tray.close_scraped_games_menu_on_open_action.setChecked(checked)
 
-    def _on_show_replacer_notifications_toggled(self, checked: bool) -> None:
+    def _on_show_replacer_notifications_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
         self._config.show_replacer_notifications = checked
         if self._tray and hasattr(self._tray, 'show_replacer_notifications_action'):
             self._tray.show_replacer_notifications_action.setChecked(checked)
 
-    def _on_show_names_toggled(self, checked: bool) -> None:
+    def _on_show_names_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
         self._config.show_names = checked
         if self._tray and hasattr(self._tray, 'show_names_action'):
             self._tray.show_names_action.setChecked(checked)
         self._apply_to_cache_viewer('show_names', checked)
 
-    def _on_show_creator_id_toggled(self, checked: bool) -> None:
+    def _on_show_creator_id_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
         self._config.show_creator_id = checked
         if self._tray and hasattr(self._tray, 'show_creator_id_action'):
             self._tray.show_creator_id_action.setChecked(checked)
         self._apply_to_cache_viewer('show_creator_id', checked)
 
-    def _apply_to_cache_viewer(self, setting: str, value: bool) -> None:
+    def _apply_to_cache_viewer(self, setting: str, value: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
         if self._tray and self._tray.dashboard_window:
             tab = getattr(self._tray.dashboard_window, '_cache_viewer_tab', None)
             if tab is not None:
                 if setting == 'show_names':
-                    tab._on_show_names_toggled(value)
+                    tab._on_show_names_toggled(value)  # ruff: ignore[private-member-access]
                 elif setting == 'show_creator_id':
-                    tab._on_show_creator_id_toggled(value)
+                    tab._on_show_creator_id_toggled(value)  # ruff: ignore[private-member-access]
 
     def _is_cache_scraper_enabled(self) -> bool:
         if self._tray and hasattr(self._tray, '_is_cache_scraper_enabled'):
             is_enabled = cast(
-                'Callable[[], bool]', getattr(self._tray, '_is_cache_scraper_enabled')
+                'Callable[[], bool]',
+                getattr(self._tray, '_is_cache_scraper_enabled'),  # ruff: ignore[get-attr-with-constant]
             )
             return is_enabled()
         return False
 
-    def set_cache_scraper_enabled(self, enabled: bool) -> None:
-        self._cache_scraper_chk.blockSignals(True)
+    def set_cache_scraper_enabled(self, enabled: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+        self._cache_scraper_chk.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
         self._cache_scraper_chk.setChecked(enabled)
-        self._cache_scraper_chk.blockSignals(False)
+        self._cache_scraper_chk.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
 
-    def _on_cache_scraper_toggled(self, checked: bool) -> None:
+    def _on_cache_scraper_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
         if self._tray and hasattr(self._tray, '_set_cache_scraper_enabled'):
             set_enabled = cast(
-                'Callable[[bool], None]', getattr(self._tray, '_set_cache_scraper_enabled')
+                'Callable[[bool], None]',
+                getattr(self._tray, '_set_cache_scraper_enabled'),  # ruff: ignore[get-attr-with-constant]
             )
             set_enabled(checked)
 
-    def _on_export_naming_toggled(self, checked: bool, option: str) -> None:
+    def _on_export_naming_toggled(self, checked: bool, option: str) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
         current = self._config.is_export_naming_enabled(option)
         if current != checked:
             new_state = self._config.toggle_export_naming(option)
-            self._export_chks[option].blockSignals(True)
+            self._export_chks[option].blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
             self._export_chks[option].setChecked(new_state)
-            self._export_chks[option].blockSignals(False)
+            self._export_chks[option].blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
         if self._tray and hasattr(self._tray, 'export_naming_actions'):
             self._tray.export_naming_actions[option].setChecked(
                 self._config.is_export_naming_enabled(option)

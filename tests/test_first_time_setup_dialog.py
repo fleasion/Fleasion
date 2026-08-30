@@ -27,7 +27,7 @@ class _FirstTimeDialogLike(Protocol):
 
 def _qapp() -> QApplication:
     app = QApplication.instance()
-    return cast(QApplication, app) if app is not None else QApplication([])
+    return cast('QApplication', app) if app is not None else QApplication([])
 
 
 def _new_dialog() -> _FirstTimeDialogLike:
@@ -39,7 +39,7 @@ def _new_dialog() -> _FirstTimeDialogLike:
 
 
 def _body(dialog: object) -> QTextBrowser:
-    return cast(QTextBrowser, dialog.__dict__['_body'])
+    return cast('QTextBrowser', dialog.__dict__['_body'])
 
 
 def test_first_time_setup_dialog_keeps_acknowledgement_on_screen() -> None:
@@ -54,7 +54,7 @@ def test_first_time_setup_dialog_keeps_acknowledgement_on_screen() -> None:
 
     available = dialog.screen().availableGeometry()
     button_bottom = dialog.ok_button.mapTo(
-        cast(QWidget, dialog), dialog.ok_button.rect().bottomRight()
+        cast('QWidget', dialog), dialog.ok_button.rect().bottomRight()
     ).y()
 
     assert dialog.width() <= int(available.width() * 0.90)

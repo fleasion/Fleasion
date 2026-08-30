@@ -38,7 +38,7 @@ def _write_settings(path: Path, cap: int) -> None:
 
 
 def _stash_dir(manager: GlobalSettingsManager) -> Path:
-    return cast(Path, manager.__dict__['_stash_dir'])
+    return cast('Path', manager.__dict__['_stash_dir'])
 
 
 def _read_cap(manager: GlobalSettingsManager, path: Path) -> int | None:

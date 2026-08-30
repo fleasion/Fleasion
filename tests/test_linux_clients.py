@@ -1,6 +1,6 @@
 import subprocess
-from dataclasses import replace
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Literal, cast
 
@@ -94,7 +94,7 @@ def test_detect_installed_clients_uses_flatpak_info(tmp_path: Path) -> None:
         home=tmp_path,
         environ={},
         which=_flatpak_which,
-        run=cast(CommandRunner, run),
+        run=cast('CommandRunner', run),
     )
 
     assert [item.key for item in installed] == ['sober']
@@ -134,7 +134,7 @@ def test_detect_installed_clients_strips_pyinstaller_library_path(
         home=tmp_path,
         environ={'LD_LIBRARY_PATH': f'{bundle_root}:{host_libs}'},
         which=_flatpak_which,
-        run=cast(CommandRunner, run),
+        run=cast('CommandRunner', run),
     )
 
     assert [item.key for item in installed] == ['sober']
@@ -192,7 +192,7 @@ def test_query_default_handlers_uses_scheme_order_and_explicit_home(tmp_path: Pa
         home=tmp_path,
         environ={},
         which=_xdg_which,
-        run=cast(CommandRunner, run),
+        run=cast('CommandRunner', run),
     )
 
     assert handlers == ('org.vinegarhq.Sober.desktop',)
@@ -255,7 +255,7 @@ def test_auto_selection_prefers_current_handler_for_future_descriptor(tmp_path: 
         home=tmp_path,
         environ={},
         which=_xdg_which,
-        run=cast(CommandRunner, run_handler),
+        run=cast('CommandRunner', run_handler),
     )
 
     assert selected is installations[1]

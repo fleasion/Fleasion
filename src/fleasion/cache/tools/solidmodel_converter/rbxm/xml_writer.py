@@ -101,10 +101,10 @@ def _write_instance(
         _write_instance(item, child, doc)
 
 
-def _write_property(
+def _write_property(  # ruff: ignore[complex-structure, too-many-branches, too-many-statements]
     props_el: Element,
     prop: RbxProperty,
-    doc: RbxDocument,  # noqa: ARG001
+    doc: RbxDocument,  # ruff: ignore[unused-function-argument]
 ) -> None:
     """Write a single property value as XML."""
     xml_tag = PROPERTY_FORMAT_TO_XML_TAG.get(prop.fmt, 'string')
@@ -198,11 +198,11 @@ def _has_invalid_xml_chars(s: str) -> bool:
     """Return True if the string contains characters not allowed in XML 1.0."""
     for ch in s:
         codepoint = ord(ch)
-        if codepoint < 0x20 and ch not in '\t\n\r':
+        if codepoint < 0x20 and ch not in '\t\n\r':  # ruff: ignore[magic-value-comparison]
             return True
-        if 0xD800 <= codepoint <= 0xDFFF:
+        if 0xD800 <= codepoint <= 0xDFFF:  # ruff: ignore[magic-value-comparison]
             return True
-        if codepoint in (0xFFFE, 0xFFFF):
+        if codepoint in (0xFFFE, 0xFFFF):  # ruff: ignore[literal-membership]
             return True
     return False
 
@@ -460,7 +460,9 @@ def _write_shared_string(parent: Element, prop: RbxProperty) -> None:
     el.set('name', prop.name)
     if isinstance(prop.value, bytes):
         # Compute MD5 hash of the raw content, base64-encoded (Studio requires this format)
-        md5_b64 = base64.b64encode(hashlib.md5(prop.value).digest()).decode('ascii')  # noqa: S324
+        md5_b64 = base64.b64encode(hashlib.md5(prop.value, usedforsecurity=False).digest()).decode(
+            'ascii'
+        )
         b64_content = base64.b64encode(prop.value).decode('ascii')
         # Register in the shared string registry
         _shared_string_registry[md5_b64] = b64_content
@@ -505,7 +507,7 @@ def _write_content(parent: Element, prop: RbxProperty) -> None:
     _write_content_value(el, prop.value)
 
 
-def _write_content_value(parent: Element, value: Any) -> None:
+def _write_content_value(parent: Element, value: Any) -> None:  # ruff: ignore[any-type]
     if value is None:
         SubElement(parent, 'null')
     elif isinstance(value, str):
@@ -525,10 +527,10 @@ def _write_content_value(parent: Element, value: Any) -> None:
         SubElement(parent, 'null')
 
 
-def _fmt_float(value: Any) -> str:
+def _fmt_float(value: Any) -> str:  # ruff: ignore[any-type]
     """Format a float for XML output, avoiding unnecessary decimals."""
     if isinstance(value, float):
-        if value.is_integer() and abs(value) < 1e15:
+        if value.is_integer() and abs(value) < 1e15:  # ruff: ignore[magic-value-comparison]
             return str(int(value))
         return f'{value:.8g}'
     return str(value)

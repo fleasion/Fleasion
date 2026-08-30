@@ -6,15 +6,7 @@ from typing import cast
 
 from PIL import Image
 
-from fleasion.cache.tools.ktx_to_png import convert
-from fleasion.cache.tools.ktx_to_png import ktx_to_png as ktx_module
-
-
-def _extend_sign(value: int, bits: int) -> int:
-    callback = cast('Callable[[int, int], int]', ktx_module.__dict__['_extend_sign'])
-    return callback(value, bits)
-
-
+from fleasion.cache.tools.ktx_to_png import convert, ktx_to_png as ktx_module
 from fleasion.cache.tools.rgba_ktx2 import (
     KTX2_MAGIC,
     VK_FORMAT_R8G8B8A8_UNORM,
@@ -24,6 +16,11 @@ from fleasion.cache.tools.rgba_ktx2 import (
     write_rgba8_ktx2,
     write_rgba8_ktx2_levels,
 )
+
+
+def _extend_sign(value: int, bits: int) -> int:
+    callback = cast('Callable[[int, int], int]', ktx_module.__dict__['_extend_sign'])
+    return callback(value, bits)
 
 
 def test_rgba8_ktx2_round_trips_to_png(tmp_path: Path) -> None:

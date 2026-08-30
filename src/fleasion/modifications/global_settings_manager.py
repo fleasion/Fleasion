@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import stat
@@ -9,7 +10,8 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from ..utils import USER_HOME, format_count, log_buffer
+from fleasion.utils import USER_HOME, format_count, log_buffer
+
 from .stash_paths import resource_stash_dir
 
 GLOBAL_SETTINGS_REL = Path('GlobalBasicSettings_13.xml')
@@ -34,10 +36,8 @@ def _global_settings_stash_path(stash_dir: Path, roblox_dir: Path) -> Path:
     try:
         legacy.replace(destination)
     except OSError:
-        try:
+        with contextlib.suppress(OSError):
             shutil.copy2(legacy, destination)
-        except OSError:
-            pass
     return destination
 
 
@@ -53,7 +53,7 @@ class GlobalSettingsManager:
         self._user_roblox_dirs = self._find_all_user_roblox_dirs()
 
     @staticmethod
-    def _find_all_user_roblox_dirs() -> list[Path]:
+    def _find_all_user_roblox_dirs() -> list[Path]:  # ruff: ignore[complex-structure]
         """Find user Roblox data directories."""
         roblox_dirs: list[Path] = []
         if sys.platform == 'darwin':
@@ -66,10 +66,12 @@ class GlobalSettingsManager:
 
         if sys.platform.startswith('linux'):
             try:
-                from ..utils.platform_linux import find_linux_global_settings_dirs
+                from fleasion.utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
+                    find_linux_global_settings_dirs,
+                )
 
                 roblox_dirs.extend(find_linux_global_settings_dirs())
-            except Exception as exc:
+            except Exception as exc:  # ruff: ignore[blind-except]
                 log_buffer.log(
                     'GlobalSettings',
                     f'Could not discover Linux Roblox settings directories: {exc}',
@@ -84,8 +86,8 @@ class GlobalSettingsManager:
             log_buffer.log('GlobalSettings', 'C:\\Users directory not found')
             return roblox_dirs
 
-        try:
-            for user_folder in os.listdir(users_dir):
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
+            for user_folder in os.listdir(users_dir):  # ruff: ignore[os-listdir]
                 user_path = users_dir / user_folder
                 if not user_path.is_dir():
                     continue
@@ -103,21 +105,21 @@ class GlobalSettingsManager:
         """Remove read-only attribute from a file."""
         if path.exists():
             try:
-                current = stat.S_IMODE(os.stat(str(path)).st_mode)
-                os.chmod(str(path), current | stat.S_IWUSR)
+                current = stat.S_IMODE(os.stat(str(path)).st_mode)  # ruff: ignore[os-stat]
+                os.chmod(str(path), current | stat.S_IWUSR)  # ruff: ignore[os-chmod]
             except OSError:
                 pass
 
     @staticmethod
-    def _set_read_only(path: Path, read_only: bool) -> None:
+    def _set_read_only(path: Path, read_only: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
         """Set or remove read-only attribute on a file."""
         if path.exists():
             try:
                 if read_only:
-                    os.chmod(str(path), stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
+                    os.chmod(str(path), stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)  # ruff: ignore[os-chmod]
                 else:
-                    current = stat.S_IMODE(os.stat(str(path)).st_mode)
-                    os.chmod(str(path), current | stat.S_IWUSR)
+                    current = stat.S_IMODE(os.stat(str(path)).st_mode)  # ruff: ignore[os-stat]
+                    os.chmod(str(path), current | stat.S_IWUSR)  # ruff: ignore[os-chmod]
             except OSError:
                 pass
 
@@ -127,18 +129,18 @@ class GlobalSettingsManager:
         if not path.exists():
             return False
         try:
-            current = stat.S_IMODE(os.stat(str(path)).st_mode)
+            current = stat.S_IMODE(os.stat(str(path)).st_mode)  # ruff: ignore[os-stat]
             # Read-only if no write permissions for owner
             return not (current & stat.S_IWUSR)
         except OSError:
             return False
 
-    def _read_framerate_cap(self, xml_path: Path) -> int | None:
+    def _read_framerate_cap(self, xml_path: Path) -> int | None:  # ruff: ignore[no-self-use]
         """Read the current FramerateCap value from GlobalBasicSettings_13.xml."""
         if not xml_path.exists():
             return None
 
-        try:
+        try:  # ruff: ignore[too-many-nested-blocks, too-many-statements-in-try-clause]
             tree = ET.parse(str(xml_path))
             root = tree.getroot()
 
@@ -154,8 +156,8 @@ class GlobalSettingsManager:
                                     return int(int_elem.text or 0)
                                 except ValueError, TypeError:
                                     return None
-            return None
-        except Exception as e:
+            return None  # ruff: ignore[try-consider-else]
+        except Exception as e:  # ruff: ignore[blind-except]
             log_buffer.log('GlobalSettings', f'Error reading XML: {e}')
             return None
 
@@ -167,7 +169,7 @@ class GlobalSettingsManager:
                 return cap
         return None
 
-    def _write_framerate_cap(self, xml_path: Path, framerate: int) -> None:
+    def _write_framerate_cap(self, xml_path: Path, framerate: int) -> None:  # ruff: ignore[complex-structure, too-many-branches]
         """Write the FramerateCap value to GlobalBasicSettings_13.xml."""
         if not xml_path.exists():
             log_buffer.log('GlobalSettings', f'XML file not found: {xml_path}')
@@ -176,7 +178,7 @@ class GlobalSettingsManager:
         # Check and store read-only state
         was_read_only = self._get_read_only_state(xml_path)
 
-        try:
+        try:  # ruff: ignore[too-many-nested-blocks, too-many-statements-in-try-clause]
             # Remove read-only temporarily if needed
             if was_read_only:
                 self._remove_read_only(xml_path)
@@ -206,15 +208,15 @@ class GlobalSettingsManager:
 
             # Restore read-only state if it was set
             if was_read_only:
-                self._set_read_only(xml_path, True)
+                self._set_read_only(xml_path, True)  # ruff: ignore[boolean-positional-value-in-call]
 
-        except Exception as e:
+        except Exception as e:  # ruff: ignore[blind-except]
             log_buffer.log('GlobalSettings', f'Error writing framerate cap: {e}')
             # Try to restore read-only state on error
             if was_read_only:
-                try:
-                    self._set_read_only(xml_path, True)
-                except Exception:
+                try:  # ruff: ignore[suppressible-exception]
+                    self._set_read_only(xml_path, True)  # ruff: ignore[boolean-positional-value-in-call]
+                except Exception:  # ruff: ignore[blind-except, try-except-pass]
                     pass
 
     def write(self, framerate: int | None) -> None:
@@ -234,9 +236,9 @@ class GlobalSettingsManager:
                 shutil.copy2(dst, stash)
                 # Also preserve read-only state
                 if self._get_read_only_state(dst):
-                    with open(stash, 'a'):
+                    with open(stash, 'a'):  # ruff: ignore[builtin-open, unspecified-encoding]
                         pass  # Touch file
-                    self._set_read_only(stash, True)
+                    self._set_read_only(stash, True)  # ruff: ignore[boolean-positional-value-in-call]
 
             # Write the framerate cap
             if dst.exists():
@@ -244,7 +246,7 @@ class GlobalSettingsManager:
 
         log_buffer.log(
             'GlobalSettings',
-            f'Wrote FramerateCap={framerate} to {format_count(self._user_roblox_dirs, "Roblox dir")}',
+            f'Wrote FramerateCap={framerate} to {format_count(self._user_roblox_dirs, "Roblox dir")}',  # ruff: ignore[line-too-long]
         )
 
     def reset_framerate_cap(self) -> None:
@@ -287,7 +289,7 @@ class GlobalSettingsManager:
 
                 # Restore the read-only state
                 if self._get_read_only_state(stash):
-                    self._set_read_only(dst, True)
+                    self._set_read_only(dst, True)  # ruff: ignore[boolean-positional-value-in-call]
 
                 stash.unlink()
 

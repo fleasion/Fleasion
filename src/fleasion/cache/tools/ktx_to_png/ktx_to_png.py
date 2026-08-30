@@ -30,7 +30,7 @@ import numpy as np
 import zstandard
 from PIL import Image
 
-from ..rgba_ktx2 import read_rgba8_ktx2
+from fleasion.cache.tools.rgba_ktx2 import read_rgba8_ktx2
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ def convert(data: bytes) -> bytes | None:
     Returns PNG bytes on success, or ``None`` if the format is unsupported or
     an error occurs.  Never raises.
     """
-    try:
+    try:  # ruff: ignore[too-many-statements-in-try-clause]
         if data[:12] == KTX1_MAGIC:
             return _convert_ktx1(data)
         if data[:12] == KTX2_MAGIC:
@@ -63,8 +63,8 @@ def convert(data: bytes) -> bytes | None:
             if stripped[:12] == KTX2_MAGIC:
                 return _convert_ktx2(stripped)
         logger.debug('ktx_to_png: unrecognised magic bytes')
-        return None
-    except Exception as exc:
+        return None  # ruff: ignore[try-consider-else]
+    except Exception as exc:  # ruff: ignore[blind-except]
         logger.debug('ktx_to_png: conversion failed: %s', exc)
         return None
 
@@ -77,7 +77,7 @@ def strip_prefixed_ktx(data: bytes) -> bytes | None:
     at the KTX magic bytes, not the wrapper.
     """
 
-    if len(data) < 12:
+    if len(data) < 12:  # ruff: ignore[magic-value-comparison]
         return None
 
     for magic in (KTX1_MAGIC, KTX2_MAGIC):
@@ -129,7 +129,7 @@ def _convert_ktx1(data: bytes) -> bytes | None:
     # 64+kvSize   imageSize (uint32)
     # 68+kvSize   imageData[imageSize]
 
-    if len(data) < 64:
+    if len(data) < 64:  # ruff: ignore[magic-value-comparison]
         return None
 
     try:
@@ -166,16 +166,16 @@ def _convert_ktx1(data: bytes) -> bytes | None:
 def _decode_ktx1(
     internal_fmt: int, image_data: bytes, width: int, height: int
 ) -> np.ndarray | None:
-    if internal_fmt in (_GL_RGB8_ETC1, _GL_RGB8_ETC2, _GL_SRGB8_ETC2):
+    if internal_fmt in (_GL_RGB8_ETC1, _GL_RGB8_ETC2, _GL_SRGB8_ETC2):  # ruff: ignore[literal-membership]
         return _decode_etc_rgb(image_data, width, height, punchthrough=False)
 
-    if internal_fmt in (
+    if internal_fmt in (  # ruff: ignore[literal-membership]
         _GL_RGB8_PUNCHTHROUGH_ALPHA1_ETC2,
         _GL_SRGB8_PUNCHTHROUGH_ALPHA1_ETC2,
     ):
         return _decode_etc_rgb(image_data, width, height, punchthrough=True)
 
-    if internal_fmt in (_GL_RGBA8_ETC2_EAC, _GL_SRGB8_ALPHA8_ETC2_EAC):
+    if internal_fmt in (_GL_RGBA8_ETC2_EAC, _GL_SRGB8_ALPHA8_ETC2_EAC):  # ruff: ignore[literal-membership]
         return _decode_etc_rgba(image_data, width, height)
 
     logger.debug('ktx_to_png: unsupported KTX1 glInternalFormat 0x%X', internal_fmt)
@@ -202,7 +202,7 @@ def _extend_sign(val: int, bits: int) -> int:
 def _clamp255(x: int) -> int:
     if x < 0:
         return 0
-    if x > 255:
+    if x > 255:  # ruff: ignore[magic-value-comparison]
         return 255
     return int(x)
 
@@ -253,7 +253,7 @@ _EAC_MODIFIER_TABLE = [
 ]
 
 
-def _legacy_etc(
+def _legacy_etc(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
     block: int,
     r0: int,
     g0: int,
@@ -264,7 +264,7 @@ def _legacy_etc(
     dest: bytearray,
     base_offset: int,
     pitch: int,
-    opaque: bool,
+    opaque: bool,  # ruff: ignore[boolean-type-hint-positional-argument]
 ) -> None:
     """Decompress one 4x4 ETC block in Individual or Differential mode."""
     remap = _REMAP_TABLE_OPAQUE if opaque else _REMAP_TABLE_TRANSPARENT
@@ -284,7 +284,7 @@ def _legacy_etc(
             idx = (((block >> (m + 16)) & 1) << 1) | ((block >> m) & 1)
             off = base_offset + x0 * pitch + y0 * 4
 
-            if opaque or idx != 2:
+            if opaque or idx != 2:  # ruff: ignore[magic-value-comparison]
                 dest[off + 0] = _clamp255(r0 + remap[code_word0][idx])
                 dest[off + 1] = _clamp255(g0 + remap[code_word0][idx])
                 dest[off + 2] = _clamp255(b0 + remap[code_word0][idx])
@@ -300,7 +300,7 @@ def _legacy_etc(
             idx = (((block >> (m + 16)) & 1) << 1) | ((block >> m) & 1)
             off = base_offset + x1 * pitch + y1 * 4
 
-            if opaque or idx != 2:
+            if opaque or idx != 2:  # ruff: ignore[magic-value-comparison]
                 dest[off + 0] = _clamp255(r1 + remap[code_word1][idx])
                 dest[off + 1] = _clamp255(g1 + remap[code_word1][idx])
                 dest[off + 2] = _clamp255(b1 + remap[code_word1][idx])
@@ -312,8 +312,13 @@ def _legacy_etc(
                 dest[off + 3] = 0
 
 
-def _etc_t_h(
-    block: int, mode: int, dest: bytearray, base_offset: int, pitch: int, opaque: bool
+def _etc_t_h(  # ruff: ignore[too-many-arguments, too-many-locals, too-many-positional-arguments, too-many-statements]
+    block: int,
+    mode: int,
+    dest: bytearray,
+    base_offset: int,
+    pitch: int,
+    opaque: bool,  # ruff: ignore[boolean-type-hint-positional-argument]
 ) -> None:
     """Decompress one 4x4 ETC block in T or H mode."""
     if mode == 1:  # T mode
@@ -375,7 +380,7 @@ def _etc_t_h(
             k = i + j * 4
             idx = (((block >> (k + 16)) & 1) << 1) | ((block >> k) & 1)
             off = row_off + j * 4
-            if opaque or idx != 2:
+            if opaque or idx != 2:  # ruff: ignore[magic-value-comparison]
                 dest[off + 0] = paint[idx][0]
                 dest[off + 1] = paint[idx][1]
                 dest[off + 2] = paint[idx][2]
@@ -387,7 +392,7 @@ def _etc_t_h(
                 dest[off + 3] = 0
 
 
-def _etc_planar(block: int, dest: bytearray, base_offset: int, pitch: int) -> None:
+def _etc_planar(block: int, dest: bytearray, base_offset: int, pitch: int) -> None:  # ruff: ignore[too-many-locals]
     """Decompress one 4x4 ETC block in Planar mode."""
     ro = (block >> 57) & 0x3F
     go1 = (block >> 56) & 0x01
@@ -435,7 +440,7 @@ def _decompress_etc_block(
     dest: bytearray,
     dest_offset: int,
     pitch: int,
-    punchthrough: bool = False,
+    punchthrough: bool = False,  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
 ) -> None:
     """Main ETC block decompressor -- port of DecompressETCBlock in Internal.cs."""
     block = _bswap64(compressed)
@@ -465,11 +470,11 @@ def _decompress_etc_block(
         b0 = (block >> 43) & 0x1F
         b1 = b0 + _extend_sign((block >> 40) & 0x7, 3)
 
-        if r1 < 0 or r1 > 31:
+        if r1 < 0 or r1 > 31:  # ruff: ignore[magic-value-comparison]
             mode = 1  # T
-        elif g1 < 0 or g1 > 31:
+        elif g1 < 0 or g1 > 31:  # ruff: ignore[magic-value-comparison]
             mode = 2  # H
-        elif b1 < 0 or b1 > 31:
+        elif b1 < 0 or b1 > 31:  # ruff: ignore[magic-value-comparison]
             mode = 3  # Planar
         else:
             # Differential -- expand to 8-bit
@@ -484,7 +489,7 @@ def _decompress_etc_block(
 
     if mode == 0:
         _legacy_etc(block, r0, g0, b0, r1, g1, b1, dest, dest_offset, pitch, opaque)
-    elif mode < 3:
+    elif mode < 3:  # ruff: ignore[magic-value-comparison]
         _etc_t_h(block, mode, dest, dest_offset, pitch, opaque)
     else:
         _etc_planar(block, dest, dest_offset, pitch)
@@ -515,7 +520,10 @@ def _decompress_eac_block(
 
 
 def _decode_etc_rgb(
-    image_data: bytes, width: int, height: int, punchthrough: bool = False
+    image_data: bytes,
+    width: int,
+    height: int,
+    punchthrough: bool = False,  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
 ) -> np.ndarray:
     """Decode a full ETC RGB (or punchthrough) image -- 8 bytes per block."""
     dest = bytearray(width * height * 4)
@@ -531,7 +539,7 @@ def _decode_etc_rgb(
             src_off += 8
 
     arr = np.frombuffer(dest, dtype=np.uint8).reshape(height, width, 4)
-    return arr
+    return arr  # ruff: ignore[unnecessary-assign]
 
 
 def _decode_etc_rgba(image_data: bytes, width: int, height: int) -> np.ndarray:
@@ -550,13 +558,13 @@ def _decode_etc_rgba(image_data: bytes, width: int, height: int) -> np.ndarray:
             dst_off = (block_y * width + block_x) * 4
             block_bytes = image_data[src_off : src_off + 16]
             # Color (bytes 8-15)
-            _decompress_etc_block(block_bytes[8:], dest, dst_off, pitch, False)
+            _decompress_etc_block(block_bytes[8:], dest, dst_off, pitch, False)  # ruff: ignore[boolean-positional-value-in-call]
             # Alpha (bytes 0-7), written to the alpha channel (offset +3)
             _decompress_eac_block(block_bytes[0:8], dest, dst_off + 3, pitch, 4)
             src_off += 16
 
     arr = np.frombuffer(dest, dtype=np.uint8).reshape(height, width, 4)
-    return arr
+    return arr  # ruff: ignore[unnecessary-assign]
 
 
 # -------------------------------------------------------------------------------
@@ -575,7 +583,7 @@ _KTX2_HEADER_SIZE = 80
 _KTX2_LEVEL_INDEX_ENTRY_SIZE = 24
 
 
-def _ktx2_kv_text(data: bytes, key: str) -> str | None:
+def _ktx2_kv_text(data: bytes, key: str) -> str | None:  # ruff: ignore[too-many-return-statements]
     """Return one UTF-8 KTX2 key/value entry, if present and well-formed."""
 
     if len(data) < _KTX2_HEADER_SIZE:
@@ -628,7 +636,7 @@ def _gamma2_ycocg_to_rgba(rgba: np.ndarray) -> np.ndarray:
     return output
 
 
-def _decode_ktx2_etc(data: bytes) -> np.ndarray | None:
+def _decode_ktx2_etc(data: bytes) -> np.ndarray | None:  # ruff: ignore[complex-structure, too-many-locals, too-many-return-statements]
     """Decode level 0 of a 2D ETC2 KTX2 texture to RGBA8.
 
     Roblox's streamed TexturePack payloads use ordinary ETC2 GPU blocks with
@@ -674,7 +682,7 @@ def _decode_ktx2_etc(data: bytes) -> np.ndarray | None:
     if vk_format not in rgb_formats | punchthrough_formats | rgba_formats:
         return None
     if (
-        type_size != 1
+        type_size != 1  # ruff: ignore[too-many-boolean-expressions]
         or width <= 0
         or height <= 0
         or depth != 0
@@ -682,7 +690,7 @@ def _decode_ktx2_etc(data: bytes) -> np.ndarray | None:
         or face_count != 1
         or level_count <= 0
         or supercompression
-        not in (
+        not in (  # ruff: ignore[literal-membership]
             _KTX2_SUPERCOMPRESSION_NONE,
             _KTX2_SUPERCOMPRESSION_ZSTD,
         )
@@ -735,14 +743,14 @@ _KTX_SUCCESS = 0  # KtxErrorCode.KtxSuccess
 
 # ktxTexture struct field offsets on 64-bit Windows/macOS libktx 4.x builds.
 # Layout derived from DECLARE_KTXTEXTURE_PUBLIC expansion in ktx.h:
-#   classId(4) + pad(4) + vtbl(8) + vvtbl(8) + _protected(8)  -- 0-31
+#   classId(4) + pad(4) + vtbl(8) + vvtbl(8) + _protected(8)  -- 0-31  # ruff: ignore[commented-out-code]
 #   isArray/isCubemap/isCompressed/generateMipmaps (4x1)        -- 32-35
-#   baseWidth(4) + baseHeight(4) + baseDepth(4) + ...             -- 36, 40
+#   baseWidth(4) + baseHeight(4) + baseDepth(4) + ...             -- 36, 40  # ruff: ignore[commented-out-code]
 #   ... numFaces(4) ends at 64
 #   orientation{x,y,z} each int32 (C enum default) = 12 bytes   -- 64-75
 #   padding(4) to align 8-byte pointer                           -- 76-79
-#   kvDataHead(8) + kvDataLen(4) + pad(4) + kvData(8)           -- 80-103
-#   dataSize(size_t=8) + pData(ptr=8)                           -- 104, 112
+#   kvDataHead(8) + kvDataLen(4) + pad(4) + kvData(8)           -- 80-103  # ruff: ignore[commented-out-code]
+#   dataSize(size_t=8) + pData(ptr=8)                           -- 104, 112  # ruff: ignore[commented-out-code]
 _OFFSET_BASE_WIDTH = 36
 _OFFSET_BASE_HEIGHT = 40
 _OFFSET_DATA_SIZE = 104
@@ -777,9 +785,9 @@ def _find_ktx_dll() -> str | None:
     return None
 
 
-def _get_ktx_dll():
+def _get_ktx_dll():  # ruff: ignore[missing-return-type-private-function]
     """Load and configure native libktx, returning the ctypes CDLL or None."""
-    global _ktx_dll, _ktx_dll_loaded
+    global _ktx_dll, _ktx_dll_loaded  # ruff: ignore[global-statement]
     if _ktx_dll_loaded:
         return _ktx_dll
     _ktx_dll_loaded = True
@@ -791,12 +799,12 @@ def _get_ktx_dll():
 
     try:
         dll = ctypes.CDLL(dll_path)
-    except Exception as exc:
+    except Exception as exc:  # ruff: ignore[blind-except]
         logger.debug('ktx_to_png: failed to load native libktx: %s', exc)
         return None
 
-    try:
-        # ktxTexture2_CreateFromMemory(data, size, flags, **texture) -- int
+    try:  # ruff: ignore[too-many-statements-in-try-clause]
+        # ktxTexture2_CreateFromMemory(data, size, flags, **texture) -- int  # ruff: ignore[commented-out-code]
         dll.ktxTexture2_CreateFromMemory.restype = ctypes.c_int
         dll.ktxTexture2_CreateFromMemory.argtypes = [
             ctypes.c_char_p,
@@ -807,17 +815,17 @@ def _get_ktx_dll():
         # ktxTexture2_NeedsTranscoding(texture) -- int (1 = yes)
         dll.ktxTexture2_NeedsTranscoding.restype = ctypes.c_int
         dll.ktxTexture2_NeedsTranscoding.argtypes = [ctypes.c_void_p]
-        # ktxTexture2_TranscodeBasis(texture, transcodeFormat, flags) -- int
+        # ktxTexture2_TranscodeBasis(texture, transcodeFormat, flags) -- int  # ruff: ignore[commented-out-code]
         dll.ktxTexture2_TranscodeBasis.restype = ctypes.c_int
         dll.ktxTexture2_TranscodeBasis.argtypes = [
             ctypes.c_void_p,
             ctypes.c_uint,
             ctypes.c_uint,
         ]
-        # ktxTexture2_Destroy(texture) -- void
+        # ktxTexture2_Destroy(texture) -- void  # ruff: ignore[commented-out-code]
         dll.ktxTexture2_Destroy.restype = None
         dll.ktxTexture2_Destroy.argtypes = [ctypes.c_void_p]
-    except Exception as exc:
+    except Exception as exc:  # ruff: ignore[blind-except]
         logger.debug('ktx_to_png: native libktx symbol setup failed: %s', exc)
         return None
 
@@ -834,7 +842,7 @@ def _read_ptr(ptr_int: int, offset: int) -> int:
     return ctypes.c_uint64.from_address(ptr_int + offset).value
 
 
-def _convert_ktx2(data: bytes) -> bytes | None:
+def _convert_ktx2(data: bytes) -> bytes | None:  # ruff: ignore[too-many-return-statements]
     rgba8 = read_rgba8_ktx2(data)
     if rgba8 is not None:
         rgba, width, height = rgba8
@@ -903,7 +911,7 @@ def _convert_ktx2(data: bytes) -> bytes | None:
         return buf.getvalue()
 
     finally:
-        try:
+        try:  # ruff: ignore[suppressible-exception]
             dll.ktxTexture2_Destroy(tex_ptr)
-        except Exception:
+        except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass

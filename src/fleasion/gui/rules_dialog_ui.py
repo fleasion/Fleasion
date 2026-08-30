@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 from PySide6 import QtCore, QtWidgets
 
-from ..localization import tr
+from fleasion.localization import tr
 
 
 def _header_item(table: QtWidgets.QTableWidget, index: int) -> QtWidgets.QTableWidgetItem:
@@ -18,8 +18,8 @@ def _header_item(table: QtWidgets.QTableWidget, index: int) -> QtWidgets.QTableW
     return item
 
 
-class Ui_Dialog:
-    def setupUi(self, Dialog: QtWidgets.QDialog) -> None:
+class Ui_Dialog:  # ruff: ignore[invalid-class-name]
+    def setupUi(self, Dialog: QtWidgets.QDialog) -> None:  # ruff: ignore[invalid-argument-name, invalid-function-name, too-many-statements]
         Dialog.setObjectName('Dialog')
         Dialog.resize(611, 300)
         self.verticalLayout = QtWidgets.QVBoxLayout(Dialog)
@@ -77,7 +77,7 @@ class Ui_Dialog:
         self.retranslateUi(Dialog)
         QtCore.QMetaObject.connectSlotsByName(Dialog)
 
-    def retranslateUi(self, Dialog: QtWidgets.QDialog) -> None:
+    def retranslateUi(self, Dialog: QtWidgets.QDialog) -> None:  # ruff: ignore[invalid-argument-name, invalid-function-name]
         Dialog.setWindowTitle(tr('ui.gui.rules_dialog_ui.dialog'))
         item = _header_item(self.rulesTable, 0)
         item.setText(tr('ui.gui.rules_dialog_ui.enabled'))

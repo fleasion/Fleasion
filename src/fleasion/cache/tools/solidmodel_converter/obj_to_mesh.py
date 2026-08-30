@@ -11,7 +11,7 @@ import struct
 from hashlib import md5
 from pathlib import Path
 
-from ....utils import LOCAL_APPDATA
+from fleasion.utils import LOCAL_APPDATA
 
 log = logging.getLogger(__name__)
 
@@ -19,7 +19,7 @@ log = logging.getLogger(__name__)
 CONVERTED_MESHES_DIR = LOCAL_APPDATA / 'FleasionNT' / 'Temp' / 'ConvertedMeshes'
 
 
-def parse_obj_for_mesh(
+def parse_obj_for_mesh(  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
     obj_content: str,
 ) -> tuple[
     list[tuple[float, float, float, float, float, float, float, float, float]],
@@ -45,7 +45,7 @@ def parse_obj_for_mesh(
     colors_out: list[tuple[int, int, int, int]] = []
     indices_out: list[tuple[int, int, int]] = []
 
-    for raw_line in obj_content.splitlines():
+    for raw_line in obj_content.splitlines():  # ruff: ignore[too-many-nested-blocks]
         line = raw_line.strip()
         if not line or line.startswith('#'):
             continue
@@ -57,7 +57,7 @@ def parse_obj_for_mesh(
         if parts[0] == 'v':
             raw_v.append((float(parts[1]), float(parts[2]), float(parts[3])))
             # Parse RGB vertex colors if present
-            if len(parts) >= 7:
+            if len(parts) >= 7:  # ruff: ignore[magic-value-comparison]
                 r, g, b = float(parts[4]), float(parts[5]), float(parts[6])
                 # Convert 0.0-1.0 float ranges to 0-255 uint8, or clamp if they're absolute
                 if r <= 1.0 and g <= 1.0 and b <= 1.0:
@@ -83,9 +83,9 @@ def parse_obj_for_mesh(
                 v_idx = int(indices_split[0]) - 1
                 vt_idx = -1
                 vn_idx = -1
-                if len(indices_split) >= 2 and indices_split[1]:
+                if len(indices_split) >= 2 and indices_split[1]:  # ruff: ignore[magic-value-comparison]
                     vt_idx = int(indices_split[1]) - 1
-                if len(indices_split) >= 3 and indices_split[2]:
+                if len(indices_split) >= 3 and indices_split[2]:  # ruff: ignore[magic-value-comparison]
                     vn_idx = int(indices_split[2]) - 1
                 face_verts.append((v_idx, vt_idx, vn_idx))
 
@@ -125,7 +125,7 @@ def parse_obj_for_mesh(
 
                     tri_indices.append(unique_verts[key])
 
-                if len(tri_indices) == 3:
+                if len(tri_indices) == 3:  # ruff: ignore[magic-value-comparison]
                     indices_out.append((tri_indices[0], tri_indices[1], tri_indices[2]))
 
     return vertices_out, colors_out, indices_out
@@ -140,7 +140,7 @@ def export_v2_mesh(
     has_colors = len(colors) == len(vertices) and any(c != (255, 255, 255, 255) for c in colors)
     # Actually, the user wants Vertex Color support "same as it currently does in C++ source"
     # In C++, it was: rbxMesh.hasColors = obj.HasVertexColors && (ver == "2.00")
-    # For safety natively enabled if we have them. Let's just always enable them or check if ANY vertex color is non-white
+    # For safety natively enabled if we have them. Let's just always enable them or check if ANY vertex color is non-white  # ruff: ignore[line-too-long]
     # Or just always export them if they're present since Version 2.00 supports it.
     # Let's unconditionally use them to match "with Vertex Color support"
     has_colors = True
@@ -157,7 +157,7 @@ def export_v2_mesh(
     #     uint8_t faceSize; // 1
     #     uint32_t vertexCount; // 4
     #     uint32_t faceCount; // 4
-    # }
+    # }  # ruff: ignore[commented-out-code]
     header_data = struct.pack(
         '<HBBII', header_size, vertex_size, face_size, vertex_count, face_count
     )
@@ -196,12 +196,13 @@ def get_or_create_mesh_from_obj(obj_path: str | Path) -> Path:
     obj_p = Path(obj_path).resolve()
 
     if not obj_p.exists():
-        raise FileNotFoundError(f'OBJ file not found: {obj_path}')
+        msg = f'OBJ file not found: {obj_path}'
+        raise FileNotFoundError(msg)
 
     CONVERTED_MESHES_DIR.mkdir(parents=True, exist_ok=True)
 
     # Hash the original path so we get a consistent temp cache name
-    path_hash = md5(str(obj_p).encode('utf-8')).hexdigest()
+    path_hash = md5(str(obj_p).encode('utf-8'), usedforsecurity=False).hexdigest()
     mesh_filename = f'{obj_p.stem}_{path_hash}.mesh'
     cached_mesh_p = CONVERTED_MESHES_DIR / mesh_filename
 

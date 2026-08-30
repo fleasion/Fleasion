@@ -24,10 +24,10 @@ class _DisplayListWidget:
     def context(self):
         return object()
 
-    def makeCurrent(self) -> None:  # noqa: N802 - mirrors Qt's API
+    def makeCurrent(self) -> None:  # ruff: ignore[invalid-function-name]
         self.made_current = True
 
-    def doneCurrent(self) -> None:  # noqa: N802 - mirrors Qt's API
+    def doneCurrent(self) -> None:  # ruff: ignore[invalid-function-name]
         self.done_current = True
 
 

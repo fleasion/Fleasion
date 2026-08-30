@@ -35,7 +35,7 @@ def _cross_thread_socket_wakeup_failure(
     def wake() -> None:
         try:
             sender.sendall(b'\0')
-        except BaseException as exc:
+        except BaseException as exc:  # ruff: ignore[blind-except]
             errors.append(exc)
 
     worker = thread_factory(target=wake, name='pytest-sandbox-wakeup-probe', daemon=True)
@@ -71,7 +71,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         return
 
     selected = ', '.join(item.nodeid for item in guarded_items[:3])
-    if len(guarded_items) > 3:
+    if len(guarded_items) > 3:  # ruff: ignore[magic-value-comparison]
         selected += f', and {len(guarded_items) - 3} more'
     pytest.exit(
         'Cross-thread event-loop wakeups are blocked in this environment '

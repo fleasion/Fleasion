@@ -4,7 +4,7 @@ from typing import cast
 
 import pytest
 
-import fleasion.utils.microprofiler as microprofiler
+from fleasion.utils import microprofiler
 from fleasion.utils.microprofiler import start_microprofiler
 
 

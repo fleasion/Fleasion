@@ -4,19 +4,27 @@ from __future__ import annotations
 
 import shutil
 import ssl
-import subprocess
+import subprocess  # ruff: ignore[suspicious-subprocess-import]
 import urllib.error
+import urllib.parse
 import urllib.request
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path  # ruff: ignore[typing-only-standard-library-import]
 
 _USER_AGENT = 'FleasionNT/1.2.0'
 
 
+def _validate_http_url(url: str) -> None:
+    scheme = urllib.parse.urlsplit(url).scheme.lower()
+    if scheme not in {'http', 'https'}:
+        msg = f'Unsupported URL scheme: {scheme or "missing"}'
+        raise ValueError(msg)
+
+
 def _log_http(message: str) -> None:
     try:
-        from .logging import log_buffer
-    except Exception:
+        from .logging import log_buffer  # ruff: ignore[import-outside-top-level]
+    except Exception:  # ruff: ignore[blind-except]
         return
     log_buffer.log('HTTP', message)
 
@@ -24,8 +32,8 @@ def _log_http(message: str) -> None:
 @lru_cache(maxsize=1)
 def _certifi_context() -> ssl.SSLContext | None:
     try:
-        import certifi
-    except Exception:
+        import certifi  # ruff: ignore[import-outside-top-level]
+    except Exception:  # ruff: ignore[blind-except]
         return None
     return ssl.create_default_context(cafile=certifi.where())
 
@@ -41,8 +49,8 @@ def _tls12_context() -> ssl.SSLContext:
 @lru_cache(maxsize=1)
 def _certifi_tls12_context() -> ssl.SSLContext | None:
     try:
-        import certifi
-    except Exception:
+        import certifi  # ruff: ignore[import-outside-top-level]
+    except Exception:  # ruff: ignore[blind-except]
         return None
     ctx = ssl.create_default_context(cafile=certifi.where())
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
@@ -78,7 +86,7 @@ def _is_tls_record_layer_error(exc: BaseException) -> bool:
     return 'RECORD_LAYER_FAILURE' in text or 'RECORD LAYER FAILURE' in text
 
 
-def _open_with_contexts(
+def _open_with_contexts(  # ruff: ignore[missing-return-type-private-function]
     req: urllib.request.Request,
     timeout: int,
     contexts: list[ssl.SSLContext | None],
@@ -94,22 +102,23 @@ def _open_with_contexts(
             continue
         seen.add(ident)
         try:
-            return urllib.request.urlopen(req, timeout=timeout, context=ctx)
+            return urllib.request.urlopen(req, timeout=timeout, context=ctx)  # ruff: ignore[suspicious-url-open-usage]
         except urllib.error.URLError as exc:
             last_exc = exc
 
     if last_exc is not None:
         raise last_exc
-    raise RuntimeError('No HTTPS fallback context available')
+    msg = 'No HTTPS fallback context available'
+    raise RuntimeError(msg)
 
 
-def _open_verified(
+def _open_verified(  # ruff: ignore[missing-return-type-private-function]
     req: urllib.request.Request,
     url: str,
     timeout: int,
 ):
     try:
-        return urllib.request.urlopen(req, timeout=timeout)
+        return urllib.request.urlopen(req, timeout=timeout)  # ruff: ignore[suspicious-url-open-usage]
     except urllib.error.URLError as exc:
         if not url.lower().startswith('https://'):
             raise
@@ -133,20 +142,24 @@ def _open_verified(
 
 
 def http_get(url: str, timeout: int = 15, headers: dict[str, str] | None = None) -> bytes:
+    _validate_http_url(url)
     request_headers = {'User-Agent': _USER_AGENT}
     if headers:
         request_headers.update(headers)
-    req = urllib.request.Request(url, headers=request_headers)
+    req = urllib.request.Request(url, headers=request_headers)  # ruff: ignore[suspicious-url-open-usage]
 
     with _open_verified(req, url, timeout) as resp:
         return resp.read()
 
 
 def http_head_status(url: str, timeout: int = 15, headers: dict[str, str] | None = None) -> int:
+    _validate_http_url(url)
     request_headers = {'User-Agent': _USER_AGENT}
     if headers:
         request_headers.update(headers)
-    req = urllib.request.Request(url, headers=request_headers, method='HEAD')
+    req = urllib.request.Request(  # ruff: ignore[suspicious-url-open-usage]
+        url, headers=request_headers, method='HEAD'
+    )
 
     with _open_verified(req, url, timeout) as resp:
         return resp.status
@@ -158,10 +171,11 @@ def http_download_to(
     timeout: int = 15,
     headers: dict[str, str] | None = None,
 ) -> None:
+    _validate_http_url(url)
     request_headers = {'User-Agent': _USER_AGENT}
     if headers:
         request_headers.update(headers)
-    req = urllib.request.Request(url, headers=request_headers)
+    req = urllib.request.Request(url, headers=request_headers)  # ruff: ignore[suspicious-url-open-usage]
 
     try:
         with _open_verified(req, url, timeout) as resp, dest.open('wb') as out:
@@ -177,6 +191,7 @@ def _curl_download_to(
     headers: dict[str, str],
     original_exc: Exception,
 ) -> None:
+    _validate_http_url(url)
     curl = shutil.which('curl')
     if curl is None:
         raise original_exc
@@ -199,10 +214,10 @@ def _curl_download_to(
             cmd.extend(['--user-agent', value])
         else:
             cmd.extend(['--header', f'{key}: {value}'])
-    cmd.append(url)
+    cmd.extend(['--', url])
 
     try:
-        result = subprocess.run(
+        result = subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
             cmd,
             capture_output=True,
             check=False,
@@ -211,10 +226,9 @@ def _curl_download_to(
         )
         if result.returncode != 0:
             detail = (result.stderr or result.stdout or '').strip()
-            raise RuntimeError(detail or f'curl exited with code {result.returncode}')
+            raise RuntimeError(detail or f'curl exited with code {result.returncode}')  # ruff: ignore[raise-within-try]
         tmp.replace(dest)
-    except Exception as exc:
+    except Exception as exc:  # ruff: ignore[blind-except]
         tmp.unlink(missing_ok=True)
-        raise RuntimeError(
-            f'urllib download failed: {original_exc}; curl fallback failed: {exc}'
-        ) from original_exc
+        msg = f'urllib download failed: {original_exc}; curl fallback failed: {exc}'
+        raise RuntimeError(msg) from original_exc

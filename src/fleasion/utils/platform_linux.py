@@ -12,14 +12,15 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by Windows collectio
 import shlex
 import shutil
 import signal
-import subprocess
+import subprocess  # ruff: ignore[suspicious-subprocess-import]
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator  # ruff: ignore[typing-only-standard-library-import]
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypedDict, overload
 
-from ..localization import tr
+from fleasion.localization import tr
+
 from .linux_clients import (
     LINUX_CLIENTS_BY_KEY,
     SOBER_CLIENT,
@@ -52,6 +53,8 @@ else:
     ) -> LinuxClientInstallation | None:
         return select_linux_client(selection, installed=installed, home=home)
 
+
+import contextlib
 
 from .logging import log_buffer
 from .metadata import APP_NAME
@@ -195,7 +198,7 @@ def missing_linux_gui_packages(
     missing: list[str] = []
     for package in ARCH_LINUX_GUI_PACKAGES:
         try:
-            result = subprocess.run(
+            result = subprocess.run(  # ruff: ignore[subprocess-run-without-check, subprocess-without-shell-equals-true]
                 [pacman, '-Q', package],
                 capture_output=True,
                 text=True,
@@ -206,7 +209,7 @@ def missing_linux_gui_packages(
                 # package to this check.
                 env=_host_subprocess_env(),
             )
-        except Exception:
+        except Exception:  # ruff: ignore[blind-except, try-except-continue]
             # A failed package query should not block an otherwise working
             # desktop when its package manager cannot be inspected.
             continue
@@ -224,7 +227,7 @@ def missing_linux_gui_packages(
 
 def run_cmd(args: list[str]) -> str:
     """Run a command and return stdout."""
-    return subprocess.run(
+    return subprocess.run(  # ruff: ignore[subprocess-run-without-check, subprocess-without-shell-equals-true]
         args,
         capture_output=True,
         text=True,
@@ -240,7 +243,7 @@ def _normalized_linux_client_preference(value: object) -> str:
 
 def set_linux_client_preference(value: str | None) -> None:
     """Set the in-process Linux client preference from ``ConfigManager``."""
-    global _linux_client_preference
+    global _linux_client_preference  # ruff: ignore[global-statement]
     _linux_client_preference = _normalized_linux_client_preference(value)
 
 
@@ -299,20 +302,18 @@ def selected_linux_client_app_id() -> str:
 
 def _process_pids(name: str) -> list[int]:
     try:
-        result = subprocess.run(
-            ['pgrep', '-x', name],
+        result = subprocess.run(  # ruff: ignore[subprocess-run-without-check, subprocess-without-shell-equals-true]
+            ['pgrep', '-x', name],  # ruff: ignore[start-process-with-partial-path]
             capture_output=True,
             text=True,
             timeout=5,
         )
-    except Exception:
+    except Exception:  # ruff: ignore[blind-except]
         return []
     pids: list[int] = []
     for raw in result.stdout.splitlines():
-        try:
+        with contextlib.suppress(ValueError):
             pids.append(int(raw.strip()))
-        except ValueError:
-            pass
     return pids
 
 
@@ -332,7 +333,7 @@ def sober_main_process() -> tuple[int, float] | None:
 
     for pid in _process_pids('Main'):
         process_dir = PROC_ROOT / str(pid)
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
             cgroup = (process_dir / 'cgroup').read_text(encoding='utf-8', errors='replace')
             if SOBER_CGROUP_MARKER not in cgroup:
                 continue
@@ -389,13 +390,13 @@ def _first_client_pid(installation: LinuxClientInstallation | None = None) -> in
 
 def _process_command(pid: int) -> Path | None:
     try:
-        result = subprocess.run(
-            ['ps', '-p', str(pid), '-o', 'comm='],
+        result = subprocess.run(  # ruff: ignore[subprocess-run-without-check, subprocess-without-shell-equals-true]
+            ['ps', '-p', str(pid), '-o', 'comm='],  # ruff: ignore[start-process-with-partial-path]
             capture_output=True,
             text=True,
             timeout=5,
         )
-    except Exception:
+    except Exception:  # ruff: ignore[blind-except]
         return None
     value = result.stdout.strip()
     return Path(value) if value else None
@@ -466,7 +467,7 @@ def terminate_roblox() -> bool:
     flatpak = shutil.which('flatpak')
     if flatpak:
         try:
-            result = subprocess.run(
+            result = subprocess.run(  # ruff: ignore[subprocess-run-without-check, subprocess-without-shell-equals-true]
                 [flatpak, 'kill', installation.app_id],
                 env=_host_subprocess_env(),
                 capture_output=True,
@@ -475,7 +476,7 @@ def terminate_roblox() -> bool:
             )
             if result.returncode == 0:
                 return True
-        except Exception:
+        except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass
 
     signalled = False
@@ -516,7 +517,7 @@ def _delete_path(path: Path, messages: list[str], label: str) -> None:
         messages.append(f'Failed to delete {label.lower()}: {exc}')
 
 
-def delete_cache() -> list[str]:
+def delete_cache() -> list[str]:  # ruff: ignore[complex-structure, too-many-branches]
     """Delete cache files for only the selected Linux client and Fleasion."""
     messages: list[str] = []
     installation = get_selected_linux_client_installation()
@@ -554,7 +555,7 @@ def delete_cache() -> list[str]:
         _delete_path(cache_storage, messages, 'Cache storage folder')
 
     if APP_CACHE_DIR.exists():
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
             preserve = {APP_CACHE_DIR / 'predownloaded'}
             for child in APP_CACHE_DIR.iterdir():
                 if child in preserve:
@@ -572,7 +573,7 @@ def delete_cache() -> list[str]:
     return messages
 
 
-def find_roblox_resource_dirs(include_studio: bool = True) -> list[Path]:
+def find_roblox_resource_dirs(include_studio: bool = True) -> list[Path]:  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument, unused-function-argument]
     """Return resource roots for only the selected Linux client."""
     found: list[Path] = []
     seen: set[str] = set()
@@ -662,18 +663,18 @@ def _host_subprocess_env() -> dict[str, str]:
 def _standard_user_popen(args: list[str]) -> subprocess.Popen[bytes]:
     env = _host_subprocess_env()
     if os.geteuid() != 0:
-        return subprocess.Popen(args, env=env, **_DETACHED_POPEN_KWARGS)
+        return subprocess.Popen(args, env=env, **_DETACHED_POPEN_KWARGS)  # ruff: ignore[subprocess-without-shell-equals-true]
 
     user_home = Path(os.environ.get('FLEASION_USER_HOME') or USER_HOME)
-    try:
+    try:  # ruff: ignore[too-many-statements-in-try-clause]
         stat = user_home.stat()
         uid = stat.st_uid
         gid = stat.st_gid
         if pwd is None:
-            raise KeyError(uid)
+            raise KeyError(uid)  # ruff: ignore[raise-within-try]
         pw_entry = pwd.getpwuid(uid)
-    except Exception:
-        return subprocess.Popen(args, env=env, **_DETACHED_POPEN_KWARGS)
+    except Exception:  # ruff: ignore[blind-except]
+        return subprocess.Popen(args, env=env, **_DETACHED_POPEN_KWARGS)  # ruff: ignore[subprocess-without-shell-equals-true]
 
     env.update(
         {
@@ -688,7 +689,7 @@ def _standard_user_popen(args: list[str]) -> subprocess.Popen[bytes]:
         os.setgid(gid)
         os.setuid(uid)
 
-    return subprocess.Popen(args, env=env, preexec_fn=_demote, **_DETACHED_POPEN_KWARGS)
+    return subprocess.Popen(args, env=env, preexec_fn=_demote, **_DETACHED_POPEN_KWARGS)  # ruff: ignore[subprocess-popen-preexec-fn, subprocess-without-shell-equals-true]
 
 
 @overload
@@ -723,14 +724,14 @@ def _standard_user_run(
     user_home = Path(os.environ.get('FLEASION_USER_HOME') or USER_HOME)
     preexec_fn = None
     if os.geteuid() == 0:
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
             stat = user_home.stat()
             uid = stat.st_uid
             gid = stat.st_gid
             if pwd is None:
-                raise KeyError(uid)
+                raise KeyError(uid)  # ruff: ignore[raise-within-try]
             pw_entry = pwd.getpwuid(uid)
-        except Exception:
+        except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass
         else:
             env.update(
@@ -749,7 +750,7 @@ def _standard_user_run(
             preexec_fn = _demote
 
     if text:
-        return subprocess.run(
+        return subprocess.run(  # ruff: ignore[subprocess-run-without-check, subprocess-without-shell-equals-true]
             args,
             env=env,
             preexec_fn=preexec_fn,
@@ -757,7 +758,7 @@ def _standard_user_run(
             text=True,
             timeout=timeout,
         )
-    return subprocess.run(
+    return subprocess.run(  # ruff: ignore[subprocess-run-without-check, subprocess-without-shell-equals-true]
         args,
         env=env,
         preexec_fn=preexec_fn,
@@ -781,7 +782,7 @@ def _open_with_desktop_handler(target: str, label: str) -> bool:
         opener_found = True
         try:
             process = _standard_user_popen(command)
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log(
                 'Launch',
                 f'Failed to start {Path(command[0]).name} for {label}: {exc}',
@@ -795,7 +796,7 @@ def _open_with_desktop_handler(target: str, label: str) -> bool:
             # process that survives the startup window is treated as successfully
             # handed off so we do not launch the target more than once.
             return True
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             # The child process started successfully; if its status cannot be
             # observed, preserve the previous detached-launch behavior.
             log_buffer.log(
@@ -829,12 +830,12 @@ def _launch_target_for_log(target: str) -> str:
     return target
 
 
-def launch_as_standard_user(target: str | Path) -> bool:
+def launch_as_standard_user(target: str | Path) -> bool:  # ruff: ignore[too-many-return-statements]
     """Launch a URI or the selected Linux client explicitly."""
     target_str = str(target).strip()
     if not target_str:
         return False
-    try:
+    try:  # ruff: ignore[too-many-statements-in-try-clause]
         if target_str.startswith(('roblox:', 'roblox-player:')):
             installation = get_selected_linux_client_installation()
             if installation is None or installation.executable is None:
@@ -863,7 +864,7 @@ def launch_as_standard_user(target: str | Path) -> bool:
 
         if path.exists():
             return _open_with_desktop_handler(str(path), 'path')
-    except Exception as exc:
+    except Exception as exc:  # ruff: ignore[blind-except]
         log_buffer.log('Launch', f'Failed to launch {_launch_target_for_log(target_str)}: {exc}')
         return False
 
@@ -909,7 +910,7 @@ def _read_linux_proxy_override_state() -> str | None:
 
 
 def _write_linux_proxy_override_state(key: str | None) -> None:
-    try:
+    try:  # ruff: ignore[too-many-statements-in-try-clause]
         if key is None:
             LINUX_PROXY_OVERRIDE_STATE.unlink(missing_ok=True)
             return
@@ -934,7 +935,7 @@ def set_linux_client_env_proxy_override(
     ca_cert_path: Path | None = None,
 ) -> bool:
     """Arm Env Proxy for exactly one selected Linux client."""
-    global _active_linux_proxy_client_key
+    global _active_linux_proxy_client_key  # ruff: ignore[global-statement]
     # Retained for call-site compatibility; registered clients currently need
     # no client-specific certificate-bundle preparation here.
     _ = ca_cert_path
@@ -982,7 +983,7 @@ def set_linux_client_env_proxy_override(
             text=True,
             timeout=10,
         )
-    except Exception as exc:
+    except Exception as exc:  # ruff: ignore[blind-except]
         log_buffer.log('Launcher', f'Could not arm {installation.display_name} Env Proxy: {exc}')
         return False
     if result.returncode != 0:
@@ -1003,7 +1004,7 @@ def set_linux_client_env_proxy_override(
 
 def clear_linux_client_env_proxy_override(*, client_key: str | None = None) -> bool:
     """Clear only the exact client environment names managed by Fleasion."""
-    global _active_linux_proxy_client_key
+    global _active_linux_proxy_client_key  # ruff: ignore[global-statement]
     key = client_key or _active_linux_proxy_client_key or _read_linux_proxy_override_state()
     if key is None:
         return True
@@ -1031,7 +1032,7 @@ def clear_linux_client_env_proxy_override(*, client_key: str | None = None) -> b
             text=True,
             timeout=10,
         )
-    except Exception as exc:
+    except Exception as exc:  # ruff: ignore[blind-except]
         log_buffer.log('Launcher', f'Could not disarm {installation.display_name} Env Proxy: {exc}')
         return False
     if result.returncode != 0:
@@ -1086,14 +1087,14 @@ def _set_default_roblox_uri_handler(desktop_id: str) -> bool:
     env['HOME'] = str(USER_HOME)
     for scheme in _ROBLOX_URI_SCHEMES:
         try:
-            result = subprocess.run(
+            result = subprocess.run(  # ruff: ignore[subprocess-run-without-check, subprocess-without-shell-equals-true]
                 [xdg_mime, 'default', desktop_id, scheme],
                 env=env,
                 capture_output=True,
                 text=True,
                 timeout=10,
             )
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log(
                 'DesktopIntegration',
                 f'Failed to set the {scheme} handler to {desktop_id}: {exc}',
@@ -1123,14 +1124,14 @@ def _restore_linux_roblox_uri_handler() -> bool:
     fleasion_handler_detected = False
     for scheme in _ROBLOX_URI_SCHEMES:
         try:
-            result = subprocess.run(
+            result = subprocess.run(  # ruff: ignore[subprocess-run-without-check, subprocess-without-shell-equals-true]
                 [xdg_mime, 'query', 'default', scheme],
                 env=env,
                 capture_output=True,
                 text=True,
                 timeout=10,
             )
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log('DesktopIntegration', f'Failed to query the {scheme} handler: {exc}')
             continue
         if result.returncode != 0:
@@ -1175,7 +1176,7 @@ def _copy_linux_app_payload() -> tuple[Path | None, Path | None]:
     if source.is_relative_to(Path('/nix/store')):
         log_buffer.log(
             'App',
-            'Linux desktop integration detected a Nix store executable; using it directly instead of copying a stale per-user binary',
+            'Linux desktop integration detected a Nix store executable; using it directly instead of copying a stale per-user binary',  # ruff: ignore[line-too-long]
         )
         return None, None
 
@@ -1235,7 +1236,7 @@ def install_desktop_entries() -> DesktopInstallResult:
     pythonpath = (
         ''
         if working_dir is None
-        else f'export PYTHONPATH={shlex.quote(str(working_dir / "src"))}${{PYTHONPATH:+:$PYTHONPATH}}\n'
+        else f'export PYTHONPATH={shlex.quote(str(working_dir / "src"))}${{PYTHONPATH:+:$PYTHONPATH}}\n'  # ruff: ignore[line-too-long]
     )
 
     launcher = f"""#!/bin/sh
@@ -1271,7 +1272,7 @@ exec {command_literal} "$@"
 
     update_desktop = shutil.which('update-desktop-database')
     if update_desktop:
-        subprocess.run(
+        subprocess.run(  # ruff: ignore[subprocess-run-without-check, subprocess-without-shell-equals-true]
             [update_desktop, str(LINUX_APPLICATIONS_DIR)],
             capture_output=True,
             timeout=10,
@@ -1297,9 +1298,9 @@ def open_folder(path: Path) -> bool:
     return _open_with_desktop_handler(str(path), 'folder')
 
 
-def show_message_box(title: str, message: str, icon: int = 0x40) -> None:
+def show_message_box(title: str, message: str, icon: int = 0x40) -> None:  # ruff: ignore[unused-function-argument]
     """Show a simple Linux desktop notification/dialog when available."""
     try:
-        subprocess.run(['zenity', '--info', '--title', title, '--text', message], timeout=10)
-    except Exception:
+        subprocess.run(['zenity', '--info', '--title', title, '--text', message], timeout=10)  # ruff: ignore[start-process-with-partial-path, subprocess-run-without-check, subprocess-without-shell-equals-true]
+    except Exception:  # ruff: ignore[blind-except]
         log_buffer.log('UI', f'{title}: {message}')

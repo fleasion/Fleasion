@@ -10,7 +10,6 @@ import pytest
 
 from fleasion.proxy.env_lifecycle import EnvProxyLifecycleController
 
-
 type HealthResult = dict[str, object]
 type PlayerIdentity = tuple[int, str] | tuple[str, int] | tuple[str, int, float]
 type RelaunchCall = tuple[str, str | None, bool, Path, bool]

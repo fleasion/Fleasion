@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import subprocess
+import subprocess  # ruff: ignore[suspicious-subprocess-import]
 import sys
 from pathlib import Path
 
@@ -52,7 +52,7 @@ def main(arguments: list[str] | None = None) -> int:
             command.append('--clean')
 
         log.info('Restarting build with reproducible environment')
-        result = subprocess.run(command, cwd=Path.cwd(), env=environment, check=False)
+        result = subprocess.run(command, cwd=Path.cwd(), env=environment, check=False)  # ruff: ignore[subprocess-without-shell-equals-true]
         return result.returncode
 
     os.environ[CLEAN_BUILD_ENV] = '1' if options.clean else '0'
@@ -60,19 +60,18 @@ def main(arguments: list[str] | None = None) -> int:
     # Build macOS
     # Slice subprocesses bypass orchestration and run PyInstaller exactly once
     if sys.platform == 'darwin' and os.environ.get(MACOS_SLICE_BUILD_ENV) != '1':
-        from .macos_build import build_macos_release
+        from .macos_build import build_macos_release  # ruff: ignore[import-outside-top-level]
 
         build_macos_release()
         return 0
-    else:
-        # Build Windows and Linux
-        pyinstaller_arguments = ['--noconfirm', 'Fleasion.spec']
-        if options.clean:
-            pyinstaller_arguments.insert(0, '--clean')
+    # Build Windows and Linux
+    pyinstaller_arguments = ['--noconfirm', 'Fleasion.spec']
+    if options.clean:
+        pyinstaller_arguments.insert(0, '--clean')
 
-        log.info(f'Building Fleasion from {Path.cwd()}')
-        run_pyinstaller(pyinstaller_arguments, skip_setup_logging=True)
-        return 0
+    log.info('Building Fleasion from %s', Path.cwd())
+    run_pyinstaller(pyinstaller_arguments, skip_setup_logging=True)
+    return 0
 
 
 if __name__ == '__main__':

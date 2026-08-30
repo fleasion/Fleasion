@@ -8,11 +8,12 @@ evdev codes also make global FastFlag keybinds work in both X11 and Wayland.
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import os
 import select
 import struct
-import subprocess
+import subprocess  # ruff: ignore[suspicious-subprocess-import]
 import sys
 import threading
 from collections.abc import Mapping
@@ -21,7 +22,8 @@ from typing import TYPE_CHECKING, Protocol
 
 from PySide6.QtCore import QObject, Signal
 
-from ..utils import log_buffer
+from fleasion.utils import log_buffer
+
 from .hotkey_names import SMU_MOUSE_WHEEL_DOWN, SMU_MOUSE_WHEEL_UP, format_smu_virtual_key
 from .windows_hotkeys import MOD_ALT, MOD_CTRL, MOD_SHIFT, MOD_WIN, MODIFIER_MASK
 
@@ -73,10 +75,10 @@ else:
         return [str(value) for value in disabled]
 
     def _set_config_disabled(config: object, values: list[str]) -> None:
-        setattr(config, 'custom_fflag_disabled', values)
+        setattr(config, 'custom_fflag_disabled', values)  # ruff: ignore[set-attr-with-constant]
 
     def _refresh_proxy(proxy: object) -> None:
-        getattr(proxy, 'refresh_custom_fflag_interception')()
+        getattr(proxy, 'refresh_custom_fflag_interception')()  # ruff: ignore[get-attr-with-constant]
 
 
 # ``struct input_event`` on Linux.  Native alignment keeps this correct for
@@ -248,13 +250,13 @@ echo "Installed Fleasion Linux keybind permissions for $target_user."
 
 def modifier_mask_for_evdev_code(code: int) -> int:
     """Return the generic modifier represented by an evdev key code."""
-    if code in (_KEY_LEFTSHIFT, _KEY_RIGHTSHIFT):
+    if code in (_KEY_LEFTSHIFT, _KEY_RIGHTSHIFT):  # ruff: ignore[literal-membership]
         return MOD_SHIFT
-    if code in (_KEY_LEFTCTRL, _KEY_RIGHTCTRL):
+    if code in (_KEY_LEFTCTRL, _KEY_RIGHTCTRL):  # ruff: ignore[literal-membership]
         return MOD_CTRL
-    if code in (_KEY_LEFTALT, _KEY_RIGHTALT):
+    if code in (_KEY_LEFTALT, _KEY_RIGHTALT):  # ruff: ignore[literal-membership]
         return MOD_ALT
-    if code in (_KEY_LEFTMETA, _KEY_RIGHTMETA):
+    if code in (_KEY_LEFTMETA, _KEY_RIGHTMETA):  # ruff: ignore[literal-membership]
         return MOD_WIN
     return 0
 
@@ -270,7 +272,7 @@ def normalize_binding(binding: object) -> HotkeyBinding | None:
         return None
     if kind == 'mouse_wheel':
         direction = binding_map.get('direction')
-        if direction not in ('up', 'down'):
+        if direction not in ('up', 'down'):  # ruff: ignore[literal-membership]
             return None
         return {
             'platform': 'linux_evdev',
@@ -280,11 +282,11 @@ def normalize_binding(binding: object) -> HotkeyBinding | None:
         }
     scan_code = binding_map.get('scan_code')
     if (
-        kind not in ('key', 'mouse_button')
+        kind not in ('key', 'mouse_button')  # ruff: ignore[literal-membership, too-many-boolean-expressions]
         or not isinstance(scan_code, int)
         or isinstance(scan_code, bool)
-        or not 0 < scan_code <= 0x2FF
-        or (kind == 'mouse_button' and scan_code not in (0x110, 0x111, 0x112, 0x113, 0x114))
+        or not 0 < scan_code <= 0x2FF  # ruff: ignore[magic-value-comparison]
+        or (kind == 'mouse_button' and scan_code not in (0x110, 0x111, 0x112, 0x113, 0x114))  # ruff: ignore[literal-membership]
     ):
         return None
     result: HotkeyBinding = {
@@ -323,9 +325,22 @@ def binding_text(binding: object) -> str:
     return '+'.join([*labels, key_text])
 
 
+def _trusted_system_executable(name: str) -> str:
+    for directory in ('/usr/bin', '/bin', '/usr/sbin', '/sbin'):
+        candidate = Path(directory) / name
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    msg = f'Required system executable not found in trusted paths: {name}'
+    raise FileNotFoundError(msg)
+
+
 def launch_permission_setup() -> None:
     """Start the one-time, Polkit-authorized input-read permission installer."""
-    subprocess.Popen(['pkexec', 'sh', '-c', _PERMISSION_INSTALLER], close_fds=True)
+    pkexec = _trusted_system_executable('pkexec')
+    shell = _trusted_system_executable('sh')
+    subprocess.Popen(  # ruff: ignore[subprocess-without-shell-equals-true]
+        [pkexec, shell, '-c', _PERMISSION_INSTALLER], close_fds=True
+    )
 
 
 class LinuxHotkeyService(QObject):
@@ -443,7 +458,7 @@ class LinuxHotkeyService(QObject):
             try:
                 raw = os.read(fd, _INPUT_EVENT.size * 16)
             except OSError as exc:
-                if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+                if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK):  # ruff: ignore[literal-membership]
                     return
                 self._drop_device(fd, exc)
                 return
@@ -453,7 +468,7 @@ class LinuxHotkeyService(QObject):
             complete_size = len(raw) - len(raw) % _INPUT_EVENT.size
             for offset in range(0, complete_size, _INPUT_EVENT.size):
                 _, _, event_type, code, value = _INPUT_EVENT.unpack_from(raw, offset)
-                if event_type == _EV_KEY and value in (0, 1):
+                if event_type == _EV_KEY and value in (0, 1):  # ruff: ignore[literal-membership]
                     self._set_key_state(fd, code, value == 1)
                 elif event_type == _EV_REL and code == _REL_WHEEL and value:
                     self._handle_wheel(value)
@@ -474,17 +489,15 @@ class LinuxHotkeyService(QObject):
             self._was_active = {
                 name: self._binding_is_active(binding) for name, binding in self._bindings.items()
             }
-        try:
+        with contextlib.suppress(OSError):
             os.close(fd)
-        except OSError:
-            pass
         detail = reason.strerror or reason if isinstance(reason, OSError) else reason
         log_buffer.log(
             'CustomFFlags',
             f'Linux keybind reader dropped {path.name} after input-device error: {detail}',
         )
 
-    def _set_key_state(self, fd: int, code: int, pressed: bool) -> None:
+    def _set_key_state(self, fd: int, code: int, pressed: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
         with self._lock:
             device_keys = self._fds.get(fd)
             if device_keys is None:
@@ -571,10 +584,8 @@ class LinuxHotkeyService(QObject):
             self._pressed.clear()
             self._was_active.clear()
         for fd in fds:
-            try:
+            with contextlib.suppress(OSError):
                 os.close(fd)
-            except OSError:
-                pass
 
 
 class LinuxCustomFFlagHotkeyController(QObject):
@@ -621,7 +632,7 @@ class LinuxCustomFFlagHotkeyController(QObject):
         if self._proxy_master is not None:
             try:
                 _refresh_proxy(self._proxy_master)
-            except Exception as exc:
+            except Exception as exc:  # ruff: ignore[blind-except]
                 log_buffer.log('CustomFFlags', f'Could not refresh proxy interception: {exc}')
         log_buffer.log(
             'CustomFFlags',

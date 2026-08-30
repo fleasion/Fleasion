@@ -13,7 +13,7 @@ from fleasion.cache.cache_viewer import SCRAPER_COLUMNS, ColumnVisibilityMenu
 
 def _qapp() -> QApplication:
     app = QApplication.instance()
-    return cast(QApplication, app) if app is not None else QApplication([])
+    return cast('QApplication', app) if app is not None else QApplication([])
 
 
 def _release(menu: ColumnVisibilityMenu, button: Qt.MouseButton, pos: QPoint) -> None:

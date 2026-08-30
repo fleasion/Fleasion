@@ -23,7 +23,6 @@ from fleasion.gui.modifications_tab import CollapsibleSection, ModificationsTab,
 from fleasion.localization import get_language, set_language, tr
 from fleasion.translations.pt import PORTUGUESE
 
-
 type SourceTuple = tuple[str, str]
 
 
@@ -33,7 +32,7 @@ _app: QApplication | None = None
 def _qapp() -> QApplication:
     global _app
     app = QApplication.instance()
-    _app = cast(QApplication, app) if app is not None else QApplication([])
+    _app = cast('QApplication', app) if app is not None else QApplication([])
     return _app
 
 
@@ -59,11 +58,11 @@ def _detect_source(row: ModRowWidget, text: str) -> SourceTuple:
 
 
 def _source_edit(row: ModRowWidget) -> QLineEdit:
-    return cast(QLineEdit, row.__dict__['_source_edit'])
+    return cast('QLineEdit', row.__dict__['_source_edit'])
 
 
 def _preview_button(row: ModRowWidget) -> QPushButton:
-    return cast(QPushButton, row.__dict__['_preview_btn'])
+    return cast('QPushButton', row.__dict__['_preview_btn'])
 
 
 def _update_row_status(row: ModRowWidget, status: str) -> None:
@@ -72,15 +71,15 @@ def _update_row_status(row: ModRowWidget, status: str) -> None:
 
 
 def _status_label(row: ModRowWidget) -> QLabel:
-    return cast(QLabel, row.__dict__['_status_label'])
+    return cast('QLabel', row.__dict__['_status_label'])
 
 
 def _row_is_font(row: ModRowWidget) -> bool:
-    return cast(bool, row.__dict__['_is_font'])
+    return cast('bool', row.__dict__['_is_font'])
 
 
 def _row_file_filter(row: ModRowWidget) -> str:
-    return cast(str, row.__dict__['_file_filter'])
+    return cast('str', row.__dict__['_file_filter'])
 
 
 def _browse_row(row: ModRowWidget) -> None:
@@ -89,27 +88,27 @@ def _browse_row(row: ModRowWidget) -> None:
 
 
 def _framerate_value(tab: ModificationsTab) -> int:
-    fflag_widget = cast(object, tab.__dict__['_fflag_widget'])
-    spinbox = cast(QSpinBox, fflag_widget.__dict__['_framerate_cap'])
+    fflag_widget = cast('object', tab.__dict__['_fflag_widget'])
+    spinbox = cast('QSpinBox', fflag_widget.__dict__['_framerate_cap'])
     return spinbox.value()
 
 
 def _section_content(section: CollapsibleSection) -> QWidget:
-    return cast(QWidget, section.__dict__['_content'])
+    return cast('QWidget', section.__dict__['_content'])
 
 
 def _section_layout(section: CollapsibleSection) -> QVBoxLayout:
-    return cast(QVBoxLayout, section.__dict__['_content_layout'])
+    return cast('QVBoxLayout', section.__dict__['_content_layout'])
 
 
 def _section_animation(section: CollapsibleSection) -> QPropertyAnimation:
-    animation = cast(QPropertyAnimation | None, section.__dict__['_animation'])
+    animation = cast('QPropertyAnimation | None', section.__dict__['_animation'])
     assert animation is not None
     return animation
 
 
 def _header_widget(section: CollapsibleSection) -> QWidget:
-    return cast(QWidget, section.__dict__['_header_widget'])
+    return cast('QWidget', section.__dict__['_header_widget'])
 
 
 _TRANSLATED_LANGUAGES: list[str] = [
@@ -323,7 +322,7 @@ def test_custom_font_browse_uses_filter_identifier(monkeypatch: pytest.MonkeyPat
 
 
 @pytest.mark.parametrize(
-    ('framerate_cap', 'expected'),
+    'framerate_cap,expected',
     [
         (2**63, 999_999_999),
         (-(2**63), 0),

@@ -7,7 +7,7 @@ import os
 import re
 import sys
 import tomllib
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, Sequence  # ruff: ignore[typing-only-standard-library-import]
 from importlib.metadata import PackageNotFoundError, version as distribution_version
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -34,11 +34,13 @@ def read_project_version(pyproject_path: Path = Path('pyproject.toml')) -> str:
     pyproject = _object_dict(pyproject_value)
     project = _object_dict(pyproject.get('project')) if pyproject is not None else None
     if project is None or project.get('name') != _DISTRIBUTION_NAME:
-        raise ValueError(f'{pyproject_path} does not describe the {_DISTRIBUTION_NAME} project.')
+        msg = f'{pyproject_path} does not describe the {_DISTRIBUTION_NAME} project.'
+        raise ValueError(msg)
 
     project_version = project.get('version')
     if not isinstance(project_version, str) or not project_version:
-        raise ValueError(f'{pyproject_path} does not contain a project version.')
+        msg = f'{pyproject_path} does not contain a project version.'
+        raise ValueError(msg)
 
     Version(project_version)
     return project_version
@@ -51,7 +53,8 @@ def build_artifact_version(
     """Return the filename version for a packaged application build."""
     parsed = Version(app_version)
     if parsed.local is not None:
-        raise ValueError('The canonical project version must not contain local metadata.')
+        msg = 'The canonical project version must not contain local metadata.'
+        raise ValueError(msg)
     if not (parsed.is_prerelease or parsed.is_devrelease):
         return app_version
 
@@ -61,18 +64,20 @@ def build_artifact_version(
 
     github_sha = build_environment.get('GITHUB_SHA', '')
     if _GITHUB_SHA_PATTERN.fullmatch(github_sha) is None:
-        raise ValueError(
+        msg = (
             'GITHUB_SHA must contain between 7 and 64 hexadecimal characters '
             'when GITHUB_ACTIONS=true.'
         )
+        raise ValueError(msg)
     return f'{app_version}+g{github_sha[:7].lower()}'
 
 
 def macos_bundle_version(app_version: str) -> str:
     """Return an Apple-compatible three-component numeric bundle version."""
     release = Version(app_version).release
-    if len(release) > 3:
-        raise ValueError('macOS bundle versions support at most three release components.')
+    if len(release) > 3:  # ruff: ignore[magic-value-comparison]
+        msg = 'macOS bundle versions support at most three release components.'
+        raise ValueError(msg)
     components = (*release, *(0 for _ in range(3 - len(release))))
     return '.'.join(str(component) for component in components)
 
@@ -120,7 +125,7 @@ def _cli(arguments: Sequence[str] | None = None) -> int:
         resolved_version = build_artifact_version(options.artifact_version)
     except (InvalidVersion, ValueError) as exc:
         parser.error(str(exc))
-    print(resolved_version)
+    print(resolved_version)  # ruff: ignore[print]
     return 0
 
 

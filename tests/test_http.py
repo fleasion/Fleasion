@@ -35,7 +35,7 @@ class _HttpModule(Protocol):
 
 
 def _cached_context(module: object, name: str) -> _CachedContext:
-    return cast(_CachedContext, vars(module)[name])
+    return cast('_CachedContext', vars(module)[name])
 
 
 def _open_verified(module: object, req: urllib.request.Request, url: str, timeout: int) -> object:

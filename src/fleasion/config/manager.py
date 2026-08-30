@@ -647,7 +647,7 @@ def _normalize_custom_fflag_keybinds(
     return normalized
 
 
-class ConfigManager:  # ruff: ignore[too-many-public-methods] - Existing public configuration API
+class ConfigManager:  # ruff: ignore[too-many-public-methods]
     """Manages application settings and replacement configurations."""
 
     def __init__(self) -> None:
@@ -1513,11 +1513,11 @@ class ConfigManager:  # ruff: ignore[too-many-public-methods] - Existing public 
     @property
     def subplace_blacklist_mode(self) -> str:
         mode = self.settings.get('subplace_blacklist_mode', 'block')
-        return mode if mode in ('block', 'stall') else 'block'
+        return mode if mode in ('block', 'stall') else 'block'  # ruff: ignore[literal-membership]
 
     @subplace_blacklist_mode.setter
     def subplace_blacklist_mode(self, value: str) -> None:
-        self.settings['subplace_blacklist_mode'] = value if value in ('block', 'stall') else 'block'
+        self.settings['subplace_blacklist_mode'] = value if value in ('block', 'stall') else 'block'  # ruff: ignore[literal-membership]
         self._save_settings()
 
     @property
@@ -1646,7 +1646,7 @@ class ConfigManager:  # ruff: ignore[too-many-public-methods] - Existing public 
     def set_config_enabled(
         self,
         name: str,
-        enabled: bool,  # ruff: ignore[boolean-type-hint-positional-argument] - Preserve public signature
+        enabled: bool,  # ruff: ignore[boolean-type-hint-positional-argument]
     ) -> None:
         """Set a config's enabled state."""
         if name not in self.config_names:
@@ -1661,7 +1661,7 @@ class ConfigManager:  # ruff: ignore[too-many-public-methods] - Existing public 
 
     def reconcile_configs(
         self,
-        save: bool = True,  # ruff: ignore[boolean-type-hint-positional-argument, boolean-default-value-positional-argument] - Preserve public signature
+        save: bool = True,  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
     ) -> bool:
         """Synchronize settings with config files currently on disk.
 

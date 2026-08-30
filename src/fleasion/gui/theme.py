@@ -137,7 +137,7 @@ class ThemeManager:
             if color_scheme == ThemeManager._qt_color_scheme('Light'):
                 return 'Light'
 
-        return 'Dark' if app.palette().window().color().lightness() < 128 else 'Light'
+        return 'Dark' if app.palette().window().color().lightness() < 128 else 'Light'  # ruff: ignore[magic-value-comparison]
 
     @staticmethod
     def _apply_forced_theme(app: QApplication, theme: str) -> None:
@@ -259,7 +259,7 @@ class ThemeManager:
             set_color_scheme(color_scheme)
 
     @staticmethod
-    def _qt_color_scheme(color_scheme_name: str):
+    def _qt_color_scheme(color_scheme_name: str):  # ruff: ignore[missing-return-type-static-method]
         color_scheme_type = getattr(Qt, 'ColorScheme', None)
         return getattr(color_scheme_type, color_scheme_name, None)
 
@@ -282,7 +282,7 @@ class ThemeManager:
         """
         app = QApplication.instance()
         if palette is None:
-            if isinstance(app, QApplication):
+            if isinstance(app, QApplication):  # ruff: ignore[if-else-block-instead-of-if-exp]
                 palette = app.palette()
             else:
                 palette = QPalette()

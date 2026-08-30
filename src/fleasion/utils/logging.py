@@ -28,7 +28,7 @@ class LogBuffer:
         except OSError:
             pass
 
-    def _rotate_log_file_if_needed(self, incoming_bytes: int = 0) -> None:
+    def _rotate_log_file_if_needed(self, incoming_bytes: int = 0) -> None:  # ruff: ignore[no-self-use]
         if not LOG_FILE.exists():
             return
         if LOG_FILE.stat().st_size + incoming_bytes <= MAX_LOG_FILE_BYTES:
@@ -39,7 +39,7 @@ class LogBuffer:
 
     def log(self, category: str, message: str) -> None:
         """Add a log entry (callbacks are batched to reduce overhead)."""
-        now = datetime.now()
+        now = datetime.now()  # ruff: ignore[call-datetime-now-without-tzinfo]
         timestamp = now.strftime('%H:%M:%S')
         entry = f'[{timestamp}] [{category}] {message}'
 
@@ -72,9 +72,9 @@ class LogBuffer:
             callbacks_copy = self._callbacks.copy()
 
         for callback in callbacks_copy:
-            try:
+            try:  # ruff: ignore[suppressible-exception]
                 callback()
-            except Exception:
+            except Exception:  # ruff: ignore[blind-except, try-except-pass]
                 pass  # Ignore callback errors
 
     def get_all(self) -> list[str]:
@@ -85,11 +85,11 @@ class LogBuffer:
         """Get all logs as a single text string."""
         return '\n'.join(self._buffer) if self._buffer else 'No logs yet.'
 
-    def add_callback(self, callback: Any) -> None:
+    def add_callback(self, callback: Any) -> None:  # ruff: ignore[any-type]
         """Add a callback to be notified when new logs are added."""
         self._callbacks.append(callback)
 
-    def remove_callback(self, callback: Any) -> None:
+    def remove_callback(self, callback: Any) -> None:  # ruff: ignore[any-type]
         """Remove a callback."""
         if callback in self._callbacks:
             self._callbacks.remove(callback)

@@ -7,10 +7,6 @@ and delta-encoded instance IDs.
 from __future__ import annotations
 
 import struct
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    pass
 
 
 def read_u8(data: bytes, offset: int) -> tuple[int, int]:

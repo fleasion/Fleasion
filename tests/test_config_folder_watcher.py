@@ -156,7 +156,8 @@ def test_uppercase_extension_is_normalized_without_overwriting_collisions(
 
         assert collision.exists()
         assert json.loads(existing.read_text(encoding='utf-8')) == {'replacement_rules': []}
-        assert messages and 'destination name already exists' in messages[-1]
+        assert messages
+        assert 'destination name already exists' in messages[-1]
     finally:
         watcher.stop()
     assert app is not None

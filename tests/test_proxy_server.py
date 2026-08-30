@@ -130,7 +130,7 @@ def _server_port(server: object) -> int:
     assert sockets
     address = sockets[0].getsockname()
     assert isinstance(address, tuple)
-    return cast(int, address[1])
+    return cast('int', address[1])
 
 
 def _empty_replacements() -> tuple[
@@ -215,8 +215,8 @@ def test_upstream_self_test_serializes_and_fully_closes_probes() -> None:
             assert timeout == 3.0
             events.append(('connect', host))
             return UpstreamConnectResult(
-                reader=cast(asyncio.StreamReader, object()),
-                writer=cast(asyncio.StreamWriter, _ProbeWriter(host)),
+                reader=cast('asyncio.StreamReader', object()),
+                writer=cast('asyncio.StreamWriter', _ProbeWriter(host)),
                 method='direct_ip',
                 endpoint='192.0.2.1',
             )
@@ -531,11 +531,11 @@ def test_direct_upstream_refresh_retries_a_fresh_endpoint(
         ) -> UpstreamConnectResult:
             assert request_host == host
             assert timeout <= 1.0
-            endpoint_ips = [cast(str, endpoint.ip) for endpoint in endpoints]
+            endpoint_ips = [cast('str', endpoint.ip) for endpoint in endpoints]
             if refreshed_ip in endpoint_ips:
                 return UpstreamConnectResult(
                     reader=asyncio.StreamReader(),
-                    writer=cast(asyncio.StreamWriter, _FakeUpstreamWriter()),
+                    writer=cast('asyncio.StreamWriter', _FakeUpstreamWriter()),
                     method='direct_ip',
                     endpoint=refreshed_ip,
                 )
@@ -560,7 +560,7 @@ def test_direct_upstream_refresh_retries_a_fresh_endpoint(
     )
     direct = _RefreshAwareDirectConnector()
     proxy.__dict__['_direct_connector'] = direct
-    proxy.__dict__['_connector'] = AutoConnector(direct=cast(BaseUpstreamConnector, direct))
+    proxy.__dict__['_connector'] = AutoConnector(direct=cast('BaseUpstreamConnector', direct))
 
     result = asyncio.run(_connect_upstream(proxy, host, timeout=1.0))
 
@@ -598,7 +598,7 @@ def test_local_tls_max_version_can_be_relaxed(tmp_path: Path) -> None:
 
     proxy.set_local_tls_max_version(ssl.TLSVersion.MAXIMUM_SUPPORTED)
     generated_ctx = _host_context(proxy, 'dynamic.example')
-    server_ctx = cast(ssl.SSLContext, proxy.__dict__['_server_ssl_ctx'])
+    server_ctx = cast('ssl.SSLContext', proxy.__dict__['_server_ssl_ctx'])
     host_contexts = cast('dict[str, ssl.SSLContext]', proxy.__dict__['_host_ssl_ctxs'])
 
     assert server_ctx.maximum_version is ssl.TLSVersion.MAXIMUM_SUPPORTED
@@ -645,14 +645,14 @@ def test_explicit_proxy_connect_upgrades_to_tls_and_serves_http(tmp_path: Path) 
             reader.feed_eof()
             return UpstreamConnectResult(
                 reader=reader,
-                writer=cast(asyncio.StreamWriter, _FakeUpstreamWriter()),
+                writer=cast('asyncio.StreamWriter', _FakeUpstreamWriter()),
                 endpoint='test',
                 method='direct_ip',
             )
 
         proxy.__dict__['_connect_upstream'] = fake_connect_upstream
         await proxy.start()
-        port = _server_port(cast(object, proxy.__dict__['_server']))
+        port = _server_port(cast('object', proxy.__dict__['_server']))
         try:
             reader, writer = await asyncio.open_connection('127.0.0.1', port)
             connect_request = (
@@ -713,7 +713,7 @@ def test_explicit_proxy_tunnels_non_intercept_hosts(tmp_path: Path) -> None:
         )
 
         await proxy.start()
-        proxy_port = _server_port(cast(object, proxy.__dict__['_server']))
+        proxy_port = _server_port(cast('object', proxy.__dict__['_server']))
         try:
             reader, writer = await asyncio.open_connection('127.0.0.1', proxy_port)
             writer.write(
@@ -759,8 +759,8 @@ def test_explicit_tunnel_dialer_prefers_ipv4_and_falls_back(
         ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
             calls.append((host, port, family))
             if host == '192.0.2.1':
-                raise asyncio.TimeoutError()
-            return asyncio.StreamReader(), cast(asyncio.StreamWriter, _FakeUpstreamWriter())
+                raise TimeoutError
+            return asyncio.StreamReader(), cast('asyncio.StreamWriter', _FakeUpstreamWriter())
 
         monkeypatch.setattr(loop, 'getaddrinfo', fake_getaddrinfo)
         monkeypatch.setattr(asyncio, 'open_connection', fake_open_connection)
@@ -791,7 +791,7 @@ def test_explicit_tunnel_single_candidate_receives_full_connection_budget(
         async def fake_open_connection(
             *_args: object, **_kwargs: object
         ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
-            return asyncio.StreamReader(), cast(asyncio.StreamWriter, _FakeUpstreamWriter())
+            return asyncio.StreamReader(), cast('asyncio.StreamWriter', _FakeUpstreamWriter())
 
         timeouts: list[float] = []
 
@@ -834,8 +834,9 @@ def test_explicit_tunnel_dialer_falls_back_to_ipv6(monkeypatch: pytest.MonkeyPat
         ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
             calls.append((host, port, family))
             if family == socket.AF_INET:
-                raise OSError('network unreachable')
-            return asyncio.StreamReader(), cast(asyncio.StreamWriter, _FakeUpstreamWriter())
+                msg = 'network unreachable'
+                raise OSError(msg)
+            return asyncio.StreamReader(), cast('asyncio.StreamWriter', _FakeUpstreamWriter())
 
         monkeypatch.setattr(loop, 'getaddrinfo', fake_getaddrinfo)
         monkeypatch.setattr(asyncio, 'open_connection', fake_open_connection)
@@ -874,8 +875,9 @@ def test_explicit_tunnel_dialer_reserves_an_ipv6_attempt_after_many_ipv4_failure
         ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
             calls.append((host, port, family))
             if family == socket.AF_INET:
-                raise OSError('network unreachable')
-            return asyncio.StreamReader(), cast(asyncio.StreamWriter, _FakeUpstreamWriter())
+                msg = 'network unreachable'
+                raise OSError(msg)
+            return asyncio.StreamReader(), cast('asyncio.StreamWriter', _FakeUpstreamWriter())
 
         monkeypatch.setattr(loop, 'getaddrinfo', fake_getaddrinfo)
         monkeypatch.setattr(asyncio, 'open_connection', fake_open_connection)

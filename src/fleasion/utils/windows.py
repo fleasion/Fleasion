@@ -9,10 +9,11 @@ from __future__ import annotations
 import sys
 
 if sys.platform == 'win32':
-    from .platform_windows import *  # noqa: F403
+    from .platform_windows import *  # ruff: ignore[undefined-local-with-import-star]
 elif sys.platform == 'darwin':
-    from .platform_macos import *  # noqa: F403
+    from .platform_macos import *  # ruff: ignore[undefined-local-with-import-star]
 elif sys.platform.startswith('linux'):
-    from .platform_linux import *  # noqa: F403
+    from .platform_linux import *  # ruff: ignore[undefined-local-with-import-star]
 else:
-    raise RuntimeError('Fleasion supports Windows, macOS, and Linux only.')
+    msg = 'Fleasion supports Windows, macOS, and Linux only.'
+    raise RuntimeError(msg)

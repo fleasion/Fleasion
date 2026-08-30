@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import traceback
-from types import TracebackType
+from types import TracebackType  # ruff: ignore[typing-only-standard-library-import]
 from typing import TYPE_CHECKING
 
 from colorama import Back, Fore, Style, just_fix_windows_console

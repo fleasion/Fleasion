@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sized
+from collections.abc import Sized  # ruff: ignore[typing-only-standard-library-import]
 
 
 def _count(value: int | Sized) -> int:

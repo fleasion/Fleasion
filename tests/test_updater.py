@@ -4,7 +4,6 @@ from urllib.parse import SplitResult
 
 import pytest
 from packaging.version import Version
-from pytest import MonkeyPatch
 
 from fleasion.utils import update_resolver
 from fleasion.utils.metadata import APP_REPO
@@ -34,7 +33,7 @@ def _resolver(current_version: str) -> UpdateResolver:
 
 
 @pytest.mark.parametrize(
-    ('current_version', 'latest_tag', 'expected'),
+    'current_version,latest_tag,expected',
     [
         ('2.4.0', 'v2.4.1', True),
         ('2.4.0', 'v2.4.0', False),
@@ -57,7 +56,7 @@ def test_update_availability_uses_semantic_version_ordering(
 
 
 @pytest.mark.parametrize(
-    ('current_version', 'expected_api'),
+    'current_version,expected_api',
     [
         ('2.4.0', _LATEST_RELEASE_API),
         ('2.4.0.post1', _LATEST_RELEASE_API),
@@ -84,7 +83,7 @@ def test_repository_url_is_normalized_for_github_endpoints() -> None:
     )
 
 
-def test_resolver_caches_parsed_configuration(monkeypatch: MonkeyPatch) -> None:
+def test_resolver_caches_parsed_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
     urlsplit_calls: list[str] = []
     original_urlsplit = update_resolver.urlsplit
 
@@ -164,7 +163,7 @@ def test_stable_channel_ignores_drafts_and_prereleases(release: dict[str, object
     assert _resolver('2.4.0').select_update(release) is None
 
 
-def test_resolver_fetches_from_its_channel_endpoint(monkeypatch: MonkeyPatch) -> None:
+def test_resolver_fetches_from_its_channel_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
     requested_urls: list[str] = []
     requested_params: list[object] = []
 
@@ -199,7 +198,7 @@ def test_resolver_fetches_from_its_channel_endpoint(monkeypatch: MonkeyPatch) ->
     assert requested_params == [{'per_page': 10}]
 
 
-def test_qt_checker_owns_resolver_and_emits_its_result(monkeypatch: MonkeyPatch) -> None:
+def test_qt_checker_owns_resolver_and_emits_its_result(monkeypatch: pytest.MonkeyPatch) -> None:
     resolver = _resolver('2.4.0b1')
     monkeypatch.setattr(
         resolver,

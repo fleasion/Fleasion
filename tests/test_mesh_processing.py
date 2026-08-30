@@ -125,7 +125,8 @@ def test_v7_rejects_a_mismatched_draco_length(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(mesh_processing, 'DRACO_AVAILABLE', True)
 
     def fail_decode(_data: bytes) -> Never:
-        raise AssertionError('decoded')
+        msg = 'decoded'
+        raise AssertionError(msg)
 
     monkeypatch.setattr(
         mesh_processing,

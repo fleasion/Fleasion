@@ -11,11 +11,12 @@ import os
 import shutil
 import stat
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping  # ruff: ignore[typing-only-standard-library-import]
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ..utils import format_count, log_buffer
+from fleasion.utils import format_count, log_buffer
+
 from .stash_paths import resource_stash_dir
 
 # ---------------------------------------------------------------------------
@@ -119,10 +120,13 @@ def _sober_config_path_for_resource_dir(roblox_dir: Path) -> Path | None:
     if not sys.platform.startswith('linux'):
         return None
     try:
-        from ..utils.platform_linux import SOBER_CONFIG_FILE, is_sober_resource_dir
+        from fleasion.utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
+            SOBER_CONFIG_FILE,
+            is_sober_resource_dir,
+        )
 
         return SOBER_CONFIG_FILE if is_sober_resource_dir(roblox_dir) else None
-    except Exception:
+    except Exception:  # ruff: ignore[blind-except]
         return None
 
 
@@ -173,7 +177,7 @@ class FastFlagManager:
     # Public API
     # ------------------------------------------------------------------
 
-    def build_json(self, settings: Mapping[str, object]) -> dict[str, str]:
+    def build_json(self, settings: Mapping[str, object]) -> dict[str, str]:  # ruff: ignore[complex-structure, no-self-use, too-many-branches]
         """Convert a UI settings dict into the flags dict that becomes ClientAppSettings.json."""
         flags: dict[str, str] = {}
 
@@ -184,7 +188,7 @@ class FastFlagManager:
             if flag_key in PRESET_FLAGS:
                 flags[PRESET_FLAGS[flag_key]] = 'True'
             # Vulkan and OpenGL require disabling D3D11
-            if mode in ('Vulkan', 'OpenGL'):
+            if mode in ('Vulkan', 'OpenGL'):  # ruff: ignore[literal-membership]
                 flags[PRESET_FLAGS['Rendering.Mode.DisableD3D11']] = 'True'
 
         # ── MSAA ────────────────────────────────────────────────────
@@ -235,12 +239,12 @@ class FastFlagManager:
 
         for key in ('grass_max', 'grass_min', 'grass_motion'):
             val = _setting_value(settings, key)
-            if val is not None and val != '':
+            if val is not None and val != '':  # ruff: ignore[compare-to-empty-string]
                 flags[EXTRA_FLAGS[key]] = str(_int_value(val))
 
         return flags
 
-    def write(self, settings: Mapping[str, object]) -> set[Path]:
+    def write(self, settings: Mapping[str, object]) -> set[Path]:  # ruff: ignore[complex-structure, too-many-branches, too-many-statements]
         """Build flags and write settings, returning dirs blocked by permissions."""
         flags = self.build_json(settings)
         content = json.dumps(flags, indent=2).encode('utf-8') if flags else b'{}'
@@ -249,12 +253,12 @@ class FastFlagManager:
         failed = 0
         failed_dirs: set[Path] = set()
 
-        for roblox_dir in self._roblox_dirs:
+        for roblox_dir in self._roblox_dirs:  # ruff: ignore[too-many-nested-blocks]
             install_stash = resource_stash_dir(self._stash_dir, roblox_dir)
             wrote_dir = False
             for dst, stash_rel in client_settings_targets_for_resource_dir(roblox_dir):
                 stash = install_stash / stash_rel
-                try:
+                try:  # ruff: ignore[too-many-statements-in-try-clause]
                     # Stash original once
                     if dst.exists() and not stash.exists():
                         stash.parent.mkdir(parents=True, exist_ok=True)
@@ -271,7 +275,7 @@ class FastFlagManager:
             sober_config = _sober_config_path_for_resource_dir(roblox_dir)
             if sober_config is not None:
                 stash_config = install_stash / 'sober_config.json'
-                try:
+                try:  # ruff: ignore[too-many-statements-in-try-clause]
                     config_payload: JsonObject = {}
                     if sober_config.exists():
                         if not stash_config.exists():
@@ -316,7 +320,7 @@ class FastFlagManager:
             if wrote_dir:
                 written_dirs += 1
 
-        message = f'Wrote {format_count(len(flags), "flag")} to {format_count(written_dirs, "Roblox dir")}'
+        message = f'Wrote {format_count(len(flags), "flag")} to {format_count(written_dirs, "Roblox dir")}'  # ruff: ignore[line-too-long]
         if failed:
             message += f'; skipped {format_count(failed, "Roblox dir")} due to permission errors'
         log_buffer.log('FastFlags', message)
@@ -351,7 +355,7 @@ class FastFlagManager:
             if not target.is_file():
                 continue
 
-            try:
+            try:  # ruff: ignore[too-many-statements-in-try-clause]
                 try:
                     existing_value: object = json.loads(target.read_text(encoding='utf-8'))
                     existing = _json_object(existing_value) or {}
@@ -385,17 +389,17 @@ class FastFlagManager:
             )
         return updated_count
 
-    def restore(self) -> None:
+    def restore(self) -> None:  # ruff: ignore[complex-structure, too-many-branches, too-many-statements]
         """Restore (or delete) ``ClientAppSettings.json`` in every Roblox dir."""
         restored = 0
         failed = 0
 
-        for roblox_dir in self._roblox_dirs:
+        for roblox_dir in self._roblox_dirs:  # ruff: ignore[too-many-nested-blocks]
             install_stash = resource_stash_dir(self._stash_dir, roblox_dir)
             restored_dir = False
             for dst, stash_rel in client_settings_targets_for_resource_dir(roblox_dir):
                 stash = install_stash / stash_rel
-                try:
+                try:  # ruff: ignore[too-many-statements-in-try-clause]
                     if stash.exists():
                         dst.parent.mkdir(parents=True, exist_ok=True)
                         _clear_read_only(dst)
@@ -416,7 +420,7 @@ class FastFlagManager:
             sober_config = _sober_config_path_for_resource_dir(roblox_dir)
             if sober_config is not None:
                 stash_config = install_stash / 'sober_config.json'
-                try:
+                try:  # ruff: ignore[too-many-statements-in-try-clause]
                     if stash_config.exists():
                         sober_config.parent.mkdir(parents=True, exist_ok=True)
                         _clear_read_only(sober_config)
@@ -457,5 +461,5 @@ class FastFlagManager:
 
         message = 'Restored ClientAppSettings.json'
         if failed:
-            message += f' in {format_count(restored, "Roblox dir")}; skipped {format_count(failed, "Roblox dir")} due to permission errors'
+            message += f' in {format_count(restored, "Roblox dir")}; skipped {format_count(failed, "Roblox dir")} due to permission errors'  # ruff: ignore[line-too-long]
         log_buffer.log('FastFlags', message)

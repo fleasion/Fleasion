@@ -9,7 +9,8 @@ from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
-from ..localization import tr
+from fleasion.localization import tr
+
 from .metadata import APP_REPO, APP_VERSION
 from .update_resolver import UpdateResolver
 
@@ -46,7 +47,7 @@ _active_checkers: set[QtUpdateChecker] = set()
 
 def _show_update_dialog(tag: str, html_url: str) -> None:
     """Display an available update on the Qt main thread."""
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication  # ruff: ignore[import-outside-top-level]
 
     latest_display = UpdateResolver.display_version(tag)
     current = APP_VERSION.strip()
@@ -63,11 +64,11 @@ def _show_update_dialog(tag: str, html_url: str) -> None:
     dialog.setWindowTitle(tr('ui.utils.updater.update_available'))
 
     try:
-        from .paths import get_icon_path
+        from .paths import get_icon_path  # ruff: ignore[import-outside-top-level]
 
         if icon_path := get_icon_path():
             dialog.setWindowIcon(QIcon(str(icon_path)))
-    except Exception:
+    except Exception:  # ruff: ignore[blind-except, try-except-pass]
         pass
 
     main_layout = QVBoxLayout(dialog)

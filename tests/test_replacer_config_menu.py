@@ -38,12 +38,14 @@ _app: QApplication | None = None
 def _qapp() -> QApplication:
     global _app
     app = QApplication.instance()
-    _app = cast(QApplication, app) if app is not None else QApplication([])
+    _app = cast('QApplication', app) if app is not None else QApplication([])
     return _app
 
 
 def _new_replacer_tree_item() -> QTreeWidgetItem:
-    factory = cast('Callable[[], QTreeWidgetItem]', replacer_config_module.__dict__['ReplacerTreeItem'])
+    factory = cast(
+        'Callable[[], QTreeWidgetItem]', replacer_config_module.__dict__['ReplacerTreeItem']
+    )
     return factory()
 
 
@@ -56,7 +58,7 @@ def _new_profile_name_delegate() -> QStyledItemDelegate:
 
 
 def _draw_group_icon_role() -> int:
-    return cast(int, replacer_config_module.__dict__['_ROLE_DRAW_GROUP_ICON'])
+    return cast('int', replacer_config_module.__dict__['_ROLE_DRAW_GROUP_ICON'])
 
 
 def _new_scrollable_menu(*, checkable: bool = False) -> QMenu:
@@ -73,11 +75,11 @@ def _menu_set_entries(menu: QMenu, entries: list[dict[str, object]], minimum_wid
 
 
 def _menu_natural_size(menu: QMenu) -> QSize:
-    return cast(QSize, menu.__dict__['_natural_content_size'])
+    return cast('QSize', menu.__dict__['_natural_content_size'])
 
 
 def _menu_scroll_area(menu: QMenu) -> QScrollArea:
-    return cast(QScrollArea, menu.__dict__['scroll_area'])
+    return cast('QScrollArea', menu.__dict__['scroll_area'])
 
 
 def _menu_constrain(menu: QMenu, geometry: QRect, *, anchor_y: int) -> None:
@@ -97,7 +99,7 @@ def _menu_row(menu: QMenu, name: str) -> QWidget:
 
 
 def _row_like(row: QWidget) -> _MenuRowLike:
-    return cast(_MenuRowLike, row)
+    return cast('_MenuRowLike', row)
 
 
 def _guard_opening_release(menu: QMenu) -> None:
@@ -132,7 +134,7 @@ def _add_rule(window: ReplacerConfigWindow) -> None:
 
 
 def _enabled_row_checked(window: ReplacerConfigWindow, name: str) -> bool:
-    row = cast(_MenuRowLike, window.enabled_menu.item_widgets[name])
+    row = cast('_MenuRowLike', window.enabled_menu.item_widgets[name])
     return row.isChecked()
 
 

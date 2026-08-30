@@ -15,7 +15,7 @@ def _metadata_needs_resolution(info: Mapping[str, object]) -> bool:
 
 def _copy_converted_varnames() -> tuple[str, ...]:
     method = getattr(cache_viewer_module.CacheViewerTab, '_copy_converted')
-    return cast(tuple[str, ...], method.__code__.co_varnames)
+    return cast('tuple[str, ...]', method.__code__.co_varnames)
 
 
 def test_cache_viewer_toggle_column_width_constant_is_defined() -> None:
@@ -63,6 +63,6 @@ def test_copy_converted_keeps_gzip_binding_global() -> None:
 
 
 def test_cache_viewer_has_qapplication_for_screen_fallback() -> None:
-    import fleasion.cache.cache_viewer as cache_viewer
+    from fleasion.cache import cache_viewer
 
     assert cache_viewer.QApplication is not None

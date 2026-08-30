@@ -12,7 +12,7 @@ def run_pyinstaller(
     if not skip_setup_logging:
         setup_script_logging()
 
-    from PyInstaller.__main__ import run
+    from PyInstaller.__main__ import run  # ruff: ignore[import-outside-top-level]
 
     run(arguments)
 

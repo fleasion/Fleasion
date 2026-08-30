@@ -6,8 +6,8 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ..proxy.addons.custom_fflags import normalize_custom_fflags
-from ..utils.paths import FASTFLAG_PROFILES_FOLDER
+from fleasion.proxy.addons.custom_fflags import normalize_custom_fflags
+from fleasion.utils.paths import FASTFLAG_PROFILES_FOLDER
 
 if TYPE_CHECKING:
 
@@ -34,9 +34,11 @@ class FastFlagProfileManager:
         if name.lower().endswith('.json'):
             name = name[:-5].strip()
         if not name:
-            raise ValueError('Profile name cannot be empty.')
+            msg = 'Profile name cannot be empty.'
+            raise ValueError(msg)
         if name in {'.', '..'} or any(character in name for character in '\\/:*?"<>|'):
-            raise ValueError('Profile name contains an invalid character.')
+            msg = 'Profile name contains an invalid character.'
+            raise ValueError(msg)
         return name
 
     def _path_for(self, name: str) -> Path:
@@ -65,29 +67,36 @@ class FastFlagProfileManager:
             payload_value: object = json.loads(path.read_text(encoding='utf-8'))
             payload = _object_dict(payload_value)
         except FileNotFoundError:
-            raise ValueError('Profile no longer exists.') from None
+            msg = 'Profile no longer exists.'
+            raise ValueError(msg) from None
         except json.JSONDecodeError as exc:
-            raise ValueError(f'Profile is not valid JSON: {exc.msg}.') from exc
+            msg = f'Profile is not valid JSON: {exc.msg}.'
+            raise ValueError(msg) from exc
         if payload is None:
-            raise ValueError('Profile JSON must contain FastFlag name/value pairs.')
+            msg = 'Profile JSON must contain FastFlag name/value pairs.'
+            raise ValueError(msg)
         flags = normalize_custom_fflags(payload)
         if len(flags) != len(payload):
-            raise ValueError('Each FastFlag value must be a string, number, or boolean.')
+            msg = 'Each FastFlag value must be a string, number, or boolean.'
+            raise ValueError(msg)
         return flags
 
     def delete(self, name: str) -> None:
         try:
             self._path_for(name).unlink()
         except FileNotFoundError:
-            raise ValueError('Profile no longer exists.') from None
+            msg = 'Profile no longer exists.'
+            raise ValueError(msg) from None
 
     def rename(self, old_name: str, new_name: str) -> str:
         old_path = self._path_for(old_name)
         new_path = self._path_for(new_name)
         if new_path.exists() and new_path != old_path:
-            raise ValueError('A profile with that name already exists.')
+            msg = 'A profile with that name already exists.'
+            raise ValueError(msg)
         try:
             old_path.rename(new_path)
         except FileNotFoundError:
-            raise ValueError('Profile no longer exists.') from None
+            msg = 'Profile no longer exists.'
+            raise ValueError(msg) from None
         return new_path.stem

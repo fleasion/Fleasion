@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3  # ruff: ignore[shebang-not-executable]
 """Reset Fleasion's first-time setup prompt flag for local testing."""
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ def _default_settings_path() -> Path:
     if str(src_dir) not in sys.path:
         sys.path.insert(0, str(src_dir))
 
-    from fleasion.utils.paths import CONFIG_FILE
+    from fleasion.utils.paths import CONFIG_FILE  # ruff: ignore[import-outside-top-level]
 
     return Path(CONFIG_FILE)
 
@@ -28,7 +28,8 @@ def _load_settings(path: Path) -> dict:
         data = json.load(f)
 
     if not isinstance(data, dict):
-        raise ValueError(f'{path} must contain a JSON object')
+        msg = f'{path} must contain a JSON object'
+        raise ValueError(msg)  # ruff: ignore[type-check-without-type-error]
 
     return data
 
@@ -58,10 +59,10 @@ def main() -> int:
     try:
         reset_first_time_setup(args.settings.expanduser())
     except (OSError, json.JSONDecodeError, ValueError) as exc:
-        print(f'Failed to reset first-time setup flag: {exc}', file=sys.stderr)
+        print(f'Failed to reset first-time setup flag: {exc}', file=sys.stderr)  # ruff: ignore[print]
         return 1
 
-    print(f'Reset first_time_setup_complete=false in {args.settings.expanduser()}')
+    print(f'Reset first_time_setup_complete=false in {args.settings.expanduser()}')  # ruff: ignore[print]
     return 0
 
 

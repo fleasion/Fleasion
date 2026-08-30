@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import platform
 import re
-import subprocess
+import subprocess  # ruff: ignore[suspicious-subprocess-import]
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
@@ -34,12 +34,12 @@ else:
         def query(key: object, name: str) -> object | None:
             try:
                 value, _ = winreg.QueryValueEx(key, name)
-                return value
-            except Exception:
+                return value  # ruff: ignore[try-consider-else]
+            except Exception:  # ruff: ignore[blind-except]
                 return None
 
         try:
-            import winreg
+            import winreg  # ruff: ignore[import-outside-top-level]
 
             with winreg.OpenKey(
                 winreg.HKEY_CURRENT_USER,
@@ -53,7 +53,7 @@ else:
                     str(proxy_server) if proxy_server else None,
                     str(auto_config_url) if auto_config_url else None,
                 )
-        except Exception:
+        except Exception:  # ruff: ignore[blind-except]
             return False, None, None
 
 
@@ -69,14 +69,14 @@ def _read_winhttp_proxy() -> str | None:
 
     try:
         creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
-        result = subprocess.run(
-            ['netsh', 'winhttp', 'show', 'proxy'],
+        result = subprocess.run(  # ruff: ignore[subprocess-run-without-check]
+            ['netsh', 'winhttp', 'show', 'proxy'],  # ruff: ignore[start-process-with-partial-path]
             capture_output=True,
             text=True,
             timeout=5,
             creationflags=creationflags,
         )
-    except Exception:
+    except Exception:  # ruff: ignore[blind-except]
         return None
 
     text = (result.stdout or '') + '\n' + (result.stderr or '')
@@ -98,7 +98,7 @@ def _proxy_target(host: str | None, port: object) -> str | None:
         port_int = int(str(port).strip())
     except TypeError, ValueError:
         return None
-    if port_int <= 0 or port_int > 65535:
+    if port_int <= 0 or port_int > 65535:  # ruff: ignore[magic-value-comparison]
         return None
     if ':' in host_text and not host_text.startswith('['):
         host_text = f'[{host_text}]'
@@ -135,13 +135,13 @@ def _read_macos_proxies() -> tuple[bool, str | None, bool, str | None, str | Non
         return False, None, False, None, None
 
     try:
-        result = subprocess.run(
-            ['scutil', '--proxy'],
+        result = subprocess.run(  # ruff: ignore[subprocess-run-without-check]
+            ['scutil', '--proxy'],  # ruff: ignore[start-process-with-partial-path]
             capture_output=True,
             text=True,
             timeout=5,
         )
-    except Exception:
+    except Exception:  # ruff: ignore[blind-except]
         return False, None, False, None, None
 
     return _parse_scutil_proxy_output((result.stdout or '') + '\n' + (result.stderr or ''))
@@ -167,7 +167,7 @@ def detect_windows_proxy() -> WindowsProxyInfo:
     )
 
 
-def _host_port_from_target(target: str) -> tuple[str, int] | None:
+def _host_port_from_target(target: str) -> tuple[str, int] | None:  # ruff: ignore[too-many-return-statements]
     target = target.strip()
     if not target:
         return None

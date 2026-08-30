@@ -12,15 +12,15 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
-    QStyleOptionViewItem,
     QStyledItemDelegate,
+    QStyleOptionViewItem,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
-from ..localization import tr, tr_count
+from fleasion.localization import tr, tr_count
 
 type JsonScalar = str | int | float | bool | None
 type JsonValue = JsonScalar | dict[str, JsonValue] | list[JsonValue]
@@ -46,7 +46,7 @@ _DUPLICATE_COMBINE_LIMIT = 250
 class _WordWrapDelegate(QStyledItemDelegate):
     """Item delegate that enables word-wrapping for long text in tree rows."""
 
-    def sizeHint(
+    def sizeHint(  # ruff: ignore[invalid-function-name]
         self, option: QStyleOptionViewItem, index: QModelIndex | QPersistentModelIndex
     ) -> QSize:
         base = super().sizeHint(option, index)
@@ -56,11 +56,11 @@ class _WordWrapDelegate(QStyledItemDelegate):
         text = index.data(Qt.ItemDataRole.DisplayRole) or ''
         if not text:
             return base
-        tree = cast(QTreeWidget | None, self.parent())
+        tree = cast('QTreeWidget | None', self.parent())
         # Use a slightly smaller available width so wrapping happens earlier
         col_w = tree.columnWidth(0) if tree is not None else 0
         # Subtract a larger margin to account for expander/gutter and padding
-        w = col_w - 70 if col_w > 70 else (option.rect.width() - 70)
+        w = col_w - 70 if col_w > 70 else (option.rect.width() - 70)  # ruff: ignore[magic-value-comparison]
         if w <= 0:
             return base
         fm = option.fontMetrics
@@ -92,12 +92,12 @@ class CacheJsonViewer(QWidget):
 
         self._setup_ui()
 
-    def _setup_ui(self) -> None:
+    def _setup_ui(self) -> None:  # ruff: ignore[too-many-statements]
         """Setup the UI."""
         layout = QVBoxLayout()
         layout.setContentsMargins(5, 5, 5, 5)
 
-        # Single toolbar row: search | nav buttons (hidden until search) | expand/collapse | adv | match
+        # Single toolbar row: search | nav buttons (hidden until search) | expand/collapse | adv | match  # ruff: ignore[line-too-long]
         toolbar = QHBoxLayout()
         toolbar.setSpacing(4)
         toolbar.addWidget(QLabel(tr('ui.cache.cache_json_viewer.search')))
@@ -181,7 +181,7 @@ class CacheJsonViewer(QWidget):
 
     def _populate_tree(self) -> None:
         """Populate the tree with JSON data."""
-        self.tree.blockSignals(True)
+        self.tree.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
         self.tree.setUpdatesEnabled(False)
         try:
             self.tree.clear()
@@ -213,7 +213,7 @@ class CacheJsonViewer(QWidget):
                 self._add_node(self.tree, '', self.data)
         finally:
             self.tree.setUpdatesEnabled(True)
-            self.tree.blockSignals(False)
+            self.tree.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
 
     def _get_duplicate_values_in_dict(self, obj: dict[str, JsonValue]) -> dict[object, list[str]]:
         """Map values to list of keys that share that value. Only for hashable values."""
@@ -235,12 +235,11 @@ class CacheJsonViewer(QWidget):
         """Convert an object to a hashable representation."""
         if isinstance(obj, dict):
             return tuple(sorted((k, self._make_hashable(v)) for k, v in obj.items()))
-        elif isinstance(obj, list):
+        if isinstance(obj, list):
             return tuple(self._make_hashable(item) for item in obj)
-        elif isinstance(obj, set):
+        if isinstance(obj, set):
             return frozenset(self._make_hashable(item) for item in obj)
-        else:
-            return obj
+        return obj
 
     def _find_keys_with_same_value(
         self,
@@ -258,7 +257,7 @@ class CacheJsonViewer(QWidget):
             return [key]
 
     def _should_skip_node(self, key: str, value: JsonValue) -> bool:
-        """Check if node should be skipped (null values and boilerplate fields when Advanced is off)."""
+        """Check if node should be skipped (null values and boilerplate fields when Advanced is off)."""  # ruff: ignore[line-too-long]
         # Always skip null values
         if value is None:
             return True
@@ -271,7 +270,7 @@ class CacheJsonViewer(QWidget):
 
         return False
 
-    def _get_preview_text(self, obj: JsonValue) -> str:
+    def _get_preview_text(self, obj: JsonValue) -> str:  # ruff: ignore[too-many-return-statements]
         """Get preview text for a dict/list (first non-null field)."""
         if isinstance(obj, dict):
             for k, v in obj.items():
@@ -280,14 +279,13 @@ class CacheJsonViewer(QWidget):
                         # Normalize whitespace; let the tree column elide at the screen edge
                         preview = ' '.join(v.split())
                         return f'{k}: "{preview}"'
-                    elif isinstance(v, bool):
+                    if isinstance(v, bool):
                         return f'{k}: {str(v).lower()}'
-                    elif isinstance(v, (int, float)):
+                    if isinstance(v, (int, float)):
                         return f'{k}: {v}'
-                    else:
-                        return f'{k}: ...'
+                    return f'{k}: ...'
             return ''
-        elif isinstance(obj, list) and len(obj) > 0 and isinstance(obj[0], dict):
+        if isinstance(obj, list) and len(obj) > 0 and isinstance(obj[0], dict):
             return self._get_preview_text(obj[0])
         return ''
 
@@ -362,21 +360,21 @@ class CacheJsonViewer(QWidget):
             # Add tooltip for long values (original unstripped value as reference)
             display = f'{key}: {val_str}' if key else val_str
             item = QTreeWidgetItem(parent_item, [display])
-            if isinstance(value, str) and len(value) > 60:
+            if isinstance(value, str) and len(value) > 60:  # ruff: ignore[magic-value-comparison]
                 item.setToolTip(0, value)
             # Mark as a leaf scalar so the word-wrap delegate applies to it
-            item.setData(0, _WRAP_ROLE, True)
+            item.setData(0, _WRAP_ROLE, True)  # ruff: ignore[boolean-positional-value-in-call]
             self.node_values[id(item)] = value
             self.node_is_leaf[id(item)] = True
 
         return item
 
-    def _on_item_expanded(self, item: QTreeWidgetItem) -> None:
+    def _on_item_expanded(self, item: QTreeWidgetItem) -> None:  # ruff: ignore[complex-structure, too-many-branches]
         """Called when a tree item is expanded - load children for lazy-loaded arrays/dicts."""
         item_id = id(item)
         updates_enabled = self.tree.updatesEnabled()
         self.tree.setUpdatesEnabled(False)
-        try:
+        try:  # ruff: ignore[too-many-nested-blocks]
             # Check if this is a lazy-loaded array
             if item_id in self._lazy_arrays:
                 array_info = self._lazy_arrays[item_id]
@@ -407,7 +405,7 @@ class CacheJsonViewer(QWidget):
                         item.removeChild(first_child)
 
                         # Add actual dict children with duplicate value combining
-                        dict_obj = cast(dict[str, JsonValue], self.node_values[item_id])
+                        dict_obj = cast('dict[str, JsonValue]', self.node_values[item_id])
                         if len(dict_obj) <= _DUPLICATE_COMBINE_LIMIT:
                             duplicate_map = self._get_duplicate_values_in_dict(dict_obj)
                             processed_keys: set[str] = set()
@@ -457,7 +455,7 @@ class CacheJsonViewer(QWidget):
         finally:
             self.tree.setUpdatesEnabled(True)
 
-    def _on_search_text_changed(self, text: str) -> None:
+    def _on_search_text_changed(self, text: str) -> None:  # ruff: ignore[unused-method-argument]
         """Handle search text change."""
         # Debounce the search
         if not hasattr(self, '_search_debounce'):
@@ -570,7 +568,7 @@ class CacheJsonViewer(QWidget):
                 for i in range(item.childCount()):
                     child = _preserve_tree_item(item.child(i))
                     key = child.text(0).split(':')[0].strip().strip('[]')
-                    walk(child, path + (key,))
+                    walk(child, path + (key,))  # ruff: ignore[collection-literal-concatenation]
 
         for i in range(self.tree.topLevelItemCount()):
             item = _preserve_tree_item(self.tree.topLevelItem(i))
@@ -589,7 +587,7 @@ class CacheJsonViewer(QWidget):
                 for i in range(item.childCount()):
                     child = _preserve_tree_item(item.child(i))
                     key = child.text(0).split(':')[0].strip().strip('[]')
-                    walk(child, path + (key,))
+                    walk(child, path + (key,))  # ruff: ignore[collection-literal-concatenation]
             # If path is not in saved set, leave collapsed (children are still dummy nodes)
 
         for i in range(self.tree.topLevelItemCount()):
@@ -597,7 +595,7 @@ class CacheJsonViewer(QWidget):
             key = item.text(0).split(':')[0].strip().strip('[]')
             walk(item, (key,))
 
-    def _refresh_tree_filtering(self) -> None:
+    def _refresh_tree_filtering(self) -> None:  # ruff: ignore[complex-structure]
         """Update tree visibility based on current filter settings, preserving expansion state."""
         # Store current expansion state
         expansion_state: dict[int, bool] = {}

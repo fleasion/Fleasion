@@ -30,7 +30,7 @@ def _windows_system_theme(app: object) -> str:
 
 
 def _theme_state(name: str) -> str:
-    return cast(str, getattr(ThemeManager, name))
+    return cast('str', getattr(ThemeManager, name))
 
 
 def _set_color_scheme_noop(_app: object, _name: str) -> None:

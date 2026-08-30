@@ -6,7 +6,7 @@ import importlib
 import struct
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable  # ruff: ignore[typing-only-standard-library-import]
 from typing import TYPE_CHECKING, Protocol
 
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QMimeData
@@ -65,10 +65,12 @@ def _encode_png(image: QImage) -> bytes:
     png_data = QByteArray()
     buffer = QBuffer(png_data)
     if not buffer.open(QIODevice.OpenModeFlag.WriteOnly):
-        raise RuntimeError('Failed to prepare clipboard image data')
+        msg = 'Failed to prepare clipboard image data'
+        raise RuntimeError(msg)
     try:
         if not _save_qimage(image, buffer, 'PNG'):
-            raise RuntimeError('Failed to encode clipboard image as PNG')
+            msg = 'Failed to encode clipboard image as PNG'
+            raise RuntimeError(msg)
     finally:
         buffer.close()
 
@@ -135,11 +137,12 @@ def _copy_windows_image_to_clipboard(image: QImage, png_data: bytes) -> None:
         try:
             win32clipboard.OpenClipboard()
             break
-        except Exception as e:
+        except Exception as e:  # ruff: ignore[blind-except]
             last_error = e
             time.sleep(0.025)
     else:
-        raise RuntimeError(f'Failed to open clipboard: {last_error}')
+        msg = f'Failed to open clipboard: {last_error}'
+        raise RuntimeError(msg)
 
     try:
         win32clipboard.EmptyClipboard()
@@ -157,8 +160,8 @@ def copy_pixmap_to_clipboard(pixmap: QPixmap) -> None:
     if sys.platform == 'win32':
         try:
             _copy_windows_image_to_clipboard(image, png_data)
-            return
-        except Exception:
+            return  # ruff: ignore[try-consider-else]
+        except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass
 
     mime_data = QMimeData()

@@ -25,9 +25,9 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from ..localization import tr
-from ..utils import LOGS_DIR, get_icon_path, log_buffer, open_folder, time_tracker
-from ..utils.macos_proxy_helper import HELPER_LOG_DIR
+from fleasion.localization import tr
+from fleasion.utils import LOGS_DIR, get_icon_path, log_buffer, open_folder, time_tracker
+from fleasion.utils.macos_proxy_helper import HELPER_LOG_DIR
 
 
 class LogsWindow(QDialog):
@@ -52,7 +52,7 @@ class LogsWindow(QDialog):
 
     def _set_icon(self) -> None:
         if icon_path := get_icon_path():
-            from PySide6.QtGui import QIcon
+            from PySide6.QtGui import QIcon  # ruff: ignore[import-outside-top-level]
 
             self.setWindowIcon(QIcon(str(icon_path)))
 
@@ -121,7 +121,7 @@ class LogsWindow(QDialog):
         esc = QShortcut(QKeySequence('Escape'), self._search_input)
         esc.activated.connect(self._clear_search)
 
-    def _get_monospace_font(self) -> QFont:
+    def _get_monospace_font(self) -> QFont:  # ruff: ignore[no-self-use]
         font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
         font.setPointSize(10)
         return font
@@ -171,7 +171,7 @@ class LogsWindow(QDialog):
         self.time_timer.timeout.connect(self._refresh_time_label)
         self.time_timer.start(1000)
 
-    def showEvent(self, a0: QShowEvent) -> None:
+    def showEvent(self, a0: QShowEvent) -> None:  # ruff: ignore[invalid-function-name]
         if not self.timer.isActive():
             self.timer.start(250)
         if not self.time_timer.isActive():
@@ -213,7 +213,7 @@ class LogsWindow(QDialog):
             tr('ui.gui.logs.time_wasted_value', value0=time_tracker.format_duration(total))
         )
 
-    def closeEvent(self, a0: QCloseEvent) -> None:
+    def closeEvent(self, a0: QCloseEvent) -> None:  # ruff: ignore[invalid-function-name]
         self.timer.stop()
         self.time_timer.stop()
         super().closeEvent(a0)

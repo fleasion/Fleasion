@@ -1,4 +1,4 @@
-"""opus-better-cook: Roblox SolidModel binary deserializer and converter."""
+"""opus-better-cook: Roblox SolidModel binary deserializer and converter."""  # ruff: ignore[implicit-namespace-package]
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 from .converter import convert_file
 
 
-def main() -> None:
+def main() -> None:  # ruff: ignore[non-empty-init-module]
     """CLI entry point for converting SolidModel .bin files to .rbxm / .rbxmx."""
     parser = argparse.ArgumentParser(
         prog='opus-better-cook',

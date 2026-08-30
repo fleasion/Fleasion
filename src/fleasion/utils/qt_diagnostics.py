@@ -7,7 +7,9 @@ import sys
 import threading
 from collections.abc import Callable
 
-from PySide6 import __version__ as PYSIDE_VERSION_STR
+from PySide6 import (
+    __version__ as PYSIDE_VERSION_STR,  # ruff: ignore[lowercase-imported-as-non-lowercase]
+)
 from PySide6.QtCore import QMessageLogContext, QtMsgType, qInstallMessageHandler, qVersion
 
 from .logging import log_buffer
@@ -46,9 +48,9 @@ def _forward_to_previous_handler(
 ) -> None:
     """Preserve existing Qt console/debugger output when diagnostics are installed."""
     if _previous_handler is not None:
-        try:
+        try:  # ruff: ignore[suppressible-exception]
             _previous_handler(message_type, context, message)
-        except Exception:
+        except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass
         return
 
@@ -58,8 +60,8 @@ def _forward_to_previous_handler(
         try:
             level = _message_level(message_type)
             category = getattr(context, 'category', None) or 'qt'
-            print(f'Qt {level} [{category}] {message}', file=sys.stderr)
-        except Exception:
+            print(f'Qt {level} [{category}] {message}', file=sys.stderr)  # ruff: ignore[print]
+        except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass
 
 
@@ -92,12 +94,12 @@ def _qt_message_handler(message_type: QtMsgType, context: QMessageLogContext, me
 
 def install_qt_message_logging() -> None:
     """Install a process-wide Qt message handler once without risking startup."""
-    global _installed, _previous_handler
+    global _installed, _previous_handler  # ruff: ignore[global-statement]
     if _installed:
         return
     try:
         _previous_handler = qInstallMessageHandler(_qt_message_handler)
-    except Exception as exc:
+    except Exception as exc:  # ruff: ignore[blind-except]
         log_buffer.log('Qt', f'Could not install Qt message logging: {exc}')
         return
     _installed = True

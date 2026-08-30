@@ -123,7 +123,7 @@ def interleave_u64(values: list[int]) -> bytes:
     count = len(values)
     out = bytearray(count * 8)
     for i, v in enumerate(values):
-        v &= 0xFFFF_FFFF_FFFF_FFFF
+        v &= 0xFFFF_FFFF_FFFF_FFFF  # ruff: ignore[redefined-loop-name]
         for byte_idx in range(8):
             out[byte_idx * count + i] = (v >> (56 - byte_idx * 8)) & 0xFF
     return bytes(out)

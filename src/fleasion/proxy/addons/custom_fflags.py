@@ -8,12 +8,12 @@ import stat
 import sys
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable  # ruff: ignore[typing-only-standard-library-import]
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ...utils import log_buffer
-from ...utils.paths import CONFIG_FILE, LOCAL_APPDATA
+from fleasion.utils import log_buffer
+from fleasion.utils.paths import CONFIG_FILE, LOCAL_APPDATA
 
 type JsonScalar = str | int | float | bool | None
 type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
@@ -73,7 +73,8 @@ def normalize_flag_value(value: object) -> str:
         return value
     if isinstance(value, int | float):
         return str(value)
-    raise ValueError('FastFlag values must be strings, numbers, or booleans')
+    msg = 'FastFlag values must be strings, numbers, or booleans'
+    raise ValueError(msg)
 
 
 def normalize_custom_fflags(value: object) -> dict[str, str]:
@@ -102,7 +103,7 @@ class CustomFFlagModifier:
         config_manager: object,
         flag_cache_path: Path | None = None,
         settings_path: Path | None = None,
-        reload_settings_from_disk: bool = False,
+        reload_settings_from_disk: bool = False,  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
         macos_resource_dirs: list[Path] | None = None,
     ) -> None:
         self.config_manager: object = config_manager
@@ -288,7 +289,7 @@ class CustomFFlagModifier:
             self._delivery_generation += 1
             self._last_fresh_response_flags = None
 
-    def prime_windows_flag_cache(self) -> bool:
+    def prime_windows_flag_cache(self) -> bool:  # ruff: ignore[too-many-locals, too-many-return-statements]
         """Synchronize active overrides into Roblox's uncompressed Windows flag cache.
 
         Some flags, including the task-scheduler target FPS, are consumed before
@@ -303,9 +304,9 @@ class CustomFFlagModifier:
             return False
 
         cache_path = self._flag_cache_path or WINDOWS_FLAG_CACHE_PATH
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
             raw = cache_path.read_bytes()
-            if len(raw) < 5:
+            if len(raw) < 5:  # ruff: ignore[magic-value-comparison]
                 return False
             signature_length = int.from_bytes(raw[:4], 'little')
             compression_offset = 4 + signature_length
@@ -373,10 +374,12 @@ class CustomFFlagModifier:
             if sys.platform != 'darwin':
                 return []
             try:
-                from ...utils.platform_macos import find_roblox_resource_dirs
+                from fleasion.utils.platform_macos import (  # ruff: ignore[import-outside-top-level]
+                    find_roblox_resource_dirs,
+                )
 
                 resource_dirs = find_roblox_resource_dirs(include_studio=False)
-            except Exception:
+            except Exception:  # ruff: ignore[blind-except]
                 return []
 
         paths: list[Path] = []
@@ -400,7 +403,7 @@ class CustomFFlagModifier:
         except OSError:
             pass
 
-    def prime_macos_client_settings(self) -> bool:
+    def prime_macos_client_settings(self) -> bool:  # ruff: ignore[complex-structure, too-many-branches, too-many-statements]
         """Seed custom flags into Player's local macOS startup settings.
 
         Roblox loads the Resources ClientSettings file before its first remote
@@ -429,7 +432,7 @@ class CustomFFlagModifier:
         updated_paths = 0
 
         for target in paths:
-            try:
+            try:  # ruff: ignore[too-many-statements-in-try-clause]
                 existing: JsonObject
                 if target.exists():
                     try:
@@ -444,7 +447,7 @@ class CustomFFlagModifier:
                     if loaded is None:
                         log_buffer.log(
                             'CustomFFlags',
-                            f'macOS ClientSettings root was not an object; left unchanged: {target}',
+                            f'macOS ClientSettings root was not an object; left unchanged: {target}',  # ruff: ignore[line-too-long]
                         )
                         continue
                     existing = loaded
@@ -537,7 +540,7 @@ class CustomFFlagModifier:
         except json.JSONDecodeError, UnicodeDecodeError:
             self.log_response_failure(
                 'decode',
-                f'Could not decode ClientSettings response for {path[:160]}; response left unchanged',
+                f'Could not decode ClientSettings response for {path[:160]}; response left unchanged',  # ruff: ignore[line-too-long]
             )
             return body, None
 
@@ -545,7 +548,7 @@ class CustomFFlagModifier:
         if payload is None:
             self.log_response_failure(
                 'invalid-root',
-                f'ClientSettings response for {path[:160]} was not a JSON object; response left unchanged',
+                f'ClientSettings response for {path[:160]} was not a JSON object; response left unchanged',  # ruff: ignore[line-too-long]
             )
             return body, None
 
@@ -553,7 +556,7 @@ class CustomFFlagModifier:
         if application_settings is None:
             self.log_response_failure(
                 'missing-application-settings',
-                f'ClientSettings response for {path[:160]} had no applicationSettings object; response left unchanged',
+                f'ClientSettings response for {path[:160]} had no applicationSettings object; response left unchanged',  # ruff: ignore[line-too-long]
             )
             return body, None
 

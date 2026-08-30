@@ -250,7 +250,8 @@ def test_cdn_replacement_takes_priority_over_type_removal(monkeypatch: pytest.Mo
     )
 
     assert json.loads(modified)[0]['assetId'] == 1234
-    assert routed and routed[0][0][2] == 'https://example.com/custom.png'
+    assert routed
+    assert routed[0][0][2] == 'https://example.com/custom.png'
     assert routed[0][1]['map_index'] is None
 
 
@@ -281,7 +282,8 @@ def test_local_replacement_takes_priority_over_type_removal(
     )
 
     assert json.loads(modified)[0]['assetId'] == 1234
-    assert routed and routed[0][0][2] == str(replacement)
+    assert routed
+    assert routed[0][0][2] == str(replacement)
 
 
 def test_whole_texturepack_id_replacement_swaps_parent_without_downloading_xml() -> None:
@@ -509,7 +511,6 @@ def test_replacement_precheck_stops_and_backs_off_after_network_failure(
         @staticmethod
         def _get_roblosecurity(*, wait: bool = False) -> None:
             _ = wait
-            return None
 
         def _https_get(self, hostname: str, path: str, **_kwargs: object) -> tuple[None, None]:
             self.calls.append((hostname, path))

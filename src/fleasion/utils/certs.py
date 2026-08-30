@@ -54,10 +54,15 @@ NOT_VALID_BEFORE_SKEW_MINUTES = 5
 
 def _crypto() -> tuple[ModuleType, type[object], ModuleType, ModuleType, ModuleType]:
     """Lazy import of cryptography modules."""
-    from cryptography import x509
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import rsa
-    from cryptography.x509.oid import NameOID
+    from cryptography import x509  # ruff: ignore[import-outside-top-level]
+    from cryptography.hazmat.primitives import (  # ruff: ignore[import-outside-top-level]
+        hashes,
+        serialization,
+    )
+    from cryptography.hazmat.primitives.asymmetric import (  # ruff: ignore[import-outside-top-level]
+        rsa,
+    )
+    from cryptography.x509.oid import NameOID  # ruff: ignore[import-outside-top-level]
 
     return x509, NameOID, hashes, serialization, rsa
 
@@ -110,7 +115,10 @@ def _leaf_signed_by_ca(
     rsa_mod: _RsaModule,
 ) -> bool:
     """Return True if *leaf_cert* verifies with *ca_cert*'s public key."""
-    from cryptography.hazmat.primitives.asymmetric import ec as ec_mod, padding
+    from cryptography.hazmat.primitives.asymmetric import (  # ruff: ignore[import-outside-top-level]
+        ec as ec_mod,
+        padding,
+    )
 
     ca_public_key = ca_cert.public_key()
     signature_hash_algorithm = leaf_cert.signature_hash_algorithm
@@ -146,12 +154,13 @@ def _safe_cert_filename(name: str) -> str:
 def _normalise_hosts(hosts: Iterable[str]) -> list[str]:
     normalized = sorted({str(host).strip().lower() for host in hosts if str(host).strip()})
     if not normalized:
-        raise ValueError('at least one host is required')
+        msg = 'at least one host is required'
+        raise ValueError(msg)
     return normalized
 
 
 def _san_entries_for_hosts(hosts: Iterable[str]) -> list[x509.GeneralName]:
-    from cryptography import x509
+    from cryptography import x509  # ruff: ignore[import-outside-top-level]
 
     san_entries: list[x509.GeneralName] = []
     for host in _normalise_hosts(hosts):
@@ -163,45 +172,45 @@ def _san_entries_for_hosts(hosts: Iterable[str]) -> list[x509.GeneralName]:
 
 
 def _cert_san_names(cert: x509.Certificate) -> tuple[set[str], set[str]]:
-    from cryptography import x509
+    from cryptography import x509  # ruff: ignore[import-outside-top-level]
 
     try:
         san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
         san_dns = {name.lower() for name in san.get_values_for_type(x509.DNSName)}
         san_ips = {str(ip) for ip in san.get_values_for_type(x509.IPAddress)}
-        return san_dns, san_ips
+        return san_dns, san_ips  # ruff: ignore[try-consider-else]
     except x509.ExtensionNotFound:
         return set(), set()
 
 
 def _cert_allows_server_auth(cert: x509.Certificate) -> bool:
-    from cryptography import x509
-    from cryptography.x509.oid import ExtendedKeyUsageOID
+    from cryptography import x509  # ruff: ignore[import-outside-top-level]
+    from cryptography.x509.oid import ExtendedKeyUsageOID  # ruff: ignore[import-outside-top-level]
 
     try:
         eku = cert.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
-        return ExtendedKeyUsageOID.SERVER_AUTH in eku
+        return ExtendedKeyUsageOID.SERVER_AUTH in eku  # ruff: ignore[try-consider-else]
     except x509.ExtensionNotFound:
         # Absence of EKU is less restrictive than a wrong EKU.
         return True
 
 
 def _cert_has_authority_key_identifier(cert: x509.Certificate) -> bool:
-    from cryptography import x509
+    from cryptography import x509  # ruff: ignore[import-outside-top-level]
 
     try:
         cert.extensions.get_extension_for_class(x509.AuthorityKeyIdentifier)
-        return True
+        return True  # ruff: ignore[try-consider-else]
     except x509.ExtensionNotFound:
         return False
 
 
 def _cert_has_subject_key_identifier(cert: x509.Certificate) -> bool:
-    from cryptography import x509
+    from cryptography import x509  # ruff: ignore[import-outside-top-level]
 
     try:
         cert.extensions.get_extension_for_class(x509.SubjectKeyIdentifier)
-        return True
+        return True  # ruff: ignore[try-consider-else]
     except x509.ExtensionNotFound:
         return False
 
@@ -231,10 +240,12 @@ def generate_ca(ca_dir: Path) -> tuple[Path, Path]:
     ca_key_path = ca_dir / 'ca.key'
 
     if ca_cert_path.exists() and ca_key_path.exists():
-        try:
-            from cryptography import x509
-            from cryptography.hazmat.primitives import serialization
-            from cryptography.hazmat.primitives.serialization import (
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
+            from cryptography import x509  # ruff: ignore[import-outside-top-level]
+            from cryptography.hazmat.primitives import (  # ruff: ignore[import-outside-top-level]
+                serialization,
+            )
+            from cryptography.hazmat.primitives.serialization import (  # ruff: ignore[import-outside-top-level]
                 load_pem_private_key,
             )
 
@@ -248,14 +259,19 @@ def generate_ca(ca_dir: Path) -> tuple[Path, Path]:
                 return ca_cert_path, ca_key_path
 
             logger.warning('Existing Fleasion CA is stale or mismatched; regenerating')
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             logger.warning('Failed to load existing Fleasion CA; regenerating (%s)', exc)
 
     _crypto()
-    from cryptography import x509
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import rsa
-    from cryptography.x509.oid import NameOID
+    from cryptography import x509  # ruff: ignore[import-outside-top-level]
+    from cryptography.hazmat.primitives import (  # ruff: ignore[import-outside-top-level]
+        hashes,
+        serialization,
+    )
+    from cryptography.hazmat.primitives.asymmetric import (  # ruff: ignore[import-outside-top-level]
+        rsa,
+    )
+    from cryptography.x509.oid import NameOID  # ruff: ignore[import-outside-top-level]
 
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     name = x509.Name(
@@ -305,7 +321,7 @@ def generate_ca(ca_dir: Path) -> tuple[Path, Path]:
     return ca_cert_path, ca_key_path
 
 
-def generate_host_cert(
+def generate_host_cert(  # ruff: ignore[too-many-locals, too-many-statements]
     host: str, ca_cert_path: Path, ca_key_path: Path, ca_dir: Path
 ) -> tuple[Path, Path]:
     """Generate a leaf certificate for *host* signed by our CA.
@@ -317,17 +333,27 @@ def generate_host_cert(
     cert_path = ca_dir / f'{safe_host}.crt'
     key_path = ca_dir / f'{safe_host}.key'
 
-    from cryptography import x509
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import rsa
-    from cryptography.hazmat.primitives.serialization import load_pem_private_key
-    from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+    from cryptography import x509  # ruff: ignore[import-outside-top-level]
+    from cryptography.hazmat.primitives import (  # ruff: ignore[import-outside-top-level]
+        hashes,
+        serialization,
+    )
+    from cryptography.hazmat.primitives.asymmetric import (  # ruff: ignore[import-outside-top-level]
+        rsa,
+    )
+    from cryptography.hazmat.primitives.serialization import (  # ruff: ignore[import-outside-top-level]
+        load_pem_private_key,
+    )
+    from cryptography.x509.oid import (  # ruff: ignore[import-outside-top-level]
+        ExtendedKeyUsageOID,
+        NameOID,
+    )
 
     # Load CA once here so we can validate cached leaf cert issuer before reusing it.
     ca_cert = x509.load_pem_x509_certificate(ca_cert_path.read_bytes())
 
     if cert_path.exists() and key_path.exists():
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
             cached_leaf = x509.load_pem_x509_certificate(cert_path.read_bytes())
             cached_key = load_pem_private_key(key_path.read_bytes(), password=None)
 
@@ -355,11 +381,11 @@ def generate_host_cert(
 
             try:
                 signature_ok = _leaf_signed_by_ca(cached_leaf, ca_cert, rsa)
-            except Exception:
+            except Exception:  # ruff: ignore[blind-except]
                 signature_ok = False
 
             if (
-                cn_ok
+                cn_ok  # ruff: ignore[too-many-boolean-expressions]
                 and san_ok
                 and issuer_ok
                 and time_ok
@@ -371,7 +397,7 @@ def generate_host_cert(
                 return cert_path, key_path
 
             logger.warning('Cached leaf cert for %s is stale or mismatched; regenerating', host)
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             logger.warning(
                 'Failed to validate cached leaf cert for %s; regenerating (%s)',
                 host,
@@ -382,7 +408,8 @@ def generate_host_cert(
     ca_key = load_pem_private_key(ca_key_path.read_bytes(), password=None)
 
     if not _cert_matches_private_key(ca_cert, ca_key, serialization):
-        raise ValueError('CA cert/key pair is mismatched')
+        msg = 'CA cert/key pair is mismatched'
+        raise ValueError(msg)
     # A CA key used here is a certificate issuer key; the loader's union is broader.
     ca_signing_key = cast('CertificateIssuerPrivateKeyTypes', ca_key)
 
@@ -444,7 +471,7 @@ def generate_host_cert(
     return cert_path, key_path
 
 
-def generate_multi_host_cert(
+def generate_multi_host_cert(  # ruff: ignore[too-many-locals]
     cert_name: str,
     hosts: Iterable[str],
     ca_cert_path: Path,
@@ -458,16 +485,26 @@ def generate_multi_host_cert(
     cert_path = ca_dir / f'{safe_name}.crt'
     key_path = ca_dir / f'{safe_name}.key'
 
-    from cryptography import x509
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import rsa
-    from cryptography.hazmat.primitives.serialization import load_pem_private_key
-    from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+    from cryptography import x509  # ruff: ignore[import-outside-top-level]
+    from cryptography.hazmat.primitives import (  # ruff: ignore[import-outside-top-level]
+        hashes,
+        serialization,
+    )
+    from cryptography.hazmat.primitives.asymmetric import (  # ruff: ignore[import-outside-top-level]
+        rsa,
+    )
+    from cryptography.hazmat.primitives.serialization import (  # ruff: ignore[import-outside-top-level]
+        load_pem_private_key,
+    )
+    from cryptography.x509.oid import (  # ruff: ignore[import-outside-top-level]
+        ExtendedKeyUsageOID,
+        NameOID,
+    )
 
     ca_cert = x509.load_pem_x509_certificate(ca_cert_path.read_bytes())
 
     if cert_path.exists() and key_path.exists():
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
             cached_leaf = x509.load_pem_x509_certificate(cert_path.read_bytes())
             cached_key = load_pem_private_key(key_path.read_bytes(), password=None)
 
@@ -483,11 +520,11 @@ def generate_multi_host_cert(
 
             try:
                 signature_ok = _leaf_signed_by_ca(cached_leaf, ca_cert, rsa)
-            except Exception:
+            except Exception:  # ruff: ignore[blind-except]
                 signature_ok = False
 
             if (
-                cn_ok
+                cn_ok  # ruff: ignore[too-many-boolean-expressions]
                 and issuer_ok
                 and time_ok
                 and key_ok
@@ -503,7 +540,7 @@ def generate_multi_host_cert(
                 'Cached multi-host cert %s is stale or mismatched; regenerating',
                 cert_name,
             )
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             logger.warning(
                 'Failed to validate cached multi-host cert %s; regenerating (%s)',
                 cert_name,
@@ -512,7 +549,8 @@ def generate_multi_host_cert(
 
     ca_key = load_pem_private_key(ca_key_path.read_bytes(), password=None)
     if not _cert_matches_private_key(ca_cert, ca_key, serialization):
-        raise ValueError('CA cert/key pair is mismatched')
+        msg = 'CA cert/key pair is mismatched'
+        raise ValueError(msg)
     # A CA key used here is a certificate issuer key; the loader's union is broader.
     ca_signing_key = cast('CertificateIssuerPrivateKeyTypes', ca_key)
 

@@ -17,12 +17,12 @@ from threading import Lock, Thread
 from typing import TYPE_CHECKING, Literal, Protocol, TypeIs
 from urllib.parse import urlparse
 
-from ...utils import APP_CACHE_DIR, format_count, log_buffer
-from ...utils.http import http_download_to
-from ..roblox_metadata import strip_roblox_metadata
+from fleasion.proxy.roblox_metadata import strip_roblox_metadata
+from fleasion.utils import APP_CACHE_DIR, format_count, log_buffer
+from fleasion.utils.http import http_download_to
 
 if TYPE_CHECKING:
-    from ...config.manager import ConfigManager, ReplacementMaps
+    from fleasion.config.manager import ConfigManager, ReplacementMaps
 
 type _JsonScalar = str | int | float | bool | None
 type _JsonValue = _JsonScalar | list[_JsonValue] | dict[str, _JsonValue]
@@ -85,8 +85,8 @@ else:
 
     def _scraper_get_roblosecurity(scraper: _CacheScraperLike, *, wait: bool = False) -> str | None:
         if wait:
-            return scraper._get_roblosecurity(wait=True)
-        return scraper._get_roblosecurity()
+            return scraper._get_roblosecurity(wait=True)  # ruff: ignore[private-member-access]
+        return scraper._get_roblosecurity()  # ruff: ignore[private-member-access]
 
     def _scraper_https_get(
         scraper: _CacheScraperLike,
@@ -94,7 +94,7 @@ else:
         path: str,
         extra_headers: dict[str, str] | None = None,
     ) -> bytes | None:
-        return scraper._https_get(hostname, path, extra_headers=extra_headers)
+        return scraper._https_get(hostname, path, extra_headers=extra_headers)  # ruff: ignore[private-member-access]
 
     def _scraper_https_get_status(
         scraper: _CacheScraperLike,
@@ -102,7 +102,7 @@ else:
         path: str,
         extra_headers: dict[str, str] | None = None,
     ) -> tuple[bytes | None, int | None]:
-        return scraper._https_get(
+        return scraper._https_get(  # ruff: ignore[private-member-access]
             hostname,
             path,
             extra_headers=extra_headers,
@@ -115,7 +115,7 @@ else:
         *,
         extra_headers: dict[str, str] | None = None,
     ) -> tuple[bytes | None, int | None]:
-        return scraper._fetch_asset_with_place_id_retry(
+        return scraper._fetch_asset_with_place_id_retry(  # ruff: ignore[private-member-access]
             asset_id,
             extra_headers=extra_headers,
         )
@@ -239,12 +239,12 @@ def _file_value(value: object) -> str:
         return _short_value(text)
     try:
         return Path(text).name or text
-    except Exception:
+    except Exception:  # ruff: ignore[blind-except]
         return _short_value(text)
 
 
 def _b64decode_padded(value: object) -> bytes:
-    import base64 as _b64
+    import base64 as _b64  # ruff: ignore[import-outside-top-level]
 
     raw = str(value).encode('ascii', errors='ignore')
     raw += b'=' * (-len(raw) % 4)
@@ -270,7 +270,7 @@ def _normalized_build_type(value: object) -> _BuildType:
 def _texpack_slot_from_build_type(value: object) -> int | None:
     normalized = _normalized_build_type(value)
     if isinstance(normalized, int):
-        return normalized if 0 <= normalized <= 2 else None
+        return normalized if 0 <= normalized <= 2 else None  # ruff: ignore[magic-value-comparison]
     if not isinstance(normalized, str) or not normalized:
         return None
     if any(token in normalized for token in ('color', 'albedo', 'diffuse', 'basecolor')):
@@ -278,7 +278,7 @@ def _texpack_slot_from_build_type(value: object) -> int | None:
     if any(token in normalized for token in ('normal', 'bump')):
         return 1
     if (
-        'metal' in normalized
+        'metal' in normalized  # ruff: ignore[too-many-boolean-expressions]
         or 'rough' in normalized
         or 'emiss' in normalized
         or 'height' in normalized
@@ -334,13 +334,13 @@ def _representation_matches_requested(representation: _JsonObject, requested: _B
     return False
 
 
-def _select_content_representation(e: _JsonObject) -> _JsonObject | None:
+def _select_content_representation(e: _JsonObject) -> _JsonObject | None:  # ruff: ignore[too-many-return-statements]
     crpl = e.get('contentRepresentationPriorityList')
     if not crpl:
         return None
     try:
         decoded = _loads(_b64decode_padded(crpl))
-    except Exception:
+    except Exception:  # ruff: ignore[blind-except]
         return None
     if not isinstance(decoded, list) or not decoded:
         return None
@@ -366,12 +366,12 @@ def _decode_fidelity_slot_quality(fidelity_b64: object | None) -> tuple[int, int
         return None
     try:
         fb = _b64decode_padded(fidelity_b64)
-    except Exception:
+    except Exception:  # ruff: ignore[blind-except]
         return None
-    if len(fb) < 2:
+    if len(fb) < 2:  # ruff: ignore[magic-value-comparison]
         return None
     slot = (fb[0] & 0x60) >> 5
-    if slot > 2:
+    if slot > 2:  # ruff: ignore[magic-value-comparison]
         return None
     quality = (fb[1] & 0xC0) >> 6
     return slot, quality
@@ -400,7 +400,7 @@ if TYPE_CHECKING:
 
 def _decompress_cdn_response(data: bytes) -> bytes:
     if data[:4] == _ZSTD_MAGIC:
-        import zstandard
+        import zstandard  # ruff: ignore[import-outside-top-level]
 
         data = zstandard.ZstdDecompressor().decompress(data, max_output_size=64 * 1024 * 1024)
         log_buffer.log('CDN', f'Decompressed zstd CDN payload: {len(data)} bytes')
@@ -410,24 +410,32 @@ def _decompress_cdn_response(data: bytes) -> bytes:
     return data
 
 
-def _inject_obj_into_solidmodel(bin_data: bytes, obj_path: Path, prefer_v3: bool = False) -> bytes:
-    from ...cache.tools.solidmodel_converter.converter import deserialize_rbxm
+def _inject_obj_into_solidmodel(bin_data: bytes, obj_path: Path, prefer_v3: bool = False) -> bytes:  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument, complex-structure]
+    from fleasion.cache.tools.solidmodel_converter.converter import (  # ruff: ignore[import-outside-top-level]
+        deserialize_rbxm,
+    )
 
     if TYPE_CHECKING:
 
         def _detect_csgmdl_version(data: bytes) -> int | None: ...
     else:
-        from ...cache.tools.solidmodel_converter.csg_mesh import _detect_csgmdl_version
-    from ...cache.tools.solidmodel_converter.obj_to_csg import export_csg_mesh
-    from ...cache.tools.solidmodel_converter.rbxm.serializer import write_rbxm
-    from ...cache.tools.solidmodel_converter.rbxm.types import (
+        from fleasion.cache.tools.solidmodel_converter.csg_mesh import (  # ruff: ignore[import-outside-top-level]
+            _detect_csgmdl_version,
+        )
+    from fleasion.cache.tools.solidmodel_converter.obj_to_csg import (  # ruff: ignore[import-outside-top-level]
+        export_csg_mesh,
+    )
+    from fleasion.cache.tools.solidmodel_converter.rbxm.serializer import (  # ruff: ignore[import-outside-top-level]
+        write_rbxm,
+    )
+    from fleasion.cache.tools.solidmodel_converter.rbxm.types import (  # ruff: ignore[import-outside-top-level]
         PropertyFormat,
         RbxProperty,
     )
 
     bin_data = _decompress_cdn_response(bin_data)
     doc = deserialize_rbxm(bin_data)
-    _INJECTABLE = frozenset(
+    INJECTABLE = frozenset(  # ruff: ignore[non-lowercase-variable-in-function]
         {'PartOperationAsset', 'UnionOperation', 'NegateOperation', 'PartOperation'}
     )
 
@@ -436,7 +444,7 @@ def _inject_obj_into_solidmodel(bin_data: bytes, obj_path: Path, prefer_v3: bool
         log_buffer.log('SolidModel', 'Using forced CSGMDL v3 for direct OBJ replacement')
     else:
         for inst in doc.roots:
-            if inst.class_name in _INJECTABLE:
+            if inst.class_name in INJECTABLE:
                 prop = inst.properties.get('MeshData')
                 if prop is not None and prop.value:
                     mesh_bytes = (
@@ -453,7 +461,7 @@ def _inject_obj_into_solidmodel(bin_data: bytes, obj_path: Path, prefer_v3: bool
     csg_bytes = export_csg_mesh(obj_path, version=csg_version)
     injected = 0
     for inst in doc.roots:
-        if inst.class_name in _INJECTABLE:
+        if inst.class_name in INJECTABLE:
             inst.properties['MeshData'] = RbxProperty(
                 name='MeshData',
                 fmt=PropertyFormat.STRING,
@@ -467,24 +475,25 @@ def _inject_obj_into_solidmodel(bin_data: bytes, obj_path: Path, prefer_v3: bool
             injected += 1
 
     if injected == 0:
-        raise ValueError(f'No injectable root (roots: {[r.class_name for r in doc.roots]})')
+        msg = f'No injectable root (roots: {[r.class_name for r in doc.roots]})'
+        raise ValueError(msg)
     log_buffer.log('SolidModel', f'Injected CSGMDL into {format_count(injected, "root")}')
     return write_rbxm(doc)
 
 
 def _try_mesh_to_obj(path: Path, ctx: str) -> Path | None:
     try:
-        from ...cache.tools.solidmodel_converter.mesh_intermediary import (
+        from fleasion.cache.tools.solidmodel_converter.mesh_intermediary import (  # ruff: ignore[import-outside-top-level]
             mesh_file_to_cached_obj,
         )
 
         return mesh_file_to_cached_obj(path)
-    except Exception as exc:
+    except Exception as exc:  # ruff: ignore[blind-except]
         log_buffer.log('Intermediary', f'{ctx}: .mesh->OBJ failed: {exc}')
         return None
 
 
-def _is_csgmdl_bin(path: Path) -> bool:
+def _is_csgmdl_bin(path: Path) -> bool:  # ruff: ignore[complex-structure]
     """Check if a .bin file is actually a CSGMDL by looking for RBXM header and MeshData.
 
     Returns True only if:
@@ -492,33 +501,37 @@ def _is_csgmdl_bin(path: Path) -> bool:
     2. It contains an injectable root (PartOperationAsset, etc.)
     3. That root has MeshData containing a CSGMDL blob
     """
-    try:
+    try:  # ruff: ignore[too-many-statements-in-try-clause]
         raw = path.read_bytes()
         # Decompress if needed
         data = raw
         if raw[:4] == b'\x28\xb5\x2f\xfd':  # zstd
-            import zstandard
+            import zstandard  # ruff: ignore[import-outside-top-level]
 
             data = zstandard.ZstdDecompressor().decompress(raw, max_output_size=64 * 1024 * 1024)
         elif raw[:2] == b'\x1f\x8b':  # gzip
             data = gzip.decompress(raw)
 
         # Check if it's a valid binary RBXM
-        from ...cache.tools.solidmodel_converter.mesh_intermediary import is_binary_rbxm
+        from fleasion.cache.tools.solidmodel_converter.mesh_intermediary import (  # ruff: ignore[import-outside-top-level]
+            is_binary_rbxm,
+        )
 
         if not is_binary_rbxm(data):
             return False
 
         # Try to deserialize and find injectable roots with MeshData
-        from ...cache.tools.solidmodel_converter.converter import deserialize_rbxm
+        from fleasion.cache.tools.solidmodel_converter.converter import (  # ruff: ignore[import-outside-top-level]
+            deserialize_rbxm,
+        )
 
         doc = deserialize_rbxm(data)
-        _INJECTABLE = frozenset(
+        INJECTABLE = frozenset(  # ruff: ignore[non-lowercase-variable-in-function]
             {'PartOperationAsset', 'UnionOperation', 'NegateOperation', 'PartOperation'}
         )
 
         for inst in doc.roots:
-            if inst.class_name in _INJECTABLE:
+            if inst.class_name in INJECTABLE:
                 prop = inst.properties.get('MeshData')
                 if prop is not None and prop.value:
                     # Check if MeshData looks like CSGMDL
@@ -526,7 +539,7 @@ def _is_csgmdl_bin(path: Path) -> bool:
 
                         def _detect_csgmdl_version(data: bytes) -> int | None: ...
                     else:
-                        from ...cache.tools.solidmodel_converter.csg_mesh import (
+                        from fleasion.cache.tools.solidmodel_converter.csg_mesh import (  # ruff: ignore[import-outside-top-level]
                             _detect_csgmdl_version,
                         )
 
@@ -537,31 +550,31 @@ def _is_csgmdl_bin(path: Path) -> bool:
                     )
                     if _detect_csgmdl_version(mesh_bytes) is not None:
                         return True
-        return False
-    except Exception:
+        return False  # ruff: ignore[try-consider-else]
+    except Exception:  # ruff: ignore[blind-except]
         return False
 
 
 def _try_bin_to_obj(path: Path, ctx: str) -> Path | None:
     try:
-        from ...cache.tools.solidmodel_converter.mesh_intermediary import (
+        from fleasion.cache.tools.solidmodel_converter.mesh_intermediary import (  # ruff: ignore[import-outside-top-level]
             bin_file_to_cached_obj,
         )
 
         return bin_file_to_cached_obj(path)
-    except Exception as exc:
+    except Exception as exc:  # ruff: ignore[blind-except]
         log_buffer.log('Intermediary', f'{ctx}: .bin->OBJ failed: {exc}')
         return None
 
 
 def _try_rbxmx_to_obj(path: Path, ctx: str) -> Path | None:
     try:
-        from ...cache.tools.solidmodel_converter.mesh_intermediary import (
+        from fleasion.cache.tools.solidmodel_converter.mesh_intermediary import (  # ruff: ignore[import-outside-top-level]
             rbxmx_file_to_cached_obj,
         )
 
         return rbxmx_file_to_cached_obj(path)
-    except Exception as exc:
+    except Exception as exc:  # ruff: ignore[blind-except]
         log_buffer.log('Intermediary', f'{ctx}: .rbxmx->OBJ failed: {exc}')
         return None
 
@@ -585,8 +598,8 @@ def _download_remote_file(url: str, dest: Path, label: str) -> bool:
             },
         )
         log_buffer.log('Downloader', f'Saved {label}: {dest.name}')
-        return True
-    except Exception as exc:
+        return True  # ruff: ignore[try-consider-else]
+    except Exception as exc:  # ruff: ignore[blind-except]
         log_buffer.log('Downloader', f'Failed to download {label}: {exc}')
         return False
 
@@ -596,16 +609,26 @@ class TextureStripper:
 
     # ── Shared singleton state (class-level) ──────────────────────────────
     _lock: Lock = Lock()
-    _pending: dict[str, tuple[str, str]] = {}  # requestId -> (kind, value)
-    _cdn_redirects: dict[str, str] = {}  # base_cdn_url -> redirect_url
-    _local_redirects: dict[str, str] = {}  # base_cdn_url -> local_path
-    _solidmodel_injections: dict[str, str] = {}  # base_cdn_url -> obj_path
-    _solidmodel_force_v3: set[str] = set()  # base_cdn_url values that should force v3 CSG export
-    _batch_generations: dict[str, int] = {}  # batch_id -> route generation
+    _pending: dict[
+        str, tuple[str, str]
+    ] = {}  # requestId -> (kind, value)  # ruff: ignore[mutable-class-default]
+    _cdn_redirects: dict[
+        str, str
+    ] = {}  # base_cdn_url -> redirect_url  # ruff: ignore[mutable-class-default]
+    _local_redirects: dict[
+        str, str
+    ] = {}  # base_cdn_url -> local_path  # ruff: ignore[mutable-class-default]
+    _solidmodel_injections: dict[
+        str, str
+    ] = {}  # base_cdn_url -> obj_path  # ruff: ignore[mutable-class-default]
+    _solidmodel_force_v3: set[str] = set()  # ruff: ignore[mutable-class-default]  # base_cdn_url values that should force v3 CSG export
+    _batch_generations: dict[
+        str, int
+    ] = {}  # batch_id -> route generation  # ruff: ignore[mutable-class-default]
     _routes_generation: int = 0
     # ─────────────────────────────────────────────────────────────────────
 
-    ASSET_TYPES: dict[int, str] = {
+    ASSET_TYPES: dict[int, str] = {  # ruff: ignore[mutable-class-default]
         1: 'Image',
         2: 'TShirt',
         3: 'Audio',
@@ -681,7 +704,7 @@ class TextureStripper:
         79: 'DynamicHead',
         80: 'CodeSnippet',
     }
-    _REVERSE: dict[str, int] = {name.lower(): tid for tid, name in ASSET_TYPES.items()}
+    _REVERSE: dict[str, int] = {name.lower(): tid for tid, name in ASSET_TYPES.items()}  # ruff: ignore[mutable-class-default]
 
     def __init__(self, config_manager: ConfigManager) -> None:
         self.config_manager = config_manager
@@ -763,11 +786,11 @@ class TextureStripper:
 
     # Pre-downloaded private replacement assets: replacement_id -> local file path.
     # Populated eagerly at proxy startup by precheck_replacements().
-    _predownloaded: dict[int, str] = {}
+    _predownloaded: dict[int, str] = {}  # ruff: ignore[mutable-class-default]
     # IDs confirmed publicly accessible (no pre-download needed).
-    _checked_public: set[int] = set()
+    _checked_public: set[int] = set()  # ruff: ignore[mutable-class-default]
     # IDs currently being checked in a precheck thread (to avoid duplicate spawns).
-    _precheck_pending: set[int] = set()
+    _precheck_pending: set[int] = set()  # ruff: ignore[mutable-class-default]
 
     _PREDOWNLOAD_DIR: Path = APP_CACHE_DIR / 'predownloaded'
     _PRECHECK_NETWORK_RETRY_BASE_SECONDS = 120.0
@@ -779,27 +802,29 @@ class TextureStripper:
     _CONV_CACHE_DIR: Path = APP_CACHE_DIR / 'rig_converted'
 
     # Virtual rig-filter type keys -> required original rig ('R6', 'R15', 'unknown')
-    _VIRTUAL_ANIM_RIG: dict[str, str] = {
+    _VIRTUAL_ANIM_RIG: dict[str, str] = {  # ruff: ignore[mutable-class-default]
         'R6Animation': 'R6',
         'R15Animation': 'R15',
         'NonPlayerAnimation': 'unknown',
     }
 
     # rig of replacement local file, keyed by normalised path string
-    _anim_repl_rig: dict[str, str] = {}
+    _anim_repl_rig: dict[str, str] = {}  # ruff: ignore[mutable-class-default]
     # converted file path, keyed by f'{content_hash16}_{target_rig}'
-    _anim_conv_paths: dict[str, str] = {}
+    _anim_conv_paths: dict[str, str] = {}  # ruff: ignore[mutable-class-default]
     # CDN URLs for animation replacements that need upstream rig detection before serving.
     # Populated by process_batch_response; checked by check_cdn_request.
     # These do NOT short-circuit - upstream response is read to detect original rig.
     # Value: (local_path, required_rig) where required_rig is 'R6'|'R15'|'unknown'|'any'
-    _anim_rig_local: dict[str, _AnimPendingValue] = {}  # base_cdn_url -> (local_path, required_rig)
+    _anim_rig_local: dict[
+        str, _AnimPendingValue
+    ] = {}  # base_cdn_url -> (local_path, required_rig)  # ruff: ignore[mutable-class-default]
     # pending_key -> (local_path, required_rig)
-    _anim_local_pending: dict[str, _AnimPendingValue] = {}
+    _anim_local_pending: dict[str, _AnimPendingValue] = {}  # ruff: ignore[mutable-class-default]
     # separate lock for rig-conversion state (avoids holding _lock during file I/O)
     _anim_lock: Lock = Lock()
 
-    def precheck_replacements(self) -> None:
+    def precheck_replacements(self) -> None:  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
         """Eagerly check all replacement asset IDs and pre-download private ones.
 
         Called in a background thread at proxy startup. For each ID-based
@@ -870,13 +895,13 @@ class TextureStripper:
             # Quick accessibility check — needs auth cookie just to use the API.
             # A 200 here means the asset is publicly downloadable (no place-ID
             # needed); the cookie is required for API auth, not ownership.
-            _data, status = _scraper_https_get_status(
+            data_, status = _scraper_https_get_status(
                 scraper,
                 'assetdelivery.roblox.com',
                 f'/v1/asset/?id={target_id}',
                 extra_headers=dict(extra) if extra else None,
             )
-            if _data:
+            if data_:
                 # 200 — publicly accessible.
                 # Only animations require a local copy for rig conversion.
                 # All other public assets use the normal ID swap.
@@ -886,13 +911,13 @@ class TextureStripper:
                 )
                 if needs_rig_conversion:
                     try:
-                        local_path.write_bytes(_data)
+                        local_path.write_bytes(data_)
                         self._predownloaded[int(target_id)] = str(local_path)
                         log_buffer.log(
                             'Replacer',
-                            f'Cached public animation {target_id} for rig conversion ({len(_data)} bytes)',
+                            f'Cached public animation {target_id} for rig conversion ({len(data_)} bytes)',  # ruff: ignore[line-too-long]
                         )
-                    except Exception:
+                    except Exception:  # ruff: ignore[blind-except]
                         self._checked_public.add(int(target_id))
                 else:
                     self._predownloaded.pop(int(target_id), None)
@@ -900,7 +925,7 @@ class TextureStripper:
                 public_count += 1
                 continue
 
-            if status == 404:
+            if status == 404:  # ruff: ignore[magic-value-comparison]
                 log_buffer.log(
                     'Replacer',
                     f'Replacement asset {target_id} not found (404) — skipping',
@@ -912,7 +937,7 @@ class TextureStripper:
                     )
                 continue
 
-            if status != 403:
+            if status != 403:  # ruff: ignore[magic-value-comparison]
                 log_buffer.log(
                     'Replacer',
                     f'Replacement asset {target_id} returned status {status} — skipping',
@@ -954,7 +979,7 @@ class TextureStripper:
                         'Replacer',
                         f'Pre-downloaded private asset {target_id} ({len(data)} bytes)',
                     )
-                except Exception as exc:
+                except Exception as exc:  # ruff: ignore[blind-except]
                     log_buffer.log(
                         'Replacer',
                         f'Failed to save pre-download for {target_id}: {exc}',
@@ -1001,7 +1026,7 @@ class TextureStripper:
             )
         log_buffer.log(
             'Replacer',
-            f'Pre-check complete: {public_count} public, {private_count} private (pre-downloaded), {failed_count} failed',
+            f'Pre-check complete: {public_count} public, {private_count} private (pre-downloaded), {failed_count} failed',  # ruff: ignore[line-too-long]
         )
 
     def _precheck_texpack_layouts(self, replacements_tuple: ReplacementMaps) -> None:
@@ -1014,7 +1039,7 @@ class TextureStripper:
         replacements = {
             key: value
             for key, value in replacements.items()
-            if self._normalize_asset_id(value) not in (0, 1)
+            if self._normalize_asset_id(value) not in (0, 1)  # ruff: ignore[literal-membership]
         }
         parent_ids: set[int] = set()
         for key in (
@@ -1028,13 +1053,13 @@ class TextureStripper:
             parent_raw, global_index_raw = key.split(':', 1)
             if not parent_raw.isdigit() or not global_index_raw.isdigit():
                 continue
-            if int(global_index_raw) >= 2:
+            if int(global_index_raw) >= 2:  # ruff: ignore[magic-value-comparison]
                 parent_ids.add(int(parent_raw))
 
         for parent_id in sorted(parent_ids):
             log_buffer.log(
                 'TexPackTrace',
-                f'Precheck: fetching TexturePack XML layout for pack {parent_id} because a slot >=2 rule exists',
+                f'Precheck: fetching TexturePack XML layout for pack {parent_id} because a slot >=2 rule exists',  # ruff: ignore[line-too-long]
             )
             scraper.prefetch_texpack_layout(parent_id)
 
@@ -1045,7 +1070,7 @@ class TextureStripper:
         scraper = self._cache_scraper
         if scraper is None:
             return False
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
             cookie = _scraper_get_roblosecurity(scraper)
             extra = {'Cookie': f'.ROBLOSECURITY={cookie};'} if cookie else {}
             data = _scraper_https_get(
@@ -1055,11 +1080,11 @@ class TextureStripper:
                 extra_headers=extra or None,
             )
             if data:
-                import json as _json
+                import json as _json  # ruff: ignore[import-outside-top-level]
 
                 info = _json.loads(data)
                 return int(info.get('AssetTypeId', -1)) in self._ANIM_TYPE_IDS
-        except Exception:
+        except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass
         return False
 
@@ -1067,10 +1092,10 @@ class TextureStripper:
         """Return True if this local-replacement key targets an animation asset."""
         # All animation-related string keys: virtual rig-filter types + every
         # named animation asset type from ASSET_TYPES
-        _ANIM_STR_KEYS = frozenset(
+        ANIM_STR_KEYS = frozenset(  # ruff: ignore[non-lowercase-variable-in-function]
             name for tid, name in self.ASSET_TYPES.items() if tid in self._ANIM_TYPE_IDS
         ) | frozenset(self._VIRTUAL_ANIM_RIG)
-        if isinstance(key, str) and key in _ANIM_STR_KEYS:
+        if isinstance(key, str) and key in ANIM_STR_KEYS:
             return True
         # TexturePack slot keys (e.g. "12345:2") are never animations
         if isinstance(key, str) and ':' in key:
@@ -1082,37 +1107,39 @@ class TextureStripper:
             return False
         return self._is_anim_asset_id(aid)
 
-    def precheck_anim_rigs(self) -> None:
-        from ...utils.anim_converter import detect_rig
+    def precheck_anim_rigs(self) -> None:  # ruff: ignore[complex-structure, too-many-branches, too-many-statements]
+        from fleasion.utils.anim_converter import (  # ruff: ignore[import-outside-top-level]
+            detect_rig,
+        )
 
-        try:
+        try:  # ruff: ignore[suppressible-exception]
             self._CONV_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        except Exception:
+        except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass
 
         replacements_tuple = self.config_manager.get_all_replacements()
         _, _, _, local_replacements = replacements_tuple
 
-        _ANIM_EXTS = {'.rbxm', '.rbxmx'}
+        ANIM_EXTS = {'.rbxm', '.rbxmx'}  # ruff: ignore[non-lowercase-variable-in-function]
 
         # Collect local paths that are definitely animation replacements.
         # Check: animation key/type, .rbxm/.rbxmx extension, or asset type via API.
         paths_to_process: list[str] = []
 
         for key, local_path in local_replacements.items():
-            local_path = str(local_path)
+            local_path = str(local_path)  # ruff: ignore[redefined-loop-name]
             if local_path in paths_to_process:
                 continue
-            if Path(local_path).suffix.lower() in _ANIM_EXTS or self._is_anim_replacement_key(key):
+            if Path(local_path).suffix.lower() in ANIM_EXTS or self._is_anim_replacement_key(key):
                 paths_to_process.append(local_path)
 
         # Predownloaded ID-to-ID replacements: check replacement asset ID via API,
         # then fall back to extension and magic-byte sniffing.
         for repl_id, local_path in self._predownloaded.items():
-            local_path = str(local_path)
+            local_path = str(local_path)  # ruff: ignore[redefined-loop-name]
             if local_path in paths_to_process:
                 continue
-            if Path(local_path).suffix.lower() in _ANIM_EXTS:
+            if Path(local_path).suffix.lower() in ANIM_EXTS:
                 paths_to_process.append(local_path)
                 continue
             # Check the replacement asset ID itself via economy API
@@ -1132,7 +1159,7 @@ class TextureStripper:
                     or b'CurveAnimation' in head
                 ):
                     paths_to_process.append(local_path)
-            except Exception:
+            except Exception:  # ruff: ignore[blind-except, try-except-pass]
                 pass
 
         converted = 0
@@ -1142,7 +1169,7 @@ class TextureStripper:
                 continue
             try:
                 data = strip_roblox_metadata(p, p.read_bytes())
-            except Exception:
+            except Exception:  # ruff: ignore[blind-except, try-except-continue]
                 continue
 
             # Only process animation files
@@ -1170,11 +1197,15 @@ class TextureStripper:
             f'Pre-conversion complete: {format_count(converted, "animation")} processed',
         )
 
-    def _get_or_create_converted(
+    def _get_or_create_converted(  # ruff: ignore[complex-structure, too-many-branches, too-many-statements]
         self, local_path: str, target_rig: str, data: bytes | None = None
     ) -> str | None:
         """Return path to a rig-converted copy of local_path, creating it if needed."""
-        import xml.etree.ElementTree as ET
+        import xml.etree.ElementTree as ET  # ruff: ignore[import-outside-top-level]
+
+        from defusedxml import (  # ruff: ignore[import-outside-top-level]
+            ElementTree as safe_et,  # ruff: ignore[camelcase-imported-as-lowercase]
+        )
 
         p = Path(local_path)
         if not p.exists():
@@ -1184,7 +1215,7 @@ class TextureStripper:
             if data is None:
                 data = strip_roblox_metadata(p, p.read_bytes())
             content_key = hashlib.sha256(data).hexdigest()[:16]
-        except Exception:
+        except Exception:  # ruff: ignore[blind-except]
             return None
 
         cache_key = f'{content_key}_{target_rig}'
@@ -1202,20 +1233,24 @@ class TextureStripper:
                 self._anim_conv_paths[cache_key] = str(out_path)
             return str(out_path)
 
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
             self._CONV_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
             # Convert binary .rbxm to XML if needed
-            from ...utils.anim_converter import rbxm_to_rbxmx
+            from fleasion.utils.anim_converter import (  # ruff: ignore[import-outside-top-level]
+                rbxm_to_rbxmx,
+            )
 
-            if data[:8] == b'<roblox!':
+            if data[:8] == b'<roblox!':  # ruff: ignore[if-else-block-instead-of-if-exp]
                 xml_data = rbxm_to_rbxmx(data)
             else:
                 xml_data = data
 
             # If it's a CurveAnimation, convert to KeyframeSequence first
             if b'CurveAnimation' in xml_data:
-                from ...utils.r15_to_r6 import curve_anim_to_keyframe_xml
+                from fleasion.utils.r15_to_r6 import (  # ruff: ignore[import-outside-top-level]
+                    curve_anim_to_keyframe_xml,
+                )
 
                 xml_data = curve_anim_to_keyframe_xml(xml_data)
 
@@ -1238,24 +1273,33 @@ class TextureStripper:
                     r15_joints: object,
                 ) -> None: ...
 
-                from ...utils.r15_to_r6 import sanitize_xml
+                from fleasion.utils.r15_to_r6 import (  # ruff: ignore[import-outside-top-level]
+                    sanitize_xml,
+                )
             else:
-                from ...utils.r15_to_r6 import (
+                from fleasion.utils.r15_to_r6 import (  # ruff: ignore[import-outside-top-level]
                     convert_keyframe_r6_to_r15,
                     convert_keyframe_r15_to_r6,
                     sanitize_xml,
                 )
-            from ...utils.rig_data import R6_JOINTS, R6_PARTS, R15_JOINTS, R15_PARTS
+            from fleasion.utils.rig_data import (  # ruff: ignore[import-outside-top-level]
+                R6_JOINTS,
+                R6_PARTS,
+                R15_JOINTS,
+                R15_PARTS,
+            )
 
-            root = ET.fromstring(sanitize_xml(xml_data))
+            root = safe_et.fromstring(sanitize_xml(xml_data))
             etree = ET.ElementTree(root)
 
             ks = root.find("Item[@class='KeyframeSequence']")
             if ks is None:
-                raise ValueError('No KeyframeSequence found')
+                msg = 'No KeyframeSequence found'
+                raise ValueError(msg)  # ruff: ignore[raise-within-try]
             keyframes = ks.findall("Item[@class='Keyframe']")
             if not keyframes:
-                raise ValueError('No Keyframes found')
+                msg = 'No Keyframes found'
+                raise ValueError(msg)  # ruff: ignore[raise-within-try]
 
             if target_rig == 'R6':
                 for kf in keyframes:
@@ -1269,11 +1313,11 @@ class TextureStripper:
                 self._anim_conv_paths[cache_key] = str(out_path)
             log_buffer.log('AnimConv', f'Created {target_rig} version: {out_path.name}')
             return str(out_path)
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log('AnimConv', f'Conversion failed for {p.name} -> {target_rig}: {exc}')
             return None
 
-    def _get_or_create_converted_curve(
+    def _get_or_create_converted_curve(  # ruff: ignore[complex-structure, too-many-branches, too-many-statements]
         self, local_path: str, target_rig: str, data: bytes | None = None
     ) -> str | None:
         """Return path to a rig-converted CurveAnimation copy of local_path, creating it if needed.
@@ -1289,7 +1333,7 @@ class TextureStripper:
             if data is None:
                 data = strip_roblox_metadata(p, p.read_bytes())
             content_key = hashlib.sha256(data).hexdigest()[:16]
-        except Exception:
+        except Exception:  # ruff: ignore[blind-except]
             return None
 
         cache_key = f'{content_key}_{target_rig}_curve'
@@ -1306,22 +1350,31 @@ class TextureStripper:
                 self._anim_conv_paths[cache_key] = str(out_path)
             return str(out_path)
 
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
             self._CONV_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
             # Step 1: Convert binary .rbxm -> XML if needed
-            from ...utils.anim_converter import detect_rig, rbxm_to_rbxmx
+            from fleasion.utils.anim_converter import (  # ruff: ignore[import-outside-top-level]
+                detect_rig,
+                rbxm_to_rbxmx,
+            )
 
             xml_data = rbxm_to_rbxmx(data) if data[:10].startswith(b'<roblox!\x89\xff') else data
 
             # Step 2: Convert CurveAnimation -> KeyframeSequence if needed
             if b'CurveAnimation' in xml_data:
-                from ...utils.r15_to_r6 import curve_anim_to_keyframe_xml
+                from fleasion.utils.r15_to_r6 import (  # ruff: ignore[import-outside-top-level]
+                    curve_anim_to_keyframe_xml,
+                )
 
                 xml_data = curve_anim_to_keyframe_xml(xml_data)
 
             # Step 3: Rig-convert if source rig differs from target rig
-            import xml.etree.ElementTree as ET
+            import xml.etree.ElementTree as ET  # ruff: ignore[import-outside-top-level]
+
+            from defusedxml import (  # ruff: ignore[import-outside-top-level]
+                ElementTree as safe_et,  # ruff: ignore[camelcase-imported-as-lowercase]
+            )
 
             if TYPE_CHECKING:
 
@@ -1341,24 +1394,33 @@ class TextureStripper:
                     r15_joints: object,
                 ) -> None: ...
 
-                from ...utils.r15_to_r6 import sanitize_xml
+                from fleasion.utils.r15_to_r6 import (  # ruff: ignore[import-outside-top-level]
+                    sanitize_xml,
+                )
             else:
-                from ...utils.r15_to_r6 import (
+                from fleasion.utils.r15_to_r6 import (  # ruff: ignore[import-outside-top-level]
                     convert_keyframe_r6_to_r15,
                     convert_keyframe_r15_to_r6,
                     sanitize_xml,
                 )
-            from ...utils.rig_data import R6_JOINTS, R6_PARTS, R15_JOINTS, R15_PARTS
+            from fleasion.utils.rig_data import (  # ruff: ignore[import-outside-top-level]
+                R6_JOINTS,
+                R6_PARTS,
+                R15_JOINTS,
+                R15_PARTS,
+            )
 
             src_rig = detect_rig(xml_data)
-            if src_rig != 'unknown' and src_rig != target_rig:
-                root = ET.fromstring(sanitize_xml(xml_data))
+            if src_rig != 'unknown' and src_rig != target_rig:  # ruff: ignore[repeated-equality-comparison]
+                root = safe_et.fromstring(sanitize_xml(xml_data))
                 ks = root.find("Item[@class='KeyframeSequence']")
                 if ks is None:
-                    raise ValueError('No KeyframeSequence found after curve conversion')
+                    msg = 'No KeyframeSequence found after curve conversion'
+                    raise ValueError(msg)  # ruff: ignore[raise-within-try]
                 keyframes = ks.findall("Item[@class='Keyframe']")
                 if not keyframes:
-                    raise ValueError('No Keyframes found after curve conversion')
+                    msg = 'No Keyframes found after curve conversion'
+                    raise ValueError(msg)  # ruff: ignore[raise-within-try]
                 if target_rig == 'R6':
                     for kf in keyframes:
                         convert_keyframe_r15_to_r6(kf, R6_PARTS, R6_JOINTS, R15_PARTS, R15_JOINTS)
@@ -1370,7 +1432,9 @@ class TextureStripper:
                 xml_data = buf.getvalue()
 
             # Step 4: Convert KeyframeSequence -> CurveAnimation
-            from ...utils.r15_to_r6 import keyframe_to_curve_anim
+            from fleasion.utils.r15_to_r6 import (  # ruff: ignore[import-outside-top-level]
+                keyframe_to_curve_anim,
+            )
 
             curve_data = keyframe_to_curve_anim(xml_data)
 
@@ -1382,7 +1446,7 @@ class TextureStripper:
                 f'Created {target_rig} CurveAnimation version: {out_path.name}',
             )
             return str(out_path)
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log(
                 'AnimConv',
                 f'CurveAnim conversion failed for {p.name} -> {target_rig}: {exc}',
@@ -1395,11 +1459,13 @@ class TextureStripper:
             if local_path in self._anim_repl_rig:
                 return self._anim_repl_rig[local_path]
         try:
-            from ...utils.anim_converter import detect_rig
+            from fleasion.utils.anim_converter import (  # ruff: ignore[import-outside-top-level]
+                detect_rig,
+            )
 
             path = Path(local_path)
             rig = detect_rig(strip_roblox_metadata(path, path.read_bytes()))
-        except Exception:
+        except Exception:  # ruff: ignore[blind-except]
             rig = 'unknown'
         with self._anim_lock:
             self._anim_repl_rig[local_path] = rig
@@ -1418,10 +1484,10 @@ class TextureStripper:
     # Batch request (called from server MITM thread)
     # ------------------------------------------------------------------
 
-    def process_batch_request(
+    def process_batch_request(  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
         self,
         body: bytes,
-        req_headers: dict[str, str],
+        req_headers: dict[str, str],  # ruff: ignore[unused-method-argument]
         replacements_tuple: ReplacementMaps,
         batch_id: str = '',
     ) -> tuple[bytes, bytes] | bytes:
@@ -1435,7 +1501,7 @@ class TextureStripper:
             return body, body
         try:
             data = _loads(body)
-        except Exception:
+        except Exception:  # ruff: ignore[blind-except]
             return body
         if not isinstance(data, list):
             return body
@@ -1450,7 +1516,7 @@ class TextureStripper:
         replacements = {
             key: value
             for key, value in replacements.items()
-            if self._normalize_asset_id(value) not in (0, 1)
+            if self._normalize_asset_id(value) not in (0, 1)  # ruff: ignore[literal-membership]
         }
         # Move pre-downloaded private replacements into local_replacements so
         # they follow the exact same code path as user-configured local files
@@ -1533,7 +1599,7 @@ class TextureStripper:
 
         # Convert TexturePack slot removals to blank-placeholder local routes.
         # Dropping a slot from the batch breaks the entire TexturePack in Roblox;
-        # serving a 1×1 blank KTX2 keeps the pack intact for the other slots.
+        # serving a 1×1 blank KTX2 keeps the pack intact for the other slots.  # ruff: ignore[ambiguous-unicode-character-comment]
         # Matches "parentId:mapIndex" and wildcard "TexturePack:N" removal keys.
         synthetic_slot_removals: set[int | str] = set()
         if removals:
@@ -1560,22 +1626,22 @@ class TextureStripper:
                             synthetic_slot_removals.add(r)
                     log_buffer.log(
                         'TexPack',
-                        f'Routing {format_count(tp_slot_removals, "slot removal")} to blank placeholder',
+                        f'Routing {format_count(tp_slot_removals, "slot removal")} to blank placeholder',  # ruff: ignore[line-too-long]
                     )
 
-        _slot_target_ids: set[int] = set()
-        _all_texpack_rule_keys = (
+        slot_target_ids: set[int] = set()
+        all_texpack_rule_keys = (
             set(replacements.keys())
             | set(cdn_replacements.keys())
             | set(local_replacements.keys())
             | set(removals)
         )
-        for _key in _all_texpack_rule_keys:
-            if isinstance(_key, str) and ':' in _key:
-                _pk = _key.split(':', 1)[0]
-                if _pk.isdigit():
-                    _slot_target_ids.add(int(_pk))
-        _texpack_request_slots = self._build_texpack_request_slot_map(data, _slot_target_ids)
+        for key in all_texpack_rule_keys:
+            if isinstance(key, str) and ':' in key:
+                pk = key.split(':', 1)[0]
+                if pk.isdigit():
+                    slot_target_ids.add(int(pk))
+        texpack_request_slots = self._build_texpack_request_slot_map(data, slot_target_ids)
 
         orig_len = len(data)
         filtered_data: _JsonList = []
@@ -1583,7 +1649,7 @@ class TextureStripper:
         for old_idx, e in enumerate(data):
             if not isinstance(e, dict):
                 continue
-            map_index = _texpack_request_slots.get(old_idx)
+            map_index = texpack_request_slots.get(old_idx)
             aid = self._normalize_asset_id(e.get('assetId'))
             slot_key = f'{aid}:{map_index}' if (aid is not None and map_index is not None) else None
             wildcard_key = f'TexturePack:{map_index}' if map_index is not None else None
@@ -1594,7 +1660,7 @@ class TextureStripper:
                 + self._get_type_keys(e)
             )
             if self._is_anim_entry(e):
-                replacement_keys += [k for k in self._VIRTUAL_ANIM_RIG]
+                replacement_keys += [k for k in self._VIRTUAL_ANIM_RIG]  # ruff: ignore[unnecessary-comprehension]
             has_replacement = any(
                 key in source
                 and not (source is local_replacements and key in synthetic_slot_removals)
@@ -1605,10 +1671,10 @@ class TextureStripper:
                 continue
             new_idx = len(filtered_data)
             filtered_data.append(e)
-            if old_idx in _texpack_request_slots:
-                filtered_slots[new_idx] = _texpack_request_slots[old_idx]
+            if old_idx in texpack_request_slots:
+                filtered_slots[new_idx] = texpack_request_slots[old_idx]
         data = filtered_data
-        _texpack_request_slots = filtered_slots
+        texpack_request_slots = filtered_slots
         if len(data) < orig_len:
             log_buffer.log('Remover', f'Removed {format_count(orig_len - len(data), "asset")}')
             modified = True
@@ -1620,70 +1686,70 @@ class TextureStripper:
         # All route through the ORM compositor targeting Roblox fidelity slot 2
         # (the combined ORM CDN request).  The mapping is GLOBAL and FIXED —
         # it does NOT depend on the per-asset XML tag ordering.
-        _GLOBAL_INDEX_CHANNEL = {
+        GLOBAL_INDEX_CHANNEL = {  # ruff: ignore[non-lowercase-variable-in-function]
             2: 'metalness',
             3: 'roughness',
             4: 'emissive',
             5: 'height',
         }
         # _orm_overrides: pack_id_or_'TexturePack' -> {channel_name: local_path}
-        _orm_overrides: dict[int | str, dict[str, str | None]] = {}
+        orm_overrides: dict[int | str, dict[str, str | None]] = {}
         # Normal is a full physical slot (GI1), but ORM roughness mip generation
         # needs its vectors as an input when the same TexturePack overrides it.
-        _normal_overrides: dict[int | str, str | int | None] = {}
+        normal_overrides: dict[int | str, str | int | None] = {}
         # Seed GI1 from ID replacements, then let CDN/local replacements win on
         # the same key just like the normal routing specificity rules do.
-        for _nk, _nv in replacements.items():
-            if not isinstance(_nk, str) or ':' not in _nk:
+        for nk, nv in replacements.items():
+            if not isinstance(nk, str) or ':' not in nk:
                 continue
-            _npk, _ngi = _nk.split(':', 1)
-            if _ngi != '1' or self._normalize_asset_id(_nv) in (0, 1):
+            npk, ngi = nk.split(':', 1)
+            if ngi != '1' or self._normalize_asset_id(nv) in (0, 1):  # ruff: ignore[literal-membership]
                 continue
-            _normal_overrides[int(_npk) if _npk.isdigit() else _npk] = _nv
+            normal_overrides[int(npk) if npk.isdigit() else npk] = nv
         # Scan both cdn_replacements and local_replacements. Local replacements
         # are processed last so they win on key collisions.
-        _vs2_sources: dict[_ReplacementKey, str] = {**cdn_replacements, **local_replacements}
-        for _ck, _cv in _vs2_sources.items():
-            if not isinstance(_ck, str) or ':' not in _ck:
+        vs2_sources: dict[_ReplacementKey, str] = {**cdn_replacements, **local_replacements}
+        for ck, cv in vs2_sources.items():
+            if not isinstance(ck, str) or ':' not in ck:
                 continue
-            _pk, _gi_str = _ck.split(':', 1)
-            if not _gi_str.isdigit():
+            pk, gi_str = ck.split(':', 1)
+            if not gi_str.isdigit():
                 continue
-            _gi = int(_gi_str)
-            _pk_key: int | str = int(_pk) if _pk.isdigit() else _pk
-            if _gi == 1:
-                _normal_overrides[_pk_key] = _cv
+            gi = int(gi_str)
+            pk_key: int | str = int(pk) if pk.isdigit() else pk
+            if gi == 1:
+                normal_overrides[pk_key] = cv
                 continue
-            if _gi < 2:
+            if gi < 2:  # ruff: ignore[magic-value-comparison]
                 continue  # GI0 is the Color full-slot route.
-            _ch = _GLOBAL_INDEX_CHANNEL.get(_gi)
-            if not _ch:
+            ch = GLOBAL_INDEX_CHANNEL.get(gi)
+            if not ch:
                 continue
             # KTX2/KTX paths (e.g. blank placeholder) are not valid scalar PNG
             # sources; treat them as None = zero out the requested ORM channel.
-            cv_value = _preserve_optional_str(_cv)
-            _cv_resolved: str | None = (
+            cv_value = _preserve_optional_str(cv)
+            cv_resolved: str | None = (
                 None
                 if (cv_value is not None and cv_value.lower().endswith(('.ktx2', '.ktx')))
                 else cv_value
             )
-            _orm_overrides.setdefault(_pk_key, {})[_ch] = _cv_resolved
-        for idx, e in enumerate(data):
+            orm_overrides.setdefault(pk_key, {})[ch] = cv_resolved
+        for idx, e in enumerate(data):  # ruff: ignore[too-many-nested-blocks]
             if not isinstance(e, dict):
                 continue
             aid_raw = e.get('assetId')
             aid = self._normalize_asset_id(aid_raw)
             req_id = e.get('requestId')
             type_keys = self._get_type_keys(e)
-            is_solidmodel = (e.get('assetTypeId') == 39) or (
-                self._REVERSE.get(str(e.get('assetType', '')).lower()) == 39
+            is_solidmodel = (e.get('assetTypeId') == 39) or (  # ruff: ignore[magic-value-comparison]
+                self._REVERSE.get(str(e.get('assetType', '')).lower()) == 39  # ruff: ignore[magic-value-comparison]
             )
 
             # Build slot key from request metadata first. The fidelity field can
             # collapse distinct TexturePack CDN entries to slot 0.
             # slot_key = "assetId:mapIndex" (e.g. "7547298786:1" for the normal-map slot).
             # wildcard_key = "TexturePack:N" matches the N-th slot of ANY TexturePack.
-            map_index = _texpack_request_slots.get(idx)
+            map_index = texpack_request_slots.get(idx)
             slot_key = f'{aid}:{map_index}' if (aid is not None and map_index is not None) else None
             wildcard_key = f'TexturePack:{map_index}' if map_index is not None else None
 
@@ -1730,7 +1796,7 @@ class TextureStripper:
                 # Roblox resolves every map from the replacement pack.  Treating
                 # a whole pack as an image downloads its XML and serves that XML
                 # for every slot, effectively removing all textures.
-                is_texpack_slot_match = matched in (slot_key, wildcard_key)
+                is_texpack_slot_match = matched in (slot_key, wildcard_key)  # ruff: ignore[literal-membership]
 
                 if is_texpack_slot_match and req_id and aid and str(replacement_id).isdigit():
                     scraper = self._cache_scraper
@@ -1761,7 +1827,7 @@ class TextureStripper:
                                 local_tgt = str(dl_path)
 
                         if local_tgt is not None:
-                            # Instead of pushing the ID to Roblox, we route it as a local file, prompting conversion
+                            # Instead of pushing the ID to Roblox, we route it as a local file, prompting conversion  # ruff: ignore[line-too-long]
                             self._route_local(
                                 f'{batch_id}_{req_id}',
                                 aid,
@@ -1787,30 +1853,30 @@ class TextureStripper:
                 # are configured via VSN keys (N≥2), composite them into one texture.
                 # This check runs BEFORE normal local_key routing so that e.g.
                 # "packId:2 → metalness.png" is composited rather than served raw.
-                if map_index == 2 and _orm_overrides:
-                    _orm_chs: dict[str, str | None] = {}
+                if map_index == 2 and orm_overrides:  # ruff: ignore[magic-value-comparison]
+                    orm_chs: dict[str, str | None] = {}
                     # Wildcard always lowest priority
-                    _orm_chs.update(_orm_overrides.get('TexturePack', {}))
+                    orm_chs.update(orm_overrides.get('TexturePack', {}))
                     # Pack-specific overrides win
-                    if aid in _orm_overrides:
-                        _orm_chs.update(_orm_overrides[aid])
-                    if _orm_chs:
-                        _normal_source = _normal_overrides.get('TexturePack')
-                        if aid in _normal_overrides:
-                            _normal_source = _normal_overrides[aid]
-                        _comp = self._build_orm_composite(
+                    if aid in orm_overrides:
+                        orm_chs.update(orm_overrides[aid])
+                    if orm_chs:
+                        normal_source = normal_overrides.get('TexturePack')
+                        if aid in normal_overrides:
+                            normal_source = normal_overrides[aid]
+                        comp = self._build_orm_composite(
                             aid,
-                            _orm_chs,
-                            normal_source=_normal_source,
+                            orm_chs,
+                            normal_source=normal_source,
                         )
-                        if _comp:
+                        if comp:
                             self._route_local(
                                 f'{batch_id}_{req_id}',
                                 aid,
-                                _comp,
+                                comp,
                                 is_solidmodel,
                                 is_texpack=True,
-                                source_key=f'ORM[{", ".join(sorted(_orm_chs))}]',
+                                source_key=f'ORM[{", ".join(sorted(orm_chs))}]',
                                 map_index=map_index,
                             )
                             modified = True
@@ -1824,7 +1890,7 @@ class TextureStripper:
                 all_keys = list(winning_keys)
                 # For animation entries, also check virtual rig-filter keys as fallback
                 if self._is_anim_entry(e):
-                    all_keys = all_keys + [k for k in self._VIRTUAL_ANIM_RIG]
+                    all_keys = all_keys + [k for k in self._VIRTUAL_ANIM_RIG]  # ruff: ignore[non-augmented-assignment, unnecessary-comprehension]
 
                 cdn_key = winning_cdn_key
                 # Prefer real local replacements over blank routes synthesized
@@ -1846,14 +1912,14 @@ class TextureStripper:
                     # Check if this replacement specifically targets a TexturePack slot or type
                     is_texpack = (
                         (':' in str(local_key))
-                        or (e.get('assetTypeId') == 63)
-                        or (self._REVERSE.get(str(e.get('assetType', '')).lower()) == 63)
+                        or (e.get('assetTypeId') == 63)  # ruff: ignore[magic-value-comparison]
+                        or (self._REVERSE.get(str(e.get('assetType', '')).lower()) == 63)  # ruff: ignore[magic-value-comparison]
                     )
-                    _repl_local_path = local_replacements[local_key]
+                    repl_local_path = local_replacements[local_key]
                     self._route_local(
                         f'{batch_id}_{req_id}',
                         aid,
-                        _repl_local_path,
+                        repl_local_path,
                         is_solidmodel,
                         is_texpack,
                         source_key=local_key,
@@ -1865,25 +1931,23 @@ class TextureStripper:
                         if str(local_key) in self._VIRTUAL_ANIM_RIG:
                             # Collect all virtual keys in local_replacements pointing to the
                             # same file — user may have "R6Animation, R15Animation" in one rule.
-                            _covered = frozenset(
+                            covered = frozenset(
                                 self._VIRTUAL_ANIM_RIG[vk]
                                 for vk in self._VIRTUAL_ANIM_RIG
-                                if local_replacements.get(vk) == _repl_local_path
+                                if local_replacements.get(vk) == repl_local_path
                             )
-                            _required_rig = (
-                                'any' if _covered >= {'R6', 'R15', 'unknown'} else _covered
-                            )
+                            required_rig = 'any' if covered >= {'R6', 'R15', 'unknown'} else covered
                         else:
-                            _required_rig = 'any'
+                            required_rig = 'any'
                         self._queue_anim_pending(
                             f'{batch_id}_{req_id}',
-                            (str(_repl_local_path), _required_rig),
+                            (str(repl_local_path), required_rig),
                         )
                 elif cdn_key is not None:
                     is_texpack_cdn = (
                         (':' in str(cdn_key))
-                        or (e.get('assetTypeId') == 63)
-                        or (self._REVERSE.get(str(e.get('assetType', '')).lower()) == 63)
+                        or (e.get('assetTypeId') == 63)  # ruff: ignore[magic-value-comparison]
+                        or (self._REVERSE.get(str(e.get('assetType', '')).lower()) == 63)  # ruff: ignore[magic-value-comparison]
                     )
                     self._route_cdn(
                         f'{batch_id}_{req_id}',
@@ -1912,11 +1976,11 @@ class TextureStripper:
     # Batch response (called from server MITM thread)
     # ------------------------------------------------------------------
 
-    def process_batch_response(
+    def process_batch_response(  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
         self,
         req_body: bytes,
         resp_body: bytes,
-        req_headers: dict[str, str],
+        req_headers: dict[str, str],  # ruff: ignore[unused-method-argument]
         batch_id: str = '',
     ) -> None:
         """Commit CDN URL -> redirect/local/solid mappings from batch response."""
@@ -1924,7 +1988,7 @@ class TextureStripper:
             return
         try:
             resp_data = _loads(resp_body)
-        except Exception:
+        except Exception:  # ruff: ignore[blind-except]
             return
         if not isinstance(resp_data, list):
             return
@@ -1936,7 +2000,7 @@ class TextureStripper:
         req_data: _JsonList = []
         req_ids_by_index: list[str] = []
         if req_body:
-            try:
+            try:  # ruff: ignore[too-many-statements-in-try-clause]
                 loaded_req_data = _loads(req_body)
                 if isinstance(loaded_req_data, list):
                     req_data = loaded_req_data
@@ -1945,7 +2009,7 @@ class TextureStripper:
                             req_ids_by_index.append(str(request_entry.get('requestId', '')))
                         else:
                             req_ids_by_index.append('')
-            except Exception:
+            except Exception:  # ruff: ignore[blind-except]
                 req_data = []
                 req_ids_by_index = []
 
@@ -1953,53 +2017,53 @@ class TextureStripper:
         replacements, _, cdn_replacements, local_replacements = (
             self.config_manager.get_all_replacements()
         )
-        _GLOBAL_INDEX_CHANNEL = {
+        GLOBAL_INDEX_CHANNEL = {  # ruff: ignore[non-lowercase-variable-in-function]
             2: 'metalness',
             3: 'roughness',
             4: 'emissive',
             5: 'height',
         }
-        _orm_overrides: dict[int | str, dict[str, str | None]] = {}
-        _normal_overrides: dict[int | str, str | int | None] = {}
-        for _nk, _nv in replacements.items():
-            if not isinstance(_nk, str) or ':' not in _nk:
+        orm_overrides: dict[int | str, dict[str, str | None]] = {}
+        normal_overrides: dict[int | str, str | int | None] = {}
+        for nk, nv in replacements.items():
+            if not isinstance(nk, str) or ':' not in nk:
                 continue
-            _npk, _ngi = _nk.split(':', 1)
-            if _ngi != '1' or self._normalize_asset_id(_nv) in (0, 1):
+            npk, ngi = nk.split(':', 1)
+            if ngi != '1' or self._normalize_asset_id(nv) in (0, 1):  # ruff: ignore[literal-membership]
                 continue
-            _normal_overrides[int(_npk) if _npk.isdigit() else _npk] = _nv
-        for _ck, _cv in {**cdn_replacements, **local_replacements}.items():
-            if not isinstance(_ck, str) or ':' not in _ck:
+            normal_overrides[int(npk) if npk.isdigit() else npk] = nv
+        for ck, cv in {**cdn_replacements, **local_replacements}.items():
+            if not isinstance(ck, str) or ':' not in ck:
                 continue
-            _pk, _gi_str = _ck.split(':', 1)
-            if not _gi_str.isdigit():
+            pk, gi_str = ck.split(':', 1)
+            if not gi_str.isdigit():
                 continue
-            _gi = int(_gi_str)
-            _pk_key: int | str = int(_pk) if _pk.isdigit() else _pk
-            if _gi == 1:
-                _normal_overrides[_pk_key] = _cv
+            gi = int(gi_str)
+            pk_key: int | str = int(pk) if pk.isdigit() else pk
+            if gi == 1:
+                normal_overrides[pk_key] = cv
                 continue
-            _ch = _GLOBAL_INDEX_CHANNEL.get(_gi)
-            if not _ch:
+            ch = GLOBAL_INDEX_CHANNEL.get(gi)
+            if not ch:
                 continue
-            cv_value = _preserve_optional_str(_cv)
-            _cv_resolved: str | None = (
+            cv_value = _preserve_optional_str(cv)
+            cv_resolved: str | None = (
                 None
                 if (cv_value is not None and str(cv_value).lower().endswith(('.ktx2', '.ktx')))
                 else cv_value
             )
-            _orm_overrides.setdefault(_pk_key, {})[_ch] = _cv_resolved
+            orm_overrides.setdefault(pk_key, {})[ch] = cv_resolved
 
-        _slot_target_ids: set[int] = set()
-        _all_texpack_route_keys = set(cdn_replacements.keys()) | set(local_replacements.keys())
-        for _key in _all_texpack_route_keys:
-            if isinstance(_key, str) and ':' in _key:
-                _pk = _key.split(':', 1)[0]
-                if _pk.isdigit():
-                    _slot_target_ids.add(int(_pk))
-        _texpack_request_slots = self._build_texpack_request_slot_map(req_data, _slot_target_ids)
+        slot_target_ids: set[int] = set()
+        all_texpack_route_keys = set(cdn_replacements.keys()) | set(local_replacements.keys())
+        for key in all_texpack_route_keys:
+            if isinstance(key, str) and ':' in key:
+                pk = key.split(':', 1)[0]
+                if pk.isdigit():
+                    slot_target_ids.add(int(pk))
+        texpack_request_slots = self._build_texpack_request_slot_map(req_data, slot_target_ids)
 
-        with self._lock:
+        with self._lock:  # ruff: ignore[too-many-nested-blocks]
             batch_generation = self._batch_generations.pop(batch_id, None)
             if batch_generation is None or batch_generation != self._routes_generation:
                 return
@@ -2030,30 +2094,30 @@ class TextureStripper:
                     else {}
                 )
                 aid = self._normalize_asset_id(req_item.get('assetId'))
-                map_index = _texpack_request_slots.get(idx)
+                map_index = texpack_request_slots.get(idx)
 
-                if location and not pending_key:
+                if location and not pending_key:  # ruff: ignore[collapsible-if]
                     if aid is not None and map_index is not None:
-                        if map_index == 2 and _orm_overrides:
-                            _orm_chs: dict[str, str | None] = {}
-                            _orm_chs.update(_orm_overrides.get('TexturePack', {}))
-                            if aid in _orm_overrides:
-                                _orm_chs.update(_orm_overrides[aid])
-                            if _orm_chs:
-                                _normal_source = _normal_overrides.get('TexturePack')
-                                if aid in _normal_overrides:
-                                    _normal_source = _normal_overrides[aid]
-                                _comp = self._build_orm_composite(
+                        if map_index == 2 and orm_overrides:  # ruff: ignore[magic-value-comparison]
+                            orm_chs: dict[str, str | None] = {}
+                            orm_chs.update(orm_overrides.get('TexturePack', {}))
+                            if aid in orm_overrides:
+                                orm_chs.update(orm_overrides[aid])
+                            if orm_chs:
+                                normal_source = normal_overrides.get('TexturePack')
+                                if aid in normal_overrides:
+                                    normal_source = normal_overrides[aid]
+                                comp = self._build_orm_composite(
                                     aid,
-                                    _orm_chs,
-                                    normal_source=_normal_source,
+                                    orm_chs,
+                                    normal_source=normal_source,
                                 )
-                                if _comp:
-                                    self._local_redirects[base_loc] = _comp
+                                if comp:
+                                    self._local_redirects[base_loc] = comp
                                     log_buffer.log(
                                         'Local',
                                         f'Will serve local for {base_loc[:60]}... '
-                                        f'(key=ORM[{", ".join(sorted(_orm_chs))}], slot={map_index}, file={Path(_comp).name})',
+                                        f'(key=ORM[{", ".join(sorted(orm_chs))}], slot={map_index}, file={Path(comp).name})',  # ruff: ignore[line-too-long]
                                     )
                                     continue
 
@@ -2062,7 +2126,7 @@ class TextureStripper:
                         # Match the request-side specificity order so an exact
                         # asset override always beats a TexturePack wildcard or
                         # type fallback during response recovery as well.
-                        all_keys = [slot_key, aid, wildcard_key] + self._get_type_keys(req_item)
+                        all_keys = [slot_key, aid, wildcard_key] + self._get_type_keys(req_item)  # ruff: ignore[collection-literal-concatenation]
                         local_key = next((k for k in all_keys if k in local_replacements), None)
                         cdn_key = next((k for k in all_keys if k in cdn_replacements), None)
                         if local_key is not None:
@@ -2074,14 +2138,14 @@ class TextureStripper:
                             log_buffer.log(
                                 'Local',
                                 f'Will serve local for {base_loc[:60]}... '
-                                f'(key={local_key}, slot={map_index}, file={Path(local_path).name})',
+                                f'(key={local_key}, slot={map_index}, file={Path(local_path).name})',  # ruff: ignore[line-too-long]
                             )
                             continue
                         if cdn_key is not None:
                             self._cdn_redirects[base_loc] = cdn_replacements[cdn_key]
                             log_buffer.log(
                                 'CDN',
-                                f'Will redirect {base_loc[:60]}... (key={cdn_key}, slot={map_index})',
+                                f'Will redirect {base_loc[:60]}... (key={cdn_key}, slot={map_index})',  # ruff: ignore[line-too-long]
                             )
                             continue
 
@@ -2096,10 +2160,10 @@ class TextureStripper:
                     # _anim_rig_local so server.py reads the upstream CDN response first
                     # to detect the original rig, rather than short-circuiting immediately.
                     with self._anim_lock:
-                        _anim_pending = self._anim_local_pending.pop(pending_key, None)
-                    if _anim_pending is not None:
-                        _anim_path, _required_rig = _anim_pending
-                        self._anim_rig_local[base_loc] = (_anim_path, _required_rig)
+                        anim_pending = self._anim_local_pending.pop(pending_key, None)
+                    if anim_pending is not None:
+                        anim_path, required_rig = anim_pending
+                        self._anim_rig_local[base_loc] = (anim_path, required_rig)
                         log_buffer.log('AnimConv', f'Queued rig-detect for {base_loc[:60]}...')
                     else:
                         self._local_redirects[base_loc] = url_value
@@ -2128,19 +2192,19 @@ class TextureStripper:
         base_url = f'https://{host}{path}'.split('?')[0]
 
         def _log_cdn_match(action: str, value: str | _AnimPendingValue) -> None:
-            try:
+            try:  # ruff: ignore[too-many-statements-in-try-clause]
                 target = value[0] if action == 'anim_rig' and isinstance(value, tuple) else value
                 p = Path(str(target))
                 exists = p.exists()
                 size = p.stat().st_size if exists else 0
                 ext = p.suffix.lower()
-                category = 'TexPackTrace' if ext in ('.ktx', '.ktx2') else 'CDN'
+                category = 'TexPackTrace' if ext in ('.ktx', '.ktx2') else 'CDN'  # ruff: ignore[literal-membership]
                 log_buffer.log(
                     category,
                     f'CDN short-circuit match: action={action} url={base_url[:120]} '
                     f'target={_file_value(str(target))} exists={exists} bytes={size}',
                 )
-            except Exception as exc:
+            except Exception as exc:  # ruff: ignore[blind-except]
                 log_buffer.log('CDN', f'CDN short-circuit log failed for {base_url[:80]}: {exc}')
 
         # Check animation rig-detect entries first (separate dict, no _lock needed here
@@ -2189,7 +2253,7 @@ class TextureStripper:
         resp_body: bytes,
         obj_path_str: str,
         cdn_url: str = '',
-        prefer_v3: bool = False,
+        prefer_v3: bool = False,  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
     ) -> bytes:
         # Pop ONLY this specific CDN URL, not every URL mapped to the same obj.
         # Popping all-by-value was the root cause of the SolidModel partial-replacement
@@ -2209,8 +2273,8 @@ class TextureStripper:
         try:
             modified = _inject_obj_into_solidmodel(resp_body, obj_path, prefer_v3=prefer_v3)
             log_buffer.log('SolidModel', f'Injected OBJ ({len(modified)} bytes)')
-            return modified
-        except Exception as exc:
+            return modified  # ruff: ignore[try-consider-else]
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log('SolidModel', f'Injection failed: {exc}')
             return resp_body
 
@@ -2231,7 +2295,7 @@ class TextureStripper:
             if normalized != path:
                 log_buffer.log(
                     'TexPackTrace',
-                    f'Normalized local RGBA8 KTX2 for Roblox: input={path.name} output={normalized.name}',
+                    f'Normalized local RGBA8 KTX2 for Roblox: input={path.name} output={normalized.name}',  # ruff: ignore[line-too-long]
                 )
                 return str(normalized)
             log_buffer.log('TexPackTrace', f'Local TexturePack map already KTX: file={path.name}')
@@ -2239,8 +2303,8 @@ class TextureStripper:
         if ext == '.ktx':
             log_buffer.log('TexPackTrace', f'Local TexturePack map already KTX: file={path.name}')
             return local_path
-        try:
-            from ...cache.tools.image_to_ktx2.converter import (
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
+            from fleasion.cache.tools.image_to_ktx2.converter import (  # ruff: ignore[import-outside-top-level]
                 get_or_create_ktx2_from_image,
             )
 
@@ -2259,10 +2323,10 @@ class TextureStripper:
                 )
                 log_buffer.log(
                     'TexPackTrace',
-                    f'Converted local TexturePack map: input={path.name} output={converted_path.name}',
+                    f'Converted local TexturePack map: input={path.name} output={converted_path.name}',  # ruff: ignore[line-too-long]
                 )
                 return str(converted_path)
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log('Local', f'Failed to convert {path.name} to KTX2: {exc}')
             log_buffer.log(
                 'TexPackTrace',
@@ -2275,8 +2339,8 @@ class TextureStripper:
         path: Path, *, mipmap_mode: Literal['color', 'normal', 'linear'] = 'color'
     ) -> Path:
         """Normalize RGBA8 KTX2 while preserving authored mip chains."""
-        try:
-            from ...cache.tools.rgba_ktx2 import (
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
+            from fleasion.cache.tools.rgba_ktx2 import (  # ruff: ignore[import-outside-top-level]
                 RGBA8_KTX2_CACHE_VERSION,
                 read_rgba8_ktx2_levels,
                 write_rgba8_ktx2,
@@ -2294,7 +2358,8 @@ class TextureStripper:
                 return path
 
             digest = hashlib.md5(
-                data + RGBA8_KTX2_CACHE_VERSION + mipmap_mode.encode('ascii')
+                data + RGBA8_KTX2_CACHE_VERSION + mipmap_mode.encode('ascii'),
+                usedforsecurity=False,
             ).hexdigest()[:16]
             out_path = APP_CACHE_DIR / f'{path.stem}_rgba8_{digest}.ktx2'
             if not out_path.exists():
@@ -2305,30 +2370,30 @@ class TextureStripper:
                     out_path,
                     mipmap_mode=mipmap_mode,
                 )
-            return out_path
-        except Exception as exc:
+            return out_path  # ruff: ignore[try-consider-else]
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log(
                 'TexPackTrace',
                 f'RGBA8 KTX2 normalization skipped for {path.name}: {exc}',
             )
             return path
 
-    def _route_cdn(
+    def _route_cdn(  # ruff: ignore[complex-structure, too-many-arguments, too-many-branches, too-many-positional-arguments, too-many-return-statements]
         self,
         req_id: str,
         aid: object,
         cdn_url: str,
-        is_solidmodel: bool,
-        is_texpack: bool = False,
+        is_solidmodel: bool,  # ruff: ignore[boolean-type-hint-positional-argument]
+        is_texpack: bool = False,  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
         map_index: int | None = None,
     ) -> None:
         parsed = urlparse(str(cdn_url))
         ext = Path(parsed.path).suffix.lower()
-        url_hash = hashlib.md5(str(cdn_url).encode()).hexdigest()
+        url_hash = hashlib.md5(str(cdn_url).encode(), usedforsecurity=False).hexdigest()
         if is_texpack:
             log_buffer.log(
                 'TexPackTrace',
-                f'Queue CDN TexturePack route req={req_id} aid={aid} ext={ext or "none"} url={_short_value(cdn_url)}',
+                f'Queue CDN TexturePack route req={req_id} aid={aid} ext={ext or "none"} url={_short_value(cdn_url)}',  # ruff: ignore[line-too-long]
             )
 
         if ext == '.obj':
@@ -2381,7 +2446,7 @@ class TextureStripper:
                 # Divert back to local routing so it triggers KTX2 conversion!
                 log_buffer.log(
                     'TexPackTrace',
-                    f'Downloaded CDN TexturePack map for local conversion aid={aid} file={local_cache.name}',
+                    f'Downloaded CDN TexturePack map for local conversion aid={aid} file={local_cache.name}',  # ruff: ignore[line-too-long]
                 )
                 self._route_local(
                     req_id,
@@ -2400,13 +2465,13 @@ class TextureStripper:
         self._queue_pending(req_id, ('cdn', cdn_url))
         log_buffer.log('CDN', f'Queued CDN redirect for {aid}')
 
-    def _route_local(
+    def _route_local(  # ruff: ignore[complex-structure, too-many-arguments, too-many-branches, too-many-positional-arguments, too-many-statements]
         self,
         req_id: str,
         aid: object,
         local_path: str,
-        is_solidmodel: bool,
-        is_texpack: bool = False,
+        is_solidmodel: bool,  # ruff: ignore[boolean-type-hint-positional-argument]
+        is_texpack: bool = False,  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
         source_key: object | None = None,
         map_index: int | None = None,
     ) -> None:
@@ -2422,9 +2487,9 @@ class TextureStripper:
             )
 
         # Isolate KTX2 explicit conversion only to TexturePack image replacements
-        if is_texpack and ext != '.ktx2' and ext != '.ktx':
-            try:
-                from ...cache.tools.image_to_ktx2.converter import (
+        if is_texpack and ext != '.ktx2' and ext != '.ktx':  # ruff: ignore[repeated-equality-comparison]
+            try:  # ruff: ignore[too-many-statements-in-try-clause]
+                from fleasion.cache.tools.image_to_ktx2.converter import (  # ruff: ignore[import-outside-top-level]
                     get_or_create_ktx2_from_image,
                 )
 
@@ -2445,7 +2510,7 @@ class TextureStripper:
                         f'Local TexturePack conversion selected output={path.name} '
                         f'from={original_path.name} slot={_texpack_slot_label(map_index)}',
                     )
-            except Exception as e:
+            except Exception as e:  # ruff: ignore[blind-except]
                 log_buffer.log('Local', f'Failed to convert {path.name} to KTX2: {e}')
                 log_buffer.log(
                     'TexPackTrace',
@@ -2501,25 +2566,24 @@ class TextureStripper:
                 self._queue_pending(req_id, val)
             else:
                 self._queue_pending(req_id, ('local', local_path))
-        else:
-            if ext == '.bin':
-                # Only try conversion if it's actually a CSGMDL
-                if _is_csgmdl_bin(path):
-                    obj = _try_bin_to_obj(path, f'Mesh {aid}')
-                    if obj:
-                        self._queue_pending(req_id, ('local', str(obj)))
-                    else:
-                        _log_local_queued('Failed to convert CSGMDL; serving .bin as-is')
-                        self._queue_pending(req_id, ('local', local_path))
+        elif ext == '.bin':
+            # Only try conversion if it's actually a CSGMDL
+            if _is_csgmdl_bin(path):
+                obj = _try_bin_to_obj(path, f'Mesh {aid}')
+                if obj:
+                    self._queue_pending(req_id, ('local', str(obj)))
                 else:
-                    # Not a CSGMDL, serve as-is
-                    _log_local_queued('Queued local .bin (not CSGMDL)')
+                    _log_local_queued('Failed to convert CSGMDL; serving .bin as-is')
                     self._queue_pending(req_id, ('local', local_path))
             else:
+                # Not a CSGMDL, serve as-is
+                _log_local_queued('Queued local .bin (not CSGMDL)')
                 self._queue_pending(req_id, ('local', local_path))
-                _log_local_queued()
+        else:
+            self._queue_pending(req_id, ('local', local_path))
+            _log_local_queued()
 
-    def _build_orm_composite(
+    def _build_orm_composite(  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
         self,
         parent_id: int | str,
         channel_pngs: dict[str, str | None],
@@ -2534,31 +2598,33 @@ class TextureStripper:
         TexturePack cache is used if available so unspecified channels retain
         their CDN values.
         """
-        try:
-            from ...cache.tools.orm_compositor import composite_orm
+        try:  # ruff: ignore[too-many-nested-blocks, too-many-statements-in-try-clause]
+            from fleasion.cache.tools.orm_compositor import (  # ruff: ignore[import-outside-top-level]
+                composite_orm,
+            )
 
             # Resolve CDN URLs to local cached files before compositing.
             # On download failure the channel is omitted so the baseline KTX2
             # value shows through, as if the user never replaced that channel.
             resolved: dict[str, str | None] = {}
-            for _ch, _val in channel_pngs.items():
-                if _val is not None and (
-                    str(_val).startswith('http://') or str(_val).startswith('https://')
+            for ch, val in channel_pngs.items():
+                if val is not None and (
+                    str(val).startswith('http://') or str(val).startswith('https://')
                 ):
-                    _url_hash = hashlib.md5(_val.encode()).hexdigest()[:16]
-                    _ext = Path(urlparse(_val).path).suffix.lower() or '.png'
-                    _cdn_cache = APP_CACHE_DIR / 'orm_cdn_cache' / f'{_url_hash}{_ext}'
-                    _cdn_cache.parent.mkdir(parents=True, exist_ok=True)
-                    if not _cdn_cache.exists():
-                        if not _download_remote_file(_val, _cdn_cache, f'ORM channel {_ch}'):
+                    url_hash = hashlib.md5(val.encode(), usedforsecurity=False).hexdigest()[:16]
+                    ext = Path(urlparse(val).path).suffix.lower() or '.png'
+                    cdn_cache = APP_CACHE_DIR / 'orm_cdn_cache' / f'{url_hash}{ext}'
+                    cdn_cache.parent.mkdir(parents=True, exist_ok=True)
+                    if not cdn_cache.exists():  # ruff: ignore[collapsible-if]
+                        if not _download_remote_file(val, cdn_cache, f'ORM channel {ch}'):
                             log_buffer.log(
                                 'ORM',
-                                f'CDN download failed for channel {_ch} — using original',
+                                f'CDN download failed for channel {ch} — using original',
                             )
                             continue  # skip channel; baseline value preserved
-                    resolved[_ch] = str(_cdn_cache)
+                    resolved[ch] = str(cdn_cache)
                 else:
-                    resolved[_ch] = _val
+                    resolved[ch] = val
             resolved_normal = normal_source
             if resolved_normal is not None and (
                 isinstance(resolved_normal, int) or resolved_normal.isdigit()
@@ -2586,26 +2652,28 @@ class TextureStripper:
                     if resolved_normal is None:
                         log_buffer.log(
                             'ORM',
-                            f'Normal asset {normal_id} could not be downloaded — using captured Normal baseline',
+                            f'Normal asset {normal_id} could not be downloaded — using captured Normal baseline',  # ruff: ignore[line-too-long]
                         )
 
             if resolved_normal is not None and str(resolved_normal).startswith(
                 ('http://', 'https://')
             ):
-                _url_hash = hashlib.md5(str(resolved_normal).encode()).hexdigest()[:16]
-                _ext = Path(urlparse(str(resolved_normal)).path).suffix.lower() or '.png'
-                _normal_cache = APP_CACHE_DIR / 'orm_normal_cache' / f'{_url_hash}{_ext}'
-                _normal_cache.parent.mkdir(parents=True, exist_ok=True)
-                if not _normal_cache.exists() and not _download_remote_file(
-                    str(resolved_normal), _normal_cache, 'TexturePack Normal map'
+                url_hash = hashlib.md5(
+                    str(resolved_normal).encode(), usedforsecurity=False
+                ).hexdigest()[:16]
+                ext = Path(urlparse(str(resolved_normal)).path).suffix.lower() or '.png'
+                normal_cache = APP_CACHE_DIR / 'orm_normal_cache' / f'{url_hash}{ext}'
+                normal_cache.parent.mkdir(parents=True, exist_ok=True)
+                if not normal_cache.exists() and not _download_remote_file(
+                    str(resolved_normal), normal_cache, 'TexturePack Normal map'
                 ):
                     log_buffer.log(
                         'ORM',
                         'Normal CDN download failed — using captured Normal baseline',
                     )
                     resolved_normal = None
-                elif _normal_cache.exists():
-                    resolved_normal = str(_normal_cache)
+                elif normal_cache.exists():
+                    resolved_normal = str(normal_cache)
 
             cache_manager = getattr(getattr(self, '_cache_scraper', None), 'cache_manager', None)
             if cache_manager is not None:
@@ -2618,9 +2686,9 @@ class TextureStripper:
                 normal_baseline = APP_CACHE_DIR / 'texpack_slots' / f'{parent_id}_slot1.ktx2'
             log_buffer.log(
                 'TexPackTrace',
-                f'ORM composite input pack={parent_id} baseline={baseline.name if baseline.exists() else "missing"} '
-                f'normal={_file_value(resolved_normal) if resolved_normal else (normal_baseline.name if normal_baseline.exists() else "missing")} '
-                f'channels={", ".join(f"{ch}={_file_value(val)}" for ch, val in sorted(resolved.items()))}',
+                f'ORM composite input pack={parent_id} baseline={baseline.name if baseline.exists() else "missing"} '  # ruff: ignore[line-too-long]
+                f'normal={_file_value(resolved_normal) if resolved_normal else (normal_baseline.name if normal_baseline.exists() else "missing")} '  # ruff: ignore[line-too-long]
+                f'channels={", ".join(f"{ch}={_file_value(val)}" for ch, val in sorted(resolved.items()))}',  # ruff: ignore[line-too-long]
             )
             result = composite_orm(
                 baseline=(baseline if baseline.exists() else None),
@@ -2633,16 +2701,16 @@ class TextureStripper:
                 'TexPackTrace',
                 f'ORM composite result pack={parent_id} output={_file_value(result)}',
             )
-            return result
-        except Exception as exc:
+            return result  # ruff: ignore[try-consider-else]
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log('ORM', f'Composite failed for pack {parent_id}: {exc}')
             return None
 
-    def _build_texpack_request_slot_map(
+    def _build_texpack_request_slot_map(  # ruff: ignore[complex-structure, too-many-branches]
         self,
         data: _JsonList,
         slot_target_ids: set[int] | None = None,
-        infer_repeated_assets: bool = False,
+        infer_repeated_assets: bool = False,  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
     ) -> dict[int, int]:
         """Infer TexturePack delivery slots from the index-aligned batch request.
 
@@ -2662,8 +2730,8 @@ class TextureStripper:
                 continue
             asset_counts[aid] = asset_counts.get(aid, 0) + 1
             if (
-                item.get('assetTypeId') == 63
-                or self._REVERSE.get(str(item.get('assetType', '')).lower()) == 63
+                item.get('assetTypeId') == 63  # ruff: ignore[magic-value-comparison]
+                or self._REVERSE.get(str(item.get('assetType', '')).lower()) == 63  # ruff: ignore[magic-value-comparison]
             ):
                 texpack_ids.add(aid)
 
@@ -2700,13 +2768,13 @@ class TextureStripper:
                     slots_for_asset = build_slots.setdefault(aid, {})
                     if build_key not in slots_for_asset:
                         raw_slot = next_slot.get(aid, 0)
-                        slots_for_asset[build_key] = 2 if raw_slot >= 2 else raw_slot
+                        slots_for_asset[build_key] = 2 if raw_slot >= 2 else raw_slot  # ruff: ignore[if-expr-min-max, magic-value-comparison]
                         next_slot[aid] = raw_slot + 1
                     slot = slots_for_asset[build_key]
                 elif asset_counts.get(aid, 0) > 1:
                     raw_slot = occurrence_slot.get(aid, 0)
                     occurrence_slot[aid] = raw_slot + 1
-                    slot = 2 if raw_slot >= 2 else raw_slot
+                    slot = 2 if raw_slot >= 2 else raw_slot  # ruff: ignore[if-expr-min-max, magic-value-comparison]
                 else:
                     continue
 
@@ -2714,7 +2782,7 @@ class TextureStripper:
 
         return result
 
-    def _should_remove(
+    def _should_remove(  # ruff: ignore[too-many-return-statements]
         self, e: _JsonObject, removals: set[_ReplacementKey], map_index: int | None = None
     ) -> bool:
         aid = self._normalize_asset_id(e.get('assetId'))
@@ -2747,12 +2815,12 @@ class TextureStripper:
         TexturePack slots that the user has set to "Nothing" so the rest of
         the pack keeps loading normally.
         """
-        import struct as _struct
-        import zlib as _zl
+        import struct as _struct  # ruff: ignore[import-outside-top-level]
+        import zlib as _zl  # ruff: ignore[import-outside-top-level]
 
         png_path = APP_CACHE_DIR / '_blank_texpack.png'
         if not png_path.exists():
-            try:
+            try:  # ruff: ignore[too-many-statements-in-try-clause]
 
                 def _chunk(ctype: bytes, data: bytes) -> bytes:
                     body = ctype + data
@@ -2763,23 +2831,25 @@ class TextureStripper:
                     )
 
                 sig = b'\x89PNG\r\n\x1a\n'
-                ihdr = _chunk(b'IHDR', _struct.pack('>IIBBBBB', 1, 1, 8, 6, 0, 0, 0))  # 1×1 RGBA
+                ihdr = _chunk(
+                    b'IHDR', _struct.pack('>IIBBBBB', 1, 1, 8, 6, 0, 0, 0)
+                )  # 1×1 RGBA  # ruff: ignore[ambiguous-unicode-character-comment]
                 idat = _chunk(b'IDAT', _zl.compress(b'\x00\xff\xff\xff\xff', 9))  # white, opaque
                 iend = _chunk(b'IEND', b'')
                 png_path.write_bytes(sig + ihdr + idat + iend)
-                log_buffer.log('TexPack', 'Created blank 1×1 placeholder PNG')
-            except Exception as exc:
+                log_buffer.log('TexPack', 'Created blank 1×1 placeholder PNG')  # ruff: ignore[ambiguous-unicode-character-string]
+            except Exception as exc:  # ruff: ignore[blind-except]
                 log_buffer.log('TexPack', f'Failed to create blank placeholder PNG: {exc}')
                 return None
         try:
-            from ...cache.tools.image_to_ktx2.converter import (
+            from fleasion.cache.tools.image_to_ktx2.converter import (  # ruff: ignore[import-outside-top-level]
                 get_or_create_ktx2_from_image,
             )
 
             ktx_path = get_or_create_ktx2_from_image(png_path)
             if ktx_path and ktx_path.exists():
                 return str(ktx_path)
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log('TexPack', f'Failed to convert blank placeholder to KTX2: {exc}')
         return None
 

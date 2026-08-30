@@ -15,16 +15,17 @@ Channel map (empirically confirmed):
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import io
 import struct
-from pathlib import Path
+from pathlib import Path  # ruff: ignore[typing-only-standard-library-import]
 
 import numpy as np
 from PIL import Image
 
-from ...utils import log_buffer
-from ...utils.paths import APP_CACHE_DIR
+from fleasion.utils import log_buffer
+from fleasion.utils.paths import APP_CACHE_DIR
 
 _CHANNEL_MAP: dict[str, int] = {
     'metalness': 0,
@@ -56,7 +57,7 @@ _ROUGHNESS_NORMAL_VARIANCE_SCALE = 1.0
 _ORM_COMPOSITOR_CACHE_VERSION = b'orm-mips-v2-normal-variance'
 
 
-def composite_orm(
+def composite_orm(  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
     baseline: Path | None,
     channels: dict[str, Path | None],
     cache_dir: Path = APP_CACHE_DIR,
@@ -93,31 +94,25 @@ def composite_orm(
     """
 
     # ── Cache key: inputs + compositor algorithm version ────────────────────
-    h = hashlib.md5()
+    h = hashlib.md5(usedforsecurity=False)
     h.update(_ORM_COMPOSITOR_CACHE_VERSION)
     if baseline and baseline.exists():
         h.update(baseline.name.encode())
-        try:
+        with contextlib.suppress(OSError):
             h.update(struct.pack('<Q', int(baseline.stat().st_mtime * 1e9)))
-        except OSError:
-            pass
     for normal_path in (normal_source, normal_baseline):
         if normal_path and normal_path.exists():
             h.update(normal_path.name.encode())
-            try:
+            with contextlib.suppress(OSError):
                 h.update(struct.pack('<Q', int(normal_path.stat().st_mtime * 1e9)))
-            except OSError:
-                pass
     for name in sorted(channels):
         p = channels[name]
         h.update(name.encode())
         if p is None:
             h.update(b'\xff')  # sentinel for "remove"
         elif p.exists():
-            try:
+            with contextlib.suppress(OSError):
                 h.update(struct.pack('<Q', int(p.stat().st_mtime * 1e9)))
-            except OSError:
-                pass
     cache_key = h.hexdigest()[:16]
 
     out_dir = cache_dir / 'orm_composites'
@@ -137,7 +132,7 @@ def composite_orm(
             log_buffer.log('TexPackTrace', f'ORM compositor decoding baseline={baseline.name}')
             rgba, width, height = _decode_texture_rgba(baseline)
             log_buffer.log('TexPackTrace', f'ORM compositor baseline decoded: {width}x{height}')
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log('ORM', f'Baseline decode failed ({baseline.name}): {exc}')
             log_buffer.log(
                 'TexPackTrace',
@@ -178,7 +173,7 @@ def composite_orm(
                 f'ORM compositor channel {ch_name}: missing file={png_path}',
             )
             continue
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
             img = Image.open(png_path)
             # Extract R-channel.  For grayscale images, the only channel IS R.
             if img.mode == 'L':
@@ -192,7 +187,7 @@ def composite_orm(
                 )
                 log_buffer.log(
                     'TexPackTrace',
-                    f'ORM compositor channel {ch_name}: resized source to {width}x{height} file={png_path.name}',
+                    f'ORM compositor channel {ch_name}: resized source to {width}x{height} file={png_path.name}',  # ruff: ignore[line-too-long]
                 )
             rgba[:, :, ch_idx] = r_arr
             applied.append(ch_name)
@@ -200,7 +195,7 @@ def composite_orm(
                 'TexPackTrace',
                 f'ORM compositor channel {ch_name}: applied file={png_path.name}',
             )
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log('ORM', f'Failed to apply channel "{ch_name}": {exc}')
             log_buffer.log(
                 'TexPackTrace',
@@ -218,8 +213,8 @@ def composite_orm(
     normal_path = normal_source if normal_source and normal_source.exists() else normal_baseline
     if normal_path and normal_path.exists():
         try:
-            normal_rgba, _normal_width, _normal_height = _decode_texture_rgba(normal_path)
-            if (_normal_width, _normal_height) != (width, height):
+            normal_rgba, normal_width, normal_height = _decode_texture_rgba(normal_path)
+            if (normal_width, normal_height) != (width, height):
                 normal_rgba = np.array(
                     Image.fromarray(normal_rgba, 'RGBA').resize(
                         (width, height),
@@ -231,7 +226,7 @@ def composite_orm(
                 'TexPackTrace',
                 f'ORM compositor roughness variance source={normal_path.name}',
             )
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log('ORM', f'Normal decode failed ({normal_path.name}): {exc}')
             normal_rgba = None
 
@@ -240,15 +235,13 @@ def composite_orm(
         _write_ktx2(rgba, width, height, out_path, normal_rgba=normal_rgba)
         log_buffer.log(
             'ORM',
-            f'Composited [{", ".join(applied)}] → {out_path.name} ({width}×{height})',
+            f'Composited [{", ".join(applied)}] → {out_path.name} ({width}×{height})',  # ruff: ignore[ambiguous-unicode-character-string]
         )
         return str(out_path)
-    except Exception as exc:
+    except Exception as exc:  # ruff: ignore[blind-except]
         log_buffer.log('ORM', f'KTX2 write failed: {exc}')
-        try:
+        with contextlib.suppress(OSError):
             out_path.unlink(missing_ok=True)
-        except OSError:
-            pass
         return None
 
 
@@ -263,8 +256,9 @@ def _decode_bc_ktx2(data: bytes) -> tuple[np.ndarray, int, int]:
     Additional mip levels in the container are ignored here.
     """
 
-    if len(data) < 96:
-        raise ValueError('KTX2 data too short')
+    if len(data) < 96:  # ruff: ignore[magic-value-comparison]
+        msg = 'KTX2 data too short'
+        raise ValueError(msg)
 
     vk_fmt = struct.unpack_from('<I', data, 12)[0]
     width = struct.unpack_from('<I', data, 20)[0]
@@ -272,29 +266,32 @@ def _decode_bc_ktx2(data: bytes) -> tuple[np.ndarray, int, int]:
     supercompression = struct.unpack_from('<I', data, 44)[0]
 
     if width == 0 or height == 0:
-        raise ValueError(f'Invalid KTX2 dimensions {width}×{height}')
+        msg = f'Invalid KTX2 dimensions {width}×{height}'  # ruff: ignore[ambiguous-unicode-character-string]
+        raise ValueError(msg)
 
     # Level-index entry 0 is always at offset 80 (fixed KTX2 header size).
     byte_offset = struct.unpack_from('<Q', data, 80)[0]
     byte_length = struct.unpack_from('<Q', data, 88)[0]
     level_data = data[byte_offset : byte_offset + byte_length]
 
-    if supercompression == 2:  # zstd
-        import zstandard
+    if supercompression == 2:  # zstd  # ruff: ignore[magic-value-comparison]
+        import zstandard  # ruff: ignore[import-outside-top-level]
 
         level_data = zstandard.ZstdDecompressor().decompress(
             level_data,
             max_output_size=64 * 1024 * 1024,
         )
     elif supercompression != 0:
-        raise ValueError(f'Unsupported KTX2 supercompressionScheme {supercompression}')
+        msg = f'Unsupported KTX2 supercompressionScheme {supercompression}'
+        raise ValueError(msg)
 
     if vk_fmt == _VK_BC1:
         fourcc = b'DXT1'
     elif vk_fmt == _VK_BC3:
         fourcc = b'DXT5'
     else:
-        raise ValueError(f'Unsupported vkFormat {vk_fmt} (need BC1=131 or BC3=137)')
+        msg = f'Unsupported vkFormat {vk_fmt} (need BC1=131 or BC3=137)'
+        raise ValueError(msg)
 
     def _u32(v: int) -> bytes:
         return struct.pack('<I', v)
@@ -333,8 +330,11 @@ def _decode_texture_rgba(path: Path) -> tuple[np.ndarray, int, int]:
     """Decode a normal image or supported KTX/KTX2 base level to RGBA8."""
 
     data = path.read_bytes()
-    from .ktx_to_png import convert
-    from .ktx_to_png.ktx_to_png import KTX2_MAGIC, strip_prefixed_ktx
+    from .ktx_to_png import convert  # ruff: ignore[import-outside-top-level]
+    from .ktx_to_png.ktx_to_png import (  # ruff: ignore[import-outside-top-level]
+        KTX2_MAGIC,
+        strip_prefixed_ktx,
+    )
 
     stripped = strip_prefixed_ktx(data)
     if stripped is not None and stripped[:12] == KTX2_MAGIC:
@@ -346,7 +346,8 @@ def _decode_texture_rgba(path: Path) -> tuple[np.ndarray, int, int]:
     if stripped is not None:
         png = convert(stripped)
         if png is None:
-            raise ValueError(f'Unsupported KTX texture: {path.name}')
+            msg = f'Unsupported KTX texture: {path.name}'
+            raise ValueError(msg)
         img = Image.open(io.BytesIO(png)).convert('RGBA')
     else:
         img = Image.open(io.BytesIO(data)).convert('RGBA')
@@ -394,11 +395,11 @@ def _normal_vectors_from_rgba(normal_rgba: np.ndarray) -> np.ndarray:
     # Native-Windows Roblox BC3 normal maps use DXT5nm-style packing:
     # R≈255, B≈0, G=Y, A=X. Sober ETC2 and user PNG normals use RGB XYZ.
     is_dxt5nm = (
-        float(red.mean()) > 245.0
-        and float(blue.mean()) < 10.0
-        and float(red.std()) < 12.0
-        and float(blue.std()) < 12.0
-        and float(alpha.std()) > 0.5
+        float(red.mean()) > 245.0  # ruff: ignore[magic-value-comparison]
+        and float(blue.mean()) < 10.0  # ruff: ignore[magic-value-comparison]
+        and float(red.std()) < 12.0  # ruff: ignore[magic-value-comparison]
+        and float(blue.std()) < 12.0  # ruff: ignore[magic-value-comparison]
+        and float(alpha.std()) > 0.5  # ruff: ignore[magic-value-comparison]
     )
     if is_dxt5nm:
         x = alpha / 127.5 - 1.0
@@ -449,7 +450,7 @@ def _downsample_linear_rgba(rgba: np.ndarray, width: int, height: int) -> np.nda
     return output
 
 
-def generate_orm_mip_chain(
+def generate_orm_mip_chain(  # ruff: ignore[too-many-locals]
     rgba: np.ndarray,
     normal_rgba: np.ndarray | None = None,
     *,
@@ -464,16 +465,20 @@ def generate_orm_mip_chain(
     renormalized, matching Fleasion's standalone Normal mip path.
     """
 
-    if rgba.ndim != 3 or rgba.shape[2] != 4 or rgba.dtype != np.uint8:
-        raise ValueError('ORM base must be an HxWx4 uint8 array')
+    if rgba.ndim != 3 or rgba.shape[2] != 4 or rgba.dtype != np.uint8:  # ruff: ignore[magic-value-comparison]
+        msg = 'ORM base must be an HxWx4 uint8 array'
+        raise ValueError(msg)
     height, width, _ = rgba.shape
     if width <= 0 or height <= 0:
-        raise ValueError(f'invalid ORM dimensions {width}x{height}')
+        msg = f'invalid ORM dimensions {width}x{height}'
+        raise ValueError(msg)
     if roughness_variance_scale < 0:
-        raise ValueError('roughness variance scale must be non-negative')
+        msg = 'roughness variance scale must be non-negative'
+        raise ValueError(msg)
     if normal_rgba is not None:
         if normal_rgba.shape != rgba.shape or normal_rgba.dtype != np.uint8:
-            raise ValueError('Normal base must match ORM dimensions and be uint8 RGBA')
+            msg = 'Normal base must match ORM dimensions and be uint8 RGBA'
+            raise ValueError(msg)
         base_normals = _normal_vectors_from_rgba(normal_rgba)
         current_normals = base_normals
     else:
@@ -530,11 +535,12 @@ def _write_ktx2(
     normal_rgba: np.ndarray | None = None,
 ) -> None:
     """Write packed material RGBA32 as a full-mip uncompressed KTX2."""
-    from .rgba_ktx2 import write_rgba8_ktx2_levels
+    from .rgba_ktx2 import write_rgba8_ktx2_levels  # ruff: ignore[import-outside-top-level]
 
     expected_shape = (height, width, 4)
     if rgba.shape != expected_shape or rgba.dtype != np.uint8:
-        raise ValueError(f'RGBA buffer shape mismatch: {rgba.shape} != {expected_shape}')
+        msg = f'RGBA buffer shape mismatch: {rgba.shape} != {expected_shape}'
+        raise ValueError(msg)
 
     levels = generate_orm_mip_chain(rgba, normal_rgba)
     write_rgba8_ktx2_levels(levels, width, height, out_path)

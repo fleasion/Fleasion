@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
@@ -63,21 +64,19 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..cache.tools.ktx_to_png import convert as ktx_to_png, strip_prefixed_ktx
-from ..localization import tr, tr_count, translation_values
-from ..modifications.fflag_profiles import FastFlagProfileManager
-from ..modifications.manager import (
-    normalise_target_path,
-    target_path_for_roblox_dir,
-)
-from ..modifications.platform_targets import (
+from fleasion.cache.tools.ktx_to_png import convert as ktx_to_png, strip_prefixed_ktx
+from fleasion.localization import tr, tr_count, translation_values
+from fleasion.modifications.fflag_profiles import FastFlagProfileManager
+from fleasion.modifications.manager import normalise_target_path, target_path_for_roblox_dir
+from fleasion.modifications.platform_targets import (
     read_current_platform_original_asset,
     target_path_for_current_platform,
 )
-from ..modifications.stash_paths import resource_stash_dir
-from ..utils import APP_CACHE_DIR, log_buffer, open_folder
-from ..utils.http import http_get
-from ..utils.threading import run_in_thread
+from fleasion.modifications.stash_paths import resource_stash_dir
+from fleasion.utils import APP_CACHE_DIR, log_buffer, open_folder
+from fleasion.utils.http import http_get
+from fleasion.utils.threading import run_in_thread
+
 from .file_drop import FileDropLineEdit, local_file_path_example
 from .theme import ThemeManager
 
@@ -377,7 +376,7 @@ SOUND_FILTER = 'modifications.filter.audio_files'
 FONT_FILTER = 'modifications.filter.font_files'
 
 TEXTURES = [
-    # (display_name_id, target_path, file_filter_id)
+    # (display_name_id, target_path, file_filter_id)  # ruff: ignore[commented-out-code]
     (
         'modifications.builtin.texture.hq_studs_diffuse',
         target_path_for_current_platform(r'PlatformContent\pc\textures\plastic\diffuse.dds'),
@@ -539,7 +538,7 @@ class _RichTextButton(QPushButton):
     """QPushButton that draws a label and a larger suffix character, each independently
     vertically centred so mixed font sizes don't shift each other's position."""
 
-    def __init__(
+    def __init__(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
         self,
         label: str,
         suffix: str = '',
@@ -562,7 +561,7 @@ class _RichTextButton(QPushButton):
 
     @override
     def sizeHint(self) -> QSize:
-        from PySide6.QtGui import QFont, QFontMetrics
+        from PySide6.QtGui import QFont, QFontMetrics  # ruff: ignore[import-outside-top-level]
 
         hint = super().sizeHint()
         if not self._suffix:
@@ -587,9 +586,17 @@ class _RichTextButton(QPushButton):
         return hint
 
     @override
-    def paintEvent(self, a0: QPaintEvent) -> None:
-        from PySide6.QtGui import QFont, QFontMetrics, QPainter, QPalette
-        from PySide6.QtWidgets import QStyle, QStyleOptionButton
+    def paintEvent(self, a0: QPaintEvent) -> None:  # ruff: ignore[too-many-locals, too-many-statements]
+        from PySide6.QtGui import (  # ruff: ignore[import-outside-top-level]
+            QFont,
+            QFontMetrics,
+            QPainter,
+            QPalette,
+        )
+        from PySide6.QtWidgets import (  # ruff: ignore[import-outside-top-level]
+            QStyle,
+            QStyleOptionButton,
+        )
 
         opt = QStyleOptionButton()
         self.initStyleOption(opt)
@@ -679,7 +686,7 @@ class CollapsibleSection(QWidget):
         self,
         title: str,
         parent: QWidget | None = None,
-        expanded: bool = True,
+        expanded: bool = True,  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
         header_widgets: list[QWidget] | None = None,
     ) -> None:
         super().__init__(parent)
@@ -751,8 +758,8 @@ class CollapsibleSection(QWidget):
     @override
     def paintEvent(self, a0: QPaintEvent) -> None:
         """Draw a rounded-rect card that adapts to dark and light themes."""
-        from PySide6.QtCore import QRectF
-        from PySide6.QtGui import QPainter, QPainterPath
+        from PySide6.QtCore import QRectF  # ruff: ignore[import-outside-top-level]
+        from PySide6.QtGui import QPainter, QPainterPath  # ruff: ignore[import-outside-top-level]
 
         colors = ThemeManager.panel_colors(self.palette())
         painter = QPainter(self)
@@ -772,7 +779,7 @@ class CollapsibleSection(QWidget):
     def add_widget(self, widget: QWidget) -> None:
         self._content_layout.addWidget(widget)
 
-    def _arrow_style(self, expanded: bool) -> str:
+    def _arrow_style(self, expanded: bool) -> str:  # ruff: ignore[boolean-type-hint-positional-argument]
         """Return platform-specific arrow styling for Unicode triangle glyphs."""
         if os.name == 'nt':
             return (
@@ -782,7 +789,7 @@ class CollapsibleSection(QWidget):
             )
         return self._DEFAULT_ARROW_STYLE
 
-    def _set_arrow_state(self, expanded: bool) -> None:
+    def _set_arrow_state(self, expanded: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
         self._arrow.setText(self._EXPANDED_ARROW if expanded else self._COLLAPSED_ARROW)
         self._arrow.setStyleSheet(self._arrow_style(expanded))
 
@@ -859,7 +866,11 @@ class DropdownComboBox(QComboBox):
 
     @override
     def paintEvent(self, e: QPaintEvent) -> None:
-        from PySide6.QtWidgets import QStyle, QStyleOptionComboBox, QStylePainter
+        from PySide6.QtWidgets import (  # ruff: ignore[import-outside-top-level]
+            QStyle,
+            QStyleOptionComboBox,
+            QStylePainter,
+        )
 
         style = _style_or_none(self)
         if style is None:
@@ -991,15 +1002,15 @@ class ModRowWidget(QWidget):
 
     delete_requested = Signal(str)  # entry_id
 
-    def __init__(
+    def __init__(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
         self,
         manager: _ModificationManagerLike,
         display_name: str,
         target_path: str,
         file_filter: str = 'modifications.filter.all_files',
-        deletable: bool = False,
+        deletable: bool = False,  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
         mute_bundled: str | None = None,
-        is_font: bool = False,
+        is_font: bool = False,  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -1124,7 +1135,9 @@ class ModRowWidget(QWidget):
 
     def _check_for_orphaned_stash(self) -> None:
         """Show a warning if a stash file exists but Fleasion has no active record."""
-        from ..modifications.manager import MOD_ORIGINALS_DIR
+        from fleasion.modifications.manager import (  # ruff: ignore[import-outside-top-level]
+            MOD_ORIGINALS_DIR,
+        )
 
         roblox_dirs = self._manager.roblox_dirs
         if not roblox_dirs:
@@ -1164,13 +1177,13 @@ class ModRowWidget(QWidget):
 
         if status == 'error':
             self._show_source_error(error_msg or tr('modifications.error.failed_to_apply'))
-        elif status in ('applied', 'not_set'):
+        elif status in ('applied', 'not_set'):  # ruff: ignore[literal-membership]
             self._clear_source_error()
 
-        if status not in ('orphaned_stash',):
+        if status != 'orphaned_stash':
             self._status_label.setToolTip('')
 
-        self._reset_btn.setVisible(status in ('applied', 'error', 'orphaned_stash'))
+        self._reset_btn.setVisible(status in ('applied', 'error', 'orphaned_stash'))  # ruff: ignore[literal-membership]
 
     # ------------------------------------------------------------------
     # Actions
@@ -1208,17 +1221,15 @@ class ModRowWidget(QWidget):
             # clear_entry deletes the entry from JSON; drop our reference
             # so _apply_source correctly calls add_entry next time.
             self._entry_id = None
-        else:
-            # Orphaned stash with no JSON entry at all — restore directly.
-            if not self._manager.restore_orphaned_stash(self._target_path):
-                return
+        # Orphaned stash with no JSON entry at all — restore directly.
+        elif not self._manager.restore_orphaned_stash(self._target_path):
+            return
         self._set_source_text_silent('')
         self._update_status('not_set')
 
     def _on_delete(self) -> None:
-        if self._entry_id:
-            if not self._manager.remove_entry(self._entry_id):
-                return
+        if self._entry_id and not self._manager.remove_entry(self._entry_id):
+            return
         self.delete_requested.emit(self._entry_id or '')
 
     def _on_preview(self) -> None:
@@ -1243,9 +1254,9 @@ class ModRowWidget(QWidget):
         self._apply_from_text()
 
     def apply_source_external(self, source_type: str, source_value: str) -> None:
-        """Called externally (e.g. by ‘Apply to All Sky Faces’)."""
+        """Called externally (e.g. by ‘Apply to All Sky Faces’)."""  # ruff: ignore[ambiguous-unicode-character-docstring]
         self._apply_source(source_type, source_value)
-        display = source_value if source_type in ('local_file', 'asset_id', 'bundled') else ''
+        display = source_value if source_type in ('local_file', 'asset_id', 'bundled') else ''  # ruff: ignore[literal-membership]
         self._set_source_text_silent(display)
 
     # ------------------------------------------------------------------
@@ -1253,7 +1264,7 @@ class ModRowWidget(QWidget):
     # ------------------------------------------------------------------
 
     def _get_source_display_text(self) -> str:
-        """Return the textbox display string for the current entry’s source."""
+        """Return the textbox display string for the current entry’s source."""  # ruff: ignore[ambiguous-unicode-character-docstring]
         for entry in self._manager.entries:
             if entry.get('target_path') == self._target_path:
                 src_type = entry.get('source_type')
@@ -1263,7 +1274,7 @@ class ModRowWidget(QWidget):
                     if src_val == self._resolve_bundled_empty() or src_val == 'bundled:zero':
                         return tr('replacer.action.remove').casefold()
                     return src_val
-                if src_type in ('local_file', 'asset_id', 'cdn_url'):
+                if src_type in ('local_file', 'asset_id', 'cdn_url'):  # ruff: ignore[literal-membership]
                     return src_val
                 return ''
         return ''
@@ -1271,9 +1282,9 @@ class ModRowWidget(QWidget):
     def _set_source_text_silent(self, text: str) -> None:
         """Set textbox text without triggering the apply debounce."""
         self._debounce.stop()
-        self._source_edit.blockSignals(True)
+        self._source_edit.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
         self._source_edit.setText(text)
-        self._source_edit.blockSignals(False)
+        self._source_edit.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
         self._clear_source_error()
 
     def _show_source_error(self, tooltip: str = '') -> None:
@@ -1304,7 +1315,7 @@ class ModRowWidget(QWidget):
         ext = Path(self._target_path).suffix.lower()
         return self._BUNDLED_EMPTY_BY_EXT.get(ext, 'bundled:zero')
 
-    def _detect_source_from_text(self, text: str) -> tuple[str, str]:
+    def _detect_source_from_text(self, text: str) -> tuple[str, str]:  # ruff: ignore[too-many-return-statements]
         """Detect source type and value from a textbox string."""
         text = text.strip().strip('"\'')
         # Any registered translation of the remove action is accepted, so newly
@@ -1439,7 +1450,7 @@ class ModPreviewDialog(QDialog):
 
         self.setLayout(layout)
 
-    def _build_preview_widget(self, mode: str) -> QWidget:
+    def _build_preview_widget(self, mode: str) -> QWidget:  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
         """Build a widget that previews the file based on its type."""
         container = QWidget()
         layout = QVBoxLayout()
@@ -1462,7 +1473,7 @@ class ModPreviewDialog(QDialog):
 
         lower = self._target_path.lower()
 
-        # Image / Texture (including .dds)
+        # Image / Texture (including .dds)  # ruff: ignore[commented-out-code]
         if lower.endswith(('.tex', '.dds', '.ktx', '.ktx2', '.png', '.jpg', '.jpeg')):
             label = QLabel()
             label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1484,13 +1495,15 @@ class ModPreviewDialog(QDialog):
             elif lower.endswith(('.tex', '.dds')):
                 # The replacement may be a plain image (PNG/JPEG) even though
                 # the target path ends in .tex/.dds — detect by magic bytes first.
-                _is_raw_image = (
+                is_raw_image = (
                     data[:8] == b'\x89PNG\r\n\x1a\n'  # PNG
                     or data[:2] == b'\xff\xd8'  # JPEG
-                    or data[:6] in (b'GIF87a', b'GIF89a')
+                    or data[:6] in (b'GIF87a', b'GIF89a')  # ruff: ignore[literal-membership]
                 )
-                if not _is_raw_image:
-                    from ..modifications.dds_to_png import tex_to_png_bytes
+                if not is_raw_image:
+                    from fleasion.modifications.dds_to_png import (  # ruff: ignore[import-outside-top-level]
+                        tex_to_png_bytes,
+                    )
 
                     converted = tex_to_png_bytes(data)
                     if converted:
@@ -1505,7 +1518,7 @@ class ModPreviewDialog(QDialog):
                         container.setLayout(layout)
                         return container
 
-            from PySide6.QtGui import QPixmap
+            from PySide6.QtGui import QPixmap  # ruff: ignore[import-outside-top-level]
 
             pixmap = QPixmap()
             pixmap.loadFromData(display_bytes)
@@ -1523,15 +1536,17 @@ class ModPreviewDialog(QDialog):
 
         # Mesh
         elif lower.endswith('.mesh'):
-            try:
-                from ..cache import mesh_processing
+            try:  # ruff: ignore[too-many-statements-in-try-clause]
+                from fleasion.cache import mesh_processing  # ruff: ignore[import-outside-top-level]
 
                 obj_text = mesh_processing.convert(data)
                 if obj_text:
                     if mode == 'mod':
                         self._mod_converted_bytes = obj_text.encode()
                         self._mod_converted_ext = '.obj'
-                    from ..cache.obj_viewer import ObjViewerPanel
+                    from fleasion.cache.obj_viewer import (  # ruff: ignore[import-outside-top-level]
+                        ObjViewerPanel,
+                    )
 
                     viewer = ObjViewerPanel()
                     viewer.load_obj(obj_text)
@@ -1540,46 +1555,50 @@ class ModPreviewDialog(QDialog):
                     layout.addWidget(
                         QLabel(tr('ui.gui.modifications_tab.could_not_convert_mesh_for_preview'))
                     )
-            except Exception as exc:
+            except Exception as exc:  # ruff: ignore[blind-except]
                 layout.addWidget(
                     QLabel(tr('ui.gui.modifications_tab.mesh_preview_error_value', value0=exc))
                 )
 
         # Audio
         elif lower.endswith(('.mp3', '.ogg', '.wav')):
-            try:
+            try:  # ruff: ignore[too-many-statements-in-try-clause]
                 # Write to temp file for AudioPlayerWidget
-                import tempfile
+                import tempfile  # ruff: ignore[import-outside-top-level]
 
                 suffix = Path(self._target_path).suffix
-                tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+                tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)  # ruff: ignore[open-file-with-context-handler]
                 tmp.write(data)
                 tmp.close()
-                from ..cache.audio_player import AudioPlayerWidget
+                from fleasion.cache.audio_player import (  # ruff: ignore[import-outside-top-level]
+                    AudioPlayerWidget,
+                )
 
                 player = AudioPlayerWidget(tmp.name)
                 layout.addWidget(player)
-            except Exception as exc:
+            except Exception as exc:  # ruff: ignore[blind-except]
                 layout.addWidget(
                     QLabel(tr('ui.gui.modifications_tab.audio_preview_error_value', value0=exc))
                 )
 
         # Fonts
         elif lower.endswith(('.ttf', '.otf', '.ttc')):
-            try:
+            try:  # ruff: ignore[too-many-statements-in-try-clause]
                 # Check if it's actually JSON (FontFamily) instead of a font file
-                try:
-                    import json as json_module
+                try:  # ruff: ignore[too-many-statements-in-try-clause]
+                    import json as json_module  # ruff: ignore[import-outside-top-level]
 
                     decoded = data.decode('utf-8', errors='replace')
                     json_module.loads(decoded)
                     # It's valid JSON, show as JSON instead
-                    from PySide6.QtWidgets import QTextEdit
+                    from PySide6.QtWidgets import (  # ruff: ignore[import-outside-top-level]
+                        QTextEdit,
+                    )
 
                     viewer = QTextEdit()
                     viewer.setReadOnly(True)
                     # Pretty print the JSON
-                    import json as json_module
+                    import json as json_module  # ruff: ignore[import-outside-top-level]
 
                     parsed = json_module.loads(decoded)
                     pretty_json = json_module.dumps(parsed, indent=2)
@@ -1587,11 +1606,13 @@ class ModPreviewDialog(QDialog):
                     layout.addWidget(viewer)
                 except ValueError, UnicodeDecodeError:
                     # Not JSON, treat as font file
-                    from ..cache.font_viewer import FontViewerWidget
+                    from fleasion.cache.font_viewer import (  # ruff: ignore[import-outside-top-level]
+                        FontViewerWidget,
+                    )
 
                     font_viewer = FontViewerWidget(data)
                     layout.addWidget(font_viewer)
-            except Exception as exc:
+            except Exception as exc:  # ruff: ignore[blind-except]
                 layout.addWidget(
                     QLabel(tr('ui.gui.modifications_tab.font_json_preview_error_value', value0=exc))
                 )
@@ -1604,9 +1625,11 @@ class ModPreviewDialog(QDialog):
         container.setLayout(layout)
         return container
 
-    def _load_data(self, mode: str) -> bytes | None:
+    def _load_data(self, mode: str) -> bytes | None:  # ruff: ignore[too-many-return-statements]
         """Load file bytes for preview. mode='mod' or 'original'."""
-        from ..modifications.manager import MOD_ORIGINALS_DIR
+        from fleasion.modifications.manager import (  # ruff: ignore[import-outside-top-level]
+            MOD_ORIGINALS_DIR,
+        )
 
         if not self._manager.roblox_dirs:
             return None
@@ -1688,13 +1711,13 @@ class ModPreviewDialog(QDialog):
         msg.exec()
 
         if msg.clickedButton() == open_button:
-            try:
-                import subprocess
+            try:  # ruff: ignore[too-many-statements-in-try-clause]
+                import subprocess  # ruff: ignore[import-outside-top-level, suspicious-subprocess-import]
 
                 paths = [Path(path) for path in exported_paths if path]
                 if len(paths) == 1 and paths[0].is_file():
-                    subprocess.Popen(
-                        ['explorer.exe', '/select,', str(paths[0].resolve())],
+                    subprocess.Popen(  # ruff: ignore[subprocess-without-shell-equals-true]
+                        ['explorer.exe', '/select,', str(paths[0].resolve())],  # ruff: ignore[start-process-with-partial-path]
                         stdin=subprocess.DEVNULL,
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
@@ -1703,7 +1726,7 @@ class ModPreviewDialog(QDialog):
                 elif paths:
                     target = paths[0] if paths[0].is_dir() else paths[0].parent
                     open_folder(target)
-            except Exception as exc:
+            except Exception as exc:  # ruff: ignore[blind-except]
                 log_buffer.log('Export', f'Could not open exported file location: {exc}')
 
 
@@ -1831,7 +1854,7 @@ class FastFlagProfilesDialog(QDialog):
         close = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         close.rejected.connect(self.reject)
         layout.addWidget(close)
-        self._set_actions_enabled(False)
+        self._set_actions_enabled(False)  # ruff: ignore[boolean-positional-value-in-call]
 
     def _on_profile_double_clicked(self, _item: QListWidgetItem) -> None:
         self._load_profile()
@@ -1840,7 +1863,7 @@ class FastFlagProfilesDialog(QDialog):
         item = _current_list_item(self._profile_list)
         return item.text() if item is not None else None
 
-    def _set_actions_enabled(self, enabled: bool) -> None:
+    def _set_actions_enabled(self, enabled: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
         for button in (
             self._load_button,
             self._update_button,
@@ -2090,10 +2113,12 @@ class FFlagBrowserDialog(QDialog):
     def _extract_flags(payload: _JsonValue) -> dict[str, str]:
         """Validate the public ClientSettings response without accepting arbitrary JSON."""
         if not isinstance(payload, dict):
-            raise ValueError('Roblox returned an invalid FastFlag response.')
+            msg = 'Roblox returned an invalid FastFlag response.'
+            raise ValueError(msg)  # ruff: ignore[type-check-without-type-error]
         settings = payload.get('applicationSettings')
         if not isinstance(settings, dict):
-            raise ValueError('Roblox returned no application FastFlags.')
+            msg = 'Roblox returned no application FastFlags.'
+            raise ValueError(msg)  # ruff: ignore[type-check-without-type-error]
 
         flags: dict[str, str] = {}
         for raw_name, raw_value in settings.items():
@@ -2104,7 +2129,8 @@ class FFlagBrowserDialog(QDialog):
                 'True' if raw_value is True else 'False' if raw_value is False else str(raw_value)
             )
         if not flags:
-            raise ValueError('Roblox returned no usable FastFlags.')
+            msg = 'Roblox returned no usable FastFlags.'
+            raise ValueError(msg)
         return flags
 
     @classmethod
@@ -2113,7 +2139,8 @@ class FFlagBrowserDialog(QDialog):
         try:
             lines = payload.decode('utf-8').splitlines()
         except UnicodeDecodeError as exc:
-            raise ValueError('The FastVariable tracker returned invalid text.') from exc
+            msg = 'The FastVariable tracker returned invalid text.'
+            raise ValueError(msg) from exc
 
         flags: dict[str, None] = {}
         for line in lines:
@@ -2125,7 +2152,8 @@ class FFlagBrowserDialog(QDialog):
             if name.startswith(cls._FAMILIES):
                 flags[name] = None
         if not flags:
-            raise ValueError('The FastVariable tracker returned no usable FastFlags.')
+            msg = 'The FastVariable tracker returned no usable FastFlags.'
+            raise ValueError(msg)
         return flags
 
     @classmethod
@@ -2144,7 +2172,7 @@ class FFlagBrowserDialog(QDialog):
     @classmethod
     def _read_cache(cls, *, now: float | None = None) -> dict[str, str | None] | None:
         """Return the recent merged result, ignoring malformed or expired cache files."""
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
             cached: _JsonValue = json.loads(cls._CACHE_PATH.read_text(encoding='utf-8'))
             if not isinstance(cached, dict) or cached.get('version') != cls._CACHE_VERSION:
                 return None
@@ -2188,12 +2216,10 @@ class FFlagBrowserDialog(QDialog):
             # The browser remains useful if its optional cache cannot be written.
             pass
         finally:
-            try:
+            with contextlib.suppress(OSError):
                 temporary_path.unlink(missing_ok=True)
-            except OSError:
-                pass
 
-    def _refresh(self, force: bool = False) -> None:
+    def _refresh(self, force: bool = False) -> None:  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
         if self._refresh_button.isEnabled() is False:
             return
         if not force:
@@ -2210,7 +2236,7 @@ class FFlagBrowserDialog(QDialog):
         threading.Thread(target=self._fetch_flags, daemon=True).start()
 
     def _fetch_flags(self) -> None:
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
             # Tell Fleasion's ClientSettings interceptor to pass this browser
             # request through. Active custom flags must not look like values
             # published by Roblox.
@@ -2255,7 +2281,8 @@ class FFlagBrowserDialog(QDialog):
                 )
 
             if not flags:
-                raise ValueError('No configured FastFlag source returned usable data.')
+                msg = 'No configured FastFlag source returned usable data.'
+                raise ValueError(msg)  # ruff: ignore[raise-within-try]
             self._write_cache(flags)
             self.flags_loaded.emit(flags)
         except (OSError, ValueError, json.JSONDecodeError) as exc:
@@ -2269,7 +2296,7 @@ class FFlagBrowserDialog(QDialog):
             family = self._family_for(name)
             family_counts[family] = family_counts.get(family, 0) + 1
 
-        self._family_filter.blockSignals(True)
+        self._family_filter.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
         self._family_filter.clear()
         self._family_filter.addItem(tr('ui.gui.modifications_tab.all_fastflags'), '')
         for family in sorted(family_counts):
@@ -2283,7 +2310,7 @@ class FFlagBrowserDialog(QDialog):
             )
         previous_index = self._family_filter.findData(current_family)
         self._family_filter.setCurrentIndex(max(0, previous_index))
-        self._family_filter.blockSignals(False)
+        self._family_filter.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
         self._refresh_button.setEnabled(True)
         self._populate_table()
         self._filter_rows()
@@ -2335,7 +2362,7 @@ class FFlagBrowserDialog(QDialog):
     def _populate_table(self) -> None:
         """Populate once per download; search and filters only hide existing rows."""
         self._table.setUpdatesEnabled(False)
-        self._table.blockSignals(True)
+        self._table.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
         try:
             self._table.setRowCount(len(self._flags))
             for row, (name, value) in enumerate(self._flags.items()):
@@ -2347,7 +2374,7 @@ class FFlagBrowserDialog(QDialog):
                 value_item.setFlags(value_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self._table.setItem(row, 1, value_item)
         finally:
-            self._table.blockSignals(False)
+            self._table.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
             self._table.setUpdatesEnabled(True)
 
     def _selected_names(self) -> list[str]:
@@ -2428,7 +2455,12 @@ class WindowsHotkeyCaptureDialog(QDialog):
 
     @classmethod
     def _modifier_mask(cls, modifiers: Qt.KeyboardModifier) -> int:
-        from .windows_hotkeys import MOD_ALT, MOD_CTRL, MOD_SHIFT, MOD_WIN
+        from .windows_hotkeys import (  # ruff: ignore[import-outside-top-level]
+            MOD_ALT,
+            MOD_CTRL,
+            MOD_SHIFT,
+            MOD_WIN,
+        )
 
         qt_modifiers = cls._enum_value(modifiers)
         result = 0
@@ -2444,11 +2476,13 @@ class WindowsHotkeyCaptureDialog(QDialog):
 
     @staticmethod
     def _event_binding(event: QKeyEvent, modifiers: int) -> _HotkeyBinding | None:
-        from .windows_hotkeys import modifier_mask_for_virtual_key
+        from .windows_hotkeys import (  # ruff: ignore[import-outside-top-level]
+            modifier_mask_for_virtual_key,
+        )
 
         scan_code = int(event.nativeScanCode())
         virtual_key = int(event.nativeVirtualKey())
-        if not 0 < scan_code <= 0xFF:
+        if not 0 < scan_code <= 0xFF:  # ruff: ignore[magic-value-comparison]
             return None
         extended = virtual_key in {
             0xA3,
@@ -2478,7 +2512,12 @@ class WindowsHotkeyCaptureDialog(QDialog):
 
     @staticmethod
     def _modifier_preview(modifiers: int) -> str:
-        from .windows_hotkeys import MOD_ALT, MOD_CTRL, MOD_SHIFT, MOD_WIN
+        from .windows_hotkeys import (  # ruff: ignore[import-outside-top-level]
+            MOD_ALT,
+            MOD_CTRL,
+            MOD_SHIFT,
+            MOD_WIN,
+        )
 
         labels = [
             label
@@ -2507,7 +2546,9 @@ class WindowsHotkeyCaptureDialog(QDialog):
             self._preview.setText(tr('ui.gui.modifications_tab.that_key_could_not_be_read_as'))
             return
         if key in self._MODIFIER_KEYS:
-            from .windows_hotkeys import modifier_mask_for_virtual_key
+            from .windows_hotkeys import (  # ruff: ignore[import-outside-top-level]
+                modifier_mask_for_virtual_key,
+            )
 
             self._pending_modifier = binding
             self._pending_modifier_key = key
@@ -2531,7 +2572,7 @@ class WindowsHotkeyCaptureDialog(QDialog):
         self.binding = self._pending_modifier
         self.accept()
 
-    @override
+    @override  # ruff: ignore[implicit-return]
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if self._suppress_mouse_capture:
             return super().mousePressEvent(event)
@@ -2551,7 +2592,7 @@ class WindowsHotkeyCaptureDialog(QDialog):
                 'modifiers': self._modifier_mask(event.modifiers()),
             }
             self.accept()
-            return
+            return None
         super().mousePressEvent(event)
 
     @override
@@ -2622,13 +2663,15 @@ class LinuxHotkeyCaptureDialog(QDialog):
         self.accept()
 
     def _key_pressed(self, code: int, modifiers: int) -> None:
-        from .linux_hotkeys import modifier_mask_for_evdev_code
+        from .linux_hotkeys import (  # ruff: ignore[import-outside-top-level]
+            modifier_mask_for_evdev_code,
+        )
 
         # Raw evdev sees the dialog controls too. Only Clear and Cancel arm
         # this suppression; every other mouse button remains bindable. Delay
         # button capture a moment so Qt has time to deliver a Clear/Cancel
         # click first; if it closes this dialog, the queued capture is ignored.
-        if code >= 0x100:
+        if code >= 0x100:  # ruff: ignore[magic-value-comparison]
             QTimer.singleShot(25, partial(self._capture_mouse_button, code, modifiers))
             return
         own_modifier = modifier_mask_for_evdev_code(code)
@@ -2661,7 +2704,7 @@ class LinuxHotkeyCaptureDialog(QDialog):
         self.binding = {
             'platform': 'linux_evdev',
             'kind': 'mouse_wheel',
-            'direction': 'up' if code == 256 else 'down',
+            'direction': 'up' if code == 256 else 'down',  # ruff: ignore[magic-value-comparison]
             'modifiers': modifiers,
         }
         self.accept()
@@ -2712,7 +2755,9 @@ class CustomFFlagEditor(QWidget):
         self._hotkey_controller: _HotkeyController | None = None
         self._owns_hotkey_controller = False
         if self._windows_keybinds:
-            from .windows_hotkeys import WindowsCustomFFlagHotkeyController
+            from .windows_hotkeys import (  # ruff: ignore[import-outside-top-level]
+                WindowsCustomFFlagHotkeyController,
+            )
 
             self._hotkey_controller = hotkey_controller
             if self._hotkey_controller is None:
@@ -2723,7 +2768,9 @@ class CustomFFlagEditor(QWidget):
             self._hotkey_service = self._hotkey_controller.service
             self._hotkey_controller.toggled.connect(self._on_hotkey_toggled)
         elif self._linux_keybinds:
-            from .linux_hotkeys import LinuxCustomFFlagHotkeyController
+            from .linux_hotkeys import (  # ruff: ignore[import-outside-top-level]
+                LinuxCustomFFlagHotkeyController,
+            )
 
             self._hotkey_controller = hotkey_controller
             if self._hotkey_controller is None:
@@ -2740,7 +2787,7 @@ class CustomFFlagEditor(QWidget):
         self._setup_ui()
         self._load_flags()
 
-    def _setup_ui(self) -> None:
+    def _setup_ui(self) -> None:  # ruff: ignore[too-many-locals, too-many-statements]
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 10, 0, 0)
         layout.setSpacing(7)
@@ -2877,7 +2924,7 @@ class CustomFFlagEditor(QWidget):
         else:
             self._update_status()
 
-    def _load_flags(self, sync_hotkeys: bool = True) -> None:
+    def _load_flags(self, sync_hotkeys: bool = True) -> None:  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
         flags = dict(getattr(self._config, 'custom_fflags', {}) or {}) if self._config else {}
         self._replace_table_rows(sorted(flags.items(), key=lambda item: item[0].lower()))
         self._filter_rows(self._search.text())
@@ -2889,7 +2936,7 @@ class CustomFFlagEditor(QWidget):
         """Bulk-load rows without constructing a widget for every boolean value."""
         self._loading = True
         self._table.setUpdatesEnabled(False)
-        self._table.blockSignals(True)
+        self._table.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
         try:
             self._table.setRowCount(len(rows))
             for row, (name, value) in enumerate(rows):
@@ -2916,7 +2963,7 @@ class CustomFFlagEditor(QWidget):
                     )
                     self._table.setItem(row, 3, keybind_item)
         finally:
-            self._table.blockSignals(False)
+            self._table.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
             self._table.setUpdatesEnabled(True)
             self._loading = False
 
@@ -2983,9 +3030,9 @@ class CustomFFlagEditor(QWidget):
     def _keybind_text(binding: _HotkeyBinding | None) -> str:
         binding_text: Callable[[_HotkeyBinding | None], str]
         if sys.platform.startswith('linux'):
-            from .linux_hotkeys import binding_text
+            from .linux_hotkeys import binding_text  # ruff: ignore[import-outside-top-level]
         else:
-            from .windows_hotkeys import binding_text
+            from .windows_hotkeys import binding_text  # ruff: ignore[import-outside-top-level]
 
         return binding_text(binding)
 
@@ -3072,7 +3119,9 @@ class CustomFFlagEditor(QWidget):
         if prompt.clickedButton() != setup_button:
             return None
         try:
-            from .linux_hotkeys import launch_permission_setup
+            from .linux_hotkeys import (  # ruff: ignore[import-outside-top-level]
+                launch_permission_setup,
+            )
 
             launch_permission_setup()
         except OSError as exc:
@@ -3093,7 +3142,7 @@ class CustomFFlagEditor(QWidget):
         return None
 
     def _edit_keybind(self, row: int, column: int) -> None:
-        if column != 3:
+        if column != 3:  # ruff: ignore[magic-value-comparison]
             return
         name_item = self._table.item(row, 0)
         name = name_item.text() if name_item else ''
@@ -3138,7 +3187,7 @@ class CustomFFlagEditor(QWidget):
     def _on_cell_changed(self, row: int, column: int) -> None:
         if self._loading:
             return
-        if self._hotkeys_supported and column == 2:
+        if self._hotkeys_supported and column == 2:  # ruff: ignore[magic-value-comparison]
             self._save_hotkey_settings()
             return
         if column == 0:
@@ -3194,19 +3243,19 @@ class CustomFFlagEditor(QWidget):
             return
         try:
             self._proxy_master.refresh_custom_fflag_interception()
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log('CustomFFlags', f'Could not refresh proxy interception: {exc}')
 
-    def _on_enabled_toggled(self, checked: bool) -> None:
+    def _on_enabled_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
         if self._config is None or self._proxy_master is None:
             return
 
         if checked and not self._config.custom_fflags_warning_accepted:
             warning = CustomFFlagWarningDialog(self)
             if warning.exec() != QDialog.DialogCode.Accepted:
-                self._enable_toggle.blockSignals(True)
+                self._enable_toggle.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
                 self._enable_toggle.setChecked(False)
-                self._enable_toggle.blockSignals(False)
+                self._enable_toggle.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
                 self._update_status()
                 return
             self._config.custom_fflags_warning_accepted = True
@@ -3280,7 +3329,9 @@ class CustomFFlagEditor(QWidget):
         self._load_flags()
 
     def _import_mapping(self, payload: object) -> None:
-        from ..proxy.addons.custom_fflags import normalize_custom_fflags
+        from fleasion.proxy.addons.custom_fflags import (  # ruff: ignore[import-outside-top-level]
+            normalize_custom_fflags,
+        )
 
         if not _is_object_dict(payload):
             raise ValueError(tr('modifications.fastflag.import_root_must_be_object'))
@@ -3367,7 +3418,7 @@ class CustomFFlagEditor(QWidget):
                 return entry[0]
             if column == 1:
                 return entry[1]
-            if column == 2:
+            if column == 2:  # ruff: ignore[magic-value-comparison]
                 return 'disabled' if entry[0] in self._disabled_flag_names() else 'enabled'
             return self._keybind_text(self._keybinds().get(entry[0]))
 
@@ -3434,7 +3485,7 @@ class CustomFFlagEditor(QWidget):
 class FFlagSection(QWidget):
     """The complete Fast Flags section content with all controls."""
 
-    def __init__(
+    def __init__(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
         self,
         manager: _ModificationManagerLike,
         roblox_monitor: RobloxExitMonitor | None = None,
@@ -3463,7 +3514,7 @@ class FFlagSection(QWidget):
         self._setup_ui()
         self._load_from_manager()
 
-    def _setup_ui(self) -> None:
+    def _setup_ui(self) -> None:  # ruff: ignore[too-many-statements]
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
@@ -3651,7 +3702,7 @@ class FFlagSection(QWidget):
 
         self.setLayout(layout)
 
-    def set_presets_enabled(self, enabled: bool) -> None:
+    def set_presets_enabled(self, enabled: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
         """Enable the allowlisted/local controls without disabling the proxy editor."""
         self._preset_container.setEnabled(enabled)
         self._reset_btn.setEnabled(enabled)
@@ -3670,11 +3721,11 @@ class FFlagSection(QWidget):
             else tr('modifications.quality', quality=value)
         )
 
-    def _on_mesh_lod_toggle(self, checked: bool) -> None:
+    def _on_mesh_lod_toggle(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
         self._mesh_lod_slider.setEnabled(checked)
         self._schedule_write()
 
-    def _on_frm_toggle(self, checked: bool) -> None:
+    def _on_frm_toggle(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
         self._frm_slider.setEnabled(checked)
         self._schedule_write()
 
@@ -3703,11 +3754,10 @@ class FFlagSection(QWidget):
         if is_roblox_running:
             # Queue the modification instead of writing immediately
             self._manager.pending_modifications_queue.enqueue_framerate_cap(value)
+        elif value:
+            run_in_thread(self._manager.sync_saved_global_settings)()
         else:
-            if value:
-                run_in_thread(self._manager.sync_saved_global_settings)()
-            else:
-                run_in_thread(self._manager.reset_framerate_cap)()
+            run_in_thread(self._manager.reset_framerate_cap)()
 
     def _schedule_write(self, *_args: object) -> None:
         self._debounce_timer.start()
@@ -3768,7 +3818,7 @@ class FFlagSection(QWidget):
             self._framerate_cap,
         ]
         for w in widgets:
-            w.blockSignals(True)
+            w.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
 
         idx = self._rendering_mode.findData(str(s.get('rendering_mode') or 'Default'))
         if idx >= 0:
@@ -3827,7 +3877,7 @@ class FFlagSection(QWidget):
         self._framerate_cap.setValue(framerate_cap)
 
         for w in widgets:
-            w.blockSignals(False)
+            w.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
 
     def _on_reset_all(self) -> None:
         """Reset all fast-flag controls to default and restore files."""
@@ -3862,7 +3912,7 @@ class FFlagSection(QWidget):
 class ModificationsTab(QWidget):
     """The entire Modifications tab, added to the dashboard's QTabWidget."""
 
-    def __init__(
+    def __init__(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
         self,
         mod_manager: _ModificationManagerLike,
         roblox_monitor: RobloxExitMonitor | None = None,
@@ -3893,7 +3943,7 @@ class ModificationsTab(QWidget):
                 self._on_roblox_player_status_changed
             )
 
-    def _setup_ui(self) -> None:
+    def _setup_ui(self) -> None:  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
         outer = QVBoxLayout()
         outer.setContentsMargins(0, 0, 0, 0)
 
@@ -4043,14 +4093,14 @@ class ModificationsTab(QWidget):
 
         self._container_layout.addWidget(font_section)
 
-        # Rebuild persisted head variant rows (headA–headP added in a previous session)
-        _head_variant_set = set(HEAD_VARIANTS)
+        # Rebuild persisted head variant rows (headA–headP added in a previous session)  # ruff: ignore[ambiguous-unicode-character-comment]
+        head_variant_set = set(HEAD_VARIANTS)
         for entry in self._manager.entries:
             target = entry.get('target_path', '')
             if not target or target in self._row_widgets:
                 continue
             fname = Path(target.replace('\\', '/')).name
-            if fname in _head_variant_set:
+            if fname in head_variant_set:
                 name = tr('modifications.head_variant', variant=fname[4:-5].upper())
                 row = ModRowWidget(
                     self._manager,
@@ -4079,13 +4129,13 @@ class ModificationsTab(QWidget):
         self._custom_content_layout = self._custom_section.content_layout
 
         # Rebuild persisted custom entries
-        for entry in self._manager.entries:
+        for entry in self._manager.entries:  # ruff: ignore[too-many-nested-blocks]
             target = entry.get('target_path', '')
-            if target and target not in self._row_widgets:
+            if target and target not in self._row_widgets:  # ruff: ignore[collapsible-if]
                 # This is likely a custom entry
-                if not any(target == p for _, p in AVATAR_MESHES):
-                    if not any(target == p for _, p in SKYBOX_FACES):
-                        if not any(target == p for _, p in INDOOR_FACES):
+                if not any(target == p for _, p in AVATAR_MESHES):  # ruff: ignore[collapsible-if]
+                    if not any(target == p for _, p in SKYBOX_FACES):  # ruff: ignore[collapsible-if]
+                        if not any(target == p for _, p in INDOOR_FACES):  # ruff: ignore[collapsible-if]
                             if not any(target == p for _, p, _ in SOUNDS):
                                 self._add_custom_row(
                                     entry.get('display_name', Path(target).name),
@@ -4120,7 +4170,7 @@ class ModificationsTab(QWidget):
 
     @override
     def changeEvent(self, a0: QEvent) -> None:
-        from PySide6.QtCore import QEvent
+        from PySide6.QtCore import QEvent  # ruff: ignore[import-outside-top-level]
 
         super().changeEvent(a0)
         if a0.type() == QEvent.Type.PaletteChange:
@@ -4138,7 +4188,7 @@ class ModificationsTab(QWidget):
         pal = self.palette()
         win_light = pal.window().color().lightness()
         alt_light = pal.alternateBase().color().lightness()
-        if win_light < 128 and alt_light <= win_light:
+        if win_light < 128 and alt_light <= win_light:  # ruff: ignore[magic-value-comparison]
             # System dark mode: alternate-base is no lighter than window —
             # force the same card colour as the explicit dark theme.
             bg = 'background-color: rgb(64, 64, 64);'
@@ -4146,8 +4196,8 @@ class ModificationsTab(QWidget):
             bg = 'background-color: palette(alternate-base);'
         self._mod_container.setStyleSheet(f'QWidget#_FleasionModContainer {{ {bg} }}')
 
-    def _clear_roblox_cache(self) -> None:
-        from .delete_cache import DeleteCacheWindow
+    def _clear_roblox_cache(self) -> None:  # ruff: ignore[no-self-use]
+        from .delete_cache import DeleteCacheWindow  # ruff: ignore[import-outside-top-level]
 
         window = DeleteCacheWindow()
         window.show()
@@ -4212,7 +4262,7 @@ class ModificationsTab(QWidget):
             tr('ui.gui.modifications_tab.select_variant'),
             available,
             0,
-            False,
+            False,  # ruff: ignore[boolean-positional-value-in-call]
         )
         if ok and item:
             target = target_path_for_current_platform(rf'content\avatar\heads\{item}')
@@ -4303,14 +4353,14 @@ class ModificationsTab(QWidget):
     # Fast Flags toggle
     # ------------------------------------------------------------------
 
-    def _on_fflag_toggle(self, checked: bool) -> None:
+    def _on_fflag_toggle(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
         self._manager.fast_flags_enabled = checked
         self._fflag_widget.set_presets_enabled(checked)
         if checked:
             # Immediately write current settings
             self._fflag_widget.apply_current_settings()
 
-    def _on_roblox_player_status_changed(self, is_running: bool) -> None:
+    def _on_roblox_player_status_changed(self, is_running: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
         """Apply all queued modifications when Roblox Player exits."""
         if not is_running:
             # Roblox has exited, apply any pending modifications
@@ -4452,11 +4502,10 @@ class _CustomModDialog(QDialog):
                 if p.exists():
                     # If it's a directory, start there; if it's a file, start in its parent
                     initial_dir = str(p) if p.is_dir() else str(p.parent)
-                else:
-                    # If the exact path doesn't exist but the parent does, use the parent
-                    if p.parent.exists():
-                        initial_dir = str(p.parent)
-            except Exception:
+                # If the exact path doesn't exist but the parent does, use the parent
+                elif p.parent.exists():
+                    initial_dir = str(p.parent)
+            except Exception:  # ruff: ignore[blind-except]
                 initial_dir = ''
 
         path, _ = QFileDialog.getOpenFileName(

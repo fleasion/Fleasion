@@ -4,4 +4,4 @@ from .fflag_manager import FastFlagManager
 from .fflag_profiles import FastFlagProfileManager
 from .manager import ModificationManager
 
-__all__ = ['ModificationManager', 'FastFlagManager', 'FastFlagProfileManager']
+__all__ = ['ModificationManager', 'FastFlagManager', 'FastFlagProfileManager']  # ruff: ignore[unsorted-dunder-all]

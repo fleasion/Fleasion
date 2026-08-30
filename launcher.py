@@ -11,7 +11,7 @@ else:
     # Load NumPy before PySide6 on Windows. Some frozen Windows builds otherwise
     # fail while initializing NumPy's native DLLs after Qt has already loaded.
     if sys.platform == 'win32':
-        import numpy  # noqa: F401
+        import numpy  # ruff: ignore[unused-import, unconventional-import-alias]
 
     from fleasion import main
 

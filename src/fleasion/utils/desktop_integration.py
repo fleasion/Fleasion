@@ -11,12 +11,13 @@ import os
 import plistlib
 import shlex
 import shutil
-import subprocess
+import subprocess  # ruff: ignore[suspicious-subprocess-import]
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ..version import macos_bundle_version
+from fleasion.version import macos_bundle_version
+
 from .metadata import APP_NAME, APP_VERSION
 from .paths import USER_HOME, get_icon_path
 
@@ -35,10 +36,10 @@ _DESCRIPTION = 'Roblox asset interceptor and replacer'
 
 def _log(message: str) -> None:
     try:
-        from .logging import log_buffer
+        from .logging import log_buffer  # ruff: ignore[import-outside-top-level]
 
         log_buffer.log('DesktopIntegration', message)
-    except Exception:
+    except Exception:  # ruff: ignore[blind-except, try-except-pass]
         pass
 
 
@@ -80,7 +81,7 @@ def _launch_command() -> tuple[list[str], Path | None, dict[str, str]]:
 def _remove_windows_shortcut() -> bool:
     try:
         WINDOWS_START_MENU_SHORTCUT_PATH.unlink(missing_ok=True)
-        return True
+        return True  # ruff: ignore[try-consider-else]
     except OSError as exc:
         _log(f'Failed to remove Windows start-menu shortcut: {exc}')
         return False
@@ -96,9 +97,9 @@ else:
     def _create_windows_shortcut_runtime(
         command: list[str], working_dir: Path | None, icon_path: Path | None
     ) -> bool:
-        try:
-            import pythoncom
-            import win32com.client
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
+            import pythoncom  # ruff: ignore[import-outside-top-level]
+            import win32com.client  # ruff: ignore[import-outside-top-level]
 
             pythoncom.CoInitialize()
             shell = win32com.client.Dispatch('WScript.Shell')
@@ -112,8 +113,8 @@ else:
                 shortcut.IconLocation = f'{icon_path},0'
             shortcut.Save()
             _log(f'Windows start-menu shortcut updated: {WINDOWS_START_MENU_SHORTCUT_PATH}')
-            return True
-        except Exception as exc:
+            return True  # ruff: ignore[try-consider-else]
+        except Exception as exc:  # ruff: ignore[blind-except]
             _log(f'Failed to create Windows start-menu shortcut: {exc}')
             return False
 
@@ -144,7 +145,7 @@ def _register_macos_application(app_path: Path) -> None:
     if not lsregister.is_file():
         return
     try:
-        subprocess.run(
+        subprocess.run(  # ruff: ignore[subprocess-run-without-check, subprocess-without-shell-equals-true]
             [str(lsregister), '-f', str(app_path)],
             capture_output=True,
             timeout=10,
@@ -162,7 +163,7 @@ def _remove_macos_app() -> bool:
         return True
     try:
         shutil.rmtree(MACOS_APPLICATION_PATH)
-        return True
+        return True  # ruff: ignore[try-consider-else]
     except OSError as exc:
         _log(f'Failed to remove macOS launcher app: {exc}')
         return False
@@ -189,7 +190,7 @@ def _create_macos_app() -> bool:
         _log(f'Refusing to overwrite unmarked macOS app: {MACOS_APPLICATION_PATH}')
         return False
 
-    try:
+    try:  # ruff: ignore[too-many-statements-in-try-clause]
         macos_dir.mkdir(parents=True, exist_ok=True)
         resources.mkdir(parents=True, exist_ok=True)
 
@@ -224,8 +225,8 @@ def _create_macos_app() -> bool:
         _register_macos_application(MACOS_APPLICATION_PATH)
         marker.write_text('Managed by Fleasion desktop integration.\n', encoding='utf-8')
         _log(f'macOS launcher app updated: {MACOS_APPLICATION_PATH}')
-        return True
-    except Exception as exc:
+        return True  # ruff: ignore[try-consider-else]
+    except Exception as exc:  # ruff: ignore[blind-except]
         _log(f'Failed to create macOS launcher app: {exc}')
         return False
 
@@ -236,14 +237,14 @@ if TYPE_CHECKING:
 else:
 
     def _restore_linux_uri_handler_runtime() -> None:
-        from . import platform_linux
+        from . import platform_linux  # ruff: ignore[import-outside-top-level]
 
         platform_linux.__dict__['_restore_linux_roblox_uri_handler']()
 
 
 def _remove_linux_desktop_entries() -> bool:
     try:
-        from .platform_linux import (
+        from .platform_linux import (  # ruff: ignore[import-outside-top-level]
             LINUX_APPLICATIONS_DIR,
             LINUX_DESKTOP_ENTRY_PATH,
             LINUX_LAUNCHER_PATH,
@@ -253,24 +254,26 @@ def _remove_linux_desktop_entries() -> bool:
             path.unlink(missing_ok=True)
         if LINUX_DESKTOP_ENTRY_PATH.parent == LINUX_APPLICATIONS_DIR:
             _restore_linux_uri_handler_runtime()
-        return True
-    except Exception as exc:
+        return True  # ruff: ignore[try-consider-else]
+    except Exception as exc:  # ruff: ignore[blind-except]
         _log(f'Failed to remove Linux desktop integration: {exc}')
         return False
 
 
 def _create_linux_desktop_entries() -> bool:
     try:
-        from .platform_linux import install_desktop_entries
+        from .platform_linux import (  # ruff: ignore[import-outside-top-level]
+            install_desktop_entries,
+        )
 
         install_desktop_entries()
-        return True
-    except Exception as exc:
+        return True  # ruff: ignore[try-consider-else]
+    except Exception as exc:  # ruff: ignore[blind-except]
         _log(f'Failed to create Linux desktop integration: {exc}')
         return False
 
 
-def sync_desktop_integration(enabled: bool) -> bool:
+def sync_desktop_integration(enabled: bool) -> bool:  # ruff: ignore[boolean-type-hint-positional-argument]
     """Ensure desktop/start-menu integration matches the desired state."""
     if sys.platform == 'win32':
         return _create_windows_shortcut() if enabled else _remove_windows_shortcut()

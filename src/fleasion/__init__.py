@@ -13,8 +13,7 @@ __version__ = read_version()
 
 def __getattr__(name: str) -> object:
     if name == 'main':
-        # ruff: ignore[import-outside-top-level] - Keep the Qt application import lazy
-        from .app import main
+        from .app import main  # ruff: ignore[import-outside-top-level]
 
         return main
     raise AttributeError(name)

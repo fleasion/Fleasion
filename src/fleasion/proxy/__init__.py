@@ -13,8 +13,7 @@ __all__ = ['ProxyMaster', 'check_and_patch_running_roblox_ca']
 
 def __getattr__(name: str) -> object:
     if name in __all__:
-        # ruff: ignore[import-outside-top-level] - Preserve the package's lazy proxy import
-        from .master import (
+        from .master import (  # ruff: ignore[import-outside-top-level]
             ProxyMaster,
             check_and_patch_running_roblox_ca,
         )

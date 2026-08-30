@@ -36,7 +36,7 @@ log = logging.getLogger(__name__)
 def _log_solidmodel_message(message: str) -> None:
     """Best-effort UI log mirroring the converter's existing logging behavior."""
     with suppress(Exception):
-        from ....utils import log_buffer
+        from fleasion.utils import log_buffer  # ruff: ignore[import-outside-top-level]
 
         log_buffer.log('SolidModel', message)
 

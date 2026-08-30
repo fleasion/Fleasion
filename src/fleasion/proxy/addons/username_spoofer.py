@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import json
 import threading
-from typing import TYPE_CHECKING, Protocol, TypeIs, TypedDict
+from typing import TYPE_CHECKING, Protocol, TypedDict, TypeIs
 
 import requests
 
-from ...utils import log_buffer
+from fleasion.utils import log_buffer
 
 if TYPE_CHECKING:
-    from ...config.manager import JsonObject, JsonValue
-    from ..server import ProxyFlow
+    from fleasion.config.manager import JsonObject, JsonValue
+    from fleasion.proxy.server import ProxyFlow
 
 PROFILE_ENDPOINT_FRAGMENT = '/v1/user/profiles/get-profiles'
 GAMEJOIN_ENDPOINT_FRAGMENTS = (
@@ -180,7 +180,7 @@ class UsernameSpoofer:
         # Roblox appears to treat an empty string as "missing" and can fall
         # back to other name sources. Use a zero-width sentinel so a blank
         # spoof still renders visibly blank while remaining intentionally set.
-        return EMPTY_NAME_SENTINEL if new_value == '' else new_value
+        return EMPTY_NAME_SENTINEL if new_value == '' else new_value  # ruff: ignore[compare-to-empty-string]
 
     @classmethod
     def _set_name_fields(cls, profile: JsonObject, new_value: str) -> int:
@@ -196,30 +196,32 @@ class UsernameSpoofer:
                 changed += 1
         return changed
 
-    def request(self, flow: ProxyFlow) -> None:
+    def request(self, flow: ProxyFlow) -> None:  # ruff: ignore[no-self-use, unused-method-argument]
         return
 
     @staticmethod
     def _fetch_authenticated_user_id() -> int | None:
-        from ...utils.roblox_auth import get_roblosecurity
+        from fleasion.utils.roblox_auth import (  # ruff: ignore[import-outside-top-level]
+            get_roblosecurity,
+        )
 
         cookie = get_roblosecurity()
         if not cookie:
             return None
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
             sess = requests.Session()
             sess.trust_env = False
             sess.proxies = {}
             try:
                 sess.cookies.set('.ROBLOSECURITY', cookie)
-            except Exception:
+            except Exception:  # ruff: ignore[blind-except]
                 sess.headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
             resp = sess.get('https://users.roblox.com/v1/users/authenticated', timeout=10)
-            if resp.status_code != 200:
+            if resp.status_code != 200:  # ruff: ignore[magic-value-comparison]
                 return None
             user_id = resp.json().get('id')
             return int(user_id) if user_id is not None else None
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log('username-spoofer', f'Failed to fetch authenticated user id: {exc}')
             return None
 
@@ -290,7 +292,7 @@ class UsernameSpoofer:
             enabled = bool(self._runtime_state.get('self_game_creator'))
         if not enabled:
             return False
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
             response = flow.response
             if TYPE_CHECKING:
                 assert response is not None
@@ -306,12 +308,12 @@ class UsernameSpoofer:
                 separators=(',', ':'),
                 ensure_ascii=False,
             ).encode('utf-8')
-            return True
-        except Exception as exc:
+            return True  # ruff: ignore[try-consider-else]
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log('username-spoofer', f'Failed to modify gamejoin response: {exc}')
             return False
 
-    def response(self, flow: ProxyFlow) -> None:
+    def response(self, flow: ProxyFlow) -> None:  # ruff: ignore[complex-structure, too-many-branches]
         if flow.response is None or not flow.response.content:
             return
         if self._modify_gamejoin_response(flow):
@@ -329,7 +331,7 @@ class UsernameSpoofer:
             or state.get('self_verified')
         ):
             return
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
             payload = _json_object(_load_json(flow.response.content.decode('utf-8')))
             profile_details = payload.get('profileDetails', [])
             if not isinstance(profile_details, list):
@@ -359,5 +361,5 @@ class UsernameSpoofer:
                 separators=(',', ':'),
                 ensure_ascii=False,
             ).encode('utf-8')
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log('username-spoofer', f'Failed to modify profile response: {exc}')

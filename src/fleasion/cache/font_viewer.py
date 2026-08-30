@@ -16,8 +16,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..localization import tr
-from ..utils import log_buffer
+from fleasion.localization import tr
+from fleasion.utils import log_buffer
 
 
 class FontViewerWidget(QWidget):
@@ -41,7 +41,7 @@ class FontViewerWidget(QWidget):
 
     def _load_font(self) -> None:
         """Load font from bytes and register with Qt."""
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
             log_buffer.log('FontViewer', f'Loading font ({len(self.font_data)} bytes)')
 
             # Write to temporary file so Qt can load it
@@ -73,10 +73,10 @@ class FontViewerWidget(QWidget):
             else:
                 log_buffer.log('FontViewer', 'Failed to load font')
 
-        except Exception as e:
+        except Exception as e:  # ruff: ignore[blind-except]
             log_buffer.log('FontViewer', f'Font load error: {e}')
 
-    def _setup_ui(self) -> None:
+    def _setup_ui(self) -> None:  # ruff: ignore[too-many-locals, too-many-statements]
         """Setup the UI."""
         layout = QVBoxLayout()
         layout.setContentsMargins(10, 10, 10, 10)

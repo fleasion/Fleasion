@@ -67,12 +67,14 @@ class UpdateResolver:
         """Return the validated GitHub owner and repository path."""
         parsed = self.parsed_repository_url
         path_parts = parsed.path.strip('/').split('/')
-        if parsed.scheme != 'https' or parsed.hostname != 'github.com' or len(path_parts) != 2:
-            raise ValueError(f'Unsupported GitHub repository URL: {self.repository_url!r}')
+        if parsed.scheme != 'https' or parsed.hostname != 'github.com' or len(path_parts) != 2:  # ruff: ignore[magic-value-comparison]
+            msg = f'Unsupported GitHub repository URL: {self.repository_url!r}'
+            raise ValueError(msg)
         owner, repository = path_parts
         repository = repository.removesuffix('.git')
         if not owner or not repository:
-            raise ValueError(f'Unsupported GitHub repository URL: {self.repository_url!r}')
+            msg = f'Unsupported GitHub repository URL: {self.repository_url!r}'
+            raise ValueError(msg)
         return f'{owner}/{repository}'
 
     @cached_property
@@ -186,6 +188,6 @@ class UpdateResolver:
             )
             response.raise_for_status()
             release_data = response.json()
-        except Exception:
+        except Exception:  # ruff: ignore[blind-except]
             return None
         return self.select_update(release_data)

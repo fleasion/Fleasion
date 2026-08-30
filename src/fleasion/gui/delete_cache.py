@@ -6,8 +6,8 @@ import time
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import QDialog, QLabel, QTextEdit, QVBoxLayout
 
-from ..localization import tr
-from ..utils import delete_cache, get_icon_path, log_buffer
+from fleasion.localization import tr
+from fleasion.utils import delete_cache, get_icon_path, log_buffer
 
 
 class DeleteCacheWindow(QDialog):
@@ -37,7 +37,7 @@ class DeleteCacheWindow(QDialog):
     def _set_icon(self) -> None:
         """Set window icon."""
         if icon_path := get_icon_path():
-            from PySide6.QtGui import QIcon
+            from PySide6.QtGui import QIcon  # ruff: ignore[import-outside-top-level]
 
             self.setWindowIcon(QIcon(str(icon_path)))
 
@@ -64,9 +64,9 @@ class DeleteCacheWindow(QDialog):
         self.log_signal.connect(self._append_log)
         self.done_signal.connect(self._on_done)
 
-    def _get_monospace_font(self):
+    def _get_monospace_font(self):  # ruff: ignore[missing-return-type-private-function, no-self-use]
         """Get a monospace font."""
-        from PySide6.QtGui import QFontDatabase
+        from PySide6.QtGui import QFontDatabase  # ruff: ignore[import-outside-top-level]
 
         font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
         font.setPointSize(9)

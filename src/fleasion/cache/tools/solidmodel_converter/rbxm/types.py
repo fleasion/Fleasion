@@ -100,7 +100,7 @@ class RbxInstance:
     class_name: str
     referent: int
     properties: dict[str, RbxProperty] = field(default_factory=dict[str, RbxProperty])
-    children: list['RbxInstance'] = field(default_factory=list['RbxInstance'])  # noqa: UP037
+    children: list[RbxInstance] = field(default_factory=list['RbxInstance'])
     is_service: bool = False
 
 

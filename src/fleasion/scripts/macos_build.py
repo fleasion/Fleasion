@@ -9,7 +9,7 @@ import plistlib
 import re
 import shlex
 import shutil
-import subprocess
+import subprocess  # ruff: ignore[suspicious-subprocess-import]
 import sys
 import tarfile
 import tempfile
@@ -51,8 +51,8 @@ def subprocess_run(
 ) -> subprocess.CompletedProcess[str]:
     """Run a command with consistent logging and text output."""
     if log_command:
-        log.info(f'Running {shlex.join(command)}')
-    return subprocess.run(
+        log.info('Running %s', shlex.join(command))
+    return subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
         command, check=check, capture_output=capture_output, env=environment, text=True
     )
 
@@ -95,7 +95,8 @@ class MacOSBuilder:
         output = result.stdout.strip()
         match = re.fullmatch(r'uv ([^ ]+)(?: .*)?', output)
         if match is None:
-            raise RuntimeError(f'Could not determine the installed uv version from {output!r}.')
+            msg = f'Could not determine the installed uv version from {output!r}.'
+            raise RuntimeError(msg)
         return match.group(1)
 
     @property
@@ -130,19 +131,21 @@ class MacOSBuilder:
         architectures = self._architectures(file_path)
         missing = set(required) - architectures
         if missing:
-            raise RuntimeError(
+            msg = (
                 f'{file_path} is missing {", ".join(sorted(missing))}; '
                 f'found {" ".join(sorted(architectures))!r}.'
             )
+            raise RuntimeError(msg)
 
     def _require_only_architectures(self, file_path: Path, *required: str) -> None:
         architectures = self._architectures(file_path)
         expected = set(required)
         if architectures != expected:
-            raise RuntimeError(
+            msg = (
                 f'{file_path} contains {" ".join(sorted(architectures))!r}; '
                 f'expected only {" ".join(sorted(expected))!r}.'
             )
+            raise RuntimeError(msg)
 
     @staticmethod
     def _payload_path(app_path: Path, relative_path: str) -> Path | None:
@@ -157,9 +160,8 @@ class MacOSBuilder:
     ) -> Path:
         payload_path = self._payload_path(app_path, relative_path)
         if payload_path is None or (executable and not os.access(payload_path, os.X_OK)):
-            raise RuntimeError(
-                f'{build_label} completed, but bundled payload was not found: {relative_path}'
-            )
+            msg = f'{build_label} completed, but bundled payload was not found: {relative_path}'
+            raise RuntimeError(msg)
         return payload_path
 
     def _verify_app_bundle(self, app_path: Path, build_label: str) -> None:
@@ -180,29 +182,33 @@ class MacOSBuilder:
         ]
         missing_directories = [path for path in required_directories if not path.is_dir()]
         if missing_directories:
-            raise RuntimeError(
+            msg = (
                 f'{build_label} completed, but required app directory is missing: '
                 f'{missing_directories[0]}'
             )
+            raise RuntimeError(msg)
         if not info_plist.is_file():
-            raise RuntimeError(f'{build_label} completed, but Info.plist is missing: {info_plist}')
+            msg = f'{build_label} completed, but Info.plist is missing: {info_plist}'
+            raise RuntimeError(msg)
 
         with info_plist.open('rb') as plist_file:
             plist = plistlib.load(plist_file)
         if plist.get('CFBundlePackageType') != 'APPL':
-            raise RuntimeError(f'{info_plist} does not describe an APPL bundle.')
+            msg = f'{info_plist} does not describe an APPL bundle.'
+            raise RuntimeError(msg)
         if plist.get('CFBundleExecutable') != self.executable_name:
-            raise RuntimeError(
+            msg = (
                 f'{info_plist} has an unexpected CFBundleExecutable: '
                 f'{plist.get("CFBundleExecutable")!r}.'
             )
+            raise RuntimeError(msg)
         icon_file = plist.get('CFBundleIconFile')
         if not isinstance(icon_file, str) or not (resources_path / icon_file).is_file():
-            raise RuntimeError(f'{build_label} completed, but its app icon is missing.')
+            msg = f'{build_label} completed, but its app icon is missing.'
+            raise RuntimeError(msg)
         if not executable_path.is_file() or not os.access(executable_path, os.X_OK):
-            raise RuntimeError(
-                f'{build_label} completed, but its executable is missing: {executable_path}'
-            )
+            msg = f'{build_label} completed, but its executable is missing: {executable_path}'
+            raise RuntimeError(msg)
 
         self._require_payload(
             app_path, '_sounddevice_data/portaudio-binaries/libportaudio.dylib', build_label
@@ -212,10 +218,11 @@ class MacOSBuilder:
             '_soundfile_data/libsndfile_x86_64.dylib',
         )
         if not any(self._payload_path(app_path, payload) for payload in soundfile_payloads):
-            raise RuntimeError(
+            msg = (
                 f'{build_label} completed, but bundled payload was not found: '
                 '_soundfile_data/libsndfile_*.dylib'
             )
+            raise RuntimeError(msg)
 
     @staticmethod
     def _is_allowed_single_arch_macho(app_path: Path, file_path: Path, archs: set[str]) -> bool:
@@ -253,9 +260,8 @@ class MacOSBuilder:
 
         if invalid_files:
             details = '\n'.join(invalid_files[:40])
-            raise RuntimeError(
-                f'Universal app still contains single-architecture Mach-O files:\n{details}'
-            )
+            msg = f'Universal app still contains single-architecture Mach-O files:\n{details}'
+            raise RuntimeError(msg)
 
     @staticmethod
     def _minimum_macos_version(file_path: Path, architecture: str) -> str | None:
@@ -274,9 +280,9 @@ class MacOSBuilder:
                 command = 'build'
             elif value == 'cmd LC_VERSION_MIN_MACOSX':
                 command = 'minimum'
-            elif command == 'build' and value.startswith('minos '):
-                return value.split(maxsplit=1)[1]
-            elif command == 'minimum' and value.startswith('version '):
+            elif (command == 'build' and value.startswith('minos ')) or (
+                command == 'minimum' and value.startswith('version ')
+            ):
                 return value.split(maxsplit=1)[1]
         return None
 
@@ -298,10 +304,11 @@ class MacOSBuilder:
                     incompatible.append(f'{file_path} [{architecture}]: macOS {minimum_version}')
         if incompatible:
             details = '\n'.join(incompatible[:40])
-            raise RuntimeError(
+            msg = (
                 f'App contains binaries requiring newer than macOS '
                 f'{self.deployment_target}:\n{details}'
             )
+            raise RuntimeError(msg)
 
     def _build_arm64(self) -> None:
         """Build the native arm64 slice with the active pinned Python."""
@@ -335,26 +342,29 @@ class MacOSBuilder:
             log_command=False,
         )
         if rosetta.returncode != 0:
-            raise RuntimeError(
+            msg = (
                 'Rosetta is required for the Intel build. Install it with: '
                 'softwareupdate --install-rosetta --agree-to-license'
             )
+            raise RuntimeError(msg)
         if self.x86_uv_path.is_file() and os.access(self.x86_uv_path, os.X_OK):
             return
 
-        archive_path = Path(f'/tmp/uv-x86_64-apple-darwin-{self.x86_uv_version}.tar.gz')
         url = (
             'https://github.com/astral-sh/uv/releases/download/'
             f'{self.x86_uv_version}/uv-x86_64-apple-darwin.tar.gz'
         )
-        log.info(f'Downloading x86_64 uv {self.x86_uv_version}')
-        with urllib.request.urlopen(url) as response, archive_path.open('wb') as archive_file:
-            shutil.copyfileobj(response, archive_file)
-        Path('.tools').mkdir(parents=True, exist_ok=True)
-        with tarfile.open(archive_path, 'r:gz') as archive:
-            archive.extractall('.tools', filter='data')
+        log.info('Downloading x86_64 uv %s', self.x86_uv_version)
+        with tempfile.TemporaryDirectory(prefix='fleasion-uv-') as temp_dir:
+            archive_path = Path(temp_dir) / 'uv-x86_64-apple-darwin.tar.gz'
+            with urllib.request.urlopen(url) as response, archive_path.open('wb') as archive_file:  # ruff: ignore[suspicious-url-open-usage]
+                shutil.copyfileobj(response, archive_file)
+            Path('.tools').mkdir(parents=True, exist_ok=True)
+            with tarfile.open(archive_path, 'r:gz') as archive:
+                archive.extractall('.tools', filter='data')
         if not self.x86_uv_path.is_file():
-            raise RuntimeError(f'uv archive did not contain {self.x86_uv_path}.')
+            msg = f'uv archive did not contain {self.x86_uv_path}.'
+            raise RuntimeError(msg)
 
     def _build_x86_64(self) -> None:
         """Build the Intel slice in an isolated Rosetta environment."""
@@ -503,8 +513,8 @@ class MacOSBuilder:
                 ]
             )
             self._verify_zip_package()
-            log.info(f'Built {app_path} ({architecture})')
-            log.info(f'Built {self.zip_path}')
+            log.info('Built %s (%s)', app_path, architecture)
+            log.info('Built %s', self.zip_path)
             return
 
         self._require_architectures(
@@ -514,18 +524,20 @@ class MacOSBuilder:
             app_path, f'{_HELPER_NAME}-{architecture}', 'Final app', executable=True
         )
         self._require_only_architectures(helper, architecture)
-        log.info(f'Built {app_path} ({architecture})')
+        log.info('Built %s (%s)', app_path, architecture)
 
     def build(self) -> None:
         """Build the configured macOS application architecture."""
         if platform.system() != 'Darwin':
-            raise RuntimeError('The macOS release builder must run on macOS.')
+            msg = 'The macOS release builder must run on macOS.'
+            raise RuntimeError(msg)
         if self.target_architecture not in _SUPPORTED_ARCHITECTURES:
             expected = ', '.join(sorted(_SUPPORTED_ARCHITECTURES))
-            raise RuntimeError(
+            msg = (
                 f'Unsupported MACOS_TARGET_ARCH: {self.target_architecture}. '
                 f'Expected one of: {expected}.'
             )
+            raise RuntimeError(msg)
 
         if self.target_architecture in {'arm64', 'x86_64'}:
             if self.target_architecture == 'arm64':

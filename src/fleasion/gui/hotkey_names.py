@@ -59,11 +59,11 @@ SMU_MOUSE_WHEEL_DOWN = 257
 
 def format_smu_virtual_key(virtual_key: int) -> str:
     """Return the same virtual-key label SMU presents in its hotkey UI."""
-    if 0x41 <= virtual_key <= 0x5A or 0x30 <= virtual_key <= 0x39:
+    if 0x41 <= virtual_key <= 0x5A or 0x30 <= virtual_key <= 0x39:  # ruff: ignore[magic-value-comparison]
         return chr(virtual_key)
-    if 0x70 <= virtual_key <= 0x87:
+    if 0x70 <= virtual_key <= 0x87:  # ruff: ignore[magic-value-comparison]
         return f'F{virtual_key - 0x70 + 1}'
-    if 0x60 <= virtual_key <= 0x69:
+    if 0x60 <= virtual_key <= 0x69:  # ruff: ignore[magic-value-comparison]
         return f'Numpad {virtual_key - 0x60}'
     if virtual_key == SMU_MOUSE_WHEEL_UP:
         return 'Mouse Wheel Up'

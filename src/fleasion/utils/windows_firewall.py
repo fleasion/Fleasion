@@ -5,7 +5,7 @@ from __future__ import annotations
 import ctypes
 import json
 import os
-import subprocess
+import subprocess  # ruff: ignore[suspicious-subprocess-import]
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -44,7 +44,7 @@ def _atomic_write_json(path: Path, payload: Mapping[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f'.{path.name}.tmp')
     temporary.write_text(json.dumps(payload, indent=2), encoding='utf-8')
-    os.replace(temporary, path)
+    os.replace(temporary, path)  # ruff: ignore[os-replace]
 
 
 def write_pending_repair(config_dir: Path | None = None) -> None:
@@ -100,7 +100,7 @@ def _is_admin() -> bool:
         return False
     try:
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
-    except Exception:
+    except Exception:  # ruff: ignore[blind-except]
         return False
 
 
@@ -117,8 +117,8 @@ def get_fleasion_firewall_rule_status(
     errors: list[str] = []
     for _direction, rule_name in _RULES:
         try:
-            completed = subprocess.run(
-                [
+            completed = subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
+                [  # ruff: ignore[start-process-with-partial-path]
                     'netsh.exe',
                     'advfirewall',
                     'firewall',
@@ -194,7 +194,7 @@ def install_fleasion_firewall_rules(
             'protocol=any',
         ]
         try:
-            completed = subprocess.run(
+            completed = subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
                 command,
                 capture_output=True,
                 text=True,

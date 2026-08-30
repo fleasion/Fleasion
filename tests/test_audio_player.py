@@ -13,14 +13,13 @@ from PySide6.QtWidgets import QApplication
 
 from fleasion.cache.audio_player import AudioPlayerWidget
 
-
 _app: QApplication | None = None
 
 
 def _qapp() -> QApplication:
     global _app
     app = QApplication.instance()
-    _app = cast(QApplication, app) if app is not None else QApplication([])
+    _app = cast('QApplication', app) if app is not None else QApplication([])
     return _app
 
 
@@ -128,7 +127,7 @@ def test_playback_callback_outputs_nonzero_float32_audio(monkeypatch: pytest.Mon
                 'Callable[[NDArray[np.float32], int, object, object], None]',
                 self.kwargs['callback'],
             )
-            channels = cast(int, self.kwargs['channels'])
+            channels = cast('int', self.kwargs['channels'])
             outdata: NDArray[np.float32] = np.zeros((128, channels), dtype=np.float32)
             callback(outdata, len(outdata), None, None)
             captured['outdata'] = outdata

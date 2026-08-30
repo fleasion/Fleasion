@@ -41,10 +41,12 @@ def _is_sober_resource_path(resource_dir: Path) -> bool:
     if 'org.vinegarhq.Sober' in resource_dir.parts:
         return True
     try:
-        from ..utils.platform_linux import is_sober_resource_dir
+        from fleasion.utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
+            is_sober_resource_dir,
+        )
 
         return is_sober_resource_dir(resource_dir)
-    except Exception:
+    except Exception:  # ruff: ignore[blind-except]
         return False
 
 
@@ -70,7 +72,7 @@ def _migrate_legacy_sober_stash(
     try:
         legacy.rename(destination)
     except OSError:
-        try:
+        try:  # ruff: ignore[suppressible-exception]
             shutil.copytree(legacy, destination)
         except OSError:
             # The caller can still use a fresh hashed stash.  Never delete or

@@ -3,7 +3,7 @@ import os
 import subprocess
 import sys
 from collections.abc import Callable, Iterable
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Never, Protocol, cast
@@ -53,12 +53,12 @@ def _probe_backend() -> JsonObject:
 
 
 def _backend_port() -> int:
-    return cast(int, daemon.__dict__['_backend_port'])
+    return cast('int', daemon.__dict__['_backend_port'])
 
 
 def _relay_handler() -> _RelayHandlerLike:
-    relay_type = cast(type[object], daemon.__dict__['_RelayHandler'])
-    return cast(_RelayHandlerLike, object.__new__(relay_type))
+    relay_type = cast('type[object]', daemon.__dict__['_RelayHandler'])
+    return cast('_RelayHandlerLike', object.__new__(relay_type))
 
 
 def _build_plist() -> bytes:
@@ -102,7 +102,8 @@ def _raise_connection_refused(*_args: object, **_kwargs: object) -> Never:
 
 
 def _raise_connection_refused_text(*_args: object, **_kwargs: object) -> Never:
-    raise ConnectionRefusedError('connection refused')
+    msg = 'connection refused'
+    raise ConnectionRefusedError(msg)
 
 
 def _backend_connection() -> SimpleNamespace:
@@ -361,7 +362,7 @@ def test_helper_installer_stages_helper_before_privileged_install(
     ok, detail = macos_proxy_helper.install_helper()
 
     assert ok is True, detail
-    script = cast(str, captured['script'])
+    script = cast('str', captured['script'])
     assert str(source) not in script
     assert '/usr/bin/python3' not in script
     assert 'launchctl bootout' in script
@@ -465,7 +466,7 @@ def _make_self_signed_ca_pem(
             x509.NameAttribute(NameOID.ORGANIZATION_NAME, organization),
         ]
     )
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     cert = (
         x509.CertificateBuilder()
         .subject_name(name)
@@ -657,7 +658,7 @@ def test_helper_patch_ca_rejects_symlinked_cacert(
     outside = tmp_path / 'outside.pem'
     outside.write_text('outside', encoding='utf-8')
     try:
-        os.symlink(outside, ssl_dir / 'cacert.pem')
+        Path(ssl_dir / 'cacert.pem').symlink_to(outside)
     except OSError as exc:
         pytest.skip(f'symlink unavailable: {exc}')
     current_ca = '-----BEGIN CERTIFICATE-----\nCURRENT\n-----END CERTIFICATE-----\n'

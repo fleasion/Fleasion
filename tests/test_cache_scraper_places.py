@@ -40,11 +40,11 @@ def _fetch_place_ids(scraper: CacheScraper, creator_id: int, creator_type: int |
 
 
 def _executor(scraper: CacheScraper) -> ThreadPoolExecutor:
-    return cast(ThreadPoolExecutor, scraper.__dict__['_executor'])
+    return cast('ThreadPoolExecutor', scraper.__dict__['_executor'])
 
 
 def _work_generation(scraper: CacheScraper) -> int:
-    return cast(int, scraper.__dict__['_work_generation'])
+    return cast('int', scraper.__dict__['_work_generation'])
 
 
 def _url_to_asset(scraper: CacheScraper) -> dict[str, list[str]]:
@@ -127,7 +127,7 @@ class _CacheManager:
 def _make_scraper() -> CacheScraper:
     _clear_creator_caches()
     manager = _CacheManager()
-    return CacheScraper(cast(CacheManager, manager))
+    return CacheScraper(cast('CacheManager', manager))
 
 
 def test_user_place_lookup_uses_supported_limits_and_falls_back() -> None:
@@ -152,7 +152,8 @@ def test_user_place_lookup_uses_supported_limits_and_falls_back() -> None:
                     'nextPageCursor': None,
                 }
             ).encode()
-        raise AssertionError(f'unexpected path: {path}')
+        msg = f'unexpected path: {path}'
+        raise AssertionError(msg)
 
     _set_https_get(scraper, fake_https_get)
 
@@ -176,7 +177,8 @@ def test_user_place_lookup_finds_prison_life_places_with_limit_50() -> None:
         calls.append(path)
         assert 'limit=100' not in path
         if 'limit=50' not in path:
-            raise AssertionError(f'unexpected fallback after successful limit=50: {path}')
+            msg = f'unexpected fallback after successful limit=50: {path}'
+            raise AssertionError(msg)
         return json.dumps(
             {
                 'data': [
@@ -204,8 +206,8 @@ def test_user_place_lookup_finds_prison_life_places_with_limit_50() -> None:
 
 def test_reset_for_cache_clear_invalidates_old_background_work() -> None:
     scraper = _make_scraper()
-    manager = cast(_CacheManager, scraper.cache_manager)
-    scraper.cache_logs['old'] = cast(CacheLogEntry, {'assetTypeId': 1})
+    manager = cast('_CacheManager', scraper.cache_manager)
+    scraper.cache_logs['old'] = cast('CacheLogEntry', {'assetTypeId': 1})
     _url_to_asset(scraper)['old-url'] = ['old']
     old_generation = _work_generation(scraper)
     old_executor = _executor(scraper)
@@ -236,7 +238,8 @@ def test_https_get_status_failure_always_returns_unpackable_tuple(
     scraper = _make_scraper()
 
     def fail_connect(*_args: object, **_kwargs: object) -> Never:
-        raise OSError('offline')
+        msg = 'offline'
+        raise OSError(msg)
 
     monkeypatch.setattr(socket, 'create_connection', fail_connect)
     try:
@@ -269,7 +272,8 @@ def test_https_get_tries_the_next_cached_endpoint_after_a_connect_failure(
     def fake_connect(address: tuple[str, int], timeout: float) -> _FakeSocket:
         attempts.append((address, timeout))
         if address[0] == '198.51.100.1':
-            raise OSError('first route timed out')
+            msg = 'first route timed out'
+            raise OSError(msg)
         return _FakeSocket()
 
     def create_context() -> _FakeContext:

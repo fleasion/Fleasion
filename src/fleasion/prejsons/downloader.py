@@ -3,13 +3,13 @@
 import json
 import urllib.error
 
-from ..utils import CLOG_URL, ORIGINALS_DIR, REPLACEMENTS_DIR, format_count, log_buffer
-from ..utils.http import http_get
+from fleasion.utils import CLOG_URL, ORIGINALS_DIR, REPLACEMENTS_DIR, format_count, log_buffer
+from fleasion.utils.http import http_get
 
 
 def download_prejsons() -> None:
     """Download pre-configured JSON files from CLOG.json on startup."""
-    try:
+    try:  # ruff: ignore[too-many-statements-in-try-clause]
         ORIGINALS_DIR.mkdir(parents=True, exist_ok=True)
         REPLACEMENTS_DIR.mkdir(parents=True, exist_ok=True)
 

@@ -1,7 +1,6 @@
 from pathlib import Path
 
 import pytest
-from pytest import MonkeyPatch
 
 from fleasion import version
 from fleasion.utils.metadata import APP_REPO
@@ -47,7 +46,7 @@ def test_artifact_version_rejects_canonical_local_metadata() -> None:
 
 
 @pytest.mark.parametrize(
-    ('app_version', 'expected'),
+    'app_version,expected',
     [
         ('2.4', '2.4.0'),
         ('2.4.0b1', '2.4.0'),
@@ -58,7 +57,7 @@ def test_macos_bundle_version_is_numeric(app_version: str, expected: str) -> Non
     assert version.macos_bundle_version(app_version) == expected
 
 
-def test_frozen_version_uses_distribution_metadata(monkeypatch: MonkeyPatch) -> None:
+def test_frozen_version_uses_distribution_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(version.sys, 'frozen', True, raising=False)
     monkeypatch.setattr(version, '_read_pyproject_version', lambda: '0.1.0')
     monkeypatch.setattr(version, '_read_installed_version', lambda: '2.3.0')
@@ -66,7 +65,9 @@ def test_frozen_version_uses_distribution_metadata(monkeypatch: MonkeyPatch) -> 
     assert version.read_version() == '2.3.0'
 
 
-def test_frozen_version_does_not_derive_artifact_provenance(monkeypatch: MonkeyPatch) -> None:
+def test_frozen_version_does_not_derive_artifact_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(version.sys, 'frozen', True, raising=False)
     monkeypatch.setattr(version, '_read_installed_version', lambda: '2.4.0b1')
     monkeypatch.setenv('GITHUB_ACTIONS', 'true')
@@ -75,7 +76,9 @@ def test_frozen_version_does_not_derive_artifact_provenance(monkeypatch: MonkeyP
     assert version.read_version() == '2.4.0b1'
 
 
-def test_source_version_falls_back_to_pyproject(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
+def test_source_version_falls_back_to_pyproject(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     package_path = tmp_path / 'src' / 'fleasion'
     package_path.mkdir(parents=True)
     fake_module_path = package_path / 'version.py'
@@ -91,7 +94,9 @@ def test_source_version_falls_back_to_pyproject(monkeypatch: MonkeyPatch, tmp_pa
     assert version.read_version() == '2.3.0'
 
 
-def test_unrelated_parent_pyproject_is_ignored(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
+def test_unrelated_parent_pyproject_is_ignored(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     package_path = tmp_path / 'temporary-extraction' / 'fleasion'
     package_path.mkdir(parents=True)
     fake_module_path = package_path / 'version.py'

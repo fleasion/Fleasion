@@ -12,6 +12,8 @@ import struct
 import xml.etree.ElementTree as ET
 from collections.abc import Mapping, Sequence
 
+from defusedxml import ElementTree as safe_et  # ruff: ignore[camelcase-imported-as-lowercase]
+
 from .rig_data import CFrame, Joint
 
 # CFrame math
@@ -46,7 +48,7 @@ def parse_cf(elem: ET.Element) -> CFrame:
 def write_cf(elem: ET.Element, cf: Sequence[float]) -> None:
     for c in list(elem):
         elem.remove(c)
-    for tag, v in zip(
+    for tag, v in zip(  # ruff: ignore[zip-without-explicit-strict]
         ['X', 'Y', 'Z', 'R00', 'R01', 'R02', 'R10', 'R11', 'R12', 'R20', 'R21', 'R22'],
         cf,
     ):
@@ -135,7 +137,7 @@ def compute_world_cfs(
     return world_cfs
 
 
-def _calculate_limb(
+def _calculate_limb(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
     limb_world_cf: Sequence[float],
     motor_c0: Sequence[float],
     motor_c1: Sequence[float],
@@ -145,11 +147,14 @@ def _calculate_limb(
     offset: tuple[float, float, float] = (0.0, 0.0, 0.0),
 ) -> tuple[CFrame, CFrame]:
     mapped = cf_mul(dst_hrp_cf, cf_mul(cf_inv(src_hrp_cf), limb_world_cf))
-    mapped = [
-        mapped[0] + offset[0],
-        mapped[1] + offset[1],
-        mapped[2] + offset[2],
-    ] + list(mapped[3:])
+    mapped = (
+        [  # ruff: ignore[collection-literal-concatenation]
+            mapped[0] + offset[0],
+            mapped[1] + offset[1],
+            mapped[2] + offset[2],
+        ]
+        + list(mapped[3:])
+    )
     cf = cf_mul(cf_inv(cf_mul(torso_world_cf, motor_c0)), mapped)
     return cf_mul(cf, motor_c1), mapped
 
@@ -472,7 +477,7 @@ def _encode_float_curve(times_sec: list[float], values: list[float]) -> bytes:
         buf += struct.pack('<BBfff', 1, 0, float(v), 0.0, 0.0)
     buf += struct.pack('<II', 1, n)
     for t in times_sec:
-        buf += struct.pack('<I', max(0, int(round(t * _CURVE_TICKS_PER_SEC))))
+        buf += struct.pack('<I', max(0, int(round(t * _CURVE_TICKS_PER_SEC))))  # ruff: ignore[unnecessary-cast-to-int]
     return buf
 
 
@@ -483,9 +488,9 @@ def _decompose_cf(cf: Sequence[float]) -> tuple[float, float, float, float, floa
     R = Rx(rx) * Ry(ry) * Rz(rz)
     """
     px, py, pz = cf[0], cf[1], cf[2]
-    R02 = cf[5]
+    R02 = cf[5]  # ruff: ignore[non-lowercase-variable-in-function]
     ry = math.asin(max(-1.0, min(1.0, R02)))
-    if abs(math.cos(ry)) > 1e-6:
+    if abs(math.cos(ry)) > 1e-6:  # ruff: ignore[magic-value-comparison]
         rx = math.atan2(-cf[8], cf[11])
         rz = math.atan2(-cf[4], cf[3])
     else:
@@ -498,7 +503,7 @@ def _xml_escape(s: str) -> str:
     return s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
 
 
-def keyframe_to_curve_anim(xml_bytes: bytes) -> bytes:
+def keyframe_to_curve_anim(xml_bytes: bytes) -> bytes:  # ruff: ignore[complex-structure, too-many-locals, too-many-statements]
     """Convert a KeyframeSequence RBXMX to a CurveAnimation RBXMX.
 
     Each Pose CFrame is split into a Position (Vector3Curve/FloatCurve X/Y/Z)
@@ -506,7 +511,7 @@ def keyframe_to_curve_anim(xml_bytes: bytes) -> bytes:
     The Folder hierarchy mirrors the Pose parent-child structure.
     ValuesAndTimes is written as base64-encoded BinaryString.
     """
-    root_elem = ET.fromstring(sanitize_xml(xml_bytes))
+    root_elem = safe_et.fromstring(sanitize_xml(xml_bytes))
 
     ks = root_elem.find(".//Item[@class='KeyframeSequence']")
     if ks is None:
@@ -576,7 +581,7 @@ def keyframe_to_curve_anim(xml_bytes: bytes) -> bytes:
             weight_elem = props.find("float[@name='Weight']") if props is not None else None
             weight = float(weight_elem.text or 0) if weight_elem is not None else 1.0
             if n and n in bone_cfs and weight > 0:
-                bone_cfs[n].append((t, _get_cf(elem)))
+                bone_cfs[n].append((t, _get_cf(elem)))  # ruff: ignore[function-uses-loop-variable]
             for c in elem:
                 _walk_poses(c)
 
@@ -584,11 +589,11 @@ def keyframe_to_curve_anim(xml_bytes: bytes) -> bytes:
             _walk_poses(child)
 
     # Unique referent counter (local to this call)
-    _id = [0]
+    id_ = [0]
 
     def _ref() -> str:
-        _id[0] += 1
-        return f'RBX{_id[0]:032X}'
+        id_[0] += 1
+        return f'RBX{id_[0]:032X}'
 
     def _fc_xml(axis: str, times: list[float], values: list[float]) -> str:
         data = _encode_float_curve(times, values)
@@ -688,6 +693,8 @@ def keyframe_to_curve_anim(xml_bytes: bytes) -> bytes:
 
 def curve_anim_to_keyframe_xml(anim_data: bytes) -> bytes:
     """Convert a CurveAnimation (binary RBXM or XML) to a KeyframeSequence RBXMX."""
-    from ..utils.anim_converter import curve_anim_to_keyframe
+    from fleasion.utils.anim_converter import (  # ruff: ignore[import-outside-top-level]
+        curve_anim_to_keyframe,
+    )
 
     return curve_anim_to_keyframe(anim_data)

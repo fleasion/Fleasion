@@ -7,14 +7,16 @@ that all ``assetId`` fields point to ``rbxasset://fonts/CustomFont.ttf``.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import shutil
 import stat
-from collections.abc import Callable
+from collections.abc import Callable  # ruff: ignore[typing-only-standard-library-import]
 from pathlib import Path
 from typing import TypeIs
 
-from ..utils import log_buffer
+from fleasion.utils import log_buffer
+
 from .stash_paths import resource_stash_dir
 
 # Recognised font magic bytes (first 4 bytes of the file).
@@ -47,7 +49,7 @@ def _clear_read_only(path: Path) -> None:
 
 def validate_font_bytes(data: bytes) -> bool:
     """Return ``True`` if *data* starts with a known font magic header."""
-    if len(data) < 4:
+    if len(data) < 4:  # ruff: ignore[magic-value-comparison]
         return False
     header = data[:4]
     return any(header == magic for magic in FONT_HEADERS.values())
@@ -73,16 +75,14 @@ def _load_generated_family_names(marker_path: Path) -> set[str]:
 
 def _save_generated_family_names(marker_path: Path, names: set[str]) -> None:
     if not names:
-        try:
+        with contextlib.suppress(FileNotFoundError, OSError):
             marker_path.unlink()
-        except FileNotFoundError, OSError:
-            pass
         return
     marker_path.parent.mkdir(parents=True, exist_ok=True)
     marker_path.write_text(json.dumps(sorted(names), indent=2), encoding='utf-8')
 
 
-def apply_custom_font(
+def apply_custom_font(  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
     font_data: bytes,
     roblox_dirs: list[Path],
     stash_dir: Path,
@@ -196,10 +196,8 @@ def restore_font_families(
         elif dst_font.exists():
             _clear_read_only(dst_font)
             dst_font.unlink()
-        try:
+        with contextlib.suppress(FileNotFoundError, OSError):
             generated_font_marker.unlink()
-        except FileNotFoundError, OSError:
-            pass
 
         # Restore family JSONs that predated Fleasion.
         families_dir = roblox_dir / FAMILIES_REL
@@ -221,16 +219,12 @@ def restore_font_families(
             dst_json = families_dir / name
             if dst_json.exists():
                 _clear_read_only(dst_json)
-                try:
+                with contextlib.suppress(OSError):
                     dst_json.unlink()
-                except OSError:
-                    pass
         _save_generated_family_names(marker_path, set())
 
         for directory in (families_dir, roblox_dir / 'content' / 'fonts'):
-            try:
+            with contextlib.suppress(OSError):
                 directory.rmdir()
-            except OSError:
-                pass
 
         log_buffer.log('Modifications', f'Restored font families in {roblox_dir.name}')

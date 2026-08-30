@@ -38,9 +38,9 @@ def test_linux_config_dir_uses_xdg_config_home(
 
     paths = _load_paths_module(monkeypatch, tmp_path, xdg_config_home=xdg_config_home)
 
-    assert paths.CONFIG_DIR == xdg_config_home / 'Fleasion'
-    assert paths.CONFIG_FILE == xdg_config_home / 'Fleasion' / 'settings.json'
-    assert paths.CONFIGS_FOLDER == xdg_config_home / 'Fleasion' / 'configs'
+    assert xdg_config_home / 'Fleasion' == paths.CONFIG_DIR
+    assert xdg_config_home / 'Fleasion' / 'settings.json' == paths.CONFIG_FILE
+    assert xdg_config_home / 'Fleasion' / 'configs' == paths.CONFIGS_FOLDER
 
 
 def test_linux_config_dir_defaults_to_home_dot_config(
@@ -48,4 +48,4 @@ def test_linux_config_dir_defaults_to_home_dot_config(
 ) -> None:
     paths = _load_paths_module(monkeypatch, tmp_path, xdg_config_home=None)
 
-    assert paths.CONFIG_DIR == tmp_path / 'home' / '.config' / 'Fleasion'
+    assert tmp_path / 'home' / '.config' / 'Fleasion' == paths.CONFIG_DIR

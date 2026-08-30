@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ..utils.logging import log_buffer
+from fleasion.utils.logging import log_buffer
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -23,7 +23,9 @@ type _PlayerIdentity = tuple[int, str] | tuple[str, int] | tuple[str, int, float
 def _is_gdk_repair_path(path: Path) -> bool:
     """Avoid importing Windows-only process helpers on non-Windows builds."""
     try:
-        from ..utils.platform_windows import is_roblox_gdk_exe_path
+        from fleasion.utils.platform_windows import (  # ruff: ignore[import-outside-top-level]
+            is_roblox_gdk_exe_path,
+        )
 
         return is_roblox_gdk_exe_path(path)
     except ImportError, OSError:
@@ -33,7 +35,7 @@ def _is_gdk_repair_path(path: Path) -> bool:
 class EnvProxyLifecycleController:
     """Own Env conversion, bounded CA repair relaunches, and ordered exit."""
 
-    def __init__(
+    def __init__(  # ruff: ignore[too-many-arguments]
         self,
         *,
         config_manager: ConfigManager,
@@ -131,7 +133,7 @@ class EnvProxyLifecycleController:
         if callable(prepare):
             prepare()
 
-    def handle_player_launch(
+    def handle_player_launch(  # ruff: ignore[complex-structure, too-many-return-statements]
         self,
         exe_path: Path | None = None,
         launch_target: str | None = None,
@@ -142,7 +144,7 @@ class EnvProxyLifecycleController:
         if not self._enabled() or not self._operation_lock.acquire(blocking=False):
             return False
         intentional_relaunch_marked = False
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
             if player_already_stopped:
                 # The macOS URI watcher already issued SIGKILL.  Mark the exit
                 # before any preparation/replay work so the slower status timer
@@ -189,7 +191,7 @@ class EnvProxyLifecycleController:
                 relaunched = self._relaunch_player(
                     self._proxy_master.roblox_env_proxy_url(),
                     launch_target,
-                    False,
+                    False,  # ruff: ignore[boolean-positional-value-in-call]
                     self._cancel_event,
                     Path(current_exe),
                     player_already_stopped,
@@ -214,7 +216,7 @@ class EnvProxyLifecycleController:
             # for later CA-repair attempts.
             launch_target = None
             return self._monitor_owned_player(Path(current_exe), relaunch_on_repair=True)
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log(
                 'Launcher',
                 f'Env Proxy Player lifecycle failed: {type(exc).__name__}: {exc}',
@@ -237,11 +239,11 @@ class EnvProxyLifecycleController:
             player_already_stopped=True,
         )
 
-    def handle_adopted_player_launch(self, exe_path: Path | None = None) -> bool:
+    def handle_adopted_player_launch(self, exe_path: Path | None = None) -> bool:  # ruff: ignore[too-many-return-statements]
         """Monitor a package-activated Player without synthetic relaunch."""
         if not self._enabled() or not self._operation_lock.acquire(blocking=False):
             return False
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
             if not self._proxy_master.wait_for_env_proxy_ready(timeout=15.0):
                 log_buffer.log(
                     'Launcher', 'Env Proxy adopted launch skipped: proxy did not become ready'
@@ -284,7 +286,7 @@ class EnvProxyLifecycleController:
                 Path(current_exe), relaunch_on_repair=gdk_repair_relaunch
             )
 
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log(
                 'Launcher',
                 f'Env Proxy adopted Player lifecycle failed: {type(exc).__name__}: {exc}',
@@ -293,7 +295,7 @@ class EnvProxyLifecycleController:
         finally:
             self._operation_lock.release()
 
-    def _monitor_owned_player(
+    def _monitor_owned_player(  # ruff: ignore[too-many-return-statements]
         self,
         current_exe: Path,
         *,
@@ -357,10 +359,10 @@ class EnvProxyLifecycleController:
                 relaunched = self._relaunch_player(
                     self._proxy_master.roblox_env_proxy_url(),
                     launch_target,
-                    True,
+                    True,  # ruff: ignore[boolean-positional-value-in-call]
                     self._cancel_event,
                     Path(current_exe),
-                    False,
+                    False,  # ruff: ignore[boolean-positional-value-in-call]
                 )
             finally:
                 self._finish_intentional_relaunch()

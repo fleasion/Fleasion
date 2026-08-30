@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QWidgetAction,
 )
 
-from ..localization import tr
+from fleasion.localization import tr
 
 type AssetType = int | str
 
@@ -154,7 +154,7 @@ def asset_type_display_name(type_id: AssetType) -> str:
 class CategoryFilterPopup(QMenu):
     filters_changed = Signal(set)
 
-    def __init__(
+    def __init__(  # ruff: ignore[too-many-locals, too-many-statements]
         self,
         parent: QWidget | None = None,
         active_filters: set[AssetType] | None = None,
@@ -231,7 +231,7 @@ class CategoryFilterPopup(QMenu):
                 cat_types.append(tid)
 
             def toggle_category(
-                _checked: bool = False,
+                _checked: bool = False,  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
                 category_types: list[AssetType] = cat_types,
                 category_name: str = cat_name,
             ) -> None:
@@ -242,7 +242,7 @@ class CategoryFilterPopup(QMenu):
                 cb = self.checkboxes[tid]
 
                 def toggle_type(
-                    checked: bool = False,
+                    checked: bool = False,  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
                     type_id: AssetType = tid,
                     category_name: str = cat_name,
                 ) -> None:
@@ -254,7 +254,7 @@ class CategoryFilterPopup(QMenu):
             vbox.addStretch()
             grid.addWidget(cat_frame, row, col)
             col += 1
-            if col >= 4:
+            if col >= 4:  # ruff: ignore[magic-value-comparison]
                 col = 0
                 row += 1
 
@@ -315,14 +315,14 @@ class CategoryFilterPopup(QMenu):
         self.active_filters: set[AssetType] = set(active_filters) if active_filters else set()
         self._updating = True
         for tid, cb in self.checkboxes.items():
-            cb.blockSignals(True)
+            cb.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
             cb.setChecked(tid in self.active_filters)
-            cb.blockSignals(False)
+            cb.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
         for cat_name in self.categories:
             self._update_category_state(cat_name)
         self._updating = False
 
-    def mouseReleaseEvent(self, a0: QMouseEvent | None) -> None:
+    def mouseReleaseEvent(self, a0: QMouseEvent | None) -> None:  # ruff: ignore[invalid-function-name]
         if a0 is None:
             return
         action = self.actionAt(a0.pos())
@@ -344,9 +344,9 @@ class CategoryFilterPopup(QMenu):
         for tid in type_ids:
             if tid in self.checkboxes:
                 cb = self.checkboxes[tid]
-                cb.blockSignals(True)
+                cb.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
                 cb.setChecked(new_state)
-                cb.blockSignals(False)
+                cb.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
                 if new_state:
                     self.active_filters.add(tid)
                 else:
@@ -356,7 +356,7 @@ class CategoryFilterPopup(QMenu):
         self._updating = False
         self.filters_changed.emit(self.active_filters)
 
-    def _on_type_clicked(self, tid: AssetType, cat_name: str, checked: bool) -> None:
+    def _on_type_clicked(self, tid: AssetType, cat_name: str, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
         if self._updating:
             return
         self._updating = True
@@ -377,14 +377,14 @@ class CategoryFilterPopup(QMenu):
         )
         total_count = sum(1 for tid in type_ids if tid in self.checkboxes)
 
-        cat_cb.blockSignals(True)
+        cat_cb.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
         if checked_count == 0:
             cat_cb.setCheckState(Qt.CheckState.Unchecked)
         elif checked_count == total_count and total_count > 0:
             cat_cb.setCheckState(Qt.CheckState.Checked)
         else:
             cat_cb.setCheckState(Qt.CheckState.PartiallyChecked)
-        cat_cb.blockSignals(False)
+        cat_cb.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
 
     def _clear_all(self) -> None:
         if self._updating:
@@ -392,9 +392,9 @@ class CategoryFilterPopup(QMenu):
         self._updating = True
         self.active_filters.clear()
         for cb in self.checkboxes.values():
-            cb.blockSignals(True)
+            cb.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
             cb.setChecked(False)
-            cb.blockSignals(False)
+            cb.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
         for cat_name in self.categories:
             self._update_category_state(cat_name)
         self._updating = False

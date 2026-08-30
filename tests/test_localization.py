@@ -180,7 +180,8 @@ def test_translation_catalogs_match_english_keys_markup_and_placeholders() -> No
 
         for identifier, english in localization.ENGLISH.items():
             translated = catalog[identifier]
-            assert isinstance(translated, str) and translated, identifier
+            assert isinstance(translated, str), identifier
+            assert translated, identifier
             assert sorted(placeholder_re.findall(translated)) == sorted(
                 placeholder_re.findall(english)
             ), identifier
@@ -703,8 +704,8 @@ def test_indirect_ui_text_flows_do_not_use_literal_visible_text() -> None:
                         )
 
     assert not untranslated, (
-        'Indirect user-visible text must use tr() identifiers before it reaches UI helpers/signals:\n'
-        + '\n'.join(untranslated)
+        'Indirect user-visible text must use tr() identifiers before it reaches '
+        'UI helpers/signals:\n' + '\n'.join(untranslated)
     )
 
 
@@ -990,9 +991,7 @@ def test_local_variables_forwarded_to_ui_do_not_hide_literal_text() -> None:
         joined = ''.join(fragments).strip()
         if joined.startswith(('http://', 'https://')):
             return False
-        if not any(char.isalnum() for char in joined):
-            return False
-        return True
+        return any(char.isalnum() for char in joined)
 
     for path in source_root.rglob('*.py'):
         if path.name == 'localization.py' or 'translations' in path.parts:

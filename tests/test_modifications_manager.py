@@ -1,11 +1,10 @@
 import json
-import os
 import stat
 import sys
 import threading
 import types
-from io import BytesIO
 from collections.abc import Callable
+from io import BytesIO
 from pathlib import Path
 from typing import Never, cast
 
@@ -17,7 +16,6 @@ from fleasion.modifications import fflag_manager, manager as modifications_manag
 from fleasion.modifications.fflag_manager import FastFlagManager
 from fleasion.modifications.manager import ModificationManager, normalise_target_path
 from fleasion.modifications.stash_paths import resource_stash_dir
-
 
 type Entry = dict[str, object]
 
@@ -71,7 +69,7 @@ def _find_roblox_dirs() -> list[Path]:
 
 
 def _manager_path(manager: ModificationManager, name: str) -> Path:
-    return cast(Path, manager.__dict__[name])
+    return cast('Path', manager.__dict__[name])
 
 
 def _manager_data(manager: ModificationManager) -> object:
@@ -79,7 +77,7 @@ def _manager_data(manager: ModificationManager) -> object:
 
 
 def _signal_spy(manager: ModificationManager, name: str) -> _SignalSpy:
-    return cast(_SignalSpy, manager.__dict__[name])
+    return cast('_SignalSpy', manager.__dict__[name])
 
 
 class _SignalSpy:
@@ -100,7 +98,8 @@ def _manager_for_entry(entry: Entry) -> ModificationManager:
 
 
 def _raise_permission_denied(_entry: object) -> Never:
-    raise PermissionError('Permission denied')
+    msg = 'Permission denied'
+    raise PermissionError(msg)
 
 
 def test_normalise_target_path_converts_windows_separators_on_posix() -> None:
@@ -185,7 +184,8 @@ def test_stash_write_records_permission_denials_and_continues(
 
     def fake_write_bytes(path: Path, data: bytes) -> int:
         if path.is_relative_to(denied_dir):
-            raise PermissionError('protected install')
+            msg = 'protected install'
+            raise PermissionError(msg)
         return original_write_bytes(path, data)
 
     monkeypatch.setattr(Path, 'write_bytes', fake_write_bytes)
@@ -400,7 +400,7 @@ def test_clear_entry_restore_failure_keeps_entry_and_reports_error(
 
     assert manager.entries == [entry]
     assert entry['status'] == 'error'
-    assert 'Failed to restore original file' in cast(str, entry['error_message'])
+    assert 'Failed to restore original file' in cast('str', entry['error_message'])
     assert _signal_spy(manager, 'entry_status_changed').calls == [
         ('entry-1', 'error', entry['error_message'])
     ]
@@ -434,7 +434,7 @@ def test_update_entry_restore_failure_keeps_existing_source_and_reports_error(
     assert entry['source_type'] == 'asset_id'
     assert entry['source_value'] == '123'
     assert entry['status'] == 'error'
-    assert 'Failed to restore original file' in cast(str, entry['error_message'])
+    assert 'Failed to restore original file' in cast('str', entry['error_message'])
     assert _signal_spy(manager, 'entry_status_changed').calls == [
         ('entry-1', 'error', entry['error_message'])
     ]
@@ -458,7 +458,7 @@ def test_remove_entry_restore_failure_keeps_entry_and_reports_error(
 
     assert manager.entries == [entry]
     assert entry['status'] == 'error'
-    assert 'Failed to restore original file' in cast(str, entry['error_message'])
+    assert 'Failed to restore original file' in cast('str', entry['error_message'])
     assert _signal_spy(manager, 'entry_status_changed').calls == [
         ('entry-1', 'error', entry['error_message'])
     ]
@@ -487,7 +487,8 @@ def test_fast_flags_reports_permission_denied_installations(
 
     def fake_write_bytes(path: Path, data: bytes) -> int:
         if path.is_relative_to(roblox_dir):
-            raise PermissionError('protected install')
+            msg = 'protected install'
+            raise PermissionError(msg)
         return original_write_bytes(path, data)
 
     monkeypatch.setattr(Path, 'write_bytes', fake_write_bytes)
@@ -754,7 +755,7 @@ def test_windows_find_roblox_dirs_ignores_invalid_registry_key_and_keeps_scannin
     software_key = _Key()
     valid_key = _Key()
     valid_dir = Path('C:/ValidRoblox')
-    valid_exe = os.path.join(str(valid_dir), modifications_manager.ROBLOX_PROCESS)
+    valid_exe = str(valid_dir / modifications_manager.ROBLOX_PROCESS)
 
     def open_key(root: object, name: str) -> _Key:
         if root is fake_winreg.HKEY_CURRENT_USER and name == r'Software':
@@ -762,7 +763,8 @@ def test_windows_find_roblox_dirs_ignores_invalid_registry_key_and_keeps_scannin
         if root is software_key and name == 'ValidVendor':
             return valid_key
         if root is software_key and name == 'corrupt\x00key':
-            raise ValueError('embedded null character')
+            msg = 'embedded null character'
+            raise ValueError(msg)
         raise OSError
 
     def enum_key(key: _Key, index: int) -> str:

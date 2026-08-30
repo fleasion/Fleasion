@@ -116,7 +116,8 @@ def test_old_image_typed_mesh_payload_uses_only_a_header_for_type_detection(
     info['type_name'] = 'Image'
 
     def fail_full_asset_read(*_args: object, **_kwargs: object) -> Never:
-        raise AssertionError('type detection must not read the full payload')
+        msg = 'type detection must not read the full payload'
+        raise AssertionError(msg)
 
     manager.get_asset = fail_full_asset_read
 

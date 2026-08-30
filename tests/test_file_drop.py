@@ -5,8 +5,8 @@ from typing import cast
 from PySide6.QtCore import QDir, QMimeData, QUrl
 from PySide6.QtWidgets import QApplication, QLineEdit
 
-from fleasion.gui.file_drop import FileDropLineEdit, local_file_path_from_mime_data
 from fleasion.gui import modifications_tab as modifications_tab_module
+from fleasion.gui.file_drop import FileDropLineEdit, local_file_path_from_mime_data
 
 
 def _relative_target_path_for_resource_file(path: Path, roblox_dirs: list[Path]) -> str | None:
@@ -36,7 +36,7 @@ def test_local_file_path_from_mime_data_ignores_non_local_urls() -> None:
 
 def test_file_drop_line_edit_keeps_cooperative_mro_initialization() -> None:
     app = QApplication.instance()
-    qapp = cast(QApplication, app) if app is not None else QApplication([])
+    qapp = cast('QApplication', app) if app is not None else QApplication([])
 
     class TrackedLineEdit(QLineEdit):
         tracked_init: bool

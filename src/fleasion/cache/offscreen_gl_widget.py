@@ -24,19 +24,19 @@ from PySide6.QtGui import (
 from PySide6.QtOpenGL import QOpenGLFramebufferObject, QOpenGLFramebufferObjectFormat
 from PySide6.QtWidgets import QWidget
 
-from ..utils.logging import log_buffer
+from fleasion.utils.logging import log_buffer
 
 
 class OffscreenOpenGLWidget(QWidget):
     """QWidget that renders OpenGL offscreen and presents it as a raster image."""
 
-    framePresented = Signal()
+    framePresented = Signal()  # ruff: ignore[mixed-case-variable-in-class-scope]
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMinimumSize(120, 120)
-        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)  # ruff: ignore[boolean-positional-value-in-call]
 
         self._requested_gl_format = QSurfaceFormat()
         self._gl_context: QOpenGLContext | None = None
@@ -48,7 +48,7 @@ class OffscreenOpenGLWidget(QWidget):
         self._offscreen_error_logged = False
         self._rendering = False
 
-    def setFormat(self, fmt: QSurfaceFormat) -> None:
+    def setFormat(self, fmt: QSurfaceFormat) -> None:  # ruff: ignore[invalid-function-name]
         """Store the requested context format until the first rendered frame."""
         if self._gl_context is not None:
             log_buffer.log('OpenGL', 'Ignoring GL format change after context creation')
@@ -58,19 +58,19 @@ class OffscreenOpenGLWidget(QWidget):
     def context(self) -> QOpenGLContext | None:
         return self._gl_context
 
-    def defaultFramebufferObject(self) -> int:
+    def defaultFramebufferObject(self) -> int:  # ruff: ignore[invalid-function-name]
         return self._gl_fbo.handle() if self._gl_fbo is not None else 0
 
-    def isExposed(self) -> bool:
+    def isExposed(self) -> bool:  # ruff: ignore[invalid-function-name]
         """Compatibility helper for diagnostics retained from QOpenGLWindow."""
         return self.isVisible() and self.window().isVisible()
 
-    def makeCurrent(self) -> bool:
+    def makeCurrent(self) -> bool:  # ruff: ignore[invalid-function-name]
         if not self._ensure_context() or self._gl_context is None or self._gl_surface is None:
             return False
         return bool(self._gl_context.makeCurrent(self._gl_surface))
 
-    def doneCurrent(self) -> None:
+    def doneCurrent(self) -> None:  # ruff: ignore[invalid-function-name]
         if self._gl_context is not None:
             self._gl_context.doneCurrent()
 
@@ -81,18 +81,21 @@ class OffscreenOpenGLWidget(QWidget):
         context = QOpenGLContext(self)
         context.setFormat(self._requested_gl_format)
         if not context.create() or not context.isValid():
-            raise RuntimeError('Could not create offscreen OpenGL context')
+            msg = 'Could not create offscreen OpenGL context'
+            raise RuntimeError(msg)
 
         surface = QOffscreenSurface()
         surface.setFormat(context.format())
         surface.create()
         if not surface.isValid():
-            raise RuntimeError('Could not create offscreen OpenGL surface')
+            msg = 'Could not create offscreen OpenGL surface'
+            raise RuntimeError(msg)
 
         self._gl_context = context
         self._gl_surface = surface
         if not context.makeCurrent(surface):
-            raise RuntimeError('Could not make offscreen OpenGL context current')
+            msg = 'Could not make offscreen OpenGL context current'
+            raise RuntimeError(msg)
         try:
             self.initializeGL()
             self._gl_initialized = True
@@ -102,7 +105,8 @@ class OffscreenOpenGLWidget(QWidget):
 
     def _ensure_fbo(self, width: int, height: int) -> None:
         if self._gl_context is None:
-            raise RuntimeError('OpenGL context is not available')
+            msg = 'OpenGL context is not available'
+            raise RuntimeError(msg)
 
         width = max(1, int(width))
         height = max(1, int(height))
@@ -115,41 +119,48 @@ class OffscreenOpenGLWidget(QWidget):
         fbo_format.setSamples(max(0, self._gl_context.format().samples()))
         fbo = QOpenGLFramebufferObject(width, height, fbo_format)
         if not fbo.isValid():
-            raise RuntimeError(f'Could not create {width}x{height} OpenGL framebuffer')
+            msg = f'Could not create {width}x{height} OpenGL framebuffer'
+            raise RuntimeError(msg)
         self._gl_fbo = fbo
         self._gl_render_size = (width, height)
         self.resizeGL(width, height)
 
     def _render_to_image(self) -> QImage:
         if not self._ensure_context() or self._gl_context is None or self._gl_surface is None:
-            raise RuntimeError('OpenGL context is unavailable')
+            msg = 'OpenGL context is unavailable'
+            raise RuntimeError(msg)
         if not self._gl_context.makeCurrent(self._gl_surface):
-            raise RuntimeError('Could not make offscreen OpenGL context current')
+            msg = 'Could not make offscreen OpenGL context current'
+            raise RuntimeError(msg)
 
         try:
             self._ensure_fbo(self.width(), self.height())
-            assert self._gl_fbo is not None
+            if self._gl_fbo is None:
+                msg = 'OpenGL framebuffer was not initialized'
+                raise RuntimeError(msg)
             if not self._gl_fbo.bind():
-                raise RuntimeError('Could not bind offscreen OpenGL framebuffer')
+                msg = 'Could not bind offscreen OpenGL framebuffer'
+                raise RuntimeError(msg)
             try:
                 self.paintGL()
-                image = self._gl_fbo.toImage(True)
+                image = self._gl_fbo.toImage(True)  # ruff: ignore[boolean-positional-value-in-call]
                 if image.isNull():
-                    raise RuntimeError('OpenGL framebuffer readback returned a null image')
+                    msg = 'OpenGL framebuffer readback returned a null image'
+                    raise RuntimeError(msg)
                 return image
             finally:
                 self._gl_fbo.release()
         finally:
             self._gl_context.doneCurrent()
 
-    def paintEvent(self, event: QPaintEvent) -> None:
+    def paintEvent(self, event: QPaintEvent) -> None:  # ruff: ignore[invalid-function-name, unused-method-argument]
         if self._rendering:
             return
         self._rendering = True
         try:
             try:
                 self._frame_image = self._render_to_image()
-            except Exception as exc:
+            except Exception as exc:  # ruff: ignore[blind-except]
                 if not self._offscreen_error_logged:
                     self._offscreen_error_logged = True
                     log_buffer.log(
@@ -177,39 +188,45 @@ class OffscreenOpenGLWidget(QWidget):
         finally:
             self._rendering = False
 
-    def resizeEvent(self, event: QResizeEvent) -> None:
+    def resizeEvent(self, event: QResizeEvent) -> None:  # ruff: ignore[invalid-function-name]
         super().resizeEvent(event)
         self.update()
 
-    def closeEvent(self, event: QCloseEvent) -> None:
+    def closeEvent(self, event: QCloseEvent) -> None:  # ruff: ignore[invalid-function-name]
         context = self._gl_context
         surface = self._gl_surface
         if context is not None and surface is not None:
             try:
                 context.makeCurrent(surface)
                 self._gl_fbo = None
-            except Exception:
+            except Exception:  # ruff: ignore[blind-except, try-except-pass]
                 pass
             finally:
-                try:
+                try:  # ruff: ignore[suppressible-exception]
                     context.doneCurrent()
-                except Exception:
+                except Exception:  # ruff: ignore[blind-except, try-except-pass]
                     pass
         if surface is not None:
-            try:
+            try:  # ruff: ignore[suppressible-exception]
                 surface.destroy()
-            except Exception:
+            except Exception:  # ruff: ignore[blind-except, try-except-pass]
                 pass
         self._gl_surface = None
         self._gl_context = None
         super().closeEvent(event)
 
     # Hooks implemented by the concrete renderer classes.
-    def initializeGL(self) -> None:  # pragma: no cover - abstract hook
+    def initializeGL(  # ruff: ignore[invalid-function-name]
+        self,
+    ) -> None:  # pragma: no cover - abstract hook
         raise NotImplementedError
 
-    def resizeGL(self, width: int, height: int) -> None:  # pragma: no cover - abstract hook
+    def resizeGL(  # ruff: ignore[invalid-function-name]
+        self, width: int, height: int
+    ) -> None:  # pragma: no cover - abstract hook
         raise NotImplementedError
 
-    def paintGL(self) -> None:  # pragma: no cover - abstract hook
+    def paintGL(  # ruff: ignore[invalid-function-name]
+        self,
+    ) -> None:  # pragma: no cover - abstract hook
         raise NotImplementedError

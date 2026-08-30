@@ -10,6 +10,9 @@ import xml.etree.ElementTree as ET
 from collections.abc import Buffer, Callable
 from typing import Literal, SupportsFloat, SupportsIndex, cast
 
+from defusedxml import ElementTree as safe_et  # ruff: ignore[camelcase-imported-as-lowercase]
+from defusedxml.common import DefusedXmlException
+
 from .tools.solidmodel_converter.rbxm import deserializer as rbxm_deserializer
 from .tools.solidmodel_converter.rbxm.binary_reader import read_string
 from .tools.solidmodel_converter.rbxm.deserializer import RbxmDeserializer
@@ -45,7 +48,7 @@ def classify_roblox_document(data: bytes) -> RobloxDocumentKind | None:
     """Classify bytes as rbxm, rbxmx, rbxl, or not a Roblox document."""
     try:
         data = decompress_if_needed(data)
-    except Exception:
+    except Exception:  # ruff: ignore[blind-except]
         return None
 
     if data.startswith(RBXM_MAGIC):
@@ -97,26 +100,31 @@ def export_roblox_document(
     data = decompress_if_needed(data)
     kind = classify_roblox_document(data)
     if kind is None:
-        raise ValueError('Data is not an RBXM/RBXMX/RBXL document')
+        msg = 'Data is not an RBXM/RBXMX/RBXL document'
+        raise ValueError(msg)
 
     if export_format == 'converted_document_rbxl':
         if kind != 'rbxl' and asset_type != PLACE_ASSET_TYPE:
-            raise ValueError('Only DataModel documents can be exported as RBXL')
+            msg = 'Only DataModel documents can be exported as RBXL'
+            raise ValueError(msg)
         return _to_binary_document(data), '.rbxl'
 
     if export_format == 'converted_document_rbxm':
         if kind == 'rbxl' or asset_type == PLACE_ASSET_TYPE:
-            raise ValueError('RBXL documents must be exported as RBXL')
+            msg = 'RBXL documents must be exported as RBXL'
+            raise ValueError(msg)
         return _to_binary_document(data), '.rbxm'
 
     if export_format == 'converted_document_rbxmx':
         if kind == 'rbxl' or asset_type == PLACE_ASSET_TYPE:
-            raise ValueError('RBXL documents must be exported as RBXL')
+            msg = 'RBXL documents must be exported as RBXL'
+            raise ValueError(msg)
         if _parse_roblox_xml(data) is not None:
             return data, '.rbxmx'
         return write_rbxmx(RbxmDeserializer().deserialize(data)), '.rbxmx'
 
-    raise ValueError(f'Unsupported Roblox document export format: {export_format}')
+    msg = f'Unsupported Roblox document export format: {export_format}'
+    raise ValueError(msg)
 
 
 def _to_binary_document(data: bytes) -> bytes:
@@ -132,7 +140,7 @@ def _document_contains_datamodel(doc: RbxDocument) -> bool:
 def _binary_contains_class(data: bytes, class_name: str) -> bool:
     offset = 32
     target = class_name
-    try:
+    try:  # ruff: ignore[too-many-statements-in-try-clause]
         while offset + 16 <= len(data):
             chunk_name = data[offset : offset + 4].decode('ascii')
             compressed_size = struct.unpack_from('<I', data, offset + 4)[0]
@@ -159,10 +167,10 @@ def _binary_contains_class(data: bytes, class_name: str) -> bool:
                 found_class, _ = read_string(chunk_data, 4)
                 if found_class == target:
                     return True
-    except Exception:
+    except Exception:  # ruff: ignore[blind-except]
         try:
             return _document_contains_datamodel(RbxmDeserializer().deserialize(data))
-        except Exception:
+        except Exception:  # ruff: ignore[blind-except]
             return False
     return False
 
@@ -184,18 +192,19 @@ def _parse_roblox_xml(data: bytes) -> ET.Element | None:
     if not stripped.startswith(b'<'):
         return None
     try:
-        root = ET.fromstring(data)
-    except ET.ParseError:
+        root = safe_et.fromstring(data)
+    except ET.ParseError, DefusedXmlException:
         return None
     if _tag_name(root) != 'roblox':
         return None
     return root
 
 
-def _xml_to_document(data: bytes) -> RbxDocument:
-    root = ET.fromstring(data)
+def _xml_to_document(data: bytes) -> RbxDocument:  # ruff: ignore[complex-structure, too-many-statements]
+    root = safe_et.fromstring(data)
     if _tag_name(root) != 'roblox':
-        raise ValueError('XML root is not a Roblox document')
+        msg = 'XML root is not a Roblox document'
+        raise ValueError(msg)
 
     shared_by_md5: dict[str, bytes] = {}
     shared_strings: list[bytes] = []
@@ -207,7 +216,7 @@ def _xml_to_document(data: bytes) -> RbxDocument:
             if text:
                 try:
                     blob = base64.b64decode(text)
-                except Exception:
+                except Exception:  # ruff: ignore[blind-except]
                     blob = text.encode('utf-8', errors='replace')
             md5 = shared.get('md5') or ''
             if md5:
@@ -277,7 +286,7 @@ def _xml_to_document(data: bytes) -> RbxDocument:
     )
 
 
-def _xml_property_value(
+def _xml_property_value(  # ruff: ignore[too-many-return-statements]
     elem: ET.Element,
     type_name: str,
     shared_by_md5: dict[str, bytes],
@@ -291,7 +300,7 @@ def _xml_property_value(
             return b''
         try:
             return base64.b64decode(stripped)
-        except Exception:
+        except Exception:  # ruff: ignore[blind-except]
             return stripped.encode('utf-8', errors='replace')
     if type_name == 'ProtectedString':
         return text
@@ -326,7 +335,7 @@ def _property_format_from_type_name(type_name: str) -> PropertyFormat | None:
     return tag_to_format.get(key, PropertyFormat.STRING)
 
 
-def _value_for_format(
+def _value_for_format(  # ruff: ignore[complex-structure, too-many-branches, too-many-return-statements]
     value: object, fmt: PropertyFormat, ref_mapper: Callable[[str], int]
 ) -> object:
     if fmt in {
@@ -361,7 +370,7 @@ def _value_for_format(
         if isinstance(value, bytes):
             return value
         text = str(value).strip().replace('-', '')
-        if len(text) == 32:
+        if len(text) == 32:  # ruff: ignore[magic-value-comparison]
             try:
                 xml_random = int(text[:16], 16)
                 random_bits = (xml_random >> 1) | ((xml_random & 1) << 63)
@@ -461,8 +470,8 @@ def _parse_udim2_value(value: object) -> dict[str, float | int]:
     return {
         'XS': numbers[0] if len(numbers) > 0 else 0.0,
         'XO': int(numbers[1]) if len(numbers) > 1 else 0,
-        'YS': numbers[2] if len(numbers) > 2 else 0.0,
-        'YO': int(numbers[3]) if len(numbers) > 3 else 0,
+        'YS': numbers[2] if len(numbers) > 2 else 0.0,  # ruff: ignore[magic-value-comparison]
+        'YO': int(numbers[3]) if len(numbers) > 3 else 0,  # ruff: ignore[magic-value-comparison]
     }
 
 
@@ -530,10 +539,10 @@ def _parse_cframe_value(value: object) -> dict[str, float] | None:
                 result[key] = _safe_float(pairs[key])
         return result
     numbers = _parse_numbers(text)
-    if len(numbers) >= 12:
+    if len(numbers) >= 12:  # ruff: ignore[magic-value-comparison]
         for key, number in zip(result, numbers[:12], strict=False):
-            result[key] = number
-    elif len(numbers) >= 3:
+            result[key] = number  # ruff: ignore[manual-dict-comprehension]
+    elif len(numbers) >= 3:  # ruff: ignore[magic-value-comparison]
         result['X'], result['Y'], result['Z'] = numbers[:3]
     return result
 
@@ -592,7 +601,7 @@ def _parse_physical_properties_value(value: object) -> dict[str, bool | float] |
     if pairs:
         return _parse_physical_properties_value(pairs)
     numbers = _parse_numbers(text)
-    if len(numbers) < 5:
+    if len(numbers) < 5:  # ruff: ignore[magic-value-comparison]
         return None
     result: dict[str, bool | float] = {
         'CustomPhysics': True,
@@ -602,7 +611,7 @@ def _parse_physical_properties_value(value: object) -> dict[str, bool | float] |
         'FrictionWeight': numbers[3],
         'ElasticityWeight': numbers[4],
     }
-    if len(numbers) > 5:
+    if len(numbers) > 5:  # ruff: ignore[magic-value-comparison]
         result['AcousticAbsorption'] = numbers[5]
     return result
 
@@ -623,8 +632,8 @@ def _parse_font_value(value: object) -> dict[str, str | int]:
     return {
         'Family': parts[0] if len(parts) > 0 else '',
         'Weight': _safe_int(parts[1] if len(parts) > 1 else 400),
-        'Style': _safe_int(parts[2] if len(parts) > 2 else 0),
-        'CachedFaceId': parts[3] if len(parts) > 3 else '',
+        'Style': _safe_int(parts[2] if len(parts) > 2 else 0),  # ruff: ignore[magic-value-comparison]
+        'CachedFaceId': parts[3] if len(parts) > 3 else '',  # ruff: ignore[magic-value-comparison]
     }
 
 

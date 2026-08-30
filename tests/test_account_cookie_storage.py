@@ -1,7 +1,6 @@
 import base64
 import errno
 import json
-import os
 import stat
 import sys
 import threading
@@ -16,7 +15,6 @@ import pytest
 from fleasion.gui import rando_stuff_tab
 from fleasion.proxy.server import ProxyFlow
 from fleasion.utils import roblox_auth
-
 
 type JsonObject = dict[str, object]
 
@@ -117,7 +115,7 @@ def _rewrite_sober_cookie_header_callable() -> Callable[[str, str], str]:
 
 
 def _requests_module() -> object:
-    return cast(object, rando_stuff_tab.__dict__['_requests'])
+    return cast('object', rando_stuff_tab.__dict__['_requests'])
 
 
 def _owner_launch_account_thread(
@@ -152,7 +150,7 @@ def _owner_switch_account(owner: rando_stuff_tab.RandoStuffTab) -> None:
 
 
 def _as_proxy_flow(flow: object) -> ProxyFlow:
-    return cast(ProxyFlow, flow)
+    return cast('ProxyFlow', flow)
 
 
 def _protect_data(data: bytes, *_args: object) -> bytes:
@@ -220,7 +218,8 @@ def _deny_replace(*_args: object, **_kwargs: object) -> Never:
 
 
 def _fail_information(*_args: object, **_kwargs: object) -> Never:
-    raise AssertionError('Linux account switching must not show the unsupported-platform dialog')
+    msg = 'Linux account switching must not show the unsupported-platform dialog'
+    raise AssertionError(msg)
 
 
 class _FakeRequest:
@@ -346,7 +345,7 @@ def test_macos_cookie_storage_uses_fernet_key(
     assert 'cookie-secret' not in token
     assert _decrypt_cookie(token) == 'cookie-secret'
     assert key_path.exists()
-    assert stat.S_IMODE(os.stat(key_path).st_mode) == 0o600
+    assert stat.S_IMODE(key_path.stat().st_mode) == 0o600
 
 
 def test_auth_ticket_app_uri_builder_is_deterministic() -> None:
@@ -581,7 +580,8 @@ def test_linux_sober_cookie_storage_collapses_duplicate_auth_cookies(
     assert '.ROBLOSECURITY=new-cookie' in text
     assert 'old-one' not in text
     assert 'old-two' not in text
-    assert 'A=1' in text and 'B=2' in text
+    assert 'A=1' in text
+    assert 'B=2' in text
 
 
 def test_linux_sober_cookie_storage_refuses_missing_auth_cookie(
@@ -857,7 +857,7 @@ def test_linux_write_cookie_to_dat_uses_sober_local_auth_storage(
     _owner_write_cookie(owner, 'cookie-secret')
 
     assert written == ['cookie-secret']
-    assert cast(bool, owner.__dict__['_account_switched']) is True
+    assert cast('bool', owner.__dict__['_account_switched']) is True
 
 
 def test_linux_switch_account_writes_selected_cookie_to_sober_storage(
@@ -910,9 +910,13 @@ def test_linux_switch_account_explains_libsecret_and_does_not_select_account(
 
     def blocked(cookie: str) -> Never:
         del cookie
+        msg = 'libsecret_enabled'
         raise roblox_auth.LinuxAuthWriteError(
-            'libsecret_enabled',
-            "Sober account switching is unavailable because Sober's use_libsecret setting is enabled.",
+            msg,
+            (
+                "Sober account switching is unavailable because Sober's "
+                'use_libsecret setting is enabled.'
+            ),
         )
 
     owner.__dict__['_write_cookie_to_dat'] = blocked
@@ -933,7 +937,10 @@ def test_linux_switch_account_explains_libsecret_and_does_not_select_account(
     assert warnings == [
         (
             'Account Switch Unavailable',
-            "Sober account switching is unavailable because Sober's use_libsecret setting is enabled.",
+            (
+                "Sober account switching is unavailable because Sober's "
+                'use_libsecret setting is enabled.'
+            ),
         )
     ]
 
@@ -966,7 +973,7 @@ def test_account_subplace_root_preseed_disables_proxy_cert_verification(
     assert sessions[0].proxies == {}
     assert sessions[0].verify is False
     assert sessions[0].headers['X-CSRF-TOKEN'] == 'csrf'
-    post_json = cast(JsonObject, sessions[0].posts[1][1]['json'])
+    post_json = cast('JsonObject', sessions[0].posts[1][1]['json'])
     assert post_json['placeId'] == 537413528
     assert post_json['isTeleport'] is True
 
@@ -981,7 +988,7 @@ def test_account_proxy_marks_distinct_subplace_launch_as_teleport() -> None:
 
     owner.request(_as_proxy_flow(flow))
 
-    body = cast(JsonObject, json.loads(flow.request.content))
+    body = cast('JsonObject', json.loads(flow.request.content))
     assert body['placeId'] == 1930863474
     assert body['isTeleport'] is True
 
@@ -1000,7 +1007,7 @@ def test_account_proxy_marks_private_server_subplace_launch_as_teleport() -> Non
 
     owner.request(_as_proxy_flow(flow))
 
-    body = cast(JsonObject, json.loads(flow.request.content))
+    body = cast('JsonObject', json.loads(flow.request.content))
     assert body['placeId'] == 1930863474
     assert body['accessCode'] == 'access-123'
     assert body['isTeleport'] is True
@@ -1026,7 +1033,7 @@ def test_account_proxy_marks_private_server_subplace_launch_as_teleport() -> Non
 
     owner.request(_as_proxy_flow(retry_flow))
 
-    retry_body = cast(JsonObject, json.loads(retry_flow.request.content))
+    retry_body = cast('JsonObject', json.loads(retry_flow.request.content))
     assert retry_body['isTeleport'] is True
 
     retry_flow.response = _FakeFlowResponse(
@@ -1050,7 +1057,7 @@ def test_account_proxy_does_not_mark_nonmatching_place_as_teleport() -> None:
 
     owner.request(_as_proxy_flow(flow))
 
-    body = cast(JsonObject, json.loads(flow.request.content))
+    body = cast('JsonObject', json.loads(flow.request.content))
     assert 'isTeleport' not in body
 
 
@@ -1065,7 +1072,7 @@ def test_account_proxy_preserves_teleport_when_redirecting_job_id() -> None:
 
     owner.request(_as_proxy_flow(flow))
 
-    body = cast(JsonObject, json.loads(flow.request.content))
+    body = cast('JsonObject', json.loads(flow.request.content))
     assert flow.request.url == 'https://gamejoin.roblox.com/v1/join-game-instance'
     assert body['gameId'] == '00000000-0000-0000-0000-000000000001'
     assert body['isTeleport'] is True

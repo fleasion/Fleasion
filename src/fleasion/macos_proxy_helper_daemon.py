@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3  # ruff: ignore[shebang-not-executable]
 """Privileged macOS relay and hosts-file helper.
 
 This module is installed root-owned under /Library/PrivilegedHelperTools. It
@@ -7,6 +7,7 @@ stays small and independent from Fleasion's GUI and replacement engine.
 """
 
 import argparse
+import contextlib
 import hmac
 import json
 import logging
@@ -17,7 +18,7 @@ import socket
 import socketserver
 import ssl
 import stat
-import subprocess
+import subprocess  # ruff: ignore[suspicious-subprocess-import]
 import tempfile
 import threading
 import time
@@ -78,10 +79,12 @@ def _json_value(value: object) -> JsonValue:
         result: JsonObject = {}
         for key, item in cast('dict[object, object]', value).items():
             if not isinstance(key, str):
-                raise TypeError('JSON object keys must be strings')
+                msg = 'JSON object keys must be strings'
+                raise TypeError(msg)
             result[key] = _json_value(item)
         return result
-    raise TypeError(f'unsupported JSON value type: {type(value).__name__}')
+    msg = f'unsupported JSON value type: {type(value).__name__}'
+    raise TypeError(msg)
 
 
 def _json_list(values: Iterable[JsonValue]) -> list[JsonValue]:
@@ -91,13 +94,15 @@ def _json_list(values: Iterable[JsonValue]) -> list[JsonValue]:
 def _request_object(request: JsonValue) -> JsonObject:
     if isinstance(request, dict):
         return request
-    raise AttributeError(f"'{type(request).__name__}' object has no attribute 'get'")
+    msg = f"'{type(request).__name__}' object has no attribute 'get'"
+    raise AttributeError(msg)
 
 
 def _as_iterable(value: object) -> Iterable[object]:
     if isinstance(value, Iterable):
         return cast('Iterable[object]', value)
-    raise TypeError(f"'{type(value).__name__}' object is not iterable")
+    msg = f"'{type(value).__name__}' object is not iterable"
+    raise TypeError(msg)
 
 
 def _certificate_name(value: object) -> CertificateName:
@@ -112,7 +117,7 @@ def _certificate_name(value: object) -> CertificateName:
             if not isinstance(raw_attr, tuple):
                 return ()
             attr = cast('tuple[object, ...]', raw_attr)
-            if len(attr) != 2:
+            if len(attr) != 2:  # ruff: ignore[magic-value-comparison]
                 return ()
             attr_key, attr_value = attr
             if not isinstance(attr_key, str) or not isinstance(attr_value, str):
@@ -152,17 +157,18 @@ def _configure_logging(log_path: str | os.PathLike[str]) -> None:
 
 
 def _read_token() -> str:
-    with open(_token_file, 'r', encoding='utf-8') as handle:
+    with open(_token_file, encoding='utf-8') as handle:  # ruff: ignore[builtin-open, read-whole-file]
         token = handle.read().strip()
-    if len(token) < 32:
-        raise RuntimeError('helper token is missing or invalid')
+    if len(token) < 32:  # ruff: ignore[magic-value-comparison]
+        msg = 'helper token is missing or invalid'
+        raise RuntimeError(msg)
     return token
 
 
 def _line_targets_allowed_host(raw_line: str) -> bool:
     active = raw_line.split('#', 1)[0].strip()
     parts = active.split()
-    if len(parts) < 2 or parts[0] != '127.0.0.1':
+    if len(parts) < 2 or parts[0] != '127.0.0.1':  # ruff: ignore[magic-value-comparison]
         return False
     return any(host.lower() in ALLOWED_HOSTS for host in parts[1:])
 
@@ -172,7 +178,7 @@ def _parse_entries(content: str) -> dict[str, list[HostsEntry]]:
     for line_no, raw_line in enumerate(content.splitlines(), start=1):
         active = raw_line.split('#', 1)[0].strip()
         parts = active.split()
-        if len(parts) < 2:
+        if len(parts) < 2:  # ruff: ignore[magic-value-comparison]
             continue
         for host in parts[1:]:
             entries.setdefault(host.lower(), []).append((parts[0], line_no, raw_line))
@@ -184,23 +190,23 @@ def _flush_dns() -> None:
         ['/usr/bin/dscacheutil', '-flushcache'],
         ['/usr/bin/killall', '-HUP', 'mDNSResponder'],
     ):
-        try:
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
-        except Exception:
+        try:  # ruff: ignore[suppressible-exception]
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)  # ruff: ignore[subprocess-run-without-check, subprocess-without-shell-equals-true]
+        except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass
 
 
 def _set_hosts(hosts: Iterable[object]) -> None:
-    global _active_hosts, _last_heartbeat
+    global _active_hosts, _last_heartbeat  # ruff: ignore[global-statement]
 
     Path(HOSTS_FILE).parent.mkdir(exist_ok=True)
     requested = {str(host).strip().lower() for host in hosts}
     if not requested.issubset(ALLOWED_HOSTS):
-        raise ValueError('request contains a host outside the Fleasion allowlist')
+        msg = 'request contains a host outside the Fleasion allowlist'
+        raise ValueError(msg)
 
     try:
-        with open(HOSTS_FILE, 'r', encoding='utf-8', errors='replace') as handle:
-            existing = handle.read()
+        existing = Path(HOSTS_FILE).read_text(encoding='utf-8', errors='replace')
     except FileNotFoundError:
         existing = _default_hosts_content()
 
@@ -208,9 +214,8 @@ def _set_hosts(hosts: Iterable[object]) -> None:
     for host in sorted(requested):
         for ip, line_no, raw_line in entries.get(host, []):
             if ip != '127.0.0.1':
-                raise RuntimeError(
-                    'hosts conflict for {} at line {}: {}'.format(host, line_no, raw_line)
-                )
+                msg = f'hosts conflict for {host} at line {line_no}: {raw_line}'
+                raise RuntimeError(msg)
 
     filtered = [
         line
@@ -219,13 +224,11 @@ def _set_hosts(hosts: Iterable[object]) -> None:
     ]
     content = ''.join(filtered).rstrip('\n')
     if requested:
-        additions = '\n'.join(
-            '127.0.0.1 {} {}'.format(host, HOSTS_MARKER) for host in sorted(requested)
-        )
+        additions = '\n'.join(f'127.0.0.1 {host} {HOSTS_MARKER}' for host in sorted(requested))
         content = (content + '\n' if content else '') + additions
     content += '\n'
 
-    with open(HOSTS_FILE, 'w', encoding='utf-8') as handle:
+    with open(HOSTS_FILE, 'w', encoding='utf-8') as handle:  # ruff: ignore[builtin-open]
         handle.write(content)
         handle.flush()
         os.fsync(handle.fileno())
@@ -246,21 +249,19 @@ def _normalize_pem_block(pem: object) -> str:
 
 
 def _is_fleasion_ca_cert_block(pem_block: object) -> bool:
-    try:
+    try:  # ruff: ignore[too-many-statements-in-try-clause]
         with tempfile.NamedTemporaryFile('w', encoding='utf-8', delete=False) as handle:
             handle.write(_normalize_pem_block(pem_block))
             temp_path = handle.name
         try:
-            ssl_impl: object = getattr(ssl, '_ssl')
-            decode_cert = getattr(ssl_impl, '_test_decode_cert')
+            ssl_impl: object = getattr(ssl, '_ssl')  # ruff: ignore[get-attr-with-constant]
+            decode_cert = getattr(ssl_impl, '_test_decode_cert')  # ruff: ignore[get-attr-with-constant]
             if not callable(decode_cert):
                 return False
             decoded: object = decode_cert(temp_path)
         finally:
-            try:
-                os.unlink(temp_path)
-            except OSError:
-                pass
+            with contextlib.suppress(OSError):
+                os.unlink(temp_path)  # ruff: ignore[os-unlink]
         if not isinstance(decoded, dict):
             return False
         cert = cast('dict[object, object]', decoded)
@@ -271,7 +272,7 @@ def _is_fleasion_ca_cert_block(pem_block: object) -> bool:
             and _name_value(subject, 'commonName') == 'Fleasion Proxy CA'
             and _name_value(subject, 'organizationName') == 'Fleasion'
         )
-    except Exception:
+    except Exception:  # ruff: ignore[blind-except]
         return False
 
 
@@ -287,20 +288,24 @@ def _is_relative_to(child: Path, parent: Path) -> bool:
 def _validate_resource_root(raw_resource_dir: object) -> Path:
     resource_dir = Path(str(raw_resource_dir or '')).expanduser()
     if not resource_dir.is_absolute():
-        raise ValueError('resource_dir must be absolute')
+        msg = 'resource_dir must be absolute'
+        raise ValueError(msg)
     resource_root = resource_dir.resolve(strict=True)
     contents_dir = resource_root.parent
     app_root = contents_dir.parent
     if resource_root.name != 'Resources' or contents_dir.name != 'Contents':
-        raise ValueError('resource_dir is not a Roblox app Resources directory')
+        msg = 'resource_dir is not a Roblox app Resources directory'
+        raise ValueError(msg)
     executable_name = _ALLOWED_ROBLOX_APPS.get(app_root.name)
     if app_root.name == 'RobloxPlayer.app' and _is_froststrap_player_bundle(app_root):
         executable_name = 'RobloxPlayer'
     if executable_name is None:
-        raise ValueError('resource_dir is not under a supported Roblox app bundle')
+        msg = 'resource_dir is not under a supported Roblox app bundle'
+        raise ValueError(msg)
     executable = app_root / 'Contents' / 'MacOS' / executable_name
     if not executable.is_file():
-        raise ValueError('Roblox app executable was not found')
+        msg = 'Roblox app executable was not found'
+        raise ValueError(msg)
     return resource_root
 
 
@@ -312,7 +317,7 @@ def _is_froststrap_player_bundle(app_root: Path) -> bool:
         return False
     parts = relative.parts
     return (
-        len(parts) == 7
+        len(parts) == 7  # ruff: ignore[magic-value-comparison]
         and bool(parts[0])
         and parts[1:5]
         == (
@@ -330,24 +335,30 @@ def _is_froststrap_player_bundle(app_root: Path) -> bool:
 def _safe_cacert_path(resource_root: Path) -> Path:
     ssl_dir = resource_root / 'ssl'
     if ssl_dir.is_symlink():
-        raise ValueError('Roblox ssl directory is a symlink')
+        msg = 'Roblox ssl directory is a symlink'
+        raise ValueError(msg)
     if ssl_dir.exists():
         if not ssl_dir.is_dir():
-            raise ValueError('Roblox ssl path is not a directory')
+            msg = 'Roblox ssl path is not a directory'
+            raise ValueError(msg)
         resolved_ssl = ssl_dir.resolve(strict=True)
         if not _is_relative_to(resolved_ssl, resource_root):
-            raise ValueError('Roblox ssl directory escapes the app resources root')
+            msg = 'Roblox ssl directory escapes the app resources root'
+            raise ValueError(msg)
     else:
         ssl_dir.mkdir(mode=0o755, exist_ok=True)
 
     ca_file = ssl_dir / 'cacert.pem'
     if ca_file.is_symlink():
-        raise ValueError('Roblox cacert.pem is a symlink')
+        msg = 'Roblox cacert.pem is a symlink'
+        raise ValueError(msg)
     if ca_file.exists() and not ca_file.is_file():
-        raise ValueError('Roblox cacert.pem is not a regular file')
+        msg = 'Roblox cacert.pem is not a regular file'
+        raise ValueError(msg)
     resolved_ca_parent = ca_file.parent.resolve(strict=True)
     if not _is_relative_to(resolved_ca_parent, resource_root):
-        raise ValueError('Roblox cacert.pem parent escapes the app resources root')
+        msg = 'Roblox cacert.pem parent escapes the app resources root'
+        raise ValueError(msg)
     return ca_file
 
 
@@ -380,13 +391,13 @@ def _strip_requested_pem_blocks(
 
 def _atomic_write_text(path: Path, content: str) -> None:
     fd, tmp_path = tempfile.mkstemp(prefix='.fleasion_cacert_', dir=str(path.parent))
-    try:
+    try:  # ruff: ignore[too-many-statements-in-try-clause]
         with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as handle:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(tmp_path, path)
-        try:
+        os.replace(tmp_path, path)  # ruff: ignore[os-replace]
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
             dir_fd = os.open(path.parent, os.O_RDONLY)
             try:
                 os.fsync(dir_fd)
@@ -395,10 +406,8 @@ def _atomic_write_text(path: Path, content: str) -> None:
         except OSError:
             pass
     except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)  # ruff: ignore[os-unlink]
         raise
 
 
@@ -412,10 +421,8 @@ def _clear_write_barriers(path: Path) -> None:
     if path.is_dir():
         desired_mode |= stat.S_IXUSR
 
-    try:
+    with contextlib.suppress(OSError):
         path.chmod(desired_mode)
-    except OSError:
-        pass
 
     chflags = getattr(os, 'chflags', None)
     if not callable(chflags):
@@ -432,10 +439,8 @@ def _clear_write_barriers(path: Path) -> None:
     except OSError:
         return
 
-    try:
+    with contextlib.suppress(OSError):
         chflags(path, current_flags & ~immutable_mask)
-    except OSError:
-        pass
 
 
 def _prepare_cacert_target(resource_root: Path, ca_file: Path) -> None:
@@ -446,18 +451,18 @@ def _prepare_cacert_target(resource_root: Path, ca_file: Path) -> None:
 
 
 def _normalize_cacert_permissions(ca_file: Path) -> None:
-    try:
+    with contextlib.suppress(OSError):
         ca_file.chmod(0o644)
-    except OSError:
-        pass
 
 
-def _patch_ca(ca_pem: object, installs: object) -> JsonObject:
+def _patch_ca(ca_pem: object, installs: object) -> JsonObject:  # ruff: ignore[too-many-locals]
     current_ca = _normalize_pem_block(ca_pem)
     if not _PEM_CERT_BLOCK_RE.fullmatch(current_ca):
-        raise ValueError('ca_pem is not a PEM certificate block')
+        msg = 'ca_pem is not a PEM certificate block'
+        raise ValueError(msg)
     if not isinstance(installs, list):
-        raise ValueError('installs must be a list')
+        msg = 'installs must be a list'
+        raise ValueError(msg)  # ruff: ignore[type-check-without-type-error]
 
     patched: list[JsonObject] = []
     skipped: list[JsonObject] = []
@@ -467,7 +472,7 @@ def _patch_ca(ca_pem: object, installs: object) -> JsonObject:
         item_dict = cast('dict[object, object]', item) if isinstance(item, dict) else None
         raw_resource_dir = item_dict.get('resource_dir') if item_dict is not None else ''
         result: JsonObject = {'resource_dir': str(raw_resource_dir or '')}
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
             resource_root = _validate_resource_root(raw_resource_dir)
             ca_file = _safe_cacert_path(resource_root)
             _prepare_cacert_target(resource_root, ca_file)
@@ -518,7 +523,7 @@ def _patch_ca(ca_pem: object, installs: object) -> JsonObject:
             result['status'] = 'patched'
             result['changed'] = True
             patched.append(result)
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             result['status'] = 'failed'
             result['error'] = str(exc)
             failed.append(result)
@@ -581,7 +586,7 @@ def _probe_backend() -> JsonObject:
         backend.close()
 
 
-def _handle_request(request: JsonValue) -> JsonObject:
+def _handle_request(request: JsonValue) -> JsonObject:  # ruff: ignore[too-many-return-statements]
     request_object = _request_object(request)
     supplied = str(request_object.get('token') or '')
     if not hmac.compare_digest(supplied, _read_token()):
@@ -597,7 +602,7 @@ def _handle_request(request: JsonValue) -> JsonObject:
         _set_hosts([])
         return _status()
     if action == 'heartbeat':
-        global _last_heartbeat
+        global _last_heartbeat  # ruff: ignore[global-statement]
         with _state_lock:
             if _active_hosts:
                 _last_heartbeat = time.monotonic()
@@ -619,7 +624,7 @@ class _ControlHandler(socketserver.StreamRequestHandler):
             decoded: object = json.loads(raw.decode('utf-8'))
             request = _json_value(decoded)
             response: JsonObject = _handle_request(request)
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             logger.warning('control request failed: %s', exc)
             response = {'ok': False, 'error': str(exc)}
         self.wfile.write((json.dumps(response, separators=(',', ':')) + '\n').encode('utf-8'))
@@ -654,10 +659,8 @@ class _RelayHandler(socketserver.BaseRequestHandler):
             except OSError:
                 pass
             finally:
-                try:
+                with contextlib.suppress(OSError):
                     destination.shutdown(socket.SHUT_WR)
-                except OSError:
-                    pass
 
         forward = threading.Thread(target=pump, args=(client, backend), daemon=True)
         forward.start()
@@ -679,12 +682,12 @@ def _lease_monitor() -> None:
             logger.warning('proxy heartbeat lease expired; clearing hosts entries')
             try:
                 _set_hosts([])
-            except Exception as exc:
-                logger.error('failed to clear hosts after lease expiry: %s', exc)
+            except Exception as exc:  # ruff: ignore[blind-except]
+                logger.error('failed to clear hosts after lease expiry: %s', exc)  # ruff: ignore[error-instead-of-exception]
 
 
 def main() -> None:
-    global _token_file, _backend_port
+    global _token_file, _backend_port  # ruff: ignore[global-statement]
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--token-file', required=True)
@@ -694,7 +697,8 @@ def main() -> None:
     args = parser.parse_args()
 
     if os.geteuid() != 0:
-        raise SystemExit('Fleasion proxy helper must run as root')
+        msg = 'Fleasion proxy helper must run as root'
+        raise SystemExit(msg)
 
     _token_file = args.token_file
     _backend_port = args.backend_port
@@ -702,7 +706,7 @@ def main() -> None:
 
     control = None
     relay = None
-    try:
+    try:  # ruff: ignore[too-many-statements-in-try-clause]
         logger.info(
             'helper starting: control 127.0.0.1:%d, relay 127.0.0.1:443 -> 127.0.0.1:%d',
             args.control_port,
@@ -712,15 +716,15 @@ def main() -> None:
 
         try:
             _set_hosts([])
-        except Exception as exc:
-            logger.error('startup hosts cleanup failed: %s', exc)
+        except Exception as exc:  # ruff: ignore[blind-except]
+            logger.error('startup hosts cleanup failed: %s', exc)  # ruff: ignore[error-instead-of-exception]
 
         logger.info('binding helper control 127.0.0.1:%d', args.control_port)
         control = _ThreadingTCPServer(('127.0.0.1', args.control_port), _ControlHandler)
         logger.info('binding helper relay 127.0.0.1:443')
         relay = _ThreadingTCPServer(('127.0.0.1', 443), _RelayHandler)
 
-        def stop_handler(_signum: int, _frame: 'FrameType | None') -> None:
+        def stop_handler(_signum: int, _frame: FrameType | None) -> None:
             _stop_event.set()
             threading.Thread(target=control.shutdown, daemon=True).start()
             threading.Thread(target=relay.shutdown, daemon=True).start()
@@ -741,8 +745,8 @@ def main() -> None:
         _stop_event.set()
         try:
             _set_hosts([])
-        except Exception as exc:
-            logger.error('shutdown hosts cleanup failed: %s', exc)
+        except Exception as exc:  # ruff: ignore[blind-except]
+            logger.error('shutdown hosts cleanup failed: %s', exc)  # ruff: ignore[error-instead-of-exception]
         if control is not None:
             control.server_close()
         if relay is not None:

@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Protocol
 import numpy as np
 from numpy.typing import NDArray
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtGui import QCloseEvent  # ruff: ignore[typing-only-third-party-import]
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -23,8 +23,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..localization import tr
-from ..utils import log_buffer
+from fleasion.localization import tr
+from fleasion.utils import log_buffer
 
 type AudioArray = NDArray[np.float32]
 type AudioCallback = Callable[[AudioArray, int, object, object], None]
@@ -91,10 +91,10 @@ else:
         return value
 
     def _config_audio_volume(config: object) -> int:
-        return getattr(config, 'audio_volume')
+        return getattr(config, 'audio_volume')  # ruff: ignore[get-attr-with-constant]
 
     def _set_config_audio_volume(config: object, value: int) -> None:
-        setattr(config, 'audio_volume', value)
+        setattr(config, 'audio_volume', value)  # ruff: ignore[set-attr-with-constant]
 
 
 _LINUX_LIBRARY_SEARCH_DIRS = (
@@ -119,7 +119,7 @@ def _resolve_library_path(
     candidate = Path(resolved)
     if candidate.is_file():
         return candidate
-    if Path(resolved).parent != Path('.'):
+    if Path(resolved).parent != Path():
         return None
 
     for search_dir in search_dirs or _LINUX_LIBRARY_SEARCH_DIRS:
@@ -181,26 +181,26 @@ _audio_backend_logged = False
 
 def _log_audio_backend_once() -> None:
     """Log the PortAudio backend selected by the GUI player once per process."""
-    global _audio_backend_logged
+    global _audio_backend_logged  # ruff: ignore[global-statement]
     if _audio_backend_logged:
         return
     _audio_backend_logged = True
 
-    try:
+    try:  # ruff: ignore[too-many-statements-in-try-clause]
         preferred = _preferred_portaudio_path()
         loaded = getattr(sd, '_libname', None)
         version = getattr(sd, '__version__', 'unknown')
         try:
             portaudio_version = sd.get_portaudio_version()
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             portaudio_version = f'unavailable ({type(exc).__name__}: {exc})'
         try:
             default_device = sd.default.device
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             default_device = f'unavailable ({type(exc).__name__}: {exc})'
         try:
             device_count = len(sd.query_devices())
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             device_count = f'unavailable ({type(exc).__name__}: {exc})'
         log_buffer.log(
             'Audio',
@@ -212,7 +212,7 @@ def _log_audio_backend_once() -> None:
             f'default_device={default_device} '
             f'device_count={device_count}',
         )
-    except Exception as exc:
+    except Exception as exc:  # ruff: ignore[blind-except]
         log_buffer.log('Audio', f'Backend diagnostic failed: {type(exc).__name__}: {exc}')
 
 
@@ -253,7 +253,7 @@ class AudioPlayerWidget(QWidget):
         self.duration = 0.0
 
         # Volume
-        if config_manager:
+        if config_manager:  # ruff: ignore[if-else-block-instead-of-if-exp]
             initial_slider = _config_audio_volume(config_manager)
         else:
             initial_slider = 70
@@ -282,7 +282,7 @@ class AudioPlayerWidget(QWidget):
 
     def _load_audio(self) -> None:
         """Load audio file and get metadata."""
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
             # Load audio as float32 so the callback writes the same dtype that
             # PortAudio receives from sounddevice.
             self.audio_data, self.sample_rate = sf.read(self.audio_file_path, dtype='float32')
@@ -292,7 +292,7 @@ class AudioPlayerWidget(QWidget):
                 self.audio_data = np.column_stack((self.audio_data, self.audio_data))
             elif self.audio_data.shape[1] == 1:
                 self.audio_data = np.repeat(self.audio_data, 2, axis=1)
-            elif self.audio_data.shape[1] > 2:
+            elif self.audio_data.shape[1] > 2:  # ruff: ignore[magic-value-comparison]
                 mono = self.audio_data.mean(axis=1)
                 self.audio_data = np.column_stack((mono, mono))
 
@@ -303,11 +303,11 @@ class AudioPlayerWidget(QWidget):
             # Calculate duration
             self.duration = len(_audio_data(self.audio_data)) / _sample_rate(self.sample_rate)
 
-        except Exception as e:
+        except Exception as e:  # ruff: ignore[blind-except]
             log_buffer.log('Audio', f'Error loading audio: {e}')
             self.duration = 0
 
-    def _setup_ui(self) -> None:
+    def _setup_ui(self) -> None:  # ruff: ignore[too-many-statements]
         """Setup the UI."""
         layout = QVBoxLayout()
         layout.setContentsMargins(10, 10, 10, 10)
@@ -436,9 +436,9 @@ class AudioPlayerWidget(QWidget):
         # Start playing
         self._play()
 
-    def _playback_worker(self, stop_event: threading.Event) -> None:
+    def _playback_worker(self, stop_event: threading.Event) -> None:  # ruff: ignore[complex-structure, too-many-statements]
         """Worker thread for audio playback."""
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
 
             def callback(
                 outdata: AudioArray, frames: int, _time_info: object, status: object
@@ -491,34 +491,34 @@ class AudioPlayerWidget(QWidget):
             finally:
                 try:
                     stream.stop()
-                except Exception as e:
+                except Exception as e:  # ruff: ignore[blind-except]
                     log_buffer.log('Audio', f'Error stopping audio stream: {e}')
                 try:
                     stream.close()
-                except Exception as e:
+                except Exception as e:  # ruff: ignore[blind-except]
                     log_buffer.log('Audio', f'Error closing audio stream: {e}')
 
-        except Exception as e:
+        except Exception as e:  # ruff: ignore[blind-except]
             log_buffer.log('Audio', f'Playback error: {e}')
         finally:
             is_current_playback = False
-            try:
+            try:  # ruff: ignore[too-many-statements-in-try-clause]
                 with self.stream_lock:
                     if self.stream is locals().get('stream'):
                         self.stream = None
                     if self.stop_event is stop_event:
                         self.stop_event = None
                         is_current_playback = True
-            except Exception:
+            except Exception:  # ruff: ignore[blind-except, try-except-pass]
                 pass
             if is_current_playback:
                 self.is_playing = False
                 # Schedule UI update on the main thread to avoid manipulating
                 # Qt widgets from this worker thread (which can cause
                 # "wrapped C/C++ object ... has been deleted" errors).
-                try:
+                try:  # ruff: ignore[suppressible-exception]
                     QTimer.singleShot(0, lambda: self._safe_set_play_pause_text('▶'))
-                except Exception:
+                except Exception:  # ruff: ignore[blind-except, try-except-pass]
                     # If scheduling fails for any reason, ignore silently.
                     pass
 
@@ -528,9 +528,9 @@ class AudioPlayerWidget(QWidget):
         This method swallows exceptions that occur if the underlying
         C++ widget has been deleted.
         """
-        try:
+        try:  # ruff: ignore[suppressible-exception]
             self.play_pause_btn.setText(text)
-        except Exception:
+        except Exception:  # ruff: ignore[blind-except, try-except-pass]
             # Widget may have been deleted; ignore.
             pass
 
@@ -582,7 +582,7 @@ class AudioPlayerWidget(QWidget):
         if self.play_pause_btn.text() != expected_text:
             self.play_pause_btn.setText(expected_text)
 
-    def _format_time(self, seconds: float) -> str:
+    def _format_time(self, seconds: float) -> str:  # ruff: ignore[no-self-use]
         """Format seconds as MM:SS.mmm."""
         minutes = int(seconds // 60)
         secs = int(seconds % 60)
@@ -601,7 +601,7 @@ class AudioPlayerWidget(QWidget):
 
         self.stopped.emit()
 
-    def closeEvent(self, event: QCloseEvent) -> None:
+    def closeEvent(self, event: QCloseEvent) -> None:  # ruff: ignore[invalid-function-name]
         """Handle widget close."""
         self.stop()
         super().closeEvent(event)

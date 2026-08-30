@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import os
 import sys
-from collections.abc import Callable
-from pathlib import Path
+from collections.abc import Callable  # ruff: ignore[typing-only-standard-library-import]
+from pathlib import Path  # ruff: ignore[typing-only-standard-library-import]
 from typing import TYPE_CHECKING, Protocol
 
 from .logging import log_buffer
@@ -31,18 +32,18 @@ if TYPE_CHECKING:
 else:
     try:
         import win32crypt
-    except Exception:
+    except Exception:  # ruff: ignore[blind-except]
         win32crypt = None
 
 
 def _get_fernet_cipher(key_file: Path, *, create: bool = True) -> _FernetCipher | None:
     try:
-        from cryptography.fernet import Fernet
-    except Exception as exc:
+        from cryptography.fernet import Fernet  # ruff: ignore[import-outside-top-level]
+    except Exception as exc:  # ruff: ignore[blind-except]
         log_buffer.log('Auth', f'Token encryption unavailable: {type(exc).__name__}: {exc}')
         return None
 
-    try:
+    try:  # ruff: ignore[too-many-statements-in-try-clause]
         if not key_file.exists():
             if not create:
                 return None
@@ -56,12 +57,10 @@ def _get_fernet_cipher(key_file: Path, *, create: bool = True) -> _FernetCipher 
                 f.write(key)
         else:
             key = key_file.read_bytes().strip()
-        try:
-            os.chmod(key_file, 0o600)
-        except OSError:
-            pass
+        with contextlib.suppress(OSError):
+            os.chmod(key_file, 0o600)  # ruff: ignore[os-chmod]
         return Fernet(key)
-    except Exception as exc:
+    except Exception as exc:  # ruff: ignore[blind-except]
         log_buffer.log('Auth', f'Token encryption key failed: {type(exc).__name__}: {exc}')
         return None
 
@@ -75,17 +74,18 @@ def encrypt_token(token: str, key_file: Path) -> str:
 
     cipher = _get_fernet_cipher(key_file)
     if cipher is None:
-        raise RuntimeError('No local token encryption backend is available')
+        msg = 'No local token encryption backend is available'
+        raise RuntimeError(msg)
     return 'fernet:' + cipher.encrypt(raw).decode('ascii')
 
 
-def decrypt_token(stored: str, key_file: Path) -> str | None:
+def decrypt_token(stored: str, key_file: Path) -> str | None:  # ruff: ignore[too-many-return-statements]
     """Decrypt a token stored by :func:`encrypt_token`.
 
     Legacy unprefixed values are still accepted so existing account files can be
     read, but all new writes use an encrypted prefixed format.
     """
-    try:
+    try:  # ruff: ignore[too-many-statements-in-try-clause]
         if stored.startswith('dpapi:'):
             if win32crypt is None:
                 return None
@@ -104,5 +104,5 @@ def decrypt_token(stored: str, key_file: Path) -> str | None:
         if sys.platform in {'darwin', 'win32'}:
             return None
         return encrypted.decode('utf-8')
-    except Exception:
+    except Exception:  # ruff: ignore[blind-except]
         return None

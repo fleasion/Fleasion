@@ -103,7 +103,7 @@ class RbxmSerializer:
         """Pre-scan SHARED_STRING properties and build the SSTR table."""
         for inst in self._all_instances:
             for prop in inst.properties.values():
-                if prop.fmt == PropertyFormat.SHARED_STRING and isinstance(prop.value, bytes):
+                if prop.fmt == PropertyFormat.SHARED_STRING and isinstance(prop.value, bytes):  # ruff: ignore[collapsible-if]
                     if prop.value not in self._shared_string_index:
                         self._shared_string_index[prop.value] = len(self._shared_strings)
                         self._shared_strings.append(prop.value)
@@ -171,9 +171,8 @@ class RbxmSerializer:
         compressed = lz4_block.compress(data, store_size=False)
         if len(compressed) < uncompressed_size:
             return name_b + struct.pack('<III', len(compressed), uncompressed_size, 0) + compressed
-        else:
-            # Uncompressed: compressed_size field = 0
-            return name_b + struct.pack('<III', 0, uncompressed_size, 0) + data
+        # Uncompressed: compressed_size field = 0
+        return name_b + struct.pack('<III', 0, uncompressed_size, 0) + data
 
     # ------------------------------------------------------------------
     # META chunk
@@ -193,13 +192,13 @@ class RbxmSerializer:
     # ------------------------------------------------------------------
 
     def _build_sstr(self) -> bytes:
-        import hashlib
+        import hashlib  # ruff: ignore[import-outside-top-level]
 
         buf = bytearray()
         buf.extend(write_u32(0))  # version
         buf.extend(write_u32(len(self._shared_strings)))
         for blob in self._shared_strings:
-            md5 = hashlib.md5(blob).digest()  # noqa: S324
+            md5 = hashlib.md5(blob, usedforsecurity=False).digest()
             buf.extend(md5)
             buf.extend(write_binary_string(blob))
         return bytes(buf)
@@ -275,7 +274,7 @@ class RbxmSerializer:
         return bytes(buf)
 
     @staticmethod
-    def _default_value(fmt: PropertyFormat) -> Any:
+    def _default_value(fmt: PropertyFormat) -> Any:  # ruff: ignore[any-type, complex-structure, too-many-branches, too-many-return-statements]
         match fmt:
             case PropertyFormat.STRING:
                 return b''
@@ -354,7 +353,7 @@ class RbxmSerializer:
             case _:
                 return None
 
-    def _encode_prop_values(self, fmt: PropertyFormat, values: list[Any]) -> bytes | None:
+    def _encode_prop_values(self, fmt: PropertyFormat, values: list[Any]) -> bytes | None:  # ruff: ignore[complex-structure, too-many-branches, too-many-return-statements]
         """Encode a list of property values in the binary RBXM format."""
         match fmt:
             case PropertyFormat.STRING:

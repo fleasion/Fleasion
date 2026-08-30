@@ -11,12 +11,13 @@ import os
 import re
 import sys
 import time
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as ET  # ruff: ignore[typing-only-standard-library-import]
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, TypedDict
+from typing import TYPE_CHECKING, Protocol, TypedDict, cast
 
 import numpy as np
+from defusedxml import ElementTree as safe_et  # ruff: ignore[camelcase-imported-as-lowercase]
 from OpenGL import GL
 from OpenGL.GL import glDeleteLists
 from PySide6.QtCore import QPoint, Qt, QTimer
@@ -41,8 +42,9 @@ from PySide6.QtWidgets import (
     QWidgetAction,
 )
 
-from ..localization import tr
-from ..utils import log_buffer
+from fleasion.localization import tr
+from fleasion.utils import log_buffer
+
 from .fps_controls import (
     KEY_BACKWARD,
     KEY_DOWN,
@@ -216,7 +218,7 @@ def rot3_from_quat(q: Quaternion) -> Rotation3:
     ]
 
 
-def quat_slerp(
+def quat_slerp(  # ruff: ignore[too-many-locals]
     q0: Quaternion,
     q1: Quaternion,
     t: float,
@@ -228,7 +230,7 @@ def quat_slerp(
     if dot < 0.0:
         dot = -dot
         w1, x1, y1, z1 = -w1, -x1, -y1, -z1
-    if dot > 0.9995:
+    if dot > 0.9995:  # ruff: ignore[magic-value-comparison]
         w = w0 + (w1 - w0) * t
         x = x0 + (x1 - x0) * t
         y = y0 + (y1 - y0) * t
@@ -366,7 +368,7 @@ def _fill_sparse_pose_tracks(keys: list[Keyframe]) -> list[Keyframe]:
     discarded, sample each pose independently so unrelated facial keyframes do
     not reset body parts to the rig's bind pose.
     """
-    if len(keys) < 2:
+    if len(keys) < 2:  # ruff: ignore[magic-value-comparison]
         return keys
 
     tracks: dict[str, list[tuple[int, np.ndarray]]] = {}
@@ -379,7 +381,7 @@ def _fill_sparse_pose_tracks(keys: list[Keyframe]) -> list[Keyframe]:
         for index in range(first_index):
             keys[index].pose_by_part_name[name] = first_transform
 
-        for (left_index, left), (right_index, right) in zip(samples, samples[1:]):
+        for (left_index, left), (right_index, right) in zip(samples, samples[1:]):  # ruff: ignore[zip-instead-of-pairwise, zip-without-explicit-strict]
             if right_index == left_index + 1:
                 continue
             left_time = keys[left_index].time
@@ -435,7 +437,7 @@ def parse_cframe(elem: ET.Element) -> tuple[tuple[float, float, float], list[flo
     z = float(_text(elem.find('Z'), '0'))
     r: list[float] = []
     for k in ('R00', 'R01', 'R02', 'R10', 'R11', 'R12', 'R20', 'R21', 'R22'):
-        if k in ('R00', 'R11', 'R22'):
+        if k in ('R00', 'R11', 'R22'):  # ruff: ignore[literal-membership]
             r.append(float(_text(elem.find(k), '1')))
         else:
             r.append(float(_text(elem.find(k), '0')))
@@ -445,10 +447,10 @@ def parse_cframe(elem: ET.Element) -> tuple[tuple[float, float, float], list[flo
 # Rig and animation loading
 
 
-def load_rig(rig_path: str) -> tuple[dict[str, Part], list[Motor6D]]:
+def load_rig(rig_path: str) -> tuple[dict[str, Part], list[Motor6D]]:  # ruff: ignore[too-many-locals]
     """Load rig from XML file."""
-    tree = ET.parse(rig_path)
-    root = tree.getroot()
+    tree = safe_et.parse(rig_path)
+    root = cast('ET.Element', tree.getroot())
 
     parts: dict[str, Part] = {}
     motors: list[Motor6D] = []
@@ -496,13 +498,13 @@ def load_rig(rig_path: str) -> tuple[dict[str, Part], list[Motor6D]]:
     return parts, motors
 
 
-def load_animation_from_xml(anim_data: bytes) -> list[Keyframe]:
+def load_animation_from_xml(anim_data: bytes) -> list[Keyframe]:  # ruff: ignore[complex-structure]
     """Load animation from XML bytes (RBXMX format)."""
     try:
         text = anim_data.decode('utf-8-sig', errors='replace')
         text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
-        root = ET.fromstring(text)
-    except Exception:
+        root = safe_et.fromstring(text)
+    except Exception:  # ruff: ignore[blind-except]
         return []
 
     keys: list[Keyframe] = []
@@ -545,7 +547,7 @@ def load_animation_from_xml(anim_data: bytes) -> list[Keyframe]:
 
 def load_animation_from_rbxm(anim_data: bytes) -> list[Keyframe]:
     """Load animation from binary RBXM format."""
-    try:
+    try:  # ruff: ignore[too-many-statements-in-try-clause]
         if TYPE_CHECKING:
 
             def parse_rbxm(data: bytes) -> dict[int, _ParsedInstanceLike]: ...
@@ -554,12 +556,15 @@ def load_animation_from_rbxm(anim_data: bytes) -> list[Keyframe]:
                 instances: dict[int, _ParsedInstanceLike], class_name: str
             ) -> list[_ParsedInstanceLike]: ...
         else:
-            from .rbxm_parser import find_by_class, parse_rbxm
+            from .rbxm_parser import (  # ruff: ignore[import-outside-top-level]
+                find_by_class,
+                parse_rbxm,
+            )
     except ImportError:
         log_buffer.log('AnimationViewer', 'RBXM parser not available')
         return []
 
-    try:
+    try:  # ruff: ignore[too-many-statements-in-try-clause]
         instances = parse_rbxm(anim_data)
 
         # Find all Keyframe instances
@@ -574,7 +579,7 @@ def load_animation_from_rbxm(anim_data: bytes) -> list[Keyframe]:
         for kf_inst in keyframe_instances:
             # Get keyframe time
             time_val = kf_inst.properties.get('Time', 0.0)
-            if isinstance(time_val, (int, float)):
+            if isinstance(time_val, (int, float)):  # ruff: ignore[if-else-block-instead-of-if-exp]
                 t = float(time_val)
             else:
                 t = 0.0
@@ -587,11 +592,11 @@ def load_animation_from_rbxm(anim_data: bytes) -> list[Keyframe]:
                 keys.append(Keyframe(t, poses))
 
         keys.sort(key=lambda k: k.time)
-        return keys
+        return keys  # ruff: ignore[try-consider-else]
 
-    except Exception as e:
+    except Exception as e:  # ruff: ignore[blind-except]
         log_buffer.log('AnimationViewer', f'Error parsing RBXM animation: {e}')
-        import traceback
+        import traceback  # ruff: ignore[import-outside-top-level]
 
         log_buffer.log('AnimationViewer', traceback.format_exc())
         return []
@@ -616,16 +621,16 @@ def _collect_poses(instance: _ParsedInstanceLike, poses: dict[str, np.ndarray]) 
             _collect_poses(child, poses)
 
 
-def load_curve_animation_data(anim_data: bytes) -> list[Keyframe]:
+def load_curve_animation_data(anim_data: bytes) -> list[Keyframe]:  # ruff: ignore[complex-structure, too-many-branches, too-many-statements]
     """Load animation keyframes from a CurveAnimation (binary RBXM or XML)."""
-    import base64 as _b64
-    import struct
+    import base64 as _b64  # ruff: ignore[import-outside-top-level]
+    import struct  # ruff: ignore[import-outside-top-level]
 
-    TICKS = 14400.0
+    TICKS = 14400.0  # ruff: ignore[non-lowercase-variable-in-function]
 
     def _vat(raw_b: bytes) -> CurveSamples:
         """Decode ValuesAndTimes blob → [(time_sec, value), ...]"""
-        if len(raw_b) < 8:
+        if len(raw_b) < 8:  # ruff: ignore[magic-value-comparison]
             return []
         _, n = struct.unpack_from('<II', raw_b)
         if not n:
@@ -678,12 +683,14 @@ def load_curve_animation_data(anim_data: bytes) -> list[Keyframe]:
         return {'px': [], 'py': [], 'pz': [], 'rx': [], 'ry': [], 'rz': []}
 
     # ── Binary RBXM path ──────────────────────────────────────────────────────
-    if anim_data.startswith(b'<roblox!'):
+    if anim_data.startswith(b'<roblox!'):  # ruff: ignore[too-many-nested-blocks]
         try:
-            from .tools.solidmodel_converter.rbxm.deserializer import RbxmDeserializer
+            from .tools.solidmodel_converter.rbxm.deserializer import (  # ruff: ignore[import-outside-top-level]
+                RbxmDeserializer,
+            )
 
             tree = RbxmDeserializer().deserialize(anim_data)
-        except Exception as e:
+        except Exception as e:  # ruff: ignore[blind-except]
             log_buffer.log('AnimationViewer', f'CurveAnimation RBXM deserialize error: {e}')
             return []
 
@@ -703,7 +710,7 @@ def load_curve_animation_data(anim_data: bytes) -> list[Keyframe]:
                         return _vat(rb)
             return []
 
-        def _walk_rbxm(inst: RbxInstance) -> None:
+        def _walk_rbxm(inst: RbxInstance) -> None:  # ruff: ignore[complex-structure, too-many-branches]
             cls = inst.class_name
             if cls == 'Folder':
                 name = _preserve_str(_prop(inst, 'Name') or '')
@@ -751,8 +758,8 @@ def load_curve_animation_data(anim_data: bytes) -> list[Keyframe]:
         try:
             text = anim_data.decode('utf-8-sig', errors='replace')
             text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
-            root = ET.fromstring(text)
-        except Exception:
+            root = safe_et.fromstring(text)
+        except Exception:  # ruff: ignore[blind-except]
             return []
 
         def _vat_xml(fc_item: ET.Element) -> CurveSamples:
@@ -760,17 +767,17 @@ def load_curve_animation_data(anim_data: bytes) -> list[Keyframe]:
                 if bs.get('name') == 'ValuesAndTimes' and bs.text:
                     try:
                         return _vat(_b64.b64decode(bs.text.strip()))
-                    except Exception:
+                    except Exception:  # ruff: ignore[blind-except, try-except-pass]
                         pass
             for s in fc_item.iter('string'):
                 if s.get('name') == 'ValuesAndTimes' and s.text:
                     try:
                         return _vat(s.text.encode('latin-1'))
-                    except Exception:
+                    except Exception:  # ruff: ignore[blind-except, try-except-pass]
                         pass
             return []
 
-        def _walk_xml(item: ET.Element) -> None:
+        def _walk_xml(item: ET.Element) -> None:  # ruff: ignore[complex-structure, too-many-branches]
             cls = item.get('class', '')
             if cls == 'Folder':
                 props = item.find('Properties')
@@ -836,8 +843,7 @@ def load_curve_animation_data(anim_data: bytes) -> list[Keyframe]:
     times_set: set[float] = set()
     for bc in bone_curves.values():
         for tv in (bc['px'], bc['py'], bc['pz'], bc['rx'], bc['ry'], bc['rz']):
-            for t, _ in tv:
-                times_set.add(round(t, 6))
+            times_set.update(round(t, 6) for t, _ in tv)
 
     if not times_set:
         return []
@@ -872,13 +878,13 @@ def load_animation_data(anim_data: bytes) -> list[Keyframe]:
             return _fill_sparse_pose_tracks(keys)
 
     # Strip UTF-8 BOM for format detection (Roblox Studio emits BOM-prefixed RBXMX)
-    _detect = anim_data[3:] if anim_data[:3] == b'\xef\xbb\xbf' else anim_data
+    detect = anim_data[3:] if anim_data[:3] == b'\xef\xbb\xbf' else anim_data
 
     # Try to detect format
-    if _detect.startswith(b'<roblox!'):
+    if detect.startswith(b'<roblox!'):
         # Binary RBXM format
         keys = load_animation_from_rbxm(anim_data)
-    elif _detect.strip().startswith(b'<'):
+    elif detect.strip().startswith(b'<'):
         # XML format
         keys = load_animation_from_xml(anim_data)
     else:
@@ -888,8 +894,8 @@ def load_animation_data(anim_data: bytes) -> list[Keyframe]:
 
 def load_animation_from_file(anim_path: str) -> list[Keyframe]:
     """Load animation from XML file."""
-    tree = ET.parse(anim_path)
-    root = tree.getroot()
+    tree = safe_et.parse(anim_path)
+    root = cast('ET.Element', tree.getroot())
 
     keys: list[Keyframe] = []
     for item in root.iter('Item'):
@@ -968,15 +974,15 @@ def detect_rig_type(parts: dict[str, Part]) -> str:
 
 def load_obj_mesh(mesh_path: str) -> MeshData | None:
     """Load OBJ mesh file."""
-    if not os.path.exists(mesh_path):
+    if not os.path.exists(mesh_path):  # ruff: ignore[os-path-exists]
         return None
 
     vertices: list[list[float]] = []
     normals: list[list[float]] = []
     faces: list[MeshFace] = []
 
-    try:
-        with open(mesh_path, 'r') as f:
+    try:  # ruff: ignore[too-many-nested-blocks, too-many-statements-in-try-clause]
+        with open(mesh_path) as f:  # ruff: ignore[builtin-open, unspecified-encoding]
             for line in f:
                 parts = line.strip().split()
                 if not parts:
@@ -993,17 +999,17 @@ def load_obj_mesh(mesh_path: str) -> MeshData | None:
                         indices = vertex_str.split('/')
                         v_idx = int(indices[0]) - 1
                         face_verts.append(v_idx)
-                        if len(indices) >= 3 and indices[2]:
+                        if len(indices) >= 3 and indices[2]:  # ruff: ignore[magic-value-comparison]
                             n_idx = int(indices[2]) - 1
                             face_norms.append(n_idx)
-                    faces.append({'v': face_verts, 'n': face_norms if face_norms else None})
+                    faces.append({'v': face_verts, 'n': face_norms or None})
 
         return {
             'vertices': np.array(vertices, dtype=np.float32),
             'normals': np.array(normals, dtype=np.float32) if normals else None,
             'faces': faces,
         }
-    except Exception as e:
+    except Exception as e:  # ruff: ignore[blind-except]
         log_buffer.log('AnimationViewer', f'Error loading mesh {mesh_path}: {e}')
         return None
 
@@ -1129,9 +1135,9 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
             refresh = float(screen.refreshRate()) if screen is not None else 60.0
             if not refresh or refresh <= 0:
                 refresh = 60.0
-        except Exception:
+        except Exception:  # ruff: ignore[blind-except]
             refresh = 60.0
-        interval_ms = max(1, int(round(1000.0 / refresh)))
+        interval_ms = max(1, int(round(1000.0 / refresh)))  # ruff: ignore[unnecessary-cast-to-int]
         self.timer.start(interval_ms)
 
     def get_refresh_interval_ms(self) -> int:
@@ -1141,11 +1147,11 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
             refresh = float(screen.refreshRate()) if screen is not None else 60.0
             if not refresh or refresh <= 0:
                 refresh = 60.0
-        except Exception:
+        except Exception:  # ruff: ignore[blind-except]
             refresh = 60.0
-        return max(1, int(round(1000.0 / refresh)))
+        return max(1, int(round(1000.0 / refresh)))  # ruff: ignore[unnecessary-cast-to-int]
 
-    def _create_placeholder_rig(
+    def _create_placeholder_rig(  # ruff: ignore[no-self-use]
         self, pose_names: set[str]
     ) -> tuple[dict[int, Part], dict[str, Motor6D]]:
         """Create placeholder rig with simple cubes for unsupported animation types."""
@@ -1173,9 +1179,9 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
 
         return parts, motors
 
-    def load_animation_data(self, anim_data: bytes) -> bool:
+    def load_animation_data(self, anim_data: bytes) -> bool:  # ruff: ignore[complex-structure, too-many-branches, too-many-statements]
         """Load animation from raw bytes and setup rig."""
-        try:
+        try:  # ruff: ignore[too-many-nested-blocks, too-many-statements-in-try-clause]
             # Parse animation (handles both XML and binary RBXM)
             self.keyframes = load_animation_data(anim_data)
             if not self.keyframes:
@@ -1212,7 +1218,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
                 self.parts = placeholder_parts
                 self.motors = placeholder_motors
                 self.duration = max(kf.time for kf in self.keyframes) if self.keyframes else 0
-                self.root_ref = list(placeholder_parts.keys())[0] if placeholder_parts else 0
+                self.root_ref = list(placeholder_parts.keys())[0] if placeholder_parts else 0  # ruff: ignore[unnecessary-iterable-allocation-for-first-element]
                 self.root_name = (
                     placeholder_parts[self.root_ref].name if placeholder_parts else 'Root'
                 )
@@ -1266,11 +1272,11 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
 
             self.current_time = 0
             self.update()
-            return True
+            return True  # ruff: ignore[try-consider-else]
 
-        except Exception as e:
+        except Exception as e:  # ruff: ignore[blind-except]
             log_buffer.log('AnimationViewer', f'Error loading animation: {e}')
-            import traceback
+            import traceback  # ruff: ignore[import-outside-top-level]
 
             log_buffer.log('AnimationViewer', traceback.format_exc())
             return False
@@ -1290,12 +1296,12 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
                 f'visible={self.isVisible()} exposed={self.isExposed()} '
                 f'context_valid={context_valid} fbo={self.defaultFramebufferObject()}'
             )
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             return f'state_unavailable={type(exc).__name__}: {exc}'
 
     def _sample_center_pixel(self) -> str:
         """Sample one rendered pixel so logs can separate rendering from presentation."""
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
             size = self.size()
             x = max(0, size.width() // 2)
             y = max(0, size.height() // 2)
@@ -1307,17 +1313,17 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
                 )
             else:
                 values = np.asarray(pixel, dtype=np.uint8).reshape(-1)
-            if values.size < 4:
+            if values.size < 4:  # ruff: ignore[magic-value-comparison]
                 return f'unexpected_readback_size={values.size}'
             return f'rgba=({values[0]},{values[1]},{values[2]},{values[3]})'
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             return f'readback_failed={type(exc).__name__}: {exc}'
 
     def _log_gl_context_once(self) -> None:
         if self._gl_context_logged:
             return
         self._gl_context_logged = True
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
             context = self.context()
             if TYPE_CHECKING:
                 assert context is not None
@@ -1341,7 +1347,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
                     f'vendor={vendor.decode(errors="replace") if vendor else "unknown"}'
                 ),
             )
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log('OpenGL', f'Could not read animation viewer context details: {exc}')
 
     def _schedule_presentation_watchdog(self) -> None:
@@ -1370,7 +1376,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
             'OpenGL', f'Animation viewer first raster frame presented; {self._surface_state()}'
         )
 
-    def initializeGL(self) -> None:
+    def initializeGL(self) -> None:  # ruff: ignore[invalid-function-name]
         """Initialize OpenGL settings."""
         self._log_gl_context_once()
         self._schedule_presentation_watchdog()
@@ -1400,7 +1406,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
             f'{self._surface_state()}',
         )
 
-    def resizeGL(  # pyright: ignore[reportIncompatibleMethodOverride]
+    def resizeGL(  # pyright: ignore[reportIncompatibleMethodOverride]  # ruff: ignore[invalid-function-name]
         self, w: int, h: int
     ) -> None:
         """Handle resize."""
@@ -1475,7 +1481,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
         # Draw XYZ axis indicator
         self._draw_axis_indicator()
 
-    def paintGL(self) -> None:
+    def paintGL(self) -> None:  # ruff: ignore[invalid-function-name]
         """Render an animation frame and log the first presentation lifecycle."""
         first_paint = not self._first_paint_started_logged
         if first_paint:
@@ -1483,7 +1489,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
             log_buffer.log(
                 'OpenGL', f'Animation viewer first paintGL started; {self._surface_state()}'
             )
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
             self._paint_scene()
             if first_paint:
                 render_error = GL.glGetError()
@@ -1498,7 +1504,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
                     f'readback_gl_error={self._gl_error_text(readback_error)}; '
                     f'{self._surface_state()}',
                 )
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             if not self._paint_error_logged:
                 self._paint_error_logged = True
                 log_buffer.log(
@@ -1508,10 +1514,10 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
             try:
                 GL.glClearColor(0.08, 0.08, 0.10, 1.0)
                 GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
-            except Exception:
+            except Exception:  # ruff: ignore[blind-except, try-except-pass]
                 pass
 
-    def _update_world_transforms(self) -> None:
+    def _update_world_transforms(self) -> None:  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
         """Update world transforms for all parts based on current animation frame."""
         if not self.keyframes or self.root_ref is None:
             return
@@ -1588,7 +1594,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
                     continue
 
                 # Get child pose transform
-                T = pose.get(child.name, ident)
+                T = pose.get(child.name, ident)  # ruff: ignore[non-lowercase-variable-in-function]
 
                 # Calculate world transform: parent_world * C0 * pose * inv(C1)
                 # Use cached c1_inv for performance
@@ -1605,7 +1611,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
 
         self.world_transforms = world
 
-    def _compile_mesh_display_list(self, part_ref: PartRef, mesh_data: MeshData) -> int:
+    def _compile_mesh_display_list(self, part_ref: PartRef, mesh_data: MeshData) -> int:  # ruff: ignore[no-self-use, unused-method-argument]
         """Compile mesh into a display list for fast rendering."""
         dl = GL.glGenLists(1)
         GL.glNewList(dl, GL.GL_COMPILE)
@@ -1639,7 +1645,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
             self.display_lists[part_ref] = self._compile_mesh_display_list(part_ref, mesh_data)
         return self.display_lists[part_ref]
 
-    def release_display_lists(self, make_current: bool = True) -> None:
+    def release_display_lists(self, make_current: bool = True) -> None:  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
         """Delete cached mesh display lists while their OpenGL context is current."""
         display_lists = tuple(self.display_lists.values())
         self.display_lists.clear()
@@ -1648,7 +1654,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
             return
 
         made_current = False
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
             if make_current:
                 if self.context() is None:
                     return
@@ -1657,16 +1663,16 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
             for display_list in display_lists:
                 if display_list:
                     glDeleteLists(display_list, 1)
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log('AnimationViewer', f'Could not delete display lists: {exc}')
         finally:
             if made_current:
-                try:
+                try:  # ruff: ignore[suppressible-exception]
                     self.doneCurrent()
-                except Exception:
+                except Exception:  # ruff: ignore[blind-except, try-except-pass]
                     pass
 
-    def closeEvent(self, event: QCloseEvent) -> None:
+    def closeEvent(self, event: QCloseEvent) -> None:  # ruff: ignore[invalid-function-name]
         """Release GPU resources before Qt destroys this widget's context."""
         self.timer.stop()
         self.release_display_lists()
@@ -1675,7 +1681,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
         else:
             super().closeEvent(event)
 
-    def _draw_grid(self) -> None:
+    def _draw_grid(self) -> None:  # ruff: ignore[no-self-use]
         """Draw a subtle floor grid to provide spatial context."""
         GL.glPushAttrib(GL.GL_ALL_ATTRIB_BITS)
         GL.glDisable(GL.GL_LIGHTING)
@@ -1693,14 +1699,14 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
         GL.glBegin(GL.GL_LINES)
         val = -grid_size
         while val <= grid_size + 0.001:
-            if abs(val) < 0.01:
+            if abs(val) < 0.01:  # ruff: ignore[magic-value-comparison]
                 GL.glColor4f(1.0, 0.2, 0.2, 0.15)  # X axis highlight
             else:
                 GL.glColor4f(1.0, 1.0, 1.0, 0.08)
             GL.glVertex3f(val, bottom_y, -grid_size)
             GL.glVertex3f(val, bottom_y, grid_size)
 
-            if abs(val) < 0.01:
+            if abs(val) < 0.01:  # ruff: ignore[magic-value-comparison]
                 GL.glColor4f(0.2, 0.4, 1.0, 0.15)  # Z axis highlight
             else:
                 GL.glColor4f(1.0, 1.0, 1.0, 0.08)
@@ -1778,11 +1784,11 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
         # Restore viewport
         GL.glViewport(0, 0, w, h)
 
-    def mousePressEvent(self, event: QMouseEvent) -> None:
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # ruff: ignore[invalid-function-name]
         """Handle mouse press."""
         self.last_pos = event.pos()
 
-    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # ruff: ignore[invalid-function-name]
         """Handle mouse drag."""
         if self.last_pos is None:
             return
@@ -1801,7 +1807,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
 
         self.last_pos = event.pos()
 
-    def wheelEvent(self, event: QWheelEvent) -> None:
+    def wheelEvent(self, event: QWheelEvent) -> None:  # ruff: ignore[invalid-function-name]
         """Handle mouse wheel."""
         delta = event.angleDelta().y()
         if self.camera_mode == 'orbit':
@@ -1831,7 +1837,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
     def _is_movement_pressed(self, movement_key: MovementKey) -> bool:
         return movement_key in self.keys_pressed
 
-    def keyPressEvent(self, event: QKeyEvent) -> None:
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # ruff: ignore[invalid-function-name]
         movement_key = movement_key_from_event(event)
         if self.camera_mode == 'orbit':
             if movement_key in WASD_MOVEMENT_KEYS:
@@ -1842,17 +1848,17 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
             self.keys_pressed.add(movement_key)
         super().keyPressEvent(event)
 
-    def keyReleaseEvent(self, event: QKeyEvent) -> None:
+    def keyReleaseEvent(self, event: QKeyEvent) -> None:  # ruff: ignore[invalid-function-name]
         movement_key = movement_key_from_event(event)
         if movement_key is not None:
             self.keys_pressed.discard(movement_key)
         super().keyReleaseEvent(event)
 
-    def focusOutEvent(self, event: QFocusEvent) -> None:
+    def focusOutEvent(self, event: QFocusEvent) -> None:  # ruff: ignore[invalid-function-name]
         self.keys_pressed.clear()
         super().focusOutEvent(event)
 
-    def set_auto_rotate(self, enabled: bool) -> None:
+    def set_auto_rotate(self, enabled: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
         self.auto_rotate = enabled
         if enabled and self.camera_mode == 'fps':
             self.reset_view()
@@ -1864,10 +1870,10 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
         self.auto_rotate = False
 
         pitch = self.rotation_x % 360.0
-        if pitch > 180.0:
+        if pitch > 180.0:  # ruff: ignore[magic-value-comparison]
             pitch -= 360.0
         yaw = self.rotation_y % 360.0
-        if yaw > 180.0:
+        if yaw > 180.0:  # ruff: ignore[magic-value-comparison]
             yaw -= 360.0
 
         self.cam_pitch = pitch
@@ -1882,12 +1888,12 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
 
         self.cam_pos = np.array([px, py, pz], dtype=float)
 
-    def _update_tick(self) -> None:
+    def _update_tick(self) -> None:  # ruff: ignore[complex-structure, too-many-branches]
         needs_update = False
         current_time = time.time()
         dt = current_time - self.last_tick_time
         self.last_tick_time = current_time
-        if dt > 0.1:
+        if dt > 0.1:  # ruff: ignore[magic-value-comparison]
             dt = 0.016
 
         if self.camera_mode == 'orbit':
@@ -1958,7 +1964,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
         self.zoom = 20.0
         self.update()
 
-    def toggle_grid(self, enabled: bool) -> None:
+    def toggle_grid(self, enabled: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
         self.show_grid = enabled
         self.update()
 
@@ -1969,7 +1975,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
 class AnimationViewerPanel(QWidget):
     """Animation viewer with playback controls."""
 
-    def __init__(
+    def __init__(  # ruff: ignore[too-many-statements]
         self, parent: QWidget | None = None, config_manager: ConfigManager | None = None
     ) -> None:
         super().__init__(parent)
@@ -2076,7 +2082,7 @@ class AnimationViewerPanel(QWidget):
         self.slider_pressed = False
         self.last_tick_time: float | None = None
 
-    def _toggle_grid_and_save(self, enabled: bool) -> None:
+    def _toggle_grid_and_save(self, enabled: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
         self.gl_widget.toggle_grid(enabled)
         if self.config_manager:
             self.config_manager.settings['obj_show_grid'] = enabled
@@ -2122,13 +2128,13 @@ class AnimationViewerPanel(QWidget):
             # Start playback timer at monitor refresh rate for smooth sync
             try:
                 interval = self.gl_widget.get_refresh_interval_ms()
-            except Exception:
+            except Exception:  # ruff: ignore[blind-except]
                 interval = 33
             self.timer.start(interval)
 
     def _update_playback(self) -> None:
         """Update playback position using actual elapsed time."""
-        import time as time_module
+        import time as time_module  # ruff: ignore[import-outside-top-level]
 
         if not self.slider_pressed and self.is_loaded:
             current_tick = time_module.perf_counter()
@@ -2152,9 +2158,9 @@ class AnimationViewerPanel(QWidget):
             # Update slider
             if self.gl_widget.duration > 0:
                 slider_val = int((new_time / self.gl_widget.duration) * 1000)
-                self.time_slider.blockSignals(True)
+                self.time_slider.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
                 self.time_slider.setValue(slider_val)
-                self.time_slider.blockSignals(False)
+                self.time_slider.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
 
             self._update_time_label()
 

@@ -8,13 +8,15 @@ everything runs in the same process.
 import base64
 import hashlib
 import logging
-from concurrent.futures import Future, ThreadPoolExecutor
 from collections.abc import Callable, Iterable
+from concurrent.futures import Future, ThreadPoolExecutor
 from threading import Lock
-from typing import TYPE_CHECKING, Literal, NotRequired, TypeIs, TypedDict, cast, overload
+from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict, TypeIs, cast, overload
 
-from ...cache.cache_manager import CacheManager
-from ...utils import format_count, log_buffer
+from fleasion.cache.cache_manager import (
+    CacheManager,  # ruff: ignore[typing-only-first-party-import]
+)
+from fleasion.utils import format_count, log_buffer
 
 try:
     import orjson
@@ -59,18 +61,19 @@ def _is_object_list(value: object) -> TypeIs[list[object]]:
 def _preserve_object_dict(value: object) -> JsonObject:
     if TYPE_CHECKING:
         assert isinstance(value, dict)
-    return cast(JsonObject, value)
+    return cast('JsonObject', value)
 
 
 def _preserve_object_list(value: object) -> list[object]:
     if TYPE_CHECKING:
         assert isinstance(value, list)
-    return cast(list[object], value)
+    return cast('list[object]', value)
 
 
 def _preserve_asset_id(value: object) -> AssetId:
     if TYPE_CHECKING:
-        assert isinstance(value, (int, str)) and not isinstance(value, bool)
+        assert isinstance(value, (int, str))
+        assert not isinstance(value, bool)
     return value
 
 
@@ -82,7 +85,8 @@ def _preserve_str(value: object) -> str:
 
 def _preserve_int(value: object) -> int:
     if TYPE_CHECKING:
-        assert isinstance(value, int) and not isinstance(value, bool)
+        assert isinstance(value, int)
+        assert not isinstance(value, bool)
     return value
 
 
@@ -127,7 +131,7 @@ def _normalized_build_type(value: object) -> BuildType | None:
 def _texpack_slot_from_build_type(value: object) -> int | None:
     normalized = _normalized_build_type(value)
     if isinstance(normalized, int):
-        return normalized if 0 <= normalized <= 2 else None
+        return normalized if 0 <= normalized <= 2 else None  # ruff: ignore[magic-value-comparison]
     if not isinstance(normalized, str) or not normalized:
         return None
     if any(token in normalized for token in ('color', 'albedo', 'diffuse', 'basecolor')):
@@ -135,7 +139,7 @@ def _texpack_slot_from_build_type(value: object) -> int | None:
     if any(token in normalized for token in ('normal', 'bump')):
         return 1
     if (
-        'metal' in normalized
+        'metal' in normalized  # ruff: ignore[too-many-boolean-expressions]
         or 'rough' in normalized
         or 'emiss' in normalized
         or 'height' in normalized
@@ -196,7 +200,7 @@ def creator_game_base_paths(creator_id: int, creator_type: int, limit: int) -> l
             f'/v2/users/{creator_id}/games?sortOrder=Asc&limit={limit}',
             f'/v2/users/{creator_id}/games?accessFilter=Public&sortOrder=Asc&limit={limit}',
         ]
-    if creator_type == 2:
+    if creator_type == 2:  # ruff: ignore[magic-value-comparison]
         return [
             f'/v2/groups/{creator_id}/gamesV2?accessFilter=2&limit={limit}&sortOrder=Asc',
             f'/v2/groups/{creator_id}/gamesV2?accessFilter=1&limit={limit}&sortOrder=Asc',
@@ -204,7 +208,7 @@ def creator_game_base_paths(creator_id: int, creator_type: int, limit: int) -> l
     return []
 
 
-def _build_texpack_request_slot_map(req_json: list[object]) -> dict[int, int]:
+def _build_texpack_request_slot_map(req_json: list[object]) -> dict[int, int]:  # ruff: ignore[complex-structure, too-many-branches]
     texpack_ids: set[int] = set()
     asset_counts: dict[int, int] = {}
     for item_value in req_json:
@@ -217,7 +221,7 @@ def _build_texpack_request_slot_map(req_json: list[object]) -> dict[int, int]:
         asset_counts[aid] = asset_counts.get(aid, 0) + 1
         asset_type = item.get('assetTypeId')
         asset_type_name = str(item.get('assetType', '')).lower()
-        if asset_type == 63 or asset_type_name == 'texturepack':
+        if asset_type == 63 or asset_type_name == 'texturepack':  # ruff: ignore[magic-value-comparison]
             texpack_ids.add(aid)
 
     for item_value in req_json:
@@ -253,13 +257,13 @@ def _build_texpack_request_slot_map(req_json: list[object]) -> dict[int, int]:
                 slots_for_asset = build_slots.setdefault(aid, {})
                 if build_key not in slots_for_asset:
                     raw_slot = next_slot.get(aid, 0)
-                    slots_for_asset[build_key] = 2 if raw_slot >= 2 else raw_slot
+                    slots_for_asset[build_key] = 2 if raw_slot >= 2 else raw_slot  # ruff: ignore[if-expr-min-max, magic-value-comparison]
                     next_slot[aid] = raw_slot + 1
                 slot = slots_for_asset[build_key]
             elif asset_counts.get(aid, 0) > 1:
                 raw_slot = occurrence_slot.get(aid, 0)
                 occurrence_slot[aid] = raw_slot + 1
-                slot = 2 if raw_slot >= 2 else raw_slot
+                slot = 2 if raw_slot >= 2 else raw_slot  # ruff: ignore[if-expr-min-max, magic-value-comparison]
             else:
                 continue
         result[idx] = slot
@@ -282,13 +286,13 @@ def _representation_matches_requested(representation: JsonObject, requested: obj
     return False
 
 
-def _select_content_representation(item: JsonObject) -> JsonObject | None:
+def _select_content_representation(item: JsonObject) -> JsonObject | None:  # ruff: ignore[complex-structure, too-many-return-statements]
     crpl = item.get('contentRepresentationPriorityList')
     if not crpl:
         return None
     try:
         decoded = _loads(_b64decode_padded(crpl))
-    except Exception:
+    except Exception:  # ruff: ignore[blind-except]
         return None
     if not _is_object_list(decoded) or not decoded:
         return None
@@ -318,12 +322,12 @@ def _decode_fidelity_slot_quality(fidelity_b64: object | None) -> tuple[int, int
         return None
     try:
         fb = _b64decode_padded(fidelity_b64)
-    except Exception:
+    except Exception:  # ruff: ignore[blind-except]
         return None
-    if len(fb) < 2:
+    if len(fb) < 2:  # ruff: ignore[magic-value-comparison]
         return None
     slot = (fb[0] & 0x60) >> 5
-    if slot > 2:
+    if slot > 2:  # ruff: ignore[magic-value-comparison]
         return None
     quality = (fb[1] & 0xC0) >> 6
     return slot, quality
@@ -347,11 +351,11 @@ def _decode_selected_representation_slot_quality(item: JsonObject) -> tuple[int,
     return _decode_fidelity_slot_quality(representation.get('fidelity'))
 
 
-def _ktx2_pack_index(data: bytes) -> int | None:
+def _ktx2_pack_index(data: bytes) -> int | None:  # ruff: ignore[too-many-return-statements]
     """Read Roblox's ``packIndex`` KVD entry from a KTX2 payload when present."""
-    import struct
+    import struct  # ruff: ignore[import-outside-top-level]
 
-    if len(data) < 80 or data[:12] != b'\xabKTX 20\xbb\r\n\x1a\n':
+    if len(data) < 80 or data[:12] != b'\xabKTX 20\xbb\r\n\x1a\n':  # ruff: ignore[magic-value-comparison]
         return None
     try:
         _dfd_offset, _dfd_length, kvd_offset, kvd_length, _sgd_offset, _sgd_length = (
@@ -359,7 +363,7 @@ def _ktx2_pack_index(data: bytes) -> int | None:
         )
     except struct.error:
         return None
-    if kvd_offset < 80 or kvd_length <= 0 or kvd_offset + kvd_length > len(data):
+    if kvd_offset < 80 or kvd_length <= 0 or kvd_offset + kvd_length > len(data):  # ruff: ignore[magic-value-comparison]
         return None
 
     pos = kvd_offset
@@ -397,7 +401,7 @@ class CacheScraper:
         self._lock = Lock()
         # asset_id -> {'location': str, 'assetTypeId': int, 'cached'?: True}
         self.cache_logs: dict[AssetId, CacheLogEntry] = {}
-        # base CDN URL (no query) -> list[asset_id]  (1:many – same replacement ID → same CDN URL)
+        # base CDN URL (no query) -> list[asset_id]  (1:many – same replacement ID → same CDN URL)  # ruff: ignore[ambiguous-unicode-character-comment]
         self._url_to_asset: dict[str, list[AssetId]] = {}
         # TexturePack sub-asset lookup: sub_asset_id -> (parent_pack_id, map_index)
         # map_index 0=Color/Albedo, 1=Normal, 2=ORM (Roughness+Metalness combined)
@@ -415,7 +419,7 @@ class CacheScraper:
         # the XML has been fetched.  Virtual slot 0 = first XML sub-asset, etc.
         # Only populated for virtual slots ≥ 2 (ORM sub-channels); slots 0 and 1
         # are full-slot replacements and need no channel mapping.
-        # Values: 'metalness' | 'roughness' | 'emissive' | 'height'
+        # Values: 'metalness' | 'roughness' | 'emissive' | 'height'  # ruff: ignore[commented-out-code]
         self._texpack_vslot_channel: dict[tuple[int, int], str] = {}
         # Tracks which TexturePack parent IDs have had their XML pre-fetched
         # (or attempted) to avoid redundant API calls from precheck_replacements.
@@ -485,14 +489,14 @@ class CacheScraper:
     # Called from server MITM thread for assetdelivery batch responses
     # ------------------------------------------------------------------
 
-    def process_batch_response(self, req_body: bytes, resp_body: bytes) -> None:
+    def process_batch_response(self, req_body: bytes, resp_body: bytes) -> None:  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
         """Stage 1: extract asset IDs and CDN locations from batch response."""
         if not self.enabled or not req_body or not resp_body:
             return
         try:
             req_json = _loads(req_body)
             res_json = _loads(resp_body)
-        except Exception:
+        except Exception:  # ruff: ignore[blind-except]
             return
 
         if not _is_object_list(req_json) or not _is_object_list(res_json):
@@ -543,7 +547,7 @@ class CacheScraper:
                 # duplicate-URL skip below. Otherwise the first classification
                 # of a reused CDN URL sticks forever and KTX2 slot exports can
                 # be written under the wrong slot name.
-                if asset_type == 63:
+                if asset_type == 63:  # ruff: ignore[magic-value-comparison]
                     request_slot = texpack_request_slots.get(idx)
                     selected_quality = _decode_selected_representation_slot_quality(res_item)
                     if request_slot is not None:
@@ -554,8 +558,8 @@ class CacheScraper:
                     else:
                         slot_quality = None
                     if slot_quality is not None:
-                        _slot, _qual = slot_quality
-                        new_meta = (int(asset_id), int(_slot), int(_qual))
+                        slot, qual = slot_quality
+                        new_meta = (int(asset_id), int(slot), int(qual))
                         self._url_to_texpack_slot.setdefault(base_url, set()).add(new_meta)
                 # Skip if this exact CDN URL is already registered.
                 # Previously this was keyed by asset_id alone, which meant only
@@ -607,25 +611,25 @@ class CacheScraper:
     # Called from server MITM thread for Roblox CDN responses
     # ------------------------------------------------------------------
 
-    def process_cdn_response(
+    def process_cdn_response(  # ruff: ignore[complex-structure, too-many-branches]
         self, full_url: str, path: str, body: bytes, content_type: str
     ) -> None:
         """Stage 2: cache the actual CDN asset bytes."""
         if not self.enabled or not body:
             return
 
-        base_url = full_url.split('?')[0]
+        base_url = full_url.split('?', maxsplit=1)[0]
 
         # Warn if a CDN URL arrives that was never registered via a batch
         # response — this was the original TexturePack sub-asset blind spot.
         # Should no longer fire after the dedup fix; kept as a canary.
         with self._lock:
-            _known = base_url in self._url_to_asset or base_url in self._url_to_texpack_slot
-        if not _known:
-            _cdn_id = base_url.rsplit('/', 1)[-1]
+            known = base_url in self._url_to_asset or base_url in self._url_to_texpack_slot
+        if not known:
+            cdn_id = base_url.rsplit('/', 1)[-1]
             log_buffer.log(
                 'DEBUG_CDN',
-                f'[CDN UNKNOWN] URL not seen in any batch (cdn_id={_cdn_id})',
+                f'[CDN UNKNOWN] URL not seen in any batch (cdn_id={cdn_id})',
             )
 
         with self._lock:
@@ -667,34 +671,34 @@ class CacheScraper:
         # as an Image or TexturePack (which causes preview failures).
         inner = body
         if body[:2] == b'\x1f\x8b':
-            import gzip as _gzip
+            import gzip as _gzip  # ruff: ignore[import-outside-top-level]
 
             try:
                 inner = _gzip.decompress(body)
-            except Exception:
+            except Exception:  # ruff: ignore[blind-except]
                 inner = body
         elif body[:4] == b'\x28\xb5\x2f\xfd':
             try:
-                import zstandard
+                import zstandard  # ruff: ignore[import-outside-top-level]
 
                 inner = zstandard.ZstdDecompressor().decompress(
                     body, max_output_size=64 * 1024 * 1024
                 )
-            except Exception:
+            except Exception:  # ruff: ignore[blind-except]
                 inner = body
 
         # For TexturePack slots: archive the exact raw response under every
         # logical parent/slot association for this CDN URL.  The persistent
         # archive keeps all Roblox mip packs; a separate canonical slot file is
         # maintained only for callers that need the largest captured level 0.
-        _KTX_MAGIC = (b'\xabKTX 20\xbb', b'\xabKTX 11\xbb')
-        if tp_slot_metas_early and inner[:8] in _KTX_MAGIC:
-            for _tp_id, _tp_slot, _tp_qual in tp_slot_metas_early:
+        KTX_MAGIC = (b'\xabKTX 20\xbb', b'\xabKTX 11\xbb')  # ruff: ignore[non-lowercase-variable-in-function]
+        if tp_slot_metas_early and inner[:8] in KTX_MAGIC:
+            for tp_id, tp_slot, tp_qual in tp_slot_metas_early:
                 self._submit_background(
                     self._store_texpack_slot_ktx2_async,
-                    _tp_id,
-                    _tp_slot,
-                    _tp_qual,
+                    tp_id,
+                    tp_slot,
+                    tp_qual,
                     inner,
                     generation=generation,
                 )
@@ -702,8 +706,8 @@ class CacheScraper:
         # Store / convert for every original asset ID that shares this CDN URL
         for asset_id, asset_type in pending:
             needs_conversion = (
-                asset_type in (1, 13) and inner[:8] in (b'\xabKTX 20\xbb', b'\xabKTX 11\xbb')
-            ) or asset_type == 63
+                asset_type in (1, 13) and inner[:8] in (b'\xabKTX 20\xbb', b'\xabKTX 11\xbb')  # ruff: ignore[literal-membership]
+            ) or asset_type == 63  # ruff: ignore[magic-value-comparison]
 
             if needs_conversion:
                 self._submit_background(
@@ -741,7 +745,7 @@ class CacheScraper:
             if isinstance(candidates, str):
                 values = (candidates,)
             elif isinstance(candidates, Iterable):
-                candidate_values = cast(Iterable[object], candidates)
+                candidate_values = cast('Iterable[object]', candidates)
                 values = tuple(str(value) for value in candidate_values)
             else:
                 values = (str(candidates),)
@@ -777,7 +781,7 @@ class CacheScraper:
         extra_headers: dict[str, str] | None = None,
         timeout: float = 8.0,
         max_redirects: int = 6,
-        return_status: Literal[False] = False,
+        return_status: Literal[False] = False,  # ruff: ignore[boolean-default-value-positional-argument]
     ) -> bytes | None: ...
 
     @overload
@@ -792,14 +796,14 @@ class CacheScraper:
         return_status: Literal[True],
     ) -> tuple[bytes | None, int | None]: ...
 
-    def _https_get(
+    def _https_get(  # ruff: ignore[complex-structure, too-many-arguments, too-many-branches, too-many-locals, too-many-positional-arguments, too-many-statements]
         self,
         hostname: str,
         path: str,
         extra_headers: dict[str, str] | None = None,
         timeout: float = 8.0,
         max_redirects: int = 6,
-        return_status: bool = False,
+        return_status: bool = False,  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
     ) -> bytes | tuple[bytes | None, int | None] | None:
         """Make an HTTPS GET request, bypassing our hosts file by connecting to the
         real IP while passing the original hostname as SNI and Host header.
@@ -816,10 +820,10 @@ class CacheScraper:
         because Python's requests library sends gzip/deflate Accept-Encoding by
         default, never zstd.
         """
-        import http.client
-        import socket
-        import ssl
-        from urllib.parse import urlparse
+        import http.client  # ruff: ignore[import-outside-top-level]
+        import socket  # ruff: ignore[import-outside-top-level]
+        import ssl  # ruff: ignore[import-outside-top-level]
+        from urllib.parse import urlparse  # ruff: ignore[import-outside-top-level]
 
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
@@ -841,11 +845,11 @@ class CacheScraper:
                     ssl_sock = ctx.wrap_socket(raw_sock, server_hostname=cur_hostname)
                     real_ip = candidate
                     break
-                except Exception as exc:
+                except Exception as exc:  # ruff: ignore[blind-except]
                     try:
                         if raw_sock is not None:
                             raw_sock.close()
-                    except Exception:
+                    except Exception:  # ruff: ignore[blind-except, try-except-pass]
                         pass
                     log_buffer.log(
                         'Cache', f'Socket connect failed {cur_hostname} ({candidate}): {exc}'
@@ -854,7 +858,7 @@ class CacheScraper:
             if ssl_sock is None:
                 return (None, None) if return_status else None
 
-            try:
+            try:  # ruff: ignore[too-many-statements-in-try-clause]
                 conn = http.client.HTTPConnection.__new__(http.client.HTTPSConnection)
                 http.client.HTTPConnection.__init__(conn, real_ip, 443, timeout=timeout)
                 conn.sock = ssl_sock
@@ -875,7 +879,7 @@ class CacheScraper:
                 conn.request('GET', cur_path, headers=req_headers)
                 resp = conn.getresponse()
 
-                if resp.status in (301, 302, 303, 307, 308):
+                if resp.status in (301, 302, 303, 307, 308):  # ruff: ignore[literal-membership]
                     location = resp.headers.get('Location', '')
                     resp.read()
                     ssl_sock.close()
@@ -888,39 +892,39 @@ class CacheScraper:
                         cur_path += '?' + parsed.query
                     continue
 
-                if resp.status == 200:
+                if resp.status == 200:  # ruff: ignore[magic-value-comparison]
                     data = resp.read()
                     ssl_sock.close()
                     # Decompress gzip — assetdelivery wraps PNG in gzip when
                     # Accept-Encoding: gzip was advertised
                     ce = resp.headers.get('Content-Encoding', '').lower()
                     if ce == 'gzip' and data:
-                        import gzip as _gzip
+                        import gzip as _gzip  # ruff: ignore[import-outside-top-level]
 
-                        try:
+                        try:  # ruff: ignore[suppressible-exception]
                             data = _gzip.decompress(data)
-                        except Exception:
+                        except Exception:  # ruff: ignore[blind-except, try-except-pass]
                             pass
                     elif data[:4] == b'\x28\xb5\x2f\xfd':  # zstd magic
                         try:
-                            import zstandard
+                            import zstandard  # ruff: ignore[import-outside-top-level]
 
                             data = zstandard.ZstdDecompressor().decompress(
                                 data, max_output_size=32 * 1024 * 1024
                             )
-                        except Exception:
+                        except Exception:  # ruff: ignore[blind-except, try-except-pass]
                             pass
-                    result = data if data else None
+                    result = data or None
                     return (result, 200) if return_status else result
 
                 status = resp.status
                 resp.read()
                 ssl_sock.close()
-                return (None, status) if return_status else None
-            except Exception as exc:
-                try:
+                return (None, status) if return_status else None  # ruff: ignore[try-consider-else]
+            except Exception as exc:  # ruff: ignore[blind-except]
+                try:  # ruff: ignore[suppressible-exception]
                     ssl_sock.close()
-                except Exception:
+                except Exception:  # ruff: ignore[blind-except, try-except-pass]
                     pass
                 log_buffer.log('Cache', f'HTTP error {cur_hostname}: {exc}')
                 return (None, None) if return_status else None
@@ -930,10 +934,10 @@ class CacheScraper:
     # ------------------------------------------------------------------
     # Creator place-ID cache (class-level, shared across threads)
     # ------------------------------------------------------------------
-    _creator_place_cache: dict[int, list[int] | int] = {}
+    _creator_place_cache: dict[int, list[int] | int] = {}  # ruff: ignore[mutable-class-default]
     # Fast-path: creator_id -> last place_id that successfully downloaded an asset.
     # Avoids re-iterating the full games list for the same creator.
-    _creator_last_success: dict[int, int] = {}
+    _creator_last_success: dict[int, int] = {}  # ruff: ignore[mutable-class-default]
 
     def _fetch_creator_info(self, asset_id: str) -> tuple[int | None, int | None]:
         """Look up the creator ID and type for an asset via develop.roblox.com.
@@ -941,7 +945,7 @@ class CacheScraper:
         Returns (creator_id, creator_type) or (None, None).
         creator_type: 1 = User, 2 = Group.
         """
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
             cookie = self._get_roblosecurity()
             extra = {'Accept': 'application/json'}
             if cookie:
@@ -965,12 +969,12 @@ class CacheScraper:
                 creator_id = _int_value(creator_id)
             if creator_type is not None:
                 creator_type = _int_value(creator_type)
-            return creator_id, creator_type
-        except Exception as exc:
+            return creator_id, creator_type  # ruff: ignore[try-consider-else]
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log('Cache', f'Creator info lookup failed for {asset_id}: {exc}')
             return None, None
 
-    def _fetch_place_ids_for_creator(self, creator_id: int, creator_type: int | None) -> list[int]:
+    def _fetch_place_ids_for_creator(self, creator_id: int, creator_type: int | None) -> list[int]:  # ruff: ignore[complex-structure, too-many-branches]
         """Get place IDs owned by the given creator, trying multiple pages.
 
         Uses games.roblox.com which is public and needs no auth.
@@ -981,8 +985,8 @@ class CacheScraper:
             cached = self._creator_place_cache[creator_id]
             return cached if isinstance(cached, list) else ([cached] if cached else [])
 
-        try:
-            if creator_type not in (1, 2):
+        try:  # ruff: ignore[too-many-nested-blocks, too-many-statements-in-try-clause]
+            if creator_type not in (1, 2):  # ruff: ignore[literal-membership]
                 self._creator_place_cache[creator_id] = []
                 return []
 
@@ -1008,7 +1012,7 @@ class CacheScraper:
                         if not raw:
                             break
 
-                        import json as _json
+                        import json as _json  # ruff: ignore[import-outside-top-level]
 
                         resp = _json.loads(raw)
                         games = resp.get('data', [])
@@ -1035,13 +1039,13 @@ class CacheScraper:
                 )
             else:
                 log_buffer.log('Cache', f'No games found for creator {creator_id}')
-            return place_ids
-        except Exception as exc:
+            return place_ids  # ruff: ignore[try-consider-else]
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log('Cache', f'Place ID lookup failed for creator {creator_id}: {exc}')
             self._creator_place_cache[creator_id] = []
             return []
 
-    def _fetch_asset_with_place_id_retry(
+    def _fetch_asset_with_place_id_retry(  # ruff: ignore[too-many-return-statements]
         self,
         asset_id: str,
         extra_headers: dict[str, str] | None = None,
@@ -1064,7 +1068,7 @@ class CacheScraper:
         if data:
             return data, status
 
-        if status != 403:
+        if status != 403:  # ruff: ignore[magic-value-comparison]
             return None, status
 
         # 403 — attempt place-ID bypass
@@ -1094,7 +1098,7 @@ class CacheScraper:
             if data:
                 log_buffer.log(
                     'Cache',
-                    f'Successfully downloaded privated asset {asset_id} (cached place {last_success})',
+                    f'Successfully downloaded privated asset {asset_id} (cached place {last_success})',  # ruff: ignore[line-too-long]
                 )
                 return data, status
 
@@ -1140,12 +1144,12 @@ class CacheScraper:
             data, _status = self._fetch_asset_with_place_id_retry(
                 asset_id, extra_headers=extra or None
             )
-            return data
-        except Exception as exc:
+            return data  # ruff: ignore[try-consider-else]
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log('Cache', f'API fetch error for {asset_id}: {exc}')
         return None
 
-    def _fetch_and_update_cache(
+    def _fetch_and_update_cache(  # ruff: ignore[complex-structure, too-many-arguments, too-many-branches, too-many-positional-arguments]
         self,
         asset_id: str,
         asset_type: int,
@@ -1155,18 +1159,20 @@ class CacheScraper:
         inner_content: bytes | None = None,
         generation: int | None = None,
     ) -> None:
-        try:
+        try:  # ruff: ignore[too-many-nested-blocks, too-many-statements-in-try-clause]
             if not self._generation_is_current(generation):
                 return
 
             # Try local KTX conversion first (KTX1 ETC and KTX2 BasisU/UASTC).
             # Falls through to API fetch if conversion returns None (unsupported format).
-            if asset_type in (1, 13) and inner_content:
+            if asset_type in (1, 13) and inner_content:  # ruff: ignore[literal-membership]
                 try:
-                    from ...cache.tools.ktx_to_png import convert as _ktx_convert
+                    from fleasion.cache.tools.ktx_to_png import (  # ruff: ignore[import-outside-top-level]
+                        convert as _ktx_convert,
+                    )
 
                     png_bytes = _ktx_convert(inner_content)
-                except Exception:
+                except Exception:  # ruff: ignore[blind-except]
                     png_bytes = None
                 if png_bytes and png_bytes[:4] == b'\x89PNG':
                     metadata['content_length'] = len(png_bytes)
@@ -1186,9 +1192,9 @@ class CacheScraper:
             if api_content:
                 is_valid = False
                 content_desc = ''
-                if asset_type in (1, 13) and api_content[:4] == b'\x89PNG':
+                if asset_type in (1, 13) and api_content[:4] == b'\x89PNG':  # ruff: ignore[literal-membership]
                     is_valid, content_desc = True, 'PNG'
-                elif asset_type == 63 and b'<roblox>' in api_content[:100]:
+                elif asset_type == 63 and b'<roblox>' in api_content[:100]:  # ruff: ignore[magic-value-comparison]
                     is_valid, content_desc = True, 'XML'
 
                 if is_valid:
@@ -1209,7 +1215,7 @@ class CacheScraper:
                         )
                         # For TexturePack: preserve raw KTX2 sidecar AND populate
                         # the sub-asset lookup so replacements can target sub-asset IDs.
-                        if asset_type == 63:
+                        if asset_type == 63:  # ruff: ignore[magic-value-comparison]
                             if inner_content and self._generation_is_current(generation):
                                 self._store_raw_asset_if_current(
                                     generation,
@@ -1236,10 +1242,10 @@ class CacheScraper:
                 if success:
                     type_name = self.cache_manager.get_asset_type_name(asset_type)
                     log_buffer.log('Cache', f'Cached {type_name} (raw fallback): {asset_id}')
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log('Cache', f'Background conversion error for {asset_id}: {exc}')
             if original_content is not None and self._generation_is_current(generation):
-                try:
+                try:  # ruff: ignore[suppressible-exception]
                     self._store_asset_if_current(
                         generation,
                         asset_id=str(asset_id),
@@ -1248,7 +1254,7 @@ class CacheScraper:
                         url=url,
                         metadata=metadata,
                     )
-                except Exception:
+                except Exception:  # ruff: ignore[blind-except, try-except-pass]
                     pass
 
     def _populate_texpack_subasset_lookup(
@@ -1269,7 +1275,7 @@ class CacheScraper:
         the asset's XML structure.
         """
         # Semantic mapping: XML tag name → global index.
-        _TAG_TO_GLOBAL_INDEX = {
+        TAG_TO_GLOBAL_INDEX = {  # ruff: ignore[non-lowercase-variable-in-function]
             'color': 0,
             'albedo': 0,
             'diffuse': 0,
@@ -1288,7 +1294,7 @@ class CacheScraper:
         }
         # ORM channel name for each recognised PBR sub-tag.
         # Tags without a channel (Color, Normal, or combined 'orm') map to None.
-        _TAG_TO_CHANNEL: dict[str, str | None] = {
+        TAG_TO_CHANNEL: dict[str, str | None] = {  # ruff: ignore[non-lowercase-variable-in-function]
             'color': None,
             'albedo': None,
             'diffuse': None,
@@ -1305,8 +1311,10 @@ class CacheScraper:
             'displacement': 'height',
             'heightmap': 'height',
         }
-        try:
-            import xml.etree.ElementTree as _ET
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
+            from defusedxml import (  # ruff: ignore[import-outside-top-level]
+                ElementTree as _ET,  # ruff: ignore[camelcase-imported-as-constant]
+            )
 
             root = _ET.fromstring(xml_content)
             added = 0
@@ -1315,19 +1323,19 @@ class CacheScraper:
             )
             for elem in root:  # direct children only — no recursion into sub-trees
                 tag_lower = elem.tag.lower().lstrip('{').split('}')[-1]  # strip namespace
-                global_index = _TAG_TO_GLOBAL_INDEX.get(tag_lower)
+                global_index = TAG_TO_GLOBAL_INDEX.get(tag_lower)
                 if global_index is None:
                     continue  # unknown tag — skip (don't advance virtual_slot)
                 text = (elem.text or '').strip()
                 sub_id = int(text) if text.isdigit() and int(text) != 0 else None
-                channel = _TAG_TO_CHANNEL.get(tag_lower)
+                channel = TAG_TO_CHANNEL.get(tag_lower)
                 if sub_id is not None:
                     with self._lock:
                         if generation is not None and generation != self._work_generation:
                             return
                         self._texpack_subasset_lookup[sub_id] = (parent_id, global_index)
                     added += 1
-                # Record virtual slot → channel for ORM sub-channels (legacy, kept for potential revert).
+                # Record virtual slot → channel for ORM sub-channels (legacy, kept for potential revert).  # ruff: ignore[line-too-long]
                 if channel is not None:  # None means Color/Normal/full-ORM → no channel
                     with self._lock:
                         if generation is not None and generation != self._work_generation:
@@ -1339,10 +1347,10 @@ class CacheScraper:
                     'Cache',
                     f'TexturePack {parent_id}: mapped {format_count(added, "sub-asset")}',
                 )
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log('Cache', f'TexturePack {parent_id} sub-asset parse error: {exc}')
 
-    def _store_texpack_slot_ktx2_async(
+    def _store_texpack_slot_ktx2_async(  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
         self,
         parent_id: int,
         slot: int,
@@ -1364,10 +1372,10 @@ class CacheScraper:
           1 = Normal
           2 = ORM (R=Metalness, G=Roughness, B=Emissive, A=Height)
         """
-        try:
-            import struct as _struct
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
+            import struct as _struct  # ruff: ignore[import-outside-top-level]
 
-            if len(ktx2_bytes) < 80 or ktx2_bytes[:12] != b'\xabKTX 20\xbb\r\n\x1a\n':
+            if len(ktx2_bytes) < 80 or ktx2_bytes[:12] != b'\xabKTX 20\xbb\r\n\x1a\n':  # ruff: ignore[magic-value-comparison]
                 log_buffer.log(
                     'TexPackSlot',
                     f'Ignoring non-KTX2 slot payload for {parent_id} slot{slot}',
@@ -1416,7 +1424,7 @@ class CacheScraper:
                 if slot_path.exists():
                     try:
                         existing = slot_path.read_bytes()
-                        if len(existing) >= 28 and existing[:12] == b'\xabKTX 20\xbb\r\n\x1a\n':
+                        if len(existing) >= 28 and existing[:12] == b'\xabKTX 20\xbb\r\n\x1a\n':  # ruff: ignore[magic-value-comparison]
                             existing_w, existing_h = _struct.unpack_from('<II', existing, 20)
                             existing_rank = (
                                 existing_w * existing_h,
@@ -1427,7 +1435,7 @@ class CacheScraper:
                     except OSError:
                         existing = None
 
-                if existing is None or existing_rank <= new_rank:
+                if existing is None or existing_rank <= new_rank:  # ruff: ignore[collapsible-if]
                     if existing != ktx2_bytes:
                         if existing is None:
                             canonical_action = ('created', 0, 0)
@@ -1466,7 +1474,7 @@ class CacheScraper:
                     f'Canonical {slot_name} {new_w}x{new_h} for pack {parent_id} '
                     f'({len(ktx2_bytes)} bytes) -> {slot_path.name}',
                 )
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log('TexPackSlot', f'Failed to store slot {slot} for {parent_id}: {exc}')
 
     def prefetch_texpack_layout(self, parent_id: int) -> None:
@@ -1484,20 +1492,20 @@ class CacheScraper:
         # that a concurrent batch thread isn't falsely returned early while the
         # background thread is still mid-request.  Duplicate concurrent fetches are
         # harmless since _populate_texpack_subasset_lookup is idempotent.
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
             xml_data = self._fetch_from_api(str(parent_id))
             if xml_data and xml_data.lstrip()[:1] == b'<':
                 self._populate_texpack_subasset_lookup(parent_id, xml_data)
                 log_buffer.log('Cache', f'Pre-fetched TexturePack layout for {parent_id}')
             else:
                 log_buffer.log('Cache', f'TexturePack {parent_id} did not return XML for pre-fetch')
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log('Cache', f'TexturePack pre-fetch failed for {parent_id}: {exc}')
         finally:
             with self._lock:
                 self._texpack_layout_fetched.add(parent_id)
 
-    def _store_asset_async(
+    def _store_asset_async(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
         self,
         asset_id: str,
         asset_type: int,
@@ -1518,7 +1526,7 @@ class CacheScraper:
             if success:
                 type_name = self.cache_manager.get_asset_type_name(asset_type)
                 log_buffer.log('Cache', f'Cached {type_name}: {asset_id} ({len(data)} bytes)')
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log('Cache', f'Cache store error for {asset_id}: {exc}')
 
     def _copy_cached_asset(
@@ -1530,7 +1538,7 @@ class CacheScraper:
         generation: int | None = None,
     ) -> None:
         """Copy an already-cached asset to a new asset ID (cross-batch replication)."""
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
             if not self._generation_is_current(generation):
                 return
             data = self.cache_manager.get_asset(str(source_id), asset_type)
@@ -1546,10 +1554,10 @@ class CacheScraper:
                 if success:
                     type_name = self.cache_manager.get_asset_type_name(asset_type)
                     log_buffer.log('Cache', f'Replicated {type_name}: {dest_id} (from {source_id})')
-        except Exception as exc:
+        except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log('Cache', f'Replication error {source_id}->{dest_id}: {exc}')
 
-    def _store_asset_if_current(
+    def _store_asset_if_current(  # ruff: ignore[too-many-arguments]
         self,
         generation: int | None,
         *,
@@ -1603,17 +1611,17 @@ class CacheScraper:
             return
 
         # Parse asset ID out of path like /v1/asset/?id=7547298681
-        import re as _re
+        import re as _re  # ruff: ignore[import-outside-top-level]
 
-        _m = _re.search(r'[?&]id=(\d+)', path)
-        asset_id = _m.group(1) if _m else None
+        m = _re.search(r'[?&]id=(\d+)', path)
+        asset_id = m.group(1) if m else None
 
         # Identify the body magic so we know what kind of asset this is
         magic = body[:8].hex() if body else 'empty'
         body_snippet = body[:64].hex() if body else 'empty'
 
         # Is this a 302 redirect to the CDN, or direct bytes?
-        is_redirect = (status in (301, 302, 303, 307, 308)) and bool(location)
+        is_redirect = (status in (301, 302, 303, 307, 308)) and bool(location)  # ruff: ignore[literal-membership]
 
         log_buffer.log(
             'DEBUG_DIRECT',
@@ -1627,10 +1635,10 @@ class CacheScraper:
             # The CDN URL in Location: will be fetched next as a Roblox CDN
             # request, but it WON'T be in _url_to_asset so process_cdn_response
             # will silently drop it. Log only a non-sensitive CDN id.
-            _cdn_id = str(location).split('?', 1)[0].rsplit('/', 1)[-1]
+            cdn_id = str(location).split('?', 1)[0].rsplit('/', 1)[-1]
             log_buffer.log(
                 'DEBUG_DIRECT',
-                f'[DIRECT ASSET REDIRECT] asset_id={asset_id!r} cdn_id={_cdn_id!r}  '
+                f'[DIRECT ASSET REDIRECT] asset_id={asset_id!r} cdn_id={cdn_id!r}  '
                 f'<-- this CDN URL will NOT be caught by process_cdn_response '
                 f'because it was never registered via a batch response',
             )
@@ -1645,7 +1653,7 @@ class CacheScraper:
     # GUI-callable interface (same as before - no change needed in GUI code)
     # ------------------------------------------------------------------
 
-    def set_enabled(self, enabled: bool) -> None:
+    def set_enabled(self, enabled: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
         self.enabled = enabled
         log_buffer.log('Cache', f'Cache scraper {"enabled" if enabled else "disabled"}')
 
@@ -1669,8 +1677,11 @@ class CacheScraper:
         """Return the Roblox security cookie through the existing auth helper."""
         return self._get_roblosecurity(wait=wait)
 
-    def _get_roblosecurity(self, *, wait: bool = False) -> str | None:
-        from ...utils.roblox_auth import get_roblosecurity, wait_for_roblosecurity
+    def _get_roblosecurity(self, *, wait: bool = False) -> str | None:  # ruff: ignore[no-self-use]
+        from fleasion.utils.roblox_auth import (  # ruff: ignore[import-outside-top-level]
+            get_roblosecurity,
+            wait_for_roblosecurity,
+        )
 
         if wait:
             return wait_for_roblosecurity()

@@ -16,7 +16,7 @@ def _on_done(dialog: DeleteCacheWindow) -> None:
 
 
 def _close_delay() -> int:
-    return cast(int, DeleteCacheWindow.__dict__['_CLOSE_AFTER_DONE_MS'])
+    return cast('int', DeleteCacheWindow.__dict__['_CLOSE_AFTER_DONE_MS'])
 
 
 def _record_accept(values: list[bool]) -> Callable[[], None]:
@@ -29,7 +29,7 @@ def _record_accept(values: list[bool]) -> Callable[[], None]:
 @pytest.fixture(scope='module')
 def qt_app() -> QApplication:
     app = QApplication.instance()
-    return cast(QApplication, app) if app is not None else QApplication([])
+    return cast('QApplication', app) if app is not None else QApplication([])
 
 
 def test_delete_cache_window_closes_after_done(

@@ -13,7 +13,7 @@ from fleasion.modifications.macos_bootstrapper_bridge import MacBootstrapperBrid
 
 def _qapp() -> QApplication:
     app = QApplication.instance()
-    return cast(QApplication, app) if app is not None else QApplication([])
+    return cast('QApplication', app) if app is not None else QApplication([])
 
 
 def _make_bridge(
@@ -27,7 +27,7 @@ def _make_bridge(
 
 
 def _timer(bridge: MacBootstrapperBridge, name: str) -> QTimer:
-    return cast(QTimer, bridge.__dict__[name])
+    return cast('QTimer', bridge.__dict__[name])
 
 
 def _reconcile_launch_settings(bridge: MacBootstrapperBridge) -> None:
@@ -132,7 +132,7 @@ def test_appleblox_launch_rewrite_starts_resource_guard(
         'FFlagDebugSkyGray': 'True',
     }
     assert _timer(bridge, '_launch_guard_timer').isActive()
-    assert cast(int, bridge.__dict__['_managed_reapply_passes']) == 2
+    assert cast('int', bridge.__dict__['_managed_reapply_passes']) == 2
     assert reapply_requests == [True]
     assert prepare_calls == [True]
     bridge.stop()
@@ -165,7 +165,7 @@ def test_launch_guard_reapplies_changed_managed_resource(
     managed_file.write_bytes(b'appleblox')
     _reconcile_managed_files(bridge)
 
-    assert cast(int, bridge.__dict__['_managed_reapply_passes']) == 2
+    assert cast('int', bridge.__dict__['_managed_reapply_passes']) == 2
     assert reapply_requests == [True]
     bridge.stop()
 

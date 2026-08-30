@@ -22,7 +22,7 @@ SOBER_TARGET_PATHS: dict[str, str] = {
     r'PlatformContent\pc\textures\sky\indoor512_up.tex': 'android/textures/sky/indoor512_up.tex',
     r'PlatformContent\pc\textures\plastic\diffuse.dds': 'android/textures/plastic/diffuse.dds',
     r'PlatformContent\pc\textures\plastic\normal.dds': 'android/textures/plastic/normal.dds',
-    r'PlatformContent\pc\textures\plastic\normaldetail.dds': 'android/textures/plastic/normaldetail.ktx',
+    r'PlatformContent\pc\textures\plastic\normaldetail.dds': 'android/textures/plastic/normaldetail.ktx',  # ruff: ignore[line-too-long]
     r'PlatformContent\pc\textures\studs.dds': 'android/textures/studs.dds',
 }
 
@@ -37,7 +37,8 @@ def _normalise_relative_target(target_path: str | Path) -> str:
     drive, _tail = ntpath.splitdrive(text)
     parts = [part for part in normalised.split('/') if part and part != '.']
     if drive or normalised.startswith('/') or not parts or any(part == '..' for part in parts):
-        raise ValueError('Target path must be a safe relative resource path')
+        msg = 'Target path must be a safe relative resource path'
+        raise ValueError(msg)
     return '/'.join(parts)
 
 
@@ -78,9 +79,13 @@ def _linux_resource_client_key(resource_dir: Path) -> str | None:
         return None
     root = Path(resource_dir)
     try:
-        from ..utils.linux_clients import LINUX_CLIENTS
-        from ..utils.paths import USER_HOME
-        from ..utils.platform_linux import is_sober_resource_dir
+        from fleasion.utils.linux_clients import (  # ruff: ignore[import-outside-top-level]
+            LINUX_CLIENTS,
+        )
+        from fleasion.utils.paths import USER_HOME  # ruff: ignore[import-outside-top-level]
+        from fleasion.utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
+            is_sober_resource_dir,
+        )
 
         for descriptor in LINUX_CLIENTS:
             if descriptor.paths(home=USER_HOME).owns_resource_path(root):
@@ -89,7 +94,7 @@ def _linux_resource_client_key(resource_dir: Path) -> str | None:
         # installations whose Flatpak metadata is temporarily unavailable.
         if is_sober_resource_dir(root):
             return 'sober'
-    except Exception:
+    except Exception:  # ruff: ignore[blind-except, try-except-pass]
         pass
     return None
 
@@ -167,8 +172,11 @@ def _read_zip_member(archive_path: Path, member: str) -> bytes | None:
 
 def _read_sober_original_asset(target_path: str | Path) -> bytes | None:
     try:
-        from ..utils.platform_linux import SOBER_DATA_DIR, SOBER_LEGACY_EXE_DIR
-    except Exception:
+        from fleasion.utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
+            SOBER_DATA_DIR,
+            SOBER_LEGACY_EXE_DIR,
+        )
+    except Exception:  # ruff: ignore[blind-except]
         return None
 
     for rel in target_path_candidates_for_current_platform(target_path):
@@ -189,11 +197,14 @@ def _read_sober_original_asset(target_path: str | Path) -> bytes | None:
     return None
 
 
-def _read_sober_original_asset_directory(target_dir: str | Path) -> dict[str, bytes]:
+def _read_sober_original_asset_directory(target_dir: str | Path) -> dict[str, bytes]:  # ruff: ignore[complex-structure, too-many-branches]
     """Read immediate files from a directory in Sober's packaged assets."""
     try:
-        from ..utils.platform_linux import SOBER_DATA_DIR, SOBER_LEGACY_EXE_DIR
-    except Exception:
+        from fleasion.utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
+            SOBER_DATA_DIR,
+            SOBER_LEGACY_EXE_DIR,
+        )
+    except Exception:  # ruff: ignore[blind-except]
         return {}
 
     try:
@@ -221,7 +232,7 @@ def _read_sober_original_asset_directory(target_dir: str | Path) -> dict[str, by
 
     prefix = f'assets/{rel.rstrip("/")}/'
     for apk in apks:
-        try:
+        try:  # ruff: ignore[too-many-statements-in-try-clause]
             with zipfile.ZipFile(apk) as archive:
                 for member in archive.namelist():
                     if not member.startswith(prefix):
@@ -250,10 +261,12 @@ def read_current_platform_original_asset(
         client_key = _linux_resource_client_key(resource_dir)
     else:
         try:
-            from ..utils.platform_linux import selected_linux_client_key
+            from fleasion.utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
+                selected_linux_client_key,
+            )
 
             client_key = selected_linux_client_key()
-        except Exception:
+        except Exception:  # ruff: ignore[blind-except]
             client_key = 'sober'
     if client_key == 'sober':
         return _read_sober_original_asset(target_path)
@@ -272,10 +285,12 @@ def read_current_platform_original_directory(
         client_key = _linux_resource_client_key(resource_dir)
     else:
         try:
-            from ..utils.platform_linux import selected_linux_client_key
+            from fleasion.utils.platform_linux import (  # ruff: ignore[import-outside-top-level]
+                selected_linux_client_key,
+            )
 
             client_key = selected_linux_client_key()
-        except Exception:
+        except Exception:  # ruff: ignore[blind-except]
             client_key = 'sober'
     if client_key == 'sober':
         return _read_sober_original_asset_directory(target_dir)

@@ -19,10 +19,10 @@ def tex_to_png_bytes(data: bytes) -> bytes | None:
 
     Returns PNG bytes or ``None`` on failure.
     """
-    from PIL import Image
+    from PIL import Image  # ruff: ignore[import-outside-top-level]
 
     # DDS magic: b'DDS ' (0x44445320)
-    DDS_MAGIC = b'DDS '
+    DDS_MAGIC = b'DDS '  # ruff: ignore[non-lowercase-variable-in-function]
 
     working = data
 
@@ -39,5 +39,5 @@ def tex_to_png_bytes(data: bytes) -> bytes | None:
         buf = io.BytesIO()
         img.convert('RGBA').save(buf, format='PNG')
         return buf.getvalue()
-    except Exception:
+    except Exception:  # ruff: ignore[blind-except]
         return None
