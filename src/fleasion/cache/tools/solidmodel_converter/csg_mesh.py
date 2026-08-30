@@ -48,7 +48,7 @@ def _byte_at(data: bytes, offset: int) -> int:
 def _decode_quantized_f32_component(raw: int) -> float:
     """Decode Roblox CSGMDL5's offset 16-bit unit-vector component."""
     value = (raw - 0x7FFF) & 0xFFFF
-    if value >= 0x8000:  # ruff: ignore[magic-value-comparison]
+    if value >= 0x8000:
         value -= 0x10000
     return value / 32767.0
 
@@ -151,7 +151,7 @@ class CSGVertex:
     ed3: float
 
     @staticmethod
-    def from_bytes(data: bytes, offset: int = 0) -> CSGVertex:  # ruff: ignore[too-many-locals]
+    def from_bytes(data: bytes, offset: int = 0) -> CSGVertex:
         """Parse a CSGVertex from 84 bytes at the given offset."""
         (
             px,
@@ -311,7 +311,7 @@ def _decode_faces5_state_machine(vertex_data: bytes, vertex_count: int) -> list[
     return indices
 
 
-def _parse_csg_mesh_v5(encrypted_data: bytes, version: int) -> CSGMeshData:  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
+def _parse_csg_mesh_v5(encrypted_data: bytes, version: int) -> CSGMeshData:
     """Parse a CSGMDL version-5 binary blob.
 
     V5 body layout (``body = encrypted_data[10:]``, fully plaintext after the
@@ -344,13 +344,13 @@ def _parse_csg_mesh_v5(encrypted_data: bytes, version: int) -> CSGMeshData:  # r
     """
     body = encrypted_data[10:]
 
-    if len(body) < 22:  # ruff: ignore[magic-value-comparison]
+    if len(body) < 22:
         msg = f'CSGMDL v{version}: body too short ({len(body)} bytes)'
         raise ValueError(msg)
 
     # ── N: unique attribute entry count ────────────────────────────────────
     N = struct.unpack_from('<H', body, 0)[0]  # ruff: ignore[non-lowercase-variable-in-function]
-    if N == 0 or N > 100_000:  # ruff: ignore[magic-value-comparison]
+    if N == 0 or N > 100_000:
         msg = f'CSGMDL v{version}: implausible entry count {N}'
         raise ValueError(msg)
 
@@ -506,7 +506,7 @@ def _parse_csg_mesh_v5(encrypted_data: bytes, version: int) -> CSGMeshData:  # r
     # ── Decode delta-encoded indices via Faces5 state machine ───────────────
     all_indices = _decode_faces5_state_machine(vertex_data, vertex_count_f)
 
-    if len(range_markers) < 2:  # ruff: ignore[magic-value-comparison]
+    if len(range_markers) < 2:
         msg = f'CSGMDL v{version}: not enough range markers: {len(range_markers)}'
         raise ValueError(msg)
     last_marker = range_markers[0]
@@ -634,7 +634,7 @@ def _parse_csg_mesh_v5(encrypted_data: bytes, version: int) -> CSGMeshData:  # r
     )
 
 
-def parse_csg_mesh_full(encrypted_data: bytes) -> CSGMeshData:  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
+def parse_csg_mesh_full(encrypted_data: bytes) -> CSGMeshData:
     """Decrypt and parse a CSGMDL binary blob, returning full metadata.
 
     Parameters
@@ -670,7 +670,7 @@ def parse_csg_mesh_full(encrypted_data: bytes) -> CSGMeshData:  # ruff: ignore[c
         )
 
     # v5+ uses a completely different body layout (plaintext, no XOR on body).
-    if version >= 5:  # ruff: ignore[magic-value-comparison]
+    if version >= 5:
         return _parse_csg_mesh_v5(encrypted_data, version)
 
     # Hash + Salt (32 bytes — we skip validation for now)
@@ -712,7 +712,7 @@ def parse_csg_mesh_full(encrypted_data: bytes) -> CSGMeshData:  # ruff: ignore[c
     # v3/v4 trailer: sub-mesh metadata (20 bytes)
     submesh_boundaries: list[int] = []
     remaining = len(data) - offset
-    if version == 4 and remaining >= 4:  # ruff: ignore[magic-value-comparison]
+    if version == 4 and remaining >= 4:
         boundary_count = struct.unpack_from('<I', data, offset)[0]
         boundary_bytes = boundary_count * 4
         if boundary_count > 0 and boundary_bytes <= remaining - 4:
@@ -743,7 +743,7 @@ def parse_csg_mesh_full(encrypted_data: bytes) -> CSGMeshData:  # ruff: ignore[c
                     boundaries,
                 )
 
-    if not submesh_boundaries and remaining >= 20 and version >= 3:  # ruff: ignore[magic-value-comparison]
+    if not submesh_boundaries and remaining >= 20 and version >= 3:
         brep_ver = struct.unpack_from('<I', data, offset)[0]
         _padding = struct.unpack_from('<I', data, offset + 4)[0]
         b1 = struct.unpack_from('<I', data, offset + 8)[0]
@@ -823,7 +823,7 @@ def serialize_csg_mesh(
         If ``indices`` length is not a multiple of 3, or any index is out of
         range for the given ``vertices`` list.
     """
-    if version == 5:  # ruff: ignore[magic-value-comparison]
+    if version == 5:
         return serialize_csg_mesh_v5(vertices, indices)
 
     if len(indices) % 3 != 0:
@@ -890,7 +890,7 @@ def serialize_csg_mesh(
     # covering all triangles, with no separate collision or auxiliary meshes.
     # The parser pops trailing entries equal to num_indices and re-appends
     # it once, yielding submesh_boundaries = [0, num_indices].
-    if version >= 3:  # ruff: ignore[magic-value-comparison]
+    if version >= 3:
         buf.extend(struct.pack('<5I', 0, 0, num_indices, num_indices, num_indices))
 
     log.info(
@@ -953,9 +953,9 @@ def _encode_faces5(indices: list[int]) -> bytes:
         raw = target - (index_out & 0x7FFFFF)
         delta = ((raw + HALF) % RING) - HALF  # → [-0x400000, 0x3FFFFF]
 
-        if 0 <= delta <= 63:  # ruff: ignore[magic-value-comparison]
+        if 0 <= delta <= 63:
             data.append(delta)
-        elif -64 <= delta <= -1:  # ruff: ignore[magic-value-comparison]
+        elif -64 <= delta <= -1:
             data.append(delta + 128)  # maps -64→64, -1→127
         else:
             d = delta % RING  # unsigned 23-bit representation
@@ -1048,7 +1048,7 @@ def serialize_csg_mesh_v5(
     for v in vertices:
         # Prefer the stored UV-gen type if it looks like a valid NormalId (1-6),
         # otherwise derive it fresh from the vertex normal direction.
-        nid = v.extra_r if 1 <= v.extra_r <= 6 else _compute_normal_id(v.nx, v.ny, v.nz)  # ruff: ignore[magic-value-comparison]
+        nid = v.extra_r if 1 <= v.extra_r <= 6 else _compute_normal_id(v.nx, v.ny, v.nz)
         body += struct.pack('<B', nid)
 
     # ── UV coords: [uint16=N] N × float32×2 ──────────────────────────────────  # ruff: ignore[ambiguous-unicode-character-comment]
@@ -1105,7 +1105,7 @@ def _detect_csgmdl_version(data: bytes) -> int | None:
     checks for the ``CSGMDL`` magic tag, returning the version integer on
     success or ``None`` if the data does not look like a valid CSGMDL blob.
     """
-    if len(data) < 10:  # ruff: ignore[magic-value-comparison]
+    if len(data) < 10:
         return None
     decrypted = xor_buffer(data[:10])
     if decrypted[:6] != HEADER_TAG:
@@ -1123,7 +1123,7 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-def export_obj(  # ruff: ignore[complex-structure, too-many-branches]
+def export_obj(
     vertices: list[CSGVertex],
     indices: list[int],
     output_path: Path,
@@ -1193,7 +1193,7 @@ def export_obj(  # ruff: ignore[complex-structure, too-many-branches]
                     # Simple approach: just write all faces in order with group markers
                     i0, i1, i2 = valid_faces[face_idx]
                     f.write(
-                        f'f {i0 + 1}/{i0 + 1}/{i0 + 1} {i1 + 1}/{i1 + 1}/{i1 + 1} {i2 + 1}/{i2 + 1}/{i2 + 1}\n'  # ruff: ignore[line-too-long]
+                        f'f {i0 + 1}/{i0 + 1}/{i0 + 1} {i1 + 1}/{i1 + 1}/{i1 + 1} {i2 + 1}/{i2 + 1}/{i2 + 1}\n'
                     )
                     face_idx += 1
                     if face_idx >= sm_end:
@@ -1202,7 +1202,7 @@ def export_obj(  # ruff: ignore[complex-structure, too-many-branches]
             # No sub-mesh info — write all faces as one group
             for i0, i1, i2 in valid_faces:
                 f.write(
-                    f'f {i0 + 1}/{i0 + 1}/{i0 + 1} {i1 + 1}/{i1 + 1}/{i1 + 1} {i2 + 1}/{i2 + 1}/{i2 + 1}\n'  # ruff: ignore[line-too-long]
+                    f'f {i0 + 1}/{i0 + 1}/{i0 + 1} {i1 + 1}/{i1 + 1}/{i1 + 1} {i2 + 1}/{i2 + 1}/{i2 + 1}\n'
                 )
 
     log.info(
@@ -1225,7 +1225,7 @@ class ObjMeshPart:
     cframe: CFrame | None = None  # keys: X,Y,Z, R00..R22
 
 
-def _transform_vertex(v: CSGVertex, cframe: CFrame) -> CSGVertex:  # ruff: ignore[too-many-locals]
+def _transform_vertex(v: CSGVertex, cframe: CFrame) -> CSGVertex:
     """Apply a CFrame transform to a vertex (local -> world space).
 
     CFrame rotation is a 3x3 matrix (R00..R22), translation is (X, Y, Z).
@@ -1294,7 +1294,7 @@ def _write_mtl_file(mtl_path: Path) -> None:
         f.write('illum 1\n')
 
 
-def export_obj_multi(  # ruff: ignore[complex-structure, too-many-branches]
+def export_obj_multi(
     parts: list[ObjMeshPart],
     output_path: Path,
 ) -> None:

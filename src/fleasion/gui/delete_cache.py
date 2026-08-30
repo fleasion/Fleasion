@@ -64,7 +64,7 @@ class DeleteCacheWindow(QDialog):
         self.log_signal.connect(self._append_log)
         self.done_signal.connect(self._on_done)
 
-    def _get_monospace_font(self):  # ruff: ignore[missing-return-type-private-function, no-self-use]
+    def _get_monospace_font(self):
         """Get a monospace font."""
         from PySide6.QtGui import QFontDatabase  # ruff: ignore[import-outside-top-level]
 

@@ -48,7 +48,7 @@ def _forward_to_previous_handler(
 ) -> None:
     """Preserve existing Qt console/debugger output when diagnostics are installed."""
     if _previous_handler is not None:
-        try:  # ruff: ignore[suppressible-exception]
+        try:
             _previous_handler(message_type, context, message)
         except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass
@@ -60,7 +60,7 @@ def _forward_to_previous_handler(
         try:
             level = _message_level(message_type)
             category = getattr(context, 'category', None) or 'qt'
-            print(f'Qt {level} [{category}] {message}', file=sys.stderr)  # ruff: ignore[print]
+            print(f'Qt {level} [{category}] {message}', file=sys.stderr)
         except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass
 

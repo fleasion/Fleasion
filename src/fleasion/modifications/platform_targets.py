@@ -22,7 +22,7 @@ SOBER_TARGET_PATHS: dict[str, str] = {
     r'PlatformContent\pc\textures\sky\indoor512_up.tex': 'android/textures/sky/indoor512_up.tex',
     r'PlatformContent\pc\textures\plastic\diffuse.dds': 'android/textures/plastic/diffuse.dds',
     r'PlatformContent\pc\textures\plastic\normal.dds': 'android/textures/plastic/normal.dds',
-    r'PlatformContent\pc\textures\plastic\normaldetail.dds': 'android/textures/plastic/normaldetail.ktx',  # ruff: ignore[line-too-long]
+    r'PlatformContent\pc\textures\plastic\normaldetail.dds': 'android/textures/plastic/normaldetail.ktx',
     r'PlatformContent\pc\textures\studs.dds': 'android/textures/studs.dds',
 }
 
@@ -197,7 +197,7 @@ def _read_sober_original_asset(target_path: str | Path) -> bytes | None:
     return None
 
 
-def _read_sober_original_asset_directory(target_dir: str | Path) -> dict[str, bytes]:  # ruff: ignore[complex-structure, too-many-branches]
+def _read_sober_original_asset_directory(target_dir: str | Path) -> dict[str, bytes]:
     """Read immediate files from a directory in Sober's packaged assets."""
     try:
         from fleasion.utils.platform_linux import (  # ruff: ignore[import-outside-top-level]

@@ -161,8 +161,8 @@ class _ConfigManagerLike(Protocol):
     enabled_configs: list[str]
     settings: _ConfigSettings
 
-    def set_config_enabled(self, name: str, enabled: bool) -> None: ...  # ruff: ignore[boolean-type-hint-positional-argument]
-    def reconcile_configs(self, save: bool = True) -> bool: ...  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
+    def set_config_enabled(self, name: str, enabled: bool) -> None: ...
+    def reconcile_configs(self, save: bool = True) -> bool: ...
     def is_config_enabled(self, name: str) -> bool: ...
     def is_valid_config_name(self, name: str) -> bool: ...
     def create_config(self, name: str) -> bool: ...
@@ -243,7 +243,7 @@ if TYPE_CHECKING:
 
     def _owner_selected_paths(owner: object) -> list[tuple[int, ...]]: ...
 
-    def _owner_set_drag_hint(owner: object, active: bool) -> None: ...  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _owner_set_drag_hint(owner: object, active: bool) -> None: ...
 
     def _owner_valid_drop(
         owner: object,
@@ -372,7 +372,7 @@ else:
     def _owner_selected_paths(owner: object) -> list[tuple[int, ...]]:
         return getattr(owner, '_selected_movable_paths')()  # ruff: ignore[get-attr-with-constant]
 
-    def _owner_set_drag_hint(owner: object, active: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _owner_set_drag_hint(owner: object, active: bool) -> None:
         getattr(owner, '_set_drag_hint_active')(active)  # ruff: ignore[get-attr-with-constant]
 
     def _owner_valid_drop(
@@ -739,7 +739,7 @@ class _ConfigMenuRow(QWidget):
     def isChecked(self) -> bool:  # ruff: ignore[invalid-function-name]
         return self._checked
 
-    def setChecked(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument, invalid-function-name]
+    def setChecked(self, checked: bool) -> None:  # ruff: ignore[invalid-function-name]
         if self._checked == checked:
             return
         self._checked = checked
@@ -1002,7 +1002,7 @@ class _ScrollableConfigMenu(QMenu):
 class ReplacerConfigWindow(QDialog):
     """Replacer configuration window with tabs."""
 
-    def __init__(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
+    def __init__(  # ruff: ignore[too-many-positional-arguments]
         self,
         config_manager: _ConfigManagerLike,
         proxy_master: ProxyMaster | None = None,
@@ -1067,7 +1067,7 @@ class ReplacerConfigWindow(QDialog):
             and self._system_tray.config_manager.close_to_tray
             and not _tray_exiting(self._system_tray)
         ):
-            try:  # ruff: ignore[suppressible-exception]
+            try:
                 self._system_tray.notify_dashboard_closed()
             except Exception:  # ruff: ignore[blind-except, try-except-pass]
                 pass
@@ -1202,7 +1202,7 @@ class ReplacerConfigWindow(QDialog):
         for gate in self._env_proxy_gates:
             gate.set_proxy_enabled(enabled)
 
-    def set_proxy_features_enabled(self, enabled: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def set_proxy_features_enabled(self, enabled: bool) -> None:
         for gate in self._proxy_gates:
             gate.set_proxy_enabled(enabled)
         if hasattr(self, '_cache_viewer_tab') and hasattr(
@@ -1312,7 +1312,7 @@ class ReplacerConfigWindow(QDialog):
         ]:
             btn = QPushButton(text)
 
-            def run_config_action(_checked: bool = False, action_name: str = action) -> None:  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
+            def run_config_action(_checked: bool = False, action_name: str = action) -> None:
                 self._config_action(action_name)
 
             btn.clicked.connect(run_config_action)
@@ -1377,7 +1377,7 @@ class ReplacerConfigWindow(QDialog):
 
         parent_layout.addWidget(self.tree)
 
-    def _create_edit_section(self, parent_layout: QVBoxLayout) -> None:  # ruff: ignore[too-many-statements]
+    def _create_edit_section(self, parent_layout: QVBoxLayout) -> None:
         """Create the add/edit profile section."""
         edit_group = QGroupBox(tr('ui.gui.replacer_config.add_edit_profile'))
         edit_group.setStyleSheet('QGroupBox::title { padding-left: 5px; }')
@@ -1512,7 +1512,7 @@ class ReplacerConfigWindow(QDialog):
         )
         open_folder(configs_folder)
 
-    def _clear_roblox_cache(self) -> None:  # ruff: ignore[no-self-use]
+    def _clear_roblox_cache(self) -> None:
         from .delete_cache import DeleteCacheWindow  # ruff: ignore[import-outside-top-level]
 
         window = DeleteCacheWindow()
@@ -1598,18 +1598,18 @@ class ReplacerConfigWindow(QDialog):
             )
         # Keep the Editing button styled to reflect whether the currently
         # selected editing profile is enabled or not.
-        try:  # ruff: ignore[suppressible-exception]
+        try:
             self._update_editing_button_style()
         except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass
 
-    def _on_config_toggle(self, name: str, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _on_config_toggle(self, name: str, checked: bool) -> None:
         """Handle config toggle."""
         self.config_manager.set_config_enabled(name, checked)
         self._update_enabled_menu_text()
         status = 'Enabled' if checked else 'Disabled'
         log_buffer.log('Config', f'{status}: {name}')
-        try:  # ruff: ignore[suppressible-exception]
+        try:
             self._update_editing_button_style()
         except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass
@@ -1682,7 +1682,7 @@ class ReplacerConfigWindow(QDialog):
             kept.append(entry)
         return kept
 
-    def _prune_descendant_paths(self, paths: list[tuple[int, ...]]) -> list[tuple[int, ...]]:  # ruff: ignore[no-self-use]
+    def _prune_descendant_paths(self, paths: list[tuple[int, ...]]) -> list[tuple[int, ...]]:
         result: list[tuple[int, ...]] = []
         for path in sorted(paths, key=lambda p: (len(p), p)):
             if not any(
@@ -1756,7 +1756,7 @@ class ReplacerConfigWindow(QDialog):
         elif mode == 'cdn':
             action = tr('replacer.action.cdn')
             cdn_url = rule.get('cdn_url', '')
-            replace_with = cdn_url[:40] + '...' if len(cdn_url) > 40 else cdn_url  # ruff: ignore[magic-value-comparison]
+            replace_with = cdn_url[:40] + '...' if len(cdn_url) > 40 else cdn_url
         elif mode == 'local':
             action = tr('replacer.action.local')
             local_path = rule.get('local_path', '')
@@ -1791,7 +1791,7 @@ class ReplacerConfigWindow(QDialog):
         item, _summary = self._make_tree_item_with_summary(entry, path)
         return item
 
-    def _make_tree_item_with_summary(  # ruff: ignore[too-many-locals]
+    def _make_tree_item_with_summary(
         self,
         entry: _RuleEntry,
         path: tuple[int, ...],
@@ -1894,7 +1894,7 @@ class ReplacerConfigWindow(QDialog):
         for top_index in range(self.tree.topLevelItemCount()):
             walk(_tree_item(self.tree.topLevelItem(top_index)))
 
-    def _set_group_expanded(self, item: QTreeWidgetItem, expanded: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _set_group_expanded(self, item: QTreeWidgetItem, expanded: bool) -> None:
         if getattr(self, '_refreshing_tree', False) or item.data(0, _ROLE_KIND) != _KIND_GROUP:
             return
         path = _item_path(item.data(0, _ROLE_PATH))
@@ -1963,7 +1963,7 @@ class ReplacerConfigWindow(QDialog):
                 self.tree.clearSelection()
                 if hasattr(self, 'name_entry'):
                     self._clear_entries()
-        try:  # ruff: ignore[suppressible-exception]
+        try:
             self._update_editing_button_style()
         except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass
@@ -1998,7 +1998,7 @@ class ReplacerConfigWindow(QDialog):
             ),
         )
         # Ensure the Editing button reflects the enabled state after rebuild
-        try:  # ruff: ignore[suppressible-exception]
+        try:
             self._update_editing_button_style()
         except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass
@@ -2018,7 +2018,7 @@ class ReplacerConfigWindow(QDialog):
             self._refresh_tree()
 
         """Handle strip textures change."""
-        try:  # ruff: ignore[suppressible-exception]
+        try:
             self._update_editing_button_style()
         except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass
@@ -2042,14 +2042,14 @@ class ReplacerConfigWindow(QDialog):
             color = '#55cc66' if enabled else '#cc5555'
             self.config_menu_btn.setIcon(self._make_status_icon(color))
         except Exception:  # ruff: ignore[blind-except]
-            try:  # ruff: ignore[suppressible-exception]
+            try:
                 self.config_menu_btn.setIcon(QIcon())
             except Exception:  # ruff: ignore[blind-except, try-except-pass]
                 pass
         # Ensure button text color isn't used for state; the dot represents state now.
         self.config_menu_btn.setStyleSheet('')
 
-    def _make_status_icon(self, color: str = '#cc5555', size: int = 12) -> QIcon:  # ruff: ignore[no-self-use]
+    def _make_status_icon(self, color: str = '#cc5555', size: int = 12) -> QIcon:
         """Create a small circular QIcon of given color for menu actions.
 
         This uses native Qt QIcon/QPixmap drawing and avoids custom widget
@@ -2091,7 +2091,7 @@ class ReplacerConfigWindow(QDialog):
         """Make dropped Configs assets portable while preserving external paths."""
         self.replacement_entry.setText(local_replacement_path_for_storage(file_path))
 
-    def _config_action(self, action: str) -> None:  # ruff: ignore[complex-structure, too-many-branches, too-many-statements]
+    def _config_action(self, action: str) -> None:
         """Handle config management actions."""
         current = self.config_manager.last_config
 
@@ -2389,7 +2389,7 @@ class ReplacerConfigWindow(QDialog):
             self._save_with_undo(rules_copy)
             self._refresh_tree()
 
-    def _set_group_profiles_enabled(self, path: tuple[int, ...], enabled: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _set_group_profiles_enabled(self, path: tuple[int, ...], enabled: bool) -> None:
         """Set every descendant profile in a group to the same enabled state."""
         rules = deepcopy(self.config_manager.replacement_rules)
         group = self._entry_at_path(rules, path)
@@ -2408,7 +2408,7 @@ class ReplacerConfigWindow(QDialog):
             action = 'Enabled' if enabled else 'Disabled'
             log_buffer.log(
                 'Config',
-                f'{action} {format_count(changed, "profile")} in group: {group.get("name", "Group")}',  # ruff: ignore[line-too-long]
+                f'{action} {format_count(changed, "profile")} in group: {group.get("name", "Group")}',
             )
 
     def _create_group_from_selected(self) -> None:
@@ -2476,7 +2476,7 @@ class ReplacerConfigWindow(QDialog):
             f'Created group: {name.strip()} ({format_count(children, "profile")})',
         )
 
-    def _edit_asset_ids(self, path: tuple[int, ...]) -> None:  # ruff: ignore[complex-structure, too-many-statements]
+    def _edit_asset_ids(self, path: tuple[int, ...]) -> None:
         """Edit asset IDs for a profile."""
         rules = self.config_manager.replacement_rules
         rule = self._entry_at_path(rules, path)
@@ -2552,8 +2552,8 @@ class ReplacerConfigWindow(QDialog):
         # Add Asset Types menu to Edit Asset IDs
         types_btn = QPushButton(tr('ui.gui.replacer_config.asset_types'))
 
-        def show_dialog_types_popup() -> None:  # ruff: ignore[complex-structure, too-many-statements]
-            def on_filters_changed(filters: set[int | str]) -> None:  # ruff: ignore[complex-structure, too-many-branches]
+        def show_dialog_types_popup() -> None:
+            def on_filters_changed(filters: set[int | str]) -> None:
                 from fleasion.cache.cache_manager import (  # ruff: ignore[import-outside-top-level]
                     CacheManager,
                 )
@@ -2597,7 +2597,7 @@ class ReplacerConfigWindow(QDialog):
                 CacheManager,
             )
 
-            if _time.monotonic() - self._dialog_asset_types_popup_last_closed < 0.25:  # ruff: ignore[magic-value-comparison]
+            if _time.monotonic() - self._dialog_asset_types_popup_last_closed < 0.25:
                 return
 
             VIRTUAL_ANIM_TYPES = {'R6Animation', 'R15Animation', 'NonPlayerAnimation'}  # ruff: ignore[non-lowercase-variable-in-function]
@@ -2652,7 +2652,7 @@ class ReplacerConfigWindow(QDialog):
         dialog.setLayout(layout)
         dialog.show()
 
-    def _edit_replacement(self, path: tuple[int, ...]) -> None:  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
+    def _edit_replacement(self, path: tuple[int, ...]) -> None:
         """Edit replacement value for a profile."""
         rules = self.config_manager.replacement_rules
         rule = self._entry_at_path(rules, path)
@@ -2776,7 +2776,7 @@ class ReplacerConfigWindow(QDialog):
         self._save_with_undo(rules_copy)
         self._refresh_tree()
 
-    def _parse_ids(self, text: str) -> list[int | str]:  # ruff: ignore[no-self-use]
+    def _parse_ids(self, text: str) -> list[int | str]:
         """Parse IDs from text."""
         ids: list[int | str] = []
         for part in _ID_SPLIT_RE.split(text):
@@ -2804,7 +2804,7 @@ class ReplacerConfigWindow(QDialog):
             CacheManager,
         )
 
-        if time.monotonic() - self._asset_types_popup_last_closed < 0.25:  # ruff: ignore[magic-value-comparison]
+        if time.monotonic() - self._asset_types_popup_last_closed < 0.25:
             return
 
         popup = self.asset_types_popup
@@ -2862,7 +2862,7 @@ class ReplacerConfigWindow(QDialog):
         """Remember that the edit dialog Asset Types popup just closed."""
         self._dialog_asset_types_popup_last_closed = time.monotonic()
 
-    def _on_asset_types_changed(self, filters: set[int | str]) -> None:  # ruff: ignore[complex-structure]
+    def _on_asset_types_changed(self, filters: set[int | str]) -> None:
         """Handle asset types selection change."""
         from fleasion.cache.cache_manager import (  # ruff: ignore[import-outside-top-level]
             CacheManager,
@@ -2883,7 +2883,7 @@ class ReplacerConfigWindow(QDialog):
                     if name.lower() == item.lower():
                         is_mapped = True
                         break
-                # Also treat virtual anim type strings as mapped (so they get removed/re-added cleanly)  # ruff: ignore[line-too-long]
+                # Also treat virtual anim type strings as mapped (so they get removed/re-added cleanly)
                 if item in VIRTUAL_ANIM_TYPES:
                     is_mapped = True
                 if not is_mapped:
@@ -2907,7 +2907,7 @@ class ReplacerConfigWindow(QDialog):
         self.replace_entry.clear()
         self.replacement_entry.clear()
 
-    def _detect_mode(self, value: str) -> tuple[str, _ModeFields]:  # ruff: ignore[no-self-use]
+    def _detect_mode(self, value: str) -> tuple[str, _ModeFields]:
         """Auto-detect mode from replacement value.
 
         Returns tuple of (mode, extra_fields).
@@ -2915,7 +2915,7 @@ class ReplacerConfigWindow(QDialog):
         value = value.strip().strip('"\'')
 
         if not value:
-            # Empty = remove  # ruff: ignore[commented-out-code]
+            # Empty = remove
             return 'id', {}
 
         if value.startswith(('http://', 'https://')):
@@ -2923,7 +2923,7 @@ class ReplacerConfigWindow(QDialog):
             return 'cdn', {'cdn_url': value}
 
         # Check if it's a file path (contains path separators or drive letter)
-        if '\\' in value or '/' in value or (len(value) > 2 and value[1] == ':'):  # ruff: ignore[magic-value-comparison]
+        if '\\' in value or '/' in value or (len(value) > 2 and value[1] == ':'):
             return 'local', {'local_path': value}
 
         # Try to parse as integer (asset ID)
@@ -2939,7 +2939,7 @@ class ReplacerConfigWindow(QDialog):
         # Default to treating as potential asset ID (will fail validation)
         return 'id', {'_raw': value}
 
-    def _get_rule_from_entries(self) -> _ProfileRule | None:  # ruff: ignore[complex-structure]
+    def _get_rule_from_entries(self) -> _ProfileRule | None:
         """Get rule from input fields."""
         ids = self._parse_ids(self.replace_entry.text())
         if not ids:
@@ -2980,7 +2980,7 @@ class ReplacerConfigWindow(QDialog):
             # Validate URL is accessible
             try:
                 status = http_head_status(cdn_url, timeout=5, headers={'User-Agent': 'Mozilla/5.0'})
-                if status >= 400:  # ruff: ignore[magic-value-comparison]
+                if status >= 400:
                     QMessageBox.warning(
                         self,
                         tr('ui.gui.replacer_config.warning'),
@@ -3198,7 +3198,7 @@ class ReplacerConfigWindow(QDialog):
         indent = ' ' * (_GROUP_CONTENT_INDENT_SPACES * max(0, group_depth))
         return f'{indent}{name}'
 
-    def _group_display_name(self, name: str, path: tuple[int, ...]) -> str:  # ruff: ignore[no-self-use, unused-method-argument]
+    def _group_display_name(self, name: str, path: tuple[int, ...]) -> str:  # ruff: ignore[unused-method-argument]
         return name
 
     def _group_guide_x(self, group_path: tuple[int, ...]) -> int:
@@ -3209,14 +3209,14 @@ class ReplacerConfigWindow(QDialog):
         depth_offset = max(0, group_depth - 1) * _GROUP_GUIDE_STEP_PX
         return name_left + _GROUP_GUIDE_GUTTER_PX + depth_offset + 1
 
-    def _paint_group_guides(self, viewport: QWidget) -> None:  # ruff: ignore[complex-structure]
+    def _paint_group_guides(self, viewport: QWidget) -> None:
         if not hasattr(self, 'tree'):
             return
         if not getattr(self, '_group_depth_by_path', None) and not self._config_has_groups():
             return
 
         palette = self.tree.palette()
-        is_dark = palette.window().color().lightness() < 128  # ruff: ignore[magic-value-comparison]
+        is_dark = palette.window().color().lightness() < 128
         guide_color = QColor('#5f6368' if is_dark else '#c4c7c5')
         selected_color = guide_color.lighter(175 if is_dark else 115)
 
@@ -3269,7 +3269,7 @@ class ReplacerConfigWindow(QDialog):
 
         painter.end()
 
-    def _set_drag_hint_active(self, active: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument, complex-structure, too-many-branches]
+    def _set_drag_hint_active(self, active: bool) -> None:
         """Highlight valid group/root drop targets while dragging profiles."""
         if not hasattr(self, 'tree'):
             return

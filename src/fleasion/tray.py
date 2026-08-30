@@ -65,15 +65,15 @@ class _HotkeyController(Protocol):
 class _SettingsTabLike(Protocol):
     def refresh_from_config(self) -> None: ...
 
-    def set_cache_scraper_enabled(self, enabled: bool) -> None: ...  # ruff: ignore[boolean-type-hint-positional-argument]
+    def set_cache_scraper_enabled(self, enabled: bool) -> None: ...
 
 
 class _CacheViewerTabLike(Protocol):
-    def set_cache_scraper_enabled(self, enabled: bool) -> None: ...  # ruff: ignore[boolean-type-hint-positional-argument]
+    def set_cache_scraper_enabled(self, enabled: bool) -> None: ...
 
-    def _on_show_names_toggled(self, enabled: bool) -> None: ...  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _on_show_names_toggled(self, enabled: bool) -> None: ...
 
-    def _on_show_creator_id_toggled(self, enabled: bool) -> None: ...  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _on_show_creator_id_toggled(self, enabled: bool) -> None: ...
 
 
 if TYPE_CHECKING:
@@ -94,13 +94,13 @@ if TYPE_CHECKING:
 
     def _optional_screen(screen: QScreen) -> QScreen | None: ...
 
-    def _cache_viewer_show_names(tab: _CacheViewerTabLike, enabled: bool) -> None: ...  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _cache_viewer_show_names(tab: _CacheViewerTabLike, enabled: bool) -> None: ...
 
-    def _cache_viewer_show_creator_id(tab: _CacheViewerTabLike, enabled: bool) -> None: ...  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _cache_viewer_show_creator_id(tab: _CacheViewerTabLike, enabled: bool) -> None: ...
 
     def _register_notification_app_id(app_id: str, icon_path: Path | None) -> bool: ...
 
-    def _make_dashboard(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
+    def _make_dashboard(  # ruff: ignore[too-many-positional-arguments]
         config_manager: ConfigManager,
         proxy_master: ProxyMaster,
         mod_manager: ModificationManager | None,
@@ -134,10 +134,10 @@ else:
     def _optional_screen(screen: QScreen) -> QScreen | None:
         return screen
 
-    def _cache_viewer_show_names(tab: _CacheViewerTabLike, enabled: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _cache_viewer_show_names(tab: _CacheViewerTabLike, enabled: bool) -> None:
         tab._on_show_names_toggled(enabled)  # ruff: ignore[private-member-access]
 
-    def _cache_viewer_show_creator_id(tab: _CacheViewerTabLike, enabled: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _cache_viewer_show_creator_id(tab: _CacheViewerTabLike, enabled: bool) -> None:
         tab._on_show_creator_id_toggled(enabled)  # ruff: ignore[private-member-access]
 
     def _register_notification_app_id(app_id: str, icon_path: Path | None) -> bool:
@@ -151,14 +151,14 @@ else:
         if icon_path is not None:
             winreg.SetValueEx(key, 'IconUri', 0, winreg.REG_SZ, str(icon_path))
         winreg.SetValueEx(key, 'ShowInSettings', 0, winreg.REG_DWORD, 1)
-        try:  # ruff: ignore[suppressible-exception]
+        try:
             key.Close()
         except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass
         _win_set_app_id(app_id)
         return True
 
-    def _make_dashboard(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
+    def _make_dashboard(  # ruff: ignore[too-many-positional-arguments]
         config_manager: ConfigManager,
         proxy_master: ProxyMaster,
         mod_manager: ModificationManager | None,
@@ -196,7 +196,7 @@ class _XfceTrayNotification(QWidget):
 
     closed = Signal(object)
 
-    def __init__(self, title: str, message: str, icon: QIcon, dark: bool, timeout: int) -> None:  # ruff: ignore[boolean-type-hint-positional-argument, too-many-statements]
+    def __init__(self, title: str, message: str, icon: QIcon, dark: bool, timeout: int) -> None:
         super().__init__(
             None,
             Qt.WindowType.Tool
@@ -437,7 +437,7 @@ class SystemTray:
 
     def _create_menu(self) -> None:
         """Create the tray menu."""
-        # Title (disabled)  # ruff: ignore[commented-out-code]
+        # Title (disabled)
         title_action = QAction(
             tr('ui.tray.value_v_value', value0=APP_NAME, value1=APP_VERSION), self.menu
         )
@@ -514,7 +514,7 @@ class SystemTray:
             action.setCheckable(True)
             action.setChecked(self.config_manager.is_config_enabled(name))
 
-            def toggle_config(_checked: bool = False, config_name: str = name) -> None:  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
+            def toggle_config(_checked: bool = False, config_name: str = name) -> None:
                 self._toggle_config(config_name)
 
             action.triggered.connect(toggle_config)
@@ -524,7 +524,7 @@ class SystemTray:
         """Toggle a config's enabled state."""
         self.config_manager.toggle_config_enabled(name)
 
-    def _create_settings_menu(self) -> None:  # ruff: ignore[too-many-statements]
+    def _create_settings_menu(self) -> None:
         """Create the Settings submenu."""
         settings_menu = QMenu(tr('ui.tray.settings'), self.menu)
 
@@ -548,7 +548,7 @@ class SystemTray:
             action = QAction(label, theme_menu)
             action.setCheckable(True)
 
-            def set_theme(_checked: bool = False, theme: str = theme_name) -> None:  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
+            def set_theme(_checked: bool = False, theme: str = theme_name) -> None:
                 self._set_theme(theme)
 
             action.triggered.connect(set_theme)
@@ -576,7 +576,7 @@ class SystemTray:
             action.setCheckable(True)
             action.setChecked(self.config_manager.is_export_naming_enabled(option))
 
-            def toggle_export(_checked: bool = False, export_option: str = option) -> None:  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
+            def toggle_export(_checked: bool = False, export_option: str = option) -> None:
                 self._toggle_export_naming(export_option)
 
             action.triggered.connect(toggle_export)
@@ -723,7 +723,7 @@ class SystemTray:
         scraper = self._cache_scraper()
         return bool(getattr(scraper, 'enabled', False))
 
-    def _set_cache_scraper_enabled(self, enabled: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _set_cache_scraper_enabled(self, enabled: bool) -> None:
         scraper = self._cache_scraper()
         if scraper is not None:
             scraper.set_enabled(enabled)
@@ -742,10 +742,10 @@ class SystemTray:
             if settings_tab is not None and hasattr(settings_tab, 'set_cache_scraper_enabled'):
                 settings_tab.set_cache_scraper_enabled(enabled)
 
-    def _toggle_cache_scraper(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _toggle_cache_scraper(self, checked: bool) -> None:
         self._set_cache_scraper_enabled(checked)
 
-    def set_proxy_features_enabled(self, enabled: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument, complex-structure, too-many-branches]
+    def set_proxy_features_enabled(self, enabled: bool) -> None:
         """Persist and apply the top-level proxy feature toggle."""
         self.config_manager.proxy_features_enabled = enabled
 
@@ -1150,7 +1150,7 @@ class SystemTray:
         else:
             self._show_replacer_config()
 
-    def _set_dashboard_foreground_mode(self, enabled: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument, no-self-use]
+    def _set_dashboard_foreground_mode(self, enabled: bool) -> None:
         """Keep the macOS dashboard visible when Fleasion loses focus."""
         if sys.platform != 'darwin':
             return
@@ -1200,7 +1200,7 @@ class SystemTray:
                 self._xfce_notification.close()
 
             icon = QIcon(str(icon_path)) if icon_path is not None else QIcon()
-            dark = QApplication.palette().color(QPalette.ColorRole.Window).lightness() < 128  # ruff: ignore[magic-value-comparison]
+            dark = QApplication.palette().color(QPalette.ColorRole.Window).lightness() < 128
             notification = _XfceTrayNotification(title, message, icon, dark, 10000)
             notification.closed.connect(self._on_xfce_notification_closed)
             self._xfce_notification = notification
@@ -1287,7 +1287,7 @@ class SystemTray:
         if window in self.open_windows:
             self.open_windows.remove(window)
 
-    def _open_discord_server(self) -> None:  # ruff: ignore[no-self-use]
+    def _open_discord_server(self) -> None:
         """Open the Discord server invite in the default browser."""
         discord_url = (
             APP_DISCORD
@@ -1296,7 +1296,7 @@ class SystemTray:
         )
         QDesktopServices.openUrl(QUrl(discord_url))
 
-    def _copy_discord(self) -> None:  # ruff: ignore[no-self-use]
+    def _copy_discord(self) -> None:
         """Copy Discord invite to clipboard."""
         from PySide6.QtCore import Qt  # ruff: ignore[import-outside-top-level]
         from PySide6.QtWidgets import (  # ruff: ignore[import-outside-top-level]
@@ -1325,7 +1325,7 @@ class SystemTray:
             msg_box.setWindowIcon(QIcon(str(icon_path)))
         msg_box.exec()
 
-    def _open_kofi(self) -> None:  # ruff: ignore[no-self-use]
+    def _open_kofi(self) -> None:
         """Open Ko-fi page in browser."""
         import webbrowser  # ruff: ignore[import-outside-top-level]
 
@@ -1412,7 +1412,7 @@ class SystemTray:
 
         # Player must be closed (or explicitly preserved) before its loopback
         # proxy disappears.
-        try:  # ruff: ignore[suppressible-exception]
+        try:
             self.proxy_master.stop()
         except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass

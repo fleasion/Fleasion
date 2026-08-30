@@ -18,7 +18,7 @@ import socket
 import socketserver
 import ssl
 import stat
-import subprocess  # ruff: ignore[suspicious-subprocess-import]
+import subprocess
 import tempfile
 import threading
 import time
@@ -117,7 +117,7 @@ def _certificate_name(value: object) -> CertificateName:
             if not isinstance(raw_attr, tuple):
                 return ()
             attr = cast('tuple[object, ...]', raw_attr)
-            if len(attr) != 2:  # ruff: ignore[magic-value-comparison]
+            if len(attr) != 2:
                 return ()
             attr_key, attr_value = attr
             if not isinstance(attr_key, str) or not isinstance(attr_value, str):
@@ -159,7 +159,7 @@ def _configure_logging(log_path: str | os.PathLike[str]) -> None:
 def _read_token() -> str:
     with open(_token_file, encoding='utf-8') as handle:  # ruff: ignore[builtin-open, read-whole-file]
         token = handle.read().strip()
-    if len(token) < 32:  # ruff: ignore[magic-value-comparison]
+    if len(token) < 32:
         msg = 'helper token is missing or invalid'
         raise RuntimeError(msg)
     return token
@@ -168,7 +168,7 @@ def _read_token() -> str:
 def _line_targets_allowed_host(raw_line: str) -> bool:
     active = raw_line.split('#', 1)[0].strip()
     parts = active.split()
-    if len(parts) < 2 or parts[0] != '127.0.0.1':  # ruff: ignore[magic-value-comparison]
+    if len(parts) < 2 or parts[0] != '127.0.0.1':
         return False
     return any(host.lower() in ALLOWED_HOSTS for host in parts[1:])
 
@@ -178,7 +178,7 @@ def _parse_entries(content: str) -> dict[str, list[HostsEntry]]:
     for line_no, raw_line in enumerate(content.splitlines(), start=1):
         active = raw_line.split('#', 1)[0].strip()
         parts = active.split()
-        if len(parts) < 2:  # ruff: ignore[magic-value-comparison]
+        if len(parts) < 2:
             continue
         for host in parts[1:]:
             entries.setdefault(host.lower(), []).append((parts[0], line_no, raw_line))
@@ -190,7 +190,7 @@ def _flush_dns() -> None:
         ['/usr/bin/dscacheutil', '-flushcache'],
         ['/usr/bin/killall', '-HUP', 'mDNSResponder'],
     ):
-        try:  # ruff: ignore[suppressible-exception]
+        try:
             subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)  # ruff: ignore[subprocess-run-without-check, subprocess-without-shell-equals-true]
         except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass
@@ -317,7 +317,7 @@ def _is_froststrap_player_bundle(app_root: Path) -> bool:
         return False
     parts = relative.parts
     return (
-        len(parts) == 7  # ruff: ignore[magic-value-comparison]
+        len(parts) == 7
         and bool(parts[0])
         and parts[1:5]
         == (
@@ -455,7 +455,7 @@ def _normalize_cacert_permissions(ca_file: Path) -> None:
         ca_file.chmod(0o644)
 
 
-def _patch_ca(ca_pem: object, installs: object) -> JsonObject:  # ruff: ignore[too-many-locals]
+def _patch_ca(ca_pem: object, installs: object) -> JsonObject:
     current_ca = _normalize_pem_block(ca_pem)
     if not _PEM_CERT_BLOCK_RE.fullmatch(current_ca):
         msg = 'ca_pem is not a PEM certificate block'

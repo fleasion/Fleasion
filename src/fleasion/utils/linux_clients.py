@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess  # ruff: ignore[suspicious-subprocess-import]
+import subprocess
 import sys
 from collections.abc import (
     Callable,  # ruff: ignore[typing-only-standard-library-import]
@@ -368,7 +368,7 @@ def query_default_roblox_handler(**kwargs: Unpack[_QueryHandlerKwargs]) -> str |
     return handlers[0] if handlers else None
 
 
-def select_linux_client(  # ruff: ignore[too-many-arguments]
+def select_linux_client(
     selection: str = 'auto',
     *,
     installed: Sequence[LinuxClientInstallation] | None = None,

@@ -354,7 +354,7 @@ class MicroProfiler:
                 except Exception:  # ruff: ignore[blind-except]
                     return
 
-    def _sample(self) -> JsonObject:  # ruff: ignore[too-many-locals]
+    def _sample(self) -> JsonObject:
         now = time.monotonic()
         process_id = os.getpid()
         python_threads = _python_thread_details()

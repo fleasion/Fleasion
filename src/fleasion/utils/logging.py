@@ -28,7 +28,7 @@ class LogBuffer:
         except OSError:
             pass
 
-    def _rotate_log_file_if_needed(self, incoming_bytes: int = 0) -> None:  # ruff: ignore[no-self-use]
+    def _rotate_log_file_if_needed(self, incoming_bytes: int = 0) -> None:
         if not LOG_FILE.exists():
             return
         if LOG_FILE.stat().st_size + incoming_bytes <= MAX_LOG_FILE_BYTES:
@@ -72,7 +72,7 @@ class LogBuffer:
             callbacks_copy = self._callbacks.copy()
 
         for callback in callbacks_copy:
-            try:  # ruff: ignore[suppressible-exception]
+            try:
                 callback()
             except Exception:  # ruff: ignore[blind-except, try-except-pass]
                 pass  # Ignore callback errors
@@ -85,11 +85,11 @@ class LogBuffer:
         """Get all logs as a single text string."""
         return '\n'.join(self._buffer) if self._buffer else 'No logs yet.'
 
-    def add_callback(self, callback: Any) -> None:  # ruff: ignore[any-type]
+    def add_callback(self, callback: Any) -> None:
         """Add a callback to be notified when new logs are added."""
         self._callbacks.append(callback)
 
-    def remove_callback(self, callback: Any) -> None:  # ruff: ignore[any-type]
+    def remove_callback(self, callback: Any) -> None:
         """Remove a callback."""
         if callback in self._callbacks:
             self._callbacks.remove(callback)

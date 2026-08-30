@@ -83,7 +83,7 @@ except ImportError:
         return json.loads(data)
 
 
-class CacheManager:  # ruff: ignore[too-many-public-methods]
+class CacheManager:
     """Manages cached Roblox assets organized by type."""
 
     # Asset types mapping
@@ -272,7 +272,7 @@ class CacheManager:  # ruff: ignore[too-many-public-methods]
             raise ValueError(msg)
         return self.get_texturepack_slot_dir() / f'{asset_id}_slot{slot}.ktx2'
 
-    def get_texturepack_slot_pack_path(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
+    def get_texturepack_slot_pack_path(  # ruff: ignore[too-many-positional-arguments]
         self,
         asset_id: str | int,
         slot: int,
@@ -359,14 +359,14 @@ class CacheManager:  # ruff: ignore[too-many-public-methods]
             log_buffer.log('Scraper', f'Failed to retrieve raw asset {asset_id}: {e}')
         return None
 
-    def _is_json_data(self, data: bytes) -> bool:  # ruff: ignore[no-self-use]
+    def _is_json_data(self, data: bytes) -> bool:
         """
         Quick check if binary data is valid JSON.
 
         Returns:
             True if data is valid JSON, False otherwise
         """
-        if not data or len(data) < 2:  # ruff: ignore[magic-value-comparison]
+        if not data or len(data) < 2:
             return False
 
         # Check for gzip compression
@@ -392,12 +392,12 @@ class CacheManager:  # ruff: ignore[too-many-public-methods]
         try:
             from . import mesh_processing  # ruff: ignore[import-outside-top-level]
 
-            if asset_type != 4 and mesh_processing.is_mesh_data(data):  # ruff: ignore[magic-value-comparison]
+            if asset_type != 4 and mesh_processing.is_mesh_data(data):
                 return 'Mesh'
         except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass
 
-        if asset_type != 3 and self._is_audio_data(data):  # ruff: ignore[magic-value-comparison]
+        if asset_type != 3 and self._is_audio_data(data):
             return 'Audio'
 
         type_name = self.get_asset_type_name(asset_type)
@@ -417,7 +417,7 @@ class CacheManager:  # ruff: ignore[too-many-public-methods]
             or data.startswith(b'\xff\xfb')
             or data.startswith(b'\xff\xf3')
             or data.startswith(b'\xff\xf2')
-            or (len(data) >= 12 and data.startswith(b'RIFF') and data[8:12] == b'WAVE')  # ruff: ignore[magic-value-comparison]
+            or (len(data) >= 12 and data.startswith(b'RIFF') and data[8:12] == b'WAVE')
             or data.startswith(b'fLaC')
         )
 
@@ -447,7 +447,7 @@ class CacheManager:  # ruff: ignore[too-many-public-methods]
             asset_path = self.get_asset_path(asset_id, asset_type)
 
             # Compress data if it's large
-            if len(data) > 10240:  # 10KB threshold  # ruff: ignore[magic-value-comparison]
+            if len(data) > 10240:  # 10KB threshold
                 with gzip.open(asset_path, 'wb') as f:
                     f.write(data)
                 compressed = True
@@ -660,7 +660,7 @@ class CacheManager:  # ruff: ignore[too-many-public-methods]
 
             assets = [a for a in assets if _matches(a)]
 
-        # Update type_name with detected_type if available (this makes detected types persistent in listings)  # ruff: ignore[line-too-long]
+        # Update type_name with detected_type if available (this makes detected types persistent in listings)
         for asset in assets:
             if 'detected_type' in asset:
                 asset['type_name'] = asset['detected_type']
@@ -670,7 +670,7 @@ class CacheManager:  # ruff: ignore[too-many-public-methods]
 
         return assets
 
-    def get_available_export_formats(self, asset_type: int) -> list[str]:  # ruff: ignore[no-self-use]
+    def get_available_export_formats(self, asset_type: int) -> list[str]:
         """
         Get available export formats for an asset type.
 
@@ -686,29 +686,25 @@ class CacheManager:  # ruff: ignore[too-many-public-methods]
         formats.append('bin')
 
         # Add 'converted' for types that support conversion
-        if asset_type == 4:  # Mesh - can convert to OBJ  # ruff: ignore[magic-value-comparison]
+        if asset_type == 4:  # Mesh - can convert to OBJ
             formats.insert(0, 'converted_obj')
-        elif (
-            asset_type == 3  # ruff: ignore[magic-value-comparison]
-        ):  # Audio - proper extension (ogg/mp3 handled in export)
+        elif asset_type == 3:  # Audio - proper extension (ogg/mp3 handled in export)
             formats.insert(0, 'converted_audio')
         elif asset_type in (1, 13):  # Image, Decal  # ruff: ignore[literal-membership]
             formats.insert(0, 'converted_png')
-        elif asset_type == 63:  # TexturePack  # ruff: ignore[magic-value-comparison]
+        elif asset_type == 63:  # TexturePack
             formats.insert(0, 'slot_ktx2')
             formats.insert(0, 'converted_images')
             formats.insert(0, 'converted')
-        elif asset_type == 24:  # Animation  # ruff: ignore[magic-value-comparison]
+        elif asset_type == 24:  # Animation
             formats.insert(0, 'converted_rbxmx')
             formats.insert(1, 'converted_rbxmx_curve')
-        elif asset_type == 39:  # SolidModel  # ruff: ignore[magic-value-comparison]
+        elif asset_type == 39:  # SolidModel
             formats.insert(0, 'converted_rbxmx_model')
             formats.insert(0, 'converted_obj')
-        elif asset_type == 73:  # FontFamily - JSON metadata  # ruff: ignore[magic-value-comparison]
+        elif asset_type == 73:  # FontFamily - JSON metadata
             formats.insert(0, 'converted_json')
-        elif (
-            asset_type == 74  # ruff: ignore[magic-value-comparison]
-        ):  # FontFace - actual font file
+        elif asset_type == 74:  # FontFace - actual font file
             formats.insert(0, 'converted_font')
 
         return formats
@@ -731,7 +727,7 @@ class CacheManager:  # ruff: ignore[too-many-public-methods]
                 formats.insert(0, fmt)
         return formats
 
-    def export_asset(  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-return-statements, too-many-statements]
+    def export_asset(  # ruff: ignore[too-many-return-statements]
         self,
         asset_id: str,
         asset_type: int,
@@ -828,7 +824,7 @@ class CacheManager:  # ruff: ignore[too-many-public-methods]
 
                 if export_format == 'bin':
                     # Binary export - for TexturePack use raw KTX2 sidecar if available
-                    if asset_type == 63:  # ruff: ignore[magic-value-comparison]
+                    if asset_type == 63:
                         raw_data = self.get_raw_asset(asset_id, asset_type)
                         if raw_data is not None:
                             output_path = export_type_dir / f'{filename}.ktx2'
@@ -848,9 +844,7 @@ class CacheManager:  # ruff: ignore[too-many-public-methods]
                     output_path.write_bytes(glb_data)
                     return output_path
 
-                if (
-                    export_format == 'converted_obj' and asset_type == 4  # ruff: ignore[magic-value-comparison]
-                ):  # Mesh - convert to OBJ
+                if export_format == 'converted_obj' and asset_type == 4:  # Mesh - convert to OBJ
                     from . import mesh_processing  # ruff: ignore[import-outside-top-level]
 
                     try:  # ruff: ignore[too-many-statements-in-try-clause]
@@ -871,9 +865,7 @@ class CacheManager:  # ruff: ignore[too-many-public-methods]
                     # Fallback
                     output_path = export_type_dir / f'{filename}.mesh'
 
-                elif (
-                    export_format == 'converted_obj' and asset_type == 39  # ruff: ignore[magic-value-comparison]
-                ):  # SolidModel -> obj
+                elif export_format == 'converted_obj' and asset_type == 39:  # SolidModel -> obj
                     from .tools.solidmodel_converter.converter import (  # ruff: ignore[import-outside-top-level]
                         deserialize_rbxm,
                         export_obj_from_doc,
@@ -893,7 +885,7 @@ class CacheManager:  # ruff: ignore[too-many-public-methods]
                         # Fall through to binary
 
                 elif (
-                    export_format == 'converted_rbxmx_model' and asset_type == 39  # ruff: ignore[magic-value-comparison]
+                    export_format == 'converted_rbxmx_model' and asset_type == 39
                 ):  # SolidModel -> rbxmx
                     from .tools.solidmodel_converter.converter import (  # ruff: ignore[import-outside-top-level]
                         deserialize_rbxm,
@@ -961,7 +953,7 @@ class CacheManager:  # ruff: ignore[too-many-public-methods]
                     return output_path
 
                 elif (
-                    export_format == 'converted' and asset_type == 63  # ruff: ignore[magic-value-comparison]
+                    export_format == 'converted' and asset_type == 63
                 ):  # TexturePack - export as XML
                     # Decompress if needed
                     xml_data = data
@@ -974,12 +966,12 @@ class CacheManager:  # ruff: ignore[too-many-public-methods]
                     return output_path
 
                 elif (
-                    export_format == 'converted_images' and asset_type == 63  # ruff: ignore[magic-value-comparison]
+                    export_format == 'converted_images' and asset_type == 63
                 ):  # TexturePack - extract individual textures
                     return self._export_texturepack(data, asset_id, export_type_dir, filename)
 
                 elif (
-                    export_format == 'converted_rbxmx' and asset_type == 24  # ruff: ignore[magic-value-comparison]
+                    export_format == 'converted_rbxmx' and asset_type == 24
                 ):  # Animation - export as RBXMX
                     try:  # ruff: ignore[too-many-statements-in-try-clause]
                         anim_data = data
@@ -1014,7 +1006,7 @@ class CacheManager:  # ruff: ignore[too-many-public-methods]
                         output_path = export_type_dir / f'{filename}.rbxmx'
 
                 elif (
-                    export_format == 'converted_rbxmx_curve' and asset_type == 24  # ruff: ignore[magic-value-comparison]
+                    export_format == 'converted_rbxmx_curve' and asset_type == 24
                 ):  # Animation - export as CurveAnimation RBXMX
                     try:  # ruff: ignore[too-many-statements-in-try-clause]
                         anim_data = data
@@ -1049,7 +1041,7 @@ class CacheManager:  # ruff: ignore[too-many-public-methods]
                         output_path = export_type_dir / f'{filename}.rbxmx'
 
                 elif (
-                    export_format == 'converted_json' and asset_type == 73  # ruff: ignore[magic-value-comparison]
+                    export_format == 'converted_json' and asset_type == 73
                 ):  # FontFamily - JSON metadata
                     # FontFamily assets are JSON files
                     output_path = export_type_dir / f'{filename}.json'
@@ -1057,7 +1049,7 @@ class CacheManager:  # ruff: ignore[too-many-public-methods]
                     return output_path
 
                 elif (
-                    export_format == 'converted_font' and asset_type == 74  # ruff: ignore[magic-value-comparison]
+                    export_format == 'converted_font' and asset_type == 74
                 ):  # FontFace - actual font file
                     ext = self._detect_font_extension(data)
                     output_path = export_type_dir / f'{filename}{ext}'
@@ -1076,13 +1068,13 @@ class CacheManager:  # ruff: ignore[too-many-public-methods]
             log_buffer.log('Scraper', f'Failed to export asset {asset_id}: {e}')
             return None
 
-    def _detect_extension(self, data: bytes, asset_type: int) -> str:  # ruff: ignore[complex-structure, too-many-branches, too-many-return-statements]
+    def _detect_extension(self, data: bytes, asset_type: int) -> str:  # ruff: ignore[too-many-return-statements]
         """Detect file extension based on data signature."""
-        if asset_type == 39:  # ruff: ignore[magic-value-comparison]
+        if asset_type == 39:
             return '.bin'
-        if asset_type == 73:  # FontFamily - JSON metadata  # ruff: ignore[magic-value-comparison]
+        if asset_type == 73:  # FontFamily - JSON metadata
             return '.json'
-        if asset_type == 74:  # FontFace - actual font file  # ruff: ignore[magic-value-comparison]
+        if asset_type == 74:  # FontFace - actual font file
             return self._detect_font_extension(data)
         if data.startswith(b'\x89PNG'):
             return '.png'
@@ -1095,7 +1087,7 @@ class CacheManager:  # ruff: ignore[too-many-public-methods]
             or data.startswith(b'\xff\xf2')
         ):
             return '.mp3'
-        if len(data) >= 12 and data.startswith(b'RIFF') and data[8:12] == b'WAVE':  # ruff: ignore[magic-value-comparison]
+        if len(data) >= 12 and data.startswith(b'RIFF') and data[8:12] == b'WAVE':
             return '.wav'
         if data.startswith(b'fLaC'):
             return '.flac'
@@ -1103,9 +1095,9 @@ class CacheManager:  # ruff: ignore[too-many-public-methods]
             return '.mesh'
         if data.startswith(b'<roblox'):
             is_binary = data.startswith(b'<roblox!')
-            if asset_type == 9:  # ruff: ignore[magic-value-comparison]
+            if asset_type == 9:
                 return '.rbxl' if is_binary else '.rbxlx'
-            if asset_type == 63:  # TexturePack XML  # ruff: ignore[magic-value-comparison]
+            if asset_type == 63:  # TexturePack XML
                 return '.xml'
             return '.rbxm' if is_binary else '.rbxmx'
         if data.startswith(b'\xabKTX'):
@@ -1114,7 +1106,7 @@ class CacheManager:  # ruff: ignore[too-many-public-methods]
             return '.gz'
         return '.bin'
 
-    def _detect_font_extension(self, data: bytes) -> str:  # ruff: ignore[no-self-use]
+    def _detect_font_extension(self, data: bytes) -> str:
         """Detect font file extension from magic bytes."""
         if not data:
             return '.ttf'
@@ -1122,7 +1114,7 @@ class CacheManager:  # ruff: ignore[too-many-public-methods]
         # TrueType
         if data[:4] == b'\x00\x01\x00\x00':
             return '.ttf'
-        # OpenType (CFF-based)  # ruff: ignore[commented-out-code]
+        # OpenType (CFF-based)
         if data[:4] == b'OTTO':
             return '.otf'
         # TrueType Collection
@@ -1134,7 +1126,7 @@ class CacheManager:  # ruff: ignore[too-many-public-methods]
 
         return '.ttf'  # Default to TTF for font types
 
-    def _export_texturepack(  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
+    def _export_texturepack(
         self,
         data: bytes,
         asset_id: str,
@@ -1244,16 +1236,16 @@ class CacheManager:  # ruff: ignore[too-many-public-methods]
                                 timeout=15,
                                 allow_redirects=True,
                             )
-                            if response.status_code == 200 and response.content:  # ruff: ignore[magic-value-comparison]
+                            if response.status_code == 200 and response.content:
                                 texture_data = response.content
                                 log_buffer.log(
                                     'Export',
-                                    f'Successfully fetched {map_name} texture {map_id}, size: {len(texture_data)} bytes',  # ruff: ignore[line-too-long]
+                                    f'Successfully fetched {map_name} texture {map_id}, size: {len(texture_data)} bytes',
                                 )
                             else:
                                 log_buffer.log(
                                     'Export',
-                                    f'API returned status {response.status_code} for {map_name} texture {map_id}',  # ruff: ignore[line-too-long]
+                                    f'API returned status {response.status_code} for {map_name} texture {map_id}',
                                 )
 
                         if texture_data:
@@ -1317,7 +1309,7 @@ class CacheManager:  # ruff: ignore[too-many-public-methods]
             raw_path = self.get_raw_asset_path(asset_id, asset_type)
             if raw_path.exists():
                 raw_path.unlink()
-            if asset_type == 63:  # ruff: ignore[magic-value-comparison]
+            if asset_type == 63:
                 self.delete_texturepack_slot_files(asset_id)
 
             with self._lock:
@@ -1332,7 +1324,7 @@ class CacheManager:  # ruff: ignore[too-many-public-methods]
             log_buffer.log('Scraper', f'Failed to delete asset {asset_id}: {e}')
             return False
 
-    def delete_assets_batch(self, assets: list[tuple[str, int]]) -> tuple[int, int]:  # ruff: ignore[complex-structure]
+    def delete_assets_batch(self, assets: list[tuple[str, int]]) -> tuple[int, int]:
         """
         Delete multiple assets efficiently by batching index writes.
 
@@ -1358,7 +1350,7 @@ class CacheManager:  # ruff: ignore[too-many-public-methods]
                     raw_path = self.get_raw_asset_path(asset_id, asset_type)
                     if raw_path.exists():
                         raw_path.unlink()
-                    if asset_type == 63:  # ruff: ignore[magic-value-comparison]
+                    if asset_type == 63:
                         self.delete_texturepack_slot_files(asset_id)
                     deleted_count += 1
                 except Exception as e:  # ruff: ignore[blind-except]

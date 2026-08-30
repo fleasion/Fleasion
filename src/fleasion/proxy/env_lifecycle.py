@@ -35,7 +35,7 @@ def _is_gdk_repair_path(path: Path) -> bool:
 class EnvProxyLifecycleController:
     """Own Env conversion, bounded CA repair relaunches, and ordered exit."""
 
-    def __init__(  # ruff: ignore[too-many-arguments]
+    def __init__(
         self,
         *,
         config_manager: ConfigManager,
@@ -133,7 +133,7 @@ class EnvProxyLifecycleController:
         if callable(prepare):
             prepare()
 
-    def handle_player_launch(  # ruff: ignore[complex-structure, too-many-return-statements]
+    def handle_player_launch(  # ruff: ignore[too-many-return-statements]
         self,
         exe_path: Path | None = None,
         launch_target: str | None = None,

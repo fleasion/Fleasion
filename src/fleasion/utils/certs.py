@@ -321,7 +321,7 @@ def generate_ca(ca_dir: Path) -> tuple[Path, Path]:
     return ca_cert_path, ca_key_path
 
 
-def generate_host_cert(  # ruff: ignore[too-many-locals, too-many-statements]
+def generate_host_cert(
     host: str, ca_cert_path: Path, ca_key_path: Path, ca_dir: Path
 ) -> tuple[Path, Path]:
     """Generate a leaf certificate for *host* signed by our CA.
@@ -471,7 +471,7 @@ def generate_host_cert(  # ruff: ignore[too-many-locals, too-many-statements]
     return cert_path, key_path
 
 
-def generate_multi_host_cert(  # ruff: ignore[too-many-locals]
+def generate_multi_host_cert(
     cert_name: str,
     hosts: Iterable[str],
     ca_cert_path: Path,

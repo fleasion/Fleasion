@@ -163,7 +163,7 @@ class JsonSearchWorker(QThread):
     def stop(self) -> None:
         self._stop_requested = True
 
-    def run(self) -> None:  # ruff: ignore[complex-structure]
+    def run(self) -> None:
         """Search tree items in background."""
         if not self.query or self._stop_requested:
             return
@@ -241,14 +241,14 @@ class AssetFetcherThread(QThread):
     def stop(self) -> None:
         self._stop_requested = True
 
-    def _get_roblosecurity(self) -> str | None:  # ruff: ignore[no-self-use]
+    def _get_roblosecurity(self) -> str | None:
         from fleasion.utils.roblox_auth import (  # ruff: ignore[import-outside-top-level]
             get_roblosecurity,
         )
 
         return get_roblosecurity()
 
-    def run(self) -> None:  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
+    def run(self) -> None:
         try:  # ruff: ignore[too-many-nested-blocks, too-many-statements-in-try-clause]
             val = self._asset
             scraper = self.__class__._scraper  # ruff: ignore[private-member-access]
@@ -275,16 +275,16 @@ class AssetFetcherThread(QThread):
                         timeout=15,
                     )
                     status = r.status_code
-                    data = r.content if r.status_code == 200 else None  # ruff: ignore[magic-value-comparison]
+                    data = r.content if r.status_code == 200 else None
                     # Attempt place-ID retry on 403 via inline logic
-                    if data is None and r.status_code == 403:  # ruff: ignore[magic-value-comparison]
+                    if data is None and r.status_code == 403:
                         try:  # ruff: ignore[too-many-statements-in-try-clause]
                             info_r = _req.get(
                                 f'https://develop.roblox.com/v1/assets?assetIds={val}',
                                 headers={'Accept': 'application/json', **(extra or {})},
                                 timeout=10,
                             )
-                            if info_r.status_code == 200:  # ruff: ignore[magic-value-comparison]
+                            if info_r.status_code == 200:
                                 info_payload: object = info_r.json()
                                 info = _preserve_object_dict(info_payload)
                                 items = _preserve_object_list(info.get('data', []))
@@ -328,7 +328,7 @@ class AssetFetcherThread(QThread):
                                                         headers={'Accept': 'application/json'},
                                                         timeout=10,
                                                     )
-                                                    if g_r.status_code != 200:  # ruff: ignore[magic-value-comparison]
+                                                    if g_r.status_code != 200:
                                                         break
                                                     response_payload: object = g_r.json()
                                                     resp_json = _preserve_object_dict(
@@ -361,7 +361,7 @@ class AssetFetcherThread(QThread):
                                                                 timeout=15,
                                                             )
                                                             status = r2.status_code
-                                                            if r2.status_code == 200 and r2.content:  # ruff: ignore[magic-value-comparison]
+                                                            if r2.status_code == 200 and r2.content:
                                                                 data = r2.content
                                                                 break  # Found working place ID
                                                     if data:
@@ -380,9 +380,9 @@ class AssetFetcherThread(QThread):
                     return
                 if data:
                     self.data_ready.emit(data)
-                elif status == 404:  # ruff: ignore[magic-value-comparison]
+                elif status == 404:
                     self.error.emit(tr('json.fetch.asset_not_found'))
-                elif status == 403:  # ruff: ignore[magic-value-comparison]
+                elif status == 403:
                     self.error.emit(tr('json.fetch.asset_private'))
                 else:
                     self.error.emit(tr('json.fetch.no_data'))
@@ -410,7 +410,7 @@ class AssetFetcherThread(QThread):
                     if extra:
                         headers.update(extra)
                     r = _req.get(val, headers=headers, timeout=15)
-                    data = r.content if r.status_code == 200 else None  # ruff: ignore[magic-value-comparison]
+                    data = r.content if r.status_code == 200 else None
 
                 if self._stop_requested:
                     return
@@ -564,7 +564,7 @@ class SolidModelLoaderThread(QThread):
 class JsonTreeViewer(QDialog):
     """JSON tree viewer dialog."""
 
-    def __init__(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
+    def __init__(  # ruff: ignore[too-many-positional-arguments]
         self,
         parent: QWidget | None,
         data: JsonValue,
@@ -630,7 +630,7 @@ class JsonTreeViewer(QDialog):
 
             self.setWindowIcon(QIcon(str(icon_path)))
 
-    def _setup_ui(self) -> None:  # ruff: ignore[too-many-statements]
+    def _setup_ui(self) -> None:
         """Setup the UI."""
         layout = QVBoxLayout()
         layout.setContentsMargins(10, 10, 10, 10)
@@ -808,7 +808,7 @@ class JsonTreeViewer(QDialog):
         if value.startswith(('http://', 'https://', 'ftp://', 'file://')):
             return True
         # Check for absolute paths (Unix and Windows)
-        if value.startswith('/') or (len(value) > 2 and value[1] == ':'):  # ruff: ignore[magic-value-comparison]
+        if value.startswith('/') or (len(value) > 2 and value[1] == ':'):
             return True
         # Check for relative paths with directory separators
         if '/' in value or '\\' in value:  # ruff: ignore[needless-bool]
@@ -866,7 +866,7 @@ class JsonTreeViewer(QDialog):
     # Preview panel creation
     # ──────────────────────────────────────────────────────────────────────
 
-    def _create_preview_panel(self) -> QWidget:  # ruff: ignore[too-many-statements]
+    def _create_preview_panel(self) -> QWidget:
         """Create the right-side preview panel (mirrors cache_viewer's panel)."""
         from fleasion.cache.animation_viewer import (  # ruff: ignore[import-outside-top-level]
             AnimationViewerPanel,
@@ -908,7 +908,7 @@ class JsonTreeViewer(QDialog):
         self.loading_label = QLabel(tr('ui.gui.json_viewer.loading'))
         self.loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.loading_label.setStyleSheet(
-            'QLabel { background-color: palette(base); color: #888; font-size: 14px; padding: 20px; }'  # ruff: ignore[line-too-long]
+            'QLabel { background-color: palette(base); color: #888; font-size: 14px; padding: 20px; }'
         )
         self.preview_container_layout.addWidget(self.loading_label)
         self.loading_label.hide()
@@ -1024,7 +1024,7 @@ class JsonTreeViewer(QDialog):
         # Update group title
         try:
             display = str(val)
-            if len(display) > 60:  # ruff: ignore[magic-value-comparison]
+            if len(display) > 60:
                 display = display[:57] + '...'
             self.preview_title_label.setText(tr('ui.gui.json_viewer.preview_value', value0=display))
         except Exception:  # ruff: ignore[blind-except, try-except-pass]
@@ -1071,11 +1071,11 @@ class JsonTreeViewer(QDialog):
         else:
             self._preview_hex(data)
 
-    def _detect_content_type(self, data: bytes) -> str:  # ruff: ignore[complex-structure, no-self-use, too-many-branches, too-many-return-statements]
+    def _detect_content_type(self, data: bytes) -> str:  # ruff: ignore[too-many-return-statements]
         """Detect content type from magic bytes."""
         working = data
         if data[:2] == b'\x1f\x8b':
-            try:  # ruff: ignore[suppressible-exception]
+            try:
                 working = gzip_module.decompress(data)
             except Exception:  # ruff: ignore[blind-except, try-except-pass]
                 pass
@@ -1100,7 +1100,7 @@ class JsonTreeViewer(QDialog):
         ):
             return 'audio'
 
-        # Fonts (TrueType/OpenType)  # ruff: ignore[commented-out-code]
+        # Fonts (TrueType/OpenType)
         if working[:4] == b'\x00\x01\x00\x00':  # TrueType
             return 'font'
         if working[:4] == b'OTTO':  # OpenType (CFF-based)
@@ -1118,7 +1118,7 @@ class JsonTreeViewer(QDialog):
         if working[:8] == b'<roblox!':
             return 'rbxm'
 
-        # XML (RBXMX / animation / texturepack)  # ruff: ignore[commented-out-code]
+        # XML (RBXMX / animation / texturepack)
         if working[:7] == b'<roblox' or working[:5] == b'<?xml':
             # Check for texturepack XML (has color/normal/metalness/roughness/emissive elements)
             try:
@@ -1167,9 +1167,9 @@ class JsonTreeViewer(QDialog):
     def _scale_and_show_image(self, pixmap: QPixmap) -> None:
         container_w = self.preview_scroll.viewport().width() - 20
         container_h = self.preview_scroll.viewport().height() - 20
-        if container_w < 100:  # ruff: ignore[magic-value-comparison]
+        if container_w < 100:
             container_w = 400
-        if container_h < 100:  # ruff: ignore[magic-value-comparison]
+        if container_h < 100:
             container_h = 400
         scaled = pixmap.scaled(
             container_w,
@@ -1218,7 +1218,7 @@ class JsonTreeViewer(QDialog):
             self.audio_wrapper.show()
             self.stop_preview_btn.show()
 
-            # Install global event filter to catch Space for play/pause while audio preview is active  # ruff: ignore[line-too-long]
+            # Install global event filter to catch Space for play/pause while audio preview is active
             try:
                 from PySide6.QtWidgets import QApplication  # ruff: ignore[import-outside-top-level]
 
@@ -1228,7 +1228,7 @@ class JsonTreeViewer(QDialog):
                 self._audio_key_filter_installed = False
 
             # When audio stops or widget is deleted, remove the event filter
-            try:  # ruff: ignore[suppressible-exception]
+            try:
                 self.audio_player.stopped.connect(lambda: self._remove_audio_key_filter())  # ruff: ignore[unnecessary-lambda]
             except Exception:  # ruff: ignore[blind-except, try-except-pass]
                 pass
@@ -1327,7 +1327,7 @@ class JsonTreeViewer(QDialog):
             self.rbxm_viewer.show()
             self.stop_preview_btn.show()
             display = str(self._previewing_value)
-            if len(display) > 60:  # ruff: ignore[magic-value-comparison]
+            if len(display) > 60:
                 display = display[:57] + '...'
             self.preview_title_label.setText(
                 tr('json.preview.title_with_value', title=title_prefix, value=display)
@@ -1346,7 +1346,7 @@ class JsonTreeViewer(QDialog):
         lines.append(tr('json.preview.hex.first_bytes', count=preview_size))
         for i in range(0, preview_size, 16):
             hex_part = ' '.join(f'{b:02x}' for b in data[i : i + 16])
-            ascii_part = ''.join(chr(b) if 32 <= b < 127 else '.' for b in data[i : i + 16])  # ruff: ignore[magic-value-comparison]
+            ascii_part = ''.join(chr(b) if 32 <= b < 127 else '.' for b in data[i : i + 16])
             lines.append(f'{i:08x}  {hex_part:<48}  {ascii_part}')
         if len(data) > preview_size:
             lines.append(tr('json.preview.hex.more_bytes', count=len(data) - preview_size))
@@ -1368,7 +1368,7 @@ class JsonTreeViewer(QDialog):
         self._solidmodel_loader.error.connect(self._on_solidmodel_error)
         self._solidmodel_loader.start()
 
-    def _preview_texturepack(self, data: bytes) -> None:  # ruff: ignore[too-many-statements]
+    def _preview_texturepack(self, data: bytes) -> None:
         """Preview a texture pack by showing all texture maps."""
         from defusedxml import (  # ruff: ignore[import-outside-top-level]
             ElementTree as ET,  # ruff: ignore[camelcase-imported-as-acronym]
@@ -1483,7 +1483,7 @@ class JsonTreeViewer(QDialog):
 
             working = data
             if data[:2] == b'\x1f\x8b':
-                try:  # ruff: ignore[suppressible-exception]
+                try:
                     working = gzip_module.decompress(data)
                 except Exception:  # ruff: ignore[blind-except, try-except-pass]
                     pass
@@ -1511,7 +1511,7 @@ class JsonTreeViewer(QDialog):
 
             # Scale to fit container
             container_width = self.preview_scroll.viewport().width() - 30
-            if container_width < 100:  # ruff: ignore[magic-value-comparison]
+            if container_width < 100:
                 container_width = 400
 
             if pixmap.width() > container_width:
@@ -1626,13 +1626,13 @@ class JsonTreeViewer(QDialog):
         """Stop the current preview and hide the preview panel controls."""
         self._stop_all_loaders()
         self._hide_all_preview_widgets()
-        try:  # ruff: ignore[suppressible-exception]
+        try:
             self.rbxm_viewer.clear()
         except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass
         self.preview_panel.hide()
         self._previewing_value = None
-        try:  # ruff: ignore[suppressible-exception]
+        try:
             self.preview_title_label.setText(tr('ui.gui.json_viewer.preview'))
         except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass
@@ -1711,7 +1711,7 @@ class JsonTreeViewer(QDialog):
                 key_event = _key_event(event)
                 if key_event.key() == Qt.Key.Key_Space:  # ruff: ignore[collapsible-if]
                     if self.audio_player and self.audio_wrapper.isVisible():
-                        try:  # ruff: ignore[suppressible-exception]
+                        try:
                             # Toggle play/pause on the audio widget
                             _toggle_audio_player(self.audio_player)
                         except Exception:  # ruff: ignore[blind-except, try-except-pass]
@@ -1941,7 +1941,7 @@ class JsonTreeViewer(QDialog):
         if vals:
             self.on_import_ids(vals)
             all_asset_ids = all(isinstance(v, int) for v in vals)
-            preview = f'{", ".join(str(v) for v in vals[:5])}{"..." if len(vals) > 5 else ""}'  # ruff: ignore[magic-value-comparison]
+            preview = f'{", ".join(str(v) for v in vals[:5])}{"..." if len(vals) > 5 else ""}'
             if all_asset_ids:
                 message = tr(
                     'json.replacer.added_one_asset_id'

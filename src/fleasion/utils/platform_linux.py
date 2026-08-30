@@ -12,7 +12,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by Windows collectio
 import shlex
 import shutil
 import signal
-import subprocess  # ruff: ignore[suspicious-subprocess-import]
+import subprocess
 import sys
 import time
 from collections.abc import Iterator  # ruff: ignore[typing-only-standard-library-import]
@@ -517,7 +517,7 @@ def _delete_path(path: Path, messages: list[str], label: str) -> None:
         messages.append(f'Failed to delete {label.lower()}: {exc}')
 
 
-def delete_cache() -> list[str]:  # ruff: ignore[complex-structure, too-many-branches]
+def delete_cache() -> list[str]:
     """Delete cache files for only the selected Linux client and Fleasion."""
     messages: list[str] = []
     installation = get_selected_linux_client_installation()
@@ -573,7 +573,7 @@ def delete_cache() -> list[str]:  # ruff: ignore[complex-structure, too-many-bra
     return messages
 
 
-def find_roblox_resource_dirs(include_studio: bool = True) -> list[Path]:  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument, unused-function-argument]
+def find_roblox_resource_dirs(include_studio: bool = True) -> list[Path]:  # ruff: ignore[unused-function-argument]
     """Return resource roots for only the selected Linux client."""
     found: list[Path] = []
     seen: set[str] = set()
@@ -671,7 +671,7 @@ def _standard_user_popen(args: list[str]) -> subprocess.Popen[bytes]:
         uid = stat.st_uid
         gid = stat.st_gid
         if pwd is None:
-            raise KeyError(uid)  # ruff: ignore[raise-within-try]
+            raise KeyError(uid)
         pw_entry = pwd.getpwuid(uid)
     except Exception:  # ruff: ignore[blind-except]
         return subprocess.Popen(args, env=env, **_DETACHED_POPEN_KWARGS)  # ruff: ignore[subprocess-without-shell-equals-true]
@@ -729,7 +729,7 @@ def _standard_user_run(
             uid = stat.st_uid
             gid = stat.st_gid
             if pwd is None:
-                raise KeyError(uid)  # ruff: ignore[raise-within-try]
+                raise KeyError(uid)
             pw_entry = pwd.getpwuid(uid)
         except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass
@@ -1176,7 +1176,7 @@ def _copy_linux_app_payload() -> tuple[Path | None, Path | None]:
     if source.is_relative_to(Path('/nix/store')):
         log_buffer.log(
             'App',
-            'Linux desktop integration detected a Nix store executable; using it directly instead of copying a stale per-user binary',  # ruff: ignore[line-too-long]
+            'Linux desktop integration detected a Nix store executable; using it directly instead of copying a stale per-user binary',
         )
         return None, None
 
@@ -1236,7 +1236,7 @@ def install_desktop_entries() -> DesktopInstallResult:
     pythonpath = (
         ''
         if working_dir is None
-        else f'export PYTHONPATH={shlex.quote(str(working_dir / "src"))}${{PYTHONPATH:+:$PYTHONPATH}}\n'  # ruff: ignore[line-too-long]
+        else f'export PYTHONPATH={shlex.quote(str(working_dir / "src"))}${{PYTHONPATH:+:$PYTHONPATH}}\n'
     )
 
     launcher = f"""#!/bin/sh

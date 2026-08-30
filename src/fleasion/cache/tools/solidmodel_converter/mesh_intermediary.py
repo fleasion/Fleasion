@@ -291,7 +291,7 @@ def bin_file_to_cached_obj(bin_path: Path) -> Path:
 # .rbxmx (XML SolidModel export) -> cached OBJ
 
 
-def rbxmx_file_to_cached_obj(rbxmx_path: Path) -> Path:  # ruff: ignore[complex-structure]
+def rbxmx_file_to_cached_obj(rbxmx_path: Path) -> Path:
     """Parse MeshData from an RBXMX SolidModel export and convert to a cached OBJ."""
     import base64  # ruff: ignore[import-outside-top-level]
 

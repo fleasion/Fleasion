@@ -59,10 +59,10 @@ def main() -> int:
     try:
         reset_first_time_setup(args.settings.expanduser())
     except (OSError, json.JSONDecodeError, ValueError) as exc:
-        print(f'Failed to reset first-time setup flag: {exc}', file=sys.stderr)  # ruff: ignore[print]
+        print(f'Failed to reset first-time setup flag: {exc}', file=sys.stderr)
         return 1
 
-    print(f'Reset first_time_setup_complete=false in {args.settings.expanduser()}')  # ruff: ignore[print]
+    print(f'Reset first_time_setup_complete=false in {args.settings.expanduser()}')
     return 0
 
 

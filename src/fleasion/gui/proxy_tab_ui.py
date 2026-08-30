@@ -10,7 +10,7 @@ from fleasion.localization import tr
 
 
 class Ui_Form:  # ruff: ignore[invalid-class-name]
-    def setupUi(self, Form: QtWidgets.QWidget) -> None:  # ruff: ignore[invalid-argument-name, invalid-function-name, too-many-statements]
+    def setupUi(self, Form: QtWidgets.QWidget) -> None:  # ruff: ignore[invalid-argument-name, invalid-function-name]
         Form.setObjectName('Form')
         Form.resize(847, 561)
         self.verticalLayout_3 = QtWidgets.QVBoxLayout(Form)

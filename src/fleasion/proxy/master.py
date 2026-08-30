@@ -36,7 +36,7 @@ import shutil
 import socket
 import ssl
 import stat
-import subprocess  # ruff: ignore[suspicious-subprocess-import]
+import subprocess
 import sys
 import tempfile
 import threading
@@ -237,7 +237,7 @@ class _DnsApi(Protocol):
 
 
 class _Kernel32(Protocol):
-    def OpenProcess(self, desired_access: int, inherit_handle: bool, process_id: int) -> int: ...  # ruff: ignore[boolean-type-hint-positional-argument, invalid-function-name]
+    def OpenProcess(self, desired_access: int, inherit_handle: bool, process_id: int) -> int: ...  # ruff: ignore[invalid-function-name]
     def GetExitCodeProcess(self, process: int, exit_code: object) -> int: ...  # ruff: ignore[invalid-function-name]
     def CloseHandle(self, handle: int) -> int: ...  # ruff: ignore[invalid-function-name]
 
@@ -569,7 +569,7 @@ def _is_routable_public_ip(ip: str) -> bool:
         return False
 
 
-def _dns_query_udp(  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
+def _dns_query_udp(
     hostname: str, server: str, port: int = 53, timeout: float = 3.0, qtype: int = 1
 ) -> list[str]:
     """Send a raw DNS A/AAAA-record query over UDP to *server*, bypassing the OS
@@ -617,7 +617,7 @@ def _dns_query_udp(  # ruff: ignore[complex-structure, too-many-branches, too-ma
     finally:
         sock.close()
 
-    if len(response) < 12:  # ruff: ignore[magic-value-comparison]
+    if len(response) < 12:
         return []
 
     # Parse response header
@@ -633,7 +633,7 @@ def _dns_query_udp(  # ruff: ignore[complex-structure, too-many-branches, too-ma
             pos += 1
             if length == 0:
                 break
-            if length & 0xC0 == 0xC0:  # pointer  # ruff: ignore[magic-value-comparison]
+            if length & 0xC0 == 0xC0:  # pointer
                 pos += 1
                 break
             pos += length
@@ -645,7 +645,7 @@ def _dns_query_udp(  # ruff: ignore[complex-structure, too-many-branches, too-ma
         if pos >= len(response):
             break
         # Name field (may be a pointer)
-        if response[pos] & 0xC0 == 0xC0:  # ruff: ignore[magic-value-comparison]
+        if response[pos] & 0xC0 == 0xC0:
             pos += 2
         else:
             while pos < len(response) and response[pos] != 0:
@@ -655,11 +655,11 @@ def _dns_query_udp(  # ruff: ignore[complex-structure, too-many-branches, too-ma
             break
         rtype, _, _, rdlength = _struct.unpack('!HHIH', response[pos : pos + 10])
         pos += 10
-        if rtype == 1 and rdlength == 4:  # A record  # ruff: ignore[magic-value-comparison]
+        if rtype == 1 and rdlength == 4:  # A record
             ip = '.'.join(str(b) for b in response[pos : pos + 4])
             if _is_routable_public_ip(ip):
                 ips.append(ip)
-        elif rtype == 28 and rdlength == 16:  # AAAA record  # ruff: ignore[magic-value-comparison]
+        elif rtype == 28 and rdlength == 16:  # AAAA record
             try:
                 ip = _socket.inet_ntop(_socket.AF_INET6, response[pos : pos + 16])
             except OSError:
@@ -685,7 +685,7 @@ def _prefer_ipv4_endpoints(endpoints: list[UpstreamEndpoint]) -> list[UpstreamEn
     )
 
 
-def _resolve_real_endpoints(  # ruff: ignore[complex-structure, too-many-branches]
+def _resolve_real_endpoints(
     hosts: set[str],
     *,
     collect_all_public_fallbacks: bool = False,
@@ -905,7 +905,7 @@ def _log_system_proxy_info(info: WindowsProxyInfo, system_proxy: HttpProxyConfig
         )
 
 
-def _log_upstream_transport_settings(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
+def _log_upstream_transport_settings(  # ruff: ignore[too-many-positional-arguments]
     configured_mode: str,
     effective_mode: str,
     system_proxy: HttpProxyConfig | None,
@@ -1006,7 +1006,7 @@ def _connect_explicit_proxy_tls_for_self_test(
         ).encode('ascii')
         raw_sock.sendall(request)
         response = b''
-        while b'\r\n\r\n' not in response and len(response) < 4096:  # ruff: ignore[magic-value-comparison]
+        while b'\r\n\r\n' not in response and len(response) < 4096:
             chunk = raw_sock.recv(4096)
             if not chunk:
                 break
@@ -1029,7 +1029,7 @@ def _cert_dict_san_hosts(cert: _PeerCertificate) -> set[str]:
         if not isinstance(entry_value, tuple):
             continue
         entry = cast('tuple[object, ...]', entry_value)
-        if len(entry) != 2:  # ruff: ignore[magic-value-comparison]
+        if len(entry) != 2:
             continue
         kind, value = entry
         if kind in ('DNS', 'IP Address') and isinstance(value, str):  # ruff: ignore[literal-membership]
@@ -1037,11 +1037,11 @@ def _cert_dict_san_hosts(cert: _PeerCertificate) -> set[str]:
     return names
 
 
-def _run_tls_self_test_sync(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
+def _run_tls_self_test_sync(  # ruff: ignore[too-many-positional-arguments]
     hosts: set[str],
     ca_cert_path: Path,
     port: int,
-    explicit_proxy: bool = False,  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
+    explicit_proxy: bool = False,
     loopback_host: str = '127.0.0.1',
     tls_max_version: ssl.TLSVersion = PROXY_TLS_MAX_VERSION,
 ) -> tuple[bool, list[str]]:
@@ -1080,11 +1080,11 @@ def _run_tls_self_test_sync(  # ruff: ignore[too-many-arguments, too-many-positi
     return not failures, failures
 
 
-async def _tls_self_test_result(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
+async def _tls_self_test_result(  # ruff: ignore[too-many-positional-arguments]
     hosts: set[str],
     ca_cert_path: Path,
     port: int,
-    explicit_proxy: bool = False,  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
+    explicit_proxy: bool = False,
     loopback_host: str = '127.0.0.1',
     tls_max_version: ssl.TLSVersion = PROXY_TLS_MAX_VERSION,
 ) -> tuple[bool, list[str]]:
@@ -1101,7 +1101,7 @@ async def _tls_self_test_result(  # ruff: ignore[too-many-arguments, too-many-po
     )
 
 
-def _run_raw_tls_loopback_probe_sync(  # ruff: ignore[too-many-arguments, too-many-positional-arguments, too-many-statements]
+def _run_raw_tls_loopback_probe_sync(  # ruff: ignore[too-many-positional-arguments]
     host: str,
     ca_cert_path: Path,
     cert_path: Path,
@@ -1193,7 +1193,7 @@ def _run_raw_tls_loopback_probe_sync(  # ruff: ignore[too-many-arguments, too-ma
     return True, f'protocol={client_protocol}; cipher={client_cipher}'
 
 
-async def _run_raw_tls_loopback_probe(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
+async def _run_raw_tls_loopback_probe(  # ruff: ignore[too-many-positional-arguments]
     host: str,
     ca_cert_path: Path,
     cert_path: Path,
@@ -1298,7 +1298,7 @@ async def _run_in_memory_tls_probe(
     )
 
 
-def _log_tls_self_test_passed(hosts: set[str], explicit_proxy: bool = False) -> None:  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
+def _log_tls_self_test_passed(hosts: set[str], explicit_proxy: bool = False) -> None:
     mode = 'explicit proxy TLS' if explicit_proxy else 'TLS'
     log_buffer.log(
         'TLS',
@@ -1315,7 +1315,7 @@ async def _run_tls_self_test(
     hosts: set[str],
     ca_cert_path: Path,
     port: int,
-    explicit_proxy: bool = False,  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
+    explicit_proxy: bool = False,
 ) -> bool:
     ok, failures = await _tls_self_test_result(hosts, ca_cert_path, port, explicit_proxy)
     if ok:
@@ -1425,7 +1425,7 @@ def _is_macos_studio_bundle_path(exe_path: Path) -> bool:
     return any(parent.name == 'RobloxStudio.app' for parent in resolved.parents)
 
 
-def _flush_dns() -> None:  # ruff: ignore[complex-structure, too-many-branches]
+def _flush_dns() -> None:
     """Flush the OS DNS cache so hosts-file changes take effect immediately.
 
     Calls ``DnsFlushResolverCache`` in *dnsapi.dll* directly via ctypes first.
@@ -1866,7 +1866,7 @@ def _list_port_listeners_netstat(port: int) -> list[_PortListener]:
         if not line:
             continue
         parts = line.split()
-        if len(parts) < 5:  # ruff: ignore[magic-value-comparison]
+        if len(parts) < 5:
             continue
 
         proto, local_addr, _, state, pid_text = parts[:5]
@@ -1899,7 +1899,7 @@ def _list_port_listeners_netstat(port: int) -> list[_PortListener]:
     return listeners
 
 
-def _list_port_listeners(port: int) -> list[_PortListener]:  # ruff: ignore[complex-structure]
+def _list_port_listeners(port: int) -> list[_PortListener]:
     """Return unique listener records for a TCP port."""
     if IS_MACOS or IS_LINUX:
         try:
@@ -1918,7 +1918,7 @@ def _list_port_listeners(port: int) -> list[_PortListener]:  # ruff: ignore[comp
         if result is not None and result.returncode == 0:
             for raw_line in result.stdout.splitlines()[1:]:
                 parts = raw_line.split()
-                if len(parts) < 9:  # ruff: ignore[magic-value-comparison]
+                if len(parts) < 9:
                     continue
                 try:
                     pid = int(parts[1])
@@ -2012,7 +2012,7 @@ def _parse_active_hosts_entries(content: str) -> dict[str, list[_HostsEntry]]:
         if not active:
             continue
         parts = active.split()
-        if len(parts) < 2:  # ruff: ignore[magic-value-comparison]
+        if len(parts) < 2:
             continue
         ip = parts[0]
         for hostname in parts[1:]:
@@ -2149,7 +2149,7 @@ def _hosts_line_has_target_loopback(raw_line: str, hosts: set[str]) -> bool:
     if not active:
         return False
     parts = active.split()
-    if len(parts) < 2 or not _is_hosts_loopback_ip(parts[0]):  # ruff: ignore[magic-value-comparison]
+    if len(parts) < 2 or not _is_hosts_loopback_ip(parts[0]):
         return False
     target_hosts = {host.lower() for host in hosts}
     return any(host.lower() in target_hosts for host in parts[1:])
@@ -2238,7 +2238,7 @@ def _remove_voidstrap_gu_acc_entries(
     return True
 
 
-def _spilled_hosts_line_should_remove(line_file: _BinaryLineFile, hosts: set[str]) -> bool:  # ruff: ignore[too-many-locals]
+def _spilled_hosts_line_should_remove(line_file: _BinaryLineFile, hosts: set[str]) -> bool:
     """Classify an unterminated hosts line without loading it into memory."""
     line_file.seek(0)
     prefix = line_file.read(4096)
@@ -2297,7 +2297,7 @@ def _spilled_hosts_line_should_remove(line_file: _BinaryLineFile, hosts: set[str
     )
 
 
-def repair_hosts_file(  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-return-statements, too-many-statements]
+def repair_hosts_file(  # ruff: ignore[too-many-return-statements]
     hosts: set[str] | None = None,
     error_details: _ErrorDetails | None = None,
     *,
@@ -2611,7 +2611,7 @@ def _write_hosts_file(content: str) -> None:
         raise PermissionError(msg) from exc
 
 
-def _add_hosts_entries(hosts: set[str], error_details: _ErrorDetails | None = None) -> bool:  # ruff: ignore[complex-structure, too-many-branches, too-many-return-statements, too-many-statements]
+def _add_hosts_entries(hosts: set[str], error_details: _ErrorDetails | None = None) -> bool:  # ruff: ignore[too-many-return-statements]
     """Append redirect entries for *hosts* to the system hosts file.
 
     Returns True on success.  Skips entries already present.
@@ -2816,7 +2816,7 @@ def _remove_hosts_entries(hosts: set[str], error_details: _ErrorDetails | None =
 # ---------------------------------------------------------------------------
 
 
-def _find_roblox_dirs(*, include_studio: bool = True) -> list[Path]:  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
+def _find_roblox_dirs(*, include_studio: bool = True) -> list[Path]:
     """Locate Roblox resource directories, optionally including Studio.
 
     Methods used (combined):
@@ -2889,7 +2889,7 @@ def _find_roblox_dirs(*, include_studio: bool = True) -> list[Path]:  # ruff: ig
             return True
         return False
 
-    def _scan_for_exe(root: Path, max_depth: int) -> list[Path]:  # ruff: ignore[complex-structure]
+    def _scan_for_exe(root: Path, max_depth: int) -> list[Path]:
         """Return all subdirs up to max_depth layers under root that contain RobloxPlayerBeta.exe or RobloxStudioBeta.exe."""
         results: list[Path] = []
 
@@ -3715,7 +3715,7 @@ def _patch_roblox_ca_with_macos_helper(
     return bool(response.get('ok')), changed, response
 
 
-def _install_ca_into_roblox(  # ruff: ignore[complex-structure, too-many-locals, too-many-statements]
+def _install_ca_into_roblox(
     ca_pem: str, *, include_studio: bool = True
 ) -> tuple[bool, _ErrorDetails]:
     """Ensure each Roblox ssl/cacert.pem has exactly one current Fleasion CA cert."""
@@ -4173,7 +4173,7 @@ def _selected_linux_client_installation() -> LinuxClientInstallation | None:
         return None
 
 
-def check_and_patch_running_roblox_ca(exe_path: Path) -> bool:  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
+def check_and_patch_running_roblox_ca(exe_path: Path) -> bool:
     """Check if the currently running Roblox instance has our CA in its cacert.pem.
 
     Called when RobloxPlayerBeta.exe is detected launching at runtime.
@@ -4335,7 +4335,7 @@ if TYPE_CHECKING:
     )
 
 
-class ProxyMaster:  # ruff: ignore[too-many-public-methods]
+class ProxyMaster:
     """Manages the Fleasion proxy lifecycle."""
 
     def __init__(
@@ -4443,7 +4443,7 @@ class ProxyMaster:  # ruff: ignore[too-many-public-methods]
     def _use_env_proxy_mode(self) -> bool:
         return str(getattr(self.config_manager, 'proxy_mode', 'hosts') or 'hosts') == 'env'
 
-    def can_live_switch_to_hosts(self) -> bool:  # ruff: ignore[no-self-use]
+    def can_live_switch_to_hosts(self) -> bool:
         """Return whether this process has a safe hosts-mode privilege path."""
         if IS_WINDOWS:
             return _is_admin()
@@ -4583,7 +4583,7 @@ class ProxyMaster:  # ruff: ignore[too-many-public-methods]
                 return False
         return self._hosts_proxy_ready.is_set()
 
-    def _roblox_ca_target(self, exe_path: Path) -> tuple[Path, str] | None:  # ruff: ignore[no-self-use]
+    def _roblox_ca_target(self, exe_path: Path) -> tuple[Path, str] | None:
         ca_cert_path = _current_proxy_ca_dir() / 'ca.crt'
         if not ca_cert_path.exists():
             return None
@@ -4653,7 +4653,7 @@ class ProxyMaster:  # ruff: ignore[too-many-public-methods]
                 unhealthy_samples = 0
             else:
                 unhealthy_samples += 1
-                if unhealthy_samples >= 2:  # ruff: ignore[magic-value-comparison]
+                if unhealthy_samples >= 2:
                     return {
                         'success': False,
                         'healthy': False,
@@ -4713,7 +4713,7 @@ class ProxyMaster:  # ruff: ignore[too-many-public-methods]
             if callable(setter):
                 setter(text)
 
-    def set_env_proxy_intercept_all(self, enabled: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def set_env_proxy_intercept_all(self, enabled: bool) -> None:
         """Toggle whether hosts outside Fleasion's own feature set also get
         decrypted/logged. Deliberately not persisted anywhere - this always
         starts back at False on every launch, regardless of what it was
@@ -4918,7 +4918,7 @@ class ProxyMaster:  # ruff: ignore[too-many-public-methods]
         _pid, started_at = process
         return self._sober_boottime() - started_at >= route_delay
 
-    def _set_linux_sober_clientsettings_passthrough(self, enabled: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _set_linux_sober_clientsettings_passthrough(self, enabled: bool) -> None:
         """Keep Sober's pinned ClientSettings bootstrap outside TLS interception."""
         if self._proxy is None:
             return
@@ -5039,14 +5039,14 @@ class ProxyMaster:  # ruff: ignore[too-many-public-methods]
                 )
         return hosts
 
-    def set_roblox_player_running(self, running: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def set_roblox_player_running(self, running: bool) -> None:
         with self._lock:
             if self._roblox_player_running == running:
                 return
             self._roblox_player_running = running
         self.refresh_username_spoofer_interception()
 
-    def refresh_username_spoofer_interception(self) -> None:  # ruff: ignore[complex-structure, too-many-branches, too-many-return-statements, too-many-statements]
+    def refresh_username_spoofer_interception(self) -> None:  # ruff: ignore[too-many-return-statements]
         """Refresh hosts entries for optional proxy-backed features."""
         desired_hosts = self._desired_intercept_hosts()
         self._log_intercept_configuration('Refresh requested', desired_hosts)
@@ -5353,12 +5353,12 @@ class ProxyMaster:  # ruff: ignore[too-many-public-methods]
         try:
             if not launch_as_standard_user(exe_path):
                 msg = 'launch failed'
-                raise OSError(msg)  # ruff: ignore[raise-within-try]
+                raise OSError(msg)
             log_buffer.log('Certificate', f'Roblox restarted: {exe_path.name}')
         except OSError as exc:
             log_buffer.log('Certificate', f'Failed to restart Roblox: {exc}')
 
-    def refresh_and_restart_roblox(self, exe_path: Path) -> None:  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
+    def refresh_and_restart_roblox(self, exe_path: Path) -> None:
         """Validate launch-time Roblox CA state, repair it, and restart once if needed.
 
         Roblox/Fishstrap can rewrite ssl/cacert.pem after the first process is
@@ -5461,7 +5461,7 @@ class ProxyMaster:  # ruff: ignore[too-many-public-methods]
                     stable_unhealthy_samples = 0
                 else:
                     stable_unhealthy_samples += 1
-                    if stable_unhealthy_samples >= 2:  # ruff: ignore[magic-value-comparison]
+                    if stable_unhealthy_samples >= 2:
                         break
                 last_state = next_state
                 last_sha = next_sha
@@ -5492,7 +5492,7 @@ class ProxyMaster:  # ruff: ignore[too-many-public-methods]
     def _install_proxy_loop_diagnostics(
         self,
         loop: asyncio.AbstractEventLoop,
-        env_proxy_mode: bool,  # ruff: ignore[boolean-type-hint-positional-argument]
+        env_proxy_mode: bool,
     ) -> None:
         """Capture accept failures swallowed by asyncio's Proactor server loop."""
         self._windows_proactor_accept_fault = False
@@ -5576,7 +5576,7 @@ class ProxyMaster:  # ruff: ignore[too-many-public-methods]
             # returns unexpectedly or startup aborts after flags were primed.
             self._cleanup_linux_client_proxy_state()
 
-    async def _run_startup_tls_self_test(  # ruff: ignore[complex-structure]
+    async def _run_startup_tls_self_test(
         self,
         hosts: set[str],
         ca_cert_path: Path,
@@ -5771,7 +5771,7 @@ class ProxyMaster:  # ruff: ignore[too-many-public-methods]
 
         threading.Thread(target=_do_restart, daemon=True, name='fleasion-proxy-mode-switch').start()
 
-    def stop(self) -> None:  # ruff: ignore[complex-structure, too-many-branches]
+    def stop(self) -> None:
         ready_event = getattr(self, '_env_proxy_ready', None)
         if ready_event is not None:
             ready_event.clear()
@@ -5833,7 +5833,7 @@ class ProxyMaster:  # ruff: ignore[too-many-public-methods]
             if self._thread.is_alive():
                 log_buffer.log('Proxy', 'Warning: proxy thread did not stop cleanly')
 
-    async def _run_proxy(self) -> None:  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-return-statements, too-many-statements]
+    async def _run_proxy(self) -> None:  # ruff: ignore[too-many-return-statements]
         self._running = True
         self._loop = asyncio.get_running_loop()
         env_proxy_mode = self._use_env_proxy_mode()
@@ -6252,7 +6252,7 @@ class ProxyMaster:  # ruff: ignore[too-many-public-methods]
                         'bind_error': str(exc),
                         'bind_reason': (
                             'access_denied_or_reserved'
-                            if exc.errno == 10013 or native_error == 10013 or 'access' in err_text  # ruff: ignore[magic-value-comparison]
+                            if exc.errno == 10013 or native_error == 10013 or 'access' in err_text
                             else 'already_in_use'
                         ),
                     },
@@ -6658,7 +6658,7 @@ class ProxyMaster:  # ruff: ignore[too-many-public-methods]
                     _cancel_hosts_cleanup_on_reboot()
                 with contextlib.suppress(OSError):
                     _PROXY_OWNER_PID_FILE.unlink(missing_ok=True)
-            try:  # ruff: ignore[suppressible-exception]
+            try:
                 await self._proxy.stop()
             except Exception:  # ruff: ignore[blind-except, try-except-pass]
                 pass

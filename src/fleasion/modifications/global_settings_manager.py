@@ -53,7 +53,7 @@ class GlobalSettingsManager:
         self._user_roblox_dirs = self._find_all_user_roblox_dirs()
 
     @staticmethod
-    def _find_all_user_roblox_dirs() -> list[Path]:  # ruff: ignore[complex-structure]
+    def _find_all_user_roblox_dirs() -> list[Path]:
         """Find user Roblox data directories."""
         roblox_dirs: list[Path] = []
         if sys.platform == 'darwin':
@@ -111,7 +111,7 @@ class GlobalSettingsManager:
                 pass
 
     @staticmethod
-    def _set_read_only(path: Path, read_only: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _set_read_only(path: Path, read_only: bool) -> None:
         """Set or remove read-only attribute on a file."""
         if path.exists():
             try:
@@ -135,7 +135,7 @@ class GlobalSettingsManager:
         except OSError:
             return False
 
-    def _read_framerate_cap(self, xml_path: Path) -> int | None:  # ruff: ignore[no-self-use]
+    def _read_framerate_cap(self, xml_path: Path) -> int | None:
         """Read the current FramerateCap value from GlobalBasicSettings_13.xml."""
         if not xml_path.exists():
             return None
@@ -169,7 +169,7 @@ class GlobalSettingsManager:
                 return cap
         return None
 
-    def _write_framerate_cap(self, xml_path: Path, framerate: int) -> None:  # ruff: ignore[complex-structure, too-many-branches]
+    def _write_framerate_cap(self, xml_path: Path, framerate: int) -> None:
         """Write the FramerateCap value to GlobalBasicSettings_13.xml."""
         if not xml_path.exists():
             log_buffer.log('GlobalSettings', f'XML file not found: {xml_path}')
@@ -214,7 +214,7 @@ class GlobalSettingsManager:
             log_buffer.log('GlobalSettings', f'Error writing framerate cap: {e}')
             # Try to restore read-only state on error
             if was_read_only:
-                try:  # ruff: ignore[suppressible-exception]
+                try:
                     self._set_read_only(xml_path, True)  # ruff: ignore[boolean-positional-value-in-call]
                 except Exception:  # ruff: ignore[blind-except, try-except-pass]
                     pass
@@ -246,7 +246,7 @@ class GlobalSettingsManager:
 
         log_buffer.log(
             'GlobalSettings',
-            f'Wrote FramerateCap={framerate} to {format_count(self._user_roblox_dirs, "Roblox dir")}',  # ruff: ignore[line-too-long]
+            f'Wrote FramerateCap={framerate} to {format_count(self._user_roblox_dirs, "Roblox dir")}',
         )
 
     def reset_framerate_cap(self) -> None:

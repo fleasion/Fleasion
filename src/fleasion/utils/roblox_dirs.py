@@ -27,7 +27,7 @@ else:
         return value if isinstance(value, list) else None
 
 
-def _normalise_roblox_dir(value: str | Path) -> Path | None:  # ruff: ignore[complex-structure, too-many-branches, too-many-return-statements]
+def _normalise_roblox_dir(value: str | Path) -> Path | None:  # ruff: ignore[too-many-return-statements]
     """Return a valid Roblox install/resource directory, or None."""
     try:
         path = Path(value)

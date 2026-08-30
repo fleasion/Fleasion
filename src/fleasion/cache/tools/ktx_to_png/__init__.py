@@ -1,4 +1,4 @@
-from .ktx_to_png import (  # ruff: ignore[implicit-namespace-package]
+from .ktx_to_png import (
     KTX1_MAGIC,
     KTX2_MAGIC,
     convert,

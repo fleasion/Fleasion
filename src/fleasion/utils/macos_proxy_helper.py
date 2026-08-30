@@ -11,7 +11,7 @@ import secrets
 import shlex
 import shutil
 import socket
-import subprocess  # ruff: ignore[suspicious-subprocess-import]
+import subprocess
 import sys
 import tempfile
 import time
@@ -71,7 +71,7 @@ def _ensure_token() -> str:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     if HELPER_TOKEN_FILE.exists():
         token = HELPER_TOKEN_FILE.read_text(encoding='utf-8').strip()
-        if len(token) >= 32:  # ruff: ignore[magic-value-comparison]
+        if len(token) >= 32:
             with contextlib.suppress(OSError):
                 HELPER_TOKEN_FILE.chmod(0o600)
             return token
@@ -309,7 +309,7 @@ def _stage_installer_payload(source: Path) -> tuple[Path, Path, Path]:
     return staging_dir, staging_helper, staging_plist
 
 
-def install_helper() -> tuple[bool, str]:  # ruff: ignore[complex-structure, too-many-locals, too-many-return-statements]
+def install_helper() -> tuple[bool, str]:  # ruff: ignore[too-many-return-statements]
     """Install/start the root helper with one macOS administrator approval."""
     if sys.platform != 'darwin':
         return False, 'The macOS proxy helper is only available on macOS.'
@@ -479,7 +479,7 @@ exit 0
             next_progress_log += 5.0
         time.sleep(HELPER_READY_POLL_SECONDS)
     detail = (
-        f'The helper was installed but did not become ready within {HELPER_READY_TIMEOUT_SECONDS:.0f} seconds. '  # ruff: ignore[line-too-long]
+        f'The helper was installed but did not become ready within {HELPER_READY_TIMEOUT_SECONDS:.0f} seconds. '
         'Diagnostic logs were created at:\n'
         f'  {HELPER_LOG_PATH}\n'
         f'  {HELPER_STDERR_LOG_PATH}'

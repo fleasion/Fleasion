@@ -168,13 +168,13 @@ CFRAME_ROTATIONS: dict[int, list[int | float]] = {
 }
 
 
-def parse_rbxm(data: bytes) -> dict[int, RbxmInstance]:  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
+def parse_rbxm(data: bytes) -> dict[int, RbxmInstance]:
     """
     Parse RBXM binary data.
 
     Returns a dictionary mapping referents to instances.
     """
-    if len(data) < 32:  # ruff: ignore[magic-value-comparison]
+    if len(data) < 32:
         msg = 'File too small to be valid RBXM'
         raise ValueError(msg)
 
@@ -316,7 +316,7 @@ def _parse_prop_chunk(data: bytes, class_info: ClassInfo, instances: InstanceMap
             instances[ref].properties[prop_name] = values[i]
 
 
-def _parse_prop_values(data: bytes, type_id: int, count: int) -> list[PropertyValue]:  # ruff: ignore[complex-structure, too-many-branches]
+def _parse_prop_values(data: bytes, type_id: int, count: int) -> list[PropertyValue]:
     """Parse property values based on type ID."""
     values: list[PropertyValue] = []
 
@@ -329,20 +329,20 @@ def _parse_prop_values(data: bytes, type_id: int, count: int) -> list[PropertyVa
             string_value, offset = read_string(data, offset)
             values.append(string_value)
 
-    elif type_id == 0x02:  # Bool  # ruff: ignore[magic-value-comparison]
+    elif type_id == 0x02:  # Bool
         for i in range(count):
             if i < len(data):
                 values.append(bool(data[i]))
             else:
                 values.append(False)
 
-    elif type_id == 0x03:  # Int32  # ruff: ignore[magic-value-comparison]
+    elif type_id == 0x03:  # Int32
         values = _property_values(decode_interleaved_i32(data, count))
 
-    elif type_id == 0x04:  # Float32  # ruff: ignore[magic-value-comparison]
+    elif type_id == 0x04:  # Float32
         values = _property_values(decode_interleaved_f32(data, count))
 
-    elif type_id == 0x05:  # Float64  # ruff: ignore[magic-value-comparison]
+    elif type_id == 0x05:  # Float64
         for i in range(count):
             offset = i * 8
             if offset + 8 <= len(data):
@@ -350,7 +350,7 @@ def _parse_prop_values(data: bytes, type_id: int, count: int) -> list[PropertyVa
             else:
                 values.append(0.0)
 
-    elif type_id == 0x10:  # CFrame  # ruff: ignore[magic-value-comparison]
+    elif type_id == 0x10:  # CFrame
         values = _property_values(_parse_cframes(data, count))
 
     else:

@@ -57,7 +57,7 @@ _ROUGHNESS_NORMAL_VARIANCE_SCALE = 1.0
 _ORM_COMPOSITOR_CACHE_VERSION = b'orm-mips-v2-normal-variance'
 
 
-def composite_orm(  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
+def composite_orm(
     baseline: Path | None,
     channels: dict[str, Path | None],
     cache_dir: Path = APP_CACHE_DIR,
@@ -187,7 +187,7 @@ def composite_orm(  # ruff: ignore[complex-structure, too-many-branches, too-man
                 )
                 log_buffer.log(
                     'TexPackTrace',
-                    f'ORM compositor channel {ch_name}: resized source to {width}x{height} file={png_path.name}',  # ruff: ignore[line-too-long]
+                    f'ORM compositor channel {ch_name}: resized source to {width}x{height} file={png_path.name}',
                 )
             rgba[:, :, ch_idx] = r_arr
             applied.append(ch_name)
@@ -235,7 +235,7 @@ def composite_orm(  # ruff: ignore[complex-structure, too-many-branches, too-man
         _write_ktx2(rgba, width, height, out_path, normal_rgba=normal_rgba)
         log_buffer.log(
             'ORM',
-            f'Composited [{", ".join(applied)}] → {out_path.name} ({width}×{height})',  # ruff: ignore[ambiguous-unicode-character-string]
+            f'Composited [{", ".join(applied)}] → {out_path.name} ({width}×{height})',
         )
         return str(out_path)
     except Exception as exc:  # ruff: ignore[blind-except]
@@ -256,7 +256,7 @@ def _decode_bc_ktx2(data: bytes) -> tuple[np.ndarray, int, int]:
     Additional mip levels in the container are ignored here.
     """
 
-    if len(data) < 96:  # ruff: ignore[magic-value-comparison]
+    if len(data) < 96:
         msg = 'KTX2 data too short'
         raise ValueError(msg)
 
@@ -266,7 +266,7 @@ def _decode_bc_ktx2(data: bytes) -> tuple[np.ndarray, int, int]:
     supercompression = struct.unpack_from('<I', data, 44)[0]
 
     if width == 0 or height == 0:
-        msg = f'Invalid KTX2 dimensions {width}×{height}'  # ruff: ignore[ambiguous-unicode-character-string]
+        msg = f'Invalid KTX2 dimensions {width}×{height}'
         raise ValueError(msg)
 
     # Level-index entry 0 is always at offset 80 (fixed KTX2 header size).
@@ -274,7 +274,7 @@ def _decode_bc_ktx2(data: bytes) -> tuple[np.ndarray, int, int]:
     byte_length = struct.unpack_from('<Q', data, 88)[0]
     level_data = data[byte_offset : byte_offset + byte_length]
 
-    if supercompression == 2:  # zstd  # ruff: ignore[magic-value-comparison]
+    if supercompression == 2:  # zstd
         import zstandard  # ruff: ignore[import-outside-top-level]
 
         level_data = zstandard.ZstdDecompressor().decompress(
@@ -395,11 +395,11 @@ def _normal_vectors_from_rgba(normal_rgba: np.ndarray) -> np.ndarray:
     # Native-Windows Roblox BC3 normal maps use DXT5nm-style packing:
     # R≈255, B≈0, G=Y, A=X. Sober ETC2 and user PNG normals use RGB XYZ.
     is_dxt5nm = (
-        float(red.mean()) > 245.0  # ruff: ignore[magic-value-comparison]
-        and float(blue.mean()) < 10.0  # ruff: ignore[magic-value-comparison]
-        and float(red.std()) < 12.0  # ruff: ignore[magic-value-comparison]
-        and float(blue.std()) < 12.0  # ruff: ignore[magic-value-comparison]
-        and float(alpha.std()) > 0.5  # ruff: ignore[magic-value-comparison]
+        float(red.mean()) > 245.0
+        and float(blue.mean()) < 10.0
+        and float(red.std()) < 12.0
+        and float(blue.std()) < 12.0
+        and float(alpha.std()) > 0.5
     )
     if is_dxt5nm:
         x = alpha / 127.5 - 1.0
@@ -450,7 +450,7 @@ def _downsample_linear_rgba(rgba: np.ndarray, width: int, height: int) -> np.nda
     return output
 
 
-def generate_orm_mip_chain(  # ruff: ignore[too-many-locals]
+def generate_orm_mip_chain(
     rgba: np.ndarray,
     normal_rgba: np.ndarray | None = None,
     *,
@@ -465,7 +465,7 @@ def generate_orm_mip_chain(  # ruff: ignore[too-many-locals]
     renormalized, matching Fleasion's standalone Normal mip path.
     """
 
-    if rgba.ndim != 3 or rgba.shape[2] != 4 or rgba.dtype != np.uint8:  # ruff: ignore[magic-value-comparison]
+    if rgba.ndim != 3 or rgba.shape[2] != 4 or rgba.dtype != np.uint8:
         msg = 'ORM base must be an HxWx4 uint8 array'
         raise ValueError(msg)
     height, width, _ = rgba.shape

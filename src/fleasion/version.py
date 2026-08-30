@@ -75,7 +75,7 @@ def build_artifact_version(
 def macos_bundle_version(app_version: str) -> str:
     """Return an Apple-compatible three-component numeric bundle version."""
     release = Version(app_version).release
-    if len(release) > 3:  # ruff: ignore[magic-value-comparison]
+    if len(release) > 3:
         msg = 'macOS bundle versions support at most three release components.'
         raise ValueError(msg)
     components = (*release, *(0 for _ in range(3 - len(release))))
@@ -125,7 +125,7 @@ def _cli(arguments: Sequence[str] | None = None) -> int:
         resolved_version = build_artifact_version(options.artifact_version)
     except (InvalidVersion, ValueError) as exc:
         parser.error(str(exc))
-    print(resolved_version)  # ruff: ignore[print]
+    print(resolved_version)
     return 0
 
 

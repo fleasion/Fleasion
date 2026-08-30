@@ -202,12 +202,12 @@ class OffscreenOpenGLWidget(QWidget):
             except Exception:  # ruff: ignore[blind-except, try-except-pass]
                 pass
             finally:
-                try:  # ruff: ignore[suppressible-exception]
+                try:
                     context.doneCurrent()
                 except Exception:  # ruff: ignore[blind-except, try-except-pass]
                     pass
         if surface is not None:
-            try:  # ruff: ignore[suppressible-exception]
+            try:
                 surface.destroy()
             except Exception:  # ruff: ignore[blind-except, try-except-pass]
                 pass

@@ -274,7 +274,7 @@ class RbxmSerializer:
         return bytes(buf)
 
     @staticmethod
-    def _default_value(fmt: PropertyFormat) -> Any:  # ruff: ignore[any-type, complex-structure, too-many-branches, too-many-return-statements]
+    def _default_value(fmt: PropertyFormat) -> Any:  # ruff: ignore[too-many-return-statements]
         match fmt:
             case PropertyFormat.STRING:
                 return b''
@@ -353,7 +353,7 @@ class RbxmSerializer:
             case _:
                 return None
 
-    def _encode_prop_values(self, fmt: PropertyFormat, values: list[Any]) -> bytes | None:  # ruff: ignore[complex-structure, too-many-branches, too-many-return-statements]
+    def _encode_prop_values(self, fmt: PropertyFormat, values: list[Any]) -> bytes | None:  # ruff: ignore[too-many-return-statements]
         """Encode a list of property values in the binary RBXM format."""
         match fmt:
             case PropertyFormat.STRING:

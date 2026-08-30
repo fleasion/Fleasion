@@ -20,7 +20,7 @@ class ProxyGate(QWidget):
         self,
         content: QWidget,
         message: str | None = None,
-        compact: bool = False,  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
+        compact: bool = False,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -76,7 +76,7 @@ class ProxyGate(QWidget):
             self._overlay.raise_()
         return super().event(event)
 
-    def set_proxy_enabled(self, enabled: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def set_proxy_enabled(self, enabled: bool) -> None:
         effective_enabled = enabled or self._dismissed_for_session
         self._content.setEnabled(effective_enabled)
         self._overlay.setVisible(not effective_enabled)

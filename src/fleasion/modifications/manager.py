@@ -254,7 +254,7 @@ def _instance_attr(obj: object, name: str, default: object = None) -> object:
 # ---------------------------------------------------------------------------
 
 
-def _find_roblox_dirs() -> list[Path]:  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
+def _find_roblox_dirs() -> list[Path]:
     """Locate Roblox resource directories that can receive file modifications."""
     if sys.platform == 'darwin':
         from fleasion.utils.platform_macos import (  # ruff: ignore[import-outside-top-level]
@@ -331,7 +331,7 @@ def _find_roblox_dirs() -> list[Path]:  # ruff: ignore[complex-structure, too-ma
             return None
         return Path(exe_path)
 
-    def _scan_for_exe(root: Path, max_depth: int) -> list[Path]:  # ruff: ignore[complex-structure]
+    def _scan_for_exe(root: Path, max_depth: int) -> list[Path]:
         results: list[Path] = []
 
         def _has_player(path: Path) -> bool:
@@ -535,7 +535,7 @@ class PendingModificationsQueue:
 # ---------------------------------------------------------------------------
 
 
-class ModificationManager(QObject):  # ruff: ignore[too-many-public-methods]
+class ModificationManager(QObject):
     """Core engine for modification entries: eager-write, stash, restore."""
 
     entry_status_changed = Signal(str, str, str)  # (entry_id, status, error_msg)
@@ -647,7 +647,7 @@ class ModificationManager(QObject):  # ruff: ignore[too-many-public-methods]
             denied_dirs.clear()
         return paths
 
-    def _active_managed_resource_files(  # ruff: ignore[complex-structure]
+    def _active_managed_resource_files(
         self,
         extra_paths: Iterable[Path] = (),
         *,
@@ -834,7 +834,7 @@ class ModificationManager(QObject):  # ruff: ignore[too-many-public-methods]
         with lock:
             self._clear_managed_file_read_only_locked(extra_paths, clear_untracked=clear_untracked)
 
-    def set_read_only_lock_enabled(self, enabled: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def set_read_only_lock_enabled(self, enabled: bool) -> None:
         """Apply or remove the optional persistent modification-file guard."""
         enabled = bool(enabled)
         lock = cast('threading.Lock | None', _instance_attr(self, '_fs_lock'))
@@ -852,7 +852,7 @@ class ModificationManager(QObject):  # ruff: ignore[too-many-public-methods]
             else:
                 self._clear_managed_file_read_only_locked()
 
-    def _clear_managed_file_read_only_locked(  # ruff: ignore[complex-structure]
+    def _clear_managed_file_read_only_locked(
         self,
         extra_paths: Iterable[Path] = (),
         *,
@@ -922,7 +922,7 @@ class ModificationManager(QObject):  # ruff: ignore[too-many-public-methods]
     # Persistence
     # ------------------------------------------------------------------
 
-    def _load_json(self) -> _ModificationData:  # ruff: ignore[no-self-use]
+    def _load_json(self) -> _ModificationData:
         if MODIFICATIONS_JSON.exists():
             try:  # ruff: ignore[too-many-statements-in-try-clause]
                 with MODIFICATIONS_JSON.open('r', encoding='utf-8') as fp:
@@ -1138,7 +1138,7 @@ class ModificationManager(QObject):  # ruff: ignore[too-many-public-methods]
             data = self._resolve_source(entry)
             if data is None:
                 msg = 'Could not resolve source data'
-                raise ValueError(msg)  # ruff: ignore[raise-within-try]
+                raise ValueError(msg)
 
             target = entry.get('target_path', '')
 
@@ -1146,7 +1146,7 @@ class ModificationManager(QObject):  # ruff: ignore[too-many-public-methods]
             if target.lower().endswith(('customfont.ttf',)) or entry.get('_is_font'):
                 if not validate_font_bytes(data):
                     msg = 'Not a valid font file (invalid header)'
-                    raise ValueError(msg)  # ruff: ignore[raise-within-try]
+                    raise ValueError(msg)
                 with self._fs_lock:
                     self._unlock_managed_files_locked()
                     try:
@@ -1246,7 +1246,7 @@ class ModificationManager(QObject):  # ruff: ignore[too-many-public-methods]
 
         return None
 
-    def _fetch_cdn_url(self, url: str) -> bytes:  # ruff: ignore[no-self-use]
+    def _fetch_cdn_url(self, url: str) -> bytes:
         """Download a CDN URL, caching to ModCache."""
         import hashlib  # ruff: ignore[import-outside-top-level]
         from urllib.error import URLError  # ruff: ignore[import-outside-top-level]
@@ -1296,7 +1296,7 @@ class ModificationManager(QObject):  # ruff: ignore[too-many-public-methods]
         )
         data, status = fetch_asset(str(asset_id), extra_headers=extra_hdrs or None)
         if data is None:
-            if status == 403:  # ruff: ignore[magic-value-comparison]
+            if status == 403:
                 msg = 'Asset not found or private. Add .ROBLOSECURITY cookie.'
                 raise PermissionError(msg)
             msg = f'Asset download failed (HTTP {status})'
@@ -1586,7 +1586,7 @@ class ModificationManager(QObject):  # ruff: ignore[too-many-public-methods]
                     pass
                 finally:
                     self._protect_managed_files_locked()
-            try:  # ruff: ignore[suppressible-exception]
+            try:
                 self.global_settings_manager.restore()
             except Exception:  # ruff: ignore[blind-except, try-except-pass]
                 pass

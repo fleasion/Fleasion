@@ -1,4 +1,4 @@
-from __future__ import annotations  # ruff: ignore[implicit-namespace-package]
+from __future__ import annotations
 
 import math
 import os
@@ -128,7 +128,7 @@ class _Plotter(Protocol):
 
     def add_axes(self) -> object: ...
 
-    def add_mesh(  # ruff: ignore[too-many-arguments]
+    def add_mesh(
         self,
         mesh: _Mesh,
         *,
@@ -343,14 +343,14 @@ def rot3_from_quat(q: _Quaternion) -> _Mat3:
     ]
 
 
-def quat_slerp(q0: _Quaternion, q1: _Quaternion, t: float) -> _Quaternion:  # ruff: ignore[too-many-locals]
+def quat_slerp(q0: _Quaternion, q1: _Quaternion, t: float) -> _Quaternion:
     w0, x0, y0, z0 = q0
     w1, x1, y1, z1 = q1
     dot = w0 * w1 + x0 * x1 + y0 * y1 + z0 * z1
     if dot < 0.0:
         dot = -dot
         w1, x1, y1, z1 = -w1, -x1, -y1, -z1
-    if dot > 0.9995:  # ruff: ignore[magic-value-comparison]
+    if dot > 0.9995:
         w = w0 + (w1 - w0) * t
         x = x0 + (x1 - x0) * t
         y = y0 + (y1 - y0) * t
@@ -409,7 +409,7 @@ class Keyframe:
 # Parse rig
 
 
-def load_rig(rig_path: str) -> tuple[dict[str, Part], list[Motor6D]]:  # ruff: ignore[too-many-locals]
+def load_rig(rig_path: str) -> tuple[dict[str, Part], list[Motor6D]]:
     tree = safe_et.parse(rig_path)
     root = cast('ET.Element', tree.getroot())
 
@@ -586,7 +586,7 @@ def load_obj_mesh(
 
 
 class AnimPreviewWidget(QWidget):
-    def __init__(  # ruff: ignore[too-many-locals, too-many-statements]
+    def __init__(
         self,
         rig_path: str,
         anim_path: str,
@@ -693,7 +693,7 @@ class AnimPreviewWidget(QWidget):
         self.timer.timeout.connect(self.tick)
         self.timer.start(16)
 
-    def tick(self) -> None:  # ruff: ignore[complex-structure]
+    def tick(self) -> None:
         self.time += 0.016
         if self.time > self.duration:
             self.time = 0.0
@@ -746,11 +746,11 @@ class AnimPreviewWidget(QWidget):
 
     @override
     def closeEvent(self, event: QCloseEvent) -> None:
-        try:  # ruff: ignore[suppressible-exception]
+        try:
             self.timer.stop()
         except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass
-        try:  # ruff: ignore[suppressible-exception]
+        try:
             self.plotter.close()
         except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass
@@ -758,8 +758,8 @@ class AnimPreviewWidget(QWidget):
 
 
 if __name__ == '__main__':
-    if len(sys.argv) < 3:  # ruff: ignore[magic-value-comparison]
-        print('Usage: python animpreview.py <RIG.rbxmx> <ANIM.rbxmx>')  # ruff: ignore[print]
+    if len(sys.argv) < 3:
+        print('Usage: python animpreview.py <RIG.rbxmx> <ANIM.rbxmx>')
         sys.exit(2)
 
     app = QApplication(sys.argv)

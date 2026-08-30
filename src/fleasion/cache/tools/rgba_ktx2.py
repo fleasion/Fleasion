@@ -122,7 +122,7 @@ def write_rgba8_ktx2(
     write_rgba8_ktx2_levels(levels, width, height, out_path)
 
 
-def write_rgba8_ktx2_levels(  # ruff: ignore[too-many-locals]
+def write_rgba8_ktx2_levels(
     levels: list[bytes] | tuple[bytes, ...],
     width: int,
     height: int,
@@ -213,7 +213,7 @@ def write_rgba8_ktx2_levels(  # ruff: ignore[too-many-locals]
     out_path.write_bytes(header + dfd + kvd + metadata_padding + b''.join(physical_parts))
 
 
-def read_rgba8_ktx2_levels(data: bytes) -> tuple[list[bytes], int, int] | None:  # ruff: ignore[too-many-locals]
+def read_rgba8_ktx2_levels(data: bytes) -> tuple[list[bytes], int, int] | None:
     """Return ``(levels, width, height)`` for uncompressed RGBA8 KTX2 data."""
 
     if len(data) < _KTX2_HEADER_SIZE + 24 or data[:12] != KTX2_MAGIC:

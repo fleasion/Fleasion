@@ -68,7 +68,7 @@ class BaseUpstreamConnector:
         host: str,
         endpoints: Sequence[UpstreamEndpoint],
         ssl_ctx: ssl.SSLContext,
-        timeout: float,  # ruff: ignore[async-function-with-timeout]
+        timeout: float,
     ) -> UpstreamConnectResult:
         raise NotImplementedError
 
@@ -111,12 +111,12 @@ def normalize_endpoints(
 
 
 class DirectIpConnector(BaseUpstreamConnector):
-    async def connect(  # ruff: ignore[no-self-use]
+    async def connect(
         self,
         host: str,
         endpoints: Sequence[UpstreamEndpoint],
         ssl_ctx: ssl.SSLContext,
-        timeout: float,  # ruff: ignore[async-function-with-timeout]
+        timeout: float,
     ) -> UpstreamConnectResult:
         failures: list[str] = []
         targets = list(endpoints) or [UpstreamEndpoint(host=host)]
@@ -160,13 +160,13 @@ def _recv_until_header_end(sock: socket.socket) -> bytes:
             msg = 'proxy closed during CONNECT'
             raise OSError(msg)
         buf += chunk
-        if len(buf) > 65536:  # ruff: ignore[magic-value-comparison]
+        if len(buf) > 65536:
             msg = 'proxy CONNECT response too large'
             raise OSError(msg)
     return bytes(buf)
 
 
-def _blocking_http_connect_socket(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
+def _blocking_http_connect_socket(  # ruff: ignore[too-many-positional-arguments]
     proxy_host: str,
     proxy_port: int,
     target_host: str,
@@ -193,7 +193,7 @@ def _blocking_http_connect_socket(  # ruff: ignore[too-many-arguments, too-many-
         status_line = response.split(b'\r\n', 1)[0]
         if b' 200 ' not in status_line and not status_line.startswith(b'HTTP/1.1 200'):
             msg = f'proxy CONNECT failed: {status_line!r}'
-            raise OSError(msg)  # ruff: ignore[raise-within-try]
+            raise OSError(msg)
 
         sock.setblocking(False)  # ruff: ignore[boolean-positional-value-in-call]
         return sock  # ruff: ignore[try-consider-else]
@@ -214,7 +214,7 @@ class HttpConnectConnector(BaseUpstreamConnector):
         host: str,
         endpoints: Sequence[UpstreamEndpoint],
         ssl_ctx: ssl.SSLContext,
-        timeout: float,  # ruff: ignore[async-function-with-timeout]
+        timeout: float,
     ) -> UpstreamConnectResult:
         loop = asyncio.get_running_loop()
         target_port = _target_port(endpoints)
@@ -272,7 +272,7 @@ def _recv_exact(sock: socket.socket, length: int) -> bytes:
     return bytes(data)
 
 
-def _blocking_socks5_connect_socket(  # ruff: ignore[complex-structure, too-many-arguments, too-many-branches, too-many-positional-arguments]
+def _blocking_socks5_connect_socket(  # ruff: ignore[too-many-positional-arguments]
     proxy_host: str,
     proxy_port: int,
     target_host: str,
@@ -288,15 +288,15 @@ def _blocking_socks5_connect_socket(  # ruff: ignore[complex-structure, too-many
             methods.append(0x02)
         sock.sendall(bytes([0x05, len(methods), *methods]))
         resp = _recv_exact(sock, 2)
-        if resp[0] != 0x05:  # ruff: ignore[magic-value-comparison]
+        if resp[0] != 0x05:
             msg = f'SOCKS5 bad greeting response: {resp!r}'
-            raise OSError(msg)  # ruff: ignore[raise-within-try]
-        if resp[1] == 0x02:  # ruff: ignore[magic-value-comparison]
+            raise OSError(msg)
+        if resp[1] == 0x02:
             user_bytes = username.encode('utf-8', errors='replace') if username else b''
             pass_bytes = (password or '').encode('utf-8', errors='replace')
-            if len(user_bytes) > 255 or len(pass_bytes) > 255:  # ruff: ignore[magic-value-comparison]
+            if len(user_bytes) > 255 or len(pass_bytes) > 255:
                 msg = 'SOCKS5 username/password too long'
-                raise OSError(msg)  # ruff: ignore[raise-within-try]
+                raise OSError(msg)
             sock.sendall(
                 b'\x01'
                 + bytes([len(user_bytes)])
@@ -307,15 +307,15 @@ def _blocking_socks5_connect_socket(  # ruff: ignore[complex-structure, too-many
             auth = _recv_exact(sock, 2)
             if auth != b'\x01\x00':
                 msg = f'SOCKS5 username/password rejected: {auth!r}'
-                raise OSError(msg)  # ruff: ignore[raise-within-try]
+                raise OSError(msg)
         elif resp[1] != 0x00:
             msg = f'SOCKS5 no-auth rejected: {resp!r}'
-            raise OSError(msg)  # ruff: ignore[raise-within-try]
+            raise OSError(msg)
 
         host_bytes = target_host.encode('idna')
-        if len(host_bytes) > 255:  # ruff: ignore[magic-value-comparison]
+        if len(host_bytes) > 255:
             msg = 'SOCKS5 target host too long'
-            raise OSError(msg)  # ruff: ignore[raise-within-try]
+            raise OSError(msg)
         req = (
             b'\x05\x01\x00'
             b'\x03' + bytes([len(host_bytes)]) + host_bytes + target_port.to_bytes(2, 'big')
@@ -323,21 +323,21 @@ def _blocking_socks5_connect_socket(  # ruff: ignore[complex-structure, too-many
         sock.sendall(req)
 
         resp = _recv_exact(sock, 4)
-        if resp[0] != 0x05 or resp[1] != 0:  # ruff: ignore[magic-value-comparison]
+        if resp[0] != 0x05 or resp[1] != 0:
             msg = f'SOCKS5 connect failed: {resp!r}'
-            raise OSError(msg)  # ruff: ignore[raise-within-try]
+            raise OSError(msg)
 
         atyp = resp[3]
         if atyp == 1:
             _recv_exact(sock, 4)
-        elif atyp == 3:  # ruff: ignore[magic-value-comparison]
+        elif atyp == 3:
             n = _recv_exact(sock, 1)[0]
             _recv_exact(sock, n)
-        elif atyp == 4:  # ruff: ignore[magic-value-comparison]
+        elif atyp == 4:
             _recv_exact(sock, 16)
         else:
             msg = f'SOCKS5 unknown address type: {atyp}'
-            raise OSError(msg)  # ruff: ignore[raise-within-try]
+            raise OSError(msg)
         _recv_exact(sock, 2)
 
         sock.setblocking(False)  # ruff: ignore[boolean-positional-value-in-call]
@@ -357,7 +357,7 @@ class Socks5Connector(BaseUpstreamConnector):
         host: str,
         endpoints: Sequence[UpstreamEndpoint],
         ssl_ctx: ssl.SSLContext,
-        timeout: float,  # ruff: ignore[async-function-with-timeout]
+        timeout: float,
     ) -> UpstreamConnectResult:
         loop = asyncio.get_running_loop()
         target_port = _target_port(endpoints)
@@ -413,7 +413,7 @@ class UnavailableConnector(BaseUpstreamConnector):
         host: str,
         endpoints: Sequence[UpstreamEndpoint],  # ruff: ignore[unused-method-argument]
         ssl_ctx: ssl.SSLContext,  # ruff: ignore[unused-method-argument]
-        timeout: float,  # ruff: ignore[async-function-with-timeout, unused-method-argument]
+        timeout: float,  # ruff: ignore[unused-method-argument]
     ) -> UpstreamConnectResult:
         return UpstreamConnectResult(
             reader=None,
@@ -488,13 +488,13 @@ class AutoConnector(BaseUpstreamConnector):
             connectors[UpstreamMode.SOCKS5.value] = self.manual_socks5
         return connectors
 
-    async def _try_connector(  # ruff: ignore[no-self-use, too-many-arguments, too-many-positional-arguments]
+    async def _try_connector(  # ruff: ignore[too-many-positional-arguments]
         self,
         connector: BaseUpstreamConnector,
         host: str,
         endpoints: Sequence[UpstreamEndpoint],
         ssl_ctx: ssl.SSLContext,
-        timeout: float,  # ruff: ignore[async-function-with-timeout]
+        timeout: float,
         failures: list[str],
     ) -> UpstreamConnectResult:
         result = await connector.connect(host, endpoints, ssl_ctx, timeout)
@@ -510,7 +510,7 @@ class AutoConnector(BaseUpstreamConnector):
         host: str,
         endpoints: Sequence[UpstreamEndpoint],
         ssl_ctx: ssl.SSLContext,
-        timeout: float,  # ruff: ignore[async-function-with-timeout]
+        timeout: float,
     ) -> UpstreamConnectResult:
         now = time.monotonic()
         state = self.state_for(host)

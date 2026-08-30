@@ -203,24 +203,24 @@ def _humanize_time(iso_str: str | None) -> str:  # ruff: ignore[too-many-return-
         days = int(hours / 24)
         months = int(days / 30)
         years = int(days / 365)
-        if seconds < 60:  # ruff: ignore[magic-value-comparison]
+        if seconds < 60:
             return tr('subplace.time.just_now')
-        if minutes < 60:  # ruff: ignore[magic-value-comparison]
+        if minutes < 60:
             return tr(
                 'subplace.time.minute_ago' if minutes == 1 else 'subplace.time.minutes_ago',
                 count=minutes,
             )
-        if hours < 24:  # ruff: ignore[magic-value-comparison]
+        if hours < 24:
             return tr(
                 'subplace.time.hour_ago' if hours == 1 else 'subplace.time.hours_ago',
                 count=hours,
             )
-        if days < 30:  # ruff: ignore[magic-value-comparison]
+        if days < 30:
             return tr(
                 'subplace.time.day_ago' if days == 1 else 'subplace.time.days_ago',
                 count=days,
             )
-        if months < 12:  # ruff: ignore[magic-value-comparison]
+        if months < 12:
             return tr(
                 'subplace.time.month_ago' if months == 1 else 'subplace.time.months_ago',
                 count=months,
@@ -243,7 +243,7 @@ class _Invoker(QObject):
         super().__init__(parent)
         self.call.connect(self._run, Qt.ConnectionType.QueuedConnection)
 
-    def _run(self, fn: _MainCallback) -> None:  # ruff: ignore[no-self-use]
+    def _run(self, fn: _MainCallback) -> None:
         try:
             fn()
         except Exception as exc:  # ruff: ignore[blind-except]
@@ -253,7 +253,7 @@ class _Invoker(QObject):
             traceback.print_exc()
 
 
-# GameCardWidget (inline, PySide6)  # ruff: ignore[commented-out-code]
+# GameCardWidget (inline, PySide6)
 
 if TYPE_CHECKING:
     _CARD_H: int = 0
@@ -329,8 +329,8 @@ class _CopyPlaceIdLabel(QLabel):
 class SubplaceGameCard(QFrame):
     """Game card matching the PreJsons visual design, with subplace-joiner buttons."""
 
-    def _apply_style(self, hover: bool = False) -> None:  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
-        dark = QApplication.palette().color(QPalette.ColorRole.Window).lightness() < 128  # ruff: ignore[magic-value-comparison]
+    def _apply_style(self, hover: bool = False) -> None:
+        dark = QApplication.palette().color(QPalette.ColorRole.Window).lightness() < 128
         border = 'rgba(255,255,255,0.22)' if dark else 'rgba(0,0,0,0.18)'
         bg = (
             ('rgba(255,255,255,0.07)' if hover else 'rgba(255,255,255,0.04)')
@@ -367,7 +367,7 @@ class SubplaceGameCard(QFrame):
         self.thumb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.thumb_label.setScaledContents(True)
         self.thumb_label.setStyleSheet(
-            'background: palette(alternate-base); border-radius: 4px; color: palette(placeholder-text); font-size: 8pt;'  # ruff: ignore[line-too-long]
+            'background: palette(alternate-base); border-radius: 4px; color: palette(placeholder-text); font-size: 8pt;'
         )
         layout.addWidget(self.thumb_label)
 
@@ -568,7 +568,7 @@ class JobIdDialog(QDialog):
         self._status_label.setText(tr('ui.gui.subplace_joiner_tab.fetching_servers'))
         threading.Thread(target=self._worker, daemon=True).start()
 
-    def _worker(self) -> None:  # ruff: ignore[complex-structure]
+    def _worker(self) -> None:
         global _servers_rl_until  # ruff: ignore[global-statement]
         RL_WAIT = (  # ruff: ignore[non-lowercase-variable-in-function]
             60  # seconds to wait after a 429
@@ -605,7 +605,7 @@ class JobIdDialog(QDialog):
                     self._status_update.emit(tr('subplace.jobs.retrying'))
 
                 resp = requests.get(url, timeout=15, proxies={})
-                if resp.status_code == 429:  # ruff: ignore[magic-value-comparison]
+                if resp.status_code == 429:
                     with _servers_rl_lock:
                         _servers_rl_until = max(_servers_rl_until, time.time() + RL_WAIT)
                     if attempt == 0:
@@ -797,7 +797,7 @@ class SubplaceJoinerTab(QWidget):
             except Exception:  # ruff: ignore[blind-except]
                 sess.headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
             resp = sess.get('https://users.roblox.com/v1/users/authenticated', timeout=10)
-            if resp.status_code == 200:  # ruff: ignore[magic-value-comparison]
+            if resp.status_code == 200:
                 user_data = cast('dict[str, object]', resp.json())
                 username = cast('str', user_data.get('name', ''))
                 if username:
@@ -827,7 +827,7 @@ class SubplaceJoinerTab(QWidget):
 
     # UI setup
 
-    def _setup_ui(self) -> None:  # ruff: ignore[too-many-statements]
+    def _setup_ui(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
@@ -960,7 +960,7 @@ class SubplaceJoinerTab(QWidget):
         footer_layout.addWidget(clear_cache_btn)
         root.addWidget(footer_widget)
 
-    def _clear_roblox_cache(self) -> None:  # ruff: ignore[no-self-use]
+    def _clear_roblox_cache(self) -> None:
         from .delete_cache import DeleteCacheWindow  # ruff: ignore[import-outside-top-level]
 
         window = DeleteCacheWindow()
@@ -968,7 +968,7 @@ class SubplaceJoinerTab(QWidget):
 
     # Settings persistence
 
-    def _settings_path(self) -> str:  # ruff: ignore[no-self-use]
+    def _settings_path(self) -> str:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         return str(_primary_settings_path())
 
@@ -1015,7 +1015,7 @@ class SubplaceJoinerTab(QWidget):
 
     # Recent / Favorites sidebar
 
-    def _clear_layout_buttons(self, layout: QVBoxLayout) -> None:  # ruff: ignore[no-self-use]
+    def _clear_layout_buttons(self, layout: QVBoxLayout) -> None:
         if not layout:
             return
         while layout.count():
@@ -1048,7 +1048,7 @@ class SubplaceJoinerTab(QWidget):
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    def _resolve_place_name(self, place_id: str, cookie: str = '') -> str | None:  # ruff: ignore[too-many-branches]
+    def _resolve_place_name(self, place_id: str, cookie: str = '') -> str | None:
         cookies = {'.ROBLOSECURITY': cookie} if cookie else None
         errors: list[str] = []
         if cookie:
@@ -1058,7 +1058,7 @@ class SubplaceJoinerTab(QWidget):
                     timeout=10,
                     cookies=cookies,
                 )
-                if r.status_code == 200:  # ruff: ignore[magic-value-comparison]
+                if r.status_code == 200:
                     data = cast('list[_GameInfo]', r.json())
                     name = data[0].get('name') if data else None
                     if name:
@@ -1075,7 +1075,7 @@ class SubplaceJoinerTab(QWidget):
                 f'https://apis.roblox.com/universes/v1/places/{place_id}/universe',
                 timeout=10,
             )
-            if universe.status_code != 200:  # ruff: ignore[magic-value-comparison]
+            if universe.status_code != 200:
                 errors.append(f'universe status {universe.status_code}')
             else:
                 universe_data = cast('_UniverseInfo', universe.json())
@@ -1085,7 +1085,7 @@ class SubplaceJoinerTab(QWidget):
                         f'https://games.roblox.com/v1/games?universeIds={universe_id}',
                         timeout=10,
                     )
-                    if details.status_code == 200:  # ruff: ignore[magic-value-comparison]
+                    if details.status_code == 200:
                         details_data = cast('dict[str, object]', details.json())
                         games_data = cast('list[_GameInfo]', details_data.get('data', []))
                         name = games_data[0].get('name') if games_data else None
@@ -1266,7 +1266,7 @@ class SubplaceJoinerTab(QWidget):
             daemon=True,
         ).start()
 
-    def _search_worker(self, place_id: str, cancel_event: threading.Event) -> None:  # ruff: ignore[complex-structure, too-many-locals, too-many-statements]
+    def _search_worker(self, place_id: str, cancel_event: threading.Event) -> None:
         try:  # ruff: ignore[too-many-nested-blocks, too-many-statements-in-try-clause]
             if cancel_event.is_set():
                 return
@@ -1280,7 +1280,7 @@ class SubplaceJoinerTab(QWidget):
             universe_id = universe_data.get('universeId')
             if not universe_id:
                 msg = 'Invalid Place ID or universe not found'
-                raise Exception(msg)  # ruff: ignore[raise-vanilla-class, raise-within-try]
+                raise Exception(msg)  # ruff: ignore[raise-vanilla-class]
 
             details = self._get(
                 f'https://games.roblox.com/v1/games?universeIds={universe_id}',
@@ -1375,7 +1375,7 @@ class SubplaceJoinerTab(QWidget):
 
             threading.Thread(target=load_timestamps, daemon=True).start()
 
-            def load_thumbnails() -> None:  # ruff: ignore[complex-structure]
+            def load_thumbnails() -> None:
                 BATCH_SIZE = 100  # ruff: ignore[non-lowercase-variable-in-function]
                 pending = [p for p in all_places if p.get('id')]
                 for chunk_start in range(0, len(pending), BATCH_SIZE):
@@ -1448,7 +1448,7 @@ class SubplaceJoinerTab(QWidget):
         except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log('subplace', f'Search failed: {exc}')
 
-    def _fetch_thumb_bytes_batch(self, place_ids: list[int | str]) -> dict[str, bytes]:  # ruff: ignore[complex-structure]
+    def _fetch_thumb_bytes_batch(self, place_ids: list[int | str]) -> dict[str, bytes]:
         """Fetch thumbnail image bytes for a batch of place IDs.
 
         Uses v1/places/gameicons with comma-separated IDs — more reliable than
@@ -1477,7 +1477,7 @@ class SubplaceJoinerTab(QWidget):
                 time.sleep(2**attempt)
             try:  # ruff: ignore[too-many-statements-in-try-clause]
                 resp = self._get(url, timeout=15)
-                if resp.status_code == 429:  # ruff: ignore[magic-value-comparison]
+                if resp.status_code == 429:
                     log_buffer.log(
                         'subplace',
                         f'Thumbnail batch 429 rate-limited (attempt {attempt + 1}), retrying…',
@@ -1524,7 +1524,7 @@ class SubplaceJoinerTab(QWidget):
 
         log_buffer.log(
             'subplace',
-            f'Batch thumbs: {len(uncached)} requested, {len(entries)} returned, {len(result)} resolved',  # ruff: ignore[line-too-long]
+            f'Batch thumbs: {len(uncached)} requested, {len(entries)} returned, {len(result)} resolved',
         )
         return result
 
@@ -1535,9 +1535,9 @@ class SubplaceJoinerTab(QWidget):
         added_any = False
 
         for item in items:
-            if len(item) == 5:  # ruff: ignore[magic-value-comparison]
+            if len(item) == 5:
                 name, created, updated, pid, root = item
-            elif len(item) == 4:  # ruff: ignore[magic-value-comparison]
+            elif len(item) == 4:
                 name, created, updated, pid = item
                 root = None
             else:
@@ -1730,7 +1730,7 @@ class SubplaceJoinerTab(QWidget):
             if is_roblox_running():
                 log_buffer.log(
                     'subplace',
-                    'Account switched + multi-instance on — launching new Roblox instance then joining',  # ruff: ignore[line-too-long]
+                    'Account switched + multi-instance on — launching new Roblox instance then joining',
                 )
                 self._rando_tab.close_singleton_event()
                 self.joining_place = True
@@ -1813,14 +1813,14 @@ class SubplaceJoinerTab(QWidget):
                 verify=self._request_verify(join_url),
             )
             try:
-                return r.status_code == 200 and r.json().get('status') == 2  # ruff: ignore[magic-value-comparison]
+                return r.status_code == 200 and r.json().get('status') == 2
             except Exception:  # ruff: ignore[blind-except]
                 return False
         except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log('subplace', f'Pre-seed join error: {exc}')
             return False
 
-    def _new_session(self, cookie: str | None) -> requests.Session:  # ruff: ignore[no-self-use]
+    def _new_session(self, cookie: str | None) -> requests.Session:
         sess = requests.Session()
         sess.trust_env = False
         sess.proxies = {}
@@ -1933,7 +1933,7 @@ class SubplaceJoinerTab(QWidget):
                 return
             try:
                 data = flow.response.json()
-                if data.get('status') == 2:  # ruff: ignore[magic-value-comparison]
+                if data.get('status') == 2:
                     self.joining_place = False
             except Exception:  # ruff: ignore[blind-except, try-except-pass]
                 pass

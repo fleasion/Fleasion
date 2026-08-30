@@ -11,7 +11,7 @@ import platform
 import secrets
 import shlex
 import signal
-import subprocess  # ruff: ignore[suspicious-subprocess-import]
+import subprocess
 import sys
 import threading
 import time
@@ -331,10 +331,10 @@ class _FirstTimeSetupDialog(QDialog):
         if self._can_accept:
             super().accept()
 
-    def reject(self) -> None:  # ruff: ignore[no-self-use]
+    def reject(self) -> None:
         return
 
-    def closeEvent(self, event: QCloseEvent) -> None:  # ruff: ignore[invalid-function-name, no-self-use]
+    def closeEvent(self, event: QCloseEvent) -> None:  # ruff: ignore[invalid-function-name]
         event.ignore()
 
 
@@ -465,7 +465,7 @@ def _quit_after_modal_closes(
         modal.allow_reject = True
     if isinstance(modal, _ForcedAcknowledgeMessageBox):
         modal.allow_close()
-    try:  # ruff: ignore[suppressible-exception]
+    try:
         modal.reject()
     except Exception:  # ruff: ignore[blind-except, try-except-pass]
         pass
@@ -586,7 +586,7 @@ def _run_privileged_hosts_cleanup(parent: QWidget | None = None) -> bool:
     return False
 
 
-def _show_oversized_hosts_file_dialog(  # ruff: ignore[too-many-statements]
+def _show_oversized_hosts_file_dialog(
     details: ErrorDetails, on_repaired: VoidCallback | None = None
 ) -> bool:
     """Offer a streaming repair for an abnormally large system hosts file."""
@@ -781,7 +781,7 @@ def _show_env_proxy_stale_hosts_dialog() -> bool:
     return True
 
 
-def _should_sync_autostart_on_launch(run_on_boot: bool) -> bool:  # ruff: ignore[boolean-type-hint-positional-argument]
+def _should_sync_autostart_on_launch(run_on_boot: bool) -> bool:
     if not run_on_boot:
         return False
     if sys.platform == 'darwin':
@@ -793,14 +793,14 @@ def _should_sync_autostart_on_launch(run_on_boot: bool) -> bool:  # ruff: ignore
     return False
 
 
-def _refresh_run_on_boot_ui(tray: SystemTray | None, enabled: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+def _refresh_run_on_boot_ui(tray: SystemTray | None, enabled: bool) -> None:
     if tray is not None and hasattr(tray, 'run_on_boot_action'):
         tray.run_on_boot_action.setChecked(enabled)
     if tray is not None and hasattr(tray, '_refresh_settings_tab'):
         _call_tray_refresh_settings(tray)
 
 
-def _refresh_desktop_integration_ui(tray: SystemTray | None, enabled: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+def _refresh_desktop_integration_ui(tray: SystemTray | None, enabled: bool) -> None:
     if tray is not None and hasattr(tray, 'desktop_integration_action'):
         tray.desktop_integration_action.setChecked(enabled)
     if tray is not None and hasattr(tray, '_refresh_settings_tab'):
@@ -946,7 +946,7 @@ def _show_roblox_permission_failure(
         clear_repair_result(CONFIG_DIR)
         if not write_pending_repair(paths, CONFIG_DIR):
             msg_0 = 'No valid Roblox installation folders were selected'
-            raise OSError(msg_0)  # ruff: ignore[raise-within-try]
+            raise OSError(msg_0)
         relaunched = _relaunch_as_admin(
             extra_args='--repair-roblox-permissions',
             parent_hwnd=_window_handle(parent),
@@ -1174,7 +1174,7 @@ def _prompt_first_time_language(config_manager: ConfigManager) -> None:
     set_language(config_manager.language)
 
 
-def _prompt_first_time_startup_options(  # ruff: ignore[too-many-locals, too-many-statements]
+def _prompt_first_time_startup_options(
     config_manager: ConfigManager, tray: SystemTray | None = None
 ) -> None:
     """Ask first-time users which startup integrations Fleasion should create."""
@@ -1286,7 +1286,7 @@ def _append_windows_requesting_user_args(existing_args: list[str]) -> bool:
     return True
 
 
-def _relaunch_as_admin(  # ruff: ignore[complex-structure, too-many-arguments, too-many-branches, too-many-locals, too-many-return-statements, too-many-statements]
+def _relaunch_as_admin(  # ruff: ignore[too-many-return-statements]
     extra_args: str = '',
     parent_hwnd: int | None = None,
     *,
@@ -1496,9 +1496,7 @@ def _relaunch_as_admin(  # ruff: ignore[complex-structure, too-many-arguments, t
         else:
             err = ctypes.get_last_error()
             error_text = ctypes.FormatError(err)
-        if (
-            err == 1223  # ruff: ignore[magic-value-comparison]
-        ):  # ERROR_CANCELLED: user declined UAC
+        if err == 1223:  # ERROR_CANCELLED: user declined UAC
             log_buffer.log('UAC', 'Administrator relaunch was cancelled by the user')
         else:
             log_buffer.log(
@@ -1639,7 +1637,7 @@ def _repair_autostart_once(requesting_user_sid: str | None = None, *, enabled: b
     return 1
 
 
-def _repair_roblox_permissions_once(requesting_user_sid: str | None = None) -> int:  # ruff: ignore[complex-structure]
+def _repair_roblox_permissions_once(requesting_user_sid: str | None = None) -> int:
     """Apply a pending targeted Roblox ACL repair from a one-shot UAC child."""
     if TYPE_CHECKING:
 
@@ -1773,7 +1771,7 @@ def _restart_handoff_path(token: str, phase: str = 'ready') -> Path | None:
     phase = str(phase or '')
     if phase not in _RESTART_HANDOFF_PHASES:
         return None
-    if len(token) != 32 or any(character not in '0123456789abcdef' for character in token):  # ruff: ignore[magic-value-comparison]
+    if len(token) != 32 or any(character not in '0123456789abcdef' for character in token):
         return None
     return CONFIG_DIR / f'.restart-{phase}-{token}'
 
@@ -2030,7 +2028,7 @@ def _resume_single_instance_after_handoff_failure() -> bool:
     return True
 
 
-def _abort_restart_child_and_wait(  # ruff: ignore[too-many-arguments]
+def _abort_restart_child_and_wait(
     token: str,
     parent_pid: int,
     application_pid: int | None,
@@ -2190,7 +2188,7 @@ def _strip_restart_handoff_args(args: list[str]) -> list[str]:
     return cleaned
 
 
-def restart_fleasion_normally(  # ruff: ignore[complex-structure, too-many-branches, too-many-statements]
+def restart_fleasion_normally(
     *,
     preserve_env_proxy_player: bool = False,
     verify_startup: bool = False,
@@ -2598,7 +2596,7 @@ def _show_linux_hosts_read_only_dialog(details: ErrorDetails) -> None:
     msg.exec()
 
 
-def _show_macos_ca_patch_failed_dialog(details: ErrorDetails) -> str | None:  # ruff: ignore[complex-structure, too-many-branches]
+def _show_macos_ca_patch_failed_dialog(details: ErrorDetails) -> str | None:
     """Show a user-facing popup when Roblox cacert.pem cannot be verified."""
     top = QApplication.topLevelWidgets()
     parent = next((w for w in top if w.isVisible()), None)
@@ -2849,7 +2847,7 @@ def _show_macos_relay_failed_dialog(details: ErrorDetails) -> str:
         return 'close'
 
 
-def _choose_macos_auth_source_on_launch(  # ruff: ignore[complex-structure, too-many-locals, too-many-statements]
+def _choose_macos_auth_source_on_launch(
     config_manager: ConfigManager, tray: SystemTray | None = None, *, force: bool = False
 ) -> str:
     """Ask macOS users which browser should be queried for Roblox auth."""
@@ -2866,14 +2864,14 @@ def _choose_macos_auth_source_on_launch(  # ruff: ignore[complex-structure, too-
                 return 'already-configured'
             log_buffer.log(
                 'Auth',
-                f'Configured Roblox login source {config_manager.macos_auth_source} did not produce a valid token; reopening browser picker',  # ruff: ignore[line-too-long]
+                f'Configured Roblox login source {config_manager.macos_auth_source} did not produce a valid token; reopening browser picker',
             )
             config_manager.macos_auth_source = ''
             notify_auth_source_changed()
         except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log(
                 'Auth',
-                f'Unexpected error while validating configured macOS auth source: {type(exc).__name__}: {exc}',  # ruff: ignore[line-too-long]
+                f'Unexpected error while validating configured macOS auth source: {type(exc).__name__}: {exc}',
             )
             config_manager.macos_auth_source = ''
 
@@ -3110,7 +3108,7 @@ def _windows_auth_profile_matches_username(details: ErrorDetails) -> bool:
     return True
 
 
-def _show_auth_cookie_unavailable_dialog(  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
+def _show_auth_cookie_unavailable_dialog(
     details: ErrorDetails, tray: SystemTray | None = None
 ) -> None:
     """Show a user-facing popup when no readable Roblox auth cookie can be found."""
@@ -3289,7 +3287,7 @@ def _show_auth_cookie_unavailable_dialog(  # ruff: ignore[complex-structure, too
             webbrowser.open('https://www.roblox.com/login')
 
 
-def _show_windows_upstream_firewall_dialog(details: ErrorDetails) -> None:  # ruff: ignore[complex-structure, too-many-statements]
+def _show_windows_upstream_firewall_dialog(details: ErrorDetails) -> None:
     """Explain a blocked upstream connection and offer a targeted UAC repair."""
     if sys.platform != 'win32':
         return
@@ -3415,7 +3413,7 @@ class _ProxyErrorInvoker(QObject):
     retry_proxy = Signal()
 
     @Slot(str, dict)
-    def handle_proxy_error(self, code: str, details: dict[str, object]) -> None:  # ruff: ignore[complex-structure, too-many-branches]
+    def handle_proxy_error(self, code: str, details: dict[str, object]) -> None:
         if code == 'port_bind_failed':
             _show_proxy_bind_error_dialog(details)
         elif code == 'hosts_write_exhausted':
@@ -3436,7 +3434,7 @@ class _ProxyErrorInvoker(QObject):
                 if ok:
                     log_buffer.log(
                         'ProxyHelper',
-                        'macOS proxy helper installed for protected cacert.pem; retrying proxy startup',  # ruff: ignore[line-too-long]
+                        'macOS proxy helper installed for protected cacert.pem; retrying proxy startup',
                     )
                     self.retry_proxy.emit()
                 else:
@@ -3472,7 +3470,7 @@ class _ProxyErrorInvoker(QObject):
                 if ok:
                     log_buffer.log(
                         'ProxyHelper',
-                        'macOS proxy helper reinstalled after relay failure; retrying proxy startup',  # ruff: ignore[line-too-long]
+                        'macOS proxy helper reinstalled after relay failure; retrying proxy startup',
                     )
                     self.retry_proxy.emit()
                 else:
@@ -3636,7 +3634,7 @@ class RobloxExitMonitor(QObject):
                 )
         self._studio_detected.connect(self._on_studio_detected)
 
-    def is_player_running(self) -> bool:  # ruff: ignore[no-self-use]
+    def is_player_running(self) -> bool:
         """Return whether Roblox Player is currently running."""
         return is_roblox_running()
 
@@ -3675,7 +3673,7 @@ class RobloxExitMonitor(QObject):
             self._macos_plain_launches.pop(int(launch.pid), None)
         self.env_lifecycle.handle_intercepted_player_launch(Path(launch.executable_path), target)
 
-    def _schedule_macos_plain_launch_fallback(self, exe_path: Path) -> None:  # ruff: ignore[complex-structure]
+    def _schedule_macos_plain_launch_fallback(self, exe_path: Path) -> None:
         """Keep ordinary Dock/Finder launches on the existing Env Proxy path."""
         if self._macos_uri_interceptor is None:
             return
@@ -3731,7 +3729,7 @@ class RobloxExitMonitor(QObject):
         finally:
             self._status_lock.release()
 
-    def _check_roblox_status_locked(self) -> None:  # ruff: ignore[complex-structure, too-many-branches, too-many-statements]
+    def _check_roblox_status_locked(self) -> None:
         """Check if Roblox has exited and trigger cache deletion if needed."""
         is_running = is_roblox_running()
         player_status_observed_at = time.monotonic()
@@ -3824,7 +3822,7 @@ class RobloxExitMonitor(QObject):
                         elif is_env_proxy_relaunched_player_running():
                             log_buffer.log(
                                 'Launcher',
-                                'Roblox Env Proxy Player already running; skipping duplicate launch handling',  # ruff: ignore[line-too-long]
+                                'Roblox Env Proxy Player already running; skipping duplicate launch handling',
                             )
                             self._suppress_next_player_exit_cache_delete = False
                         else:
@@ -3857,7 +3855,7 @@ class RobloxExitMonitor(QObject):
                     elif not proxy_features_enabled:
                         log_buffer.log(
                             'Certificate',
-                            'Roblox launch detected: proxy features disabled, skipping proxy CA refresh',  # ruff: ignore[line-too-long]
+                            'Roblox launch detected: proxy features disabled, skipping proxy CA refresh',
                         )
                 else:
                     log_buffer.log(
@@ -3983,7 +3981,7 @@ class RobloxExitMonitor(QObject):
         suppress_btn.clicked.connect(_suppress)
         dialog.exec()
 
-    def _delete_cache_background(self) -> None:  # ruff: ignore[no-self-use]
+    def _delete_cache_background(self) -> None:
         """Delete cache in background thread."""
         messages = delete_cache()
         for msg in messages:
@@ -4030,10 +4028,10 @@ def _looks_like_macos_fleasion_command(  # pyright: ignore[reportUnusedFunction]
     return _looks_like_fleasion_gui_command(command)
 
 
-def _other_fleasion_pids() -> list[int]:  # ruff: ignore[complex-structure, too-many-branches]
+def _other_fleasion_pids() -> list[int]:
     """Return PIDs of other Fleasion GUI processes (excludes current process and its parent)."""
     import os  # ruff: ignore[import-outside-top-level]
-    import subprocess  # ruff: ignore[import-outside-top-level, suspicious-subprocess-import]
+    import subprocess  # ruff: ignore[import-outside-top-level]
 
     current_pid = os.getpid()
     parent_pid = os.getppid()
@@ -4075,7 +4073,7 @@ def _other_fleasion_pids() -> list[int]:  # ruff: ignore[complex-structure, too-
             for line in result.stdout.strip().splitlines():
                 line = line.strip().strip('"')  # ruff: ignore[redefined-loop-name]
                 parts = line.split('","')
-                if len(parts) >= 2:  # ruff: ignore[magic-value-comparison]
+                if len(parts) >= 2:
                     try:
                         pid = int(parts[1])
                         if pid not in safe_pids:
@@ -4290,7 +4288,7 @@ def _start_single_instance_control_server(
 def kill_other_fleasion_instances() -> None:
     """Kill all other Fleasion instances except the current process."""
     import os  # ruff: ignore[import-outside-top-level]
-    import subprocess  # ruff: ignore[import-outside-top-level, suspicious-subprocess-import]
+    import subprocess  # ruff: ignore[import-outside-top-level]
 
     if _request_other_fleasion_instances_exit():
         return
@@ -4363,7 +4361,7 @@ def _check_linux_gui_dependencies() -> bool:
     return False
 
 
-def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
+def main() -> None:
     """Main application entry point."""
     global _single_instance_app, _single_instance_control_server  # ruff: ignore[global-statement, repeated-global]
     global _single_instance_shared_memory, _single_instance_tray  # ruff: ignore[global-statement]
@@ -4436,7 +4434,7 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
     pending_roblox_uri = _roblox_uri_from_argv()
     if args.install_linux_privileged_helper:
         if not sys.platform.startswith('linux'):
-            print(  # ruff: ignore[print]
+            print(
                 'Linux privileged helper installation is only supported on Linux.',
                 file=sys.stderr,
             )
@@ -4456,15 +4454,15 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
 
         result = install_privileged_helper(enable_promptless=args.linux_helper_promptless)
         if not result.get('ok'):
-            print(  # ruff: ignore[print]
+            print(
                 f'Failed to install Linux privileged helper: {result.get("error") or result}',
                 file=sys.stderr,
             )
             sys.exit(1)
-        print(f'Installed Linux privileged helper: {result["helper"]}')  # ruff: ignore[print]
-        print(f'Installed Polkit policy: {result["policy"]}')  # ruff: ignore[print]
+        print(f'Installed Linux privileged helper: {result["helper"]}')
+        print(f'Installed Polkit policy: {result["policy"]}')
         if result.get('promptless_rule'):
-            print(f'Installed promptless Polkit rule: {result["promptless_rule"]}')  # ruff: ignore[print]
+            print(f'Installed promptless Polkit rule: {result["promptless_rule"]}')
         sys.exit(0)
 
     suppress_dashboard = args.no_dashboard
@@ -4945,10 +4943,10 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
         def _relaunch_env_player(
             proxy_url: str,
             _target: str | None,
-            force: bool,  # ruff: ignore[boolean-type-hint-positional-argument]
+            force: bool,
             cancel_event: threading.Event,
             _source_exe_path: Path | None,
-            _player_already_stopped: bool,  # ruff: ignore[boolean-type-hint-positional-argument]
+            _player_already_stopped: bool,
         ) -> bool:
             return relaunch_roblox_with_proxy_env(
                 proxy_url,
@@ -4968,13 +4966,13 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
             proxy_master.rearm_custom_fflag_delivery_for_player_launch()
             return True
 
-        def _relaunch_env_player(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
+        def _relaunch_env_player(  # ruff: ignore[too-many-positional-arguments]
             proxy_url: str,
             target: str | None,
-            force: bool,  # ruff: ignore[boolean-type-hint-positional-argument]
+            force: bool,
             cancel_event: threading.Event,
             source_exe_path: Path | None,
-            player_already_stopped: bool,  # ruff: ignore[boolean-type-hint-positional-argument]
+            player_already_stopped: bool,
         ) -> bool:
             return relaunch_roblox_with_proxy_env(
                 proxy_url,
@@ -4993,10 +4991,10 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
         def _relaunch_env_player(
             _proxy_url: str,
             _target: str | None,
-            _force: bool,  # ruff: ignore[boolean-type-hint-positional-argument]
+            _force: bool,
             _cancel_event: threading.Event,
             _source_exe_path: Path | None,
-            _player_already_stopped: bool,  # ruff: ignore[boolean-type-hint-positional-argument]
+            _player_already_stopped: bool,
         ) -> bool:
             log_buffer.log(
                 'Launcher',
@@ -5124,7 +5122,7 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
         if suppress_dashboard:
             log_buffer.log(
                 'ProxyHelper',
-                'Autostart launch skipped helper installation prompt; open Fleasion normally to install it',  # ruff: ignore[line-too-long]
+                'Autostart launch skipped helper installation prompt; open Fleasion normally to install it',
             )
             return
 
@@ -5298,7 +5296,7 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
     auth_prompt_shown = False
     auth_check_invoker = _AuthCheckInvoker()
 
-    def _handle_auth_check_complete(found: bool, details: dict[str, object]) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _handle_auth_check_complete(found: bool, details: dict[str, object]) -> None:
         nonlocal auth_prompt_shown
         if found or auth_prompt_shown:
             return
@@ -5314,7 +5312,7 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
                 if config_manager.macos_auth_source:
                     log_buffer.log(
                         'Auth',
-                        f'Configured Roblox login source {config_manager.macos_auth_source} did not produce a valid token; reopening browser picker',  # ruff: ignore[line-too-long]
+                        f'Configured Roblox login source {config_manager.macos_auth_source} did not produce a valid token; reopening browser picker',
                     )
                     config_manager.macos_auth_source = ''
                     notify_auth_source_changed()
@@ -5332,7 +5330,7 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-ma
             except Exception as exc:  # ruff: ignore[blind-except]
                 log_buffer.log(
                     'Auth',
-                    f'Unexpected error while retrying macOS auth picker: {type(exc).__name__}: {exc}',  # ruff: ignore[line-too-long]
+                    f'Unexpected error while retrying macOS auth picker: {type(exc).__name__}: {exc}',
                 )
         _show_auth_cookie_unavailable_dialog(details, tray)
 

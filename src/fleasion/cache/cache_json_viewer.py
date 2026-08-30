@@ -60,7 +60,7 @@ class _WordWrapDelegate(QStyledItemDelegate):
         # Use a slightly smaller available width so wrapping happens earlier
         col_w = tree.columnWidth(0) if tree is not None else 0
         # Subtract a larger margin to account for expander/gutter and padding
-        w = col_w - 70 if col_w > 70 else (option.rect.width() - 70)  # ruff: ignore[magic-value-comparison]
+        w = col_w - 70 if col_w > 70 else (option.rect.width() - 70)
         if w <= 0:
             return base
         fm = option.fontMetrics
@@ -92,12 +92,12 @@ class CacheJsonViewer(QWidget):
 
         self._setup_ui()
 
-    def _setup_ui(self) -> None:  # ruff: ignore[too-many-statements]
+    def _setup_ui(self) -> None:
         """Setup the UI."""
         layout = QVBoxLayout()
         layout.setContentsMargins(5, 5, 5, 5)
 
-        # Single toolbar row: search | nav buttons (hidden until search) | expand/collapse | adv | match  # ruff: ignore[line-too-long]
+        # Single toolbar row: search | nav buttons (hidden until search) | expand/collapse | adv | match
         toolbar = QHBoxLayout()
         toolbar.setSpacing(4)
         toolbar.addWidget(QLabel(tr('ui.cache.cache_json_viewer.search')))
@@ -257,7 +257,7 @@ class CacheJsonViewer(QWidget):
             return [key]
 
     def _should_skip_node(self, key: str, value: JsonValue) -> bool:
-        """Check if node should be skipped (null values and boilerplate fields when Advanced is off)."""  # ruff: ignore[line-too-long]
+        """Check if node should be skipped (null values and boilerplate fields when Advanced is off)."""
         # Always skip null values
         if value is None:
             return True
@@ -360,7 +360,7 @@ class CacheJsonViewer(QWidget):
             # Add tooltip for long values (original unstripped value as reference)
             display = f'{key}: {val_str}' if key else val_str
             item = QTreeWidgetItem(parent_item, [display])
-            if isinstance(value, str) and len(value) > 60:  # ruff: ignore[magic-value-comparison]
+            if isinstance(value, str) and len(value) > 60:
                 item.setToolTip(0, value)
             # Mark as a leaf scalar so the word-wrap delegate applies to it
             item.setData(0, _WRAP_ROLE, True)  # ruff: ignore[boolean-positional-value-in-call]
@@ -369,7 +369,7 @@ class CacheJsonViewer(QWidget):
 
         return item
 
-    def _on_item_expanded(self, item: QTreeWidgetItem) -> None:  # ruff: ignore[complex-structure, too-many-branches]
+    def _on_item_expanded(self, item: QTreeWidgetItem) -> None:
         """Called when a tree item is expanded - load children for lazy-loaded arrays/dicts."""
         item_id = id(item)
         updates_enabled = self.tree.updatesEnabled()
@@ -595,7 +595,7 @@ class CacheJsonViewer(QWidget):
             key = item.text(0).split(':')[0].strip().strip('[]')
             walk(item, (key,))
 
-    def _refresh_tree_filtering(self) -> None:  # ruff: ignore[complex-structure]
+    def _refresh_tree_filtering(self) -> None:
         """Update tree visibility based on current filter settings, preserving expansion state."""
         # Store current expansion state
         expansion_state: dict[int, bool] = {}

@@ -218,7 +218,7 @@ def rot3_from_quat(q: Quaternion) -> Rotation3:
     ]
 
 
-def quat_slerp(  # ruff: ignore[too-many-locals]
+def quat_slerp(
     q0: Quaternion,
     q1: Quaternion,
     t: float,
@@ -230,7 +230,7 @@ def quat_slerp(  # ruff: ignore[too-many-locals]
     if dot < 0.0:
         dot = -dot
         w1, x1, y1, z1 = -w1, -x1, -y1, -z1
-    if dot > 0.9995:  # ruff: ignore[magic-value-comparison]
+    if dot > 0.9995:
         w = w0 + (w1 - w0) * t
         x = x0 + (x1 - x0) * t
         y = y0 + (y1 - y0) * t
@@ -368,7 +368,7 @@ def _fill_sparse_pose_tracks(keys: list[Keyframe]) -> list[Keyframe]:
     discarded, sample each pose independently so unrelated facial keyframes do
     not reset body parts to the rig's bind pose.
     """
-    if len(keys) < 2:  # ruff: ignore[magic-value-comparison]
+    if len(keys) < 2:
         return keys
 
     tracks: dict[str, list[tuple[int, np.ndarray]]] = {}
@@ -447,7 +447,7 @@ def parse_cframe(elem: ET.Element) -> tuple[tuple[float, float, float], list[flo
 # Rig and animation loading
 
 
-def load_rig(rig_path: str) -> tuple[dict[str, Part], list[Motor6D]]:  # ruff: ignore[too-many-locals]
+def load_rig(rig_path: str) -> tuple[dict[str, Part], list[Motor6D]]:
     """Load rig from XML file."""
     tree = safe_et.parse(rig_path)
     root = cast('ET.Element', tree.getroot())
@@ -498,7 +498,7 @@ def load_rig(rig_path: str) -> tuple[dict[str, Part], list[Motor6D]]:  # ruff: i
     return parts, motors
 
 
-def load_animation_from_xml(anim_data: bytes) -> list[Keyframe]:  # ruff: ignore[complex-structure]
+def load_animation_from_xml(anim_data: bytes) -> list[Keyframe]:
     """Load animation from XML bytes (RBXMX format)."""
     try:
         text = anim_data.decode('utf-8-sig', errors='replace')
@@ -621,7 +621,7 @@ def _collect_poses(instance: _ParsedInstanceLike, poses: dict[str, np.ndarray]) 
             _collect_poses(child, poses)
 
 
-def load_curve_animation_data(anim_data: bytes) -> list[Keyframe]:  # ruff: ignore[complex-structure, too-many-branches, too-many-statements]
+def load_curve_animation_data(anim_data: bytes) -> list[Keyframe]:
     """Load animation keyframes from a CurveAnimation (binary RBXM or XML)."""
     import base64 as _b64  # ruff: ignore[import-outside-top-level]
     import struct  # ruff: ignore[import-outside-top-level]
@@ -630,7 +630,7 @@ def load_curve_animation_data(anim_data: bytes) -> list[Keyframe]:  # ruff: igno
 
     def _vat(raw_b: bytes) -> CurveSamples:
         """Decode ValuesAndTimes blob → [(time_sec, value), ...]"""
-        if len(raw_b) < 8:  # ruff: ignore[magic-value-comparison]
+        if len(raw_b) < 8:
             return []
         _, n = struct.unpack_from('<II', raw_b)
         if not n:
@@ -710,7 +710,7 @@ def load_curve_animation_data(anim_data: bytes) -> list[Keyframe]:  # ruff: igno
                         return _vat(rb)
             return []
 
-        def _walk_rbxm(inst: RbxInstance) -> None:  # ruff: ignore[complex-structure, too-many-branches]
+        def _walk_rbxm(inst: RbxInstance) -> None:
             cls = inst.class_name
             if cls == 'Folder':
                 name = _preserve_str(_prop(inst, 'Name') or '')
@@ -777,7 +777,7 @@ def load_curve_animation_data(anim_data: bytes) -> list[Keyframe]:  # ruff: igno
                         pass
             return []
 
-        def _walk_xml(item: ET.Element) -> None:  # ruff: ignore[complex-structure, too-many-branches]
+        def _walk_xml(item: ET.Element) -> None:
             cls = item.get('class', '')
             if cls == 'Folder':
                 props = item.find('Properties')
@@ -999,7 +999,7 @@ def load_obj_mesh(mesh_path: str) -> MeshData | None:
                         indices = vertex_str.split('/')
                         v_idx = int(indices[0]) - 1
                         face_verts.append(v_idx)
-                        if len(indices) >= 3 and indices[2]:  # ruff: ignore[magic-value-comparison]
+                        if len(indices) >= 3 and indices[2]:
                             n_idx = int(indices[2]) - 1
                             face_norms.append(n_idx)
                     faces.append({'v': face_verts, 'n': face_norms or None})
@@ -1151,7 +1151,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
             refresh = 60.0
         return max(1, int(round(1000.0 / refresh)))  # ruff: ignore[unnecessary-cast-to-int]
 
-    def _create_placeholder_rig(  # ruff: ignore[no-self-use]
+    def _create_placeholder_rig(
         self, pose_names: set[str]
     ) -> tuple[dict[int, Part], dict[str, Motor6D]]:
         """Create placeholder rig with simple cubes for unsupported animation types."""
@@ -1179,7 +1179,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
 
         return parts, motors
 
-    def load_animation_data(self, anim_data: bytes) -> bool:  # ruff: ignore[complex-structure, too-many-branches, too-many-statements]
+    def load_animation_data(self, anim_data: bytes) -> bool:
         """Load animation from raw bytes and setup rig."""
         try:  # ruff: ignore[too-many-nested-blocks, too-many-statements-in-try-clause]
             # Parse animation (handles both XML and binary RBXM)
@@ -1313,7 +1313,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
                 )
             else:
                 values = np.asarray(pixel, dtype=np.uint8).reshape(-1)
-            if values.size < 4:  # ruff: ignore[magic-value-comparison]
+            if values.size < 4:
                 return f'unexpected_readback_size={values.size}'
             return f'rgba=({values[0]},{values[1]},{values[2]},{values[3]})'
         except Exception as exc:  # ruff: ignore[blind-except]
@@ -1517,7 +1517,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
             except Exception:  # ruff: ignore[blind-except, try-except-pass]
                 pass
 
-    def _update_world_transforms(self) -> None:  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
+    def _update_world_transforms(self) -> None:
         """Update world transforms for all parts based on current animation frame."""
         if not self.keyframes or self.root_ref is None:
             return
@@ -1611,7 +1611,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
 
         self.world_transforms = world
 
-    def _compile_mesh_display_list(self, part_ref: PartRef, mesh_data: MeshData) -> int:  # ruff: ignore[no-self-use, unused-method-argument]
+    def _compile_mesh_display_list(self, part_ref: PartRef, mesh_data: MeshData) -> int:  # ruff: ignore[unused-method-argument]
         """Compile mesh into a display list for fast rendering."""
         dl = GL.glGenLists(1)
         GL.glNewList(dl, GL.GL_COMPILE)
@@ -1645,7 +1645,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
             self.display_lists[part_ref] = self._compile_mesh_display_list(part_ref, mesh_data)
         return self.display_lists[part_ref]
 
-    def release_display_lists(self, make_current: bool = True) -> None:  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
+    def release_display_lists(self, make_current: bool = True) -> None:
         """Delete cached mesh display lists while their OpenGL context is current."""
         display_lists = tuple(self.display_lists.values())
         self.display_lists.clear()
@@ -1667,7 +1667,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
             log_buffer.log('AnimationViewer', f'Could not delete display lists: {exc}')
         finally:
             if made_current:
-                try:  # ruff: ignore[suppressible-exception]
+                try:
                     self.doneCurrent()
                 except Exception:  # ruff: ignore[blind-except, try-except-pass]
                     pass
@@ -1681,7 +1681,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
         else:
             super().closeEvent(event)
 
-    def _draw_grid(self) -> None:  # ruff: ignore[no-self-use]
+    def _draw_grid(self) -> None:
         """Draw a subtle floor grid to provide spatial context."""
         GL.glPushAttrib(GL.GL_ALL_ATTRIB_BITS)
         GL.glDisable(GL.GL_LIGHTING)
@@ -1699,14 +1699,14 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
         GL.glBegin(GL.GL_LINES)
         val = -grid_size
         while val <= grid_size + 0.001:
-            if abs(val) < 0.01:  # ruff: ignore[magic-value-comparison]
+            if abs(val) < 0.01:
                 GL.glColor4f(1.0, 0.2, 0.2, 0.15)  # X axis highlight
             else:
                 GL.glColor4f(1.0, 1.0, 1.0, 0.08)
             GL.glVertex3f(val, bottom_y, -grid_size)
             GL.glVertex3f(val, bottom_y, grid_size)
 
-            if abs(val) < 0.01:  # ruff: ignore[magic-value-comparison]
+            if abs(val) < 0.01:
                 GL.glColor4f(0.2, 0.4, 1.0, 0.15)  # Z axis highlight
             else:
                 GL.glColor4f(1.0, 1.0, 1.0, 0.08)
@@ -1858,7 +1858,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
         self.keys_pressed.clear()
         super().focusOutEvent(event)
 
-    def set_auto_rotate(self, enabled: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def set_auto_rotate(self, enabled: bool) -> None:
         self.auto_rotate = enabled
         if enabled and self.camera_mode == 'fps':
             self.reset_view()
@@ -1870,10 +1870,10 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
         self.auto_rotate = False
 
         pitch = self.rotation_x % 360.0
-        if pitch > 180.0:  # ruff: ignore[magic-value-comparison]
+        if pitch > 180.0:
             pitch -= 360.0
         yaw = self.rotation_y % 360.0
-        if yaw > 180.0:  # ruff: ignore[magic-value-comparison]
+        if yaw > 180.0:
             yaw -= 360.0
 
         self.cam_pitch = pitch
@@ -1888,12 +1888,12 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
 
         self.cam_pos = np.array([px, py, pz], dtype=float)
 
-    def _update_tick(self) -> None:  # ruff: ignore[complex-structure, too-many-branches]
+    def _update_tick(self) -> None:
         needs_update = False
         current_time = time.time()
         dt = current_time - self.last_tick_time
         self.last_tick_time = current_time
-        if dt > 0.1:  # ruff: ignore[magic-value-comparison]
+        if dt > 0.1:
             dt = 0.016
 
         if self.camera_mode == 'orbit':
@@ -1964,7 +1964,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
         self.zoom = 20.0
         self.update()
 
-    def toggle_grid(self, enabled: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def toggle_grid(self, enabled: bool) -> None:
         self.show_grid = enabled
         self.update()
 
@@ -1975,7 +1975,7 @@ class AnimationGLWidget(OffscreenOpenGLWidget):
 class AnimationViewerPanel(QWidget):
     """Animation viewer with playback controls."""
 
-    def __init__(  # ruff: ignore[too-many-statements]
+    def __init__(
         self, parent: QWidget | None = None, config_manager: ConfigManager | None = None
     ) -> None:
         super().__init__(parent)
@@ -2082,7 +2082,7 @@ class AnimationViewerPanel(QWidget):
         self.slider_pressed = False
         self.last_tick_time: float | None = None
 
-    def _toggle_grid_and_save(self, enabled: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _toggle_grid_and_save(self, enabled: bool) -> None:
         self.gl_widget.toggle_grid(enabled)
         if self.config_manager:
             self.config_manager.settings['obj_show_grid'] = enabled

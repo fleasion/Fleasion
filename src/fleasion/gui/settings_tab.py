@@ -335,7 +335,7 @@ class SettingsTab(QWidget):
 
     # Proxy
 
-    def _build_proxy_section(self) -> CollapsibleSection:  # ruff: ignore[too-many-statements]
+    def _build_proxy_section(self) -> CollapsibleSection:
         section = CollapsibleSection(tr('settings.proxy.section'), expanded=True)
 
         self._proxy_features_chk = QCheckBox(tr('ui.gui.settings_tab.enable_proxy_features'))
@@ -734,7 +734,7 @@ class SettingsTab(QWidget):
 
     # Handlers
 
-    def _clear_roblox_cache(self) -> None:  # ruff: ignore[no-self-use]
+    def _clear_roblox_cache(self) -> None:
         from .delete_cache import DeleteCacheWindow  # ruff: ignore[import-outside-top-level]
 
         window = DeleteCacheWindow()
@@ -750,7 +750,7 @@ class SettingsTab(QWidget):
                 tr('settings.language.restart_required_body'),
             )
 
-    def _on_theme_toggled(self, checked: bool, theme: str) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _on_theme_toggled(self, checked: bool, theme: str) -> None:
         if not checked:
             return
         ThemeManager.apply_theme(theme)
@@ -759,12 +759,12 @@ class SettingsTab(QWidget):
             for name, action in self._tray.theme_actions.items():
                 action.setChecked(name == theme)
 
-    def _on_open_dashboard_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _on_open_dashboard_toggled(self, checked: bool) -> None:
         self._config.open_dashboard_on_launch = checked
         if self._tray and hasattr(self._tray, 'open_dashboard_action'):
             self._tray.open_dashboard_action.setChecked(checked)
 
-    def _on_proxy_features_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _on_proxy_features_toggled(self, checked: bool) -> None:
         if not checked:
             result = QMessageBox.warning(
                 self,
@@ -820,7 +820,7 @@ class SettingsTab(QWidget):
             proxy_master.start()
         self._refresh_linux_client_status()
 
-    def _on_proxy_mode_changed(self, *_args: object) -> None:  # ruff: ignore[complex-structure, too-many-branches, too-many-statements]
+    def _on_proxy_mode_changed(self, *_args: object) -> None:
         previous_mode = self._config.proxy_mode
         new_mode = cast('str', self._proxy_mode_combo.currentData())
         self._config.proxy_mode = new_mode
@@ -970,7 +970,7 @@ class SettingsTab(QWidget):
         if self._tray and hasattr(self._tray, 'notify_proxy_mode_changed'):
             self._tray.notify_proxy_mode_changed()
 
-    def _on_wire_preserving_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _on_wire_preserving_toggled(self, checked: bool) -> None:
         self._config.wire_preserving_passthrough = checked
 
     def _on_http_proxy_changed(self, *_args: object) -> None:
@@ -1026,7 +1026,7 @@ class SettingsTab(QWidget):
         self._config.vpn_compat_max_assetdelivery_connections = self._asset_limit_spin.value()
         self._config.vpn_compat_max_cdn_connections = self._cdn_limit_spin.value()
 
-    def _on_run_on_boot_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _on_run_on_boot_toggled(self, checked: bool) -> None:
         ok = sync_autostart(
             checked,
             CONFIG_DIR,
@@ -1057,16 +1057,16 @@ class SettingsTab(QWidget):
                 tr('ui.gui.settings_tab.failed_to_register_the_autostart_task_check'),
             )
 
-    def _on_lock_roblox_files_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _on_lock_roblox_files_toggled(self, checked: bool) -> None:
         self._config.lock_roblox_files_read_only = checked
         mod_manager = getattr(self._tray, 'mod_manager', None)
         if mod_manager is not None and hasattr(mod_manager, 'set_read_only_lock_enabled'):
             mod_manager.set_read_only_lock_enabled(checked)
 
-    def _on_close_env_roblox_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _on_close_env_roblox_toggled(self, checked: bool) -> None:
         self._config.close_env_proxy_roblox_on_exit = checked
 
-    def _on_desktop_integration_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _on_desktop_integration_toggled(self, checked: bool) -> None:
         ok = sync_desktop_integration(checked)
         if ok:
             self._config.desktop_integration = checked
@@ -1093,7 +1093,7 @@ class SettingsTab(QWidget):
                 tr('ui.gui.settings_tab.failed_to_create_desktop_start_menu_integration'),
             )
 
-    def _on_always_on_top_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _on_always_on_top_toggled(self, checked: bool) -> None:
         self._config.always_on_top = checked
         if self._tray and hasattr(self._tray, 'always_on_top_action'):
             self._tray.always_on_top_action.setChecked(checked)
@@ -1108,17 +1108,17 @@ class SettingsTab(QWidget):
                     window.setWindowFlags(flags)
                     window.show()
 
-    def _on_close_to_tray_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _on_close_to_tray_toggled(self, checked: bool) -> None:
         self._config.close_to_tray = checked
         if self._tray and hasattr(self._tray, 'close_to_tray_action'):
             self._tray.close_to_tray_action.setChecked(checked)
 
-    def _on_auto_clear_cache_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _on_auto_clear_cache_toggled(self, checked: bool) -> None:
         self._config.auto_delete_cache_on_exit = checked
         if self._tray and hasattr(self._tray, 'auto_delete_cache_action'):
             self._tray.auto_delete_cache_action.setChecked(checked)
 
-    def _on_clear_cache_launch_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _on_clear_cache_launch_toggled(self, checked: bool) -> None:
         self._config.clear_cache_on_launch = checked
         if self._tray and hasattr(self._tray, 'clear_cache_action'):
             self._tray.clear_cache_action.setChecked(checked)
@@ -1171,39 +1171,39 @@ class SettingsTab(QWidget):
             tr('ui.gui.settings_tab.value_was_stored_encrypted', value0=username),
         )
 
-    def _on_close_scraped_games_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _on_close_scraped_games_toggled(self, checked: bool) -> None:
         self._config.close_scraped_games_on_open = checked
         if self._tray and hasattr(self._tray, 'close_scraped_games_action'):
             self._tray.close_scraped_games_action.setChecked(checked)
 
-    def _on_close_viewer_on_replace_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _on_close_viewer_on_replace_toggled(self, checked: bool) -> None:
         self._config.close_viewer_on_replace = checked
         if self._tray and hasattr(self._tray, 'close_viewer_on_replace_action'):
             self._tray.close_viewer_on_replace_action.setChecked(checked)
 
-    def _on_close_scraped_games_menu_on_open_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _on_close_scraped_games_menu_on_open_toggled(self, checked: bool) -> None:
         self._config.close_scraped_games_menu_on_open = checked
         if self._tray and hasattr(self._tray, 'close_scraped_games_menu_on_open_action'):
             self._tray.close_scraped_games_menu_on_open_action.setChecked(checked)
 
-    def _on_show_replacer_notifications_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _on_show_replacer_notifications_toggled(self, checked: bool) -> None:
         self._config.show_replacer_notifications = checked
         if self._tray and hasattr(self._tray, 'show_replacer_notifications_action'):
             self._tray.show_replacer_notifications_action.setChecked(checked)
 
-    def _on_show_names_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _on_show_names_toggled(self, checked: bool) -> None:
         self._config.show_names = checked
         if self._tray and hasattr(self._tray, 'show_names_action'):
             self._tray.show_names_action.setChecked(checked)
         self._apply_to_cache_viewer('show_names', checked)
 
-    def _on_show_creator_id_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _on_show_creator_id_toggled(self, checked: bool) -> None:
         self._config.show_creator_id = checked
         if self._tray and hasattr(self._tray, 'show_creator_id_action'):
             self._tray.show_creator_id_action.setChecked(checked)
         self._apply_to_cache_viewer('show_creator_id', checked)
 
-    def _apply_to_cache_viewer(self, setting: str, value: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _apply_to_cache_viewer(self, setting: str, value: bool) -> None:
         if self._tray and self._tray.dashboard_window:
             tab = getattr(self._tray.dashboard_window, '_cache_viewer_tab', None)
             if tab is not None:
@@ -1221,12 +1221,12 @@ class SettingsTab(QWidget):
             return is_enabled()
         return False
 
-    def set_cache_scraper_enabled(self, enabled: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def set_cache_scraper_enabled(self, enabled: bool) -> None:
         self._cache_scraper_chk.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
         self._cache_scraper_chk.setChecked(enabled)
         self._cache_scraper_chk.blockSignals(False)  # ruff: ignore[boolean-positional-value-in-call]
 
-    def _on_cache_scraper_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _on_cache_scraper_toggled(self, checked: bool) -> None:
         if self._tray and hasattr(self._tray, '_set_cache_scraper_enabled'):
             set_enabled = cast(
                 'Callable[[bool], None]',
@@ -1234,7 +1234,7 @@ class SettingsTab(QWidget):
             )
             set_enabled(checked)
 
-    def _on_export_naming_toggled(self, checked: bool, option: str) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _on_export_naming_toggled(self, checked: bool, option: str) -> None:
         current = self._config.is_export_naming_enabled(option)
         if current != checked:
             new_state = self._config.toggle_export_naming(option)

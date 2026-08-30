@@ -17,7 +17,7 @@ except ModuleNotFoundError:  # pragma: no cover - module is Linux-only at runtim
 import shlex
 import shutil
 import signal
-import subprocess  # ruff: ignore[suspicious-subprocess-import]
+import subprocess
 import sys
 from collections.abc import Callable  # ruff: ignore[typing-only-standard-library-import]
 from pathlib import Path
@@ -191,7 +191,7 @@ def _run_host_command(
 ) -> subprocess.CompletedProcess[bytes]: ...
 
 
-def _run_host_command(  # ruff: ignore[too-many-arguments]
+def _run_host_command(
     cmd: list[str],
     *,
     capture_output: bool = False,
@@ -219,7 +219,7 @@ def _run_host_command(  # ruff: ignore[too-many-arguments]
 
 
 def _log(message: str) -> None:
-    print(message, flush=True)  # ruff: ignore[print]
+    print(message, flush=True)
 
 
 def _polkit_policy_xml() -> str:
@@ -382,7 +382,7 @@ def _linux_process_state_and_start_time(pid: int) -> tuple[str | None, str | Non
         return None, None
     fields = after_comm.strip().split()
     state = fields[0] if fields else None
-    start_time = fields[19] if len(fields) > 19 else None  # ruff: ignore[magic-value-comparison]
+    start_time = fields[19] if len(fields) > 19 else None
     return state, start_time
 
 
@@ -635,7 +635,7 @@ def _clean_hosts_content(content: str) -> str:
         active = line.split('#', 1)[0].strip()
         parts = active.split()
         return (
-            len(parts) >= 2  # ruff: ignore[magic-value-comparison]
+            len(parts) >= 2
             and parts[0] == '127.0.0.1'
             and any(host.lower() in ALLOWED_PROXY_HOSTS for host in parts[1:])
         )
@@ -653,7 +653,7 @@ def _hosts_content_has_loopback_entries(content: str, hosts: set[str]) -> bool:
         if not active:
             continue
         parts = active.split()
-        if len(parts) < 2 or parts[0] != '127.0.0.1':  # ruff: ignore[magic-value-comparison]
+        if len(parts) < 2 or parts[0] != '127.0.0.1':
             continue
         for hostname in parts[1:]:
             host = hostname.strip().lower()
@@ -870,7 +870,7 @@ def _apply_hosts_delta(previous_hosts: set[str], updated_hosts: set[str]) -> Non
     for line in existing.splitlines(keepends=True):
         active = line.split('#', 1)[0].strip()
         parts = active.split()
-        line_hosts: set[str] = {part.lower() for part in parts[1:]} if len(parts) >= 2 else set()  # ruff: ignore[magic-value-comparison]
+        line_hosts: set[str] = {part.lower() for part in parts[1:]} if len(parts) >= 2 else set()
         if HOSTS_MARKER in line and line_hosts & removed_hosts:
             continue
         retained_lines.append(line)
@@ -890,7 +890,7 @@ def _parse_active_loopback_hosts(content: str) -> set[str]:
     for raw_line in content.splitlines():
         active = raw_line.split('#', 1)[0].strip()
         parts = active.split()
-        if len(parts) >= 2 and parts[0] == '127.0.0.1':  # ruff: ignore[magic-value-comparison]
+        if len(parts) >= 2 and parts[0] == '127.0.0.1':
             hosts.update(part.lower() for part in parts[1:])
     return hosts
 
@@ -976,7 +976,7 @@ def _target_has_ca(source: Path, target: Path) -> bool:
         return False
 
 
-def _install_system_ca(ca_cert: Path) -> JsonObject:  # ruff: ignore[complex-structure, too-many-branches]
+def _install_system_ca(ca_cert: Path) -> JsonObject:
     """Install Fleasion's CA into common Linux system trust stores."""
     if not ca_cert.is_file():
         return {'ok': False, 'error': f'CA certificate not found: {ca_cert}'}
@@ -1167,7 +1167,7 @@ async def _relay_client(
     )
 
 
-async def _serve(args: _RuntimeArgs) -> int:  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
+async def _serve(args: _RuntimeArgs) -> int:
     owner_uid, owner_gid = _validate_runtime_args(args)
     hosts = _validate_hosts(
         {host.strip().lower() for host in args.hosts.split(',') if host.strip()}
@@ -1280,7 +1280,7 @@ async def _serve(args: _RuntimeArgs) -> int:  # ruff: ignore[complex-structure, 
     return 0
 
 
-def main() -> None:  # ruff: ignore[complex-structure, too-many-statements]
+def main() -> None:
     parser = argparse.ArgumentParser(description='Fleasion privileged Linux proxy helper')
     parser.add_argument('--install-system-ca', action='store_true')
     parser.add_argument('--install-privileged-helper', action='store_true')
@@ -1328,17 +1328,17 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-statements]
             source_helper_needs_dispatch_flag=args.source_helper_needs_dispatch_flag,
             ca_cert=args.ca_cert,
         )
-        print(json.dumps(details), flush=True)  # ruff: ignore[print]
+        print(json.dumps(details), flush=True)
         raise SystemExit(0 if details.get('ok') else 1)
 
     if args.install_system_ca:
         try:
             ca_cert = _validate_install_system_ca_args(args.ca_cert)
         except Exception as exc:  # ruff: ignore[blind-except]
-            print(json.dumps({'ok': False, 'error': str(exc)}), flush=True)  # ruff: ignore[print]
+            print(json.dumps({'ok': False, 'error': str(exc)}), flush=True)
             raise SystemExit(1)  # ruff: ignore[raise-without-from-inside-except]
         details = _install_system_ca(ca_cert)
-        print(json.dumps(details), flush=True)  # ruff: ignore[print]
+        print(json.dumps(details), flush=True)
         raise SystemExit(0 if details.get('ok') else 1)
 
     required = (
@@ -1370,7 +1370,7 @@ def main() -> None:  # ruff: ignore[complex-structure, too-many-statements]
     runtime_args.shutdown_requested = lambda: shutting_down
 
     try:
-        raise SystemExit(asyncio.run(_serve(runtime_args)))  # ruff: ignore[raise-within-try]
+        raise SystemExit(asyncio.run(_serve(runtime_args)))
     except Exception as exc:  # ruff: ignore[blind-except]
         if args.ready_file:
             ready_file = Path(args.ready_file)

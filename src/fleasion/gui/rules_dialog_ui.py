@@ -19,7 +19,7 @@ def _header_item(table: QtWidgets.QTableWidget, index: int) -> QtWidgets.QTableW
 
 
 class Ui_Dialog:  # ruff: ignore[invalid-class-name]
-    def setupUi(self, Dialog: QtWidgets.QDialog) -> None:  # ruff: ignore[invalid-argument-name, invalid-function-name, too-many-statements]
+    def setupUi(self, Dialog: QtWidgets.QDialog) -> None:  # ruff: ignore[invalid-argument-name, invalid-function-name]
         Dialog.setObjectName('Dialog')
         Dialog.resize(611, 300)
         self.verticalLayout = QtWidgets.QVBoxLayout(Dialog)

@@ -77,7 +77,7 @@ def strip_prefixed_ktx(data: bytes) -> bytes | None:
     at the KTX magic bytes, not the wrapper.
     """
 
-    if len(data) < 12:  # ruff: ignore[magic-value-comparison]
+    if len(data) < 12:
         return None
 
     for magic in (KTX1_MAGIC, KTX2_MAGIC):
@@ -129,7 +129,7 @@ def _convert_ktx1(data: bytes) -> bytes | None:
     # 64+kvSize   imageSize (uint32)
     # 68+kvSize   imageData[imageSize]
 
-    if len(data) < 64:  # ruff: ignore[magic-value-comparison]
+    if len(data) < 64:
         return None
 
     try:
@@ -202,7 +202,7 @@ def _extend_sign(val: int, bits: int) -> int:
 def _clamp255(x: int) -> int:
     if x < 0:
         return 0
-    if x > 255:  # ruff: ignore[magic-value-comparison]
+    if x > 255:
         return 255
     return int(x)
 
@@ -253,7 +253,7 @@ _EAC_MODIFIER_TABLE = [
 ]
 
 
-def _legacy_etc(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
+def _legacy_etc(  # ruff: ignore[too-many-positional-arguments]
     block: int,
     r0: int,
     g0: int,
@@ -264,7 +264,7 @@ def _legacy_etc(  # ruff: ignore[too-many-arguments, too-many-positional-argumen
     dest: bytearray,
     base_offset: int,
     pitch: int,
-    opaque: bool,  # ruff: ignore[boolean-type-hint-positional-argument]
+    opaque: bool,
 ) -> None:
     """Decompress one 4x4 ETC block in Individual or Differential mode."""
     remap = _REMAP_TABLE_OPAQUE if opaque else _REMAP_TABLE_TRANSPARENT
@@ -284,7 +284,7 @@ def _legacy_etc(  # ruff: ignore[too-many-arguments, too-many-positional-argumen
             idx = (((block >> (m + 16)) & 1) << 1) | ((block >> m) & 1)
             off = base_offset + x0 * pitch + y0 * 4
 
-            if opaque or idx != 2:  # ruff: ignore[magic-value-comparison]
+            if opaque or idx != 2:
                 dest[off + 0] = _clamp255(r0 + remap[code_word0][idx])
                 dest[off + 1] = _clamp255(g0 + remap[code_word0][idx])
                 dest[off + 2] = _clamp255(b0 + remap[code_word0][idx])
@@ -300,7 +300,7 @@ def _legacy_etc(  # ruff: ignore[too-many-arguments, too-many-positional-argumen
             idx = (((block >> (m + 16)) & 1) << 1) | ((block >> m) & 1)
             off = base_offset + x1 * pitch + y1 * 4
 
-            if opaque or idx != 2:  # ruff: ignore[magic-value-comparison]
+            if opaque or idx != 2:
                 dest[off + 0] = _clamp255(r1 + remap[code_word1][idx])
                 dest[off + 1] = _clamp255(g1 + remap[code_word1][idx])
                 dest[off + 2] = _clamp255(b1 + remap[code_word1][idx])
@@ -312,13 +312,13 @@ def _legacy_etc(  # ruff: ignore[too-many-arguments, too-many-positional-argumen
                 dest[off + 3] = 0
 
 
-def _etc_t_h(  # ruff: ignore[too-many-arguments, too-many-locals, too-many-positional-arguments, too-many-statements]
+def _etc_t_h(  # ruff: ignore[too-many-positional-arguments]
     block: int,
     mode: int,
     dest: bytearray,
     base_offset: int,
     pitch: int,
-    opaque: bool,  # ruff: ignore[boolean-type-hint-positional-argument]
+    opaque: bool,
 ) -> None:
     """Decompress one 4x4 ETC block in T or H mode."""
     if mode == 1:  # T mode
@@ -380,7 +380,7 @@ def _etc_t_h(  # ruff: ignore[too-many-arguments, too-many-locals, too-many-posi
             k = i + j * 4
             idx = (((block >> (k + 16)) & 1) << 1) | ((block >> k) & 1)
             off = row_off + j * 4
-            if opaque or idx != 2:  # ruff: ignore[magic-value-comparison]
+            if opaque or idx != 2:
                 dest[off + 0] = paint[idx][0]
                 dest[off + 1] = paint[idx][1]
                 dest[off + 2] = paint[idx][2]
@@ -392,7 +392,7 @@ def _etc_t_h(  # ruff: ignore[too-many-arguments, too-many-locals, too-many-posi
                 dest[off + 3] = 0
 
 
-def _etc_planar(block: int, dest: bytearray, base_offset: int, pitch: int) -> None:  # ruff: ignore[too-many-locals]
+def _etc_planar(block: int, dest: bytearray, base_offset: int, pitch: int) -> None:
     """Decompress one 4x4 ETC block in Planar mode."""
     ro = (block >> 57) & 0x3F
     go1 = (block >> 56) & 0x01
@@ -440,7 +440,7 @@ def _decompress_etc_block(
     dest: bytearray,
     dest_offset: int,
     pitch: int,
-    punchthrough: bool = False,  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
+    punchthrough: bool = False,
 ) -> None:
     """Main ETC block decompressor -- port of DecompressETCBlock in Internal.cs."""
     block = _bswap64(compressed)
@@ -470,11 +470,11 @@ def _decompress_etc_block(
         b0 = (block >> 43) & 0x1F
         b1 = b0 + _extend_sign((block >> 40) & 0x7, 3)
 
-        if r1 < 0 or r1 > 31:  # ruff: ignore[magic-value-comparison]
+        if r1 < 0 or r1 > 31:
             mode = 1  # T
-        elif g1 < 0 or g1 > 31:  # ruff: ignore[magic-value-comparison]
+        elif g1 < 0 or g1 > 31:
             mode = 2  # H
-        elif b1 < 0 or b1 > 31:  # ruff: ignore[magic-value-comparison]
+        elif b1 < 0 or b1 > 31:
             mode = 3  # Planar
         else:
             # Differential -- expand to 8-bit
@@ -489,7 +489,7 @@ def _decompress_etc_block(
 
     if mode == 0:
         _legacy_etc(block, r0, g0, b0, r1, g1, b1, dest, dest_offset, pitch, opaque)
-    elif mode < 3:  # ruff: ignore[magic-value-comparison]
+    elif mode < 3:
         _etc_t_h(block, mode, dest, dest_offset, pitch, opaque)
     else:
         _etc_planar(block, dest, dest_offset, pitch)
@@ -523,7 +523,7 @@ def _decode_etc_rgb(
     image_data: bytes,
     width: int,
     height: int,
-    punchthrough: bool = False,  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
+    punchthrough: bool = False,
 ) -> np.ndarray:
     """Decode a full ETC RGB (or punchthrough) image -- 8 bytes per block."""
     dest = bytearray(width * height * 4)
@@ -636,7 +636,7 @@ def _gamma2_ycocg_to_rgba(rgba: np.ndarray) -> np.ndarray:
     return output
 
 
-def _decode_ktx2_etc(data: bytes) -> np.ndarray | None:  # ruff: ignore[complex-structure, too-many-locals, too-many-return-statements]
+def _decode_ktx2_etc(data: bytes) -> np.ndarray | None:  # ruff: ignore[too-many-return-statements]
     """Decode level 0 of a 2D ETC2 KTX2 texture to RGBA8.
 
     Roblox's streamed TexturePack payloads use ordinary ETC2 GPU blocks with
@@ -743,14 +743,14 @@ _KTX_SUCCESS = 0  # KtxErrorCode.KtxSuccess
 
 # ktxTexture struct field offsets on 64-bit Windows/macOS libktx 4.x builds.
 # Layout derived from DECLARE_KTXTEXTURE_PUBLIC expansion in ktx.h:
-#   classId(4) + pad(4) + vtbl(8) + vvtbl(8) + _protected(8)  -- 0-31  # ruff: ignore[commented-out-code]
+#   classId(4) + pad(4) + vtbl(8) + vvtbl(8) + _protected(8)  -- 0-31
 #   isArray/isCubemap/isCompressed/generateMipmaps (4x1)        -- 32-35
-#   baseWidth(4) + baseHeight(4) + baseDepth(4) + ...             -- 36, 40  # ruff: ignore[commented-out-code]
+#   baseWidth(4) + baseHeight(4) + baseDepth(4) + ...             -- 36, 40
 #   ... numFaces(4) ends at 64
 #   orientation{x,y,z} each int32 (C enum default) = 12 bytes   -- 64-75
 #   padding(4) to align 8-byte pointer                           -- 76-79
-#   kvDataHead(8) + kvDataLen(4) + pad(4) + kvData(8)           -- 80-103  # ruff: ignore[commented-out-code]
-#   dataSize(size_t=8) + pData(ptr=8)                           -- 104, 112  # ruff: ignore[commented-out-code]
+#   kvDataHead(8) + kvDataLen(4) + pad(4) + kvData(8)           -- 80-103
+#   dataSize(size_t=8) + pData(ptr=8)                           -- 104, 112
 _OFFSET_BASE_WIDTH = 36
 _OFFSET_BASE_HEIGHT = 40
 _OFFSET_DATA_SIZE = 104
@@ -785,7 +785,7 @@ def _find_ktx_dll() -> str | None:
     return None
 
 
-def _get_ktx_dll():  # ruff: ignore[missing-return-type-private-function]
+def _get_ktx_dll():
     """Load and configure native libktx, returning the ctypes CDLL or None."""
     global _ktx_dll, _ktx_dll_loaded  # ruff: ignore[global-statement]
     if _ktx_dll_loaded:
@@ -804,7 +804,7 @@ def _get_ktx_dll():  # ruff: ignore[missing-return-type-private-function]
         return None
 
     try:  # ruff: ignore[too-many-statements-in-try-clause]
-        # ktxTexture2_CreateFromMemory(data, size, flags, **texture) -- int  # ruff: ignore[commented-out-code]
+        # ktxTexture2_CreateFromMemory(data, size, flags, **texture) -- int
         dll.ktxTexture2_CreateFromMemory.restype = ctypes.c_int
         dll.ktxTexture2_CreateFromMemory.argtypes = [
             ctypes.c_char_p,
@@ -815,14 +815,14 @@ def _get_ktx_dll():  # ruff: ignore[missing-return-type-private-function]
         # ktxTexture2_NeedsTranscoding(texture) -- int (1 = yes)
         dll.ktxTexture2_NeedsTranscoding.restype = ctypes.c_int
         dll.ktxTexture2_NeedsTranscoding.argtypes = [ctypes.c_void_p]
-        # ktxTexture2_TranscodeBasis(texture, transcodeFormat, flags) -- int  # ruff: ignore[commented-out-code]
+        # ktxTexture2_TranscodeBasis(texture, transcodeFormat, flags) -- int
         dll.ktxTexture2_TranscodeBasis.restype = ctypes.c_int
         dll.ktxTexture2_TranscodeBasis.argtypes = [
             ctypes.c_void_p,
             ctypes.c_uint,
             ctypes.c_uint,
         ]
-        # ktxTexture2_Destroy(texture) -- void  # ruff: ignore[commented-out-code]
+        # ktxTexture2_Destroy(texture) -- void
         dll.ktxTexture2_Destroy.restype = None
         dll.ktxTexture2_Destroy.argtypes = [ctypes.c_void_p]
     except Exception as exc:  # ruff: ignore[blind-except]
@@ -911,7 +911,7 @@ def _convert_ktx2(data: bytes) -> bytes | None:  # ruff: ignore[too-many-return-
         return buf.getvalue()
 
     finally:
-        try:  # ruff: ignore[suppressible-exception]
+        try:
             dll.ktxTexture2_Destroy(tex_ptr)
         except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass

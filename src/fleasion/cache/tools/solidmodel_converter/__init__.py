@@ -1,4 +1,4 @@
-"""opus-better-cook: Roblox SolidModel binary deserializer and converter."""  # ruff: ignore[implicit-namespace-package]
+"""opus-better-cook: Roblox SolidModel binary deserializer and converter."""
 
 from __future__ import annotations
 

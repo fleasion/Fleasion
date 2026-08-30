@@ -12,7 +12,7 @@ import select
 import shutil
 import signal
 import socket
-import subprocess  # ruff: ignore[suspicious-subprocess-import]
+import subprocess
 import sys
 import threading
 import time
@@ -282,7 +282,7 @@ def _froststrap_player_apps() -> list[Path]:
     return apps
 
 
-def set_application_icon(icon_path: Path) -> bool:  # ruff: ignore[too-many-locals]
+def set_application_icon(icon_path: Path) -> bool:
     """Set the Dock tile image from Fleasion's transparent runtime icon."""
     try:  # ruff: ignore[too-many-statements-in-try-clause]
         icon_path = Path(icon_path)
@@ -373,7 +373,7 @@ def set_application_icon(icon_path: Path) -> bool:  # ruff: ignore[too-many-loca
         return False
 
 
-def set_application_foreground_mode(enabled: bool) -> bool:  # ruff: ignore[boolean-type-hint-positional-argument]
+def set_application_foreground_mode(enabled: bool) -> bool:
     """Show normal app windows while active, or return to menu-bar-only mode."""
     try:  # ruff: ignore[too-many-statements-in-try-clause]
         objc_path = ctypes.util.find_library('objc') or '/usr/lib/libobjc.A.dylib'
@@ -742,7 +742,7 @@ class MacOSRobloxUriInterceptor:
     def _vnode_event(fd: int) -> object:
         return _new_vnode_event(fd)
 
-    def _run(self) -> None:  # ruff: ignore[complex-structure, too-many-branches]
+    def _run(self) -> None:
         while not self._stop_event.is_set():
             try:
                 directory_fd = os.open(self._log_dir, os.O_RDONLY)
@@ -834,7 +834,7 @@ class MacOSRobloxUriInterceptor:
             os.close(tracked.fd)
         return
 
-    def _capture_player_launch(self, log_path: Path) -> MacOSRobloxPlayerLaunch | None:  # ruff: ignore[no-self-use]
+    def _capture_player_launch(self, log_path: Path) -> MacOSRobloxPlayerLaunch | None:
         """Resolve the original PID and bundle before touching URI log bytes."""
         pid = _first_process_pid(ROBLOX_PROCESS)
         if pid is None:
@@ -851,7 +851,7 @@ class MacOSRobloxUriInterceptor:
             detected_at=time.monotonic(),
         )
 
-    def _read_appended_target(self, tracked: _TrackedMacOSPlayerLog) -> str | None:  # ruff: ignore[no-self-use]
+    def _read_appended_target(self, tracked: _TrackedMacOSPlayerLog) -> str | None:
         try:  # ruff: ignore[too-many-statements-in-try-clause]
             os.lseek(tracked.fd, tracked.offset, os.SEEK_SET)
             chunks: list[bytes] = []
@@ -963,7 +963,7 @@ def terminate_roblox() -> bool:
             _quit_app_bundle(app_path)
             break
 
-    try:  # ruff: ignore[suppressible-exception]
+    try:
         subprocess.run(['pkill', '-TERM', '-x', ROBLOX_PROCESS], capture_output=True, timeout=5)  # ruff: ignore[start-process-with-partial-path, subprocess-run-without-check, subprocess-without-shell-equals-true]
     except Exception:  # ruff: ignore[blind-except, try-except-pass]
         pass
@@ -974,7 +974,7 @@ def terminate_roblox() -> bool:
             return True
         time.sleep(0.1)
 
-    try:  # ruff: ignore[suppressible-exception]
+    try:
         subprocess.run(['pkill', '-KILL', '-x', ROBLOX_PROCESS], capture_output=True, timeout=5)  # ruff: ignore[start-process-with-partial-path, subprocess-run-without-check, subprocess-without-shell-equals-true]
     except Exception:  # ruff: ignore[blind-except, try-except-pass]
         pass
@@ -1007,7 +1007,7 @@ def _delete_path(path: Path, messages: list[str], label: str) -> None:
         messages.append(f'Failed to delete {label.lower()}: {exc}')
 
 
-def delete_cache() -> list[str]:  # ruff: ignore[complex-structure, too-many-branches]
+def delete_cache() -> list[str]:
     """Delete Roblox cache files and Fleasion's converted-object cache."""
     messages: list[str] = []
 
@@ -1104,7 +1104,7 @@ def find_bootstrapper_restore_resource_dirs() -> list[Path]:
     ]
 
 
-def find_roblox_resource_dirs(include_studio: bool = True) -> list[Path]:  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument, complex-structure]
+def find_roblox_resource_dirs(include_studio: bool = True) -> list[Path]:
     """Return Roblox resource roots used by patch/modification code."""
     found: list[Path] = []
     seen: set[str] = set()
@@ -1214,7 +1214,7 @@ def _claim_env_proxy_relaunch(*, force: bool = False) -> bool:
         return True
 
 
-def _finish_env_proxy_relaunch(success: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+def _finish_env_proxy_relaunch(success: bool) -> None:
     global _env_proxy_relaunch_at, _env_proxy_relaunch_in_progress  # ruff: ignore[global-statement]
 
     with _env_proxy_relaunch_lock:
@@ -1233,7 +1233,7 @@ def _detached_popen(args: list[str]) -> subprocess.Popen[bytes]:
     )
 
 
-def relaunch_roblox_with_proxy_env(  # ruff: ignore[complex-structure, too-many-arguments, too-many-branches, too-many-return-statements]
+def relaunch_roblox_with_proxy_env(  # ruff: ignore[too-many-return-statements]
     proxy_url: str,
     launch_target: str | None = None,
     *,
@@ -1339,7 +1339,7 @@ def relaunch_roblox_with_proxy_env(  # ruff: ignore[complex-structure, too-many-
             if launch_result.returncode == 0:
                 break
             launch_error = (launch_result.stderr or launch_result.stdout or '').strip()
-            if '-600' not in launch_error or attempt == 2:  # ruff: ignore[magic-value-comparison]
+            if '-600' not in launch_error or attempt == 2:
                 log_buffer.log(
                     'Launcher',
                     f'Roblox Env Proxy relaunch failed: {launch_error or launch_result.returncode}',

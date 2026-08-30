@@ -11,7 +11,7 @@ import os
 import plistlib
 import shlex
 import shutil
-import subprocess  # ruff: ignore[suspicious-subprocess-import]
+import subprocess
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -273,7 +273,7 @@ def _create_linux_desktop_entries() -> bool:
         return False
 
 
-def sync_desktop_integration(enabled: bool) -> bool:  # ruff: ignore[boolean-type-hint-positional-argument]
+def sync_desktop_integration(enabled: bool) -> bool:
     """Ensure desktop/start-menu integration matches the desired state."""
     if sys.platform == 'win32':
         return _create_windows_shortcut() if enabled else _remove_windows_shortcut()

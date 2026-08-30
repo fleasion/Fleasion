@@ -283,7 +283,7 @@ class ConfigFolderWatcher(QObject):
         if all(reason == 'invalid' for reason in details.values()):
             if len(quoted) == 1:
                 return tr('config_watcher.invalid_one', name=quoted[0])
-            if len(quoted) <= 3:  # ruff: ignore[magic-value-comparison]
+            if len(quoted) <= 3:
                 return tr(
                     'config_watcher.invalid_many',
                     names=', '.join(quoted[:-1]),

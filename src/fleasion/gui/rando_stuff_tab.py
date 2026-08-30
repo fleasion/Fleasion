@@ -147,10 +147,10 @@ def _get_auth_ticket(cookie: str) -> str | None:
     try:
         # First request — Roblox returns 403 with X-CSRF-TOKEN on POST endpoints
         resp = _requests.post(url, headers=headers, json={}, timeout=10)
-        if resp.status_code == 403 and 'x-csrf-token' in resp.headers:  # ruff: ignore[magic-value-comparison]
+        if resp.status_code == 403 and 'x-csrf-token' in resp.headers:
             headers['X-CSRF-TOKEN'] = resp.headers['x-csrf-token']
             resp = _requests.post(url, headers=headers, json={}, timeout=10)
-        if resp.status_code == 200:  # ruff: ignore[magic-value-comparison]
+        if resp.status_code == 200:
             return resp.headers.get('rbx-authentication-ticket')
     except Exception:  # ruff: ignore[blind-except, try-except-pass]
         pass
@@ -167,7 +167,7 @@ def _get_access_code(place_id: str, link_code: str, cookie: str) -> str | None:
     sess.cookies.set('.ROBLOSECURITY', cookie, domain='.roblox.com')
     sess.headers.update(
         {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',  # ruff: ignore[line-too-long]
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
             'Accept-Language': 'en-US,en;q=0.9',
         }
     )
@@ -179,7 +179,7 @@ def _get_access_code(place_id: str, link_code: str, cookie: str) -> str | None:
     ):
         try:
             resp = sess.get(url, timeout=10)
-            if resp.status_code == 200:  # ruff: ignore[magic-value-comparison]
+            if resp.status_code == 200:
                 data = resp.json()
                 code = data.get('accessCode') or data.get('vipServerAccessCode')
                 if code:
@@ -244,7 +244,7 @@ def _preseed_root_place_for_subplace(root_place_id: str, cookie: str) -> bool:
         }
         resp = sess.post('https://gamejoin.roblox.com/v1/join-game', json=payload, timeout=15)
         try:
-            return resp.status_code == 200 and resp.json().get('status') == 2  # ruff: ignore[magic-value-comparison]
+            return resp.status_code == 200 and resp.json().get('status') == 2
         except Exception:  # ruff: ignore[blind-except]
             return False
     except Exception as exc:  # ruff: ignore[blind-except]
@@ -352,14 +352,14 @@ def _resolve_share_link(link: str, cookie: str = '') -> tuple[str, str]:
             timeout=10,
         )
         # Roblox returns 403 with X-CSRF-TOKEN on first POST — retry with token
-        if resp.status_code == 403 and 'x-csrf-token' in resp.headers:  # ruff: ignore[magic-value-comparison]
+        if resp.status_code == 403 and 'x-csrf-token' in resp.headers:
             sess.headers['X-CSRF-TOKEN'] = resp.headers['x-csrf-token']
             resp = sess.post(
                 'https://apis.roblox.com/sharelinks/v1/resolve-link',
                 json=body,
                 timeout=10,
             )
-        if resp.status_code != 200:  # ruff: ignore[magic-value-comparison]
+        if resp.status_code != 200:
             return '', ''
 
         data = cast('dict[str, object]', resp.json())
@@ -432,7 +432,7 @@ def _build_roblox_player_uri(
     return '+'.join(parts)
 
 
-def _build_place_launcher_url(  # ruff: ignore[too-many-arguments]
+def _build_place_launcher_url(
     place_id: str,
     *,
     request_type: str = 'RequestGame',
@@ -461,7 +461,7 @@ def _build_auth_ticket_app_uri(ticket: str, *, launch_time_ms: int | None = None
     return _build_roblox_player_uri(ticket, launch_mode='app', launch_time_ms=launch_time_ms)
 
 
-def _build_auth_ticket_place_uri(  # ruff: ignore[too-many-arguments]
+def _build_auth_ticket_place_uri(
     ticket: str,
     place_id: str,
     *,
@@ -489,7 +489,7 @@ def _build_auth_ticket_place_uri(  # ruff: ignore[too-many-arguments]
     )
 
 
-def _build_auth_ticket_private_server_uri(  # ruff: ignore[too-many-arguments]
+def _build_auth_ticket_private_server_uri(
     ticket: str,
     place_id: str,
     *,
@@ -587,7 +587,7 @@ class AddAccountDialog(QDialog):
                 'https://users.roblox.com/v1/users/authenticated',
                 timeout=10,
             )
-            if resp.status_code == 200:  # ruff: ignore[magic-value-comparison]
+            if resp.status_code == 200:
                 username = resp.json().get('name', 'Unknown')
                 self._validated.emit(username, cookie)
             else:
@@ -617,7 +617,7 @@ class _Invoker(QObject):
         super().__init__(parent)
         self.call.connect(self._run, Qt.ConnectionType.QueuedConnection)
 
-    def _run(self, fn: Callable[[], object]) -> None:  # ruff: ignore[no-self-use]
+    def _run(self, fn: Callable[[], object]) -> None:
         try:
             fn()
         except Exception as exc:  # ruff: ignore[blind-except]
@@ -825,7 +825,7 @@ class RandoStuffTab(QWidget):
         last = self._blocked_subplace_log_at.get(key, 0.0)
         if now - last >= log_interval:
             self._blocked_subplace_log_at[key] = now
-            if len(self._blocked_subplace_log_at) > 512:  # ruff: ignore[magic-value-comparison]
+            if len(self._blocked_subplace_log_at) > 512:
                 cutoff = now - 30.0
                 self._blocked_subplace_log_at = {
                     k: ts for k, ts in self._blocked_subplace_log_at.items() if ts >= cutoff
@@ -835,7 +835,7 @@ class RandoStuffTab(QWidget):
                 f'Blocked join request to blacklisted subplace ID: {place_id}',
             )
 
-    def _set_subplace_block_mode(self, mode: str, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _set_subplace_block_mode(self, mode: str, checked: bool) -> None:
         if not checked:
             return
         with self._lock:
@@ -933,7 +933,7 @@ class RandoStuffTab(QWidget):
         if state['save_settings']:
             self._persist_username_spoofer_state(state)
 
-    def _on_username_spoofer_save_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _on_username_spoofer_save_toggled(self, checked: bool) -> None:
         state = self._username_spoofer_state_from_widgets()
         self._set_username_spoofer_state(state)
         self._push_username_spoofer_runtime_state()
@@ -944,7 +944,7 @@ class RandoStuffTab(QWidget):
 
     # UI
 
-    def _setup_ui(self) -> None:  # ruff: ignore[too-many-locals, too-many-statements]
+    def _setup_ui(self) -> None:
         outer = QVBoxLayout()
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -1325,13 +1325,13 @@ class RandoStuffTab(QWidget):
         pal = self.palette()
         win_light = pal.window().color().lightness()
         alt_light = pal.alternateBase().color().lightness()
-        if win_light < 128 and alt_light <= win_light:  # ruff: ignore[magic-value-comparison]
+        if win_light < 128 and alt_light <= win_light:
             bg = 'background-color: rgb(64, 64, 64);'
         else:
             bg = 'background-color: palette(alternate-base);'
         self._misc_container.setStyleSheet(f'QWidget#_FleasionMiscContainer {{ {bg} }}')
 
-    def set_proxy_features_enabled(self, enabled: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def set_proxy_features_enabled(self, enabled: bool) -> None:
         for gate_name in (
             '_rejoin_proxy_gate',
             '_subplace_blacklist_proxy_gate',
@@ -1341,7 +1341,7 @@ class RandoStuffTab(QWidget):
             if gate is not None:
                 gate.set_proxy_enabled(enabled)
 
-    def _clear_roblox_cache(self) -> None:  # ruff: ignore[no-self-use]
+    def _clear_roblox_cache(self) -> None:
         from .delete_cache import DeleteCacheWindow  # ruff: ignore[import-outside-top-level]
 
         window = DeleteCacheWindow()
@@ -1363,7 +1363,7 @@ class RandoStuffTab(QWidget):
             if not place_id or not access_code:
                 log_buffer.log(
                     'randostuff',
-                    'No reserved server placeID/accessCode set yet - join one first or enter them manually.',  # ruff: ignore[line-too-long]
+                    'No reserved server placeID/accessCode set yet - join one first or enter them manually.',
                 )
                 return
             self._last_place_id = place_id
@@ -1401,7 +1401,7 @@ class RandoStuffTab(QWidget):
         msg.setIcon(QMessageBox.Icon.NoIcon)
         msg.exec()
 
-    def _show_subplace_blacklist_dialog(self) -> None:  # ruff: ignore[complex-structure, too-many-statements]
+    def _show_subplace_blacklist_dialog(self) -> None:
         from fleasion.utils import get_icon_path  # ruff: ignore[import-outside-top-level]
 
         dialog = QDialog(self)
@@ -1505,7 +1505,7 @@ class RandoStuffTab(QWidget):
 
     # Multi-instance
 
-    def _on_multi_instance_toggled(self, checked: bool, persist: bool = True) -> None:  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
+    def _on_multi_instance_toggled(self, checked: bool, persist: bool = True) -> None:
         if checked and not IS_WINDOWS:
             self._multi_chk.blockSignals(True)  # ruff: ignore[boolean-positional-value-in-call]
             self._multi_chk.setChecked(False)
@@ -1536,7 +1536,7 @@ class RandoStuffTab(QWidget):
                     for pid in current_pids - stripped_pids:
                         log_buffer.log(
                             'multiinstance',
-                            f'Multiple PIDs detected ({len(current_pids)}). Stripping singleton for PID {pid}',  # ruff: ignore[line-too-long]
+                            f'Multiple PIDs detected ({len(current_pids)}). Stripping singleton for PID {pid}',
                         )
                         threading.Thread(
                             target=self._close_singleton_for_pid,
@@ -1551,7 +1551,7 @@ class RandoStuffTab(QWidget):
             except Exception as exc:  # ruff: ignore[blind-except]
                 log_buffer.log('multiinstance', f'Error: {exc}')
 
-    def _get_roblox_pids(self) -> set[int]:  # ruff: ignore[no-self-use]
+    def _get_roblox_pids(self) -> set[int]:
         if TYPE_CHECKING:
             kernel32 = cast('_Kernel32', object())
         else:
@@ -1602,7 +1602,7 @@ class RandoStuffTab(QWidget):
                 return
             self._multi_stop.wait(0.1)
 
-    def _scan_and_close_singleton(self, pid: int) -> bool:  # ruff: ignore[no-self-use, too-many-locals, too-many-statements]
+    def _scan_and_close_singleton(self, pid: int) -> bool:
         """Scan `pid` for a ROBLOX_singletonEvent handle and close it. Returns True if closed."""
         if TYPE_CHECKING:
             ntdll = cast('_Ntdll', object())
@@ -1785,7 +1785,7 @@ class RandoStuffTab(QWidget):
             except Exception:  # ruff: ignore[blind-except]
                 sess.headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
             resp = sess.get('https://users.roblox.com/v1/users/authenticated', timeout=10)
-            if resp.status_code == 200:  # ruff: ignore[magic-value-comparison]
+            if resp.status_code == 200:
                 data = resp.json()
                 username = data.get('name', '')
                 user_id = data.get('id')
@@ -1822,7 +1822,7 @@ class RandoStuffTab(QWidget):
                         'https://users.roblox.com/v1/users/authenticated',
                         timeout=10,
                     )
-                    expired = resp.status_code != 200  # ruff: ignore[magic-value-comparison]
+                    expired = resp.status_code != 200
                 except Exception:  # ruff: ignore[blind-except, try-except-pass]
                     pass  # Network error — don't mark as expired
             if expired:
@@ -1873,7 +1873,7 @@ class RandoStuffTab(QWidget):
                     'https://users.roblox.com/v1/users/authenticated', timeout=10
                 )
                 username = (
-                    str(response.json().get('name') or '') if response.status_code == 200 else ''  # ruff: ignore[magic-value-comparison]
+                    str(response.json().get('name') or '') if response.status_code == 200 else ''
                 )
             except Exception:  # ruff: ignore[blind-except]
                 username = ''
@@ -1998,7 +1998,7 @@ class RandoStuffTab(QWidget):
         log_buffer.log(
             'accounts',
             f'Launch request prepared for {username}: hasLink={"yes" if bool(link) else "no"}, '
-            f'hasSubplace={"yes" if bool(subplace_id) else "no"}, hasJobId={"yes" if bool(job_id) else "no"}',  # ruff: ignore[line-too-long]
+            f'hasSubplace={"yes" if bool(subplace_id) else "no"}, hasJobId={"yes" if bool(job_id) else "no"}',
         )
 
         if _is_share_link(link):
@@ -2113,7 +2113,7 @@ class RandoStuffTab(QWidget):
 
         self._on_main(_warn)
 
-    def _get_launch_auth_ticket(self, cookie: str, mode: str) -> str | None:  # ruff: ignore[no-self-use]
+    def _get_launch_auth_ticket(self, cookie: str, mode: str) -> str | None:
         log_buffer.log('accounts', f'Requesting auth ticket for {mode} launch')
         ticket = _get_auth_ticket(cookie)
         if ticket:
@@ -2122,7 +2122,7 @@ class RandoStuffTab(QWidget):
             log_buffer.log('accounts', f'Auth-ticket retrieval failed for {mode} launch')
         return ticket
 
-    def _launch_account_thread(  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
+    def _launch_account_thread(
         self,
         cookie: str,
         username: str,
@@ -2163,7 +2163,7 @@ class RandoStuffTab(QWidget):
             'accounts',
             f'Launch parse result: placeId={place_id or "(none)"}, '
             f'subplaceId={subplace_id or "(none)"}, launchPlaceId={launch_place_id or "(none)"}, '
-            f'linkCode={"present" if bool(link_code) else "missing"}, jobId={"present" if bool(job_id) else "missing"}',  # ruff: ignore[line-too-long]
+            f'linkCode={"present" if bool(link_code) else "missing"}, jobId={"present" if bool(job_id) else "missing"}',
         )
         root_place_id = self._normalize_numeric_id(place_id)
         normalized_launch_place_id = self._normalize_numeric_id(launch_place_id)
@@ -2350,7 +2350,7 @@ class RandoStuffTab(QWidget):
         return IS_WINDOWS and self._multi_chk.isChecked()
 
     def close_singleton_event(self) -> None:
-        """Close the Roblox singleton event to allow a new instance, then clear the switched flag."""  # ruff: ignore[line-too-long]
+        """Close the Roblox singleton event to allow a new instance, then clear the switched flag."""
         if not IS_WINDOWS:
             self._account_switched = False
             return
@@ -2360,7 +2360,7 @@ class RandoStuffTab(QWidget):
             log_buffer.log('multiinstance', f'close_singleton_event error: {exc}')
         self._account_switched = False
 
-    def get_roblox_exe(self) -> str | None:  # ruff: ignore[no-self-use]
+    def get_roblox_exe(self) -> str | None:
         """Return the path to the platform Roblox Player executable, or None if not found."""
         return _find_roblox_exe()
 
@@ -2492,7 +2492,7 @@ class RandoStuffTab(QWidget):
 
     # Proxy interceptor hooks
 
-    def request(self, flow: ProxyFlow) -> None:  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-return-statements, too-many-statements]
+    def request(self, flow: ProxyFlow) -> None:  # ruff: ignore[too-many-return-statements]
         url = flow.request.pretty_url
         if 'gamejoin.roblox.com' not in url:
             return
@@ -2681,7 +2681,7 @@ class RandoStuffTab(QWidget):
         with self._lock:
             self._awaiting_rejoin_response = True
 
-    def response(self, flow: ProxyFlow) -> None:  # ruff: ignore[complex-structure, too-many-statements]
+    def response(self, flow: ProxyFlow) -> None:
         response = flow.response
         if TYPE_CHECKING:
             assert response is not None
@@ -2740,15 +2740,15 @@ class RandoStuffTab(QWidget):
             join_ready = bool(resp_json.get('joinScriptUrl'))
             log_buffer.log(
                 'randostuff',
-                f'Rejoin response status: http={resp.status_code}, status={resp_json.get("status")}, '  # ruff: ignore[line-too-long]
+                f'Rejoin response status: http={resp.status_code}, status={resp_json.get("status")}, '
                 f'joinScriptUrl={"yes" if join_ready else "no"}',
             )
             # status 2 = join script ready; clear the active attempt so no more redirects
-            if resp_json.get('status') == 2 or join_ready:  # ruff: ignore[magic-value-comparison]
+            if resp_json.get('status') == 2 or join_ready:
                 with self._lock:
                     self._active_rejoin_attempt_id = None
                 log_buffer.log('randostuff', 'Reserved server join ready — stopping redirect.')
-            elif resp.status_code >= 400:  # ruff: ignore[magic-value-comparison]
+            elif resp.status_code >= 400:
                 with self._lock:
                     self._active_rejoin_attempt_id = None
                 log_buffer.log('randostuff', 'Reserved server join error — stopping redirect.')

@@ -62,7 +62,7 @@ def get_or_create_ktx2_from_image(
         expected_size = width * height * 4
         log_buffer.log(
             'TexPackTrace',
-            f'image_to_ktx2 convert start: input={image_path.name} mode={img.mode} size={width}x{height} bytes={original_size}',  # ruff: ignore[line-too-long]
+            f'image_to_ktx2 convert start: input={image_path.name} mode={img.mode} size={width}x{height} bytes={original_size}',
         )
 
         if len(rgba_bytes) != expected_size:
@@ -72,7 +72,7 @@ def get_or_create_ktx2_from_image(
             )
             log_buffer.log(
                 'TexPackTrace',
-                f'image_to_ktx2 size mismatch: input={image_path.name} rgba={len(rgba_bytes)} expected={expected_size}',  # ruff: ignore[line-too-long]
+                f'image_to_ktx2 size mismatch: input={image_path.name} rgba={len(rgba_bytes)} expected={expected_size}',
             )
             return image_path
 
@@ -89,11 +89,11 @@ def get_or_create_ktx2_from_image(
             ktx2_size = ktx2_path.stat().st_size
             log_buffer.log(
                 'Proxy',
-                f'Converted {image_path.name} -> KTX2 (Original: {original_size:,} bytes | KTX2: {ktx2_size:,} bytes)',  # ruff: ignore[line-too-long]
+                f'Converted {image_path.name} -> KTX2 (Original: {original_size:,} bytes | KTX2: {ktx2_size:,} bytes)',
             )
             log_buffer.log(
                 'TexPackTrace',
-                f'image_to_ktx2 convert complete: input={image_path.name} output={ktx2_path.name} bytes={ktx2_size}',  # ruff: ignore[line-too-long]
+                f'image_to_ktx2 convert complete: input={image_path.name} output={ktx2_path.name} bytes={ktx2_size}',
             )
         except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass

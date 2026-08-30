@@ -72,7 +72,7 @@ def _migrate_legacy_sober_stash(
     try:
         legacy.rename(destination)
     except OSError:
-        try:  # ruff: ignore[suppressible-exception]
+        try:
             shutil.copytree(legacy, destination)
         except OSError:
             # The caller can still use a fresh hashed stash.  Never delete or

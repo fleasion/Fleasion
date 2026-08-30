@@ -196,7 +196,7 @@ class UsernameSpoofer:
                 changed += 1
         return changed
 
-    def request(self, flow: ProxyFlow) -> None:  # ruff: ignore[no-self-use, unused-method-argument]
+    def request(self, flow: ProxyFlow) -> None:  # ruff: ignore[unused-method-argument]
         return
 
     @staticmethod
@@ -217,7 +217,7 @@ class UsernameSpoofer:
             except Exception:  # ruff: ignore[blind-except]
                 sess.headers['Cookie'] = f'.ROBLOSECURITY={cookie};'
             resp = sess.get('https://users.roblox.com/v1/users/authenticated', timeout=10)
-            if resp.status_code != 200:  # ruff: ignore[magic-value-comparison]
+            if resp.status_code != 200:
                 return None
             user_id = resp.json().get('id')
             return int(user_id) if user_id is not None else None
@@ -313,7 +313,7 @@ class UsernameSpoofer:
             log_buffer.log('username-spoofer', f'Failed to modify gamejoin response: {exc}')
             return False
 
-    def response(self, flow: ProxyFlow) -> None:  # ruff: ignore[complex-structure, too-many-branches]
+    def response(self, flow: ProxyFlow) -> None:
         if flow.response is None or not flow.response.content:
             return
         if self._modify_gamejoin_response(flow):

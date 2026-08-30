@@ -647,7 +647,7 @@ def _normalize_custom_fflag_keybinds(
     return normalized
 
 
-class ConfigManager:  # ruff: ignore[too-many-public-methods]
+class ConfigManager:
     """Manages application settings and replacement configurations."""
 
     def __init__(self) -> None:
@@ -1646,7 +1646,7 @@ class ConfigManager:  # ruff: ignore[too-many-public-methods]
     def set_config_enabled(
         self,
         name: str,
-        enabled: bool,  # ruff: ignore[boolean-type-hint-positional-argument]
+        enabled: bool,
     ) -> None:
         """Set a config's enabled state."""
         if name not in self.config_names:
@@ -1661,7 +1661,7 @@ class ConfigManager:  # ruff: ignore[too-many-public-methods]
 
     def reconcile_configs(
         self,
-        save: bool = True,  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
+        save: bool = True,
     ) -> bool:
         """Synchronize settings with config files currently on disk.
 

@@ -330,7 +330,7 @@ class RbxmDeserializer:
             prop_name,
         )
 
-    def _read_property_values(  # ruff: ignore[complex-structure, too-many-branches, too-many-return-statements]
+    def _read_property_values(  # ruff: ignore[too-many-return-statements]
         self,
         fmt: PropertyFormat,
         data: bytes,
@@ -411,7 +411,7 @@ class RbxmDeserializer:
 
     # --- Property readers ---
 
-    def _read_strings(self, data: bytes, offset: int, count: int) -> list[str | bytes]:  # ruff: ignore[no-self-use]
+    def _read_strings(self, data: bytes, offset: int, count: int) -> list[str | bytes]:
         results: list[str | bytes] = []
         for _ in range(count):
             raw, offset = read_binary_string(data, offset)
@@ -422,35 +422,35 @@ class RbxmDeserializer:
                 results.append(raw)
         return results
 
-    def _read_bools(self, data: bytes, offset: int, count: int) -> list[bool]:  # ruff: ignore[no-self-use]
+    def _read_bools(self, data: bytes, offset: int, count: int) -> list[bool]:
         return [data[offset + i] != 0 for i in range(count)]
 
-    def _read_ints(self, data: bytes, offset: int, count: int) -> list[int]:  # ruff: ignore[no-self-use]
+    def _read_ints(self, data: bytes, offset: int, count: int) -> list[int]:
         return deinterleave_i32(data, offset, count)
 
-    def _read_floats(self, data: bytes, offset: int, count: int) -> list[float]:  # ruff: ignore[no-self-use]
+    def _read_floats(self, data: bytes, offset: int, count: int) -> list[float]:
         return deinterleave_f32(data, offset, count)
 
-    def _read_doubles(self, data: bytes, offset: int, count: int) -> list[float]:  # ruff: ignore[no-self-use]
+    def _read_doubles(self, data: bytes, offset: int, count: int) -> list[float]:
         results: list[float] = []
         for i in range(count):
             val, _ = read_f64(data, offset + i * 8)
             results.append(val)
         return results
 
-    def _read_udims(self, data: bytes, offset: int, count: int) -> list[dict[str, float | int]]:  # ruff: ignore[no-self-use]
+    def _read_udims(self, data: bytes, offset: int, count: int) -> list[dict[str, float | int]]:
         scales = deinterleave_f32(data, offset, count)
         offsets = deinterleave_i32(data, offset + count * 4, count)
         return [{'S': scales[i], 'O': offsets[i]} for i in range(count)]
 
-    def _read_udim2s(self, data: bytes, offset: int, count: int) -> list[dict[str, float | int]]:  # ruff: ignore[no-self-use]
+    def _read_udim2s(self, data: bytes, offset: int, count: int) -> list[dict[str, float | int]]:
         xs = deinterleave_f32(data, offset, count)
         ys = deinterleave_f32(data, offset + count * 4, count)
         xo = deinterleave_i32(data, offset + count * 8, count)
         yo = deinterleave_i32(data, offset + count * 12, count)
         return [{'XS': xs[i], 'XO': xo[i], 'YS': ys[i], 'YO': yo[i]} for i in range(count)]
 
-    def _read_rays(self, data: bytes, offset: int, count: int) -> list[dict[str, dict[str, float]]]:  # ruff: ignore[no-self-use]
+    def _read_rays(self, data: bytes, offset: int, count: int) -> list[dict[str, dict[str, float]]]:
         results: list[dict[str, dict[str, float]]] = []
         for _ in range(count):
             ox, offset = read_f32(data, offset)
@@ -467,33 +467,33 @@ class RbxmDeserializer:
             )
         return results
 
-    def _read_faces(self, data: bytes, offset: int, count: int) -> list[int]:  # ruff: ignore[no-self-use]
+    def _read_faces(self, data: bytes, offset: int, count: int) -> list[int]:
         return [data[offset + i] for i in range(count)]
 
-    def _read_axes(self, data: bytes, offset: int, count: int) -> list[int]:  # ruff: ignore[no-self-use]
+    def _read_axes(self, data: bytes, offset: int, count: int) -> list[int]:
         return [data[offset + i] for i in range(count)]
 
-    def _read_brick_colors(self, data: bytes, offset: int, count: int) -> list[int]:  # ruff: ignore[no-self-use]
+    def _read_brick_colors(self, data: bytes, offset: int, count: int) -> list[int]:
         return deinterleave_u32(data, offset, count)
 
-    def _read_color3s(self, data: bytes, offset: int, count: int) -> list[dict[str, float]]:  # ruff: ignore[no-self-use]
+    def _read_color3s(self, data: bytes, offset: int, count: int) -> list[dict[str, float]]:
         rs = deinterleave_f32(data, offset, count)
         gs = deinterleave_f32(data, offset + count * 4, count)
         bs = deinterleave_f32(data, offset + count * 8, count)
         return [{'R': rs[i], 'G': gs[i], 'B': bs[i]} for i in range(count)]
 
-    def _read_vector2s(self, data: bytes, offset: int, count: int) -> list[dict[str, float]]:  # ruff: ignore[no-self-use]
+    def _read_vector2s(self, data: bytes, offset: int, count: int) -> list[dict[str, float]]:
         xs = deinterleave_f32(data, offset, count)
         ys = deinterleave_f32(data, offset + count * 4, count)
         return [{'X': xs[i], 'Y': ys[i]} for i in range(count)]
 
-    def _read_vector3s(self, data: bytes, offset: int, count: int) -> list[dict[str, float]]:  # ruff: ignore[no-self-use]
+    def _read_vector3s(self, data: bytes, offset: int, count: int) -> list[dict[str, float]]:
         xs = deinterleave_f32(data, offset, count)
         ys = deinterleave_f32(data, offset + count * 4, count)
         zs = deinterleave_f32(data, offset + count * 8, count)
         return [{'X': xs[i], 'Y': ys[i], 'Z': zs[i]} for i in range(count)]
 
-    def _read_vector2int16s(self, data: bytes, offset: int, count: int) -> list[dict[str, int]]:  # ruff: ignore[no-self-use]
+    def _read_vector2int16s(self, data: bytes, offset: int, count: int) -> list[dict[str, int]]:
         results: list[dict[str, int]] = []
         for _ in range(count):
             x = struct.unpack_from('<h', data, offset)[0]
@@ -502,7 +502,7 @@ class RbxmDeserializer:
             results.append({'X': x, 'Y': y})
         return results
 
-    def _read_vector3int16s(self, data: bytes, offset: int, count: int) -> list[dict[str, int]]:  # ruff: ignore[no-self-use]
+    def _read_vector3int16s(self, data: bytes, offset: int, count: int) -> list[dict[str, int]]:
         results: list[dict[str, int]] = []
         for _ in range(count):
             x = struct.unpack_from('<h', data, offset)[0]
@@ -523,7 +523,7 @@ class RbxmDeserializer:
         results, _offset = self._read_cframes_with_offset(data, offset, count, fmt)
         return results
 
-    def _read_cframes_with_offset(  # ruff: ignore[no-self-use, too-many-locals]
+    def _read_cframes_with_offset(
         self,
         data: bytes,
         offset: int,
@@ -584,14 +584,14 @@ class RbxmDeserializer:
             )
         return results, offset
 
-    def _read_enums(self, data: bytes, offset: int, count: int) -> list[int]:  # ruff: ignore[no-self-use]
+    def _read_enums(self, data: bytes, offset: int, count: int) -> list[int]:
         return deinterleave_u32(data, offset, count)
 
-    def _read_refs(self, data: bytes, offset: int, count: int) -> list[int | None]:  # ruff: ignore[no-self-use]
+    def _read_refs(self, data: bytes, offset: int, count: int) -> list[int | None]:
         ids, _ = decode_ids(data, offset, count)
         return [None if v == -1 else v for v in ids]
 
-    def _read_number_sequences(  # ruff: ignore[no-self-use]
+    def _read_number_sequences(
         self, data: bytes, offset: int, count: int
     ) -> list[list[dict[str, float]]]:
         results: list[list[dict[str, float]]] = []
@@ -606,7 +606,7 @@ class RbxmDeserializer:
             results.append(keys)
         return results
 
-    def _read_color_sequences(  # ruff: ignore[no-self-use]
+    def _read_color_sequences(
         self, data: bytes, offset: int, count: int
     ) -> list[list[dict[str, float]]]:
         results: list[list[dict[str, float]]] = []
@@ -623,7 +623,7 @@ class RbxmDeserializer:
             results.append(keys)
         return results
 
-    def _read_number_ranges(self, data: bytes, offset: int, count: int) -> list[dict[str, float]]:  # ruff: ignore[no-self-use]
+    def _read_number_ranges(self, data: bytes, offset: int, count: int) -> list[dict[str, float]]:
         results: list[dict[str, float]] = []
         for _ in range(count):
             low, offset = read_f32(data, offset)
@@ -631,7 +631,7 @@ class RbxmDeserializer:
             results.append({'Min': low, 'Max': high})
         return results
 
-    def _read_rect2ds(  # ruff: ignore[no-self-use]
+    def _read_rect2ds(
         self, data: bytes, offset: int, count: int
     ) -> list[dict[str, dict[str, float]]]:
         x0s = deinterleave_f32(data, offset, count)
@@ -646,7 +646,7 @@ class RbxmDeserializer:
             for i in range(count)
         ]
 
-    def _read_physical_properties(  # ruff: ignore[no-self-use]
+    def _read_physical_properties(
         self, data: bytes, offset: int, count: int
     ) -> list[dict[str, Any] | None]:
         results: list[dict[str, Any] | None] = []
@@ -683,13 +683,13 @@ class RbxmDeserializer:
                 results.append(None)
         return results
 
-    def _read_color3uint8s(self, data: bytes, offset: int, count: int) -> list[dict[str, int]]:  # ruff: ignore[no-self-use]
+    def _read_color3uint8s(self, data: bytes, offset: int, count: int) -> list[dict[str, int]]:
         rs = data[offset : offset + count]
         gs = data[offset + count : offset + 2 * count]
         bs = data[offset + 2 * count : offset + 3 * count]
         return [{'R': rs[i], 'G': gs[i], 'B': bs[i]} for i in range(count)]
 
-    def _read_int64s(self, data: bytes, offset: int, count: int) -> list[int]:  # ruff: ignore[no-self-use]
+    def _read_int64s(self, data: bytes, offset: int, count: int) -> list[int]:
         return deinterleave_i64(data, offset, count)
 
     def _read_shared_strings(self, data: bytes, offset: int, count: int) -> list[bytes]:
@@ -698,7 +698,7 @@ class RbxmDeserializer:
             self._shared_strings[idx] if idx < len(self._shared_strings) else b'' for idx in indices
         ]
 
-    def _read_bytecodes(self, data: bytes, offset: int, count: int) -> list[bytes]:  # ruff: ignore[no-self-use]
+    def _read_bytecodes(self, data: bytes, offset: int, count: int) -> list[bytes]:
         results: list[bytes] = []
         for _ in range(count):
             raw, offset = read_binary_string(data, offset)
@@ -726,7 +726,7 @@ class RbxmDeserializer:
         present = self._read_bools(data, offset, count)
         return [cframes[i] if present[i] else None for i in range(count)]
 
-    def _read_unique_ids(self, data: bytes, offset: int, count: int) -> list[dict[str, int]]:  # ruff: ignore[no-self-use]
+    def _read_unique_ids(self, data: bytes, offset: int, count: int) -> list[dict[str, int]]:
         records = deinterleave_bytes(data, offset, count, 16)
         results: list[dict[str, int]] = []
         for record in records:
@@ -734,7 +734,7 @@ class RbxmDeserializer:
             results.append({'Index': index, 'Time': time, 'Random': random})
         return results
 
-    def _read_fonts(self, data: bytes, offset: int, count: int) -> list[dict[str, Any]]:  # ruff: ignore[no-self-use]
+    def _read_fonts(self, data: bytes, offset: int, count: int) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
         for _ in range(count):
             family_raw, offset = read_binary_string(data, offset)
@@ -752,10 +752,10 @@ class RbxmDeserializer:
             )
         return results
 
-    def _read_security_capabilities(self, data: bytes, offset: int, count: int) -> list[int]:  # ruff: ignore[no-self-use]
+    def _read_security_capabilities(self, data: bytes, offset: int, count: int) -> list[int]:
         return deinterleave_u64(data, offset, count)
 
-    def _read_contents(self, data: bytes, offset: int, count: int) -> list[dict[str, Any] | None]:  # ruff: ignore[no-self-use]
+    def _read_contents(self, data: bytes, offset: int, count: int) -> list[dict[str, Any] | None]:
         source_types = deinterleave_u32(data, offset, count)
         offset += count * 4
 
@@ -782,7 +782,7 @@ class RbxmDeserializer:
                 uri = uris[uri_index] if uri_index < len(uris) else ''
                 uri_index += 1
                 results.append({'SourceType': 'Uri', 'Uri': uri})
-            elif source_type == 2:  # ruff: ignore[magic-value-comparison]
+            elif source_type == 2:
                 if object_index < len(object_refs):
                     ref = object_refs[object_index]
                     object_index += 1

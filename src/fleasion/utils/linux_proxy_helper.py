@@ -8,7 +8,7 @@ import json
 import os
 import re
 import shutil
-import subprocess  # ruff: ignore[suspicious-subprocess-import]
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -134,7 +134,7 @@ def _run_host_command(
 ) -> subprocess.CompletedProcess[bytes]: ...
 
 
-def _run_host_command(  # ruff: ignore[too-many-arguments]
+def _run_host_command(
     cmd: list[str],
     *,
     capture_output: bool = False,
@@ -274,7 +274,7 @@ def _policy_file_is_current(path: Path) -> bool:
     return (
         f'id="{POLKIT_ACTION_NAMESPACE}.run"' in text
         and '<allow_active>yes</allow_active>' in text
-        and f'<annotate key="org.freedesktop.policykit.exec.path">{INSTALLED_HELPER_PATH}</annotate>'  # ruff: ignore[line-too-long]
+        and f'<annotate key="org.freedesktop.policykit.exec.path">{INSTALLED_HELPER_PATH}</annotate>'
         in text
     )
 
@@ -328,7 +328,7 @@ def _current_process_start_time() -> str | None:
         content = Path(f'/proc/{os.getpid()}/stat').read_text(encoding='utf-8', errors='replace')
         _before, after_comm = content.rsplit(')', 1)
         fields = after_comm.strip().split()
-        return fields[19] if len(fields) > 19 else None  # ruff: ignore[magic-value-comparison]
+        return fields[19] if len(fields) > 19 else None
     except OSError:
         return None
     except ValueError:
@@ -402,7 +402,7 @@ def install_privileged_helper(
     return details
 
 
-def ensure_privileged_helper_installed(  # ruff: ignore[complex-structure, too-many-branches, too-many-return-statements]
+def ensure_privileged_helper_installed(  # ruff: ignore[too-many-return-statements]
     *,
     enable_promptless: bool = True,
     ca_cert_path: Path | None = None,
@@ -420,7 +420,7 @@ def ensure_privileged_helper_installed(  # ruff: ignore[complex-structure, too-m
         _force_source_helper_for_session = True
         log_buffer.log(
             'ProxyHelper',
-            'Persistent Linux helper install path is read-only; using the current helper directly for this session',  # ruff: ignore[line-too-long]
+            'Persistent Linux helper install path is read-only; using the current helper directly for this session',
         )
         return True
 
@@ -448,7 +448,7 @@ def ensure_privileged_helper_installed(  # ruff: ignore[complex-structure, too-m
             _force_source_helper_for_session = True
             log_buffer.log(
                 'ProxyHelper',
-                'Persistent Linux helper install path is read-only; using the current helper directly for this session',  # ruff: ignore[line-too-long]
+                'Persistent Linux helper install path is read-only; using the current helper directly for this session',
             )
             return True
         return False
@@ -479,12 +479,12 @@ def ensure_privileged_helper_installed(  # ruff: ignore[complex-structure, too-m
         if store_names and all(str(store).endswith(':already-current') for store in store_names):
             log_buffer.log(
                 'Certificate',
-                f'CA already trusted in Linux system trust store during helper install{f" ({stores})" if stores else ""}',  # ruff: ignore[line-too-long]
+                f'CA already trusted in Linux system trust store during helper install{f" ({stores})" if stores else ""}',
             )
         else:
             log_buffer.log(
                 'Certificate',
-                f'Installed CA into Linux system trust store during helper install{f" ({stores})" if stores else ""}',  # ruff: ignore[line-too-long]
+                f'Installed CA into Linux system trust store during helper install{f" ({stores})" if stores else ""}',
             )
 
     if details.get('promptless_rule'):
@@ -497,12 +497,12 @@ def ensure_privileged_helper_installed(  # ruff: ignore[complex-structure, too-m
     return True
 
 
-def start_helper(  # ruff: ignore[complex-structure, too-many-branches, too-many-return-statements, too-many-statements]
+def start_helper(  # ruff: ignore[too-many-return-statements]
     hosts: set[str],
     backend_port: int = MACOS_PROXY_BACKEND_PORT,
     timeout: float = 120.0,
     ca_cert_path: Path | None = None,
-    require_system_ca: bool = False,  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
+    require_system_ca: bool = False,
 ) -> bool:
     """Start the privileged Linux port/hosts helper and wait until it is ready."""
     _set_last_start_error()
@@ -549,7 +549,7 @@ def start_helper(  # ruff: ignore[complex-structure, too-many-branches, too-many
                 enforce_system_ca = False
                 log_buffer.log(
                     'Certificate',
-                    'Linux system trust-store install is unsupported in the privileged environment; '  # ruff: ignore[line-too-long]
+                    'Linux system trust-store install is unsupported in the privileged environment; '
                     'continuing without distro-wide CA trust',
                 )
             else:
@@ -655,7 +655,7 @@ def start_helper(  # ruff: ignore[complex-structure, too-many-branches, too-many
             )
             log_buffer.log(
                 'ProxyHelper',
-                f'Linux proxy helper exited before becoming ready with code {returncode}; log: {HELPER_LOG_FILE}',  # ruff: ignore[line-too-long]
+                f'Linux proxy helper exited before becoming ready with code {returncode}; log: {HELPER_LOG_FILE}',
             )
             return False
         time.sleep(0.2)

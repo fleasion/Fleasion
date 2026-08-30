@@ -177,7 +177,7 @@ class FastFlagManager:
     # Public API
     # ------------------------------------------------------------------
 
-    def build_json(self, settings: Mapping[str, object]) -> dict[str, str]:  # ruff: ignore[complex-structure, no-self-use, too-many-branches]
+    def build_json(self, settings: Mapping[str, object]) -> dict[str, str]:
         """Convert a UI settings dict into the flags dict that becomes ClientAppSettings.json."""
         flags: dict[str, str] = {}
 
@@ -244,7 +244,7 @@ class FastFlagManager:
 
         return flags
 
-    def write(self, settings: Mapping[str, object]) -> set[Path]:  # ruff: ignore[complex-structure, too-many-branches, too-many-statements]
+    def write(self, settings: Mapping[str, object]) -> set[Path]:
         """Build flags and write settings, returning dirs blocked by permissions."""
         flags = self.build_json(settings)
         content = json.dumps(flags, indent=2).encode('utf-8') if flags else b'{}'
@@ -320,7 +320,7 @@ class FastFlagManager:
             if wrote_dir:
                 written_dirs += 1
 
-        message = f'Wrote {format_count(len(flags), "flag")} to {format_count(written_dirs, "Roblox dir")}'  # ruff: ignore[line-too-long]
+        message = f'Wrote {format_count(len(flags), "flag")} to {format_count(written_dirs, "Roblox dir")}'
         if failed:
             message += f'; skipped {format_count(failed, "Roblox dir")} due to permission errors'
         log_buffer.log('FastFlags', message)
@@ -389,7 +389,7 @@ class FastFlagManager:
             )
         return updated_count
 
-    def restore(self) -> None:  # ruff: ignore[complex-structure, too-many-branches, too-many-statements]
+    def restore(self) -> None:
         """Restore (or delete) ``ClientAppSettings.json`` in every Roblox dir."""
         restored = 0
         failed = 0
@@ -461,5 +461,5 @@ class FastFlagManager:
 
         message = 'Restored ClientAppSettings.json'
         if failed:
-            message += f' in {format_count(restored, "Roblox dir")}; skipped {format_count(failed, "Roblox dir")} due to permission errors'  # ruff: ignore[line-too-long]
+            message += f' in {format_count(restored, "Roblox dir")}; skipped {format_count(failed, "Roblox dir")} due to permission errors'
         log_buffer.log('FastFlags', message)

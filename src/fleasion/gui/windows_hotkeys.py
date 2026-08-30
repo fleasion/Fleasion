@@ -103,9 +103,7 @@ else:
 
         @callback_type
         def callback(code: int, message: int, lparam: int) -> int:
-            if (
-                code >= 0 and message == 0x020A  # ruff: ignore[magic-value-comparison]
-            ):  # WM_MOUSEWHEEL
+            if code >= 0 and message == 0x020A:  # WM_MOUSEWHEEL
                 data = ctypes.cast(lparam, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
                 delta = ctypes.c_short((data.mouseData >> 16) & 0xFFFF).value
                 if delta:
@@ -195,7 +193,7 @@ def normalize_binding(binding: object) -> HotkeyBinding | None:
         kind not in ('key', 'mouse_button')  # ruff: ignore[literal-membership, too-many-boolean-expressions]
         or not isinstance(scan_code, int)
         or isinstance(scan_code, bool)
-        or not 0 < scan_code <= 0xFF  # ruff: ignore[magic-value-comparison]
+        or not 0 < scan_code <= 0xFF
         or not isinstance(extended, bool)
         or (kind == 'mouse_button' and scan_code not in (1, 2, 4, 5, 6))  # ruff: ignore[literal-membership]
     ):
@@ -320,7 +318,7 @@ _SMU_WINDOWS_EXTENDED_SCAN_TO_VK = {
 }
 
 
-def _virtual_key_for_binding(scan_code: int, extended: bool) -> int:  # ruff: ignore[boolean-type-hint-positional-argument]
+def _virtual_key_for_binding(scan_code: int, extended: bool) -> int:
     if sys.platform == 'win32':
         try:
             mapped_scan_code = scan_code | (0xE000 if extended else 0)
@@ -394,7 +392,7 @@ class WindowsHotkeyService(QObject):
         )
         self._thread.start()
 
-    def _run(self, bindings: Mapping[str, HotkeyBinding]) -> None:  # ruff: ignore[complex-structure, too-many-branches, too-many-statements]
+    def _run(self, bindings: Mapping[str, HotkeyBinding]) -> None:
         user32 = _windll().user32
         user32.GetAsyncKeyState.argtypes = (ctypes.c_int,)
         user32.GetAsyncKeyState.restype = ctypes.c_short

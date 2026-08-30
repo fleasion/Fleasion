@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import subprocess  # ruff: ignore[suspicious-subprocess-import]
+import subprocess
 import sys
 from collections.abc import (
     Callable,  # ruff: ignore[typing-only-standard-library-import]

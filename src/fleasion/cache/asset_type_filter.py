@@ -154,7 +154,7 @@ def asset_type_display_name(type_id: AssetType) -> str:
 class CategoryFilterPopup(QMenu):
     filters_changed = Signal(set)
 
-    def __init__(  # ruff: ignore[too-many-locals, too-many-statements]
+    def __init__(
         self,
         parent: QWidget | None = None,
         active_filters: set[AssetType] | None = None,
@@ -231,7 +231,7 @@ class CategoryFilterPopup(QMenu):
                 cat_types.append(tid)
 
             def toggle_category(
-                _checked: bool = False,  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
+                _checked: bool = False,
                 category_types: list[AssetType] = cat_types,
                 category_name: str = cat_name,
             ) -> None:
@@ -242,7 +242,7 @@ class CategoryFilterPopup(QMenu):
                 cb = self.checkboxes[tid]
 
                 def toggle_type(
-                    checked: bool = False,  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
+                    checked: bool = False,
                     type_id: AssetType = tid,
                     category_name: str = cat_name,
                 ) -> None:
@@ -254,7 +254,7 @@ class CategoryFilterPopup(QMenu):
             vbox.addStretch()
             grid.addWidget(cat_frame, row, col)
             col += 1
-            if col >= 4:  # ruff: ignore[magic-value-comparison]
+            if col >= 4:
                 col = 0
                 row += 1
 
@@ -356,7 +356,7 @@ class CategoryFilterPopup(QMenu):
         self._updating = False
         self.filters_changed.emit(self.active_filters)
 
-    def _on_type_clicked(self, tid: AssetType, cat_name: str, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _on_type_clicked(self, tid: AssetType, cat_name: str, checked: bool) -> None:
         if self._updating:
             return
         self._updating = True

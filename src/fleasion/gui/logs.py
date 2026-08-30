@@ -121,7 +121,7 @@ class LogsWindow(QDialog):
         esc = QShortcut(QKeySequence('Escape'), self._search_input)
         esc.activated.connect(self._clear_search)
 
-    def _get_monospace_font(self) -> QFont:  # ruff: ignore[no-self-use]
+    def _get_monospace_font(self) -> QFont:
         font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
         font.setPointSize(10)
         return font

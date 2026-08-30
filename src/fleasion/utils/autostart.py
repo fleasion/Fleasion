@@ -14,7 +14,7 @@ import json
 import logging
 import os
 import plistlib
-import subprocess  # ruff: ignore[suspicious-subprocess-import]
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -353,7 +353,7 @@ def _task_exists() -> bool:
 
 def _delete_task() -> bool:
     if sys.platform == 'darwin':
-        try:  # ruff: ignore[suppressible-exception]
+        try:
             subprocess.run(  # ruff: ignore[subprocess-run-without-check, subprocess-without-shell-equals-true]
                 ['launchctl', 'unload', str(LAUNCH_AGENT_PATH)],  # ruff: ignore[start-process-with-partial-path]
                 capture_output=True,
@@ -547,7 +547,7 @@ def _grant_windows_task_user_control(windows_user_id: str) -> bool:
         return False
 
 
-def _create_task(  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-return-statements, too-many-statements]
+def _create_task(  # ruff: ignore[too-many-return-statements]
     launch_info: LaunchInfo,
     *,
     windows_user_id: str | None = None,
@@ -747,7 +747,7 @@ def _create_task(  # ruff: ignore[complex-structure, too-many-branches, too-many
         _log(f'Failed to create scheduled task: {e}')
         return False
     finally:
-        try:  # ruff: ignore[suppressible-exception]
+        try:
             os.unlink(tmp)  # ruff: ignore[os-unlink]
         except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass
@@ -765,14 +765,14 @@ def _get_stored_launch_info(config_dir: Path) -> LaunchInfo | None:
 
 
 def _save_launch_info(config_dir: Path, info: LaunchInfo) -> None:
-    try:  # ruff: ignore[suppressible-exception]
+    try:
         (config_dir / 'autostart_info.json').write_text(json.dumps(info))
     except Exception:  # ruff: ignore[blind-except, try-except-pass]
         pass
 
 
-def sync_autostart(  # ruff: ignore[complex-structure, too-many-branches]
-    enabled: bool,  # ruff: ignore[boolean-type-hint-positional-argument]
+def sync_autostart(
+    enabled: bool,
     config_dir: Path,
     *,
     windows_user_id: str | None = None,

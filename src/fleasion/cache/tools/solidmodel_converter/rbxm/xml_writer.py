@@ -101,7 +101,7 @@ def _write_instance(
         _write_instance(item, child, doc)
 
 
-def _write_property(  # ruff: ignore[complex-structure, too-many-branches, too-many-statements]
+def _write_property(
     props_el: Element,
     prop: RbxProperty,
     doc: RbxDocument,  # ruff: ignore[unused-function-argument]
@@ -198,9 +198,9 @@ def _has_invalid_xml_chars(s: str) -> bool:
     """Return True if the string contains characters not allowed in XML 1.0."""
     for ch in s:
         codepoint = ord(ch)
-        if codepoint < 0x20 and ch not in '\t\n\r':  # ruff: ignore[magic-value-comparison]
+        if codepoint < 0x20 and ch not in '\t\n\r':
             return True
-        if 0xD800 <= codepoint <= 0xDFFF:  # ruff: ignore[magic-value-comparison]
+        if 0xD800 <= codepoint <= 0xDFFF:
             return True
         if codepoint in (0xFFFE, 0xFFFF):  # ruff: ignore[literal-membership]
             return True
@@ -507,7 +507,7 @@ def _write_content(parent: Element, prop: RbxProperty) -> None:
     _write_content_value(el, prop.value)
 
 
-def _write_content_value(parent: Element, value: Any) -> None:  # ruff: ignore[any-type]
+def _write_content_value(parent: Element, value: Any) -> None:
     if value is None:
         SubElement(parent, 'null')
     elif isinstance(value, str):
@@ -527,10 +527,10 @@ def _write_content_value(parent: Element, value: Any) -> None:  # ruff: ignore[a
         SubElement(parent, 'null')
 
 
-def _fmt_float(value: Any) -> str:  # ruff: ignore[any-type]
+def _fmt_float(value: Any) -> str:
     """Format a float for XML output, avoiding unnecessary decimals."""
     if isinstance(value, float):
-        if value.is_integer() and abs(value) < 1e15:  # ruff: ignore[magic-value-comparison]
+        if value.is_integer() and abs(value) < 1e15:
             return str(int(value))
         return f'{value:.8g}'
     return str(value)

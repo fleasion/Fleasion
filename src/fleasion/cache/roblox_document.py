@@ -200,7 +200,7 @@ def _parse_roblox_xml(data: bytes) -> ET.Element | None:
     return root
 
 
-def _xml_to_document(data: bytes) -> RbxDocument:  # ruff: ignore[complex-structure, too-many-statements]
+def _xml_to_document(data: bytes) -> RbxDocument:
     root = safe_et.fromstring(data)
     if _tag_name(root) != 'roblox':
         msg = 'XML root is not a Roblox document'
@@ -335,7 +335,7 @@ def _property_format_from_type_name(type_name: str) -> PropertyFormat | None:
     return tag_to_format.get(key, PropertyFormat.STRING)
 
 
-def _value_for_format(  # ruff: ignore[complex-structure, too-many-branches, too-many-return-statements]
+def _value_for_format(  # ruff: ignore[too-many-return-statements]
     value: object, fmt: PropertyFormat, ref_mapper: Callable[[str], int]
 ) -> object:
     if fmt in {
@@ -370,7 +370,7 @@ def _value_for_format(  # ruff: ignore[complex-structure, too-many-branches, too
         if isinstance(value, bytes):
             return value
         text = str(value).strip().replace('-', '')
-        if len(text) == 32:  # ruff: ignore[magic-value-comparison]
+        if len(text) == 32:
             try:
                 xml_random = int(text[:16], 16)
                 random_bits = (xml_random >> 1) | ((xml_random & 1) << 63)
@@ -470,8 +470,8 @@ def _parse_udim2_value(value: object) -> dict[str, float | int]:
     return {
         'XS': numbers[0] if len(numbers) > 0 else 0.0,
         'XO': int(numbers[1]) if len(numbers) > 1 else 0,
-        'YS': numbers[2] if len(numbers) > 2 else 0.0,  # ruff: ignore[magic-value-comparison]
-        'YO': int(numbers[3]) if len(numbers) > 3 else 0,  # ruff: ignore[magic-value-comparison]
+        'YS': numbers[2] if len(numbers) > 2 else 0.0,
+        'YO': int(numbers[3]) if len(numbers) > 3 else 0,
     }
 
 
@@ -539,10 +539,10 @@ def _parse_cframe_value(value: object) -> dict[str, float] | None:
                 result[key] = _safe_float(pairs[key])
         return result
     numbers = _parse_numbers(text)
-    if len(numbers) >= 12:  # ruff: ignore[magic-value-comparison]
+    if len(numbers) >= 12:
         for key, number in zip(result, numbers[:12], strict=False):
             result[key] = number  # ruff: ignore[manual-dict-comprehension]
-    elif len(numbers) >= 3:  # ruff: ignore[magic-value-comparison]
+    elif len(numbers) >= 3:
         result['X'], result['Y'], result['Z'] = numbers[:3]
     return result
 
@@ -601,7 +601,7 @@ def _parse_physical_properties_value(value: object) -> dict[str, bool | float] |
     if pairs:
         return _parse_physical_properties_value(pairs)
     numbers = _parse_numbers(text)
-    if len(numbers) < 5:  # ruff: ignore[magic-value-comparison]
+    if len(numbers) < 5:
         return None
     result: dict[str, bool | float] = {
         'CustomPhysics': True,
@@ -611,7 +611,7 @@ def _parse_physical_properties_value(value: object) -> dict[str, bool | float] |
         'FrictionWeight': numbers[3],
         'ElasticityWeight': numbers[4],
     }
-    if len(numbers) > 5:  # ruff: ignore[magic-value-comparison]
+    if len(numbers) > 5:
         result['AcousticAbsorption'] = numbers[5]
     return result
 
@@ -632,8 +632,8 @@ def _parse_font_value(value: object) -> dict[str, str | int]:
     return {
         'Family': parts[0] if len(parts) > 0 else '',
         'Weight': _safe_int(parts[1] if len(parts) > 1 else 400),
-        'Style': _safe_int(parts[2] if len(parts) > 2 else 0),  # ruff: ignore[magic-value-comparison]
-        'CachedFaceId': parts[3] if len(parts) > 3 else '',  # ruff: ignore[magic-value-comparison]
+        'Style': _safe_int(parts[2] if len(parts) > 2 else 0),
+        'CachedFaceId': parts[3] if len(parts) > 3 else '',
     }
 
 

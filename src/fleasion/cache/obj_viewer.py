@@ -171,7 +171,7 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
             refresh = 60.0
         return max(1, round(1000.0 / refresh))
 
-    def load_obj_data(self, obj_content: str) -> None:  # ruff: ignore[complex-structure, too-many-branches]
+    def load_obj_data(self, obj_content: str) -> None:
         """Load OBJ file content."""
         self._discard_mesh_display_list()
         self.vertices = []
@@ -192,7 +192,7 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
             if parts[0] == 'v':
                 self.vertices.append([float(parts[1]), float(parts[2]), float(parts[3])])
                 # Vertex Colors support
-                if len(parts) >= 7:  # ruff: ignore[magic-value-comparison]
+                if len(parts) >= 7:
                     self.colors.append([float(parts[4]), float(parts[5]), float(parts[6])])
                 else:
                     self.colors.append([1.0, 1.0, 1.0])  # Default white color fallback
@@ -205,10 +205,10 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
                 for part in parts[1:]:
                     indices = part.split('/')
                     face_v.append(int(indices[0]) - 1)
-                    if len(indices) >= 3 and indices[2]:  # ruff: ignore[magic-value-comparison]
+                    if len(indices) >= 3 and indices[2]:
                         face_n.append(int(indices[2]) - 1)
 
-                if len(face_v) >= 3:  # ruff: ignore[magic-value-comparison]
+                if len(face_v) >= 3:
                     self.faces.append({'v': face_v, 'n': face_n})
 
         if self.vertices:
@@ -251,7 +251,7 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
 
         for face in self.faces:
             v_indices = face.get('v', [])
-            if len(v_indices) >= 3:  # ruff: ignore[magic-value-comparison]
+            if len(v_indices) >= 3:
                 # ensure the first three indices are valid integers within range
                 if any(_invalid_vertex_index(idx, v_count) for idx in v_indices[:3]):
                     # invalid face. append a default normal and skip detailed compute.
@@ -290,7 +290,7 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
                 n_indices = face['n']
 
                 # Only explicitly rendering triangles to optimize glBegin calls
-                if len(v_indices) < 3:  # ruff: ignore[magic-value-comparison]
+                if len(v_indices) < 3:
                     continue
 
                 # Fallback to face normals if vertex normals missing
@@ -412,7 +412,7 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
             y = max(0, size.height() // 2)
             pixel = GL.glReadPixels(x, y, 1, 1, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE)
             values = _readback_values(pixel)
-            if values.size < 4:  # ruff: ignore[magic-value-comparison]
+            if values.size < 4:
                 return f'unexpected_readback_size={values.size}'
             return f'rgba=({values[0]},{values[1]},{values[2]},{values[3]})'
         except Exception as exc:  # ruff: ignore[blind-except]
@@ -538,7 +538,7 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
                     GL.glBlendColor(1.0, 1.0, 1.0, 0.75)
                     GL.glBlendFunc(GL.GL_CONSTANT_ALPHA, GL.GL_ONE_MINUS_CONSTANT_ALPHA)
 
-                    try:  # ruff: ignore[suppressible-exception]
+                    try:
                         GL.glLineWidth(0.5)
                     except Exception:  # ruff: ignore[blind-except, try-except-pass]
                         pass  # Some drivers don't support width < 1.0
@@ -555,7 +555,7 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
         # Draw XYZ axis indicator
         self._draw_axis_indicator()
 
-    def _draw_background(self) -> None:  # ruff: ignore[no-self-use]
+    def _draw_background(self) -> None:
         """Draw a subtle gradient background for better depth perception."""
         GL.glMatrixMode(GL.GL_PROJECTION)
         GL.glPushMatrix()
@@ -590,7 +590,7 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
         GL.glPopMatrix()
         GL.glMatrixMode(GL.GL_MODELVIEW)
 
-    def _draw_grid(self) -> None:  # ruff: ignore[no-self-use]
+    def _draw_grid(self) -> None:
         """Draw a subtle floor grid to provide spatial context."""
         GL.glPushAttrib(GL.GL_ALL_ATTRIB_BITS)
         GL.glDisable(GL.GL_LIGHTING)
@@ -610,7 +610,7 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
         val = -grid_size
         while val <= grid_size + 0.001:
             # Lines parallel to Z
-            if abs(val) < 0.01:  # ruff: ignore[magic-value-comparison]
+            if abs(val) < 0.01:
                 GL.glColor4f(1.0, 0.2, 0.2, 0.15)  # X axis highlight
             else:
                 GL.glColor4f(1.0, 1.0, 1.0, 0.08)
@@ -618,7 +618,7 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
             GL.glVertex3f(val, bottom_y, grid_size)
 
             # Lines parallel to X
-            if abs(val) < 0.01:  # ruff: ignore[magic-value-comparison]
+            if abs(val) < 0.01:
                 GL.glColor4f(0.2, 0.4, 1.0, 0.15)  # Z axis highlight
             else:
                 GL.glColor4f(1.0, 1.0, 1.0, 0.08)
@@ -784,7 +784,7 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
 
         self.update()
 
-    def set_auto_rotate(self, enabled: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def set_auto_rotate(self, enabled: bool) -> None:
         """Enable/disable auto-rotation."""
         self.auto_rotate = enabled
         if enabled and self.camera_mode == 'fps':
@@ -799,10 +799,10 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
 
         # Normalize angles to [-180, 180] so the transition doesn't cause a view flick
         pitch = self.rotation_x % 360.0
-        if pitch > 180.0:  # ruff: ignore[magic-value-comparison]
+        if pitch > 180.0:
             pitch -= 360.0
         yaw = self.rotation_y % 360.0
-        if yaw > 180.0:  # ruff: ignore[magic-value-comparison]
+        if yaw > 180.0:
             yaw -= 360.0
 
         self.cam_pitch = pitch
@@ -818,14 +818,14 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
 
         self.cam_pos = np.array([px, py, pz], dtype=float)
 
-    def _update_tick(self) -> None:  # ruff: ignore[complex-structure, too-many-branches]
+    def _update_tick(self) -> None:
         """Update loop handles smooth movements independent of framerate UI stalls."""
         needs_update = False
 
         current_time = time.time()
         dt = current_time - self.last_tick_time
         self.last_tick_time = current_time
-        if dt > 0.1:  # ruff: ignore[magic-value-comparison]
+        if dt > 0.1:
             dt = 0.016
 
         if self.camera_mode == 'orbit':
@@ -899,11 +899,11 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
         self.zoom = -5.0
         self.update()
 
-    def toggle_wireframe(self, enabled: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def toggle_wireframe(self, enabled: bool) -> None:
         self.show_wireframe = enabled
         self.update()
 
-    def toggle_grid(self, enabled: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def toggle_grid(self, enabled: bool) -> None:
         self.show_grid = enabled
         self.update()
 
@@ -923,7 +923,7 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
         self.needs_rebuild = False
         self.update()
 
-    def _discard_mesh_display_list(self, make_current: bool = True) -> None:  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
+    def _discard_mesh_display_list(self, make_current: bool = True) -> None:
         if self.mesh_display_list == 0:
             return
 
@@ -939,7 +939,7 @@ class ObjViewerWidget(OffscreenOpenGLWidget):
             pass
         finally:
             if made_current:
-                try:  # ruff: ignore[suppressible-exception]
+                try:
                     self.doneCurrent()
                 except Exception:  # ruff: ignore[blind-except, try-except-pass]
                     pass
@@ -1043,13 +1043,13 @@ class ObjViewerPanel(QWidget):
         msg.setText(tr('ui.cache.obj_viewer.h3_orbit_mode_default_h3_ul_li'))
         msg.exec()
 
-    def _toggle_wireframe_and_save(self, enabled: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _toggle_wireframe_and_save(self, enabled: bool) -> None:
         self.viewer.toggle_wireframe(enabled)
         if self.config_manager:
             self.config_manager.settings['obj_show_wireframe'] = enabled
             self.config_manager.save()
 
-    def _toggle_grid_and_save(self, enabled: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _toggle_grid_and_save(self, enabled: bool) -> None:
         self.viewer.toggle_grid(enabled)
         if self.config_manager:
             self.config_manager.settings['obj_show_grid'] = enabled

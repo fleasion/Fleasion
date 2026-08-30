@@ -73,11 +73,60 @@ extend-exclude = [".agents"]
 preview = true
 select = ["ALL"]
 ignore = [
-    "missing-trailing-comma",  # Conflicts with ruff format
-    "missing-copyright-notice",  # No repository-wide copyright-header policy
-    "D",       # Docstrings are opt-in per AGENTS.md
-    "DOC",     # Docstrings are opt-in per AGENTS.md
-    "single-line-implicit-string-concatenation",  # Conflicts with ruff format
+    "line-too-long",
+    "print",
+    "shebang-missing-executable-file",
+    "missing-return-type-special-method",
+    "asyncio-dangling-task",
+    "unused-async",
+    "suspicious-subprocess-import",
+    "subprocess-popen-with-shell-equals-true",
+    # "TC001",  # False positives with pydantic
+    # "TC002",  # False positives with pydantic
+    # "TC003",  # False positives with pydantic
+    "missing-todo-link",
+    "line-contains-todo",
+    "blank-line-with-whitespace",
+    "too-many-blank-lines",
+    "logging-f-string",
+    "ERA",
+    "missing-return-type-undocumented-public-function",
+    "missing-return-type-private-function",
+    "implicit-return",
+    "raw-string-in-exception",
+    "boolean-type-hint-positional-argument",
+    "boolean-default-value-positional-argument",
+    "complex-structure",
+    "too-many-locals",
+    "too-many-statements",
+    "too-many-public-methods",
+
+    # Umbra preset
+    "any-type",
+    "async-function-with-timeout",
+    "missing-trailing-comma",
+    "missing-copyright-notice",
+    "D",        # not needed here
+    "DOC",
+    "implicit-namespace-package",   # due to how I load modules this results in annoyances
+    "pandas-use-of-dot-values",    # this is not a numpy codebase
+    "try-except-in-loop",
+    "useless-import-alias",  # pyright ruling for `as` imports needed
+    "too-many-branches",
+    "too-many-arguments",
+    "magic-value-comparison",  # I hate this rule
+    "no-self-use",
+    "bad-quotes-inline-string",
+    "ambiguous-unicode-character-string",
+    "function-call-in-dataclass-default-argument",
+    "suppressible-exception",
+    "raise-vanilla-args",   # over-eager rule
+    "raise-within-try",   # unrealistic rule
+    "extraneous-parentheses",
+]
+unfixable = [
+    "line-too-long", # line length handled in other ways by ruff format
+    "ERA",  # Don't delete commented out code
 ]
 
 [tool.ruff.lint.per-file-ignores]

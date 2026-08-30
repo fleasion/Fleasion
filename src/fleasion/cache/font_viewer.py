@@ -76,7 +76,7 @@ class FontViewerWidget(QWidget):
         except Exception as e:  # ruff: ignore[blind-except]
             log_buffer.log('FontViewer', f'Font load error: {e}')
 
-    def _setup_ui(self) -> None:  # ruff: ignore[too-many-locals, too-many-statements]
+    def _setup_ui(self) -> None:
         """Setup the UI."""
         layout = QVBoxLayout()
         layout.setContentsMargins(10, 10, 10, 10)

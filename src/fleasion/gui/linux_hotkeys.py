@@ -13,7 +13,7 @@ import errno
 import os
 import select
 import struct
-import subprocess  # ruff: ignore[suspicious-subprocess-import]
+import subprocess
 import sys
 import threading
 from collections.abc import Mapping
@@ -285,7 +285,7 @@ def normalize_binding(binding: object) -> HotkeyBinding | None:
         kind not in ('key', 'mouse_button')  # ruff: ignore[literal-membership, too-many-boolean-expressions]
         or not isinstance(scan_code, int)
         or isinstance(scan_code, bool)
-        or not 0 < scan_code <= 0x2FF  # ruff: ignore[magic-value-comparison]
+        or not 0 < scan_code <= 0x2FF
         or (kind == 'mouse_button' and scan_code not in (0x110, 0x111, 0x112, 0x113, 0x114))  # ruff: ignore[literal-membership]
     ):
         return None
@@ -497,7 +497,7 @@ class LinuxHotkeyService(QObject):
             f'Linux keybind reader dropped {path.name} after input-device error: {detail}',
         )
 
-    def _set_key_state(self, fd: int, code: int, pressed: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _set_key_state(self, fd: int, code: int, pressed: bool) -> None:
         with self._lock:
             device_keys = self._fds.get(fd)
             if device_keys is None:

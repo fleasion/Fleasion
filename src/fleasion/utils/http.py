@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import shutil
 import ssl
-import subprocess  # ruff: ignore[suspicious-subprocess-import]
+import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -86,7 +86,7 @@ def _is_tls_record_layer_error(exc: BaseException) -> bool:
     return 'RECORD_LAYER_FAILURE' in text or 'RECORD LAYER FAILURE' in text
 
 
-def _open_with_contexts(  # ruff: ignore[missing-return-type-private-function]
+def _open_with_contexts(
     req: urllib.request.Request,
     timeout: int,
     contexts: list[ssl.SSLContext | None],
@@ -112,7 +112,7 @@ def _open_with_contexts(  # ruff: ignore[missing-return-type-private-function]
     raise RuntimeError(msg)
 
 
-def _open_verified(  # ruff: ignore[missing-return-type-private-function]
+def _open_verified(
     req: urllib.request.Request,
     url: str,
     timeout: int,
@@ -226,7 +226,7 @@ def _curl_download_to(
         )
         if result.returncode != 0:
             detail = (result.stderr or result.stdout or '').strip()
-            raise RuntimeError(detail or f'curl exited with code {result.returncode}')  # ruff: ignore[raise-within-try]
+            raise RuntimeError(detail or f'curl exited with code {result.returncode}')
         tmp.replace(dest)
     except Exception as exc:  # ruff: ignore[blind-except]
         tmp.unlink(missing_ok=True)

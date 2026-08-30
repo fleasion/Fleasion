@@ -89,7 +89,7 @@ class Vertex:
         self.tw: float | np.float32 = 0.0
         # Tangent (signed byte)
         self.tx = self.ty = self.tz = self.ts = 0
-        # Color (RGBA)  # ruff: ignore[commented-out-code]
+        # Color (RGBA)
         self.r: int | np.uint8 = 255
         self.g: int | np.uint8 = 255
         self.b: int | np.uint8 = 255
@@ -154,7 +154,7 @@ def read_vertices(data: bytes, offset: int, count: int, vsize: int) -> tuple[lis
         (v.ts,) = struct.unpack_from('<b', data, pos)
         pos += 1
         # Color (4 unsigned bytes, only in 40-byte format)
-        if vsize == 40:  # ruff: ignore[magic-value-comparison]
+        if vsize == 40:
             (v.r,) = struct.unpack_from('<B', data, pos)
             pos += 1
             (v.g,) = struct.unpack_from('<B', data, pos)
@@ -193,7 +193,7 @@ def write_obj_data(
 
 
 # Version-Specific Processors
-def process_v1(data: bytes) -> str | None:  # ruff: ignore[too-many-locals]
+def process_v1(data: bytes) -> str | None:
     """
     Process version 1.x mesh format (JSON-based)
     Args:
@@ -203,7 +203,7 @@ def process_v1(data: bytes) -> str | None:  # ruff: ignore[too-many-locals]
     """
     try:  # ruff: ignore[too-many-statements-in-try-clause]
         lines = data.decode('utf-8', errors='replace').splitlines()
-        if len(lines) < 3:  # ruff: ignore[magic-value-comparison]
+        if len(lines) < 3:
             log_buffer.log('Mesh', 'Invalid v1 mesh: not enough lines')
             return None
         version = lines[0].strip()
@@ -253,7 +253,7 @@ def process_v1(data: bytes) -> str | None:  # ruff: ignore[too-many-locals]
         return None
 
 
-def process_v2_to_v5(data: bytes, version_num: str) -> str | None:  # ruff: ignore[complex-structure, too-many-locals, too-many-statements]
+def process_v2_to_v5(data: bytes, version_num: str) -> str | None:
     """
     Process version 2.00 through 5.00 mesh formats.
 
@@ -299,7 +299,7 @@ def process_v2_to_v5(data: bytes, version_num: str) -> str | None:  # ruff: igno
 
         elif version_num in ('3.00', '3.01'):  # ruff: ignore[literal-membership]
             # V3 header: sizeof_header(2) + sizeof_vertex(1) + sizeof_face(1)
-            #          + sizeof_LodOffset(2) + numLodOffsets(2)  # ruff: ignore[commented-out-code]
+            #          + sizeof_LodOffset(2) + numLodOffsets(2)
             #          + numVerts(4) + numFaces(4) = 16 bytes
             sizeof_vertex = struct.unpack_from('<B', data, offset + 2)[0]
             # sizeof_face at offset+3
@@ -311,7 +311,7 @@ def process_v2_to_v5(data: bytes, version_num: str) -> str | None:  # ruff: igno
 
         elif version_num in ('4.00', '4.01'):  # ruff: ignore[literal-membership]
             # V4 header: sizeof_header(2) + lodType(2) + numVerts(4) + numFaces(4)
-            #          + numLodOffsets(2) + numBones(2) + sizeof_boneNames(4)  # ruff: ignore[commented-out-code]
+            #          + numLodOffsets(2) + numBones(2) + sizeof_boneNames(4)
             #          + numSubsets(2) + numHighQualityLODs(1) + unused(1) = 24 bytes
             struct.unpack_from('<H', data, offset + 2)[0]  # lodType
             num_verts = struct.unpack_from('<I', data, offset + 4)[0]
@@ -350,7 +350,7 @@ def process_v2_to_v5(data: bytes, version_num: str) -> str | None:  # ruff: igno
             skinning_size = num_verts * 8  # sizeof(FileMeshSkinning) = 8
             log_buffer.log(
                 'Mesh',
-                f'Skipping {skinning_size} bytes of skinning data ({num_verts} verts × 8 bytes)',  # ruff: ignore[ambiguous-unicode-character-string]
+                f'Skipping {skinning_size} bytes of skinning data ({num_verts} verts × 8 bytes)',
             )
             offset += skinning_size
 
@@ -362,7 +362,7 @@ def process_v2_to_v5(data: bytes, version_num: str) -> str | None:  # ruff: igno
             offset += 12
 
         # --- Read and apply LOD offsets (V3/V4/V5 only) ---
-        if num_lod_offsets >= 2:  # ruff: ignore[magic-value-comparison]
+        if num_lod_offsets >= 2:
             try:  # ruff: ignore[too-many-statements-in-try-clause]
                 lod_offsets: list[int] = []
                 for _ in range(num_lod_offsets):
@@ -372,7 +372,7 @@ def process_v2_to_v5(data: bytes, version_num: str) -> str | None:  # ruff: igno
 
                 # The main mesh uses faces [0, lod_offsets[1])
                 # lod_offsets[0] is typically 0 (start of main mesh faces)
-                if len(lod_offsets) >= 2 and lod_offsets[1] > 0 and lod_offsets[1] < len(faces):  # ruff: ignore[magic-value-comparison]
+                if len(lod_offsets) >= 2 and lod_offsets[1] > 0 and lod_offsets[1] < len(faces):
                     original_count = len(faces)
                     faces = faces[: lod_offsets[1]]
                     log_buffer.log(
@@ -386,7 +386,7 @@ def process_v2_to_v5(data: bytes, version_num: str) -> str | None:  # ruff: igno
         # --- Generate OBJ lines (Appends r, g, b to support Blender vertex colors) ---
         v_lines = [
             f'v {fix_float(f"{v.px:.6f}")} {fix_float(f"{v.py:.6f}")} {fix_float(f"{v.pz:.6f}")} '
-            f'{fix_float(f"{v.r / 255.0:.6f}")} {fix_float(f"{v.g / 255.0:.6f}")} {fix_float(f"{v.b / 255.0:.6f}")}'  # ruff: ignore[line-too-long]
+            f'{fix_float(f"{v.r / 255.0:.6f}")} {fix_float(f"{v.g / 255.0:.6f}")} {fix_float(f"{v.b / 255.0:.6f}")}'
             for v in verts
         ]
         n_lines = [
@@ -407,7 +407,7 @@ def _read_chunked_mesh(data: bytes) -> list[tuple[str, int, bytes]]:
     chunks: list[tuple[str, int, bytes]] = []
     offset = 13  # Skip "version X.XX\n".
     while offset < len(data):
-        if len(data) - offset < 16:  # ruff: ignore[magic-value-comparison]
+        if len(data) - offset < 16:
             msg = 'truncated chunk header'
             raise ValueError(msg)
 
@@ -426,7 +426,7 @@ def _read_chunked_mesh(data: bytes) -> list[tuple[str, int, bytes]]:
 
 def _read_raw_coremesh(data: bytes) -> tuple[list[Vertex], list[Face]]:
     """Read the uncompressed COREMESH v1 payload used by FileMesh v6."""
-    if len(data) < 8:  # ruff: ignore[magic-value-comparison]
+    if len(data) < 8:
         msg = 'COREMESH v1 payload is too small'
         raise ValueError(msg)
 
@@ -459,7 +459,7 @@ def _apply_chunked_lod(faces: list[Face], lod_data: bytes | None) -> list[Face]:
     """Select the highest-quality face range from a v6/v7 LODS v1 payload."""
     if not lod_data:
         return faces
-    if len(lod_data) < 7:  # ruff: ignore[magic-value-comparison]
+    if len(lod_data) < 7:
         msg = 'LODS payload is too small'
         raise ValueError(msg)
 
@@ -468,7 +468,7 @@ def _apply_chunked_lod(faces: list[Face], lod_data: bytes | None) -> list[Face]:
     if offsets_end > len(lod_data):
         msg = 'LODS offsets exceed chunk size'
         raise ValueError(msg)
-    if num_offsets < 2:  # ruff: ignore[magic-value-comparison]
+    if num_offsets < 2:
         return faces
 
     first, second = struct.unpack_from('<II', lod_data, 7)
@@ -488,7 +488,7 @@ def _mesh_to_obj(verts: list[Vertex], faces: list[Face]) -> str:
     """Serialize parsed FileMesh geometry using Fleasion's OBJ conventions."""
     v_lines = [
         f'v {fix_float(f"{v.px:.6f}")} {fix_float(f"{v.py:.6f}")} {fix_float(f"{v.pz:.6f}")} '
-        f'{fix_float(f"{v.r / 255.0:.6f}")} {fix_float(f"{v.g / 255.0:.6f}")} {fix_float(f"{v.b / 255.0:.6f}")}'  # ruff: ignore[line-too-long]
+        f'{fix_float(f"{v.r / 255.0:.6f}")} {fix_float(f"{v.g / 255.0:.6f}")} {fix_float(f"{v.b / 255.0:.6f}")}'
         for v in verts
     ]
     n_lines = [
@@ -500,7 +500,7 @@ def _mesh_to_obj(verts: list[Vertex], faces: list[Face]) -> str:
     return write_obj_data(v_lines, n_lines, t_lines, f_lines)
 
 
-def process_v6_v7(data: bytes) -> str | None:  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
+def process_v6_v7(data: bytes) -> str | None:
     """Process chunked v6 geometry and Draco-compressed v7 geometry."""
     try:  # ruff: ignore[too-many-nested-blocks, too-many-statements-in-try-clause]
         version = data[:12].decode('ascii', errors='replace').strip()
@@ -514,36 +514,36 @@ def process_v6_v7(data: bytes) -> str | None:  # ruff: ignore[complex-structure,
 
         if coremesh is None:
             msg = 'no COREMESH chunk found'
-            raise ValueError(msg)  # ruff: ignore[raise-within-try]
+            raise ValueError(msg)
 
         coremesh_version, coremesh_data = coremesh
         if coremesh_version == 1:
             if version != 'version 6.00':
                 msg = f'COREMESH v1 is not valid for {version}'
-                raise ValueError(msg)  # ruff: ignore[raise-within-try]
+                raise ValueError(msg)
             verts, faces = _read_raw_coremesh(coremesh_data)
             log_buffer.log(
                 'Mesh',
                 f'Raw v6 mesh decoded: {len(verts):,} vertices, {len(faces):,} faces',
             )
-        elif coremesh_version == 2:  # ruff: ignore[magic-value-comparison]
+        elif coremesh_version == 2:
             if version != 'version 7.00':
                 msg = f'COREMESH v2 is not valid for {version}'
-                raise ValueError(msg)  # ruff: ignore[raise-within-try]
-            if len(coremesh_data) < 4:  # ruff: ignore[magic-value-comparison]
+                raise ValueError(msg)
+            if len(coremesh_data) < 4:
                 msg = 'COREMESH v2 payload is too small'
-                raise ValueError(msg)  # ruff: ignore[raise-within-try]
+                raise ValueError(msg)
 
             draco_size = struct.unpack_from('<I', coremesh_data, 0)[0]
             if draco_size != len(coremesh_data) - 4:
                 msg = 'COREMESH v2 Draco size does not match chunk size'
-                raise ValueError(msg)  # ruff: ignore[raise-within-try]
+                raise ValueError(msg)
             if not DRACO_AVAILABLE:
                 log_buffer.log('Mesh', 'DracoPy not available - cannot process v7 meshes')
                 return None
             if DracoPy is None:
                 msg = 'DracoPy availability state is inconsistent'
-                raise RuntimeError(msg)  # ruff: ignore[raise-within-try]
+                raise RuntimeError(msg)
 
             try:
                 mesh = DracoPy.decode(coremesh_data[4:])
@@ -552,13 +552,13 @@ def process_v6_v7(data: bytes) -> str | None:  # ruff: ignore[complex-structure,
                 return None
             if mesh is None or not _has_points(mesh):
                 msg = 'Draco decode returned invalid mesh data'
-                raise ValueError(msg)  # ruff: ignore[raise-within-try]
+                raise ValueError(msg)
 
             positions: NDArray[np.float32] = np.array(mesh.points, dtype=np.float32)
             num_verts = len(positions)
             if num_verts == 0:
                 msg = 'Draco mesh has no vertices'
-                raise ValueError(msg)  # ruff: ignore[raise-within-try]
+                raise ValueError(msg)
             verts = [Vertex() for _ in range(num_verts)]
             for i in range(num_verts):
                 verts[i].px, verts[i].py, verts[i].pz = positions[i]
@@ -646,7 +646,7 @@ def process_v6_v7(data: bytes) -> str | None:  # ruff: ignore[complex-structure,
                         or c >= num_verts
                     ):
                         msg = 'Draco face references an invalid vertex'
-                        raise ValueError(msg)  # ruff: ignore[raise-within-try]
+                        raise ValueError(msg)
                     faces.append(Face(a + 1, b + 1, c + 1))
             log_buffer.log(
                 'Mesh',
@@ -654,7 +654,7 @@ def process_v6_v7(data: bytes) -> str | None:  # ruff: ignore[complex-structure,
             )
         else:
             msg = f'unsupported COREMESH chunk version {coremesh_version}'
-            raise ValueError(msg)  # ruff: ignore[raise-within-try]
+            raise ValueError(msg)
 
         faces = _apply_chunked_lod(faces, lod_data)
         return _mesh_to_obj(verts, faces)
@@ -687,7 +687,7 @@ def _mesh_header(data: bytes) -> str:
 
 def is_mesh_data(data: bytes) -> bool:
     """Return True when bytes look like a Roblox mesh payload."""
-    if not data or len(data) < 12:  # ruff: ignore[magic-value-comparison]
+    if not data or len(data) < 12:
         return False
     header = _mesh_header(data)
     return any(header.startswith(prefix) for prefix in SUPPORTED_MESH_HEADERS)
@@ -703,7 +703,7 @@ def convert(data: bytes, output_path: str | None = None) -> str | None:
     Returns:
         OBJ file content as string, or None on failure
     """
-    if not data or len(data) < 12:  # ruff: ignore[magic-value-comparison]
+    if not data or len(data) < 12:
         log_buffer.log('Mesh', 'Invalid mesh data: file too small')
         return None
     if data.startswith(b'\x1f\x8b'):
@@ -750,7 +750,7 @@ if __name__ == '__main__':
     import sys
     from pathlib import Path
 
-    if len(sys.argv) < 2:  # ruff: ignore[magic-value-comparison]
+    if len(sys.argv) < 2:
         log_buffer.log('Mesh', 'Usage: python mesh_processing.py <mesh_file>')
         log_buffer.log('Mesh', 'Example: python mesh_processing.py model.mesh')
         sys.exit(1)

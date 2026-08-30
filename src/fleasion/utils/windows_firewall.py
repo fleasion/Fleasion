@@ -5,7 +5,7 @@ from __future__ import annotations
 import ctypes
 import json
 import os
-import subprocess  # ruff: ignore[suspicious-subprocess-import]
+import subprocess
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING

@@ -232,7 +232,7 @@ def _parse_float_curve_binary(data: bytes) -> list[FloatCurveKey]:
 # .rbxmx parser (in-memory)
 
 
-def _load_rbxmx_instances(  # ruff: ignore[complex-structure, too-many-statements]
+def _load_rbxmx_instances(
     source: bytes | bytearray | str,
 ) -> tuple[list[_Instance], dict[str, bytes]]:
     """Parse .rbxmx XML bytes or filepath into (list[_Instance], shared_strings dict)."""
@@ -249,12 +249,12 @@ def _load_rbxmx_instances(  # ruff: ignore[complex-structure, too-many-statement
             md5 = ss.get('md5', '')
             text = (ss.text or '').strip()
             if md5 and text:
-                try:  # ruff: ignore[suppressible-exception]
+                try:
                     shared_strings[md5] = base64.b64decode(text)
                 except Exception:  # ruff: ignore[blind-except, try-except-pass]
                     pass
 
-    def parse_props(props_elem: ET.Element, inst: _Instance) -> None:  # ruff: ignore[complex-structure, too-many-branches]
+    def parse_props(props_elem: ET.Element, inst: _Instance) -> None:
         for prop in props_elem:
             pname = prop.get('name', '')
             tag = prop.tag
@@ -368,7 +368,7 @@ def _map_poses(
 # Interpolation
 
 
-def _interpolate_values(  # ruff: ignore[complex-structure]
+def _interpolate_values(
     final_values: dict[str, float | None],
     pose_name: str,
     pose_time: float,
@@ -444,7 +444,7 @@ def _parse_markers(data: bytes, curve_name: str) -> list[tuple[float, str, str]]
     try:  # ruff: ignore[too-many-statements-in-try-clause]
         count = struct.unpack_from('<I', data, offset)[0]
         offset += 4
-        if count > 10_000:  # ruff: ignore[magic-value-comparison]
+        if count > 10_000:
             return []
         for _ in range(count):
             if offset + 8 > len(data):
@@ -470,7 +470,7 @@ def _handle_markers(
         if mc.class_name != 'MarkerCurve':
             continue
         data = mc.properties.get('Markers', b'')
-        if not isinstance(data, bytes) or len(data) < 4:  # ruff: ignore[magic-value-comparison]
+        if not isinstance(data, bytes) or len(data) < 4:
             continue
         for t, name, value in _parse_markers(data, mc.name):
             kf = kf_by_time.get(t)
@@ -496,7 +496,7 @@ def _make_keyframe(t: float) -> _Instance:
     return kf
 
 
-def _convert_curve_anim(curve_anim: _Instance) -> _Instance:  # ruff: ignore[complex-structure, too-many-statements]
+def _convert_curve_anim(curve_anim: _Instance) -> _Instance:
     """Convert a CurveAnimation _Instance to a KeyframeSequence _Instance."""
     kf_seq = _Instance('KeyframeSequence')
     kf_seq.name = curve_anim.name
@@ -630,7 +630,7 @@ def _new_ref() -> str:
     return 'RBX' + uuid.uuid4().hex.upper()
 
 
-def _instance_to_xml(inst: _Instance, parent_elem: ET.Element) -> None:  # ruff: ignore[complex-structure]
+def _instance_to_xml(inst: _Instance, parent_elem: ET.Element) -> None:
     item = ET.SubElement(parent_elem, 'Item')
     item.set('class', inst.class_name)
     item.set('referent', _new_ref())

@@ -19,7 +19,7 @@ log = logging.getLogger(__name__)
 CONVERTED_MESHES_DIR = LOCAL_APPDATA / 'FleasionNT' / 'Temp' / 'ConvertedMeshes'
 
 
-def parse_obj_for_mesh(  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
+def parse_obj_for_mesh(
     obj_content: str,
 ) -> tuple[
     list[tuple[float, float, float, float, float, float, float, float, float]],
@@ -57,7 +57,7 @@ def parse_obj_for_mesh(  # ruff: ignore[complex-structure, too-many-branches, to
         if parts[0] == 'v':
             raw_v.append((float(parts[1]), float(parts[2]), float(parts[3])))
             # Parse RGB vertex colors if present
-            if len(parts) >= 7:  # ruff: ignore[magic-value-comparison]
+            if len(parts) >= 7:
                 r, g, b = float(parts[4]), float(parts[5]), float(parts[6])
                 # Convert 0.0-1.0 float ranges to 0-255 uint8, or clamp if they're absolute
                 if r <= 1.0 and g <= 1.0 and b <= 1.0:
@@ -83,9 +83,9 @@ def parse_obj_for_mesh(  # ruff: ignore[complex-structure, too-many-branches, to
                 v_idx = int(indices_split[0]) - 1
                 vt_idx = -1
                 vn_idx = -1
-                if len(indices_split) >= 2 and indices_split[1]:  # ruff: ignore[magic-value-comparison]
+                if len(indices_split) >= 2 and indices_split[1]:
                     vt_idx = int(indices_split[1]) - 1
-                if len(indices_split) >= 3 and indices_split[2]:  # ruff: ignore[magic-value-comparison]
+                if len(indices_split) >= 3 and indices_split[2]:
                     vn_idx = int(indices_split[2]) - 1
                 face_verts.append((v_idx, vt_idx, vn_idx))
 
@@ -125,7 +125,7 @@ def parse_obj_for_mesh(  # ruff: ignore[complex-structure, too-many-branches, to
 
                     tri_indices.append(unique_verts[key])
 
-                if len(tri_indices) == 3:  # ruff: ignore[magic-value-comparison]
+                if len(tri_indices) == 3:
                     indices_out.append((tri_indices[0], tri_indices[1], tri_indices[2]))
 
     return vertices_out, colors_out, indices_out
@@ -140,7 +140,7 @@ def export_v2_mesh(
     has_colors = len(colors) == len(vertices) and any(c != (255, 255, 255, 255) for c in colors)
     # Actually, the user wants Vertex Color support "same as it currently does in C++ source"
     # In C++, it was: rbxMesh.hasColors = obj.HasVertexColors && (ver == "2.00")
-    # For safety natively enabled if we have them. Let's just always enable them or check if ANY vertex color is non-white  # ruff: ignore[line-too-long]
+    # For safety natively enabled if we have them. Let's just always enable them or check if ANY vertex color is non-white
     # Or just always export them if they're present since Version 2.00 supports it.
     # Let's unconditionally use them to match "with Vertex Color support"
     has_colors = True
@@ -157,7 +157,7 @@ def export_v2_mesh(
     #     uint8_t faceSize; // 1
     #     uint32_t vertexCount; // 4
     #     uint32_t faceCount; // 4
-    # }  # ruff: ignore[commented-out-code]
+    # }
     header_data = struct.pack(
         '<HBBII', header_size, vertex_size, face_size, vertex_count, face_count
     )

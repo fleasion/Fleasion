@@ -292,7 +292,7 @@ class AudioPlayerWidget(QWidget):
                 self.audio_data = np.column_stack((self.audio_data, self.audio_data))
             elif self.audio_data.shape[1] == 1:
                 self.audio_data = np.repeat(self.audio_data, 2, axis=1)
-            elif self.audio_data.shape[1] > 2:  # ruff: ignore[magic-value-comparison]
+            elif self.audio_data.shape[1] > 2:
                 mono = self.audio_data.mean(axis=1)
                 self.audio_data = np.column_stack((mono, mono))
 
@@ -307,7 +307,7 @@ class AudioPlayerWidget(QWidget):
             log_buffer.log('Audio', f'Error loading audio: {e}')
             self.duration = 0
 
-    def _setup_ui(self) -> None:  # ruff: ignore[too-many-statements]
+    def _setup_ui(self) -> None:
         """Setup the UI."""
         layout = QVBoxLayout()
         layout.setContentsMargins(10, 10, 10, 10)
@@ -436,7 +436,7 @@ class AudioPlayerWidget(QWidget):
         # Start playing
         self._play()
 
-    def _playback_worker(self, stop_event: threading.Event) -> None:  # ruff: ignore[complex-structure, too-many-statements]
+    def _playback_worker(self, stop_event: threading.Event) -> None:
         """Worker thread for audio playback."""
         try:  # ruff: ignore[too-many-statements-in-try-clause]
 
@@ -516,7 +516,7 @@ class AudioPlayerWidget(QWidget):
                 # Schedule UI update on the main thread to avoid manipulating
                 # Qt widgets from this worker thread (which can cause
                 # "wrapped C/C++ object ... has been deleted" errors).
-                try:  # ruff: ignore[suppressible-exception]
+                try:
                     QTimer.singleShot(0, lambda: self._safe_set_play_pause_text('▶'))
                 except Exception:  # ruff: ignore[blind-except, try-except-pass]
                     # If scheduling fails for any reason, ignore silently.
@@ -528,7 +528,7 @@ class AudioPlayerWidget(QWidget):
         This method swallows exceptions that occur if the underlying
         C++ widget has been deleted.
         """
-        try:  # ruff: ignore[suppressible-exception]
+        try:
             self.play_pause_btn.setText(text)
         except Exception:  # ruff: ignore[blind-except, try-except-pass]
             # Widget may have been deleted; ignore.
@@ -582,7 +582,7 @@ class AudioPlayerWidget(QWidget):
         if self.play_pause_btn.text() != expected_text:
             self.play_pause_btn.setText(expected_text)
 
-    def _format_time(self, seconds: float) -> str:  # ruff: ignore[no-self-use]
+    def _format_time(self, seconds: float) -> str:
         """Format seconds as MM:SS.mmm."""
         minutes = int(seconds // 60)
         secs = int(seconds % 60)

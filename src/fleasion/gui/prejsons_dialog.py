@@ -371,9 +371,9 @@ def _load_custom_dumps() -> list[tuple[GameEntry, Path]]:
                 for g in games:
                     results.append((g, fp))  # ruff: ignore[manual-list-comprehension]
             except Exception as e:  # ruff: ignore[blind-except]
-                print(f'[CustomDump] Failed to load {fp.name}: {e}')  # ruff: ignore[print]
+                print(f'[CustomDump] Failed to load {fp.name}: {e}')
     except Exception as e:  # ruff: ignore[blind-except]
-        print(f'[CustomDump] Failed to scan dir: {e}')  # ruff: ignore[print]
+        print(f'[CustomDump] Failed to scan dir: {e}')
     return results
 
 
@@ -540,8 +540,8 @@ _THUMB_H = 128
 class GameCard(QFrame):
     """A single game card: thumbnail + name + dates + action buttons."""
 
-    def _apply_style(self, hover: bool = False) -> None:  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
-        dark = QApplication.palette().color(QPalette.ColorRole.Window).lightness() < 128  # ruff: ignore[magic-value-comparison]
+    def _apply_style(self, hover: bool = False) -> None:
+        dark = QApplication.palette().color(QPalette.ColorRole.Window).lightness() < 128
         border = 'rgba(255,255,255,0.22)' if dark else 'rgba(0,0,0,0.18)'
         bg = (
             ('rgba(255,255,255,0.07)' if hover else 'rgba(255,255,255,0.04)')
@@ -574,7 +574,7 @@ class GameCard(QFrame):
         self.thumb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.thumb_label.setScaledContents(True)
         self.thumb_label.setStyleSheet(
-            'background: palette(alternate-base); border-radius: 4px; color: palette(placeholder-text); font-size: 8pt;'  # ruff: ignore[line-too-long]
+            'background: palette(alternate-base); border-radius: 4px; color: palette(placeholder-text); font-size: 8pt;'
         )
         layout.addWidget(self.thumb_label)
         # Apply the default thumbnail immediately if already cached
@@ -582,7 +582,7 @@ class GameCard(QFrame):
         if default_bytes:
             pix = QPixmap()
             if pix.loadFromData(default_bytes):
-                try:  # ruff: ignore[suppressible-exception]
+                try:
                     pix = _make_rounded_pixmap(pix, _THUMB_W, _THUMB_H, radius=6)
                 except Exception:  # ruff: ignore[blind-except, try-except-pass]
                     pass
@@ -683,8 +683,8 @@ class AddCard(QFrame):
 
     clicked = Signal()
 
-    def _apply_style(self, hover: bool = False) -> None:  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
-        dark = QApplication.palette().color(QPalette.ColorRole.Window).lightness() < 128  # ruff: ignore[magic-value-comparison]
+    def _apply_style(self, hover: bool = False) -> None:
+        dark = QApplication.palette().color(QPalette.ColorRole.Window).lightness() < 128
         border = 'rgba(255,255,255,0.22)' if dark else 'rgba(0,0,0,0.18)'
         bg = (
             ('rgba(255,255,255,0.07)' if hover else 'rgba(255,255,255,0.04)')
@@ -875,14 +875,14 @@ class PreJsonsDialog(QDialog):
         if gh_url:
             card.assets_btn.setVisible(True)
 
-            def open_assets(_checked: bool = False, url: str = gh_url) -> None:  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
+            def open_assets(_checked: bool = False, url: str = gh_url) -> None:
                 self._fetch_and_open(url)
 
             card.assets_btn.clicked.connect(open_assets)
         if rep_url:
             card.replacements_btn.setVisible(True)
 
-            def open_replacements(_checked: bool = False, url: str = rep_url) -> None:  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
+            def open_replacements(_checked: bool = False, url: str = rep_url) -> None:
                 self._fetch_and_open(url)
 
             card.replacements_btn.clicked.connect(open_replacements)
@@ -1029,7 +1029,7 @@ class PreJsonsDialog(QDialog):
 
     # Custom dump — add dialog
 
-    def _open_add_dump_dialog(self) -> None:  # ruff: ignore[complex-structure, too-many-locals, too-many-statements]
+    def _open_add_dump_dialog(self) -> None:
         dlg = QDialog(self)
         dlg.setWindowTitle(tr('ui.gui.prejsons_dialog.import_custom_game_dump'))
         dlg.setMinimumWidth(520)
@@ -1162,7 +1162,7 @@ class PreJsonsDialog(QDialog):
         layout.addLayout(btn_row)
         cancel_btn.clicked.connect(dlg.reject)
 
-        def do_import() -> None:  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
+        def do_import() -> None:
             name_text = name_edit.text().strip()
             placeid_text = placeid_edit.text().strip()
 
@@ -1285,7 +1285,7 @@ class PreJsonsDialog(QDialog):
                         pass  # Non-fatal — keep original path if copy fails
 
             # Re-save the dump with updated paths so they survive dialog restarts
-            try:  # ruff: ignore[suppressible-exception]
+            try:
                 dump_path.write_text(
                     json.dumps(
                         {'games': {'_': games[0]}}
@@ -1319,7 +1319,7 @@ class PreJsonsDialog(QDialog):
             try:
                 dump_file.unlink(missing_ok=True)
             except Exception as e:  # ruff: ignore[blind-except]
-                print(f'[CustomDump] Delete failed: {e}')  # ruff: ignore[print]
+                print(f'[CustomDump] Delete failed: {e}')
 
         if card in self._cards:
             self._cards.remove(card)
@@ -1397,7 +1397,7 @@ class PreJsonsDialog(QDialog):
     def closeEvent(self, event: QCloseEvent) -> None:  # ruff: ignore[invalid-function-name]
         """Close any open JSON viewer windows with the dialog."""
         for viewer in self._viewers[:]:
-            try:  # ruff: ignore[suppressible-exception]
+            try:
                 viewer.close()
             except Exception:  # ruff: ignore[blind-except, try-except-pass]
                 pass

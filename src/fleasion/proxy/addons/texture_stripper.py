@@ -270,7 +270,7 @@ def _normalized_build_type(value: object) -> _BuildType:
 def _texpack_slot_from_build_type(value: object) -> int | None:
     normalized = _normalized_build_type(value)
     if isinstance(normalized, int):
-        return normalized if 0 <= normalized <= 2 else None  # ruff: ignore[magic-value-comparison]
+        return normalized if 0 <= normalized <= 2 else None
     if not isinstance(normalized, str) or not normalized:
         return None
     if any(token in normalized for token in ('color', 'albedo', 'diffuse', 'basecolor')):
@@ -368,10 +368,10 @@ def _decode_fidelity_slot_quality(fidelity_b64: object | None) -> tuple[int, int
         fb = _b64decode_padded(fidelity_b64)
     except Exception:  # ruff: ignore[blind-except]
         return None
-    if len(fb) < 2:  # ruff: ignore[magic-value-comparison]
+    if len(fb) < 2:
         return None
     slot = (fb[0] & 0x60) >> 5
-    if slot > 2:  # ruff: ignore[magic-value-comparison]
+    if slot > 2:
         return None
     quality = (fb[1] & 0xC0) >> 6
     return slot, quality
@@ -410,7 +410,7 @@ def _decompress_cdn_response(data: bytes) -> bytes:
     return data
 
 
-def _inject_obj_into_solidmodel(bin_data: bytes, obj_path: Path, prefer_v3: bool = False) -> bytes:  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument, complex-structure]
+def _inject_obj_into_solidmodel(bin_data: bytes, obj_path: Path, prefer_v3: bool = False) -> bytes:
     from fleasion.cache.tools.solidmodel_converter.converter import (  # ruff: ignore[import-outside-top-level]
         deserialize_rbxm,
     )
@@ -493,7 +493,7 @@ def _try_mesh_to_obj(path: Path, ctx: str) -> Path | None:
         return None
 
 
-def _is_csgmdl_bin(path: Path) -> bool:  # ruff: ignore[complex-structure]
+def _is_csgmdl_bin(path: Path) -> bool:
     """Check if a .bin file is actually a CSGMDL by looking for RBXM header and MeshData.
 
     Returns True only if:
@@ -824,7 +824,7 @@ class TextureStripper:
     # separate lock for rig-conversion state (avoids holding _lock during file I/O)
     _anim_lock: Lock = Lock()
 
-    def precheck_replacements(self) -> None:  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
+    def precheck_replacements(self) -> None:
         """Eagerly check all replacement asset IDs and pre-download private ones.
 
         Called in a background thread at proxy startup. For each ID-based
@@ -915,7 +915,7 @@ class TextureStripper:
                         self._predownloaded[int(target_id)] = str(local_path)
                         log_buffer.log(
                             'Replacer',
-                            f'Cached public animation {target_id} for rig conversion ({len(data_)} bytes)',  # ruff: ignore[line-too-long]
+                            f'Cached public animation {target_id} for rig conversion ({len(data_)} bytes)',
                         )
                     except Exception:  # ruff: ignore[blind-except]
                         self._checked_public.add(int(target_id))
@@ -925,7 +925,7 @@ class TextureStripper:
                 public_count += 1
                 continue
 
-            if status == 404:  # ruff: ignore[magic-value-comparison]
+            if status == 404:
                 log_buffer.log(
                     'Replacer',
                     f'Replacement asset {target_id} not found (404) — skipping',
@@ -937,7 +937,7 @@ class TextureStripper:
                     )
                 continue
 
-            if status != 403:  # ruff: ignore[magic-value-comparison]
+            if status != 403:
                 log_buffer.log(
                     'Replacer',
                     f'Replacement asset {target_id} returned status {status} — skipping',
@@ -1026,7 +1026,7 @@ class TextureStripper:
             )
         log_buffer.log(
             'Replacer',
-            f'Pre-check complete: {public_count} public, {private_count} private (pre-downloaded), {failed_count} failed',  # ruff: ignore[line-too-long]
+            f'Pre-check complete: {public_count} public, {private_count} private (pre-downloaded), {failed_count} failed',
         )
 
     def _precheck_texpack_layouts(self, replacements_tuple: ReplacementMaps) -> None:
@@ -1053,13 +1053,13 @@ class TextureStripper:
             parent_raw, global_index_raw = key.split(':', 1)
             if not parent_raw.isdigit() or not global_index_raw.isdigit():
                 continue
-            if int(global_index_raw) >= 2:  # ruff: ignore[magic-value-comparison]
+            if int(global_index_raw) >= 2:
                 parent_ids.add(int(parent_raw))
 
         for parent_id in sorted(parent_ids):
             log_buffer.log(
                 'TexPackTrace',
-                f'Precheck: fetching TexturePack XML layout for pack {parent_id} because a slot >=2 rule exists',  # ruff: ignore[line-too-long]
+                f'Precheck: fetching TexturePack XML layout for pack {parent_id} because a slot >=2 rule exists',
             )
             scraper.prefetch_texpack_layout(parent_id)
 
@@ -1107,12 +1107,12 @@ class TextureStripper:
             return False
         return self._is_anim_asset_id(aid)
 
-    def precheck_anim_rigs(self) -> None:  # ruff: ignore[complex-structure, too-many-branches, too-many-statements]
+    def precheck_anim_rigs(self) -> None:
         from fleasion.utils.anim_converter import (  # ruff: ignore[import-outside-top-level]
             detect_rig,
         )
 
-        try:  # ruff: ignore[suppressible-exception]
+        try:
             self._CONV_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         except Exception:  # ruff: ignore[blind-except, try-except-pass]
             pass
@@ -1197,7 +1197,7 @@ class TextureStripper:
             f'Pre-conversion complete: {format_count(converted, "animation")} processed',
         )
 
-    def _get_or_create_converted(  # ruff: ignore[complex-structure, too-many-branches, too-many-statements]
+    def _get_or_create_converted(
         self, local_path: str, target_rig: str, data: bytes | None = None
     ) -> str | None:
         """Return path to a rig-converted copy of local_path, creating it if needed."""
@@ -1295,11 +1295,11 @@ class TextureStripper:
             ks = root.find("Item[@class='KeyframeSequence']")
             if ks is None:
                 msg = 'No KeyframeSequence found'
-                raise ValueError(msg)  # ruff: ignore[raise-within-try]
+                raise ValueError(msg)
             keyframes = ks.findall("Item[@class='Keyframe']")
             if not keyframes:
                 msg = 'No Keyframes found'
-                raise ValueError(msg)  # ruff: ignore[raise-within-try]
+                raise ValueError(msg)
 
             if target_rig == 'R6':
                 for kf in keyframes:
@@ -1317,7 +1317,7 @@ class TextureStripper:
             log_buffer.log('AnimConv', f'Conversion failed for {p.name} -> {target_rig}: {exc}')
             return None
 
-    def _get_or_create_converted_curve(  # ruff: ignore[complex-structure, too-many-branches, too-many-statements]
+    def _get_or_create_converted_curve(
         self, local_path: str, target_rig: str, data: bytes | None = None
     ) -> str | None:
         """Return path to a rig-converted CurveAnimation copy of local_path, creating it if needed.
@@ -1416,11 +1416,11 @@ class TextureStripper:
                 ks = root.find("Item[@class='KeyframeSequence']")
                 if ks is None:
                     msg = 'No KeyframeSequence found after curve conversion'
-                    raise ValueError(msg)  # ruff: ignore[raise-within-try]
+                    raise ValueError(msg)
                 keyframes = ks.findall("Item[@class='Keyframe']")
                 if not keyframes:
                     msg = 'No Keyframes found after curve conversion'
-                    raise ValueError(msg)  # ruff: ignore[raise-within-try]
+                    raise ValueError(msg)
                 if target_rig == 'R6':
                     for kf in keyframes:
                         convert_keyframe_r15_to_r6(kf, R6_PARTS, R6_JOINTS, R15_PARTS, R15_JOINTS)
@@ -1484,7 +1484,7 @@ class TextureStripper:
     # Batch request (called from server MITM thread)
     # ------------------------------------------------------------------
 
-    def process_batch_request(  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
+    def process_batch_request(
         self,
         body: bytes,
         req_headers: dict[str, str],  # ruff: ignore[unused-method-argument]
@@ -1626,7 +1626,7 @@ class TextureStripper:
                             synthetic_slot_removals.add(r)
                     log_buffer.log(
                         'TexPack',
-                        f'Routing {format_count(tp_slot_removals, "slot removal")} to blank placeholder',  # ruff: ignore[line-too-long]
+                        f'Routing {format_count(tp_slot_removals, "slot removal")} to blank placeholder',
                     )
 
         slot_target_ids: set[int] = set()
@@ -1720,7 +1720,7 @@ class TextureStripper:
             if gi == 1:
                 normal_overrides[pk_key] = cv
                 continue
-            if gi < 2:  # ruff: ignore[magic-value-comparison]
+            if gi < 2:
                 continue  # GI0 is the Color full-slot route.
             ch = GLOBAL_INDEX_CHANNEL.get(gi)
             if not ch:
@@ -1741,8 +1741,8 @@ class TextureStripper:
             aid = self._normalize_asset_id(aid_raw)
             req_id = e.get('requestId')
             type_keys = self._get_type_keys(e)
-            is_solidmodel = (e.get('assetTypeId') == 39) or (  # ruff: ignore[magic-value-comparison]
-                self._REVERSE.get(str(e.get('assetType', '')).lower()) == 39  # ruff: ignore[magic-value-comparison]
+            is_solidmodel = (e.get('assetTypeId') == 39) or (
+                self._REVERSE.get(str(e.get('assetType', '')).lower()) == 39
             )
 
             # Build slot key from request metadata first. The fidelity field can
@@ -1827,7 +1827,7 @@ class TextureStripper:
                                 local_tgt = str(dl_path)
 
                         if local_tgt is not None:
-                            # Instead of pushing the ID to Roblox, we route it as a local file, prompting conversion  # ruff: ignore[line-too-long]
+                            # Instead of pushing the ID to Roblox, we route it as a local file, prompting conversion
                             self._route_local(
                                 f'{batch_id}_{req_id}',
                                 aid,
@@ -1853,7 +1853,7 @@ class TextureStripper:
                 # are configured via VSN keys (N≥2), composite them into one texture.
                 # This check runs BEFORE normal local_key routing so that e.g.
                 # "packId:2 → metalness.png" is composited rather than served raw.
-                if map_index == 2 and orm_overrides:  # ruff: ignore[magic-value-comparison]
+                if map_index == 2 and orm_overrides:
                     orm_chs: dict[str, str | None] = {}
                     # Wildcard always lowest priority
                     orm_chs.update(orm_overrides.get('TexturePack', {}))
@@ -1912,8 +1912,8 @@ class TextureStripper:
                     # Check if this replacement specifically targets a TexturePack slot or type
                     is_texpack = (
                         (':' in str(local_key))
-                        or (e.get('assetTypeId') == 63)  # ruff: ignore[magic-value-comparison]
-                        or (self._REVERSE.get(str(e.get('assetType', '')).lower()) == 63)  # ruff: ignore[magic-value-comparison]
+                        or (e.get('assetTypeId') == 63)
+                        or (self._REVERSE.get(str(e.get('assetType', '')).lower()) == 63)
                     )
                     repl_local_path = local_replacements[local_key]
                     self._route_local(
@@ -1946,8 +1946,8 @@ class TextureStripper:
                 elif cdn_key is not None:
                     is_texpack_cdn = (
                         (':' in str(cdn_key))
-                        or (e.get('assetTypeId') == 63)  # ruff: ignore[magic-value-comparison]
-                        or (self._REVERSE.get(str(e.get('assetType', '')).lower()) == 63)  # ruff: ignore[magic-value-comparison]
+                        or (e.get('assetTypeId') == 63)
+                        or (self._REVERSE.get(str(e.get('assetType', '')).lower()) == 63)
                     )
                     self._route_cdn(
                         f'{batch_id}_{req_id}',
@@ -1976,7 +1976,7 @@ class TextureStripper:
     # Batch response (called from server MITM thread)
     # ------------------------------------------------------------------
 
-    def process_batch_response(  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
+    def process_batch_response(
         self,
         req_body: bytes,
         resp_body: bytes,
@@ -2098,7 +2098,7 @@ class TextureStripper:
 
                 if location and not pending_key:  # ruff: ignore[collapsible-if]
                     if aid is not None and map_index is not None:
-                        if map_index == 2 and orm_overrides:  # ruff: ignore[magic-value-comparison]
+                        if map_index == 2 and orm_overrides:
                             orm_chs: dict[str, str | None] = {}
                             orm_chs.update(orm_overrides.get('TexturePack', {}))
                             if aid in orm_overrides:
@@ -2117,7 +2117,7 @@ class TextureStripper:
                                     log_buffer.log(
                                         'Local',
                                         f'Will serve local for {base_loc[:60]}... '
-                                        f'(key=ORM[{", ".join(sorted(orm_chs))}], slot={map_index}, file={Path(comp).name})',  # ruff: ignore[line-too-long]
+                                        f'(key=ORM[{", ".join(sorted(orm_chs))}], slot={map_index}, file={Path(comp).name})',
                                     )
                                     continue
 
@@ -2138,14 +2138,14 @@ class TextureStripper:
                             log_buffer.log(
                                 'Local',
                                 f'Will serve local for {base_loc[:60]}... '
-                                f'(key={local_key}, slot={map_index}, file={Path(local_path).name})',  # ruff: ignore[line-too-long]
+                                f'(key={local_key}, slot={map_index}, file={Path(local_path).name})',
                             )
                             continue
                         if cdn_key is not None:
                             self._cdn_redirects[base_loc] = cdn_replacements[cdn_key]
                             log_buffer.log(
                                 'CDN',
-                                f'Will redirect {base_loc[:60]}... (key={cdn_key}, slot={map_index})',  # ruff: ignore[line-too-long]
+                                f'Will redirect {base_loc[:60]}... (key={cdn_key}, slot={map_index})',
                             )
                             continue
 
@@ -2253,7 +2253,7 @@ class TextureStripper:
         resp_body: bytes,
         obj_path_str: str,
         cdn_url: str = '',
-        prefer_v3: bool = False,  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
+        prefer_v3: bool = False,
     ) -> bytes:
         # Pop ONLY this specific CDN URL, not every URL mapped to the same obj.
         # Popping all-by-value was the root cause of the SolidModel partial-replacement
@@ -2295,7 +2295,7 @@ class TextureStripper:
             if normalized != path:
                 log_buffer.log(
                     'TexPackTrace',
-                    f'Normalized local RGBA8 KTX2 for Roblox: input={path.name} output={normalized.name}',  # ruff: ignore[line-too-long]
+                    f'Normalized local RGBA8 KTX2 for Roblox: input={path.name} output={normalized.name}',
                 )
                 return str(normalized)
             log_buffer.log('TexPackTrace', f'Local TexturePack map already KTX: file={path.name}')
@@ -2323,7 +2323,7 @@ class TextureStripper:
                 )
                 log_buffer.log(
                     'TexPackTrace',
-                    f'Converted local TexturePack map: input={path.name} output={converted_path.name}',  # ruff: ignore[line-too-long]
+                    f'Converted local TexturePack map: input={path.name} output={converted_path.name}',
                 )
                 return str(converted_path)
         except Exception as exc:  # ruff: ignore[blind-except]
@@ -2378,13 +2378,13 @@ class TextureStripper:
             )
             return path
 
-    def _route_cdn(  # ruff: ignore[complex-structure, too-many-arguments, too-many-branches, too-many-positional-arguments, too-many-return-statements]
+    def _route_cdn(  # ruff: ignore[too-many-positional-arguments, too-many-return-statements]
         self,
         req_id: str,
         aid: object,
         cdn_url: str,
-        is_solidmodel: bool,  # ruff: ignore[boolean-type-hint-positional-argument]
-        is_texpack: bool = False,  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
+        is_solidmodel: bool,
+        is_texpack: bool = False,
         map_index: int | None = None,
     ) -> None:
         parsed = urlparse(str(cdn_url))
@@ -2393,7 +2393,7 @@ class TextureStripper:
         if is_texpack:
             log_buffer.log(
                 'TexPackTrace',
-                f'Queue CDN TexturePack route req={req_id} aid={aid} ext={ext or "none"} url={_short_value(cdn_url)}',  # ruff: ignore[line-too-long]
+                f'Queue CDN TexturePack route req={req_id} aid={aid} ext={ext or "none"} url={_short_value(cdn_url)}',
             )
 
         if ext == '.obj':
@@ -2446,7 +2446,7 @@ class TextureStripper:
                 # Divert back to local routing so it triggers KTX2 conversion!
                 log_buffer.log(
                     'TexPackTrace',
-                    f'Downloaded CDN TexturePack map for local conversion aid={aid} file={local_cache.name}',  # ruff: ignore[line-too-long]
+                    f'Downloaded CDN TexturePack map for local conversion aid={aid} file={local_cache.name}',
                 )
                 self._route_local(
                     req_id,
@@ -2465,13 +2465,13 @@ class TextureStripper:
         self._queue_pending(req_id, ('cdn', cdn_url))
         log_buffer.log('CDN', f'Queued CDN redirect for {aid}')
 
-    def _route_local(  # ruff: ignore[complex-structure, too-many-arguments, too-many-branches, too-many-positional-arguments, too-many-statements]
+    def _route_local(  # ruff: ignore[too-many-positional-arguments]
         self,
         req_id: str,
         aid: object,
         local_path: str,
-        is_solidmodel: bool,  # ruff: ignore[boolean-type-hint-positional-argument]
-        is_texpack: bool = False,  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
+        is_solidmodel: bool,
+        is_texpack: bool = False,
         source_key: object | None = None,
         map_index: int | None = None,
     ) -> None:
@@ -2583,7 +2583,7 @@ class TextureStripper:
             self._queue_pending(req_id, ('local', local_path))
             _log_local_queued()
 
-    def _build_orm_composite(  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
+    def _build_orm_composite(
         self,
         parent_id: int | str,
         channel_pngs: dict[str, str | None],
@@ -2652,7 +2652,7 @@ class TextureStripper:
                     if resolved_normal is None:
                         log_buffer.log(
                             'ORM',
-                            f'Normal asset {normal_id} could not be downloaded — using captured Normal baseline',  # ruff: ignore[line-too-long]
+                            f'Normal asset {normal_id} could not be downloaded — using captured Normal baseline',
                         )
 
             if resolved_normal is not None and str(resolved_normal).startswith(
@@ -2686,9 +2686,9 @@ class TextureStripper:
                 normal_baseline = APP_CACHE_DIR / 'texpack_slots' / f'{parent_id}_slot1.ktx2'
             log_buffer.log(
                 'TexPackTrace',
-                f'ORM composite input pack={parent_id} baseline={baseline.name if baseline.exists() else "missing"} '  # ruff: ignore[line-too-long]
-                f'normal={_file_value(resolved_normal) if resolved_normal else (normal_baseline.name if normal_baseline.exists() else "missing")} '  # ruff: ignore[line-too-long]
-                f'channels={", ".join(f"{ch}={_file_value(val)}" for ch, val in sorted(resolved.items()))}',  # ruff: ignore[line-too-long]
+                f'ORM composite input pack={parent_id} baseline={baseline.name if baseline.exists() else "missing"} '
+                f'normal={_file_value(resolved_normal) if resolved_normal else (normal_baseline.name if normal_baseline.exists() else "missing")} '
+                f'channels={", ".join(f"{ch}={_file_value(val)}" for ch, val in sorted(resolved.items()))}',
             )
             result = composite_orm(
                 baseline=(baseline if baseline.exists() else None),
@@ -2706,11 +2706,11 @@ class TextureStripper:
             log_buffer.log('ORM', f'Composite failed for pack {parent_id}: {exc}')
             return None
 
-    def _build_texpack_request_slot_map(  # ruff: ignore[complex-structure, too-many-branches]
+    def _build_texpack_request_slot_map(
         self,
         data: _JsonList,
         slot_target_ids: set[int] | None = None,
-        infer_repeated_assets: bool = False,  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
+        infer_repeated_assets: bool = False,
     ) -> dict[int, int]:
         """Infer TexturePack delivery slots from the index-aligned batch request.
 
@@ -2730,8 +2730,8 @@ class TextureStripper:
                 continue
             asset_counts[aid] = asset_counts.get(aid, 0) + 1
             if (
-                item.get('assetTypeId') == 63  # ruff: ignore[magic-value-comparison]
-                or self._REVERSE.get(str(item.get('assetType', '')).lower()) == 63  # ruff: ignore[magic-value-comparison]
+                item.get('assetTypeId') == 63
+                or self._REVERSE.get(str(item.get('assetType', '')).lower()) == 63
             ):
                 texpack_ids.add(aid)
 
@@ -2768,13 +2768,13 @@ class TextureStripper:
                     slots_for_asset = build_slots.setdefault(aid, {})
                     if build_key not in slots_for_asset:
                         raw_slot = next_slot.get(aid, 0)
-                        slots_for_asset[build_key] = 2 if raw_slot >= 2 else raw_slot  # ruff: ignore[if-expr-min-max, magic-value-comparison]
+                        slots_for_asset[build_key] = 2 if raw_slot >= 2 else raw_slot  # ruff: ignore[if-expr-min-max]
                         next_slot[aid] = raw_slot + 1
                     slot = slots_for_asset[build_key]
                 elif asset_counts.get(aid, 0) > 1:
                     raw_slot = occurrence_slot.get(aid, 0)
                     occurrence_slot[aid] = raw_slot + 1
-                    slot = 2 if raw_slot >= 2 else raw_slot  # ruff: ignore[if-expr-min-max, magic-value-comparison]
+                    slot = 2 if raw_slot >= 2 else raw_slot  # ruff: ignore[if-expr-min-max]
                 else:
                     continue
 
@@ -2837,7 +2837,7 @@ class TextureStripper:
                 idat = _chunk(b'IDAT', _zl.compress(b'\x00\xff\xff\xff\xff', 9))  # white, opaque
                 iend = _chunk(b'IEND', b'')
                 png_path.write_bytes(sig + ihdr + idat + iend)
-                log_buffer.log('TexPack', 'Created blank 1×1 placeholder PNG')  # ruff: ignore[ambiguous-unicode-character-string]
+                log_buffer.log('TexPack', 'Created blank 1×1 placeholder PNG')
             except Exception as exc:  # ruff: ignore[blind-except]
                 log_buffer.log('TexPack', f'Failed to create blank placeholder PNG: {exc}')
                 return None

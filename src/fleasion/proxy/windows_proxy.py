@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import platform
 import re
-import subprocess  # ruff: ignore[suspicious-subprocess-import]
+import subprocess
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
@@ -98,7 +98,7 @@ def _proxy_target(host: str | None, port: object) -> str | None:
         port_int = int(str(port).strip())
     except TypeError, ValueError:
         return None
-    if port_int <= 0 or port_int > 65535:  # ruff: ignore[magic-value-comparison]
+    if port_int <= 0 or port_int > 65535:
         return None
     if ':' in host_text and not host_text.startswith('['):
         host_text = f'[{host_text}]'

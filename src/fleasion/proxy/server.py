@@ -238,8 +238,8 @@ def _looks_binary(text: str) -> bool:
     sample = text[:2048]
     if not sample:
         return False
-    printable = sum(1 for ch in sample if ch in '\t\r\n' or 32 <= ord(ch) < 127 or ord(ch) > 159)  # ruff: ignore[magic-value-comparison]
-    return (printable / len(sample)) < 0.85  # ruff: ignore[magic-value-comparison]
+    printable = sum(1 for ch in sample if ch in '\t\r\n' or 32 <= ord(ch) < 127 or ord(ch) > 159)
+    return (printable / len(sample)) < 0.85
 
 
 def _pretty_body_text(body: bytes) -> str:
@@ -528,7 +528,7 @@ def _coerce_replacement_value(replacement: str) -> _JsonValue:
     return replacement
 
 
-def apply_auto_replace_rules(  # ruff: ignore[complex-structure]
+def apply_auto_replace_rules(
     rules: Iterable[_AutoReplaceRule], direction: str, host: str, path: str, body: bytes
 ) -> tuple[bytes, bool]:
     """Run the body-affecting Auto Replace rules (plain text / regex / JSON
@@ -677,11 +677,11 @@ _EXPLICIT_TUNNEL_CONNECT_TIMEOUT = 10.0
 _EXPLICIT_TUNNEL_MAX_CANDIDATES = 3
 
 
-async def _open_explicit_proxy_tunnel(  # ruff: ignore[complex-structure, too-many-locals]
+async def _open_explicit_proxy_tunnel(
     host: str,
     port: int,
     *,
-    timeout: float = _EXPLICIT_TUNNEL_CONNECT_TIMEOUT,  # ruff: ignore[async-function-with-timeout]
+    timeout: float = _EXPLICIT_TUNNEL_CONNECT_TIMEOUT,
 ) -> _ExplicitTunnelConnectResult:
     """Open a plain-TCP upstream for a CONNECT tunnel.
 
@@ -805,7 +805,7 @@ class _ResponseTrackingWriter:
         self._delivery_ack: Callable[[], None] | None = None
         self._delivery_ack_expected: bytes | None = None
 
-    def begin(self, entry: _RequestLogEntry | None, hold: bool = False) -> None:  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
+    def begin(self, entry: _RequestLogEntry | None, hold: bool = False) -> None:
         self._entry = entry
         self._start = time.time()
         self._status_captured = False
@@ -902,7 +902,7 @@ class _ResponseTrackingWriter:
         if pending.action == 'drop':
             entry['response_raw'] = bytearray(pending.data)
             entry['dropped_response'] = True
-            try:  # ruff: ignore[suppressible-exception]
+            try:
                 self._writer.close()
             except Exception:  # ruff: ignore[blind-except, try-except-pass]
                 pass
@@ -1029,7 +1029,7 @@ async def _read_headers(  # pyright: ignore[reportUnusedFunction]
     return raw.first_line, raw.headers
 
 
-async def _read_body_wire(reader: asyncio.StreamReader, headers: dict[bytes, bytes]) -> RawBody:  # ruff: ignore[complex-structure, too-many-branches]
+async def _read_body_wire(reader: asyncio.StreamReader, headers: dict[bytes, bytes]) -> RawBody:
     """Read an HTTP body, preserving wire bytes and exposing dechunked payload."""
     te = headers.get(b'transfer-encoding', b'').lower()
     cl_raw = headers.get(b'content-length', b'')
@@ -1310,7 +1310,7 @@ class _FlowRequest:
         if self._path == self._original_path:
             return original
         parts = original.split(b' ', 2)
-        if len(parts) >= 3:  # ruff: ignore[magic-value-comparison]
+        if len(parts) >= 3:
             return parts[0] + b' ' + self._path.encode('ascii') + b' ' + parts[2]
         return original
 
@@ -1347,10 +1347,10 @@ def _flow_response_after_callbacks(flow: ProxyFlow) -> _FlowResponse | None:
     return flow.response
 
 
-class FleasionProxy:  # ruff: ignore[too-many-public-methods]
+class FleasionProxy:
     """Direct TLS-terminating asyncio proxy for Roblox asset hosts."""
 
-    def __init__(  # ruff: ignore[too-many-arguments, too-many-positional-arguments, too-many-statements]
+    def __init__(  # ruff: ignore[too-many-positional-arguments]
         self,
         texture_stripper: TextureStripper,
         cache_scraper: CacheScraper,
@@ -1364,8 +1364,8 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
         system_http_proxy: HttpProxyConfig | None = None,
         manual_http_proxy: HttpProxyConfig | None = None,
         manual_socks5_proxy: Socks5ProxyConfig | None = None,
-        wire_preserving_passthrough: bool = False,  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
-        explicit_proxy: bool = False,  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
+        wire_preserving_passthrough: bool = False,
+        explicit_proxy: bool = False,
         intercept_hosts: Iterable[str] | None = None,
         vpn_compat_max_assetdelivery_connections: int = 16,
         vpn_compat_max_cdn_connections: int = 32,
@@ -1376,7 +1376,7 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
         ca_cert_path: Path | None = None,
         ca_key_path: Path | None = None,
         cert_cache_dir: Path | None = None,
-        intercept_all_hosts: bool = False,  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
+        intercept_all_hosts: bool = False,
         intercept_excluded_hosts: Iterable[str] | None = None,
         auto_replace_rules: Iterable[_AutoReplaceRule] | None = None,
     ) -> None:
@@ -1658,7 +1658,7 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
         port: int,
         method: str,
         path: str,
-        intercepted: bool,  # ruff: ignore[boolean-type-hint-positional-argument]
+        intercepted: bool,
     ) -> _RequestLogEntry:
         """Append one row per request/tunnel seen through the explicit proxy.
 
@@ -1702,14 +1702,14 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
         with self._request_log_lock:
             self._request_log.clear()
 
-    def format_request_preview(self, entry: _RequestLogEntry) -> str:  # ruff: ignore[no-self-use]
+    def format_request_preview(self, entry: _RequestLogEntry) -> str:
         """Human-readable request text for a request-log entry, for the Proxy tab."""
         raw = entry.get('request_raw')
         if not raw:
             return ''
         return asyncio.run(_format_raw_http_message(bytes(raw)))
 
-    def format_response_preview(self, entry: _RequestLogEntry) -> str:  # ruff: ignore[no-self-use]
+    def format_response_preview(self, entry: _RequestLogEntry) -> str:
         """Human-readable response text for a request-log entry, for the Proxy tab."""
         raw = entry.get('response_raw')
         if not raw:
@@ -1774,7 +1774,7 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
                 entry['status'] = _parse_status_code(resp_headers.first_line)
                 entry['ms'] = round((time.time() - start) * 1000)
             finally:
-                try:  # ruff: ignore[suppressible-exception]
+                try:
                     up_writer.close()
                 except Exception:  # ruff: ignore[blind-except, try-except-pass]
                     pass
@@ -1789,7 +1789,7 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
         """
         self._intercept_match_text = (text or '').strip().lower()
 
-    def set_intercept_all_hosts(self, enabled: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def set_intercept_all_hosts(self, enabled: bool) -> None:
         """Toggle whether traffic to hosts OUTSIDE Fleasion's own feature set
         (texture stripper/custom FastFlags/username spoofer/etc) also gets
         decrypted and logged. Those feature hosts always work either way -
@@ -1807,7 +1807,7 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
         """Return whether an explicit-proxy CONNECT should be TLS-terminated."""
         normalized_host = (host or '').strip().lower().rstrip('.')
         return (
-            port == 443  # ruff: ignore[magic-value-comparison]
+            port == 443
             and normalized_host not in self._intercept_excluded_hosts
             and (self._intercept_all_hosts or normalized_host in self._intercept_hosts)
         )
@@ -1936,7 +1936,7 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
         for server in servers:
             server.close()
         for server in servers:
-            try:  # ruff: ignore[suppressible-exception]
+            try:
                 await asyncio.wait_for(server.wait_closed(), timeout=3.0)
             except Exception:  # ruff: ignore[blind-except, try-except-pass]
                 pass
@@ -1959,7 +1959,7 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
         self._last_gamejoin_time = time.monotonic()
         self._asset_diag_generation += 1
         generation = self._asset_diag_generation
-        asyncio.create_task(  # ruff: ignore[asyncio-dangling-task]
+        asyncio.create_task(
             self._warn_if_asset_traffic_missing(generation, self._last_gamejoin_time)
         )
 
@@ -1974,9 +1974,9 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
 
             log_buffer.log(
                 'ProxyDiag',
-                'Game join traffic was intercepted, but no assetdelivery/CDN requests reached Fleasion '  # ruff: ignore[line-too-long]
+                'Game join traffic was intercepted, but no assetdelivery/CDN requests reached Fleasion '
                 f'within {ASSET_TRAFFIC_MISSING_DIAGNOSTIC_SECONDS:.0f}s. '
-                'Possible asset traffic bypass: IPv6 loopback, stale DNS cache, hosts-file protection, '  # ruff: ignore[line-too-long]
+                'Possible asset traffic bypass: IPv6 loopback, stale DNS cache, hosts-file protection, '
                 'or security/VPN filtering.',
             )
         except Exception:  # ruff: ignore[blind-except]
@@ -2060,7 +2060,7 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
         self,
         host: str,
         *,
-        timeout: float = 10.0,  # ruff: ignore[async-function-with-timeout]
+        timeout: float = 10.0,
         max_targets: int | None = None,
     ) -> UpstreamConnectResult:
         endpoints = self._endpoints_for_host(host, max_targets=max_targets)
@@ -2074,7 +2074,7 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
         self,
         host: str,
         endpoints: Sequence[UpstreamEndpoint],
-        timeout: float,  # ruff: ignore[async-function-with-timeout]
+        timeout: float,
     ) -> UpstreamConnectResult:
         result = await self._connector.connect(host, endpoints, self._upstream_ssl_ctx, timeout)
 
@@ -2112,7 +2112,7 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
         self,
         host: str,
         *,
-        timeout: float = 10.0,  # ruff: ignore[async-function-with-timeout]
+        timeout: float = 10.0,
         max_targets: int | None = None,
     ) -> tuple[
         asyncio.StreamReader | None,
@@ -2130,7 +2130,7 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
             )
         return None, None, None, [result.error or 'upstream connect failed']
 
-    async def log_upstream_self_test(self, hosts: set[str] | None = None) -> None:  # ruff: ignore[complex-structure]
+    async def log_upstream_self_test(self, hosts: set[str] | None = None) -> None:
         from fleasion.utils import log_buffer  # ruff: ignore[import-outside-top-level]
 
         hosts_to_test = sorted(hosts or set(self._upstream_endpoints.keys()))
@@ -2229,12 +2229,12 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
         except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log('Proxy', f'Session error for {host}: {exc}')
         finally:
-            try:  # ruff: ignore[suppressible-exception]
+            try:
                 writer.close()
             except Exception:  # ruff: ignore[blind-except, try-except-pass]
                 pass
 
-    async def _handle_explicit_proxy_client(  # ruff: ignore[complex-structure, too-many-branches, too-many-return-statements, too-many-statements]
+    async def _handle_explicit_proxy_client(  # ruff: ignore[too-many-return-statements]
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
         from fleasion.utils import log_buffer  # ruff: ignore[import-outside-top-level]
@@ -2250,7 +2250,7 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
 
         parts = connect_headers.first_line.split()
         method = parts[0].upper() if parts else b''
-        target = parts[1].decode('ascii', errors='replace') if len(parts) >= 2 else ''  # ruff: ignore[magic-value-comparison]
+        target = parts[1].decode('ascii', errors='replace') if len(parts) >= 2 else ''
         host, _sep, port_text = target.rpartition(':')
         host = host.strip('[]').lower()
         try:
@@ -2258,7 +2258,7 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
         except ValueError:
             port = 0
 
-        if method != b'CONNECT' or not host or not 0 < port <= 65535:  # ruff: ignore[magic-value-comparison]
+        if method != b'CONNECT' or not host or not 0 < port <= 65535:
             writer.write(b'HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
             try:
                 await writer.drain()
@@ -2320,12 +2320,12 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
         except Exception as exc:  # ruff: ignore[blind-except]
             log_buffer.log('Proxy', f'Explicit proxy session error for {host}: {exc}')
         finally:
-            try:  # ruff: ignore[suppressible-exception]
+            try:
                 writer.close()
             except Exception:  # ruff: ignore[blind-except, try-except-pass]
                 pass
 
-    async def _tunnel_explicit_proxy_connection(  # ruff: ignore[complex-structure, no-self-use, too-many-statements]
+    async def _tunnel_explicit_proxy_connection(
         self,
         client_reader: asyncio.StreamReader,
         client_writer: asyncio.StreamWriter,
@@ -2341,7 +2341,7 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
         if result.writer is None or result.reader is None:
             log_buffer.log(
                 'Proxy',
-                f'Explicit proxy tunnel failed for {host}:{port}: {result.error or "unknown error"}',  # ruff: ignore[line-too-long]
+                f'Explicit proxy tunnel failed for {host}:{port}: {result.error or "unknown error"}',
             )
             client_writer.write(b'HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n')
             if log_entry is not None:
@@ -2371,7 +2371,7 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
         async def _pipe(
             reader: asyncio.StreamReader,
             writer: asyncio.StreamWriter,
-            track: bool = False,  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
+            track: bool = False,
         ) -> None:
             try:  # ruff: ignore[too-many-statements-in-try-clause]
                 while True:
@@ -2386,7 +2386,7 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
             except ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError, OSError:
                 pass
             finally:
-                try:  # ruff: ignore[suppressible-exception]
+                try:
                     writer.close()
                 except Exception:  # ruff: ignore[blind-except, try-except-pass]
                     pass
@@ -2398,12 +2398,12 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
             )
         finally:
             for tunnel_writer in (upstream_writer, client_writer):
-                try:  # ruff: ignore[suppressible-exception]
+                try:
                     tunnel_writer.close()
                 except Exception:  # ruff: ignore[blind-except, try-except-pass]
                     pass
 
-    async def _http_session(  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
+    async def _http_session(
         self,
         first_req: RawHeaders,
         reader: asyncio.StreamReader,
@@ -2459,7 +2459,7 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
                 log_buffer.log(
                     'Proxy',
                     f'Asset delivery path is blocked: Fleasion cannot open outbound TLS to {host}. '
-                    'Hosts/TLS interception may be working locally, but firewall, AV, VPN, or WFP filtering '  # ruff: ignore[line-too-long]
+                    'Hosts/TLS interception may be working locally, but firewall, AV, VPN, or WFP filtering '
                     'may be blocking Fleasion.exe/Python outbound traffic.',
                 )
                 self._notify_upstream_connect_failure_once(host, failure_text)
@@ -2467,10 +2467,10 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
             response_writer.write(
                 _make_proxy_error_response(
                     502,
-                    f'Fleasion could not connect upstream to {host}. See Fleasion logs for details.',  # ruff: ignore[line-too-long]
+                    f'Fleasion could not connect upstream to {host}. See Fleasion logs for details.',
                 )
             )
-            try:  # ruff: ignore[suppressible-exception]
+            try:
                 await response_writer.drain()
             except Exception:  # ruff: ignore[blind-except, try-except-pass]
                 pass
@@ -2513,7 +2513,7 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
                     )
                     return None
                 status_code = _parse_status_code(response.first_line)
-                if not 200 <= status_code < 300:  # ruff: ignore[magic-value-comparison]
+                if not 200 <= status_code < 300:
                     log_buffer.log(
                         'CustomFFlags',
                         f'Roblox compression dictionary returned HTTP {status_code}',
@@ -2526,7 +2526,7 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
                 if hashlib.sha256(dictionary).hexdigest() != dictionary_sha256:
                     log_buffer.log(
                         'CustomFFlags',
-                        'Roblox compression dictionary integrity check failed; preserving original response',  # ruff: ignore[line-too-long]
+                        'Roblox compression dictionary integrity check failed; preserving original response',
                     )
                     return None
                 self._client_settings_dictionary_cache[dictionary_sha256] = dictionary
@@ -2600,7 +2600,7 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
                         if req_pending.action == 'drop':
                             log_entry['dropped_request'] = True
                             log_entry['status'] = None
-                            try:  # ruff: ignore[suppressible-exception]
+                            try:
                                 response_writer.close()
                             except Exception:  # ruff: ignore[blind-except, try-except-pass]
                                 pass
@@ -2763,7 +2763,7 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
                             log_buffer.log(
                                 serve_category,
                                 f'CDN local serve complete: host={host} path={path[:160]} '
-                                f'file={serve_path.name} status={status_line} response_bytes={len(response)}',  # ruff: ignore[line-too-long]
+                                f'file={serve_path.name} status={status_line} response_bytes={len(response)}',
                             )
                             response_writer.write(response)
                             await response_writer.drain()
@@ -2941,20 +2941,20 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
                 custom_fflag_response_enabled = (
                     custom_fflag_request and custom_fflag_modifier.is_enabled()
                 )
-                if custom_fflag_response_enabled and status_code >= 400:  # ruff: ignore[magic-value-comparison]
+                if custom_fflag_response_enabled and status_code >= 400:
                     custom_fflag_modifier.log_response_failure(
                         'upstream-http',
-                        f'ClientSettings upstream returned HTTP {status_code}; response left unchanged',  # ruff: ignore[line-too-long]
+                        f'ClientSettings upstream returned HTTP {status_code}; response left unchanged',
                     )
                 elif (
-                    custom_fflag_response_enabled and 200 <= status_code < 300 and not resp_body_raw  # ruff: ignore[magic-value-comparison]
+                    custom_fflag_response_enabled and 200 <= status_code < 300 and not resp_body_raw
                 ):
                     custom_fflag_modifier.log_response_failure(
                         'empty-success',
                         f'ClientSettings upstream returned HTTP {status_code} with an empty body; '
                         'response left unchanged',
                     )
-                if host == GAMEJOIN_HOST and 200 <= status_code < 400:  # ruff: ignore[magic-value-comparison]
+                if host == GAMEJOIN_HOST and 200 <= status_code < 400:
                     self._note_gamejoin_traffic()
                 if status_code in (400, 429) and host in {  # ruff: ignore[literal-membership]
                     ASSET_DELIVERY_HOST,
@@ -2972,7 +2972,7 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
                         f'content-type={ct or "unknown"} body={len(resp_body_raw)} bytes '
                         f'retry-after={retry_after or "none"} preview={preview!r}',
                     )
-                elif status_code >= 400 and host in {  # ruff: ignore[magic-value-comparison]
+                elif status_code >= 400 and host in {
                     ASSET_DELIVERY_HOST,
                     GAMEJOIN_HOST,
                     *CDN_HOSTS,
@@ -2983,7 +2983,7 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
                     log_buffer.log(
                         'Proxy',
                         f'Upstream HTTP {status_code} from {host}{path[:180]} '
-                        f'content-type={ct or "unknown"} body={len(resp_body_raw)} bytes{snippet_text}',  # ruff: ignore[line-too-long]
+                        f'content-type={ct or "unknown"} body={len(resp_body_raw)} bytes{snippet_text}',
                     )
 
                 # ── Determine if we need to modify the response body ──────────
@@ -3062,7 +3062,7 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
                         anim_repl_path, required_rig = cast('_AnimPendingValue', short_circuit[1])
                         orig_bytes = _decompress_body(resp_body_raw, resp_headers)
 
-                        def _pick_rig_matched_file(  # ruff: ignore[complex-structure]
+                        def _pick_rig_matched_file(
                             orig_bytes: bytes,
                             repl_path: str,
                             required_rig: _AnimRequiredRig = 'any',
@@ -3081,7 +3081,7 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
                             if required_rig != 'any' and orig_rig not in required_rig:
                                 _lb.log(
                                     'AnimConv',
-                                    f'Skipping replacement: original rig={orig_rig}, required={required_rig}',  # ruff: ignore[line-too-long]
+                                    f'Skipping replacement: original rig={orig_rig}, required={required_rig}',
                                 )
                                 return orig_bytes
                             if is_curve_animation(orig_bytes):
@@ -3109,12 +3109,12 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
                                 if conv_path:
                                     _lb.log(
                                         'AnimConv',
-                                        f'Serving {target_rig} CurveAnimation replacement ({Path(conv_path).name})',  # ruff: ignore[line-too-long]
+                                        f'Serving {target_rig} CurveAnimation replacement ({Path(conv_path).name})',
                                     )
                                     return Path(conv_path).read_bytes()
                                 _lb.log(
                                     'AnimConv',
-                                    f'CurveAnimation conversion failed for {repl_p.name} → {target_rig}',  # ruff: ignore[line-too-long]
+                                    f'CurveAnimation conversion failed for {repl_p.name} → {target_rig}',
                                 )
                                 return orig_bytes
                             # KeyframeSequence path: serve rig-matched replacement.
@@ -3135,7 +3135,7 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
                                 if repl_rig == 'unknown':
                                     _lb.log(
                                         'AnimConv',
-                                        f'Rig detection unknown for replacement: {Path(repl_path).name}',  # ruff: ignore[line-too-long]
+                                        f'Rig detection unknown for replacement: {Path(repl_path).name}',
                                     )
                                 elif repl_rig != conv_rig:
                                     conv = _texture_get_converted(
@@ -3173,7 +3173,7 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
                             full_url, path, resp_body_for_cache, ct
                         )
 
-                elif custom_fflag_response_enabled and 200 <= status_code < 300 and resp_body_raw:  # ruff: ignore[magic-value-comparison]
+                elif custom_fflag_response_enabled and 200 <= status_code < 300 and resp_body_raw:
                     content_encoding = resp_headers.get(b'content-encoding', b'').lower()
                     if content_encoding == b'dcz':
                         dictionary_sha256 = _dcz_dictionary_sha256(path)
@@ -3190,7 +3190,7 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
                         if resp_body_plain is None:
                             custom_fflag_modifier.log_response_failure(
                                 'dcz-decode',
-                                'Could not decode dictionary-compressed ClientSettings; preserving original response',  # ruff: ignore[line-too-long]
+                                'Could not decode dictionary-compressed ClientSettings; preserving original response',
                             )
                         else:
                             (
@@ -3207,7 +3207,7 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
                                     if recompressed is None:
                                         custom_fflag_modifier.log_response_failure(
                                             'dcz-encode',
-                                            'Could not re-encode dictionary-compressed ClientSettings; preserving original response',  # ruff: ignore[line-too-long]
+                                            'Could not re-encode dictionary-compressed ClientSettings; preserving original response',
                                         )
                                     else:
                                         resp_body_raw = recompressed
@@ -3352,12 +3352,12 @@ class FleasionProxy:  # ruff: ignore[too-many-public-methods]
                 ):
                     break
         finally:
-            try:  # ruff: ignore[suppressible-exception]
+            try:
                 await response_writer.flush_pending_response()
             except Exception:  # ruff: ignore[blind-except, try-except-pass]
                 pass
             if up_writer is not None:
-                try:  # ruff: ignore[suppressible-exception]
+                try:
                     up_writer.close()
                 except Exception:  # ruff: ignore[blind-except, try-except-pass]
                     pass

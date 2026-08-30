@@ -54,7 +54,7 @@ _LANGUAGE_ALIASES = {
 _current_language = DEFAULT_LANGUAGE
 
 
-def normalize_language(language: Any) -> str:  # ruff: ignore[any-type]
+def normalize_language(language: Any) -> str:
     """Return a supported language code, falling back to English."""
     value = str(language or '').strip().replace('_', '-').casefold()
     if value in _TRANSLATIONS:
@@ -72,7 +72,7 @@ def available_languages() -> tuple[tuple[str, str], ...]:
     return tuple((code, LANGUAGES.get(code, code)) for code in _TRANSLATIONS)
 
 
-def set_language(language: Any) -> str:  # ruff: ignore[any-type]
+def set_language(language: Any) -> str:
     """Select the active language and return the normalized code."""
     global _current_language  # ruff: ignore[global-statement]
     _current_language = normalize_language(language)
@@ -123,6 +123,6 @@ def tr_count(
     return tr(identifier, count=count, **values)
 
 
-def verbatim(value: Any) -> str:  # ruff: ignore[any-type]
+def verbatim(value: Any) -> str:
     """Mark technical/user data that is intentionally not translated."""
     return str(value)

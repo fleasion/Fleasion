@@ -67,7 +67,7 @@ class UpdateResolver:
         """Return the validated GitHub owner and repository path."""
         parsed = self.parsed_repository_url
         path_parts = parsed.path.strip('/').split('/')
-        if parsed.scheme != 'https' or parsed.hostname != 'github.com' or len(path_parts) != 2:  # ruff: ignore[magic-value-comparison]
+        if parsed.scheme != 'https' or parsed.hostname != 'github.com' or len(path_parts) != 2:
             msg = f'Unsupported GitHub repository URL: {self.repository_url!r}'
             raise ValueError(msg)
         owner, repository = path_parts

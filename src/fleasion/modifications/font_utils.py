@@ -49,7 +49,7 @@ def _clear_read_only(path: Path) -> None:
 
 def validate_font_bytes(data: bytes) -> bool:
     """Return ``True`` if *data* starts with a known font magic header."""
-    if len(data) < 4:  # ruff: ignore[magic-value-comparison]
+    if len(data) < 4:
         return False
     header = data[:4]
     return any(header == magic for magic in FONT_HEADERS.values())
@@ -82,7 +82,7 @@ def _save_generated_family_names(marker_path: Path, names: set[str]) -> None:
     marker_path.write_text(json.dumps(sorted(names), indent=2), encoding='utf-8')
 
 
-def apply_custom_font(  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
+def apply_custom_font(
     font_data: bytes,
     roblox_dirs: list[Path],
     stash_dir: Path,

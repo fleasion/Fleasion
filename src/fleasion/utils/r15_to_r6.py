@@ -137,7 +137,7 @@ def compute_world_cfs(
     return world_cfs
 
 
-def _calculate_limb(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
+def _calculate_limb(  # ruff: ignore[too-many-positional-arguments]
     limb_world_cf: Sequence[float],
     motor_c0: Sequence[float],
     motor_c1: Sequence[float],
@@ -490,7 +490,7 @@ def _decompose_cf(cf: Sequence[float]) -> tuple[float, float, float, float, floa
     px, py, pz = cf[0], cf[1], cf[2]
     R02 = cf[5]  # ruff: ignore[non-lowercase-variable-in-function]
     ry = math.asin(max(-1.0, min(1.0, R02)))
-    if abs(math.cos(ry)) > 1e-6:  # ruff: ignore[magic-value-comparison]
+    if abs(math.cos(ry)) > 1e-6:
         rx = math.atan2(-cf[8], cf[11])
         rz = math.atan2(-cf[4], cf[3])
     else:
@@ -503,7 +503,7 @@ def _xml_escape(s: str) -> str:
     return s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
 
 
-def keyframe_to_curve_anim(xml_bytes: bytes) -> bytes:  # ruff: ignore[complex-structure, too-many-locals, too-many-statements]
+def keyframe_to_curve_anim(xml_bytes: bytes) -> bytes:
     """Convert a KeyframeSequence RBXMX to a CurveAnimation RBXMX.
 
     Each Pose CFrame is split into a Position (Vector3Curve/FloatCurve X/Y/Z)

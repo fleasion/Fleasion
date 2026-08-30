@@ -71,7 +71,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         return
 
     selected = ', '.join(item.nodeid for item in guarded_items[:3])
-    if len(guarded_items) > 3:  # ruff: ignore[magic-value-comparison]
+    if len(guarded_items) > 3:
         selected += f', and {len(guarded_items) - 3} more'
     pytest.exit(
         'Cross-thread event-loop wakeups are blocked in this environment '

@@ -110,7 +110,7 @@ class _ProxyMaster(Protocol):
 
     def set_env_proxy_intercept_match(self, text: str) -> None: ...
 
-    def set_env_proxy_intercept_all(self, enabled: bool) -> None: ...  # ruff: ignore[boolean-type-hint-positional-argument]
+    def set_env_proxy_intercept_all(self, enabled: bool) -> None: ...
 
     def get_env_proxy_pending_intercepts(self) -> list[_PendingIntercept]: ...
 
@@ -276,7 +276,7 @@ def _format_size(value: int | float | None) -> str:  # ruff: ignore[redundant-nu
         return '0 B'
     size = float(value)
     for unit in ('B', 'KB', 'MB', 'GB'):
-        if size < 1024 or unit == 'GB':  # ruff: ignore[magic-value-comparison]
+        if size < 1024 or unit == 'GB':
             return f'{int(size)} {unit}' if unit == 'B' else f'{size:.1f} {unit}'
         size /= 1024
     return f'{size:.1f} GB'
@@ -447,7 +447,7 @@ class _CompactComboBox(QComboBox):
     the app for compact in-cell dropdowns (e.g. FastFlag True/False editing).
     """
 
-    def wheelEvent(self, e: QWheelEvent) -> None:  # ruff: ignore[invalid-function-name, no-self-use]
+    def wheelEvent(self, e: QWheelEvent) -> None:  # ruff: ignore[invalid-function-name]
         e.ignore()
 
     def paintEvent(self, e: QPaintEvent) -> None:  # ruff: ignore[invalid-function-name, unused-method-argument]
@@ -655,7 +655,7 @@ class AutoReplaceRulesDialog(QDialog):
             )
             if not isinstance(imported, list):
                 msg = 'expected a list of rules'
-                raise ValueError(msg)  # ruff: ignore[raise-within-try, type-check-without-type-error]
+                raise ValueError(msg)  # ruff: ignore[type-check-without-type-error]
             imported_rules = cast('list[object]', imported)
             self._rules = [
                 cast(
@@ -708,7 +708,7 @@ class ProxyTrafficTab(QWidget):
     all - Fleasion's own features work either way.
     """
 
-    def __init__(  # ruff: ignore[too-many-statements]
+    def __init__(
         self,
         config_manager: _ConfigManager | None,
         proxy_master: _ProxyMaster | None = None,
@@ -898,7 +898,7 @@ class ProxyTrafficTab(QWidget):
     def _display_row_number(self, entry_id: int) -> int:
         return entry_id + self._traffic_id_display_offset
 
-    def _render_table(self) -> None:  # ruff: ignore[complex-structure, too-many-branches, too-many-locals, too-many-statements]
+    def _render_table(self) -> None:
         filter_text = self.ui.filterEdit.text().strip().lower()
         highlight_text = self.ui.highlightEdit.text().strip().lower()
         table = self.ui.trafficTable
@@ -1084,7 +1084,7 @@ class ProxyTrafficTab(QWidget):
             return tr('proxy.tunnel_note')
         return text
 
-    def _resolve_action(self, action: str, all_rows: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _resolve_action(self, action: str, all_rows: bool) -> None:
         if self._proxy_master is None:
             return
         if all_rows:
@@ -1107,7 +1107,7 @@ class ProxyTrafficTab(QWidget):
         shortcut.activated.connect(lambda: self._run_if_not_typing(handler))
         return shortcut
 
-    def _run_if_not_typing(self, handler: _ShortcutHandler) -> None:  # ruff: ignore[no-self-use]
+    def _run_if_not_typing(self, handler: _ShortcutHandler) -> None:
         focused = QApplication.focusWidget()
         if isinstance(focused, (QLineEdit, QTextEdit)):
             return
@@ -1147,7 +1147,7 @@ class ProxyTrafficTab(QWidget):
         )
         menu.exec(self.ui.trafficTable.viewport().mapToGlobal(pos))
 
-    def _copy_to_clipboard(self, text: str) -> None:  # ruff: ignore[no-self-use]
+    def _copy_to_clipboard(self, text: str) -> None:
         QApplication.clipboard().setText(text)
 
     def _apply_filter(self, _text: str) -> None:
@@ -1165,7 +1165,7 @@ class ProxyTrafficTab(QWidget):
         ):
             self._proxy_master.set_env_proxy_intercept_match(text)
 
-    def _on_intercept_all_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _on_intercept_all_toggled(self, checked: bool) -> None:
         """Widen/narrow decryption+logging to hosts beyond Fleasion's own
         feature set. Those feature hosts (texture stripper, custom FastFlags,
         username spoofer, etc.) keep working regardless of this toggle.
@@ -1175,7 +1175,7 @@ class ProxyTrafficTab(QWidget):
         ):
             self._proxy_master.set_env_proxy_intercept_all(checked)
 
-    def _on_preserve_toggled(self, checked: bool) -> None:  # ruff: ignore[boolean-type-hint-positional-argument]
+    def _on_preserve_toggled(self, checked: bool) -> None:
         """Unlike enableCheckBox, this setting DOES persist across launches."""
         self._preserve_enabled = checked
         if self._config is not None:
@@ -1191,7 +1191,7 @@ class ProxyTrafficTab(QWidget):
             self._last_saved_preserve_fingerprint = None
             self._refresh_traffic()
 
-    def _maybe_save_preserved_traffic(self, force: bool = False) -> None:  # ruff: ignore[boolean-default-value-positional-argument, boolean-type-hint-positional-argument]
+    def _maybe_save_preserved_traffic(self, force: bool = False) -> None:
         if not self._preserve_enabled:
             return
         fingerprint = tuple(
@@ -1238,7 +1238,7 @@ class ProxyTrafficTab(QWidget):
         self._traffic = []
         self._render_table()
 
-    def _clear_roblox_cache(self) -> None:  # ruff: ignore[no-self-use]
+    def _clear_roblox_cache(self) -> None:
         from .delete_cache import DeleteCacheWindow  # ruff: ignore[import-outside-top-level]
 
         window = DeleteCacheWindow()
